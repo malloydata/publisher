@@ -1464,7 +1464,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
          const auto = await service.createMaterialization(ENV, PKG, {});
          expect(
             await refusal(service.createMaterialization(ENV, PKG, {})),
-         ).toEqual({ status: 409, reason: undefined });
+         ).toEqual({ status: 409, reason: "MATERIALIZATION_CONFLICT" });
          const instructed = await service.createMaterialization(ENV, PKG, {
             versionId: VersionRef.parse("1.0.0"),
             buildInstructions: [

@@ -2251,6 +2251,39 @@
       ]
     }
   },
+  "BuildInstructionsInvalidError": {
+    "class": "BuildInstructionsInvalidError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "Instruction references unknown sourceEntityId 'e9'",
+        "reason": "BUILD_INSTRUCTIONS_INVALID"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Instruction references unknown sourceEntityId 'e9'",
+      "suggestions": [
+        "This is not transient. The request's build instructions or body fail the same way until they change; the message names what is wrong."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Instruction references unknown sourceEntityId 'e9'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "TableOwnershipError owned elsewhere": {
     "class": "TableOwnershipError",
     "http": {
@@ -2578,7 +2611,8 @@
       "status": 409,
       "json": {
         "code": 409,
-        "message": "a build is running"
+        "message": "a build is running",
+        "reason": "MATERIALIZATION_CONFLICT"
       },
       "logged": false,
       "logs": []

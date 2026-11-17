@@ -133,6 +133,15 @@ export type ErrorReason =
    | "TABLE_OWNED_ELSEWHERE"
    // 400: who holds a build's `name=` could not be read.
    | "TABLE_OWNERSHIP_UNVERIFIED"
+   // 400: a materialization create's body or build instructions are not a
+   // run this package can take (a field of the wrong shape, an unknown
+   // source, a table named twice, a ledger entry that does not fit); the
+   // message says which. Retrying unchanged fails the same way.
+   | "BUILD_INSTRUCTIONS_INVALID"
+   // 409: a materialization run conflicts with another run or the package's
+   // binding (a run already active, a table another run is writing, an
+   // auto-run of a package a host manifest serves).
+   | "MATERIALIZATION_CONFLICT"
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
@@ -548,6 +557,18 @@ export class BadRequestError extends Error {
 
    constructor(message: string) {
       super(message);
+   }
+}
+
+/**
+ * A materialization create's body or build instructions that no run of this
+ * package can take: a field of the wrong shape, an unknown `sourceEntityId`,
+ * a table named twice, a ledger entry that does not fit. 400 with `reason:
+ * BUILD_INSTRUCTIONS_INVALID`; the message says which.
+ */
+export class BuildInstructionsInvalidError extends BadRequestError {
+   override get kind(): "build_instructions_invalid" {
+      return "build_instructions_invalid";
    }
 }
 
@@ -1531,6 +1552,7 @@ type CompileRefusedKind =
 type BadRequestKind =
    | "bad_request"
    | "table_ownership"
+   | "build_instructions_invalid"
    | "invalid_argument"
    | "invalid_model_path"
    | "invalid_query_request"
@@ -1552,6 +1574,7 @@ interface ErrorByKind {
    not_implemented: NotImplementedError;
    bad_request: BadRequestError;
    table_ownership: TableOwnershipError;
+   build_instructions_invalid: BuildInstructionsInvalidError;
    invalid_argument: InvalidArgumentError;
    compile_refused: CompileRefusedError;
    invalid_model_path: InvalidModelPathError;
@@ -1637,6 +1660,7 @@ const ERROR_CLASSES: {
    not_implemented: NotImplementedError,
    bad_request: BadRequestError,
    table_ownership: TableOwnershipError,
+   build_instructions_invalid: BuildInstructionsInvalidError,
    invalid_argument: InvalidArgumentError,
    compile_refused: CompileRefusedError,
    invalid_model_path: InvalidModelPathError,
@@ -1874,6 +1898,16 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       mcpSetup: "package",
    },
    bad_request: BAD_REQUEST,
+   build_instructions_invalid: {
+      status: 400,
+      reason: "BUILD_INSTRUCTIONS_INVALID",
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "This is not transient. The request's build instructions or body fail the same way until they change; the message names what is wrong.",
+         ],
+      },
+   },
    table_ownership: {
       status: 400,
       reason: (error) =>
@@ -2098,7 +2132,11 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       },
    },
    materialization_not_found: { status: 404, mcp: { advice: "internal" } },
-   materialization_conflict: { status: 409, mcp: { advice: "internal" } },
+   materialization_conflict: {
+      status: 409,
+      reason: "MATERIALIZATION_CONFLICT",
+      mcp: { advice: "internal" },
+   },
    invalid_state_transition: { status: 409, mcp: { advice: "internal" } },
    write_conflict: {
       status: 409,

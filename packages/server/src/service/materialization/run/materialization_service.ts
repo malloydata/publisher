@@ -16,6 +16,7 @@
 
 import {
    BadRequestError,
+   BuildInstructionsInvalidError,
    BuildPlanUnavailableError,
    InvalidStateTransitionError,
    MaterializationConflictError,
@@ -807,7 +808,7 @@ export class MaterializationService {
             for (const i of buildInstructions) {
                const table = tableIdentity(i.physicalTableName);
                if (seen.has(table)) {
-                  throw new BadRequestError(
+                  throw new BuildInstructionsInvalidError(
                      `buildInstructions name table ${i.physicalTableName} more than once; give each source a table of its own.`,
                   );
                }

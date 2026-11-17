@@ -36,6 +36,7 @@ import {
    MaterializationConflictError,
    MaterializationEligibilityError,
    TableOwnershipError,
+   BuildInstructionsInvalidError,
    MaterializationNotFoundError,
    ModelCompilationError,
    ModelNotFoundError,
@@ -378,6 +379,13 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "AccessDeniedError row filter",
       () => AccessDeniedError.forSource("orders", "row_filter"),
+   ],
+   [
+      "BuildInstructionsInvalidError",
+      () =>
+         new BuildInstructionsInvalidError(
+            "Instruction references unknown sourceEntityId 'e9'",
+         ),
    ],
    [
       "TableOwnershipError owned elsewhere",

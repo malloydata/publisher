@@ -3965,7 +3965,15 @@ paths:
                 $ref: "#/components/schemas/Materialization"
         "400":
           description: >-
-            The request is malformed. Among other checks, every
+            The request is malformed, with `reason: BUILD_INSTRUCTIONS_INVALID`
+            and a message naming the case: a body field of the wrong shape
+            (`forceRefresh`, `reseed`, `runContext`, `buildInstructions` and
+            its entries); a package with no persist sources; an unknown
+            `sourceEntityId`; `realization=SNAPSHOT`; one table named by two
+            instructions of a version's run; a ledger entry that appears twice,
+            names a table this run does not build, names a source that is not
+            incremental, or was measured under another definition of its
+            source. Among other checks, every
             `physicalTableName` a host supplies (a build instruction, a
             `referenceManifest` entry or a `ledger` entry) must be a usable
             table path: no empty part, no backslash or control character, and
@@ -3981,7 +3989,17 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: The package already has an active materialization, or the package or version is bound to a host manifest (`manifestLocation`), or is a version a host has bound before, and the request has no `buildInstructions` (it serves the host's tables or live, so a local run would build tables it cannot serve)
+          description: >-
+            `reason: MATERIALIZATION_CONFLICT`: the package already has an
+            active materialization, or a table the run would write is being
+            written by another run (or is one the package's versions share,
+            which only an auto-run of its latest version rebuilds), or the
+            package or version is bound to a host manifest (`manifestLocation`),
+            or is a version a host has bound before, and the request has no
+            `buildInstructions` (it serves the host's tables or live, so a
+            local run would build tables it cannot serve). `reason:
+            BUILD_PLAN_UNAVAILABLE`: the package's build plan could not be
+            derived, or it serves an older model than its files.
           content:
             application/json:
               schema:
@@ -10212,6 +10230,17 @@ components:
             held by a table this package does not own, or because who holds
             it could not be read.
 
+            BUILD_INSTRUCTIONS_INVALID, on a 400 from creating a
+            materialization, means its body or build instructions are not a
+            run this package can take (a field of the wrong shape, an unknown
+            source, a table named twice, a ledger entry that does not fit);
+            the message names which. Retrying unchanged fails the same way.
+
+            MATERIALIZATION_CONFLICT, on a 409, means a materialization run
+            conflicts with another run or with the package's binding: a run
+            already active, a table another run is writing, or an auto-run of
+            a package or version a host manifest serves.
+
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
             client generated before it -- on the one field whose purpose is to
@@ -10254,7 +10283,8 @@ components:
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
             STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
             MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
-            TABLE_OWNERSHIP_UNVERIFIED, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
+            TABLE_OWNERSHIP_UNVERIFIED, BUILD_INSTRUCTIONS_INVALID,
+            MATERIALIZATION_CONFLICT, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
             VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
             PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,

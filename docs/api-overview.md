@@ -113,6 +113,20 @@ A query that fails tells you whose problem it is. Branch on `reason`, not on the
 For `CONNECTION_FAILED` and `CONNECTION_AUTH_FAILED` the body carries a fixed message, because the
 driver's text can name a host or a user; it is in the server log.
 
+A gate's refusal is a **403 with `reason: ACCESS_DENIED`**: supply the givens the gate reads.
+
+Starting a materialization (`POST …/packages/{pkg}/materializations`) answers, beside the version
+reasons:
+
+- **400 with `reason: BUILD_INSTRUCTIONS_INVALID`:** the body or the build instructions are not a run
+  this package can take: a field of the wrong shape, an unknown `sourceEntityId`, a table named
+  twice, a ledger entry that does not fit. The message names which; retrying unchanged fails the
+  same way.
+- **409 with `reason: MATERIALIZATION_CONFLICT`:** another run is active, another run is writing a
+  table this one would write, or the package or version is served from a host manifest and the
+  request has no `buildInstructions`. **409 with `reason: BUILD_PLAN_UNAVAILABLE`:** the build plan
+  could not be derived; reload the package.
+
 ## Live API explorer
 
 The running server hosts the full, interactive **Swagger UI** and the OpenAPI 3.1 spec:
