@@ -39,6 +39,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 `RefusedSource.tier` still says `preaggregate` for a rollup for one more release, so a control plane that checks `tier == preaggregate` keeps working.
 
+**Fixed: a refused `storage=` rollup's serve verdict said `tier: colocated`.** The verdict mapped every refusal-record tier that was not `storage` to the database tier, and a rollup's record says `preaggregate`. A refused rollup's verdict now gives the tier its own `storage=` puts it in, `storage` or `database`. Its `RefusedSource.tier` still says `preaggregate`.
+
 ## [Unreleased] — database-table drift reported like `storage=`; DOUBLE incremental tables re-seed; unreadable rollup grains refused at plan
 
 **A database table altered outside a build now raises the package warning.** The bind's read of a database table's columns (see the section below on a database table altered outside a build) found drift, but said so only in a log line. It now raises the same `storage-column-type-mismatch` package warning a `storage=` table does, one per table and column, and counts each in `publisher_storage_column_type_mismatch_total{stage="serve"}`, once per bind. No new code or label: the warning gains database-table subjects (a source, or a rollup's base), and its message says the table was altered outside a build and whether the column is read through a cast, answered live, or, for a rollup, persisted view or persisted query, the whole table answered live. A gone column is reported too; one whose new type still reads as its declared type is not. Rebuilding the table clears it.

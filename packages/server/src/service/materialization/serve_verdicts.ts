@@ -370,6 +370,7 @@ export class ServeVerdicts {
          persistedViewOf: (sourceID) => persistedViews.get(sourceID),
          declaredMaterialize: (sourceID) =>
             this.declaredMaterialize(buildPlan, sourceID),
+         refusedRollupTier: (sourceID) => plan.refusedRollupTiers[sourceID],
          views,
          destinationConfigured: (name) => this.destinationConfigured(name),
          connectionCanHoldTable: (name) =>

@@ -74,7 +74,7 @@
  * readers are `governance/ir/source_graph.ts`'s single walk).
  */
 
-import { refusalKey } from "./refusal_key";
+import { refusalKey, tierOf } from "./refusal_key";
 import { keyCheckPipeline } from "../text/key_check_text";
 import {
    primaryKeyOf,
@@ -315,12 +315,13 @@ export function measureRefusalKey(
    const at = table
       ? `[${[...table.grain].sort().join(",")}${table.storage !== undefined ? ` in ${table.storage}` : ""}]`
       : "";
-   return refusalKey(
+   const key = refusalKey(
       `${name}${at}@${rollupCompanionURLOf(url)?.href ?? `${url}${ROLLUP_COMPANION_SUFFIX}`}`,
       name,
       reason,
       "preaggregate",
    );
+   return table ? { ...key, rollupTier: tierOf(table.storage) } : key;
 }
 
 interface FieldLike {

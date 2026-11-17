@@ -8,6 +8,7 @@
         "refused": {
           "name": "zoned.total",
           "reason": "time_zone",
+          "rollupTier": "storage",
           "sourceID": "zoned.total[created_day in lake]@<pkg>/m.malloy.preaggregate.malloy",
           "tier": "preaggregate"
         },
@@ -22,6 +23,7 @@
         "refused": {
           "name": "zoned.n",
           "reason": "time_zone",
+          "rollupTier": "storage",
           "sourceID": "zoned.n[region in lake]@<pkg>/m.malloy.preaggregate.malloy",
           "tier": "preaggregate"
         },

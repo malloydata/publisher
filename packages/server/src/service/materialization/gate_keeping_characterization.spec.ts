@@ -259,7 +259,7 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       pair_sto: "planned | storage | not_built",
       persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll.total_sto": "refused access_filter | database | live refused",
+      "roll.total_sto": "refused access_filter | storage | live refused",
       roll__rollup__category_region__7617040b: "planned | database | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
       views__by_region_col__view: "planned | database | not_built",
@@ -275,7 +275,7 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       persist_sto: "planned | storage | not_built",
       // G3 for a colocated rollup: the base's own gate, proven on its grain.
       roll__rollup__category_region__7617040b: "planned | database | not_built",
-      "roll.total_sto": "refused access_filter | database | live refused",
+      "roll.total_sto": "refused access_filter | storage | live refused",
       roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
       views__by_region_col__view:
          "refused access_filter | database | live refused",

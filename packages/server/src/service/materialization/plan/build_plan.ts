@@ -955,6 +955,7 @@ async function collectGeneratedRollups(
                      sourceID: source.sourceID,
                      name: source.name,
                      tier: "preaggregate",
+                     rollupTier: tierOf(plan.storage),
                      // A given read while the stored relation is built,
                      // as every other mechanism names it.
                      reason: "given_in_persisted_query",
@@ -1906,6 +1907,13 @@ export interface BuildPlanOutcome {
     * than the generated name (a refusal may also leave `plan.sources`).
     */
    refusedRollups: Record<string, RefusedRollup>;
+   /**
+    * Each rollup in `plan.refusedSources`, by its sourceID, and the tier its
+    * own `storage=` puts it in: its record's `tier` says `preaggregate`, and
+    * its serve verdict gives the real one. A refusal whose placement was
+    * never read (a v1 refusal of every rollup on a source) is absent.
+    */
+   refusedRollupTiers: Record<string, "database" | "storage">;
    /** See {@link RefusalNotices}. */
    refusalNotices: RefusalNotices;
    /**
@@ -1937,8 +1945,10 @@ export function projectRefusals(
    plan: BuildPlan | null;
    annotationFindings: PackageAnnotationFinding[];
    refusalNotices: RefusalNotices;
+   rollupTiers: Record<string, "database" | "storage">;
 } {
    const kept: PackageAnnotationFinding[] = [];
+   const rollupTiers: Record<string, "database" | "storage"> = {};
    const refusedSources: Record<string, WireRefusedSource> = {
       ...(plan?.refusedSources ?? {}),
    };
@@ -1952,6 +1962,7 @@ export function projectRefusals(
       }
       moved = true;
       if (refusedSources[key.sourceID]) continue;
+      if (key.rollupTier) rollupTiers[key.sourceID] = key.rollupTier;
       refusedSources[key.sourceID] = {
          name: key.name,
          sourceID: key.sourceID,
@@ -1968,11 +1979,14 @@ export function projectRefusals(
       };
       recordEligibilityRefused(key.reason);
    }
-   if (!moved) return { plan, annotationFindings: kept, refusalNotices };
+   if (!moved) {
+      return { plan, annotationFindings: kept, refusalNotices, rollupTiers };
+   }
    return {
       plan: { ...(plan ?? { graphs: [], sources: {} }), refusedSources },
       annotationFindings: kept,
       refusalNotices,
+      rollupTiers,
    };
 }
 
@@ -2059,12 +2073,13 @@ export function deriveBuildPlanOutcome(
          : deriveBuildPlan(compiled, materializationConfig, verdicts);
    // A collision this deployment refuses alone, rather than failing the
    // load, is a refusal record like any other.
-   const { plan, annotationFindings, refusalNotices } = projectRefusals(
-      derived,
-      compiled.annotationFindings.map((f) =>
-         relaxedCollision(f, getPersistCollisionEnforce()),
-      ),
-   );
+   const { plan, annotationFindings, refusalNotices, rollupTiers } =
+      projectRefusals(
+         derived,
+         compiled.annotationFindings.map((f) =>
+            relaxedCollision(f, getPersistCollisionEnforce()),
+         ),
+      );
    return {
       plan,
       droppedPersistSources: compiled.droppedPersistSources,
@@ -2090,6 +2105,11 @@ export function deriveBuildPlanOutcome(
          .map(([sourceID]) => sourceID)
          .sort(),
       refusedRollups: refusedRollupsOf(plan, compiled.tables),
+      refusedRollupTiers: refusedRollupTiersOf(
+         plan,
+         compiled.tables,
+         rollupTiers,
+      ),
       compilerKeys: compilerKeysOf(compiled),
    };
 }
@@ -2201,6 +2221,26 @@ function persistedViewOf(
    if (!isPersistedResultSourceID(source.sourceID)) return undefined;
    const match = /^(.+)__(.+)__view$/.exec(source.name);
    return match ? { sourceName: match[1], viewName: match[2] } : undefined;
+}
+
+/** {@link BuildPlanOutcome.refusedRollupTiers}. */
+function refusedRollupTiersOf(
+   plan: BuildPlan | null,
+   tables: Readonly<Record<string, Pick<TablePlan, "rollup">>>,
+   fromRefusals: Readonly<Record<string, "database" | "storage">>,
+): Record<string, "database" | "storage"> {
+   const out: Record<string, "database" | "storage"> = {};
+   for (const [sourceID, refused] of Object.entries(
+      plan?.refusedSources ?? {},
+   )) {
+      if (refused.tier !== "preaggregate") continue;
+      const rollup = tables[sourceID]?.rollup as
+         | { storage?: string }
+         | undefined;
+      const tier = rollup ? tierOf(rollup.storage) : fromRefusals[sourceID];
+      if (tier) out[sourceID] = tier;
+   }
+   return out;
 }
 
 /** {@link BuildPlanOutcome.refusedRollups}. */

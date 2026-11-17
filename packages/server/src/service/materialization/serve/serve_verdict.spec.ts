@@ -317,6 +317,42 @@ describe("computeServeVerdicts", () => {
       expect(verdicts[1].message).toContain("gated by #(authorize)");
    });
 
+   it("gives a refused rollup the tier its own storage= puts it in, never its record's preaggregate", () => {
+      const refused = (name: string) => ({
+         name,
+         sourceID: `${name}@file:///pkg/m.preaggregate.malloy`,
+         modelPath: "m.malloy",
+         tier: "preaggregate",
+         reason: "hidden_field",
+         message: "x",
+      });
+      const verdicts = computeServeVerdicts({
+         ...facts([]),
+         plan: {
+            graphs: [],
+            sources: {},
+            refusedSources: Object.fromEntries(
+               ["in_lake", "in_db", "unread"].map((n) => [
+                  `${n}@file:///pkg/m.preaggregate.malloy`,
+                  refused(n),
+               ]),
+            ),
+         } as unknown as components["schemas"]["BuildPlan"],
+         refusedRollupTier: (id) =>
+            id.startsWith("in_lake@")
+               ? "storage"
+               : id.startsWith("in_db@")
+                 ? "database"
+                 : undefined,
+      });
+      expect(verdicts.map((v) => [v.sourceName, v.origin, v.tier])).toEqual([
+         ["in_lake", "preaggregate", "storage"],
+         ["in_db", "preaggregate", "database"],
+         // Its placement was never read: the database, as before.
+         ["unread", "preaggregate", "database"],
+      ]);
+   });
+
    it("gives a rollup over a storage= base its own verdict, beside its base's", () => {
       // A `#@ preaggregate` line is planned as the `#(preaggregate)` it reads
       // as, over the author's rows, so a stored base no longer leaves its

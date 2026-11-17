@@ -8,6 +8,7 @@
         "refused": {
           "name": "zoned.total",
           "reason": "time_zone",
+          "rollupTier": "database",
           "sourceID": "zoned.total[m,region]@<pkg>/m.malloy.preaggregate.malloy",
           "tier": "preaggregate"
         },

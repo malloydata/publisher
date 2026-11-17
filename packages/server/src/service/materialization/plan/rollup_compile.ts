@@ -410,6 +410,7 @@ function rollupBuildCopies(
                plan.readTimeTerms?.length
                   ? "given_in_persisted_query"
                   : "hidden_field",
+               { grain: plan.grainDimensions, storage: plan.storage },
             ),
          });
       }

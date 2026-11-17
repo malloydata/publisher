@@ -211,6 +211,12 @@ export interface ServeVerdictFacts {
     * Absent: none is.
     */
    declaredMaterialize?(sourceID: string): boolean;
+   /**
+    * A refused rollup's real tier, read off its own `storage=` at plan: its
+    * refusal record says `preaggregate`. Absent, or undefined (its placement
+    * was never read), the database.
+    */
+   refusedRollupTier?(sourceID: string): "database" | "storage" | undefined;
    /** Per stored source's plan sourceID, its views' verdicts (a preview). */
    views?: ReadonlyMap<string, ViewServeVerdict[]>;
    /**
@@ -279,7 +285,14 @@ export function computeServeVerdicts(facts: ServeVerdictFacts): ServeVerdict[] {
          sourceID,
          ...(refused.modelPath ? { modelPath: refused.modelPath } : {}),
          origin: originOf(sourceID, refused.tier === "preaggregate", facts),
-         tier: refused.tier === "storage" ? "storage" : "database",
+         // The tier the table would live in: a rollup's record says
+         // `preaggregate` there, a mechanism and not a place.
+         tier:
+            refused.tier === "preaggregate"
+               ? (facts.refusedRollupTier?.(sourceID) ?? "database")
+               : refused.tier === "storage"
+                 ? "storage"
+                 : "database",
          verdict: "live",
          reason: "refused",
          message: `Not built, so queries on it are answered live: ${refused.message}`,

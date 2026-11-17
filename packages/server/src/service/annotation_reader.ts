@@ -701,6 +701,12 @@ export interface RefusalKey {
    name: string;
    tier: RefusedSource["tier"];
    reason: RefusedSource["reason"];
+   /**
+    * A rollup's real tier, which its record's `tier` (`preaggregate`) does
+    * not say: read off its own `storage=`, for the serve verdict. Not on the
+    * wire.
+    */
+   rollupTier?: "database" | "storage";
 }
 
 /**
