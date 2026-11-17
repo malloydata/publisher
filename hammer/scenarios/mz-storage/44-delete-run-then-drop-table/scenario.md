@@ -1,5 +1,5 @@
 ---
-id: reclaim-drop-tables
+id: delete-run-then-drop-table
 tags: lifecycle, build-control
 package: gc
 ---
@@ -8,18 +8,19 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Reclaim a materialization (dropTables) frees the table and reverts to live
+# Delete a run (record-only), drop its table yourself, and serving stays live
 
-Deleting a materialization with `?dropTables=true` runs the destination-aware
-read-write drop of the physical table in the storage destination — the tier's GC
-primitive. After a reclaim, the source has no materialized table to serve from, so
-once the package re-establishes its serve bindings it reverts to serving live from
-the source warehouse (never a dangling route to a table that no longer exists).
+Deleting a materialization is record-only: the table the run built stays in the
+storage destination, and table cleanup is the caller's job. Once the record is
+gone the source has no run to serve from, so after a restart re-establishes the
+serve bindings it serves live from the source warehouse; the caller then drops
+the table through the destination, and serving is unaffected (never a dangling
+route to a table that no longer exists).
 
 The proof: build + route, mutate so a live recompute differs from the snapshot,
-confirm the snapshot is being served (stale), then reclaim the table and restart.
-A fresh (post-mutation) result on the re-query proves the table was dropped and
-serving fell back to live.
+confirm the snapshot is being served (stale), delete the run, check the table is
+still there, drop it through the destination, and restart. A fresh
+(post-mutation) result on the re-query proves serving fell back to live.
 
 ## Publisher
 
@@ -81,19 +82,40 @@ Expect:
 | 2026-01-01 | 150          |
 | 2026-01-02 | 200          |
 
-## Reclaim gc
+## Forget gc
 
-Drop the materialized table via `?dropTables=true`.
+Delete the latest run's record. Record-only: no table is dropped.
+
+## Destination tables
+
+The delete left the table in place.
+
+Expect:
+
+| name     |
+| -------- |
+| gc_daily |
+
+## Destination drop gc_daily
+
+The caller drops the table itself, through the destination.
+
+## Destination tables
+
+Expect:
+
+| name |
+| ---- |
 
 ## Restart
 
-Re-establish serving from the store. The reclaimed materialization is gone, so
-`daily` has no table to bind — it reverts to serving live.
+Re-establish serving from the store. The deleted run is gone, so `daily` has no
+table to bind — it serves live.
 
 ## Query base (again)
 
-Live `1150` ⇒ the table was reclaimed and serving fell back to the warehouse
-(no dangling route to the dropped table).
+Live `1150` ⇒ serving fell back to the warehouse (no dangling route to the
+dropped table).
 
 Expect:
 

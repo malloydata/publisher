@@ -1,5 +1,5 @@
 ---
-id: reclaim-reverts-live-external
+id: delete-run-reverts-live-external
 tags: lifecycle, build-control
 package: rrx
 ---
@@ -8,18 +8,21 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Reclaim reverts to live IN PLACE (external) — no restart
+# Deleting a run reverts to live IN PLACE (external) — no restart
 
-`reclaim-drop-tables` (44) proves reclaim reverts to live across a RESTART — but a
-restart re-derives bindings via the load-time rebind, which masks the *in-place*
-post-delete rebind that `deleteMaterialization` runs synchronously. This pins that
-inline path for the **external** (`storage=`) tier: after a reclaim, serving must
-revert to live immediately, WITHOUT a restart — the post-delete rebind re-derives
-from the latest remaining materialization (here none ⇒ cleared).
+`delete-run-then-drop-table` (44) proves a deleted run reverts to live across a
+RESTART — but a restart re-derives bindings via the load-time rebind, which masks
+the *in-place* post-delete rebind that `deleteMaterialization` runs synchronously.
+This pins that inline path for the **external** (`storage=`) tier: after a delete,
+serving must revert to live immediately, WITHOUT a restart — the post-delete rebind
+re-derives from the latest remaining materialization (here none ⇒ cleared).
+
+The delete is record-only, so the table is still in the destination: a binding
+left in place would go on answering from it, stale, rather than fail.
 
 Proof: build + route, mutate so live differs from the snapshot, confirm stale
-(routed), reclaim, then re-query with NO restart. Fresh ⇒ the inline post-delete
-rebind cleared the binding and serving fell back to live.
+(routed), delete the run, then re-query with NO restart. Fresh ⇒ the inline
+post-delete rebind cleared the binding and serving fell back to live.
 
 ## Publisher
 
@@ -72,9 +75,9 @@ Expect:
 | 2026-01-01 | 150          |
 | 2026-01-02 | 200          |
 
-## Reclaim rrx
+## Forget rrx
 
-Drop the materialized table via `?dropTables=true`. No restart follows.
+Delete the latest run's record (record-only: its table stays). No restart follows.
 
 ## Query base (again)
 

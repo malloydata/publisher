@@ -297,7 +297,7 @@ describe("scenario grammar: every step must verify something", () => {
          "preview",
          "await",
          "delete",
-         "reclaim",
+         "forget",
          "destination",
       ]) {
          expect(stepMustAssert(kind)).toBe(true);
