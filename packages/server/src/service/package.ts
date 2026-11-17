@@ -412,6 +412,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       modelPolicy: () => this.modelPolicy,
       packagePath: () => this.packagePath,
       malloyConfig: () => this.malloyConfig,
+      connection: (name) => this.getMalloyConnection(name),
       buildPlanPackage: this,
       publishedSurface: () => this.publishedSurface(),
    });
@@ -2772,6 +2773,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          this.mz.bind({
             colocated: quoted,
             colocatedAsGiven: true,
+            // Each table's columns as its warehouse holds them now.
+            observed: await this.mz.readColocatedColumns(quoted),
             // The first bind over a load's models publishes to them, as the
             // reload it stands in for would have.
             ...(last.bound === undefined ? { models: "installed" } : {}),
@@ -2787,6 +2790,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }
       // Quote BEFORE any projection: everything downstream reads these entries.
       entries = await this.quoteBoundTableNames(entries);
+      // Each table's columns as its warehouse holds them now, read once for
+      // this bind (one schema read per table), before the models move.
+      const observed = await this.mz.readColocatedColumns(entries);
       const buildManifest = toTableNameManifest(entries);
       const modelPaths = Array.from(this.models.keys());
       logger.info("Reloading all models with build manifest", {
@@ -2860,6 +2866,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.bind({
          colocated: entries,
          colocatedAsGiven: true,
+         observed,
          models: "installed",
       });
       this.reloadedFor = this.reloadKey(compiledFor, requested, {

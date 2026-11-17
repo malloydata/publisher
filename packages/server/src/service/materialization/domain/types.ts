@@ -153,6 +153,15 @@ export interface KeyUniqueness {
    parentKeys?: Record<string, boolean>;
 }
 
+/**
+ * One bound colocated table's columns as the bind read them from its
+ * warehouse (DuckDB's spelling, as {@link FreshnessAwareManifestEntry.schema}),
+ * or why they could not be read, in which case the table answers live.
+ */
+export type ObservedColumns =
+   | { columns: { name: string; type: string }[] }
+   | { unread: string };
+
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */
 export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;
 

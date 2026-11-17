@@ -554,6 +554,19 @@ type its build source declares, whatever expression it aggregates), declines its
 query (`MISSING_FIELD`), which is answered live. A rollup is named by its base source, and a view
 or query by its build source.
 
+**A colocated table altered outside a build.** A colocated table (no `storage=`: a `#@ persist`, a
+`#(materialize)` or a rollup in the source's own warehouse) is read with the column types its
+warehouse holds when it is bound, not only those its build wrote. Each bind (after a run, a reload,
+a restart, or a rebind from the store) reads every bound colocated table's columns once, with one
+`DESCRIBE` or `information_schema` query per table and never per query. A column whose type has
+changed since the build (an `ALTER TABLE` outside Publisher) is taken as above: a `#@ persist` or
+`#(materialize)` table reads it through a faithful cast or leaves it out, so only a query that reads
+it is answered live, and a rollup, persisted view or persisted query, which no cast reaches, is
+answered live as a whole. The log line has the same `storage-column-type-mismatch` code and names
+each changed column. A table whose columns cannot be read at the bind is answered live, with a
+warning in the log, until the next bind reads it. A change made after a bind is read at the next
+one.
+
 **Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
 no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct

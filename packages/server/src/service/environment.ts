@@ -2246,7 +2246,12 @@ export class Environment {
          }
          if (Object.keys(rawEntries).length === 0) return;
          if (Object.keys(tableNameManifest).length > 0) {
-            pkg.materialization().bind({ colocated: tableNameManifest });
+            pkg.materialization().bind({
+               colocated: tableNameManifest,
+               observed: await pkg
+                  .materialization()
+                  .readColocatedColumns(tableNameManifest),
+            });
          }
          if (
             getPersistStorageMode() !== "off" &&

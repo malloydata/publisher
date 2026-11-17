@@ -20,6 +20,9 @@
  *   read by no author query, so Malloy's own manifest substitution never
  *   serves it; the served copy re-roots the author's source on it, exactly as
  *   on a `storage=` table.
+ * - {@link applyObservedColumns}: those bindings and entries held to the
+ *   columns the bind read from each table's warehouse, so a column altered
+ *   outside a build is read with the type the table holds now.
  *
  * Called by the facade, which logs and counts what each declines; no I/O.
  */
@@ -31,11 +34,15 @@ import {
    type StoredColumn,
 } from "../domain/table_plans";
 import { capabilitiesOf } from "../domain/dialect";
-import { storedColumnsOfOutput } from "../stored_column_types";
+import {
+   storedColumnsOfOutput,
+   storedMalloyType,
+} from "../stored_column_types";
 import type {
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
+   ObservedColumns,
 } from "../domain/types";
 import {
    type Binding,
@@ -455,4 +462,162 @@ export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
       bigint: true,
       timestamptz: true,
    });
+}
+
+/** One bound colocated table whose warehouse columns moved since its build. */
+export interface ObservedDrift {
+   sourceEntityId: string;
+   /** Each column whose type is no longer the one its build wrote, or that is gone. */
+   columns: { column: string; builtType: string; observedType?: string }[];
+}
+
+/**
+ * The colocated bindings and entries held to the columns the bind read from
+ * each table's warehouse ({@link ObservedColumns}). A colocated table's types
+ * are otherwise the plan's, or what its build captured, so a column altered
+ * outside a build would be read with a type the table no longer holds.
+ *
+ * A column has drifted when the Malloy type its warehouse type reads as is
+ * not the one of the type its build wrote (its captured `schema`, else the
+ * binding's own): the bind compares like with like, so a warehouse that
+ * stores a type of its own (a Postgres truncation as a timestamp) is never
+ * drift. Then:
+ *
+ * - a served-copy binding (`#(materialize)`, `#@ persist`) declares each
+ *   drifted column with its observed type, and the one stored-column read
+ *   plan casts it or leaves it out (a gone column is left out);
+ * - an entry read by Malloy's build-manifest substitution alone (a rollup, a
+ *   persisted view or query), which no cast reaches, is left out of the
+ *   entries, so its leg finds no table and the query answers live;
+ * - a table whose read failed (`unread`), or that was not read, is left out
+ *   of both: it answers live (fail safe).
+ *
+ * With no observation (`observed` undefined) everything is returned as is.
+ */
+export function applyObservedColumns(args: {
+   entries: FreshnessManifest;
+   bindings: readonly Binding[];
+   observed: ReadonlyMap<string, ObservedColumns> | undefined;
+}): {
+   entries: FreshnessManifest;
+   bindings: Binding[];
+   drifted: ObservedDrift[];
+   unread: { sourceEntityId: string; reason: string }[];
+} {
+   const { observed } = args;
+   if (!observed) {
+      return {
+         entries: args.entries,
+         bindings: [...args.bindings],
+         drifted: [],
+         unread: [],
+      };
+   }
+   const entries: FreshnessManifest = {};
+   const drifted: ObservedDrift[] = [];
+   const unread: { sourceEntityId: string; reason: string }[] = [];
+   const left = new Set<string>();
+   const schemas = new Map<string, { name: string; type: string }[]>();
+   const served = new Set(
+      args.bindings
+         .filter((b) => b.tier === "colocated")
+         .map((b) => b.virtualHandle),
+   );
+   for (const [id, entry] of Object.entries(args.entries)) {
+      const read = observed.get(id) ?? {
+         unread: "the table was not read at this bind",
+      };
+      if ("unread" in read) {
+         unread.push({ sourceEntityId: id, reason: read.unread });
+         left.add(id);
+         continue;
+      }
+      schemas.set(id, read.columns);
+      const columns = driftOf(entry.schema ?? [], read.columns);
+      if (columns.length > 0) {
+         drifted.push({ sourceEntityId: id, columns });
+         if (!served.has(id)) {
+            left.add(id);
+            continue;
+         }
+      }
+      entries[id] = entry;
+   }
+   const bindings = args.bindings.flatMap((b): Binding[] => {
+      if (b.tier !== "colocated") return [b];
+      if (left.has(b.virtualHandle)) return [];
+      const observedColumns = schemas.get(b.virtualHandle);
+      if (!observedColumns) return [b];
+      const built = new Map(
+         (args.entries[b.virtualHandle]?.schema ?? []).map((c) => [c.name, c]),
+      );
+      const extra: ObservedDrift["columns"] = [];
+      let moved = false;
+      const schema = b.schema.flatMap((c) => {
+         const now = columnNamed(observedColumns, c.name);
+         const builtType = built.get(c.name)?.type ?? c.type;
+         if (!now) {
+            moved = true;
+            if (!built.has(c.name)) extra.push({ column: c.name, builtType });
+            return [];
+         }
+         if (typeFamily(now.type) === typeFamily(builtType)) return [c];
+         moved = true;
+         if (!built.has(c.name)) {
+            extra.push({ column: c.name, builtType, observedType: now.type });
+         }
+         return [{ name: c.name, type: now.type }];
+      });
+      if (extra.length > 0) {
+         const known = drifted.find(
+            (d) => d.sourceEntityId === b.virtualHandle,
+         );
+         if (known) {
+            for (const e of extra) {
+               if (!known.columns.some((k) => k.column === e.column)) {
+                  known.columns.push(e);
+               }
+            }
+         } else {
+            drifted.push({ sourceEntityId: b.virtualHandle, columns: extra });
+         }
+      }
+      return [moved ? { ...b, schema } : b];
+   });
+   return { entries, bindings, drifted, unread };
+}
+
+/** The columns of `built` whose observed type reads as another Malloy type, or that are gone. */
+function driftOf(
+   built: readonly { name: string; type: string }[],
+   observed: readonly { name: string; type: string }[],
+): ObservedDrift["columns"] {
+   return built.flatMap((c) => {
+      const now = columnNamed(observed, c.name);
+      if (!now) return [{ column: c.name, builtType: c.type }];
+      return typeFamily(now.type) === typeFamily(c.type)
+         ? []
+         : [{ column: c.name, builtType: c.type, observedType: now.type }];
+   });
+}
+
+/**
+ * A column by name: exactly, else by a unique case-insensitive match (a
+ * warehouse may fold the case its catalog reports).
+ */
+function columnNamed(
+   columns: readonly { name: string; type: string }[],
+   name: string,
+): { name: string; type: string } | undefined {
+   const exact = columns.find((c) => c.name === name);
+   if (exact) return exact;
+   const folded = columns.filter(
+      (c) => c.name.toLowerCase() === name.toLowerCase(),
+   );
+   return folded.length === 1 ? folded[0] : undefined;
+}
+
+/** The Malloy type a stored type reads as, or its own spelling when none. */
+function typeFamily(type: string): string {
+   return storedMalloyType(type) ?? type.trim().toUpperCase();
 }
