@@ -143,12 +143,12 @@ and adds nothing to the page's markup.
 | `Publisher.query` | `(modelPath, malloy?, opts?)` | `Promise<Array>` of row objects |
 | `Publisher.queryFull` | `(modelPath, malloy?, opts?)` | `Promise<MalloyResult>` (full envelope) |
 | `Publisher.embed` | `(selector, options)` | `{ iframe, destroy(), send(type, payload), on(type, fn) }` |
-| `Publisher.context` | property | `{ environment, package }` from the injected [page context](#page-context), else inferred from the URL |
+| `Publisher.context` | property | `{ environment, package }` inferred from the URL, else taken from the injected [page context](#page-context) |
 | `Publisher.setToken` | `(token \| null)` | `undefined`; the token then applies to all later queries on the page |
 | `Publisher.on` | `(type, fn)` | an unsubscribe function; `fn(payload, meta)` handles a message from the host, and what it returns answers a request |
 | `Publisher.emit` | `(type, payload?)` | `true` if the event was posted, `false` if there is no host to hear it |
 | `Publisher.givens` | property | a copy of the page's givens store |
-| `Publisher.setGivens` | `(givens)` | `undefined`; merges `givens` into the store, notifies `onGivensChange` listeners, emits `givens.changed` |
+| `Publisher.setGivens` | `(givens)` | `undefined`; merges `givens` into the store, notifies `onGivensChange` listeners, emits `givens.changed`. Does nothing when the store would not change |
 | `Publisher.onGivensChange` | `(fn)` | an unsubscribe function; `fn(givens)` runs after every `setGivens` |
 
 `on`, `emit` and the givens members are the page's side of the [host
@@ -228,7 +228,12 @@ It re-runs nothing itself: the page subscribes with
 `Publisher.onGivensChange(fn)` and re-queries there, so a click on the page and
 a command from the host (`givens.set`, below) take one path. The store rides
 along only once it is non-empty, so a page that never calls `setGivens` sends
-exactly the request it always did.
+exactly the request it always did, and only on queries to the page's own
+package: a query aimed at another package carries just its own `opts.givens`.
+Publisher rejects a given name a model does not declare, so **every model of
+the page's own package that the page queries must declare every given the store
+holds**; a model that does not answers `400`. Keep a given a model does not
+declare out of the store and pass it in that query's `opts.givens` instead.
 
 `queryName` (with `sourceName` for a view on a source) is the alternative to
 passing a `run:` string as the second argument; use one path or the other, and
@@ -304,7 +309,7 @@ links the short form, and the redirect covers it.
 
 Relative links that stay inside `public/` work the same at both URLs. One that
 climbs out of `public/` (`../..` above the package root) lands somewhere else under
-`/versions/<v>/public/`, which sits two segments deeper than the short URL, so keep
+`/versions/<v>/public/`, which sits three segments deeper than the short URL, so keep
 a page's links inside `public/`.
 
 ### Page context
@@ -333,21 +338,26 @@ reads it as the page's own origin. An exact origin (`https://app.example.com`)
 and a wildcard host (`https://*.example.com`: that scheme, that port, any host
 ending in `.example.com`) are kept. `*`, a scheme alone (`https:`), a wildcard
 anywhere but the leading label and a source with a path are dropped, because
-none can name a window to post to. So is a source with no scheme
+none can name a window to post to, and the server logs a warning at startup naming
+each source it drops. So is a source with no scheme
 (`app.example.com`), which is valid CSP but names no origin to post to: write
 `https://app.example.com`. If nothing usable is left the bus is off and
 the page keeps only the legacy size message.
 
 The block is ASCII only (`<`, `>`, `&`, U+2028/9 and every non-ASCII character
 are written as `\uXXXX`), so no name can close the element and the page's charset
-does not matter. It goes after the first `<meta charset>` within the first 1024
-bytes, else after `<head>`, else after the doctype, else at the start (past a
-UTF-8 byte-order mark); a tag inside an HTML comment does not count, and a UTF-16
-page or one over 2 MiB is sent unchanged. An HTML response carries a weak `ETag`
-(a hash of the page as sent), `Cache-Control: no-cache` so every load
-revalidates, and answers `If-None-Match` with `304`; a `Range` request gets the
-whole page, since byte offsets into a rewritten body mean nothing. Other files
-are sent as they are.
+does not matter. Only the first 64 KiB is scanned. The block goes after the first
+`<meta charset>` within the first 1024 bytes, else after `<head>`, else after the
+doctype, else at the start (past a UTF-8 byte-order mark) of a page that fits in
+that 64 KiB; a tag inside an HTML comment, `<script>`, `<style>`, `<title>` or
+`<textarea>` does not count. A UTF-16 page, one over 2 MiB, and one with no
+insertion point in its first 64 KiB are sent unchanged (the runtime still pins
+the version from the versioned path). An HTML response carries a weak `ETag`
+(a hash of the file's size, modification time and inode and of the injected
+block, so a matching `If-None-Match` is answered `304` after a `stat`, without
+reading the file), `Cache-Control: no-cache` so every load revalidates; a
+`Range` request gets the whole page, since byte offsets into a rewritten body
+mean nothing. Other files are sent as they are.
 
 **Serving Publisher behind a gateway.** A gateway that exposes Publisher under
 other names or another path can set the context itself. With the
@@ -383,7 +393,8 @@ A page with no block at all (one over 2 MiB or in UTF-16, which the server sends
 unchanged, a copy cached before the server injected it, or one served through
 something that rewrites it away) uses the URL alone. Served from
 `/versions/<v>/public/`, it still pins `<v>` for every query to its own package
-and never live-reloads. Under either shape `query` and `queryFull` use the names
+and never live-reloads (`latest` and `live` there name no version, so they pin
+nothing and live reload stays on). Under either shape `query` and `queryFull` use the names
 automatically, so a page served from inside its package does not need to name
 its environment or package anywhere. If you serve the page from somewhere else
 (for example a host page on another path that calls the API directly), pass
@@ -398,13 +409,15 @@ to a logged-in user authenticates as that user with no extra code.
 To authenticate with a bearer token instead, a host hands the page one over the
 [bus](#talking-to-the-host): `Publisher.embed(..., { getToken })` sends
 `auth.token` once the page is ready and again whenever the page asks. When a
-query gets a `401` and the host is bound, the runtime sends the request
+query gets a `401` and the page holds a nonce (it was embedded with one), the
+runtime waits up to 5 seconds for the host to bind, then sends the request
 `auth.token.request`. A host with `getToken` answers it with `{ token }`; a host
 with none answers `unhandled`, and the query fails with its `401` at once rather
 than after a wait. The runtime also accepts an `auth.token` event as the answer,
 waits at most 10 seconds for either, and retries the query once; several
 queries that fail together share one request, and a retry is never retried. A
-page with no host to ask (cookie auth, nothing embedding it) fails at once.
+page with no nonce, so no host to ask (cookie auth, nothing embedding it),
+fails at once.
 `Publisher.setToken(token)` still works for a page that has a token from
 elsewhere; pass `null` to clear it and fall back to cookies.
 
@@ -493,8 +506,11 @@ the runtime speaks for you. A page that nobody embeds never sends anything.
 **Envelope.** Every message, in both directions, is
 
 ```json
-{ "protocol": "publisher", "v": 1, "type": "givens.set", "id": "h1", "nonce": "…", "payload": { } }
+{ "protocol": "publisher", "v": 1, "type": "givens.set", "id": "h1", "payload": { } }
 ```
+
+A message from the page also carries `"nonce": "…"`, the one it read from its URL
+([below](#talking-to-the-host)); a message from the host never does.
 
 An `id` makes it a request. The answer repeats the `type` and `id` and adds
 `"reply": true` with either a `payload` or `"error": { "code", "message" }`. A
@@ -532,7 +548,7 @@ cannot speak for the page.
 | `ready` | page → host | `{ handles, runtime }` | Sent unsolicited, and again whenever the set of handlers changes (once per task however many change) |
 | `auth.token` | host → page | `{ token: string }` | Built in; the page uses it as its bearer token. Reply `{ applied: true }` |
 | `auth.token.request` | page → host | none | Request: a query got `401`. A host with `getToken` replies `{ token }`; one without replies `unhandled`, which fails the query at once. The runtime waits up to 10 seconds, and also accepts an `auth.token` event |
-| `givens.set` | host → page | `{ givens: { name: value } }` | Merges into the givens store and notifies `onGivensChange` listeners; a `null` value removes that key. Reply `{ applied: true, givens }` (the whole store) |
+| `givens.set` | host → page | `{ givens: { name: value } }` | Merges into the givens store and notifies `onGivensChange` listeners; a `null` value removes that key. Reply `{ applied: true, givens }` (the whole store). Until the page has called `onGivensChange` it is answered `unhandled` and applies nothing |
 | `givens.changed` | page → host | `{ givens }` | The whole store, after every `setGivens` |
 | `query.ran` | page → host | `{ model, sourceName?, queryName?, query?, givens, versionId, rowCount, ms }` | After every successful query. `query` is the first 2000 characters of the Malloy text; `rowCount` is `null` when the result shape is unknown; `versionId` is `null` when unpinned |
 | `version.unavailable` | page → host | `{ versionId, reason }` | Once, when a query at the page's own version answers `VERSION_NOT_FOUND` or `VERSION_ARCHIVED`. The query still rejects as usual |

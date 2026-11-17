@@ -31,7 +31,7 @@ internal toolkit, breaking changes ride along with Console redesigns.
 
 A React host that renders an [HTML data app](html-data-apps.md) in its own `<iframe>` (rather than
 through `Publisher.embed`) uses `createDataAppBridge` from the SDK, the host side of the
-[data-app event bus](html-data-apps.md#talking-to-the-host):
+[data-app event bus](html-data-apps.md#talking-to-the-host).
 
 The page proves the nonce that is in the URL it loaded, so the nonce has to exist before the
 iframe's `src` does, and the bridge has to be given that same nonce. In React, make it once per

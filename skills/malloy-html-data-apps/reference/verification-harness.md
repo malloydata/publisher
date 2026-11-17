@@ -41,6 +41,11 @@ Serve a stand-in at the same root-relative path the page loads (`/sdk/publisher.
     // via <malloy-render>, make this fixture a real envelope or that tile breaks.
     queryFull: (m, q) => resolve(m, q).then((rows) => ({ data: rows })),
     setToken() {},
+    // The host-bus members: inert, since nothing embeds the page under test.
+    on: () => () => {},
+    emit: () => false,
+    setGivens() {},
+    onGivensChange: () => () => {},
   };
 })();
 ```
