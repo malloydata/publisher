@@ -172,12 +172,13 @@ import { fieldNotes, noteSource } from "../text/field_notes";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import {
+   canonicalStoredSchema,
    storedColumnReadPlan,
    storedTypeServesAs,
 } from "../stored_column_types";
 import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
-import { type Binding, type Pinned } from "../domain/binding";
+import { type Binding, type Pinned, storageLookupOf } from "../domain/binding";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
 import { isDeclineOf, LegDecline } from "../domain/leg_decline";
 import type { MaterializedTableCatalog } from "./query_path";
@@ -708,15 +709,10 @@ export class RollupVariantServe {
       // query source the served copy reads from that destination too; Malloy
       // joins only within one connection.
       // The destination is the rollup's table's, when it has a fresh one.
+      const stored = this.storedIn(plan, q.args.pinned);
       const inDestination =
-         plan.storage !== undefined
-            ? await this.destinationOf(
-                 this.tableOf(plan, q.args.pinned)?.binding?.destinationName ??
-                    plan.storage,
-                 q.struct,
-                 name,
-                 q.args.pinned,
-              )
+         stored !== undefined
+            ? await this.destinationOf(stored, q.struct, name, q.args.pinned)
             : undefined;
       // The build truncated and filtered times in the joined source's time
       // zone; live reads the joined rows in the query source's.
@@ -915,7 +911,7 @@ export class RollupVariantServe {
          branch,
          read,
          primaryKeyOf(childDef),
-         plan.storage !== undefined
+         this.storedIn(plan, q.args.pinned) !== undefined
             ? verdictOf(
                  this.tableOf(plan, q.args.pinned)?.binding?.primaryKeys?.[
                     plan.baseSourceID
@@ -1466,6 +1462,29 @@ export class RollupVariantServe {
          : new LegDecline("rollup_not_built", "the rollup has no fresh table");
    }
 
+   /**
+    * The storage destination the rollup's table is in, or undefined when it
+    * is colocated: its binding's, else the annotation's (storageLookupOf).
+    */
+   private storedIn(
+      plan: RollupVariantPlan,
+      pinned: Pinned,
+   ): string | undefined {
+      const lookup = storageLookupOf(
+         pinned,
+         rollupSourceID(plan),
+         "rollup",
+         plan.storage !== undefined,
+      );
+      if (!lookup) return undefined;
+      return (
+         this.tableOf(plan, pinned)?.binding?.destinationName ??
+         (lookup.state !== "not_built"
+            ? lookup.binding.destinationName
+            : plan.storage)
+      );
+   }
+
    /** The rollup's table at the pin: a fresh storage binding, or a planned colocated one. */
    private tableOf(
       plan: RollupVariantPlan,
@@ -1479,12 +1498,15 @@ export class RollupVariantServe {
         }
       | undefined {
       const sourceID = rollupSourceID(plan);
-      if (plan.storage !== undefined) {
-         // Keyed by the rollup's own `sourceID`, never by its name.
-         const lookup =
-            sourceID === undefined
-               ? undefined
-               : pinned.tableFor(sourceID, "rollup");
+      // Keyed by the rollup's own `sourceID`, never by its name; the
+      // binding decides the tier (storageLookupOf).
+      const lookup = storageLookupOf(
+         pinned,
+         sourceID,
+         "rollup",
+         plan.storage !== undefined,
+      );
+      if (lookup) {
          const binding =
             lookup?.state === "fresh" || lookup?.state === "stale_ok"
                ? lookup.binding
@@ -2218,7 +2240,15 @@ function storedRollupReads(
    const fields = new Map(
       (base?.fields ?? []).map((f) => [String(f.as ?? f.name), f]),
    );
-   const stored = new Map(binding.schema.map((c) => [c.name, c]));
+   // Matched as the served copy matches, by a unique case fold too: a
+   // warehouse that folded the build's quoted aliases (P3-06..09).
+   const grain = grainColumns(plan, modelDef);
+   const stored = new Map(
+      canonicalStoredSchema(binding.schema, [
+         ...grain.map((g) => g.name),
+         ...plan.rollupMeasures.flatMap((m) => m.partials.map((p) => p.column)),
+      ]).map((c) => [c.name, c]),
+   );
    const columns: StoredRollupReads["columns"] = [];
    const casts = new Map<string, ColumnCast>();
    const read = (
@@ -2233,7 +2263,12 @@ function storedRollupReads(
          const plan = storedColumnReadPlan(
             [storedColumn],
             [{ name: column.name, type: liveType, field }],
-            { dialect: base?.dialect, queryTimezone: queryTimezoneOf(base) },
+            {
+               dialect: base?.dialect,
+               queryTimezone: queryTimezoneOf(base),
+               // A storage destination is DuckLake.
+               ducklake: true,
+            },
          );
          // A column whose stored type drifted from live's, with no faithful
          // cast to read it back: never read as its stored type.
@@ -2266,7 +2301,7 @@ function storedRollupReads(
       columns.push(column);
       return undefined;
    };
-   for (const g of grainColumns(plan, modelDef)) {
+   for (const g of grain) {
       const refusal = read(
          { ...g, kind: "dimension" },
          g.name,

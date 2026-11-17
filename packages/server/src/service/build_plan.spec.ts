@@ -84,7 +84,9 @@ source: c is b -> { group_by: category; aggregate: t3 is t2.sum() }
    it("gives every source every table it reads, and an extension none", async () => {
       // The wire graphs are a host's only view of these edges, for a rerun's
       // upstream closure, freshness inheritance and lineage. `b -> a` sits
-      // below the first level, where a walk of roots alone loses it.
+      // below the first level, where a walk of roots alone loses it. `b`
+      // reads `a`, not `a_ext` (one target, one table): an edge names the
+      // source a definition reads, never every source of its target (P2-21).
       const { builds } = await buildsOf(CHAIN);
       const deps = Object.fromEntries(
          Object.entries(builds[0].dependsOn).map(([id, on]) => [
@@ -95,7 +97,7 @@ source: c is b -> { group_by: category; aggregate: t3 is t2.sum() }
       expect(deps).toEqual({
          a: [],
          a_ext: [],
-         b: ["a", "a_ext"],
+         b: ["a"],
          c: ["b"],
       });
    });
@@ -117,7 +119,7 @@ source: c is b -> { group_by: category; aggregate: t3 is t2.sum() }
                (n.dependsOn ?? []).map((d) => `${name(d)}>${name(n.sourceID)}`),
             ),
       );
-      expect(edges.sort()).toEqual(["a>b", "a_ext>b", "b>c"]);
+      expect(edges.sort()).toEqual(["a>b", "b>c"]);
    });
 
    it("builds a dependency two sources share once, before both", async () => {

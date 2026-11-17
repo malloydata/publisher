@@ -134,6 +134,26 @@ describe("newestServingEntries", () => {
       expect(tablesOf(newestServingEntries(runs, {}))).toEqual(["t_done"]);
    });
 
+   it("F-17: never serves a FAILED run's failures-only manifest, even the newest", () => {
+      const failed = run("failed", {
+         status: "FAILED",
+         manifest: {
+            strict: false,
+            entries: {},
+            failures: {
+               "eid-t_done": {
+                  sourceEntityId: "eid-t_done",
+                  reason: "Binder Error",
+               },
+            },
+         } as Materialization["manifest"],
+      });
+      expect(tablesOf(newestServingEntries([failed, run("done")], {}))).toEqual(
+         ["t_done"],
+      );
+      expect(newestServingEntries([failed], {})).toEqual({});
+   });
+
    it("reads a version's own runs only", () => {
       const runs = [owned("b", "2.0.0"), owned("a", "1.0.0"), run("legacy")];
       expect(

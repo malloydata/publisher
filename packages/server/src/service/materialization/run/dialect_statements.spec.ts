@@ -22,6 +22,8 @@ import * as fs from "fs";
 import * as path from "path";
 import {
    bigQueryQueryLabelValue,
+   snowflakeSessionCheckSQL,
+   snowflakeSessionParitySQL,
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
 import { ColocatedTier, swapIntoPlace } from "./colocated_build_strategy";
@@ -418,6 +420,9 @@ async function statements(): Promise<Record<string, unknown>> {
    };
    const metadata = { team: "a\\b's", run: "r1" } as never;
    out.snowflakeSetQueryTagSQL = snowflakeSetQueryTagSQL(metadata, "sec'ret");
+   // P3-06..09: Malloy's live session parameters, set on the build session.
+   out.snowflakeSessionParitySQL = snowflakeSessionParitySQL("sec'ret");
+   out.snowflakeSessionCheckSQL = snowflakeSessionCheckSQL("sec'ret");
    out.bigQueryQueryLabelValue = bigQueryQueryLabelValue(metadata) ?? null;
    return out;
 }

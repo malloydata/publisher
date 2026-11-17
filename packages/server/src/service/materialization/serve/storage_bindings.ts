@@ -25,6 +25,7 @@ import {
 } from "../text/author_model";
 import {
    declaredColumnsOf,
+   ducklakeStoresAsDouble,
    type ReadCast,
    serveTypePlan,
    storedColumnReadPlan,
@@ -108,7 +109,20 @@ export function boundTableTypeFindings(
       const declared = (source.columns ?? []).flatMap((c) =>
          c.name && c.type ? [{ name: c.name, type: c.type }] : [],
       );
-      const mismatches = storedColumnTypeMismatches(binding.schema, declared);
+      // A 128-bit integer column, which the destination (DuckLake) holds as a
+      // DOUBLE, is reported too: every reader leaves it out.
+      const lossy = binding.schema.flatMap((c) => {
+         const d = declared.find(
+            (x) => x.name.toLowerCase() === c.name.toLowerCase(),
+         );
+         return d && ducklakeStoresAsDouble(c.type)
+            ? [{ column: d.name, storedType: c.type, declaredType: d.type }]
+            : [];
+      });
+      const mismatches = [
+         ...lossy,
+         ...storedColumnTypeMismatches(binding.schema, declared),
+      ];
       if (mismatches.length === 0) continue;
       // A joined field stored in a `#(materialize)` table's record (an
       // inlined join_one, a pair table) has no cast inside the record, so
@@ -120,10 +134,13 @@ export function boundTableTypeFindings(
                  .map((c) => c.column)
             : [],
       );
-      const handled = handlingOf(mismatches, {
+      const cast = handlingOf(mismatches, {
          queryTimezone: readers.queryTimezone?.(sourceID, source),
          recordColumns,
       });
+      const lost = new Set(lossy.map((m) => m.column));
+      const handled = (m: StoredColumnTypeMismatch): MismatchHandling =>
+         lost.has(m.column) ? "live" : cast(m);
       findings.push({
          binding,
          sourceID,
@@ -398,7 +415,8 @@ function typePlanFor(
    const plan = storedColumnReadPlan(
       v1StoredColumns(binding.schema, def?.fields),
       declaredColumnsOf(def?.fields),
-      { queryTimezone: queryTimezoneOf(def) },
+      // A storage destination is DuckLake.
+      { queryTimezone: queryTimezoneOf(def), ducklake: true },
    );
    return {
       casts: plan.casts,
