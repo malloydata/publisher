@@ -1102,3 +1102,104 @@ describe("the one rename rule: what an auto-run offers to the reclaim", () => {
       expect(r.renamed).toEqual([]);
    });
 });
+
+describe("a persisted named query's table", () => {
+   const COMPANION = "file:///pkg/models/sales.malloy.persist-view.malloy";
+   /** `q`'s persisted query, a persisted view, and a source named `top`. */
+   const plan = (): CompiledBuildPlan => {
+      const ofCompanion = (name: string, sourceEntityId: string) => {
+         const source = fakeSource({ name, sourceEntityId });
+         (source as { sourceID: string }).sourceID = `${name}@${COMPANION}`;
+         return source;
+      };
+      return bySourceID(
+         compiledWith(
+            {
+               top__query: ofCompanion("top__query", "q1"),
+               orders__top__view: ofCompanion("orders__top__view", "v1"),
+               orders__top__query: ofCompanion("orders__top__query", "q2"),
+               top_query__query: ofCompanion("top_query__query", "q3"),
+               top: fakeSource({ name: "top", sourceEntityId: "s1" }),
+               // A plain source whose own name ends `__query` keeps it.
+               mine__query: fakeSource({
+                  name: "mine__query",
+                  sourceEntityId: "s2",
+               }),
+            },
+            [
+               [
+                  "top__query",
+                  "orders__top__view",
+                  "orders__top__query",
+                  "top_query__query",
+                  "top",
+                  "mine__query",
+               ],
+            ],
+         ),
+         {
+            [`top__query@${COMPANION}`]: "models/sales.malloy",
+            [`orders__top__view@${COMPANION}`]: "models/sales.malloy",
+            [`orders__top__query@${COMPANION}`]: "models/sales.malloy",
+            [`top_query__query@${COMPANION}`]: "models/sales.malloy",
+            top: "models/sales.malloy",
+            mine__query: "models/sales.malloy",
+         },
+      );
+   };
+   const run = (priors: Record<string, ManifestEntry> = {}) =>
+      deriveSelfInstructions(plan(), undefined, priors, undefined, PKG);
+
+   it("reads as the query, with no `_query`, as a persisted view's reads with no `_view`", () => {
+      const n = names(run());
+      expect(n.q1).toMatch(/^pa__sales__top__p[0-9a-f]{8}$/);
+      expect(n.v1).toMatch(/^pa__sales__orders_top__p[0-9a-f]{8}$/);
+      // A query whose own name ends `_query` keeps it.
+      expect(n.q3).toMatch(/^pa__sales__top_query__p[0-9a-f]{8}$/);
+      expect(n.s2).toMatch(/^pa__sales__mine_query__p[0-9a-f]{8}$/);
+   });
+
+   it("is never another's table when a source, a view and a query read alike: the hash is over the build source's name", () => {
+      const n = names(run());
+      // `top` (a source) and `top` (a query) read the same; so do the view
+      // `top` of `orders` and a query named `orders__top`.
+      expect(n.q1.replace(/__p[0-9a-f]{8}$/, "")).toBe(
+         n.s1.replace(/__p[0-9a-f]{8}$/, ""),
+      );
+      expect(n.q2.replace(/__p[0-9a-f]{8}$/, "")).toBe(
+         n.v1.replace(/__p[0-9a-f]{8}$/, ""),
+      );
+      expect(new Set(Object.values(n)).size).toBe(Object.keys(n).length);
+      const r = run();
+      expect(r.refused).toEqual({});
+      expect(r.instructions.map((i) => i.sourceEntityId).sort()).toEqual(
+         ["q1", "q2", "q3", "s1", "s2", "v1"].sort(),
+      );
+   });
+
+   it("built under its `_query` name before, is renamed, rebuilt once, and the old one offered for reclaim", () => {
+      const legacy = "pa__sales__top_query__p0123abcd";
+      const r = run({ q1: prior(legacy, "q1") });
+      expect(names(r).q1).toMatch(/^pa__sales__top__p[0-9a-f]{8}$/);
+      expect(r.carried.q1).toBeUndefined();
+      expect(r.renamed.map((t) => t.previousName)).toEqual([legacy]);
+      // Once: the next run carries the new name.
+      const next = run({ q1: prior(names(r).q1, "q1") });
+      expect(next.carried.q1).toBeDefined();
+      expect(next.renamed).toEqual([]);
+   });
+
+   it("keeps a name that ends `_query` because the query's own name does, and a source's", () => {
+      const r = run({
+         q3: prior("pa__old__top_query__p0123abcd", "q3"),
+         s2: prior("pa__old__mine_query__p0123abcd", "s2"),
+      });
+      expect(r.carried.q3?.physicalTableName).toBe(
+         "pa__old__top_query__p0123abcd",
+      );
+      expect(r.carried.s2?.physicalTableName).toBe(
+         "pa__old__mine_query__p0123abcd",
+      );
+      expect(r.renamed).toEqual([]);
+   });
+});

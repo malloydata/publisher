@@ -411,23 +411,25 @@ describe("reclaiming an archived version's tables", () => {
       expect(host.status).toBe("MANIFEST_FILE_READY");
       expect(await tablesIn(env)).toEqual([DETAIL_V1, TABLE_V1]);
 
-      // 2.0.0 serves `summary` from that table.
+      // The host built 2.0.0, so it owns it: with no manifest bound, 2.0.0
+      // serves live, never what this server's store holds for it.
       await restart();
       await tamper(TABLE_V1, 202);
-      expect(await answerOf("2.0.0")).toBe(202);
+      expect(await answerOf("2.0.0")).toBe(2);
 
       await archive("1.0.0");
 
       // `detail`'s table was 1.0.0's alone: dropped. `summary`'s is still
-      // referenced by 2.0.0's run: kept, and still served.
+      // referenced by 2.0.0's run: kept, for the host to bind.
       expect(await tablesIn(env)).toEqual([TABLE_V1]);
-      expect(await answerOf("2.0.0")).toBe(202);
+      expect(await answerOf("2.0.0")).toBe(2);
       // The archived version's run is reclaimed; the other run is untouched.
       expect(await statusOf(v1.id)).toBeNull();
       expect(await statusOf(host.id)).toBe("MANIFEST_FILE_READY");
-      // And 2.0.0 binds it again after a restart.
+      // And it is still there, and 2.0.0 still live, after a restart.
       await restart();
-      expect(await answerOf("2.0.0")).toBe(202);
+      expect(await tablesIn(env)).toEqual([TABLE_V1]);
+      expect(await answerOf("2.0.0")).toBe(2);
    });
 
    it("never drops the tables an orchestrated run of the archived version built, and keeps its record", async () => {

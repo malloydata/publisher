@@ -372,7 +372,7 @@ export function assertColocatedPersistNotAuthorizeGated(
    // parameter in a persisted source's own query.
    if (buildSubstitutesAGiven(persistSource)) {
       // A rollup gets its own message, under the one reason every mechanism
-      // gives a build that reads a given (`given_in_persisted_query`): the
+      // gives a build that reads a given (`reads_given`): the
       // generic advice (move the given to the extend block) is where a
       // rollup's given already is, since the rollup READING the source bakes
       // it. And nothing else guards rollups: their
@@ -382,7 +382,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       // caller and serve that to all of them.
       if (origin === "preaggregate") {
          throw new MaterializationEligibilityError({
-            reason: "given_in_persisted_query",
+            reason: "reads_given",
             message:
                `Pre-aggregation rollup '${sourceName}' cannot be materialized: ` +
                `the source it rolls up is scoped by a given. Building the rollup ` +
@@ -396,7 +396,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       }
       const what = `Source '${sourceName}'`;
       throw new MaterializationEligibilityError({
-         reason: "given_in_persisted_query",
+         reason: "reads_given",
          message:
             `${what} cannot be materialized (colocated '#@ persist'): its ` +
             `persisted query references a given. A given the persisted query ` +

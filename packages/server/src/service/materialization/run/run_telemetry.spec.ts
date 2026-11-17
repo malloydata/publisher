@@ -147,10 +147,10 @@ describe("run telemetry vocabulary", () => {
          errorCodeOf(
             new MaterializationEligibilityError({
                message: "reads given ORG = 42",
-               reason: "given_in_persisted_query",
+               reason: "reads_given",
             }),
          ),
-      ).toBe("given_in_persisted_query");
+      ).toBe("reads_given");
       const driver = Object.assign(
          new Error(
             "relation \"secret\" does not exist: SELECT 'v' FROM secret",

@@ -103,8 +103,8 @@ export class VersionRepository {
          let row: Row | null;
          try {
             row = await tx.get<Row>(
-               `INSERT INTO versions (version_id, environment_id, package_name, dir_name, content_hash, source_location, manifest_path, archive_status, archived_at, promoted_at, demoted_at, description, git_commit_sha, git_ref, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'unarchive', NULL, ?, NULL, ?, NULL, NULL, ?, ?)
+               `INSERT INTO versions (version_id, environment_id, package_name, dir_name, content_hash, source_location, manifest_path, host_owned, archive_status, archived_at, promoted_at, demoted_at, description, git_commit_sha, git_ref, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unarchive', NULL, ?, NULL, ?, NULL, NULL, ?, ?)
                 RETURNING *`,
                [
                   versionId,
@@ -114,6 +114,7 @@ export class VersionRepository {
                   version.contentHash,
                   version.sourceLocation,
                   version.manifestPath,
+                  version.hostOwned === true,
                   promoted ? now : null,
                   version.description,
                   now,
@@ -327,8 +328,11 @@ export class VersionRepository {
       versionId: string,
       manifestPath: string | null,
    ): Promise<Version> {
+      // The mark is set only by a bind that bound (markHostOwned). A row the
+      // backfill never reached keeps what it read as: host-owned when it
+      // named a manifest (the old value, which SET reads).
       const row = await this.db.get<Row>(
-         `UPDATE versions SET manifest_path = ?, updated_at = ? WHERE ${KEY} RETURNING *`,
+         `UPDATE versions SET manifest_path = ?, host_owned = coalesce(host_owned, manifest_path IS NOT NULL), updated_at = ? WHERE ${KEY} RETURNING *`,
          [
             manifestPath,
             new Date().toISOString(),
@@ -339,6 +343,17 @@ export class VersionRepository {
       );
       if (!row) throw versionNotFound(packageName, versionId);
       return mapRow(row);
+   }
+
+   async markHostOwned(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      await this.db.run(
+         `UPDATE versions SET host_owned = TRUE, updated_at = ? WHERE ${KEY} AND host_owned IS NOT TRUE`,
+         [new Date().toISOString(), environmentId, packageName, versionId],
+      );
    }
 
    async deleteByPackage(
@@ -425,6 +440,11 @@ function mapRow(row: Row): Version {
       contentHash: row.content_hash as string,
       sourceLocation: text(row.source_location),
       manifestPath: text(row.manifest_path),
+      // NULL on a row the backfill could not reach: host-owned when it names
+      // a manifest.
+      hostOwned:
+         row.host_owned === true ||
+         (row.host_owned == null && row.manifest_path != null),
       archiveStatus: row.archive_status as VersionArchiveStatus,
       archivedAt: date(row.archived_at),
       promotedAt: date(row.promoted_at),
