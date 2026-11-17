@@ -614,7 +614,7 @@ function rerootFailureKey(
  * What a served copy's compile reads of a binding: everything but how fresh
  * the table is (`freshAsOf`, its window and fallback, which decide only
  * whether the pin reads it) and what the router reads of it beside the copy
- * (`ownGateKept`, `storedAsDouble`, a rollup's key check). A field added to `Binding` is read
+ * (`ownGateKept`, `retypedColumns`, a rollup's key check). A field added to `Binding` is read
  * here until it is listed, so a new input recompiles rather than reuses.
  * Memoized per binding, which is replaced, never edited.
  */
@@ -627,7 +627,7 @@ export function compileInputOf(b: Binding): string {
          freshnessWindowSeconds: _window,
          freshnessFallback: _fallback,
          ownGateKept: _gateKept,
-         storedAsDouble: _asDouble,
+         retypedColumns: _retyped,
          rollupKey: _rollupKey,
          ...read
       } = b;

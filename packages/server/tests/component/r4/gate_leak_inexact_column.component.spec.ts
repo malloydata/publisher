@@ -42,6 +42,17 @@ source: accounts is duckdb.sql("""
     (5, '9007199254740995', 'north', 7)
   ) AS t(id, acct, region, amount)
 """) extend { primary_key: id }
+source: accounts_bigint is duckdb.sql("""
+  SELECT CAST(id AS BIGINT) AS id, CAST(acct AS BIGINT) AS acct, region,
+         CAST(amount AS DOUBLE) AS amount
+  FROM (VALUES
+    (1, 9007199254740992, 'east', 10),
+    (2, 9007199254740992, 'east', 20),
+    (3, 9007199254740993, 'west', 1000),
+    (4, 9007199254740993, 'west', 2000),
+    (5, 9007199254740995, 'north', 7)
+  ) AS t(id, acct, region, amount)
+""") extend { primary_key: id }
 `;
 
 const MODEL = `##! experimental { givens persistence access_modifiers }
@@ -76,10 +87,33 @@ source: ub_ext is ub extend {}
 source: ub_dim is ub extend { dimension: k2 is acct }
 #(access_filter) u.acct = $ACCT
 source: via_join is accounts extend { join_one: u is ub on id = u.id }
+
+// Database tables whose exact gate column is altered to DOUBLE in the
+// warehouse after the build, and rebound: the bind observes the drift.
+#(access_filter) acct = $ACCT
+#(materialize) name="acct_db_mz"
+source: acct_db_mz is accounts -> { where: id > -5; select: * }
+#(access_filter) acct = $ACCT
+#@ persist name="acct_db_v1"
+source: acct_db_v1 is accounts -> { where: id > -6; select: id, acct, region, amount }
+#(access_filter) acct = $ACCT
+#(materialize) name="acct_db_mz_bigint"
+source: acct_db_mz_bigint is accounts_bigint -> { where: id > -7; select: * }
+#(access_filter) acct = $ACCT
+#@ persist name="acct_db_v1_bigint"
+source: acct_db_v1_bigint is accounts_bigint -> { where: id > -8; select: id, acct, region, amount }
 `;
 
 /** The tables whose gate column is altered to DOUBLE after the build. */
 const INEXACT = ["acct_mz", "acct_v1", "ub"];
+
+/** Database tables whose gate column is altered in the warehouse after the build. */
+const DB_ALTERED = [
+   "acct_db_mz",
+   "acct_db_v1",
+   "acct_db_mz_bigint",
+   "acct_db_v1_bigint",
+];
 
 /** Entry points that read an inexact table's gate column under another shape. */
 const OVER_INEXACT = ["renamed", "renamed_grouped", "ub_ext", "ub_dim"];
@@ -97,6 +131,10 @@ const QUERIES: { source: string; malloy: string }[] = [
       source: "acct_exact",
       malloy: "run: acct_exact -> { group_by: region; aggregate: n }",
    },
+   ...DB_ALTERED.map((source) => ({
+      source,
+      malloy: `run: ${source} -> { select: id, region; order_by: id }`,
+   })),
    ...[...OVER_INEXACT, "via_join"].map((source) => ({
       source,
       malloy: `run: ${source} -> { group_by: region; aggregate: c is count(); order_by: region }`,
@@ -174,7 +212,18 @@ describe("L2: a gate over a column stored inexactly is never read from the table
             (c) => (c.name === "acct" ? { ...c, type: "DOUBLE" } : c),
          );
       }
-      await fixture.rebind();
+      // A database table altered in its warehouse after the build.
+      const warehouse = (await loader.pkg.getMalloyConnection(
+         "duckdb",
+      )) as unknown as { runSQL(sql: string): Promise<unknown> };
+      for (const name of DB_ALTERED) {
+         await warehouse.runSQL(
+            `ALTER TABLE "${name}" ALTER COLUMN acct TYPE DOUBLE`,
+         );
+      }
+      // Bound as a server binds: each database table read as its warehouse
+      // holds it now.
+      await fixture.rebind({ observe: true });
    }, 600_000);
 
    afterAll(async () => {
@@ -195,6 +244,18 @@ describe("L2: a gate over a column stored inexactly is never read from the table
          const acct = (
             described.rows as { column_name: string; column_type: string }[]
          ).find((r) => r.column_name === "acct");
+         expect(acct?.column_type).toBe("DOUBLE");
+      }
+      const built = fixture.built.map((b) => `${b.name}:${b.tier}`);
+      const warehouse = (await loader.pkg.getMalloyConnection(
+         "duckdb",
+      )) as unknown as {
+         runSQL(sql: string): Promise<{ rows: Record<string, unknown>[] }>;
+      };
+      for (const name of DB_ALTERED) {
+         expect(built).toContain(`${name}:colocated`);
+         const described = await warehouse.runSQL(`DESCRIBE "${name}"`);
+         const acct = described.rows.find((r) => r.column_name === "acct");
          expect(acct?.column_type).toBe("DOUBLE");
       }
    });
@@ -246,7 +307,9 @@ describe("L2: a gate over a column stored inexactly is never read from the table
             // it is answered from depends on the switch, not on this rule.
             if (q.source === "via_join") continue;
             const goesLive =
-               INEXACT.includes(q.source) || OVER_INEXACT.includes(q.source);
+               INEXACT.includes(q.source) ||
+               OVER_INEXACT.includes(q.source) ||
+               DB_ALTERED.includes(q.source);
             it(`${q.malloy}: is answered from ${goesLive ? "live" : "the table"}`, () => {
                const got = served.get(key(q.malloy, "the ...992 caller"))![0];
                expect("answer" in got).toBe(true);

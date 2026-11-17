@@ -591,12 +591,16 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
             // A database table on a DuckLake catalog that holds the gate's
             // column as a DOUBLE (a 128-bit integer): live. Another column
             // held so leaves the gate alone.
-            for (const [asDouble, keeps] of [
-               [["acct"], false],
-               [["total"], true],
+            // A database table whose gate column the bind found altered
+            // since its build: judged by the type it holds now.
+            for (const [moved, keeps] of [
+               [[{ name: "acct", type: "DOUBLE" }], false],
+               [[{ name: "acct", type: "double precision" }], false],
+               [[{ name: "acct", type: "DECIMAL(38,0)" }], true],
+               [[{ name: "total", type: "DOUBLE" }], true],
             ] as const) {
                const lake = servedCandidate([
-                  { ...colocated, storedAsDouble: [...asDouble] },
+                  { ...colocated, retypedColumns: [...moved] },
                ]);
                expect(
                   await lake.keepsContractsFor!((await lake.attempt()).extra!),

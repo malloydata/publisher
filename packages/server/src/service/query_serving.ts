@@ -178,10 +178,10 @@ async function withGateColumnTypes(
    tables: readonly TableRead[],
    gateReadsOnce: () => Promise<GateReads | undefined>,
 ): Promise<TableRead[]> {
-   const asDouble = (t: TableRead) =>
-      (t as Partial<Pick<Binding, "storedAsDouble">>).storedAsDouble ?? [];
+   const retyped = (t: TableRead) =>
+      (t as Partial<Pick<Binding, "retypedColumns">>).retypedColumns ?? [];
    const storage = tables.filter((t) => t.tier === "storage");
-   if (storage.length === 0 && !tables.some((t) => asDouble(t).length > 0)) {
+   if (storage.length === 0 && !tables.some((t) => retyped(t).length > 0)) {
       return [...tables];
    }
    const reads = await gateReadsOnce();
@@ -197,16 +197,18 @@ async function withGateColumnTypes(
       if (t.tier === "storage") {
          return { ...t, gateColumnTypes: typeOf.get(t) };
       }
-      // A database table: only a column its DuckLake catalog holds as a
-      // DOUBLE is inexact. Unreadable gates fail closed on such a table.
-      const doubles = asDouble(t);
-      if (doubles.length === 0) return t;
+      // A database table is built in the source's own types, so only a
+      // column the bind found moved since then (altered in the warehouse, or
+      // a 128-bit integer its DuckLake catalog holds as a DOUBLE) is judged,
+      // by the type it holds now. Unreadable gates judge every such column.
+      const moved = retyped(t);
+      if (moved.length === 0) return t;
       return {
          ...t,
-         gateColumnTypes:
-            reads === undefined || reads.unresolved
-               ? ["DOUBLE"]
-               : doubles.filter((c) => held.has(c)).map(() => "DOUBLE"),
+         gateColumnTypes: (reads === undefined || reads.unresolved
+            ? moved
+            : moved.filter((c) => held.has(c.name))
+         ).map((c) => c.type),
       };
    });
 }
