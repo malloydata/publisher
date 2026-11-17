@@ -2062,7 +2062,7 @@ describe.skipIf(process.platform === "win32")(
 
 /** A statement of a build session's lockdown, not of the build. */
 const LOCKDOWN_STATEMENT =
-   /^(SELECT current_setting\(|SELECT extension_name FROM duckdb_extensions\(\)|SET (GLOBAL )?(enable_global_s3_configuration|s3_|autoinstall_known_extensions|autoload_known_extensions|allowed_directories|allowed_paths|enable_external_access|TimeZone|file_search_path)|(INSTALL|LOAD) excel)/;
+   /^(SELECT current_setting\(|SELECT extension_name FROM duckdb_extensions\(\)|SELECT count\(\*\) FROM duckdb_secrets\(\)|SET (GLOBAL )?(enable_global_s3_configuration|s3_|autoinstall_known_extensions|autoload_known_extensions|allowed_directories|allowed_paths|enable_external_access|TimeZone|file_search_path)|(INSTALL|LOAD) excel)/;
 
 const SHAPES_MODEL = `##! experimental.persistence
 source: raw is warehouse.sql("""
