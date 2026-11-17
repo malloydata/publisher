@@ -92,15 +92,50 @@ const SNOWFLAKE_SESSION_PARAMETERS = [
 ] as const;
 
 /**
+ * The settings a build session must hold before it reads, each with the
+ * value Malloy's live session holds: a day or week bucket computed under
+ * another is stored as another bucket than live answers.
+ * `QUOTED_IDENTIFIERS_IGNORE_CASE` is not among them: the build stores each
+ * column under its declared name whatever case the account returns.
+ */
+const SNOWFLAKE_REQUIRED_SETTINGS = [
+   { name: "TIMEZONE", value: "UTC" },
+   { name: "WEEK_START", value: "7" },
+] as const;
+
+/** `inner` run through the passthrough on `secretName`. */
+function throughSnowflake(inner: string, secretName: string): string {
+   return `SELECT * FROM snowflake_query('${inner.replace(/'/g, "''")}', '${secretName.replace(/'/g, "''")}')`;
+}
+
+/**
  * The statements that give a Snowflake build session Malloy's live session
  * parameters ({@link SNOWFLAKE_SESSION_PARAMETERS}), each through the
  * passthrough on `secretName`, the way the query tag is set.
  */
 export function snowflakeSessionParitySQL(secretName: string): string[] {
-   return SNOWFLAKE_SESSION_PARAMETERS.map(
-      (inner) =>
-         `SELECT * FROM snowflake_query('${inner.replace(/'/g, "''")}', '${secretName.replace(/'/g, "''")}')`,
+   return SNOWFLAKE_SESSION_PARAMETERS.map((inner) =>
+      throughSnowflake(inner, secretName),
    );
+}
+
+/**
+ * The reads that check a Snowflake build session holds each required setting
+ * ({@link SNOWFLAKE_REQUIRED_SETTINGS}), on the same handle the build reads
+ * through: one `SHOW PARAMETERS … IN SESSION` each, with the value it must
+ * hold.
+ */
+export function snowflakeSessionCheckSQL(
+   secretName: string,
+): { name: string; value: string; sql: string }[] {
+   return SNOWFLAKE_REQUIRED_SETTINGS.map(({ name, value }) => ({
+      name,
+      value,
+      sql: throughSnowflake(
+         `SHOW PARAMETERS LIKE '${name}' IN SESSION`,
+         secretName,
+      ),
+   }));
 }
 
 /** BigQuery's label grammar: lowercase, `[a-z0-9_-]`, at most 63 characters. */

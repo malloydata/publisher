@@ -1539,5 +1539,17 @@
     "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'sec''ret')",
     "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'sec''ret')"
   ],
+  "snowflakeSessionCheckSQL": [
+    {
+      "name": "TIMEZONE",
+      "value": "UTC",
+      "sql": "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'sec''ret')"
+    },
+    {
+      "name": "WEEK_START",
+      "value": "7",
+      "sql": "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''WEEK_START'' IN SESSION', 'sec''ret')"
+    }
+  ],
   "bigQueryQueryLabelValue": "team:a_b_s,run:r1"
 }

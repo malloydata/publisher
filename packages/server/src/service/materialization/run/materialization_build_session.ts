@@ -69,6 +69,7 @@ import {
 import {
    bigQueryQueryLabelValue,
    snowflakeQueryTagValue,
+   snowflakeSessionCheckSQL,
    snowflakeSessionParitySQL,
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
@@ -177,11 +178,14 @@ function orderByExpressions(
 /**
  * Give a Snowflake build session the session parameters Malloy's live
  * connection runs with (`snowflakeSessionParitySQL`), before any read, so the
- * stored rows are the rows live computes: the same column-name case, the
- * same UTC day and the same Sunday week. Issued the way the query tag is,
- * and as the tag, a refused statement is logged, never the build's failure:
- * the build stores each column under its declared name either way
- * (`canonicalRenames`).
+ * stored rows are the rows live computes: the same UTC day and the same
+ * Sunday week, and the same column-name case. Each is set the way the query
+ * tag is; then `TIMEZONE` and `WEEK_START` are read back on the same handle
+ * (`snowflakeSessionCheckSQL`), and a session that does not hold them fails
+ * the build: its day and week buckets could differ from live's and be
+ * served as exact. `QUOTED_IDENTIFIERS_IGNORE_CASE` is best-effort, logged
+ * when refused: the build stores each column under its declared name either
+ * way (`canonicalRenames`).
  */
 async function alignSnowflakeSession(
    session: DuckDBConnection,
@@ -192,7 +196,7 @@ async function alignSnowflakeSession(
          await session.runSQL(sql);
       } catch (error) {
          logger.warn(
-            "Could not give the Snowflake build session Malloy's session settings; a day or week bucket may follow the account's",
+            "Could not set a Malloy session setting on the Snowflake build session",
             {
                statement: sql,
                error: error instanceof Error ? error.message : String(error),
@@ -200,6 +204,34 @@ async function alignSnowflakeSession(
          );
       }
    }
+   for (const check of snowflakeSessionCheckSQL(handle)) {
+      let held: string | null = null;
+      try {
+         held = settingValueOf(await session.runSQL(check.sql), check.name);
+      } catch (error) {
+         throw new Error(
+            `The Snowflake build session's ${check.name} could not be read back, so the build cannot be sure its buckets match live's: ${error instanceof Error ? error.message : String(error)}`,
+         );
+      }
+      if (held !== check.value) {
+         throw new Error(
+            `The Snowflake build session holds ${check.name} = ${held ?? "(not reported)"}, not Malloy's ${check.value}, so its day and week buckets could differ from live's; the build is refused. Allow ALTER SESSION SET ${check.name} for the build's role.`,
+         );
+      }
+   }
+}
+
+/** The `value` a `SHOW PARAMETERS` result reports for `name`, or null. */
+function settingValueOf(result: unknown, name: string): string | null {
+   for (const row of resultRows(result)) {
+      const lower = Object.fromEntries(
+         Object.entries(row).map(([k, v]) => [k.toLowerCase(), v]),
+      );
+      if (String(lower.key ?? "").toUpperCase() === name) {
+         return str(lower.value);
+      }
+   }
+   return null;
 }
 
 /**

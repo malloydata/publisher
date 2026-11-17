@@ -497,9 +497,10 @@ question — it reads from the source and writes elsewhere — and the storage b
 source whose connection it can pass a query through to: Postgres, BigQuery or Snowflake, or a
 DuckLake catalog building into that same catalog. A Snowflake read first sets the session settings
 Malloy's live connection uses (case-sensitive quoted identifiers, UTC, weeks starting on Sunday),
-so a day or week bucket is stored as live computes it whatever the account's defaults (a setting
-the account refuses is logged, and the build goes on), and each
-column is stored under the name its source declares even where the account folds quoted names to
+so a day or week bucket is stored as live computes it whatever the account's defaults. It reads
+`TIMEZONE` and `WEEK_START` back on the same session before it reads any rows, and a session that
+does not hold them fails the build, so grant the build's role `ALTER SESSION` on both; a refused
+`QUOTED_IDENTIFIERS_IGNORE_CASE` is logged and the build goes on. Each column is stored under the name its source declares even where the account folds quoted names to
 upper case; a table stored with folded names before this is read by a case-insensitive match. A `storage=` source on any other connection, the
 package's own DuckDB sandbox (`duckdb.sql(...)`, `duckdb.table(...)`) and an environment DuckDB
 connection included, is refused at load with reason `storage_source_unsupported`, on every route
