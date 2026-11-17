@@ -56,8 +56,10 @@
  *   over grain dimensions only, is left out of the build (its build copy
  *   replaces it by `true`) and written again on the variant, where each
  *   caller's givens bind it; any other is refused with the reason the one
- *   classifier gives it on `#(materialize)` (`inherited_where_with_given`,
- *   `given_in_persisted_query`).
+ *   classifier gives it on `#(materialize)`: `inherited_where_with_given`
+ *   for an inherited one, `given_where_over_unstored_field` for one over a
+ *   field the grain drops, `given_in_persisted_query` for one the build
+ *   would read.
  * - **A6, fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
  *   rollup only for a query that fixes it at every aggregating level.
@@ -114,6 +116,8 @@ import {
    type RefusalKey,
 } from "../../annotation_reader";
 import type { RefusedReason } from "../domain/types";
+import { STORAGE_DIALECT } from "../domain/dialect";
+import { storedMalloyType } from "../stored_column_types";
 import {
    destinationOf,
    placementOf,
@@ -328,6 +332,8 @@ interface FieldLike {
    join?: unknown;
    expressionType?: unknown;
    accessModifier?: unknown;
+   /** A `sql native` field's warehouse type. */
+   rawType?: unknown;
    annotations?: Parameters<typeof ownLevelNotes>[0] & { inherits?: unknown };
 }
 
@@ -336,6 +342,7 @@ interface SourceLike {
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
    queryTimezone?: unknown;
+   dialect?: unknown;
 }
 
 const fieldNameOf = (f: FieldLike): string | undefined =>
@@ -886,7 +893,10 @@ interface RollupFacts {
       | {
            refused: string;
            /** The shared classifier's reason (`readTimeTermsOf`), as on `#(materialize)`. */
-           reason: "inherited_where_with_given" | "given_in_persisted_query";
+           reason:
+              | "inherited_where_with_given"
+              | "given_in_persisted_query"
+              | "given_where_over_unstored_field";
         };
    /** Where the base is declared, for its build copy's edits. */
    declaration: TermUse | undefined;
@@ -899,6 +909,8 @@ interface RollupFacts {
    scope: Parameters<typeof decomposeMeasure>[1];
    /** The joins a field path reads, or undefined when unknown. */
    joinsRead(path: readonly string[]): string[] | undefined;
+   /** The base's dialect. */
+   dialect: string | undefined;
    unservable(
       reason: RefusedReason,
       decl: Declaration,
@@ -937,9 +949,10 @@ function rollupFactsOf(
    const timeFields = currentTimeFields(def.fields);
    // A given-reading `where:` of the base's own, over its dimensions, is left
    // out of the build and written again on the variant, as the served copy
-   // re-applies one (P2); an inherited one (`inherited_where_with_given`), or
-   // one over anything else (`given_in_persisted_query`), is refused by the
-   // one classifier `#(materialize)` reads, with its reason.
+   // re-applies one (P2); an inherited one (`inherited_where_with_given`), one
+   // over a field that is not a dimension (`given_where_over_unstored_field`),
+   // or one the build would read (`given_in_persisted_query`), is refused by
+   // the one classifier `#(materialize)` reads, with its reason.
    const read = readTimeTermsOf(
       def as SourceDefLike,
       classifyWhereTerms(def).filter((t) => t.dependsOn.kind === "given"),
@@ -1036,6 +1049,7 @@ function rollupFactsOf(
       readInZone,
       scope,
       joinsRead,
+      dialect: typeof def.dialect === "string" ? def.dialect : undefined,
       unservable,
    };
 }
@@ -1044,7 +1058,8 @@ function rollupFactsOf(
  * Why `decl` is not built, as a refusal; `skip` for one v1's own validation
  * already reports; undefined when it may be built. Checked in order: a hidden
  * measure, a grain that is not the source's dimensions, the current time, the
- * source's own time zone, a hidden grain dimension, and the source's gates.
+ * source's own time zone, a hidden grain dimension, a `storage=` grain no
+ * stored read declares, and the source's gates.
  */
 function declarationRefusal(
    decl: Declaration,
@@ -1134,6 +1149,17 @@ function declarationRefusal(
          `its grain dimension \`${hiddenGrain}\` is private on a source it extends, which a rollup's build cannot read`,
       );
    }
+   const unreadableGrain =
+      decl.storage === undefined
+         ? undefined
+         : unreadableStoredGrain(decl.grain, byName, facts.dialect);
+   if (unreadableGrain) {
+      return unservable(
+         "unreadable_grain",
+         decl,
+         `its grain dimension \`${unreadableGrain.name}\` is stored as ${unreadableGrain.storedType}, which no read of a storage destination declares, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse, which reads it`,
+      );
+   }
    if ("refused" in facts.given) {
       return unservable(facts.given.reason, decl, facts.given.refused);
    }
@@ -1142,9 +1168,9 @@ function declarationRefusal(
       .filter((c) => !decl.grain.includes(c));
    if (ungrained.length > 0) {
       // A given-reading `where:` over a field the table does not store, as
-      // the classifier names it on `#(materialize)`.
+      // the classifier names it on `#(materialize)`: the fix is the grain.
       return unservable(
-         "given_in_persisted_query",
+         "given_where_over_unstored_field",
          decl,
          // malloy-text: a warning message for a person, not Malloy
          `the source's \`where:\` reads a given and ${[...new Set(ungrained)].map((c) => `\`${c}\``).join(", ")}, which the grain does not keep, so it could not be re-applied to the rollup's rows per caller`,
@@ -1188,6 +1214,31 @@ function declarationRefusal(
          // malloy-text: a warning message for a person, not Malloy
          `the source's access filter reads ${ungated.map((g) => `\`${g}\``).join(", ")}, which the grain does not keep, so the rollup's rows could not be filtered per caller`,
       );
+   }
+   return undefined;
+}
+
+/**
+ * The first grain dimension a `storage=` rollup's table would store as a type
+ * no stored read declares ({@link storedMalloyType}: a BLOB, an INTERVAL, a
+ * MAP or a JSON), with that type. Every read of the rollup groups by its
+ * grain, so such a table is never read. Judged only for a DuckDB-dialect
+ * base, whose warehouse type is the type the destination stores; another
+ * warehouse's native type may arrive as another type, which serve judges.
+ */
+function unreadableStoredGrain(
+   grain: readonly string[],
+   byName: ReadonlyMap<string, FieldLike>,
+   dialect: string | undefined,
+): { name: string; storedType: string } | undefined {
+   if (dialect !== STORAGE_DIALECT) return undefined;
+   for (const name of grain) {
+      const f = byName.get(name);
+      if (f?.type !== "sql native" || typeof f.rawType !== "string") continue;
+      const storedType = f.rawType.toUpperCase();
+      if (storedMalloyType(storedType) === undefined) {
+         return { name, storedType };
+      }
    }
    return undefined;
 }

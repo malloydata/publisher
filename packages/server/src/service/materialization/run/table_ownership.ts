@@ -437,6 +437,28 @@ export async function ownedElsewhere(
 }
 
 /**
+ * Whether a table (not a view) named `physicalTableName` exists at `site`,
+ * or undefined when the probe cannot tell (a dialect it cannot ask, or a
+ * failed probe). Never throws.
+ */
+export async function tableExistsAt(
+   site: Pick<TableSite, "dialect" | "segments" | "run">,
+   physicalTableName: string,
+): Promise<boolean | undefined> {
+   if (!tableOwnershipDialectSupported(site.dialect)) return undefined;
+   try {
+      const rows = await site.run(
+         ownedTableProbeSql(site.segments(physicalTableName), site.dialect),
+      );
+      return rows.some(
+         (row) => String(field(row, "kind") ?? "").toUpperCase() !== "VIEW",
+      );
+   } catch {
+      return undefined;
+   }
+}
+
+/**
  * Before an auto-run builds: take back out of `carried` each table at the
  * author's `name=` (`recheck`, from deriveSelfInstructions) that is not a
  * table marked as `owner`'s, and rebuild it instead (its instruction joins

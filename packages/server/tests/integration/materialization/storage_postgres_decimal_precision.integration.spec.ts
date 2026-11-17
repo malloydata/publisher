@@ -3,6 +3,7 @@
 
 /// <reference types="bun-types" />
 
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import {
    afterAll,
@@ -79,6 +80,7 @@ describe.skipIf(!url)(
       let wh: PostgresConnection;
       let lakeCatalog: PostgresConnection;
       let server: SpawnedServer;
+      let catalogConnection = "";
       const dirs: { cleanup(): void }[] = [];
       const api = () => `${server.baseUrl}/api/v0/environments/e1/packages/pa`;
 
@@ -176,6 +178,9 @@ describe.skipIf(!url)(
             name: "lake",
             connectionString: database(catalog),
          });
+         catalogConnection =
+            `dbname=${catalog} host=${pg.host} port=${pg.port} ` +
+            `user=${pg.userName} password=${pg.password}`;
          // u: unconstrained; big: wider than DECIMAL(38); m: a DECIMAL
          // already; huge: no DECIMAL(38) holds 10^45.
          await wh.runSQL(`CREATE DOMAIN amount AS numeric`);
@@ -393,6 +398,78 @@ describe.skipIf(!url)(
          await build();
          expect(await uType()).toEqual(["decimal(38,5)"]);
          expect(await sums(7)).toEqual([{ su: 1.55501, c: 7 }]);
+      });
+
+      it("re-seeds an incremental table a build before the precision fix stored as DOUBLE, to DECIMAL, equal to live", async () => {
+         const [table] = (
+            await lakeCatalog.runSQL(
+               `SELECT row_to_json(q) AS "row" FROM (
+                  SELECT s.schema_name, t.table_name
+                  FROM ducklake_table t JOIN ducklake_schema s ON s.schema_id = t.schema_id
+                  WHERE t.end_snapshot IS NULL AND s.end_snapshot IS NULL
+                    AND t.table_name LIKE 't_incremental%') q`,
+            )
+         ).rows as { schema_name: string; table_name: string }[];
+         expect(table).toBeDefined();
+         const uType = async () =>
+            (await storedTypes()).get(`${table!.table_name}.u`) ?? [];
+         // The table as a build before the fix left it: `u` as the
+         // passthrough's DOUBLE, its boundary and rows otherwise unchanged.
+         const duck = new DuckDBConnection("rewrite", ":memory:");
+         try {
+            for (const ext of ["ducklake", "postgres"]) {
+               await duck.runSQL(`INSTALL ${ext}`);
+               await duck.runSQL(`LOAD ${ext}`);
+            }
+            await duck.runSQL(
+               `ATTACH 'ducklake:postgres:${catalogConnection}' AS old_build`,
+            );
+            const path = `old_build."${table!.schema_name}"."${table!.table_name}"`;
+            await duck.runSQL(
+               `CREATE OR REPLACE TABLE ${path} AS ` +
+                  `SELECT * REPLACE (CAST(u AS DOUBLE) AS u) FROM ${path}`,
+            );
+         } finally {
+            await duck.close();
+         }
+         expect(await uType()).toEqual(["float64"]);
+
+         await wh.runSQL(
+            `INSERT INTO t (id, g, u) VALUES (9, 'c', 0.1), (10, 'c', NULL)`,
+         );
+         await build();
+         // The refresh re-seeded rather than inserting into the DOUBLE.
+         expect(await uType()).toEqual(["decimal(38,5)"]);
+         // The build log names the cause beside the seed's reason code.
+         expect(server.output()).toContain(
+            "Re-seeding to store Postgres numerics exactly",
+         );
+         const read = (s: string) =>
+            query(
+               `run: ${s} -> { where: id <= 9; aggregate: su is u.sum(), c is count() }`,
+            );
+         const live = await read("live_incremental");
+         const served = await read("incremental");
+         expect(served.servedBy).toBe("materialized");
+         expect(served.rows).toEqual(live.rows);
+         expect(live.rows).toEqual([{ su: 1.65501, c: 9 }]);
+
+         // Re-seeded once: the next refresh advances by delta, with no
+         // second re-seed and no Postgres probe for a DOUBLE it no longer has.
+         const seeds = (out: string) =>
+            out.split("Re-seeding to store Postgres numerics exactly").length;
+         const before = server.output();
+         await wh.runSQL(`INSERT INTO t (id, g, u) VALUES (11, 'c', 0.5)`);
+         await build();
+         const after = server.output().slice(before.length);
+         expect(seeds(after)).toBe(1);
+         expect(after).not.toContain(
+            "Rebuilding an incremental source in full",
+         );
+         expect(after).toMatch(
+            /materialization\.build\.finished[^\n]*"method":"delta"[^\n]*"physicalTable":"t_incremental/,
+         );
+         expect(await uType()).toEqual(["decimal(38,5)"]);
       });
    },
 );

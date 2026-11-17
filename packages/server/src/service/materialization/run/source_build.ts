@@ -54,7 +54,10 @@ import {
    upstreamReuseFromManifest,
    wrongTierDetail,
 } from "./materialization_run_support";
-import type { StorageBuildRequest } from "./storage_build_strategy";
+import type {
+   StorageBuildRequest,
+   StoredRollupBase,
+} from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
 
 /**
@@ -369,6 +372,12 @@ const COLOCATED = new ColocatedTier();
 
 /** One source's build: what {@link buildSource} reads. */
 export interface SourceBuildOptions {
+   /**
+    * The run's cancel signal. Passed to the statements that read the
+    * warehouse (the CTAS, an incremental delta) and never to a swap, DROP or
+    * backup, so a cancel never leaves a half-swapped table.
+    */
+   signal?: AbortSignal;
    persistSource: PersistSource;
    instruction: BuildInstruction;
    connection: MalloyConnection;
@@ -395,6 +404,19 @@ export interface SourceBuildOptions {
     * Postgres; leftover_name_views.ts).
     */
    replacesView?: string[];
+   /**
+    * A `storage=` rollup's base stored in its destination, which the run
+    * holds current and fresh enough (instructed_build.ts): the build groups
+    * that table's rows in the destination, and reads the warehouse only
+    * when it cannot.
+    */
+   storedBase?: StoredRollupBase;
+   /**
+    * The source is a rollup: a `storage=` build reports `upstreamReuse`
+    * only when it stacked on a stored table, never from the manifest's
+    * classification of its author's text (which names the base).
+    */
+   rollup?: boolean;
 }
 
 /**
@@ -423,6 +445,9 @@ export async function buildSource(
       contentSourceEntityId,
       planFacts = NO_PLAN_FACTS,
       replacesView,
+      storedBase,
+      rollup,
+      signal,
    } = options;
    const physicalTableName = instruction.physicalTableName;
    const rendered = renderBuildSQL(
@@ -503,6 +528,9 @@ export async function buildSource(
          planFacts,
          lift,
          ...(replacesView ? { replacesView } : {}),
+         ...(storedBase ? { storedBase } : {}),
+         ...(rollup ? { rollup } : {}),
+         ...(signal ? { signal } : {}),
       });
    }
 
@@ -523,6 +551,7 @@ export async function buildSource(
          sourceEntityId: contentSourceEntityId,
       }),
       ...(replacesView ? { replacesView } : {}),
+      ...(signal ? { signal } : {}),
    };
    return COLOCATED.build(request);
 }

@@ -576,6 +576,7 @@ describe("the routing and bind label vocabularies", () => {
          "build_plan_unavailable",
          "refused",
          "missing_table",
+         "unquotable_name",
          "compile_failed",
          "cross_connection_unbuilt",
          "column_types",

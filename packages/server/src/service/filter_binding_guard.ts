@@ -1252,6 +1252,23 @@ function findFilterOrigin(
          );
       // Ahead of the sibling-owner leg, which would settle for the struct's own twin in the sibling compile.
       if (inlineBase) return { origin: inlineBase, inlineBase: true };
+      // The executed compile's own declaration of the condition, when it
+      // compiled the condition's file, ahead of another compile's: a served
+      // copy compiles an importing file over its re-rooted base, whose stored
+      // column may be a redefinition (a native big-integer read), so the
+      // author's compile of the same file binds the name to a different field
+      // (P2-22). When that declaration is `struct` itself, the condition is
+      // its own `where:`, compiled against its own fields, and is checked as
+      // fresh. Another struct there (the declaration a caller's inline
+      // `extend` derives from) is the origin, so a rebinding is still denied.
+      const at = firstFieldUsageLocation(condition);
+      const local =
+         modelDef && at
+            ? findConditionOriginByLocation(modelDef, at)
+            : undefined;
+      if (local && siblingCandidateOwnsCondition(local, condition)) {
+         return { origin: local, inlineBase: false };
+      }
       const sibling = findSiblingDeclaringSource(
          firstFieldUsageLocation(condition),
          resolveSibling,
@@ -1260,7 +1277,6 @@ function findFilterOrigin(
          return { origin: sibling, inlineBase: false };
       }
       // A twin is only a same-named struct, not the declaration, so it stands in only where no sibling compile can exist: a model with no resolver, or the /compile text compiled for this request alone.
-      const at = firstFieldUsageLocation(condition);
       const inVirtualFile =
          !!at &&
          !!virtualUrl &&

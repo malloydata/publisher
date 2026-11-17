@@ -101,6 +101,9 @@ describe("a package compiles once per thing a compile reads", () => {
 
    afterEach(async () => {
       compiles.mockRestore();
+      // Release every loaded package: a table a rebind could not read keeps
+      // a retry timer that would otherwise fire into a later spec file.
+      await env.closeAllConnections().catch(() => {});
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
@@ -253,6 +256,26 @@ describe("a package compiles once per thing a compile reads", () => {
       ).toBe(true);
       expect(compiles).toHaveBeenCalledTimes(2);
       expect(pkg.getManifestLocation()).toBeNull();
+   });
+
+   it("cancels an unread table's retry when the package is released, and schedules none after", async () => {
+      const probe = await loadVersion(null);
+      const { entries } = await writeManifest(probe);
+      const [id] = Object.keys(entries);
+      const pkg = await loadVersion(null);
+      // `summary_b` does not exist: the bind cannot read it, and retries.
+      await pkg.reloadAllModels(
+         { [id]: { ...entries[id], tableName: "summary_b" } },
+         { ifChanged: true },
+      );
+      const unread = () =>
+         (pkg.getPackageMetadata().warnings ?? []).find(
+            (w) => w.code === "database-table-unread",
+         );
+      expect(pkg.materialization().hasUnreadDatabaseTables()).toBe(true);
+      expect(unread()?.message).toContain("A retry is pending.");
+      await pkg.releaseConnections();
+      expect(unread()?.message).not.toContain("A retry is pending.");
    });
 
    it("keeps a version's stored manifestLocation through a load and every rebind", async () => {

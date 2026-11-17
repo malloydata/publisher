@@ -514,15 +514,49 @@ describe("bindColocatedEntries", () => {
       });
       expect(bound.entries).toEqual({
          a: { tableName: '"order"' },
-         b: { tableName: "kept" },
       });
+      // `b` has no dialect to quote its name in: declined, never bound as
+      // given.
       expect(bound.declined).toEqual([
+         {
+            reason: "unquotable_name",
+            sourceEntityId: "b",
+            detail: "no dialect is known for its table, to quote its name in",
+         },
          {
             reason: "refused",
             sourceEntityId: "c",
             detail: "a gate the table cannot keep",
          },
       ]);
+   });
+
+   it("declines only an entry whose name its dialect cannot read or quote, and binds the rest", () => {
+      const bound = bindColocatedEntries({
+         entries: {
+            bad: { tableName: "`ds`.`a``b`" },
+            good: { tableName: "`ds`.`a\\`b`" },
+            plain: { tableName: "ds.t" },
+         },
+         eligibility: {
+            eligibleEntityIds: new Set(["bad", "good", "plain"]),
+            refused: {},
+         },
+         dialects: new Map([
+            ["bad", "standardsql"],
+            ["good", "standardsql"],
+            ["plain", "standardsql"],
+         ]),
+      });
+      expect(bound.entries).toEqual({
+         good: { tableName: "`ds`.`a\\`b`" },
+         plain: { tableName: "`ds`.`t`" },
+      });
+      expect(bound.declined).toHaveLength(1);
+      expect(bound.declined[0]).toMatchObject({
+         reason: "unquotable_name",
+         sourceEntityId: "bad",
+      });
    });
 
    it("declines every entry when the plan's eligibility is unknown", () => {
@@ -758,9 +792,68 @@ describe("applyObservedColumns", () => {
             sourceEntityId: "addr1",
             columns: [
                { column: "amt", builtType: "DOUBLE", observedType: "VARCHAR" },
-               { column: "d", builtType: "DATE" },
+               // The bind's decision rides on the report.
+               { column: "d", builtType: "DATE", gone: true, leftOut: true },
             ],
          },
+      ]);
+   });
+
+   // P4-01: a DuckLake table's 128-bit integer holds a DOUBLE's digits
+   // (the bind's read marks it `storedAsDouble`), whatever its build wrote.
+   it("P4-01: reads a DuckLake 128-bit integer as the DOUBLE it holds, and leaves out a rollup that stores one", () => {
+      const huge = [
+         { name: "id", type: "HUGEINT" },
+         { name: "amt", type: "DOUBLE" },
+         { name: "d", type: "DATE" },
+      ];
+      const lake: Binding = {
+         ...binding,
+         schema: huge,
+         nativeSchema: [{ name: "id", type: "HUGEINT" }],
+      };
+      const asDouble = {
+         name: "id",
+         type: "DOUBLE",
+         nativeType: "DOUBLE",
+         storedAsDouble: true as const,
+      };
+      const out = applyObservedColumns({
+         entries: {
+            addr1: { tableName: "orders_t", schema: huge },
+            rollup1: {
+               tableName: "orders_by_d",
+               schema: [{ name: "total__partial", type: "HUGEINT" }],
+            },
+         },
+         bindings: [lake],
+         observed: new Map([
+            ["addr1", { columns: [asDouble, ...huge.slice(1)] }],
+            ["rollup1", { columns: [{ ...asDouble, name: "total__partial" }] }],
+         ]),
+      });
+      expect(out.bindings[0].schema[0]).toEqual({ name: "id", type: "DOUBLE" });
+      expect(out.bindings[0].nativeSchema).toEqual([
+         { name: "id", type: "DOUBLE" },
+      ]);
+      expect(Object.keys(out.entries)).toEqual(["addr1"]);
+      expect(out.drifted.map((d) => d.columns)).toEqual([
+         [
+            {
+               column: "id",
+               builtType: "HUGEINT",
+               observedType: "DOUBLE",
+               storedAsDouble: true,
+            },
+         ],
+         [
+            {
+               column: "total__partial",
+               builtType: "HUGEINT",
+               observedType: "DOUBLE",
+               storedAsDouble: true,
+            },
+         ],
       ]);
    });
 

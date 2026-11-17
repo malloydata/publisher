@@ -7,7 +7,8 @@
  * not this model's), for the path report and the package's served-source
  * list; and the stored columns whose type does not serve as declared
  * (`storage-column-type-mismatch`), each read through a cast or answered
- * live.
+ * live. The same warning's database-table findings: a table altered outside a
+ * build, whose drift the bind read ({@link databaseDriftFindings}).
  *
  * Called by `Model` once per snapshot, which logs and counts what this
  * finds. Reads the author's model files for the lift; no other I/O.
@@ -24,12 +25,16 @@ import {
 } from "../text/author_model";
 import {
    declaredColumnsOf,
+   ducklakeStoresAsDouble,
    type ReadCast,
    serveTypePlan,
    storedColumnReadPlan,
    storedColumnTypeMismatches,
    type StoredColumnTypeMismatch,
+   storedMalloyType,
+   storedTypeServesAs,
 } from "../stored_column_types";
+import type { ObservedDrift } from "./bind";
 import type { BuildPlan } from "../domain/types";
 import type { MaterializePlan } from "../domain/table_plans";
 
@@ -104,7 +109,20 @@ export function boundTableTypeFindings(
       const declared = (source.columns ?? []).flatMap((c) =>
          c.name && c.type ? [{ name: c.name, type: c.type }] : [],
       );
-      const mismatches = storedColumnTypeMismatches(binding.schema, declared);
+      // A 128-bit integer column, which the destination (DuckLake) holds as a
+      // DOUBLE, is reported too: every reader leaves it out.
+      const lossy = binding.schema.flatMap((c) => {
+         const d = declared.find(
+            (x) => x.name.toLowerCase() === c.name.toLowerCase(),
+         );
+         return d && ducklakeStoresAsDouble(c.type)
+            ? [{ column: d.name, storedType: c.type, declaredType: d.type }]
+            : [];
+      });
+      const mismatches = [
+         ...lossy,
+         ...storedColumnTypeMismatches(binding.schema, declared),
+      ];
       if (mismatches.length === 0) continue;
       // A joined field stored in a `#(materialize)` table's record (an
       // inlined join_one, a pair table) has no cast inside the record, so
@@ -116,10 +134,13 @@ export function boundTableTypeFindings(
                  .map((c) => c.column)
             : [],
       );
-      const handled = handlingOf(mismatches, {
+      const cast = handlingOf(mismatches, {
          queryTimezone: readers.queryTimezone?.(sourceID, source),
          recordColumns,
       });
+      const lost = new Set(lossy.map((m) => m.column));
+      const handled = (m: StoredColumnTypeMismatch): MismatchHandling =>
+         lost.has(m.column) ? "live" : cast(m);
       findings.push({
          binding,
          sourceID,
@@ -132,6 +153,109 @@ export function boundTableTypeFindings(
       });
    }
    return findings;
+}
+
+/**
+ * One bound database table whose warehouse columns moved since its build,
+ * as the bind read them ({@link ObservedDrift}), for the same warning a
+ * `storage=` table's mismatch raises.
+ */
+export interface DatabaseDriftFinding {
+   sourceID: string;
+   /** The table's content address, as the bind read it. */
+   sourceEntityId: string;
+   modelPath?: string;
+   /** The name the author wrote: the source, view or query, or a rollup's base. */
+   subject: string;
+   /**
+    * Each moved column against the type its source declares: `storedType` is
+    * absent for a column that is gone. `table` when the table is answered
+    * live as a whole (a rollup, persisted view or query, which no cast
+    * reaches).
+    */
+   mismatches: (Omit<StoredColumnTypeMismatch, "storedType"> & {
+      /** Absent when Malloy reads the type it holds now as no basic type. */
+      storedType?: string;
+      /** The table no longer has the column. */
+      gone?: true;
+      handling: MismatchHandling | "table";
+   })[];
+}
+
+/**
+ * The warning findings of the database tables whose columns moved outside a
+ * build ({@link ObservedDrift}), against the columns the plan's build source
+ * declares, handled as the bind decided ({@link ObservedDrift}): any table
+ * but a served copy's is answered live whole; a served copy leaves out a
+ * column the bind left out, and reads any other with the type it holds now
+ * through a faithful cast, as is when that serves as declared (not
+ * reported), or not at all.
+ */
+export function databaseDriftFindings(
+   drifted: readonly ObservedDrift[],
+   plan: BuildPlan | null,
+   readers: {
+      /** Whether the table is read through the served copy, which casts per column. */
+      servedCopy: (sourceEntityId: string) => boolean;
+      /** As {@link boundTableTypeFindings}'s. */
+      queryTimezone?: (
+         sourceID: string,
+         source: NonNullable<BuildPlan["sources"]>[string],
+      ) => string | undefined;
+   },
+): DatabaseDriftFinding[] {
+   const sources = Object.entries(plan?.sources ?? {});
+   return drifted.flatMap((drift): DatabaseDriftFinding[] => {
+      const [sourceID, source] =
+         sources.find(([, s]) => s.sourceEntityId === drift.sourceEntityId) ??
+         [];
+      if (!sourceID || !source) return [];
+      const declaredOf = (column: string, builtType: string) =>
+         source.columns?.find((c) => c.name === column)?.type ??
+         storedMalloyType(builtType) ??
+         builtType;
+      const servedCopy = readers.servedCopy(drift.sourceEntityId);
+      const queryTimezone = readers.queryTimezone?.(sourceID, source);
+      const mismatches = drift.columns.flatMap(
+         (c): DatabaseDriftFinding["mismatches"] => {
+            const declaredType = declaredOf(c.column, c.builtType);
+            const moved = {
+               column: c.column,
+               declaredType,
+               ...(c.observedType ? { storedType: c.observedType } : {}),
+               ...(c.gone ? { gone: true as const } : {}),
+            };
+            // The bind's own decision: a table no cast reaches answers live
+            // whole, and a column it leaves out answers live.
+            if (!servedCopy) return [{ ...moved, handling: "table" }];
+            if (c.leftOut || !c.observedType) {
+               return [{ ...moved, handling: "live" }];
+            }
+            // Read with the type it holds now, through the one stored-column
+            // read plan: a faithful cast, as is when it serves as declared,
+            // else left out.
+            const { casts } = serveTypePlan(
+               [{ ...moved, storedType: c.observedType }],
+               { queryTimezone },
+            );
+            if (casts.length > 0) return [{ ...moved, handling: "cast" }];
+            if (storedTypeServesAs(c.observedType, declaredType) !== false) {
+               return [];
+            }
+            return [{ ...moved, handling: "live" }];
+         },
+      );
+      if (mismatches.length === 0) return [];
+      return [
+         {
+            sourceID,
+            sourceEntityId: drift.sourceEntityId,
+            ...(source.modelPath ? { modelPath: source.modelPath } : {}),
+            subject: source.preaggregate?.baseSourceName ?? source.name,
+            mismatches,
+         },
+      ];
+   });
 }
 
 /**
@@ -291,7 +415,8 @@ function typePlanFor(
    const plan = storedColumnReadPlan(
       v1StoredColumns(binding.schema, def?.fields),
       declaredColumnsOf(def?.fields),
-      { queryTimezone: queryTimezoneOf(def) },
+      // A storage destination is DuckLake.
+      { queryTimezone: queryTimezoneOf(def), ducklake: true },
    );
    return {
       casts: plan.casts,

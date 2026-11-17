@@ -163,6 +163,11 @@ function storageSourceConnection(
 
 /** What a `storage=` build of one source starts from. */
 export interface StorageBuildRequest {
+   /**
+    * The run's cancel signal: interrupts the build's DuckDB session on abort
+    * (`interruptOnAbort`).
+    */
+   signal?: AbortSignal;
    persistSource: PersistSource;
    instruction: BuildInstruction;
    manifest: Manifest;
@@ -200,6 +205,26 @@ export interface StorageBuildRequest {
     * (leftover_name_views.ts), so a failed build leaves the view.
     */
    replacesView?: string[];
+   /** See SourceBuildOptions.storedBase. */
+   storedBase?: StoredRollupBase;
+   /** See SourceBuildOptions.rollup. */
+   rollup?: boolean;
+}
+
+/**
+ * A `storage=` rollup's base, stored in the rollup's destination: the entry
+ * this run holds for its table, and what the rollup's build compiles there
+ * over it (rollup_compile.ts, `StoredBaseBuild`).
+ */
+export interface StoredRollupBase {
+   baseSourceID: string;
+   baseName: string;
+   /** The base table's content address, and its entry in this run. */
+   address: string;
+   entry: ManifestEntry;
+   companion: { url: string; text: string };
+   /** Called when the build grouped the base's stored table. */
+   onStacked?: () => void;
 }
 
 /** What every stage of one source's storage build reads. */
@@ -252,6 +277,7 @@ async function recomputeIntoStorage(
             ...(params.replacesView
                ? { replacesView: params.replacesView }
                : {}),
+            ...(params.signal ? { signal: params.signal } : {}),
          });
       // A same-catalog build reads and writes only the store, so its seconds
       // are the store's; a passthrough build's are mostly the warehouse's.
@@ -750,8 +776,14 @@ export class StorageBuildStrategy
       // from raw, so the downstream is a pure function of the parent's rows. On
       // ineligibility it throws and we fall back to recompute (non-strict) or
       // refuse (`strictUpstreams`).
+      // A rollup over its base's stored table: grouped there when it can be.
+      let stackedOnBase = false;
       if (dependsOnStorageUpstream) {
          ({ result, upstreamRecomputeReason } = await this.stackOnParents(ctx));
+      } else if (params.storedBase) {
+         ({ result, stacked: stackedOnBase } =
+            await this.stackRollupOnStoredBase(ctx, params.storedBase));
+         if (stackedOnBase) params.storedBase.onStacked?.();
       }
 
       // Recompute from raw: run `buildSQL` (storage upstreams inlined) in the
@@ -801,7 +833,13 @@ export class StorageBuildStrategy
                     ? { upstreamRecomputeReason }
                     : {}),
               }
-            : baseReuse),
+            : stackedOnBase
+              ? { upstreamReuse: "reused" as const }
+              : // A rollup that did not stack read the warehouse, whatever
+                // the classification of its author's text says.
+                params.rollup
+                ? {}
+                : baseReuse),
          // SCANNED, not billed, matching the colocated path's runStats
          // (totalBytesProcessed), so the field sums consistently across sources.
          // Null when the read reported nothing: a build with an empty metadata
@@ -957,6 +995,92 @@ export class StorageBuildStrategy
          return { result };
       } catch (err) {
          return recomputeAfterStackFailure(err, ctx);
+      }
+   }
+
+   /**
+    * Build a `storage=` rollup over its base's stored table in the same
+    * destination: the base re-rooted on that table as the served copy
+    * re-roots it for a query (the host port's `chainBuildText`), and the
+    * rollup's own build file over it, compiled and run on the destination
+    * alone, so nothing reads the warehouse. Only a table with the columns,
+    * and the column types, the planned (warehouse) build writes is kept.
+    * Not `stacked` when the rollup cannot be built that way: it is then
+    * built from the warehouse, as planned, with the same rows. A failure of the
+    * destination itself is thrown, as the recompute would meet it too.
+    */
+   async stackRollupOnStoredBase(
+      ctx: StorageBuildContext,
+      base: StoredRollupBase,
+   ): Promise<{ result?: StorageBuildResult; stacked: boolean }> {
+      const { params, destinationName, destinationConnection } = ctx;
+      const { persistSource, environment, physicalTableName } = {
+         ...params,
+         physicalTableName: ctx.physicalTableName,
+      };
+      const declined = (detail: string) => {
+         logger.warn(
+            "A storage= rollup did not build over its base's stored table; it builds from the warehouse",
+            { sourceName: persistSource.name, destinationName, detail },
+         );
+         return { stacked: false };
+      };
+      if (!environment.chainBuildText) {
+         return declined("this package has no served copy to write it from");
+      }
+      const text = environment.chainBuildText({
+         downstream: {
+            sourceID: persistSource.sourceID,
+            name: persistSource.name,
+         },
+         destination: {
+            name: destinationName,
+            schema: destinationSchemaOf(destinationConnection),
+         },
+         upstreams: [
+            {
+               entry: base.entry,
+               names: { [base.baseName]: [base.baseSourceID] },
+            },
+         ],
+         rollup: { baseSourceID: base.baseSourceID, companion: base.companion },
+      });
+      if ("declined" in text) return declined(text.declined);
+      try {
+         const result = await withStatementUsage(
+            {
+               environment: environment.getEnvironmentName(),
+               connection: destinationName,
+               surface: "build",
+               package: params.packageName ?? params.incremental?.packageName,
+            },
+            () =>
+               buildDownstreamIntoStorage({
+                  destinationName,
+                  destinationConnection,
+                  model: {
+                     files: text.files,
+                     entry: text.entry,
+                     leaveOutWithin: text.rerootedSpans,
+                  },
+                  connectionName: text.connection,
+                  downstreamName: text.downstreamName,
+                  recomputes: persistSource,
+                  sameDeclaredTypes: true,
+                  givenFree: true,
+                  virtualMap: text.virtualMap,
+                  physicalTableName,
+                  environmentPath: environment.getEnvironmentPath(),
+                  ...(params.replacesView
+                     ? { replacesView: params.replacesView }
+                     : {}),
+               }),
+         );
+         recordChainedStorageBuild("parent_reuse");
+         return { result, stacked: true };
+      } catch (err) {
+         if (!(err instanceof MaterializationEligibilityError)) throw err;
+         return declined(errMessage(err));
       }
    }
 

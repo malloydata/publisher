@@ -288,4 +288,13 @@ describe("proving what a view reads, per dialect", () => {
       expect(reads("SELECT * FROM g2", "g1", "main")).toBe(false);
       expect(viewDefinitionReadsOnly(undefined, "g1", "main")).toBe(false);
    });
+
+   it("decodes BigQuery's backslash escapes in a definition before comparing", () => {
+      const definition = "SELECT * FROM `ds`.`g\\\\1`";
+      expect(
+         viewDefinitionReadsOnly(definition, "ds.g\\1", "ds", "standardsql"),
+      ).toBe(true);
+      // Undecoded, the escape's backslash is read as part of the name.
+      expect(viewDefinitionReadsOnly(definition, "ds.g\\1", "ds")).toBe(false);
+   });
 });

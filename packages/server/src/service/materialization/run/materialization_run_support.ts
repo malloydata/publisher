@@ -59,7 +59,7 @@ import { escapeSQL } from "../../connection";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
 
 import type { ApiConnection } from "../../model";
-import { redactPgSecrets } from "../../../pg_helpers";
+import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 import { packageRelativeText } from "../../../package_relative_text";
 
 /**
@@ -946,7 +946,9 @@ export function redactConnectionSecrets(
    // One `seen` across arguments: a source and destination may share a subgraph.
    const seen = new WeakSet<object>();
    for (const c of connections) collectSensitiveValues(c, secrets, seen);
-   let redacted = redactPgSecrets(message);
+   // A storage URL (bucket, organization and database paths) too: the result
+   // is recorded on the run, which callers read.
+   let redacted = redactStorageUrls(redactPgSecrets(message));
    for (const s of secrets) {
       redacted = redacted.split(s).join("***");
       // A DuckDB error may echo the SQL, where a secret with a single quote

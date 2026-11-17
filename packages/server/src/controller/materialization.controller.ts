@@ -486,7 +486,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      options: { dropTables?: boolean; versionId?: VersionRef } = {},
+      options: { versionId?: VersionRef } = {},
    ) {
       return this.materializationService.deleteMaterialization(
          environmentName,
@@ -505,7 +505,7 @@ export class MaterializationController {
 function assertUsableTableName(name: string, what: string): void {
    if (!isUsableTableName(name)) {
       throw new BadRequestError(
-         `${what} 'physicalTableName' must be a table path with no empty part, no backslash, and only whole quoted parts`,
+         `${what} 'physicalTableName' must be a table path with no empty part, no backslash or control character, and only whole quoted parts`,
       );
    }
 }

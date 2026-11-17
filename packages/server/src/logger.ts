@@ -10,20 +10,73 @@ import {
 import { AxiosError } from "axios";
 import { RequestHandler } from "express";
 import winston from "winston";
+import { redactSignedUrlParams } from "./pg_helpers";
 
 const isTelemetryEnabled = Boolean(externalEnv("OTEL_EXPORTER_OTLP_ENDPOINT"));
+
+/** How deep {@link maskedForLog} walks a logged value. */
+const MAX_MASK_DEPTH = 8;
+
+/**
+ * `value` with every string in it passed through `redactSignedUrlParams`: a
+ * signed URL's signature, credential or token never reaches the log, from any
+ * line (a driver's error a package load, a publish or a request quotes).
+ * Copies only what changes, so a caller's object is never altered.
+ * Exported for its spec.
+ */
+export function maskedForLog(value: unknown, depth = 0): unknown {
+   if (typeof value === "string") return redactSignedUrlParams(value);
+   if (depth >= MAX_MASK_DEPTH || value === null || typeof value !== "object") {
+      return value;
+   }
+   if (value instanceof Error) {
+      const message = maskedForLog(value.message, depth + 1);
+      const stack = maskedForLog(value.stack, depth + 1);
+      return message === value.message && stack === value.stack
+         ? value
+         : { name: value.name, message, stack };
+   }
+   if (Array.isArray(value)) {
+      let changed = false;
+      const out = value.map((v) => {
+         const m = maskedForLog(v, depth + 1);
+         if (m !== v) changed = true;
+         return m;
+      });
+      return changed ? out : value;
+   }
+   let copy: Record<string, unknown> | undefined;
+   for (const [key, v] of Object.entries(value)) {
+      const m = maskedForLog(v, depth + 1);
+      if (m !== v) {
+         copy ??= { ...(value as Record<string, unknown>) };
+         copy[key] = m;
+      }
+   }
+   return copy ?? value;
+}
+
+/** The format step that masks every line's strings ({@link maskedForLog}). */
+const maskSignedUrlSecrets = winston.format((info) => {
+   for (const key of Object.keys(info)) {
+      info[key] = maskedForLog(info[key]);
+   }
+   return info;
+});
 
 export const logger = winston.createLogger({
    // An unknown level is the default, debug, with a startup warning.
    level: settings.get("logging.level"),
    format: isTelemetryEnabled
       ? winston.format.combine(
+           maskSignedUrlSecrets(),
            winston.format.uncolorize(),
            winston.format.timestamp(),
            winston.format.errors({ stack: true }),
            winston.format.json(),
         )
       : winston.format.combine(
+           maskSignedUrlSecrets(),
            winston.format.colorize(),
            winston.format.simple(),
         ),

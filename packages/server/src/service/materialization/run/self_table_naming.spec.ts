@@ -1,13 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import path from "path";
 import { pathToFileURL } from "url";
 import {
    compiledWith,
    fakeSource,
 } from "../../../test_helpers/materialization_test_fixtures";
+import { installSettings } from "../../../test_helpers/settings_env";
 import {
    packageTableSuffix,
    versionTableSuffix,
@@ -458,12 +459,14 @@ describe("a table named before readable names", () => {
       expect(r.renamed).toEqual([
          {
             sourceEntityId: "a1",
+            sourceName: "summary",
             previousName: `summary${LEGACY_PKG}`,
             physicalTableName: names(r).a1,
             connectionName: "duckdb",
          },
          {
             sourceEntityId: "a4",
+            sourceName: ROLLUP,
             previousName: `ns.orders__preagg__category__1a2b3c4d${LEGACY_PKG}`,
             physicalTableName: names(r).a4,
             connectionName: "duckdb",
@@ -484,7 +487,7 @@ describe("a table named before readable names", () => {
       ]);
    });
 
-   it("is not offered unless it is exactly the name Publisher gave it, in the same place", () => {
+   it("is offered wherever this package's records put it on the source's connection: the reclaim's guards decide", () => {
       const r = deriveSelfInstructions(
          compiled(),
          undefined,
@@ -503,16 +506,27 @@ describe("a table named before readable names", () => {
          undefined,
          PKG,
       );
-      expect(r.renamed).toEqual([]);
-      // An author's name= outside scope: version had no suffix to re-derive.
-      const named = deriveSelfInstructions(
+      // Another environment's suffix reads as a readable name of this
+      // package's, kept where it is; the table in another destination moves,
+      // and the old one is offered from its own place.
+      expect(r.carried.a1).toBeDefined();
+      expect(r.renamed.map((t) => [t.previousName, t.previousPlace])).toEqual([
+         [`qualified${LEGACY_PKG}`, { storageDestinationName: "lake" }],
+      ]);
+      // On another connection: another content address, never offered.
+      const elsewhere = deriveSelfInstructions(
          compiled(),
          undefined,
-         { a2: prior(`named_t${LEGACY_PKG}`, "a2") },
+         {
+            a1: {
+               ...prior(`summary${LEGACY_PKG}`, "a1"),
+               connectionName: "other",
+            } as ManifestEntry,
+         },
          undefined,
          PKG,
       );
-      expect(named.renamed).toEqual([]);
+      expect(elsewhere.renamed).toEqual([]);
    });
 
    describe("an incremental source", () => {
@@ -915,5 +929,176 @@ describe("removing a name= under scope: version", () => {
          V120,
       );
       expect(names(r).a2).toMatch(/^pa__sales__named__v1_2_0__p[0-9a-f]{8}$/);
+   });
+});
+
+describe("the one rename rule: what an auto-run offers to the reclaim", () => {
+   /** What `r` offers: each old table, the new one, and where it was. */
+   const offered = (r: ReturnType<typeof deriveSelfInstructions>) =>
+      r.renamed.map((t) => ({
+         previousName: t.previousName,
+         physicalTableName: t.physicalTableName,
+         ...(t.previousPlace ? { previousPlace: t.previousPlace } : {}),
+      }));
+
+   it("under scope: version, a name= prefix changed", () => {
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a2: prior("old_t__v1_2_0__p0123abcd", "a2") },
+         undefined,
+         V120,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "old_t__v1_2_0__p0123abcd",
+            physicalTableName: expect.stringMatching(/^named_t__v1_2_0__p/),
+         },
+      ]);
+   });
+
+   it("under scope: version, a name= container changed", () => {
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a3: prior("staging.q_t__v1_2_0__p0123abcd", "a3") },
+         undefined,
+         V120,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "staging.q_t__v1_2_0__p0123abcd",
+            physicalTableName: expect.stringMatching(
+               /^analytics\.q_t__v1_2_0__p/,
+            ),
+         },
+      ]);
+   });
+
+   it("a readable-name table, when the author adds name=", () => {
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a3: prior("pa__sales__qualified__p0123abcd", "a3") },
+         undefined,
+         PKG,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "pa__sales__qualified__p0123abcd",
+            physicalTableName: "analytics.q_t",
+         },
+      ]);
+   });
+
+   it("a rollup moved to another container", () => {
+      const r = deriveSelfInstructions(
+         withRollup(compiled()),
+         undefined,
+         { a4: prior("old_ns.pa__sales__orders_by_category__p0123abcd", "a4") },
+         undefined,
+         PKG,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "old_ns.pa__sales__orders_by_category__p0123abcd",
+            physicalTableName: expect.stringMatching(
+               /^ns\.pa__sales__orders_by_category__p/,
+            ),
+         },
+      ]);
+   });
+
+   it("an exact name= changed or removed (the reclaim keeps and lists it)", () => {
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         {
+            a1: prior("summary_t", "a1"),
+            a2: prior("named_old", "a2"),
+         },
+         undefined,
+         PKG,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "summary_t",
+            physicalTableName: expect.stringMatching(READABLE),
+         },
+         { previousName: "named_old", physicalTableName: "named_t" },
+      ]);
+   });
+
+   describe("a storage= destination changed", () => {
+      let restore: () => void;
+      beforeEach(() => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         }).restore;
+      });
+      afterEach(() => restore());
+
+      const stored = (storage: string | undefined) =>
+         compiledWith(
+            {
+               s: fakeSource({
+                  name: "s",
+                  sourceEntityId: "a1",
+                  ...(storage ? { annotationFields: { storage } } : {}),
+               }),
+            },
+            [["s"]],
+         );
+
+      for (const [from, to] of [
+         ["lake", "lake2"],
+         ["lake", undefined],
+         [undefined, "lake"],
+      ] as const) {
+         it(`from ${from ?? "the source's own database"} to ${to ?? "the source's own database"}: offered from its old place`, () => {
+            const name = "pa__s__s__p0123abcd";
+            const r = deriveSelfInstructions(
+               stored(to),
+               undefined,
+               {
+                  a1: {
+                     ...prior(name, "a1"),
+                     ...(from ? { storageDestinationName: from } : {}),
+                  } as ManifestEntry,
+               },
+               undefined,
+               PKG,
+            );
+            expect(r.carried).toEqual({});
+            expect(r.renamed).toHaveLength(1);
+            expect(r.renamed[0]).toMatchObject({
+               previousName: name,
+               previousPlace: from ? { storageDestinationName: from } : {},
+               ...(to ? { storageDestinationName: to } : {}),
+            });
+         });
+      }
+   });
+
+   it("nothing for a table carried, an edit to the SQL, or a name another source now takes", () => {
+      const now = names(
+         deriveSelfInstructions(compiled(), undefined, {}, undefined, PKG),
+      );
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         {
+            // Carried as it is.
+            a1: prior(now.a1, "a1"),
+            // Another content address (its SQL changed): no prior for a3.
+            zz: prior("pa__sales__qualified__p0123abcd", "zz"),
+            // Its old name is now a2's own name=.
+            a3: prior("named_t", "a3"),
+         },
+         undefined,
+         PKG,
+      );
+      expect(r.carried.a1).toBeDefined();
+      expect(r.renamed).toEqual([]);
    });
 });

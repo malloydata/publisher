@@ -10,6 +10,9 @@ import {
 } from "./package_materialization";
 import {
    bigIntegerReads,
+   ducklakeStoresAsDouble,
+   holdsDucklakeDouble,
+   storedColumnReadPlan,
    castToDeclaredTypes,
    liveKeepsBigIntegers,
    nativeTypeLookup,
@@ -545,10 +548,9 @@ describe("bigIntegerReads (known limitation 12)", () => {
       { name: "label", type: "VARCHAR" },
    ];
 
-   it("reads a bigint field stored as any DuckDB integer, or a DECIMAL with no scale, as HUGEINT", () => {
+   it("reads a bigint field stored as a 64-bit or narrower DuckDB integer, or a DECIMAL with no scale, as HUGEINT", () => {
       for (const t of [
          "BIGINT",
-         "HUGEINT",
          "UBIGINT",
          "INTEGER",
          "DECIMAL(38,0)",
@@ -558,9 +560,80 @@ describe("bigIntegerReads (known limitation 12)", () => {
             bigIntegerReads(schema(t), fields, { dialect: "duckdb" }),
          ).toEqual([{ column: "id", castTo: "HUGEINT" }]);
       }
-      expect(
-         bigIntegerReads(schema("UHUGEINT"), fields, { dialect: "duckdb" }),
-      ).toEqual([{ column: "id", castTo: "UHUGEINT" }]);
+   });
+
+   // P4-01: DuckLake writes a 128-bit integer to Parquet as a DOUBLE while
+   // its catalog still says HUGEINT, so a storage= (DuckLake) table's
+   // HUGEINT, INT128 or UHUGEINT column holds rounded digits: no exact read.
+   it("P4-01: leaves out a bigint field a storage= table stores as a 128-bit integer", () => {
+      for (const t of ["HUGEINT", "INT128", "UHUGEINT", "hugeint"]) {
+         expect(
+            bigIntegerReads(schema(t), fields, { dialect: "duckdb" }),
+         ).toEqual([{ column: "id" }]);
+         expect(ducklakeStoresAsDouble(t)).toBe(true);
+      }
+      for (const t of ["BIGINT", "DECIMAL(38,0)", "UBIGINT", "DOUBLE"]) {
+         expect(ducklakeStoresAsDouble(t)).toBe(false);
+      }
+   });
+
+   it("P4-01: finds a 128-bit leaf inside a list or struct", () => {
+      expect(holdsDucklakeDouble("STRUCT(a HUGEINT)")).toBe(true);
+      expect(holdsDucklakeDouble("UHUGEINT[]")).toBe(true);
+      expect(holdsDucklakeDouble("STRUCT(hugeint_name BIGINT)")).toBe(false);
+      expect(holdsDucklakeDouble("BIGINT[]")).toBe(false);
+   });
+
+   it("P4-01: a DuckLake table's 128-bit column is left out whatever its field's type or its dialect", () => {
+      for (const dialect of ["duckdb", "postgres"]) {
+         const plan = storedColumnReadPlan(
+            [
+               { name: "h", type: "HUGEINT" },
+               { name: "i", type: "HUGEINT" },
+               { name: "b", type: "BIGINT" },
+            ],
+            [
+               { name: "h", type: "number", field: big },
+               {
+                  name: "i",
+                  type: "number",
+                  field: { name: "i", type: "number", numberType: "integer" },
+               },
+               { name: "b", type: "number", field: big },
+            ],
+            { dialect, ducklake: true },
+         );
+         expect(plan.leftOut.map((m) => m.column)).toEqual(["h", "i"]);
+         expect(plan.refusals).toEqual([]);
+         expect(plan.casts.map((c) => c.column)).toEqual(
+            dialect === "duckdb" ? ["b"] : [],
+         );
+      }
+   });
+
+   it("P4-01: the read plan refuses a storage= 128-bit integer and still reads BIGINT and DECIMAL(38,0) exactly", () => {
+      const plan = storedColumnReadPlan(
+         [
+            { name: "h", type: "HUGEINT" },
+            { name: "u", type: "UHUGEINT" },
+            { name: "b", type: "BIGINT" },
+            { name: "d", type: "DECIMAL(38,0)" },
+         ],
+         ["h", "u", "b", "d"].map((name) => ({
+            name,
+            type: "number",
+            field: big,
+         })),
+         { dialect: "duckdb" },
+      );
+      expect(plan.refusals).toEqual([
+         { column: "h", storedType: "HUGEINT" },
+         { column: "u", storedType: "UHUGEINT" },
+      ]);
+      expect(plan.casts).toEqual([
+         { column: "b", castTo: "HUGEINT", native: true },
+         { column: "d", castTo: "HUGEINT", native: true },
+      ]);
    });
 
    it("leaves out a bigint field stored as a float, whose digits are gone", () => {

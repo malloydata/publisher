@@ -12,6 +12,7 @@ import type { BuildPlan } from "../domain/types";
 import type { MaterializePlan } from "../domain/table_plans";
 import {
    boundTableTypeFindings,
+   databaseDriftFindings,
    modelStorageTables,
    ownBindings,
 } from "./storage_bindings";
@@ -330,5 +331,139 @@ describe("boundTableTypeFindings", () => {
             plan,
          ),
       ).toEqual([]);
+   });
+});
+
+describe("databaseDriftFindings", () => {
+   const plan = {
+      sources: {
+         "orders@m": {
+            name: "orders",
+            sourceEntityId: "vh",
+            modelPath: "m.malloy",
+            columns: [
+               { name: "id", type: "number" },
+               { name: "flag", type: "boolean" },
+               { name: "amt", type: "number" },
+               { name: "day", type: "date" },
+            ],
+         },
+         "r@m": {
+            name: "orders__rollup",
+            sourceEntityId: "vr",
+            modelPath: "m.malloy",
+            preaggregate: { baseSourceName: "orders", grainDimensions: ["k"] },
+            columns: [{ name: "k", type: "number" }],
+         },
+      },
+   } as unknown as BuildPlan;
+
+   it("handles each moved column as the bind does: cast, left out, or the whole table live", () => {
+      const findings = databaseDriftFindings(
+         [
+            {
+               sourceEntityId: "vh",
+               columns: [
+                  // A faithful cast reads it.
+                  {
+                     column: "flag",
+                     builtType: "BOOLEAN",
+                     observedType: "INTEGER",
+                  },
+                  // None does: left out.
+                  {
+                     column: "amt",
+                     builtType: "DOUBLE",
+                     observedType: "VARCHAR",
+                  },
+                  // Gone: left out.
+                  {
+                     column: "day",
+                     builtType: "DATE",
+                     gone: true,
+                     leftOut: true,
+                  },
+                  // A zone gained off DuckDB: the bind leaves it out, though
+                  // the type alone would serve as declared.
+                  {
+                     column: "ts",
+                     builtType: "TIMESTAMP",
+                     observedType: "TIMESTAMP WITH TIME ZONE",
+                     leftOut: true,
+                  },
+                  // Now a type Malloy reads as no basic type: left out.
+                  { column: "m", builtType: "VARCHAR", leftOut: true },
+                  // Still a number: served as is, so not reported.
+                  {
+                     column: "id",
+                     builtType: "VARCHAR",
+                     observedType: "BIGINT",
+                  },
+               ],
+            },
+            {
+               sourceEntityId: "vr",
+               columns: [
+                  { column: "k", builtType: "BIGINT", observedType: "VARCHAR" },
+               ],
+            },
+            // Not in the plan: nothing to name it by.
+            {
+               sourceEntityId: "other",
+               columns: [{ column: "x", builtType: "BIGINT" }],
+            },
+         ],
+         plan,
+         { servedCopy: (id) => id === "vh" },
+      );
+      expect(findings).toEqual([
+         {
+            sourceID: "orders@m",
+            sourceEntityId: "vh",
+            modelPath: "m.malloy",
+            subject: "orders",
+            mismatches: [
+               {
+                  column: "flag",
+                  declaredType: "boolean",
+                  storedType: "INTEGER",
+                  handling: "cast",
+               },
+               {
+                  column: "amt",
+                  declaredType: "number",
+                  storedType: "VARCHAR",
+                  handling: "live",
+               },
+               {
+                  column: "day",
+                  declaredType: "date",
+                  gone: true,
+                  handling: "live",
+               },
+               {
+                  column: "ts",
+                  declaredType: "timestamp",
+                  storedType: "TIMESTAMP WITH TIME ZONE",
+                  handling: "live",
+               },
+               { column: "m", declaredType: "string", handling: "live" },
+            ],
+         },
+         {
+            sourceID: "r@m",
+            sourceEntityId: "vr",
+            modelPath: "m.malloy",
+            subject: "orders",
+            mismatches: [
+               {
+                  column: "k",
+                  declaredType: "number",
+                  storedType: "VARCHAR",
+                  handling: "table",
+               },
+            ],
+         },
+      ]);
    });
 });

@@ -67,6 +67,8 @@ import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
+   type DatabaseDriftFinding,
+   databaseDriftFindings,
 } from "./serve/storage_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import { tablePathParts } from "../quoting";
@@ -74,6 +76,7 @@ import * as warnings from "./package_warnings";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
+import type { KeptTable } from "./domain/types";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
@@ -162,6 +165,11 @@ export class PackageMaterialization {
     */
    private colocatedEntries: FreshnessManifest | undefined;
    /**
+    * The tables the newest auto-run lists as kept after a rename
+    * (Reclaimer.reclaimRenamedTables), set by that run.
+    */
+   private keptTables: readonly KeptTable[] = [];
+   /**
     * The same entries as table names only, the manifest models hydrate with
     * and /compile reads. Surfaced on /status so the control plane can confirm
     * a worker bound it.
@@ -176,6 +184,8 @@ export class PackageMaterialization {
    private observedColumns: ReadonlyMap<string, ObservedColumns> | undefined;
    /** What the last snapshot found of the observation: drift, and tables not read. */
    /** The pending re-read of the tables the last read left unread. */
+   /** Set by {@link dispose}: the package is released. */
+   private disposed = false;
    private unreadRetry:
       | { timer: ReturnType<typeof setTimeout>; attempt: number }
       | undefined;
@@ -534,6 +544,15 @@ export class PackageMaterialization {
       );
    }
 
+   /**
+    * The package is released: cancel the unread tables' retry, and schedule
+    * none after it, so no timer outlives its package.
+    */
+   dispose(): void {
+      this.disposed = true;
+      this.cancelUnreadRetry();
+   }
+
    private cancelUnreadRetry(): void {
       if (this.unreadRetry) clearTimeout(this.unreadRetry.timer);
       this.unreadRetry = undefined;
@@ -547,6 +566,7 @@ export class PackageMaterialization {
     */
    private scheduleUnreadRetry(attempt: number): void {
       this.cancelUnreadRetry();
+      if (this.disposed) return;
       const observed = this.observedColumns;
       const entries = this.colocatedEntries;
       if (!observed || !entries || attempt > UNREAD_RETRY_ATTEMPTS) return;
@@ -578,7 +598,9 @@ export class PackageMaterialization {
       attempt: number,
    ): Promise<void> {
       const current = () =>
-         this.colocatedEntries === entries && this.observedColumns === observed;
+         !this.disposed &&
+         this.colocatedEntries === entries &&
+         this.observedColumns === observed;
       if (!current()) return;
       const reread = await this.readDatabaseColumns(
          Object.fromEntries(unread.map((id) => [id, entries[id]])),
@@ -589,7 +611,8 @@ export class PackageMaterialization {
       for (const [id, o] of reread) next.set(id, o);
       this.observedColumns = next;
       this.publish();
-      this.logObservedOutcome();
+      // Only what this retry read: the rest was logged and counted already.
+      this.logObservedOutcome(new Set(unread));
       this.scheduleUnreadRetry(attempt + 1);
    }
 
@@ -616,20 +639,47 @@ export class PackageMaterialization {
       });
    }
 
-   /** Log what the bind's column read found: drifted tables, and tables it could not read. */
-   private logObservedOutcome(): void {
+   /**
+    * Log and count what the bind's column read found: drifted tables, each
+    * column of them the package warning reports counted as a `storage=`
+    * table's is, and tables it could not read. `only`: the tables a retry
+    * read again, so a table is counted and logged once per read of it.
+    */
+   private logObservedOutcome(only?: ReadonlySet<string>): void {
+      const read = (id: string) => only === undefined || only.has(id);
+      for (const finding of this.databaseDriftFindings()) {
+         if (!read(finding.sourceEntityId)) continue;
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+      }
       for (const drift of this.observedOutcome.drifted) {
+         if (!read(drift.sourceEntityId)) continue;
+         const asDouble = drift.columns.filter((c) => c.storedAsDouble);
+         if (asDouble.length > 0) {
+            logger.warn(
+               "A DuckLake table holds a 128-bit integer column as a DOUBLE, so it is never read as exact: each such column is answered live where live keeps more digits",
+               {
+                  code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+                  packageName: this.owner.packageName(),
+                  sourceEntityId: drift.sourceEntityId,
+                  columns: asDouble,
+               },
+            );
+            if (asDouble.length === drift.columns.length) continue;
+         }
          logger.warn(
             "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
             {
                code: STORED_COLUMN_TYPE_MISMATCH_CODE,
                packageName: this.owner.packageName(),
                sourceEntityId: drift.sourceEntityId,
-               columns: drift.columns,
+               columns: drift.columns.filter((c) => !c.storedAsDouble),
             },
          );
       }
       for (const miss of this.observedOutcome.unread) {
+         if (!read(miss.sourceEntityId)) continue;
          logger.warn(
             "Could not read a database table's column types at bind; its sources answer live, and it is read again",
             {
@@ -999,6 +1049,15 @@ export class PackageMaterialization {
       );
    }
 
+   /** The tables the newest auto-run lists as kept after a rename. */
+   setKeptTables(tables: readonly KeptTable[]): void {
+      this.keptTables = tables;
+   }
+
+   keptTableWarnings(): ApiPackageWarning[] {
+      return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
+   }
+
    repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {
       return warnings.repeatedJoinOneKeyWarnings(
          this.plan.buildPlan,
@@ -1037,7 +1096,30 @@ export class PackageMaterialization {
       return warnings.storedColumnTypeWarnings(
          this.owner.models(),
          this.boundTypeFindings,
+         this.databaseDriftFindings(),
       );
+   }
+
+   /**
+    * The colocated tables whose columns the last bind found moved outside a
+    * build, as the `storage-column-type-mismatch` warning reports them.
+    */
+   private databaseDriftFindings(): DatabaseDriftFinding[] {
+      const { bindings } = this.snapshot();
+      const { drifted } = this.observedOutcome;
+      if (drifted.length === 0) return [];
+      return databaseDriftFindings(drifted, this.plan.buildPlan, {
+         servedCopy: (id) =>
+            bindings.some(
+               (b) => b.tier === "colocated" && b.virtualHandle === id,
+            ),
+         queryTimezone: (sourceID, source) =>
+            queryTimezoneOf(
+               source.preaggregate
+                  ? this.baseDeclaration(source)
+                  : this.declarationLookup(sourceID),
+            ),
+      });
    }
 
    /**
