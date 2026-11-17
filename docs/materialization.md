@@ -1084,7 +1084,7 @@ source: flights is duckdb.table('flights') extend {
 - **The path report.** A query that calls a persisted view lists its table first, as `kind: "view"`: `used` when it answered (`servedBy.kind` is `view`), else skipped with `NOT_BUILT`, `STALE`, `CONTRACT` or `MISSING_FIELD`. A query that calls no persisted view does not list one. A `storage=` view's answer reports `servedFrom: "storage"`, a colocated one's `servedFrom: "database"`.
 - **The build plan** lists each persisted view as a generated source named `<source>__<view>__view`; its serve verdict reads `The persisted view \`<view>\` of \`<source>\``, reached through the source.
 
-Off (the default), `#@ persist` on a view is ignored, as before.
+With `PUBLISHER_MATERIALIZE=false`, a persisted view is not built and is answered live, but its line is still read, as a persisted query's is: an invalid one fails the publish and the load as above, and a valid one carries `persist-view-not-built` (reason `materialization_off`).
 
 ### Persisted named queries (in development, `PUBLISHER_MATERIALIZE`)
 

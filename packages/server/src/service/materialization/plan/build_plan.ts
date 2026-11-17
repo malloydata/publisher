@@ -109,6 +109,7 @@ import {
    persistedQueryRefusalFinding,
    persistedQueryRefusalKey,
    persistedViewRefusalFinding,
+   planModelPersistedViews,
 } from "./persisted_view";
 import {
    declaredPersistQueries,
@@ -1170,6 +1171,64 @@ function collectPersistQueryFindings(
    }
 }
 
+/**
+ * With PUBLISHER_MATERIALIZE off, the findings on the `#@ persist` views a
+ * model file DECLARES, read from the declarations alone (nothing is
+ * compiled): an invalid line (one that does not parse, a misspelled or
+ * retired key, an incremental key, `@env.`) fails the load, as with the
+ * switch on, and every valid one warns `persist-view-not-built` with reason
+ * `materialization_off`, as a persisted query's does.
+ */
+function collectPersistViewFindingsSwitchedOff(
+   parts: BuildPlanParts,
+   args: { modelPath: string; packagePath: string; malloyModel: MalloyModel },
+): void {
+   const modelFile = path.resolve(args.packagePath, args.modelPath);
+   let planned: ReturnType<typeof planModelPersistedViews>;
+   try {
+      planned = planModelPersistedViews(
+         modelDefIfAny(args.malloyModel),
+         (url) => {
+            try {
+               return path.resolve(fileURLToPath(url)) === modelFile;
+            } catch {
+               return false;
+            }
+         },
+      );
+   } catch {
+      return;
+   }
+   const off = {
+      reason: "persisted views are built only with PUBLISHER_MATERIALIZE on",
+      outcome: { refused: "materialization_off" as const },
+   };
+   for (const refusal of planned.refused) {
+      addAnnotationFinding(
+         parts,
+         persistedViewRefusalFinding(
+            "malformed" in refusal.outcome ? refusal : { ...refusal, ...off },
+            args.modelPath,
+         ),
+      );
+   }
+   for (const plan of planned.plans) {
+      addAnnotationFinding(
+         parts,
+         persistedViewRefusalFinding(
+            {
+               sourceID: plan.sourceID,
+               sourceName: plan.sourceName,
+               viewName: plan.viewName,
+               ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
+               ...off,
+            },
+            args.modelPath,
+         ),
+      );
+   }
+}
+
 /** The destination a persisted query's `#@ persist storage=` names. */
 function queryStorage(query: DeclaredPersistQuery): string | undefined {
    const tag = readNotesIfAny(query.notes, "@");
@@ -1285,6 +1344,16 @@ async function collectGeneratedTables(
       malloyModel,
       notBuilt: !getMaterializeEnabled(),
    });
+   // `#@ persist` on a view, read in both modes as a query's line is: with
+   // the switch off nothing is compiled, but an invalid line still fails the
+   // load and a valid one warns that it is not built.
+   if (!getMaterializeEnabled()) {
+      collectPersistViewFindingsSwitchedOff(parts, {
+         modelPath,
+         packagePath,
+         malloyModel,
+      });
+   }
    if (getMaterializeEnabled()) {
       await collectGeneratedMaterialize(parts, {
          modelPath,

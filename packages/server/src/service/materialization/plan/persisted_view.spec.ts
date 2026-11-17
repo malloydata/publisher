@@ -130,10 +130,37 @@ source: ops_ext is ops extend { where: carrier = 'aa' }
       expect(viewFindings(c)).toEqual([]);
    });
 
-   it("plans nothing with PUBLISHER_MATERIALIZE off", async () => {
+   it("plans nothing with PUBLISHER_MATERIALIZE off, and warns that the view is not built", async () => {
       enable(false);
       const c = await compiled(model);
       expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c)).toEqual([
+         '#@ persist on view "by_carrier" of source "ops" is not built, so the view is served live: persisted views are built only with PUBLISHER_MATERIALIZE on.',
+      ]);
+      const [finding] = (c.annotationFindings ?? []).filter(
+         (f) => f.code === PERSIST_VIEW_NOT_BUILT,
+      );
+      expect(finding?.refused?.reason).toBe("materialization_off");
+      expect(invalidFindings(c)).toEqual([]);
+   });
+
+   it("with PUBLISHER_MATERIALIZE off, an invalid line still fails the load", async () => {
+      enable(false);
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="by_carrier" watermark=dep
+  view: by_carrier is { group_by: carrier; aggregate: n }
+  #@ persist nmae="typo"
+  view: by_two is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(
+         invalidFindings(c)
+            .map(([code]) => code)
+            .sort(),
+      ).toEqual(["persist-unknown-key", "persist-view-invalid"]);
+      expect(viewFindings(c)).toEqual([]);
    });
 
    it("warns about and leaves out a caller-dependent view", async () => {
