@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -204,7 +205,7 @@ describe("executeInstructedBuild", () => {
       ).not.toContain("seedNameless");
    });
 
-   it("P5-10: a source cancelled while its CTAS reads is recorded cancelled, its staging dropped and never swapped in", async () => {
+   it("P5-10: a run cancelled while its last CTAS reads settles cancelled, its staging dropped and never swapped in", async () => {
       // The driver ignores the signal (DuckDB, Postgres): the CTAS finishes,
       // and the build stops before the swap.
       const run = new AbortController();
@@ -245,37 +246,30 @@ describe("executeInstructedBuild", () => {
          connectionDigests: { duckdb: "dig" },
          connections: new Map([["duckdb", connection]]),
       };
-      const { failures } = await callExecute(
-         compiled,
-         [
-            {
-               sourceEntityId: "bgoodaaaaaaaaaa",
-               materializedTableId: "mt-g",
-               physicalTableName: "good_v1",
-               realization: "COPY",
-            },
-            {
-               sourceEntityId: "bslowssssssssss",
-               materializedTableId: "mt-s",
-               physicalTableName: "slow_v1",
-               realization: "COPY",
-            },
-         ],
-         {},
-         undefined,
-         false,
-         false,
-         run.signal,
-      ).catch((error: unknown) => {
-         throw error;
-      });
-      expect(
-         (failures["bslowssssssssss"] as { cancelled?: boolean }).cancelled,
-      ).toBe(true);
-      expect(
-         (failures["bgoodaaaaaaaaaa"] as { cancelled?: boolean } | undefined)
-            ?.cancelled,
-      ).toBeUndefined();
+      await expect(
+         callExecute(
+            compiled,
+            [
+               {
+                  sourceEntityId: "bgoodaaaaaaaaaa",
+                  materializedTableId: "mt-g",
+                  physicalTableName: "good_v1",
+                  realization: "COPY",
+               },
+               {
+                  sourceEntityId: "bslowssssssssss",
+                  materializedTableId: "mt-s",
+                  physicalTableName: "slow_v1",
+                  realization: "COPY",
+               },
+            ],
+            {},
+            undefined,
+            false,
+            false,
+            run.signal,
+         ),
+      ).rejects.toBeInstanceOf(BuildCancelledError);
       const slowStatements = statements.filter((s) =>
          s.sql.includes("slow_v1"),
       );

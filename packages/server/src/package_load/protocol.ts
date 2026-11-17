@@ -325,6 +325,19 @@ export interface WorkerLogMessage {
 }
 
 /**
+ * An unhandled promise rejection caught in the worker, reported so the main
+ * thread logs it and counts it in `publisher_unhandled_rejection_total`. The
+ * worker's own logger has no job context in a rejection listener (Bun's
+ * AsyncLocalStorage is empty there), so a log written in place would carry no
+ * job and reach only the worker's stdout.
+ */
+export interface WorkerUnhandledRejectionMessage {
+   type: "unhandled-rejection";
+   message: string;
+   stack?: string;
+}
+
+/**
  * The package build plan derived from this compile, so the main thread need
  * not compile again. `durationMs` is a ceiling (other compiles interleave). A
  * failure fails the plan, not the load.
@@ -551,4 +564,5 @@ export type WorkerToMainMessage =
    | SchemaForSqlRequest
    | ReadUrlRequest
    | WorkerLogMessage
+   | WorkerUnhandledRejectionMessage
    | ReadyMessage;

@@ -1483,6 +1483,34 @@ describe("runInBackground (terminal recording)", () => {
    });
 });
 
+describe("P6-21: a run's record names no storage path", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   it("redacts a storage URL from a whole-run failure's recorded error", async () => {
+      const errorStub = sinon.stub(logger, "error");
+      try {
+         const service = ctx.service as unknown as {
+            runInBackground: (id: string, run: () => Promise<void>) => void;
+         };
+         service.runInBackground("bg-storage", async () => {
+            throw new Error(
+               "HTTP GET error on 'https://storage.googleapis.com/bkt/org_1/db_2/t.parquet' (HTTP 500)",
+            );
+         });
+         for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+         const recorded = ctx.repository.updateMaterialization.firstCall
+            .args[1] as { error?: string };
+         expect(recorded.error).toContain("<storage path>");
+         expect(recorded.error).not.toMatch(/googleapis|bkt|org_1/);
+      } finally {
+         errorStub.restore();
+      }
+   });
+});
+
 describe("transition (state machine)", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {

@@ -996,7 +996,7 @@ describe("the table-kept warning", () => {
       );
       expect(warning.message).toContain("may be the very table");
       expect(warning.message).toContain("Check whether it is");
-      expect(warning.message).toContain("record-only delete");
+      expect(warning.message).toContain("a delete is record-only");
       expect(warning.message).not.toContain("no longer read");
       expect(warning.message).not.toMatch(
          /drop it yourself|before dropping|built it with dropTables/i,

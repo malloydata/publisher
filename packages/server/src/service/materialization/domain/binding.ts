@@ -173,7 +173,7 @@ export interface Pinned {
 
 /**
  * The `storage=` table a rollup, persisted view or persisted query is read
- * from, or undefined when its tier is in the database tier. The binding decides the tier,
+ * from, or undefined when it is in the source's own database. The binding decides the tier,
  * not the annotation: a host may instruct a source with no `storage=` into a
  * storage destination (a database origin whose destination the control plane
  * chose), and the run's manifest then binds it as a storage table, which is

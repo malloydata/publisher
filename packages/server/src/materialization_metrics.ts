@@ -200,7 +200,7 @@ export const BIND_OUTCOMES = [
 ] as const;
 /**
  * Why a table was dropped (`publisher_materialization_drop_tables_total`):
- * `delete`, a caller deleted the run or the destination table; `reclaim`,
+ * `delete`, a caller deleted a storage destination's table; `reclaim`,
  * Publisher dropped a table on its own (a failed run's tables, a table a
  * readable name replaced, an archived or deleted version's tables).
  */
@@ -393,8 +393,9 @@ const tableCollisionCounter = lazyCounter(
 const dropTablesCounter = lazyCounter(
    "publisher_materialization_drop_tables_total",
    "Physical tables dropped. Labels: outcome ('success'|'failure'), tier " +
-      "('database'|'storage'), occasion ('delete' when a caller deleted " +
-      "the run or the table; 'reclaim' when Publisher dropped it on its own: " +
+      "('database'|'storage'), occasion ('delete' when a caller deleted a " +
+      "storage destination's table, since a run's delete is record-only; " +
+      "'reclaim' when Publisher dropped it on its own: " +
       "a failed run's tables, a table a readable name replaced, an archived " +
       "or deleted version's tables).",
 );

@@ -277,7 +277,7 @@ export class MaterializationRepository {
    }
 
    // Cascade deletes remove records only and issue no DDL: dropping physical
-   // tables is opt-in (deleteMaterialization({ dropTables })), and a DROP here
+   // tables is the caller's, through the connection, and a DROP here
    // could fire against a connection the delete path already tore down.
    //
    // Limitation: standalone, with no control plane owning physical GC, nothing

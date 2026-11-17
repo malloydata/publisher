@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { codesOfLines } from "./annotation_reader";
+import {
+   initFailedLine,
+   redactPgSecrets,
+   redactSignedUrlParams,
+   redactStorageUrls,
+} from "../pg_helpers";
 import { localPackageFingerprint } from "./configured_publish_retry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -36,7 +42,6 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
-import { redactPgSecrets } from "../pg_helpers";
 import { lazyCounter } from "../telemetry";
 import { assertSafePackageName, safeJoinUnderRoot } from "../path_safety";
 import {
@@ -941,18 +946,18 @@ export class EnvironmentStore
       } catch (error) {
          markNotReady();
          // Redacted because initialization errors can carry connection strings.
-         this.initError = redactPgSecrets(messageWithFilesystemCause(error));
+         this.initError = redactSignedUrlParams(
+            redactPgSecrets(messageWithFilesystemCause(error)),
+         );
          const errorData = extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
          try {
             // The failure counterpart of PUBLISHER_READY, so a waiting script
             // fails fast. Redacted for the same reason as above.
             process.stderr.write(
-               `PUBLISHER_INIT_FAILED error=${JSON.stringify(
-                  redactPgSecrets(
-                     error instanceof Error ? error.message : String(error),
-                  ),
-               )}\n`,
+               initFailedLine(
+                  error instanceof Error ? error.message : String(error),
+               ),
             );
          } catch {
             // A failed stderr write must not mask the logged error above.
@@ -1937,9 +1942,16 @@ export class EnvironmentStore
             });
          }
       }
-      // Absent, not empty, when nothing failed.
+      // Absent, not empty, when nothing failed. A load error can quote a
+      // driver's text: never a storage URL in it (the server's own file
+      // paths, which name no bucket, stay).
       if (loadErrors.length > 0) {
-         status.loadErrors = loadErrors;
+         status.loadErrors = loadErrors.map((e) => ({
+            ...e,
+            ...(e.message !== undefined
+               ? { message: redactStorageUrls(e.message) }
+               : {}),
+         }));
       }
       // The one place a /status poller learns the server found no config.
       if (this.unconfiguredNotice && status.environments.length === 0) {

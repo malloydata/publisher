@@ -12,6 +12,7 @@
  * only joins them for one warehouse table.
  */
 
+import { transactsInScriptingBlock } from "./warehouse_sql";
 import { quoteTablePath } from "../../quoting";
 import { ManifestEntry } from "../domain/types";
 import type { DatabaseBuildRequest } from "./tier";
@@ -55,7 +56,14 @@ export async function buildDatabaseDelta(
          // The CTAS's own SQL, so a delta computes what a rebuild would
          // (see deltaSelect).
          sourceSQL: buildSQL,
-         ...(request.signal ? { abortSignal: request.signal } : {}),
+         // The run's cancel reaches the delta's script, which runs in a
+         // transaction its failure rolls back. Not on Snowflake: there the
+         // script is one EXECUTE IMMEDIATE block whose rollback is its own
+         // EXCEPTION handler, which a cancelled statement is not known to run,
+         // so the delta finishes and the build stops after it.
+         ...(request.signal && !transactsInScriptingBlock(dialect)
+            ? { abortSignal: request.signal }
+            : {}),
       }),
       manifest,
       upstreamReuse: request.upstreamReuse,

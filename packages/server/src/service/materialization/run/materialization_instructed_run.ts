@@ -43,7 +43,7 @@ import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
 } from "../../../config";
-import { redactPgSecrets } from "../../../pg_helpers";
+import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 import { addressSQL, computeSourceEntityId } from "../plan/build_plan";
 import {
    sourcesInBuildOrder,
@@ -564,7 +564,7 @@ export function recordInstructedBuildFailure(
          run.environment.getApiConnection(persistSource.connectionName),
       );
    } catch {
-      reason = redactPgSecrets(errMessage(buildErr));
+      reason = redactStorageUrls(redactPgSecrets(errMessage(buildErr)));
    }
    // Classified against the upstreams that already failed in this run: a
    // dependent refused because its upstream failed fails for the upstream's
@@ -613,8 +613,10 @@ export function recordInstructedBuildFailure(
       physicalTableName: instruction.physicalTableName,
       reason,
       // Omitted when the error is not recognized, so the consumer keeps its
-      // own judgment, as for a Publisher that predates the field.
-      ...(retryable !== undefined ? { retryable } : {}),
+      // own judgment, as for a Publisher that predates the field; and for a
+      // source the run's cancel stopped, which did not fail (the run settles
+      // CANCELLED, and its status is the signal).
+      ...(retryable !== undefined && !run.signal?.aborted ? { retryable } : {}),
       // Lets a consumer tell a database failure from a `storage=` one; it
       // keys by `storageDestinationName ?? connectionName`, like a
       // successful ManifestEntry.
@@ -622,8 +624,6 @@ export function recordInstructedBuildFailure(
       ...(instruction.destination
          ? { storageDestinationName: instruction.destination }
          : {}),
-      // The run was cancelled while this source built: stopped, not failed.
-      ...(run.signal?.aborted ? { cancelled: true } : {}),
       // A bounded code beside the prose, for a refusal a client branches on.
       ...(buildErr instanceof TableOwnershipError
          ? { code: buildErr.code }

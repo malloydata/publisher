@@ -157,9 +157,9 @@ describe("MaterializationScheduler (E2E, real build)", () => {
          // indistinguishable from a manual one.
          expect(triggerOf(built)).toBe("scheduler");
 
-         // Cleanup: drop the table + record so the negative case starts clean.
+         // Cleanup: delete the record so the negative case starts clean.
          const del = await fetch(
-            `${baseUrl}${API}/materializations/${scheduled[0].id}?dropTables=true`,
+            `${baseUrl}${API}/materializations/${scheduled[0].id}`,
             { method: "DELETE" },
          );
          expect(del.status).toBe(204);

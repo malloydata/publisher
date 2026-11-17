@@ -188,7 +188,7 @@ Archiving the version reclaims the tables its auto-runs built, in the background
 
 ## Disk growth
 
-Archive takes a version out of memory and reclaims its `scope: version` tables, but its files stay, so an archived version can be unarchived without being published again. Two things remove version trees. Deleting a version removes its tree, with its row and its own tables (see [Delete a version](#delete-a-version)). Deleting the package removes all of them, with its version rows and materialization records, and reclaims each version's own `scope: "version"` tables as deleting that version does. It does not drop `scope: "package"` tables, as deleting an unversioned package never has: once the records are gone nothing names them, so drop those with `DELETE …/materializations/{id}?dropTables=true` before deleting the package.
+Archive takes a version out of memory and reclaims its `scope: version` tables, but its files stay, so an archived version can be unarchived without being published again. Two things remove version trees. Deleting a version removes its tree, with its row and its own tables (see [Delete a version](#delete-a-version)). Deleting the package removes all of them, with its version rows and materialization records, and reclaims each version's own `scope: "version"` tables as deleting that version does. It does not drop `scope: "package"` tables, as deleting an unversioned package never has: once the records are gone nothing names them, so note their names from the runs' manifests and drop them yourself through their connection, before or after deleting the package (a materialization delete is record-only).
 
 So unless versions are deleted, a package's disk use grows by one tree per version published:
 

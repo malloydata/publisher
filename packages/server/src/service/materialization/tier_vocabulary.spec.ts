@@ -120,6 +120,10 @@ describe("the rollup vocabulary", () => {
          "preaggregate-unknown-key",
          "preaggregate-unparseable",
          "preaggregate-not-built",
+         "preaggregate-not-a-measure",
+         "preaggregate-unknown-grain",
+         "preaggregate-not-mergeable",
+         "preaggregate-join-one-key-repeated",
       ]) {
          expect(API_DOC).toContain(`\`${code}\``);
       }
@@ -127,5 +131,13 @@ describe("the rollup vocabulary", () => {
       expect(API_DOC).toMatch(
          /`preaggregate-not-built` is\s+`rollup-not-built`'s former name/,
       );
+      for (const code of [
+         "rollup-not-a-measure",
+         "rollup-unknown-grain",
+         "rollup-not-mergeable",
+         "rollup-join-one-key-repeated",
+      ]) {
+         expect(API_DOC).toContain(`\`${code}\``);
+      }
    });
 });

@@ -302,3 +302,34 @@ export function redactStorageUrls(s: string): string {
       return REDACTED_STORAGE_URL + trailing;
    });
 }
+
+/**
+ * Query parameters that carry a credential in a signed or token-bearing URL,
+ * with their separators as written or percent-encoded (`%3F`, `%26`, `%3D`:
+ * a signed URL quoted inside another URL, an access log's request line):
+ * AWS SigV4 and GCS V4 signatures, credentials and session tokens, Azure SAS
+ * signatures (`sig`) and expiries (`se`), and bearer tokens.
+ */
+const SIGNED_URL_PARAM_PATTERN =
+   /((?:[?&]|%3F|%26)(?:x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential|sig|se|token|access_token)(?:=|%3D))(?:(?!%26|%23)[^&\s'"`)\]}>#])*/gi;
+
+/**
+ * `s` with the value of every credential-bearing query parameter of a signed
+ * URL masked (`X-Amz-Signature=***`), for text that is logged: the log may
+ * keep a URL's bucket and path, never a signature or token that grants
+ * access to it.
+ */
+export function redactSignedUrlParams(s: string): string {
+   return s.replace(SIGNED_URL_PARAM_PATTERN, "$1***");
+}
+
+/**
+ * The `PUBLISHER_INIT_FAILED` stderr line for `message`, with a Postgres
+ * password and a signed URL's secrets masked: a startup failure can quote
+ * either, and stderr is read by scripts and kept by process supervisors.
+ */
+export function initFailedLine(message: string): string {
+   return `PUBLISHER_INIT_FAILED error=${JSON.stringify(
+      redactSignedUrlParams(redactPgSecrets(message)),
+   )}\n`;
+}

@@ -500,6 +500,48 @@ describe('scope "version": each version builds and serves its own tables', () =>
       ).toEqual(["2.0.0"]);
    });
 
+   it("archiving a version keeps a table whose name another version's committed run names in another container", async () => {
+      // On DuckDB `main.summary_t` and `<catalog>.summary_t` are one table:
+      // a table's name does not say where it is, so the reclaim judges by
+      // its last segment and keeps it.
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
+      const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
+      const [{ db: catalog }] = await warehouseSQL(
+         "SELECT current_database() AS db",
+      );
+      await warehouseSQL("CREATE TABLE summary_t AS SELECT 7 AS answer");
+      const naming = async (
+         run: Materialization,
+         physicalTableName: string,
+      ) => {
+         const entries = run.manifest!.entries as Record<
+            string,
+            Record<string, unknown>
+         >;
+         await repo.updateMaterialization(run.id, {
+            manifest: {
+               ...run.manifest!,
+               entries: Object.fromEntries(
+                  Object.entries(entries).map(([id, e]) => [
+                     id,
+                     { ...e, physicalTableName },
+                  ]),
+               ),
+            } as never,
+         });
+      };
+      await naming(v1, "main.summary_t");
+      await naming(v2, `${String(catalog)}.summary_t`);
+
+      await env.getVersionService()!.setArchiveStatus(PKG, "1.0.0", "archive");
+      await Promise.all(reclaims);
+
+      expect(await repo.getMaterializationById(v1.id)).toBeNull();
+      expect(await warehouseTables()).toContain("summary_t");
+   });
+
    it("two packages at one version build tables of their own, so archiving one leaves the other's", async () => {
       // Both declare `persist name="summary"` on the environment's shared
       // connection and are at 1.0.0. Named for the version alone, they built

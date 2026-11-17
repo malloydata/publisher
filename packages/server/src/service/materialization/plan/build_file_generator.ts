@@ -41,15 +41,13 @@
  * an `except:`ed field. The served copy writes the modifiers again, so a
  * caller cannot select a stored hidden column.
  *
- * The table: named after the author's source (`src`), or the declaration's
- * `name=`. `src__mat` is only the generated build source's internal name in
- * the companion model. Without a `name=`, a `storage=` source's table defaults
- * to the source's own name (the destination is Publisher's, and the existing
- * collision checks refuse two sources on one table). A database source (no
- * `storage=`) is built into its own warehouse; without a `name=` Publisher
- * gives its table a readable name of its own (never the table it reads), and
- * only BigQuery, where a table needs a dataset, needs a `name=` that names
- * one (`needs_qualified_name`). The served copy re-roots it on that table, on its own connection,
+ * The table: the declaration's `name=`, or, without one, a readable name of
+ * Publisher's own, `<package>__<file>__<source>__p<8 hex>` (with `__v<version>`
+ * under `scope: "version"`), on either tier: in a `storage=` destination and
+ * in the source's own database alike, never the table the source reads.
+ * `src__mat` is only the generated build source's internal name in the
+ * companion model. In the source's own database only BigQuery, where a table
+ * needs a dataset, needs a `name=` that names one (`needs_qualified_name`). The served copy re-roots it on that table, on its own connection,
  * as it re-roots a `storage=` source on its destination, and a v1 database
  * `#@ persist` table the same way
  * (`tests/component/r4/served_copy_database.component.spec.ts`). Only a

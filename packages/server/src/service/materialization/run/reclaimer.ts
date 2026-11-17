@@ -77,6 +77,12 @@ import {
 } from "./run_instructions";
 import { hasReservedTableSuffix } from "../domain/table_name";
 
+/**
+ * The one occasion a reclaim drops on: a run's delete is record-only, so
+ * `delete` is left to a caller dropping a storage destination's table.
+ */
+type ReclaimOccasion = Extract<DropOccasion, "reclaim">;
+
 /** The tiers a drop reaches a table through. */
 const DATABASE = new DatabaseTier();
 // Only its drop. A build goes through the service's adapter, which routes a
@@ -307,7 +313,7 @@ function dropReach(
    environmentName: string,
    packageName: string,
    materializationId: string,
-   occasion: DropOccasion,
+   occasion: ReclaimOccasion,
    connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
 ) {
    const connectionCache = new Map<string, MalloyConnection>();
@@ -379,7 +385,7 @@ async function dropStorageTable(
    environment: BuildEnvironment,
    destinationName: string,
    table: Parameters<typeof STORAGE.drop>[1],
-   occasion: DropOccasion,
+   occasion: ReclaimOccasion,
    materializationId?: string,
 ): Promise<boolean> {
    const destinationConnection = destinationForCleanup(
@@ -435,7 +441,7 @@ function recordedNameViews(
 
 /**
  * The key {@link tablesStillReferenced} holds a table segment under, so a
- * delete keeps any table a committed run names anywhere under that segment.
+ * reclaim keeps any table a committed run names anywhere under that segment.
  */
 function leafReferenceKey(physicalTableName: string): string {
    return `\u0000leaf:${tableLeafKey(physicalTableName)}`;
@@ -447,7 +453,7 @@ function leafReferenceKey(physicalTableName: string): string {
  * table segment they name ({@link leafReferenceKey}): a table's name does
  * not say where it is, so one in another place or container may be the
  * table a run references (two names for one DuckLake, a DuckDB catalog
- * name), and a delete keeps it.
+ * name), and a reclaim keeps it.
  */
 function tablesStillReferenced(
    listed: Materialization[],
@@ -496,7 +502,7 @@ async function keptInPlace(
       return true;
    }
    if (stillReferenced.has(leafReferenceKey(physicalTableName))) {
-      logger.info("Keeping a table a delete would drop: it may be served", {
+      logger.info("Keeping a table a reclaim would drop: it may be served", {
          runId: materializationId,
          physicalTableName,
          destinationName: destForKey,
@@ -802,7 +808,7 @@ export class Reclaimer {
     *   validation time.
     * - Only entries this run CREATED (never a carried-forward one).
     * - Only names no other MANIFEST_FILE_READY run references, the same
-    *   destination-and-name check {@link dropMaterializedTables} applies.
+    *   destination-and-name check a version's reclaim applies.
     *
     * Database failures are left alone: stable names in the customer's own
     * warehouse are overwritten by the next build, and a DROP there is a far
@@ -852,55 +858,6 @@ export class Reclaimer {
    }
 
    /**
-    * Best-effort drop of every physical table (and leftover staging table) in
-    * this run's manifest. Failures are logged and swallowed so cleanup never
-    * blocks deleting the record.
-    *
-    * A name is dropped only when NO other MANIFEST_FILE_READY run references
-    * it: generations of a source share one physical name, so dropping a
-    * superseded record's table would take out the one still serving. Judged
-    * by table segment, whatever the place or container: after a `storage=`
-    * move that kept the name, the other run's table may be this very table
-    * (two names for one DuckLake), so it is kept and logged `may_be_served`.
-    */
-   async dropMaterializedTables(
-      environmentName: string,
-      packageName: string,
-      m: Materialization,
-   ): Promise<void> {
-      const entries = m.manifest?.entries;
-      if (!entries || Object.keys(entries).length === 0) {
-         return;
-      }
-
-      const environment = await this.deps.host.getEnvironment(
-         parseEnvironmentName(environmentName),
-         false,
-      );
-
-      // Names another MANIFEST_FILE_READY run still references, whichever
-      // version built it. `m` is still in the repo (deleted after this sweep),
-      // so it is excluded by id.
-      const environmentId = await this.resolveEnvironmentId(environmentName);
-      const listed =
-         (await this.repository.listMaterializations(
-            environmentId,
-            packageName,
-         )) ?? [];
-      await this.deps.dropManifestEntries(
-         environment,
-         environmentName,
-         packageName,
-         m.id,
-         "delete",
-         Object.values(entries),
-         tablesStillReferenced(listed, (other) => other.id !== m.id),
-         await this.connectionResolverFor(environment, packageName, m.version),
-         recordedNameViews(listed, [m]),
-      );
-   }
-
-   /**
     * How to reach the connection a run's table was built on. Through the
     * package the build used: its unversioned slot, or its version when that is
     * loaded. A version that is not loaded is never loaded for a drop: its
@@ -936,7 +893,7 @@ export class Reclaimer {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      occasion: DropOccasion,
+      occasion: ReclaimOccasion,
       entries: ManifestEntry[],
       stillReferenced: Set<string>,
       connectionFor: (name: string) => Promise<MalloyConnection | undefined>,

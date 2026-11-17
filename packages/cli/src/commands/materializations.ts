@@ -203,17 +203,11 @@ export async function deleteMaterialization(
   environmentName: string,
   packageName: string,
   materializationId: string,
-  dropTables?: boolean,
 ): Promise<void> {
   await client.deleteMaterialization(
     environmentName,
     packageName,
     materializationId,
-    dropTables,
   );
-  logSuccess(
-    dropTables
-      ? `Deleted materialization and dropped its tables: ${materializationId}`
-      : `Deleted materialization: ${materializationId}`,
-  );
+  logSuccess(`Deleted materialization: ${materializationId}`);
 }

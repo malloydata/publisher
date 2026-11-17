@@ -995,6 +995,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "424":
@@ -1421,6 +1423,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "410":
@@ -4092,31 +4096,17 @@ paths:
       summary: Delete a materialization
       description: |
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
-        materialization record. By default this removes the publisher's record
-        only; the caller owns table GC. Set dropTables=true to also drop
-        the physical tables this run produced (from the materialization's
-        manifest) as a best-effort cleanup.
+        materialization record. A delete is record-only: it never drops a
+        table, and the caller owns table GC. To drop a table this run produced,
+        check that no remaining run, of any version, names a table with that
+        name in any place, then drop it through its connection.
+        `dropTables=true` is refused with 400 and deletes nothing, as is any
+        value other than `true` or `false` (the fix is to omit it);
+        `dropTables=false`, which older clients send, is accepted and ignored.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - $ref: "#/components/parameters/materializationId"
-        - name: dropTables
-          in: query
-          required: false
-          description: |
-            When true, also drop the physical tables recorded in the
-            materialization's manifest before deleting the record. Defaults to
-            false (record-only delete; the caller owns table GC). A table
-            whose table segment another committed run of the package names,
-            in any place or container, is kept: it may be that run's table
-            reached under another name (two names for one DuckLake).
-
-            Only `true` and `false` are accepted. Any other value is refused
-            with 400 rather than read as `false`, which would delete the record,
-            leave the tables on disk, and still answer 204.
-          schema:
-            type: boolean
-            default: false
         - $ref: "#/components/parameters/versionId"
       responses:
         "204":
@@ -4283,12 +4273,14 @@ components:
     Forbidden:
       description: |
         Forbidden - insufficient permissions to perform the operation. With
-        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes),
-        the database ran the query and the storage holding a table's data (a
-        DuckLake data path, an object-store bucket) refused its read: the
-        query and the model are fine, and a retry fails the same way until
-        the database's storage credentials are fixed. The body names what
-        the caller read and never a storage path; the full text is logged.
+        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes,
+        and `sqlTemporaryTable`), the database ran the query and an object
+        store refused its read. Under a data path the environment configures
+        (a DuckLake catalog's), the query and the model are fine and a retry
+        fails the same way until the database's storage credentials are
+        fixed; otherwise the path the query reads refused access. The body
+        names what the caller read and never a storage path; the full text is
+        logged.
       content:
         application/json:
           schema:
@@ -5989,10 +5981,10 @@ components:
                   `materialize-unparseable`, `rollup-unparseable`,
                   `persist-view-unparseable` and `persist-query-unparseable`; `persist-not-materializable` (a
                   `#@ persist` on a shape Malloy does not plan);
-                  `rollup-not-a-measure` (a rollup annotation on a field that
-                  is not a measure), `rollup-unknown-grain` (a grain that does
-                  not resolve) and `rollup-not-mergeable` (a measure a rollup
-                  cannot re-aggregate);
+                  `rollup-not-a-measure`, `rollup-unknown-grain` and
+                  `rollup-not-mergeable` (a rollup line on a field that is not
+                  a measure, a grain naming no dimension, a measure no rollup
+                  can merge);
                   `materialization-table-collision` (two sources whose
                   `name=` puts them on one table; under
                   `PERSIST_COLLISION_ENFORCE=false` a refusal instead); and
@@ -6001,12 +5993,13 @@ components:
                   `#@ persits`). `preaggregate-malformed` is retained and no
                   longer produced: it is `rollup-invalid` or
                   `rollup-unparseable` now. Retained, no longer produced:
-                  `preaggregate-invalid`, `preaggregate-unknown-key` and
+                  `preaggregate-invalid`, `preaggregate-unknown-key`,
                   `preaggregate-unparseable`, `preaggregate-not-a-measure`,
-                  `preaggregate-unknown-grain` and `preaggregate-not-mergeable`,
-                  now `rollup-invalid`, `rollup-unknown-key`,
-                  `rollup-unparseable`, `rollup-not-a-measure`,
-                  `rollup-unknown-grain` and `rollup-not-mergeable`. A measure or
+                  `preaggregate-unknown-grain` and
+                  `preaggregate-not-mergeable`, now `rollup-invalid`,
+                  `rollup-unknown-key`, `rollup-unparseable`,
+                  `rollup-not-a-measure`, `rollup-unknown-grain` and
+                  `rollup-not-mergeable`. A measure or
                   source that carries both `#(rollup)` and `#(preaggregate)`
                   is `rollup-invalid`.
                   A VALID annotation Publisher cannot build here is refused
@@ -6095,6 +6088,13 @@ components:
                   the same SQL on one connection, so they share one table and
                   one boundary, where at least one is incremental (one per
                   source; `warn`).
+                  `rollup-join-one-key-repeated`: a bound rollup whose last
+                  build found the key of a `join_one` it reads repeated, so a
+                  query reading that join beside other aggregates is answered
+                  live; it clears once a build finds the key unique (one per
+                  rollup; `warn`). `preaggregate-join-one-key-repeated` is
+                  retained, no longer produced: it is
+                  `rollup-join-one-key-repeated` now.
                   `join-bypass`: an author join from a published source to one
                   with a stricter gate, which the join does not carry (one per
                   join, or one for a walk cut short at the join bound; always
@@ -6127,7 +6127,7 @@ components:
                   be the very table served, so it is never dropped).
                   Listed on the newest run's
                   `metadata.keptTables` until no committed run names it in
-                  its place (its runs deleted, with or without `dropTables`),
+                  its place (its runs deleted; a delete is record-only),
                   a run finds it dropped by hand (never on Snowflake or
                   MySQL, whose catalogs hide tables), or its name is used
                   again in its own place
@@ -8720,7 +8720,7 @@ components:
             warehouse was not queried.
 
             `database` — served from a materialized table in the source's own
-            database (the database tier): a database `#@ persist` table Malloy substituted, a
+            database (`colocated` in releases before this one): a database `#@ persist` table Malloy substituted, a
             database `#(materialize)` table the served copy read, or a
             database rollup or persisted view.
 
@@ -8950,7 +8950,7 @@ components:
           enum: [database, storage]
           description: >-
             Where the table that answered lives: `database`, the source's own
-            database (the database tier), or `storage`, a `storage=` destination. The same tier the
+            database, or `storage`, a `storage=` destination. The same tier the
             query result's `servedFrom` reports. Absent when `kind` is `live`.
         dataAsOf:
           type: string
@@ -10163,12 +10163,13 @@ components:
             the environment does not have, usually one deleted after the
             package was loaded.
 
-            STORAGE_ACCESS_DENIED, on a 403, means the storage holding a
-            table's data (a DuckLake data path, an object-store bucket)
-            refused the database's read. The query and the model are fine;
-            whoever configures the database's storage credentials has to fix
-            it, and retrying fails the same way. The body names the source or
-            connection the caller read and no storage path.
+            STORAGE_ACCESS_DENIED, on a 403, means an object store refused the
+            database's read. Under a data path the environment configures (a
+            DuckLake catalog's), the query and the model are fine and whoever
+            configures the database's storage credentials has to fix it;
+            otherwise the path the query reads refused access. Retrying fails
+            the same way. The body names the source or connection the caller
+            read and no storage path.
 
             ACCESS_DENIED, on a 403, means a gate (`#(authorize)` or
             `#(access_filter)`) refused the caller. Every gate 403 carries it,
@@ -12061,13 +12062,6 @@ components:
             own, because it may be materialized in another destination or left
             out of instructions an orchestrator fixed, so retrying the same
             instructions would not supply it.
-        cancelled:
-          type: boolean
-          description: >-
-            True when the run was cancelled while this source was building:
-            the source did not fail, the run stopped it, and its staging table
-            was dropped. Read the source as cancelled rather than failed.
-            Absent for every other failure.
 
     ManifestEntry:
       type: object
