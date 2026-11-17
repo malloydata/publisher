@@ -135,6 +135,80 @@ expression language `where:` accepts.
 > [authorize.md § Security model](authorize.md#security-model) for the full deployment contract.
 > Identity-bound givens (values the caller cannot override) are a planned milestone.
 
+## Where a gate is evaluated
+
+A row-level gate is grafted into the query it scopes and evaluated with that query. Two
+consequences follow for an author choosing what to gate on. Neither is a defect: in both cases
+Publisher's served answer matches a live run, because this is how gates are evaluated.
+
+### A time-based gate is evaluated in the query's time zone
+
+> **Know this.** A gate on a field computed from a timestamp is evaluated in the query's
+> `timezone:`, and a query may choose its own zone.
+
+```malloy
+##! experimental.givens
+
+#(secure)
+given: ON_DAY :: date
+
+#(access_filter) dday = $ON_DAY
+source: events is duckdb.table('events.parquet') extend {
+  dimension: dday is ts.day
+}
+```
+
+Malloy computes `ts.day`, and the `where:` the gate grafts, in the query's time zone. A query that
+sets a different `timezone:` moves the day boundary, so the rows the gate admits for one `ON_DAY`
+shift by that zone's offset: up to 14 hours either side of midnight.
+
+When the gate is an access boundary:
+
+- Gate on a stored date or key column (a date written at load time, a `tenant_id`), not on a field
+  computed from a timestamp.
+- Or make sure the rows either side of the boundary, within that window, belong to the same tenant,
+  so a shifted day admits nothing the caller could not already see.
+
+### An inherited gate filters a derivation's output, not its input
+
+> **Know this.** A `->` derivation over a gated source carries the base's gate (see
+> [authorize.md § The entry point](authorize.md#the-entry-point-and-only-the-entry-point)), and that
+> gate filters the rows the derivation produces. What the derivation computes, it computes over
+> every row of the base first.
+
+```malloy
+##! experimental.givens
+
+#(secure)
+given: REGION :: string
+
+#(access_filter) region = $REGION
+source: sales is duckdb.table('sales.parquet') extend {
+  measure: total is amount.sum()
+}
+
+source: shares is sales -> {
+  group_by: region, category
+  aggregate:
+    total
+    share is total / all(total)
+}
+```
+
+A caller of `shares` sees only their own region's rows, but `share` is each row's share of the grand
+total across every region. The same holds for `exclude()`, window functions, `calculate:` and `limit`:
+each is evaluated across every row before the gate applies, so a top-N ranks across every region and
+the caller then receives their region's entries from it, which may be fewer than N or none. The rows
+themselves stay scoped; global aggregates and ranks over rows the caller cannot see are visible.
+
+When those figures are sensitive:
+
+- Put the gate on the derivation's own output-level source: derive from a base the derivation is
+  meant to read in full, and declare the gate on the derived source callers enter.
+- Do not use global-context functions (`all()`, `exclude()`, window functions, `calculate:`, a
+  ranking `limit`) in a derivation over a gated source.
+- Or compute the global context explicitly, from an ungated source you intend to expose.
+
 ## Runnable example
 
 [`examples/governed-analytics`](../examples/governed-analytics) implements the row-level authorize
