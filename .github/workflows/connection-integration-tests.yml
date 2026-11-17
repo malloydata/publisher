@@ -14,6 +14,7 @@ on:
       # The harnesses and fixtures every spec below is built on.
       - "packages/server/src/test_helpers/**"
       - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
+      - "packages/server/tests/component/storage_build_bigquery_cancel.component.spec.ts"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"
@@ -51,6 +52,7 @@ on:
       # The harnesses and fixtures every spec below is built on.
       - "packages/server/src/test_helpers/**"
       - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
+      - "packages/server/tests/component/storage_build_bigquery_cancel.component.spec.ts"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"

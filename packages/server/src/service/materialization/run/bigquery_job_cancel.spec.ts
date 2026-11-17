@@ -16,12 +16,14 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BigQuery } from "@google-cloud/bigquery";
 import * as sinon from "sinon";
 import type { components } from "../../../api";
 import { logger } from "../../../logger";
 import { storageDestinationRoot } from "../../connection_config";
 import {
    BigQueryBuildJobs,
+   bigQueryJobLister,
    markBigQueryRead,
    trackBigQueryJobs,
    type BigQueryActiveJob,
@@ -253,6 +255,115 @@ describe("F-22: a cancelled BigQuery read is marked and cancelled", () => {
       await hung.cancel();
       expect(Date.now() - started).toBeLessThan(2_000);
       expect(String(warn.lastCall.args[0])).toMatch(/gave up/i);
+   });
+
+   it("skips the sweeps when the abort lands after every read settled", async () => {
+      const session = {
+         runSQL: async () => ({ rows: [] }),
+      } as unknown as DuckDBConnection;
+      const run = new AbortController();
+      let made = 0;
+      const stop = trackBigQueryJobs(session, run.signal, () => {
+         made += 1;
+         return stubJobs(() => []).lister;
+      });
+      await session.runSQL(markBigQueryRead(session, "SELECT 1"));
+      run.abort();
+      await stop();
+      // The read's statement had returned, so its job was done: no listing.
+      expect(made).toBe(0);
+   });
+
+   it("sweeps when the abort lands while a marked read is running", async () => {
+      let finish: () => void = () => {};
+      const session = {
+         runSQL: (sql: string) =>
+            sql.includes("publisher_build")
+               ? new Promise((resolve) => {
+                    finish = () => resolve({ rows: [] });
+                 })
+               : Promise.resolve({ rows: [] }),
+      } as unknown as DuckDBConnection;
+      const run = new AbortController();
+      let marked = "";
+      const stub = stubJobs(() => [{ id: "running", query: marked }]);
+      const stop = trackBigQueryJobs(
+         session,
+         run.signal,
+         () => stub.lister,
+         FAST,
+      );
+      marked = markBigQueryRead(session, "SELECT 1");
+      const read = session.runSQL(marked);
+      run.abort();
+      finish();
+      await read;
+      await stop();
+      expect(stub.cancelled).toEqual(["running"]);
+   });
+
+   it("the production lister refuses a connection with no key", () => {
+      // Never the host's default credentials: another identity.
+      expect(() => bigQueryJobLister("proj", undefined)).toThrow(
+         /no service account key/,
+      );
+   });
+
+   it("the production lister follows next pages, at most five", async () => {
+      let page = 0;
+      const request = sinon.stub(BigQuery.prototype, "request").callsFake(((
+         _options: unknown,
+         callback: (err: null, resp: unknown) => void,
+      ) => {
+         page += 1;
+         callback(null, {
+            jobs: [
+               {
+                  id: `proj:US.job-${page}`,
+                  jobReference: { jobId: `job-${page}`, location: "US" },
+                  configuration: { query: { query: `SELECT ${page}` } },
+               },
+            ],
+            // Always another page: the lister must stop on its own.
+            nextPageToken: `token-${page}`,
+         });
+      }) as never);
+      try {
+         const lister = bigQueryJobLister(
+            "proj",
+            JSON.stringify({
+               type: "service_account",
+               project_id: "proj",
+               client_email: "sa@proj.iam.gserviceaccount.com",
+               private_key: "unused",
+            }),
+         );
+         const jobs = await lister.activeJobs(0);
+         expect(request.callCount).toBe(5);
+         expect(jobs.map((j) => j.query)).toEqual([
+            "SELECT 1",
+            "SELECT 2",
+            "SELECT 3",
+            "SELECT 4",
+            "SELECT 5",
+         ]);
+         // Each later page asks for the token the one before it returned.
+         const qs = request
+            .getCalls()
+            .map(
+               (c) =>
+                  (c.args[0] as { qs: { pageToken?: string } }).qs.pageToken,
+            );
+         expect(qs).toEqual([
+            undefined,
+            "token-1",
+            "token-2",
+            "token-3",
+            "token-4",
+         ]);
+      } finally {
+         request.restore();
+      }
    });
 
    it("buildSourceIntoStorage cancels its BigQuery read's job when the run is cancelled mid-read", async () => {

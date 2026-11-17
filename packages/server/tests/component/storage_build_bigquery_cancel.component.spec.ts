@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { BigQuery } from "@google-cloud/bigquery";
+import { BigQuery, type Job } from "@google-cloud/bigquery";
 import { storageDestinationRoot } from "../../src/service/connection_config";
 import { buildSourceIntoStorage } from "../../src/service/materialization/run/materialization_build_session";
 
@@ -74,6 +74,7 @@ describe.skipIf(!hasCredentials())(
             recursive: true,
          });
          const run = new AbortController();
+         let job: Job | undefined;
          try {
             const build = buildSourceIntoStorage({
                destinationName: "lake",
@@ -97,7 +98,7 @@ describe.skipIf(!hasCredentials())(
             );
 
             // The read's job, running, found by the text only this build sends.
-            const job = await until(
+            job = await until(
                async () => {
                   const [jobs] = await client.getJobs({
                      projection: "full",
@@ -140,6 +141,8 @@ describe.skipIf(!hasCredentials())(
             expect(stoppedMs).toBeLessThan(STOPPED_WITHIN_MS);
          } finally {
             run.abort();
+            // Directly too, so a regression cannot leave the cross join running.
+            await job?.cancel().catch(() => {});
             rmSync(environmentPath, { recursive: true, force: true });
          }
       }, 180_000);

@@ -20,7 +20,12 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { BigQuery, type GetJobsOptions } from "@google-cloud/bigquery";
+import {
+   BigQuery,
+   type GetJobsOptions,
+   type GetJobsResponse,
+   type Job,
+} from "@google-cloud/bigquery";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { logger } from "../../../logger";
 
@@ -64,29 +69,43 @@ const MAX_LISTING_PAGES = 5;
  * service account key, in the project the read ran in. `allUsers: false`
  * lists only the key's own jobs, which is what the job-listing permission the
  * split read already needs grants.
+ *
+ * Refuses without a key rather than letting the client fall back to the
+ * host's default credentials: the cancel must act as the identity that ran
+ * the read, never another one.
  */
 export const bigQueryJobLister: BigQueryJobListerFactory = (
    projectId,
    serviceAccountKeyJson,
 ) => {
+   if (!serviceAccountKeyJson) {
+      throw new Error(
+         "The BigQuery source connection has no service account key, so its " +
+            "build's jobs are not cancelled under any other identity",
+      );
+   }
    const client = new BigQuery({
       projectId,
-      ...(serviceAccountKeyJson
-         ? { credentials: JSON.parse(serviceAccountKeyJson) }
-         : {}),
+      credentials: JSON.parse(serviceAccountKeyJson),
    });
    return {
       async activeJobs(minCreationTime) {
-         const options: GetJobsOptions = {
+         // Paged by hand: the client's autoPaginate stops after one page
+         // whenever maxResults is set, so maxApiCalls would bound nothing.
+         let query: GetJobsOptions | null | undefined = {
             projection: "full",
             stateFilter: ["pending", "running"],
             allUsers: false,
             minCreationTime: String(minCreationTime),
             maxResults: 200,
-            autoPaginate: true,
-            maxApiCalls: MAX_LISTING_PAGES,
+            autoPaginate: false,
          };
-         const [jobs] = await client.getJobs(options);
+         const jobs: Job[] = [];
+         for (let page = 0; page < MAX_LISTING_PAGES && query; page++) {
+            const response: GetJobsResponse = await client.getJobs(query);
+            jobs.push(...response[0]);
+            query = response[1];
+         }
          return jobs.map((job) => ({
             id: String(job.id),
             query: job.metadata?.configuration?.query?.query as
@@ -106,6 +125,12 @@ export class BigQueryBuildJobs {
    /** Unique to this session; BigQuery keeps the comment in the job's text. */
    readonly marker = `/* publisher_build:${randomUUID()} */`;
    private firstReadAt: number | undefined;
+   /** Marked statements running now ({@link begin}). */
+   private inFlight = 0;
+   /** Sequence numbers of the last mark and the last settled read. */
+   private sequence = 0;
+   private lastMarked = 0;
+   private lastSettled = 0;
    private cancelling: Promise<void> | undefined;
    private lister: BigQueryJobLister | undefined;
 
@@ -120,7 +145,29 @@ export class BigQueryBuildJobs {
    /** `sql` with this session's marker, which makes the job it starts findable. */
    mark(sql: string): string {
       this.firstReadAt ??= Date.now();
+      this.lastMarked = ++this.sequence;
       return `${this.marker}\n${sql}`;
+   }
+
+   /**
+    * A marked statement starts; call the returned function when it settles.
+    * A job is running only while one is in flight, or after a mark whose
+    * statement has not run yet.
+    */
+   begin(): () => void {
+      this.inFlight += 1;
+      let settled = false;
+      return () => {
+         if (settled) return;
+         settled = true;
+         this.inFlight -= 1;
+         this.lastSettled = ++this.sequence;
+      };
+   }
+
+   /** No marked statement running, and nothing marked since the last settled. */
+   private idle(): boolean {
+      return this.inFlight === 0 && this.lastMarked < this.lastSettled;
    }
 
    /** Cancel this session's running jobs. Idempotent; never rejects. */
@@ -135,8 +182,9 @@ export class BigQueryBuildJobs {
    }
 
    private async cancelBounded(): Promise<void> {
-      // Nothing marked, nothing started: no client, no listing.
-      if (this.firstReadAt === undefined) return;
+      // Nothing marked, nothing started: no client, no listing. Every read
+      // already settled (an abort after the reads): their jobs are done.
+      if (this.firstReadAt === undefined || this.idle()) return;
       const timeoutMs = this.options.timeoutMs ?? CANCEL_TIMEOUT_MS;
       let timer: ReturnType<typeof setTimeout> | undefined;
       let timedOut = false;
@@ -242,10 +290,25 @@ export function trackBigQueryJobs(
    if (!signal) return async () => {};
    const jobs = new BigQueryBuildJobs(makeLister, options);
    jobsBySession.set(session, jobs);
+   // Every statement carrying the marker is a read in flight until it settles:
+   // the CTAS over a direct read, the split's script, a delta, a probe.
+   const original = session.runSQL;
+   const tracked: typeof session.runSQL | undefined =
+      typeof original === "function"
+         ? (...args) => {
+              if (!String(args[0]).includes(jobs.marker)) {
+                 return original.apply(session, args);
+              }
+              const settle = jobs.begin();
+              return original.apply(session, args).finally(settle);
+           }
+         : undefined;
+   if (tracked) session.runSQL = tracked;
    const cancel = () => void jobs.cancel();
    signal.addEventListener("abort", cancel, { once: true });
    return async () => {
       signal.removeEventListener("abort", cancel);
+      if (tracked && session.runSQL === tracked) session.runSQL = original;
       if (jobsBySession.get(session) === jobs) jobsBySession.delete(session);
       await jobs.settled();
    };
