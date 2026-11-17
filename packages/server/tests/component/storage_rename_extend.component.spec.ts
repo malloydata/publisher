@@ -13,6 +13,9 @@
  * `#(materialize) storage=` source and a rollup over a renamed base each
  * build, serve from the table, and equal live, a renamed date (a cast
  * column) and a renamed 128-bit sum (stored as DECIMAL(38,0)) included.
+ * Only the `#@ persist` case and the build's schema depend on the fix; the
+ * `#(materialize)` and rollup cases pass without it too, and pin that those
+ * keep building and serving over a renamed base.
  */
 
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";

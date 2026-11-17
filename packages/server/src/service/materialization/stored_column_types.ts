@@ -193,8 +193,8 @@ export function declaredColumnsOf(
  * `sub` column under another name: the SELECT, and so the stored table,
  * hold `sub`, and the serve side renames it again. Its definition keeps the
  * output name (`name`) beside the new one (`as`), so the column is declared
- * as `sub`. A dimension the `extend` computes is no column of
- * the SELECT, and is not declared.
+ * as `sub`. A dimension the `extend` computes is no column of the SELECT;
+ * the explore's intrinsic fields already leave it out.
  */
 export function persistSourceDeclaredColumns(persistSource: {
    _explore: { intrinsicFields: readonly unknown[] };
@@ -206,11 +206,10 @@ export function persistSourceDeclaredColumns(persistSource: {
                isAtomicField?: () => boolean;
                name?: unknown;
                type?: unknown;
-               fieldTypeDef?: { name?: unknown; e?: unknown };
+               fieldTypeDef?: { name?: unknown };
             };
             if (!field.isAtomicField?.()) return [];
             const def = field.fieldTypeDef;
-            if (def?.e !== undefined) return [];
             const output =
                typeof def?.name === "string" ? def.name : field.name;
             return [{ name: output, type: field.type }];
