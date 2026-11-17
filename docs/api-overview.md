@@ -119,7 +119,7 @@ These are the rules the spec's `info` states, in the same words where they can b
 - **Field names.** camelCase. A reference is `xName` or `xPath`; a file's path is `path` and its text `content`, while
   Malloy text that is not a file (a compile check's or a query's) is `source` or `query`. A hash is `…Hash` of what it
   hashes (a file's `contentHash`); a count ends in `Count` and a size in `Bytes`; a boolean has no `is` prefix. One word,
-  one meaning: `origin` is provenance, `kind` is what a thing is (a persisted source's `persist` or `preaggregate`),
+  one meaning: `origin` is provenance, `kind` is what a thing is (a persisted source's `persist`, `materialize`, `view`, `query` or `rollup`),
   `live` is only the pseudo-version (serving from the source warehouse is `warehouse`), a version other than `live` is a
   stored version, a source discovery shows is exposed, and `manifest` is a run's manifest, or an external file of the
   same entries that `manifestLocation` names; a report's structure is its `layout`. A connection's own settings keep
@@ -174,7 +174,7 @@ These are the rules the spec's `info` states, in the same words where they can b
   own body shape. Each operation declares only the codes its shape can produce: 404 when it names a resource; 409 on
   writes and on `:reload`, `:load` and `:unload`; 412 when it takes `If-Match`; 413 when it takes a body
   (`PAYLOAD_TOO_LARGE`), or for a query or SQL result over a cap (`RESULT_TOO_LARGE`); 403 on a resource write under
-  `resources.readOnly` (`READ_ONLY`) and on an `#(authorize)` gate (`FORBIDDEN`); 410 `VERSION_ARCHIVED` when it uses
+  `resources.readOnly` (`READ_ONLY`) and on an `#(authorize)` gate (`ACCESS_DENIED`); 403 on a query or SQL whose read storage refused (`STORAGE_ACCESS_DENIED`, `PATH_ACCESS_DENIED`); 410 `VERSION_ARCHIVED` when it uses
   an archived version's content (a content read, an action on it, the report write, a run, or `latestVersionId`'s
   target), never on that version's record, its status, its `PATCH`, `DELETE` or `:unload`, or the index; and 424, 502 and 504 when it loads a version or reaches a warehouse. 400 is your request or your Malloy; 424
   is something the operation depends on (your connection: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`; an
@@ -209,7 +209,7 @@ Each row names its operations by `operationId`, which the generated clients use.
 | `GET …/versions/{versionId}/agents`, `…/agents/{agentName}`, `…/skills`, `…/skills/{skillName}` | `list-agents`, `get-agent`, `list-skills`, `get-skill`: what the version declares for agents, and the skills in force for it (`origin`: `bundled`, `package` or `agent`); a skill's `SKILL.md` text comes on both reads, its files' content with `?include=files`. Adopt an agent only when the user names it. |
 | `GET …/versions/{versionId}/entities`, `…/classification`, `…/index` | `list-entities`, `get-classification`, `get-discovery-index`: what each model declares for an indexer; the classification summary; the discovery index's `status` (`lexical`, `deferred`, `indexing`, `ready`, `failed`) and the version it is for. |
 | `GET …/versions/{versionId}/build-plan` | `get-build-plan`: the persist build plan (`status`: `ready`, `empty`, `deferred`, `unavailable`). What the version serves per source is `bindings` on its `…/status`. |
-| `GET …/packages/{packageName}/runs`, `POST`, `GET …/runs/{runId}`, `PATCH`, `DELETE` | `list-runs`, `create-run`, `get-run`, `update-run`, `delete-run`: materialization runs (`status`, `trigger`, `mode`, `scope`; `?status=` narrows); start one for a `versionId` (auto, or orchestrated with `buildInstructions`; `trigger` and `callerRunId` set on create); cancel with `{"status": "cancelled"}`; delete with `?dropTables=true` to drop the tables only it references. |
+| `GET …/packages/{packageName}/runs`, `POST`, `GET …/runs/{runId}`, `PATCH`, `DELETE` | `list-runs`, `create-run`, `get-run`, `update-run`, `delete-run`: materialization runs (`status`, `trigger`, `mode`, `scope`; `?status=` narrows); start one for a `versionId` (auto, or orchestrated with `buildInstructions`; `trigger` and `callerRunId` set on create); cancel with `{"status": "cancelled"}`; delete a settled run's record, which drops no table (dropping one is the caller's, through the connection's SQL). |
 | `GET …/runs/{runId}/manifest` | `get-run-manifest`: what a run produced: one entry per `sourceEntityId`, each naming its table (`tableId`, and `tableName` in the warehouse, with its `connectionName` or `destinationName`), and the sources that failed. |
 
 Example — run a query against the bundled `storefront` package's latest version:
@@ -250,7 +250,13 @@ A query that fails says whose problem it is. Branch on `reason`:
 - **404** `TABLE_NOT_FOUND`: the database lacks a table the model reads.
 - **413** `RESULT_TOO_LARGE`: the result passed a cap (`details.capType`: `rows`, `bytes` or `unserializable`).
   Narrow the query or lower `rowLimit`; resending it fails the same way.
-- **403** `FORBIDDEN`: a gate refused this caller; supply the givens it reads (`Source.gates`).
+- **403** `ACCESS_DENIED`: a gate refused this caller; supply the givens it reads (`Source.gates`).
+- **403** `STORAGE_ACCESS_DENIED`: the database ran the query, and storage the environment configures (a DuckLake
+  data path) refused its read. The query and the model are fine; do not retry until the database's storage
+  credentials are fixed.
+- **403** `PATH_ACCESS_DENIED`: a path the query itself reads refused access. Check the path the query reads, or its
+  grant. Neither storage reason names a storage path in the body; the server log has it, and any other 4xx that
+  carries the database's text has its URLs replaced with `<storage path>`.
 - **410** `VERSION_ARCHIVED`: the version is archived; query another, or restore it with `PATCH` `{"archived": false}`.
 - **424** `CONNECTION_AUTH_FAILED` or `CONNECTION_NOT_FOUND`: the connection is misconfigured; the query never ran. Do
   not rewrite it or retry until the connection is fixed.

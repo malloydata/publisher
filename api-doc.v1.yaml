@@ -119,7 +119,7 @@ info:
     while Malloy text that is not a file (a compile check's or a query's) is `source` or `query`. A hash is `…Hash` of
     what it hashes (a file's `contentHash`); a count ends in `Count` and a size in `Bytes`; a boolean has no `is`
     prefix. One word, one meaning: `origin` is provenance (what made the object), `kind` is what it is (a persisted
-    source's `persist` or `preaggregate`), `live` is only the pseudo-version (serving from the source warehouse is
+    source's `persist`, `materialize`, `view`, `query` or `rollup`), `live` is only the pseudo-version (serving from the source warehouse is
     `warehouse`), a version other than `live` is a stored version, a source discovery shows is exposed, and `manifest`
     is a run's manifest, or an external file of the same entries that `manifestLocation` names; a report's structure is
     its `layout`. A connection's own settings keep their warehouse's words.
@@ -1274,7 +1274,8 @@ paths:
         fields of the record. `archived: true` is refused with 409 while the version is `latest` (`VERSION_IS_LATEST`),
         the package's last active version, archived versions not counting (`VERSION_IS_LAST_ACTIVE`), or while a run is
         building it (`VERSION_BUILDING`). `manifestLocation` binds an external manifest (`null` clears it and the
-        version serves from the warehouse); a bind failure leaves the previous binding and answers 424
+        version serves from the warehouse, and stays live through a reload or a restart: once a host has bound a
+        version, the server never binds its own runs' tables to it again); a bind failure leaves the previous binding and answers 424
         `MANIFEST_UNAVAILABLE`."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
@@ -1643,7 +1644,11 @@ paths:
             `COMPILE_ERROR`, `QUERY_REJECTED`."
         "403":
           $ref: "#/components/responses/Forbidden"
-          description: "Refused by policy. `reason`: `FORBIDDEN`."
+          description: "Refused. `reason`: `ACCESS_DENIED`, a gate refused this caller (supply the givens it reads,
+            `Source.gates`); `STORAGE_ACCESS_DENIED`, the database ran the query and storage the environment configures
+            (a DuckLake data path) refused its read, so the query is fine and the database's storage credentials are
+            not; `PATH_ACCESS_DENIED`, a path the query itself reads refused access, so the query or its grant is at
+            fault. The body never names a storage path."
         "404":
           $ref: "#/components/responses/NotFound"
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`, `TABLE_NOT_FOUND`."
@@ -1708,7 +1713,7 @@ paths:
             `COMPILE_ERROR`."
         "403":
           $ref: "#/components/responses/Forbidden"
-          description: "Refused by policy. `reason`: `FORBIDDEN`."
+          description: "Refused by policy. `reason`: `ACCESS_DENIED`, a gate refused this caller."
         "404":
           $ref: "#/components/responses/NotFound"
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
@@ -2880,15 +2885,11 @@ paths:
       tags:
         - materialization
       summary: Delete a settled run's record
-      description: An unsettled run (`pending` or `running`) answers 409 `RUN_ACTIVE`; cancel it first.
+      description: "Deletes the record only: no table is dropped, whichever versions its manifest's tables serve. Dropping a
+        table the caller no longer wants is the caller's, through the connection's own SQL, and there is no option to
+        have the server do it. An unsettled run (`pending` or `running`) answers 409 `RUN_ACTIVE`; cancel it first."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
-        - name: dropTables
-          in: query
-          schema:
-            type: boolean
-            default: false
-          description: Also drop the server-owned tables only this run's manifest references.
         - $ref: "#/components/parameters/requestId"
       responses:
         "204":
@@ -3159,6 +3160,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
           description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`,
             `QUERY_REJECTED`."
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: "The database ran the statement and storage refused its read. `reason`: `STORAGE_ACCESS_DENIED`
+            (storage the environment configures, such as a DuckLake data path: fix the database's storage
+            credentials), `PATH_ACCESS_DENIED` (a path the statement reads: fix the statement or its grant). The body
+            never names a storage path."
         "404":
           $ref: "#/components/responses/NotFound"
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `TABLE_NOT_FOUND`."
@@ -3397,6 +3404,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
           description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`,
             `QUERY_REJECTED`."
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: "The database ran the statement and storage refused its read. `reason`: `STORAGE_ACCESS_DENIED`
+            (storage the environment configures, such as a DuckLake data path: fix the database's storage
+            credentials), `PATH_ACCESS_DENIED` (a path the statement reads: fix the statement or its grant). The body
+            never names a storage path."
         "404":
           $ref: "#/components/responses/NotFound"
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`, `TABLE_NOT_FOUND`."
@@ -4108,7 +4121,7 @@ components:
           description: Logical, fully-qualified, unquoted table name to create; the server quotes each segment for the dialect.
         destinationName:
           type: string
-          description: The destination to build into. Absent means the source's own connection (colocated).
+          description: The destination to build into. Absent means the source's own connection (a `database` build).
         realization:
           $ref: "#/components/schemas/Realization"
         reseed:
@@ -5325,7 +5338,9 @@ components:
         an additive change within v1, so a client treats a reason it does not know as the status's generic case.
       enum:
         - INVALID_REQUEST
-        - FORBIDDEN
+        - ACCESS_DENIED
+        - STORAGE_ACCESS_DENIED
+        - PATH_ACCESS_DENIED
         - READ_ONLY
         - NOT_FOUND
         - CONFLICT
@@ -5708,8 +5723,8 @@ components:
             kind:
               $ref: "#/components/schemas/PersistedSourceKind"
               default: persist
-              description: "What declared the source, as on `PersistSourcePlan.kind`: `persist`, or `preaggregate` for a synthesized
-                rollup."
+              description: "What declared the source, as on `PersistSourcePlan.kind`: `persist`, `materialize`, `view`, `query`, or
+                `rollup` for a synthesized rollup."
             tableId:
               type: string
               readOnly: true
@@ -6146,9 +6161,13 @@ components:
       type: string
       enum:
         - persist
-        - preaggregate
-      description: "What declared a persisted source: `persist`, the modeler's `#@ persist` on it, or `preaggregate`, a rollup
-        the server synthesized from `#@ preaggregate` annotations."
+        - materialize
+        - view
+        - query
+        - rollup
+      description: "What declared a persisted source: `persist`, the modeler's `#@ persist` on it; `materialize`, a
+        `#(materialize)` on it; `view` or `query`, a persisted view or named query; or `rollup`, a rollup the server
+        synthesized from `#(rollup)` annotations (or the deprecated `#@ preaggregate`)."
 
     PersistSourcePlan:
       type: object
@@ -6161,10 +6180,10 @@ components:
           type: string
         dialect:
           type: string
-        preaggregate:
-          $ref: "#/components/schemas/PreaggregatePlan"
+        rollup:
+          $ref: "#/components/schemas/RollupPlan"
           description: What the synthesized rollup covers, its base source, grain and measures. Present only when `kind` is
-            `preaggregate`.
+            `rollup`.
           readOnly: true
         refresh:
           type: string
@@ -6191,20 +6210,20 @@ components:
             directive needs no server change. Each is also reported as a `VersionStatus.warnings` entry, never a
             rejection. Every key the server recognizes has its own field (`tableName`, `realization`, `destinationName`,
             `refresh`, `watermark`, `mergeKeys`) and is not repeated here. For a synthesized rollup (`kind:
-            preaggregate`) the annotation was generated rather than typed, and is reported the same way."
+            rollup`) the annotation was generated rather than typed, and is reported the same way."
         modelPath:
           type: string
           description: "Version-relative path of the `.malloy` model that declares this source (for example
             `order_rollup.malloy`), so a caller can link the source back to its model. A synthesized rollup (`kind:
-            preaggregate`) is declared by no model, so this is the model of its base: the file holding the `#@
-            preaggregate` annotations it was synthesized from."
+            rollup`) is declared by no model, so this is the model of its base: the file holding the
+            `#(rollup)` annotations it was synthesized from."
         sourceName:
           type: string
         kind:
           $ref: "#/components/schemas/PersistedSourceKind"
-          description: "What declared the source: `persist`, the modeler's `#@ persist` on it, or `preaggregate`, a rollup the
-            server synthesized from `#@ preaggregate` annotations on `preaggregate.baseSourceName`'s measures; both
-            build alike."
+          description: "What declared the source: `persist`, the modeler's `#@ persist` on it; `materialize`, a
+            `#(materialize)` on it; `view` or `query`, a persisted view or named query; or `rollup`, a rollup the server
+            synthesized from `#(rollup)` annotations on `rollup.baseSourceName`'s measures; all build alike."
         tableName:
           type: string
           description: The table name the annotation's `name=` declares, as written (it may carry a dialect container path such as
@@ -6214,7 +6233,7 @@ components:
           description: The annotation's `realization=`. Absent when unset.
         destinationName:
           type: string
-          description: The destination the annotation's `storage=` names, for a `storage` build. Absent for a `colocated` build in
+          description: The destination the annotation's `storage=` names, for a `storage` build. Absent for a `database` build in
             the source's own connection.
         watermark:
           type: string
@@ -6303,11 +6322,11 @@ components:
             connection.
       additionalProperties: false
 
-    PreaggregatePlan:
+    RollupPlan:
       type: object
       description: >-
-        Provenance for a rollup source synthesized from `#@ preaggregate` annotations. A query never names a rollup,
-        never changes shape because one exists, and gets the same answer whether one is used or not, so this is the only
+        Provenance for a rollup source synthesized from `#(rollup)` annotations (or the deprecated `#@ preaggregate`). A
+        query never names a rollup, never changes shape because one exists, and gets the same answer whether one is used or not, so this is the only
         place the set of rollups and the coverage of each is visible at all.
 
 
@@ -6317,14 +6336,14 @@ components:
 
 
         That inverts how the grain was authored, which is worth knowing before reading a plan. The modeler declares per
-        measure — `#@ preaggregate grain="order_day, category"` — and may declare a measure at SEVERAL grains by writing
+        measure — `#(rollup) grain=["order_day", "category"]` — and may declare a measure at SEVERAL grains by writing
         several annotation lines on it, each of which is its own rollup. The publisher then packs every measure
         declaring the same (grain, connection, base source) into a single synthesized source, because ten measures at
         one grain should be one table and one CTAS rather than ten. So the plan has one entry per DISTINCT grain
         declared anywhere on the source, which is neither the number of annotated measures nor the number of
         annotations: a measure declared at two grains appears in two entries, and two measures sharing a grain appear in
         one. To recover the per-measure view that was written, iterate `BuildPlan.sources`, keep the `kind:
-        preaggregate` entries, and invert each entry's grain-to-measures pairing.
+        rollup` entries, and invert each entry's grain-to-measures pairing.
 
 
         Choosing between two rollups and one at the combined grain is a size judgement, not a correctness one — see
@@ -6336,7 +6355,7 @@ components:
       properties:
         baseSourceName:
           type: string
-          description: The source whose measures carry the `#@ preaggregate` annotations this rollup was synthesized from. Queries
+          description: The source whose measures carry the `#(rollup)` annotations this rollup was synthesized from. Queries
             name THIS source; the rollup is selected behind it, or bypassed, per grain coverage.
         grainDimensionNames:
           type: array
@@ -6386,7 +6405,7 @@ components:
             rollup covers, is eligible to be served from its table.
 
 
-            These are the measures whose `#@ preaggregate` named THIS grain. A measure declared at a different grain is
+            These are the measures whose `#(rollup)` named THIS grain. A measure declared at a different grain is
             not missing: it is in the plan entry for that grain. Do not read this list as the base source's full set of
             pre-aggregated measures — that is the union of these lists across every entry sharing a `baseSourceName`.
 
@@ -6885,12 +6904,8 @@ components:
       type: string
       enum:
         - FREE_PARAMETER
-        - GIVEN_IN_PERSISTED_QUERY
-        - DYNAMIC_PROJECTION
-        - DYNAMIC_JOIN
-        - DYNAMIC_JOINED_WHERE
+        - READS_GIVEN
         - MERGE_KEY_SCOPE_UNRESOLVED
-        - PREAGGREGATE_OVER_DYNAMIC_SOURCE
         - AUTHORIZE
         - READ_ONLY_DIALECT
       description: Why the eligibility check refused a persisted source at compile time. A run's build-time refusals add their
@@ -6900,7 +6915,7 @@ components:
       type: object
       description: One `#@ persist` source refused at compile time, and why. It is computed from the same tier-appropriate
         eligibility check the build enforces, so a source reported refused is refused for the tier it would actually
-        build under. A refusal of a source whose `kind` is `preaggregate` can coexist with an entry for the same source
+        build under. A refusal of a source whose `kind` is `rollup` can coexist with an entry for the same source
         in `BuildPlan.sources`; for a `persist` source a refusal means it is absent from `sources`.
       required:
         - sourceName
@@ -6917,18 +6932,17 @@ components:
           type: string
           enum:
             - storage
-            - colocated
-          description: The tier the source would have built in.
+            - database
+          description: "The tier the source would have built in: `database`, the source's own connection; `storage`, a
+            destination."
         reason:
           $ref: "#/components/schemas/RefusalReason"
-          description: "Why the source is refused, decided at compile time: `FREE_PARAMETER`; `AUTHORIZE`; four that say where a
-            given the build could not strip sits (`GIVEN_IN_PERSISTED_QUERY`, `DYNAMIC_PROJECTION`, `DYNAMIC_JOIN`,
-            `DYNAMIC_JOINED_WHERE`); `MERGE_KEY_SCOPE_UNRESOLVED` (a `merge_key=`
-            whose caller scope cannot be expressed over the stored table's own columns);
-            `PREAGGREGATE_OVER_DYNAMIC_SOURCE` (a rollup whose base is scoped by a given); and `READ_ONLY_DIALECT` (a
-            colocated `#@ persist` on a dialect that cannot create tables). `GIVEN_IN_PERSISTED_QUERY` means the build
-            would substitute a given's value, so the table would hold one caller's slice; a given in the source's extend
-            block is applied per caller at read and is admitted. The build-time refusals are on the run's
+          description: "Why the source is refused, decided at compile time: `FREE_PARAMETER`; `AUTHORIZE`; `READS_GIVEN` (the stored
+            result would read a given the build cannot strip, wherever it sits: in the query, a projection, a join, a
+            joined `where:`, or the base a rollup is built over, so the table would hold one caller's slice; a given in
+            the source's extend block is applied per caller at read and is admitted); `MERGE_KEY_SCOPE_UNRESOLVED` (a
+            `merge_key=` whose caller scope cannot be expressed over the stored table's own columns); and
+            `READ_ONLY_DIALECT` (a `database` build on a dialect that cannot create tables). The build-time refusals are on the run's
             `SourceFailure.reason`."
         message:
           type: string
@@ -8076,7 +8090,7 @@ components:
 
     TableAddress:
       type: object
-      description: "Where a built table lives: its `tableName`, and exactly one of `connectionName` (a `colocated` table, in
+      description: "Where a built table lives: its `tableName`, and exactly one of `connectionName` (a `database` table, in
         the source's own connection) or `destinationName` (a `storage` table, in a destination). Which one is set is the
         table's tier."
       required:
@@ -8090,10 +8104,10 @@ components:
             string."
         connectionName:
           type: string
-          description: The connection a `colocated` table lives in. Absent for a `storage` table.
+          description: The connection a `database` table lives in. Absent for a `storage` table.
         destinationName:
           type: string
-          description: The destination a `storage` table lives in. Absent for a `colocated` table.
+          description: The destination a `storage` table lives in. Absent for a `database` table.
 
     TableList:
       type: object
@@ -8251,7 +8265,8 @@ components:
           type: string
           description: "The location of an externally computed manifest bound to this version: a JSON array of `ManifestEntry`
             with its read-only fields left out. Absent when none is bound, and the version serves from the warehouse.
-            Set with `PATCH`; `null` clears it."
+            Set with `PATCH`; `null` clears it, and a version a host has bound stays live after a clear, a reload or
+            a restart."
         gitCommitSha:
           type: string
           readOnly: true
