@@ -25,6 +25,7 @@
  * Pure: the caller passes the instant.
  */
 
+import { isRollupOrigin } from "./table_plans";
 import { freshnessOf, type Freshness } from "./freshness";
 import { storageTablePath } from "./storage_table_path";
 import type { BuildManifest, FreshnessManifest, ManifestEntry } from "./types";
@@ -328,16 +329,15 @@ export function deriveServeBindings(
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
       const primaryKeys = primaryKeysOf(entry as never);
-      const rollupKey =
-         entry.origin === "preaggregate"
-            ? rollupKeyOf(entry as never)
-            : undefined;
+      const rollupKey = isRollupOrigin(entry.origin)
+         ? rollupKeyOf(entry as never)
+         : undefined;
       for (const sourceName of names) {
          // Set whenever there is a plan to read, even empty: an empty list
          // names no source, so the binding serves nothing (planSourceIds).
          const sourceIDs = sourceIDsFor?.(sourceName, entry.sourceEntityId);
          bindings.push({
-            kind: entry.origin === "preaggregate" ? "rollup" : "persist",
+            kind: isRollupOrigin(entry.origin) ? "rollup" : "persist",
             tier: "storage",
             sourceName,
             ...(sourceIDs !== undefined ? { sourceIDs } : {}),

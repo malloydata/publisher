@@ -15,7 +15,7 @@
  *  - a query over it (`a -> { group_by … }`, `a -> { aggregate … }`,
  *    `a -> { select: * }`), an `extend` of it, and a query two hops away;
  *  - a source that joins it, plainly and through an annotated join;
- *  - `#@ preaggregate` and `#(preaggregate)` rollups over a derivation of it.
+ *  - `#@ preaggregate` and `#(rollup)` rollups over a derivation of it.
  *
  * With `PUBLISHER_MATERIALIZE_GATED_SOURCES` off and on, each is queried as
  * three callers whose gates admit different rows, and each served answer
@@ -94,15 +94,15 @@ source: ${g}_pre1_q is ${g}_a -> { select: * } extend {
   measure: total is amount.sum()
 }
 source: ${g}_pre2_q is ${g}_a -> { select: * } extend {
-  #(preaggregate) grain=["org_id"]
+  #(rollup) grain=["org_id"]
   measure: total is amount.sum()
 }
 source: ${g}_pre2s_q is ${g}_a -> { select: * } extend {
-  #(preaggregate) grain=["org_id"] storage="lake"
+  #(rollup) grain=["org_id"] storage="lake"
   measure: total is amount.sum()
 }
 source: ${g}_pre2_ext is ${g}_a extend {
-  #(preaggregate) grain=["org_id"]
+  #(rollup) grain=["org_id"]
   measure: total is amount.sum()
 }
 `;

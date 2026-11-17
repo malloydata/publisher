@@ -20,7 +20,7 @@ const rollupModel = (
    category: string,
 ) => `##! experimental.persistence
 source: orders is duckdb.sql("SELECT ${id} AS id, ${id * 10} AS amount, '${category}' AS category") extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }`;
 

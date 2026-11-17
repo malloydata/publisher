@@ -113,7 +113,7 @@ describe("Answer", () => {
       expect(servedFromOf(answer)).toBe("database");
    });
 
-   it("reads a storage= #(preaggregate) rollup route as a storage hit", () => {
+   it("reads a storage= #(rollup) rollup route as a storage hit", () => {
       const b = { ...binding("rollup"), kind: "rollup" as const };
       const answer = answerOf({
          ...rollupRoute,
@@ -272,7 +272,7 @@ describe("recordingManifest", () => {
    });
 });
 
-describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)", () => {
+describe("the #(rollup) rollup candidate past an entry-point gate (row 1)", () => {
    const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
    const rollupCandidate = (rollupVariants: unknown = {}) =>
       variantsOf(

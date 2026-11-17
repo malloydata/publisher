@@ -544,8 +544,8 @@ describe("accessPathOf", () => {
          tier: "database",
          tableId: "abc",
       });
-      expect(of("preaggregate", "storage")).toMatchObject({
-         origin: "preaggregate",
+      expect(of("rollup", "storage")).toMatchObject({
+         origin: "rollup",
          tier: "storage",
       });
       expect(of("free text", "elsewhere")).toEqual({

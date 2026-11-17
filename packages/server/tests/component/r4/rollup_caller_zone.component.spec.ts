@@ -16,7 +16,7 @@
  *   a measure that reads a time (an hour extracted in the build's zone), and either read through a join.
  *
  * Each runs in four zones (one with a 45-minute offset), on a database and
- * a `storage=` rollup, for `#(preaggregate)` and `#@ preaggregate`, and
+ * a `storage=` rollup, for `#(rollup)` and `#@ preaggregate`, and
  * every answer equals live.
  */
 
@@ -52,8 +52,8 @@ const seedSql = [
 ];
 
 const ROUTES = {
-   "#(preaggregate)": (grain: string[], p: string) =>
-      `#(preaggregate) grain=[${grain.map((g) => `"${g}"`).join(", ")}]${p}`,
+   "#(rollup)": (grain: string[], p: string) =>
+      `#(rollup) grain=[${grain.map((g) => `"${g}"`).join(", ")}]${p}`,
    "#@ preaggregate": (grain: string[], p: string) =>
       `#@ preaggregate grain="${grain.join(",")}"${p}`,
 };

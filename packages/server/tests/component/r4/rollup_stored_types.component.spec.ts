@@ -3,7 +3,7 @@
 
 /**
  * R4 for the types a `storage=` rollup reads its stored table with (v1
- * `#@ preaggregate` and v2 `#(preaggregate)`), against live, beside the same
+ * `#@ preaggregate` and v2 `#(rollup)`), against live, beside the same
  * rollup database:
  *
  *  - a BIGINT sum past 2^53, stored as a HUGEINT partial: read through its
@@ -43,7 +43,7 @@ const SEED = [
 
 const ROUTES = {
    v2: (grain: string, placement: string) =>
-      `#(preaggregate) grain=["${grain}"]${placement}`,
+      `#(rollup) grain=["${grain}"]${placement}`,
    v1: (grain: string, placement: string) =>
       `#@ preaggregate grain="${grain}"${placement}`,
 };

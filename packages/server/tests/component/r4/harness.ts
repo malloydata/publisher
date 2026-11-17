@@ -183,7 +183,7 @@ export interface R4Scenario {
     */
    checkKeys?: boolean;
    /**
-    * Also build the generated `#(preaggregate)` rollups (the rollup companion
+    * Also build the generated `#(rollup)` rollups (the rollup companion
     * beside the entry model): a `storage=` rollup into the destination, a
     * database one into the scenario's own database under the build
     * manifest, as a package with PUBLISHER_MATERIALIZE on does.
@@ -288,7 +288,7 @@ export interface R4Fixture {
    /** The scenario's database: its source tables and its stored ones. */
    duckdb: DuckDBConnection;
    /**
-    * With {@link R4Scenario.preaggregate}: each database `#(preaggregate)`
+    * With {@link R4Scenario.preaggregate}: each database `#(rollup)`
     * rollup built, by its generated source name, to the table it was built
     * into in the scenario's database.
     */
@@ -326,7 +326,7 @@ export interface R4Fixture {
    /** Why the persisted-view planner refused a view, one sentence each. */
    viewRefusals: string[];
    /**
-    * With {@link R4Scenario.preaggregate}: each `#(preaggregate)` declaration
+    * With {@link R4Scenario.preaggregate}: each `#(rollup)` declaration
     * the rollup planner refused, by its refusal reason (an invalid one's
     * code) and base source.
     */
@@ -557,7 +557,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
              .tag.has("experimental", "persistence")
         ? []
         : plannedSources(await runtime.getBuildTargets(compiled));
-   // `#(preaggregate)`: the rollup companion's targets, built beside the rest.
+   // `#(rollup)`: the rollup companion's targets, built beside the rest.
    // Compiled as a package compiles it, with the package's connections, so
    // its build ids are the ones a served query looks up.
    const rollups = scenario.preaggregate
@@ -573,11 +573,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       : undefined;
    if (scenario.preaggregate && !rollups?.generated) {
       throw new Error(
-         `the #(preaggregate) companion did not compile: ${JSON.stringify(rollups?.refused)}`,
+         `the #(rollup) companion did not compile: ${JSON.stringify(rollups?.refused)}`,
       );
    }
    // A rollup whose build reads a given is left out, as the package's build
-   // plan leaves it out (`preaggregate-not-built`, reason
+   // plan leaves it out (`rollup-not-built`, reason
    // `given_in_persisted_query`).
    const allRollupTargets = rollups?.generated
       ? await rollups.generated.runtime.getBuildTargets(rollups.generated.model)
@@ -627,7 +627,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          sourceID: string;
          name: string;
          sourceEntityId: string;
-         origin: "preaggregate";
+         origin: "rollup";
       },
    ][] = [];
    for (const connection of rollupTargets?.connections ?? []) {
@@ -688,7 +688,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                sourceID: source.sourceID,
                name: source.name,
                sourceEntityId: target.buildId,
-               origin: "preaggregate",
+               origin: "rollup",
             },
          ]);
       }
@@ -1018,9 +1018,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          ).map((c) => ({ name: c.column_name, type: c.column_type })),
          realization: "COPY",
          rowCount: null,
-         ...(rollupOrigin.has(source.sourceID)
-            ? { origin: "preaggregate" }
-            : {}),
+         ...(rollupOrigin.has(source.sourceID) ? { origin: "rollup" } : {}),
       } as ManifestEntry;
       const leafKeys = await pairLeafKeys(source);
       if (leafKeys) {
@@ -1193,7 +1191,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                         name: source.name,
                         sourceEntityId: plan[source.sourceID].sourceEntityId,
                         origin: rollupOrigin.has(source.sourceID)
-                           ? ("preaggregate" as const)
+                           ? ("rollup" as const)
                            : ("persist" as const),
                         // A rollup's declared columns, as the package's
                         // catalog carries them from its plan.

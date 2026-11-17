@@ -217,9 +217,9 @@ async function checkBuiltKeys(
             ),
          {
             notRun:
-               "A stored source's primary key check did not run; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+               "A stored source's primary key check did not run; its queries through a storage #(rollup) rollup read as a join_many are answered live",
             notUnique:
-               "A stored source holds its primary key more than once or NULL; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+               "A stored source holds its primary key more than once or NULL; its queries through a storage #(rollup) rollup read as a join_many are answered live",
          },
          { source: persistSource.name, keyColumn: stored.keyColumn },
          // Recorded under its own sourceID.
@@ -1137,7 +1137,7 @@ export class InstructedBuild {
          // as an ordinary binding it would be silently dropped (see
          // preaggregation_serve_bindings).
          if (compiled.tables[persistSource.sourceID]?.rollup) {
-            built = { ...built, origin: "preaggregate" as const };
+            built = { ...built, origin: "rollup" as const };
          }
          if (ownedTarget) {
             await markBuiltOwnedTable(
@@ -1533,11 +1533,7 @@ function recordPendingRefusal(
       refused: refusalRecord(
          persistSource,
          err,
-         run.compiled.tables[persistSource.sourceID]?.rollup
-            ? "preaggregate"
-            : instruction.destination
-              ? "storage"
-              : "database",
+         instruction.destination ? "storage" : "database",
          run.compiled.tables[persistSource.sourceID]?.modelPath,
          run.compiled.tables[persistSource.sourceID]?.kind,
       ),
@@ -1750,7 +1746,7 @@ async function checkRollupKeys(
    const own = rollupKeyCheckOf(compiled, sourceID);
    if (own && !groupsBaseRows) {
       logger.info(
-         "A #(preaggregate) rollup was built over a stored upstream, so its key check over the base's rows is not run; queries through its join_one that need the key unique are answered live",
+         "A #(rollup) rollup was built over a stored upstream, so its key check over the base's rows is not run; queries through its join_one that need the key unique are answered live",
          { rollup: persistSource.name, keyColumn: own.keyColumn },
       );
    }
@@ -1762,9 +1758,9 @@ async function checkRollupKeys(
          () => DATABASE.checkKey({ connection }, own, table),
          {
             notRun:
-               "A #(preaggregate) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
+               "A #(rollup) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
             notUnique:
-               "A #(preaggregate) rollup's base holds its join_one key more than once; queries that read that join_one beside other aggregates are answered live",
+               "A #(rollup) rollup's base holds its join_one key more than once; queries that read that join_one beside other aggregates are answered live",
          },
          { rollup: persistSource.name, keyColumn: own.keyColumn },
       );
@@ -1832,9 +1828,9 @@ async function checkParentKeys(
          () => DATABASE.checkKey({ connection }, check, table),
          {
             notRun:
-               "A query source's primary key check did not run; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+               "A query source's primary key check did not run; its queries through a #(rollup) rollup read as a join_many are answered live",
             notUnique:
-               "A query source holds its primary key more than once or NULL; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+               "A query source holds its primary key more than once or NULL; its queries through a #(rollup) rollup read as a join_many are answered live",
          },
          {
             rollup: rollupName,

@@ -4,7 +4,7 @@
 /**
  * The one reader of materialization's annotations: every `#@` line
  * (`persist`, a v1 `preaggregate`, a persisted view's), `#(materialize)`,
- * `#(preaggregate)` and a model's `##` and `##!` lines are parsed here and
+ * `#(rollup)` and a model's `##` and `##!` lines are parsed here and
  * nowhere else in materialization (the annotation ratchet,
  * `layer_rules.spec.ts`), and a declaration's place is decided by one rule,
  * {@link placementOf}.
@@ -145,7 +145,7 @@ export function notesDeclarePersist(
  * module's header). `key` is the route's own key when the route is shared
  * (`persist` or `preaggregate` on `#@`), whose `storage=` and `name=` may be
  * written inside it; a route of its own (`#(materialize)`,
- * `#(preaggregate)`) has none.
+ * `#(rollup)`) has none.
  */
 export function placementOf(tag: RouteTag, key?: string): PlacementRead {
    const inside = (k: string) =>

@@ -54,7 +54,7 @@ source: m_empty is orders_raw extend { measure: n is count() }`,
    [
       "a v2 rollup",
       `source: rollups is orders_raw extend {
-  #(preaggregate) grain=["status"] storage=""
+  #(rollup) grain=["status"] storage=""
   measure: r_empty is amount.max()
 }`,
    ],
@@ -78,13 +78,13 @@ import "raw.malloy"
 
 #(access_filter) region = $REGION
 source: by_column is orders_raw extend {
-  #(preaggregate) grain=["status", "region"]
+  #(rollup) grain=["status", "region"]
   measure: total is amount.sum()
 }
 
 #(authorize) 'admin' = $ROLE
 source: by_lock is orders_raw extend {
-  #(preaggregate) grain=["status"]
+  #(rollup) grain=["status"]
   measure: total is amount.sum()
 }
 
@@ -628,18 +628,18 @@ source: database_ext is orders extend {
          "m.malloy": `import "raw.malloy"
 
 source: lines is lines_raw extend {
-  #(preaggregate) grain=["order_id"]
+  #(rollup) grain=["order_id"]
   measure: qty_total is qty.sum()
-  #(preaggregate) grain=["order_id", "sku"]
+  #(rollup) grain=["order_id", "sku"]
   measure: line_n is count()
 }
 
 source: orders is orders_raw extend {
   join_many: lines on lines.order_id = id
   dimension: m is created_at.month
-  #(preaggregate) grain=["region"]
+  #(rollup) grain=["region"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["region", "m"] storage="lake"
+  #(rollup) grain=["region", "m"] storage="lake"
   measure: n is count()
   view: by_region is { group_by: region; aggregate: total }
 }
@@ -682,7 +682,7 @@ source: orders is orders_raw extend {
          "m.malloy": `import "raw.malloy"
 
 source: lines is lines_raw extend {
-  #(preaggregate) grain=["order_id"] storage="lake"
+  #(rollup) grain=["order_id"] storage="lake"
   measure: qty_total is qty.sum()
 }
 
@@ -713,14 +713,14 @@ source: orders is orders_raw extend {
 
 source: orders is orders_raw extend {
   dimension: m is created_at.month
-  #(preaggregate) grain=["region", "m"]
+  #(rollup) grain=["region", "m"]
   measure: total is amount.sum()
 }
 
 source: zoned is orders_raw extend {
   timezone: 'America/Los_Angeles'
   dimension: m is created_at.month
-  #(preaggregate) grain=["region", "m"]
+  #(rollup) grain=["region", "m"]
   measure: total is amount.sum()
 }
 
@@ -816,7 +816,7 @@ source: views is orders_raw extend {
 }
 
 source: rollups is orders_raw extend {
-  #(preaggregate) grain=["region"] storage="lake"
+  #(rollup) grain=["region"] storage="lake"
   measure: r_storage is amount.sum()
 }
 

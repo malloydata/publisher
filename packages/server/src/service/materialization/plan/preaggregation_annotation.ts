@@ -101,7 +101,7 @@ interface PreaggregateGrain {
    /**
     * This grain's own `freshness` group, when its line writes one
     * (`#@ preaggregate grain="category" freshness.window="1h"`), read as
-    * `#(preaggregate)` reads it (freshness_declaration.ts).
+    * `#(rollup)` reads it (freshness_declaration.ts).
     */
    freshness?: DeclaredFreshness;
 }
@@ -231,7 +231,7 @@ function orderedNotes(annotations: unknown): OrderedNote[] {
 }
 
 /**
- * A `#@ preaggregate` line's `freshness` group, read as `#(preaggregate)`
+ * A `#@ preaggregate` line's `freshness` group, read as `#(rollup)`
  * reads it (freshness_declaration.ts); the nested form wins, as for grain=.
  */
 function readLineFreshness(

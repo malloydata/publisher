@@ -55,9 +55,9 @@ given: REGION :: string
 source: hidden is duckdb.table('orders_raw') extend {
   private dimension: secret_cat is category
   internal dimension: tenant_i is tenant
-  #(preaggregate) grain=["secret_cat", "region"]${p}
+  #(rollup) grain=["secret_cat", "region"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["tenant_i", "region"]${p}
+  #(rollup) grain=["tenant_i", "region"]${p}
   measure: t_total is amount.sum()
   view: by_secret is { group_by: secret_cat; aggregate: total }
 }
@@ -66,16 +66,16 @@ source: private_base is duckdb.table('orders_raw') extend {
 }
 // A private dimension of the source it extends: stored, still private.
 source: inherits_private is private_base extend {
-  #(preaggregate) grain=["hidden_cat", "region"]${p}
+  #(rollup) grain=["hidden_cat", "region"]${p}
   measure: total is amount.sum()
 }
 
 // (b) A given-reading where: over grain dimensions.
 source: scoped is duckdb.table('orders_raw') extend {
   where: region = $REGION
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: n is count()
 }
 // A parent joining it: the join reads the rollup's every-caller groups
@@ -88,19 +88,19 @@ source: cats is duckdb.table('cats_raw') extend {
 // Over a field the grain does not keep: refused.
 source: scoped_outside is duckdb.table('orders_raw') extend {
   where: region = $REGION
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
 }
 // Inherited from the source it extends: refused.
 source: scoped_inherited is scoped extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: inherited_total is amount.sum()
 }
 
 // (c) Zoned queries.
 source: timed is duckdb.table('orders_raw') extend {
   dimension: order_day is order_time.day
-  #(preaggregate) grain=["category", "order_day"]${p}
+  #(rollup) grain=["category", "order_day"]${p}
   measure: total is amount.sum()
 }
 `;

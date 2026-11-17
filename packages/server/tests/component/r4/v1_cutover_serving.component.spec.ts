@@ -1858,7 +1858,7 @@ source: mid_zoned is ev -> {
  * R4 for gated queries on rollups (known limitation 1, R3 for rollups: route,
  * then govern). With PUBLISHER_MATERIALIZE_GATED_SOURCES on, a query whose
  * entry point carries a row-level gate or lock is answered from a
- * `#(preaggregate)` rollup over its source when every gate is provable on
+ * `#(rollup)` rollup over its source when every gate is provable on
  * the rollup (each field it reads a grain dimension): the run target is
  * redeclared over the rollup in its declaring file, gates written on it, and
  * `govern()` grafts and proves them there.

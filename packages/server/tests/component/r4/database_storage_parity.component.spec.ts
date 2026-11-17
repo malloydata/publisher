@@ -215,7 +215,7 @@ ${pairSource("pairs_b")}
       // `storage=` rollup (#1704), so it is stored there too.
       const model = `source: crew is duckdb.table('crew_raw') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]${place}
+  #(rollup) grain=["flight_id"]${place}
   measure: crew_size is size.sum()
 }
 ${tier.label === "storage=" ? `#(materialize)${place}\n` : ""}source: flights is duckdb.table('flights_raw') extend {
@@ -293,7 +293,7 @@ ${tier.label === "storage=" ? `#(materialize)${place}\n` : ""}source: flights is
       ) => `source: ${name} is duckdb.table('segs_raw') extend {
   timezone: 'America/Los_Angeles'
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${place}
+  #(rollup) grain=["flight_id"]${place}
   measure: seg_miles is miles.sum()
 }`;
       // `read_segs` is joined from a source in its zone the join leg reads

@@ -384,14 +384,14 @@
   "loadWarnings": [
     {
       "code": "deprecated-preaggregate-annotation",
-      "message": "Measure v1_sibling on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "message": "Measure v1_sibling on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "v1_rollups"
     },
     {
       "code": "deprecated-preaggregate-annotation",
-      "message": "Measure v1_nested on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "message": "Measure v1_nested on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "v1_rollups"
@@ -657,7 +657,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "rollups__rollup__region__495e6697",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "rollups",
           "grainDimensions": [
@@ -692,7 +692,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "v1_rollups__rollup__region__cbe05f06",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "v1_rollups",
           "grainDimensions": [
@@ -727,7 +727,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "v1_rollups__rollup__status__1425197f",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "v1_rollups",
           "grainDimensions": [

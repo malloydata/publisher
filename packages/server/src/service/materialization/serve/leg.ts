@@ -217,7 +217,7 @@ function persistedResultLeg(
 }
 
 /**
- * Then `#(preaggregate)` rollups: the caller's text compiled where its
+ * Then `#(rollup)` rollups: the caller's text compiled where its
  * source's name means the coarsest rollup that reproduces it. A stored rollup
  * reads through `virtual()`, and a run failure on it may degrade to live,
  * since a rollup only accelerates (its binding never vetoes).

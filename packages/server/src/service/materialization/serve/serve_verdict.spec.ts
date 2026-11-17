@@ -63,7 +63,7 @@ describe("computeServeVerdicts", () => {
          plan("mat"),
          [view, { ...plan("ops__by_carrier__view")[1], sourceID: view }],
          [query, { ...plan("top__query")[1], sourceID: query }],
-         plan("roll", { origin: "preaggregate" }),
+         plan("roll", { origin: "rollup" }),
       ];
       const verdicts = computeServeVerdicts({
          ...facts(sources, {
@@ -89,7 +89,7 @@ describe("computeServeVerdicts", () => {
          ["mat", "materialize"],
          ["ops__by_carrier__view", "view"],
          ["top__query", "query"],
-         ["roll", "preaggregate"],
+         ["roll", "rollup"],
          ["refused_mat", "materialize"],
       ]);
    });
@@ -213,7 +213,7 @@ describe("computeServeVerdicts", () => {
       );
       expect(stored.verdict).toBe("serves");
       const rollup = plan("orders_rollup_1", {
-         origin: "preaggregate",
+         origin: "rollup",
          preaggregate: {
             baseSourceName: "orders",
             grainDimensions: ["region"],
@@ -227,9 +227,9 @@ describe("computeServeVerdicts", () => {
       });
    });
 
-   it("does not call a gated #(preaggregate) rollup gated out when its variant keeps the gates (row 1)", () => {
+   it("does not call a gated #(rollup) rollup gated out when its variant keeps the gates (row 1)", () => {
       const rollup = plan("orders_rollup_1", {
-         origin: "preaggregate",
+         origin: "rollup",
          preaggregate: {
             baseSourceName: "orders",
             grainDimensions: ["region"],
@@ -253,7 +253,7 @@ describe("computeServeVerdicts", () => {
    it("reads a rollup's reach and gate through its base, by name", () => {
       const asked: [string | undefined, string, string | undefined][] = [];
       const rollup = plan("orders_rollup_1", {
-         origin: "preaggregate",
+         origin: "rollup",
          preaggregate: {
             baseSourceName: "orders",
             grainDimensions: ["region"],
@@ -277,7 +277,7 @@ describe("computeServeVerdicts", () => {
          [undefined, "orders", "m.malloy"],
       ]);
       expect(verdict).toMatchObject({
-         origin: "preaggregate",
+         origin: "rollup",
          verdict: "live",
          reason: "row_level_gate",
       });
@@ -299,11 +299,12 @@ describe("computeServeVerdicts", () => {
                   reason: "authorize",
                   message: "it is gated by #(authorize)",
                },
-               // A preaggregate refusal beside a planned base adds nothing.
+               // A rollup's refusal beside its planned entry adds nothing.
                "orders@file:///pkg/m.malloy": {
                   name: "orders",
                   sourceID: "orders@file:///pkg/m.malloy",
-                  tier: "preaggregate",
+                  origin: "rollup",
+                  tier: "database",
                   reason: "authorize",
                   message: "x",
                },
@@ -317,12 +318,13 @@ describe("computeServeVerdicts", () => {
       expect(verdicts[1].message).toContain("gated by #(authorize)");
    });
 
-   it("gives a refused rollup the tier its own storage= puts it in, never its record's preaggregate", () => {
-      const refused = (name: string) => ({
+   it("gives a refused rollup the tier its record gives, and reads a record before this release as a rollup", () => {
+      const refused = (name: string, tier: string, origin?: string) => ({
          name,
          sourceID: `${name}@file:///pkg/m.preaggregate.malloy`,
          modelPath: "m.malloy",
-         tier: "preaggregate",
+         tier,
+         ...(origin ? { origin } : {}),
          reason: "hidden_field",
          message: "x",
       });
@@ -332,35 +334,30 @@ describe("computeServeVerdicts", () => {
             graphs: [],
             sources: {},
             refusedSources: Object.fromEntries(
-               ["in_lake", "in_db", "unread"].map((n) => [
-                  `${n}@file:///pkg/m.preaggregate.malloy`,
-                  refused(n),
-               ]),
+               [
+                  refused("in_lake", "storage", "rollup"),
+                  refused("in_db", "database", "rollup"),
+                  // As a release before this one wrote it.
+                  refused("legacy", "preaggregate"),
+               ].map((r) => [r.sourceID, r]),
             ),
          } as unknown as components["schemas"]["BuildPlan"],
-         refusedRollupTier: (id) =>
-            id.startsWith("in_lake@")
-               ? "storage"
-               : id.startsWith("in_db@")
-                 ? "database"
-                 : undefined,
       });
       expect(verdicts.map((v) => [v.sourceName, v.origin, v.tier])).toEqual([
-         ["in_lake", "preaggregate", "storage"],
-         ["in_db", "preaggregate", "database"],
-         // Its placement was never read: the database, as before.
-         ["unread", "preaggregate", "database"],
+         ["in_lake", "rollup", "storage"],
+         ["in_db", "rollup", "database"],
+         ["legacy", "rollup", "database"],
       ]);
    });
 
    it("gives a rollup over a storage= base its own verdict, beside its base's", () => {
-      // A `#@ preaggregate` line is planned as the `#(preaggregate)` it reads
+      // A `#@ preaggregate` line is planned as the `#(rollup)` it reads
       // as, over the author's rows, so a stored base no longer leaves its
       // rollups out: each is a planned source, bound and served on its own.
       const base = plan("daily", STORAGE);
       const rollup = plan("daily__rollup__category__1a2b3c4d", {
          ...STORAGE,
-         origin: "preaggregate",
+         origin: "rollup",
          preaggregate: {
             baseSourceName: "daily",
             grainDimensions: ["category"],
@@ -378,12 +375,7 @@ describe("computeServeVerdicts", () => {
          verdicts.map((v) => [v.sourceName, v.origin, v.verdict, v.reason]),
       ).toEqual([
          ["daily", "persist", "serves", undefined],
-         [
-            "daily__rollup__category__1a2b3c4d",
-            "preaggregate",
-            "serves",
-            undefined,
-         ],
+         ["daily__rollup__category__1a2b3c4d", "rollup", "serves", undefined],
       ]);
    });
 

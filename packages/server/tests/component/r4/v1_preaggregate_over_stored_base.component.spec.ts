@@ -4,7 +4,7 @@
 /**
  * R4 for a v1 `#@ preaggregate` over a `#@ persist storage=` base, with
  * PUBLISHER_MATERIALIZE at its default (off), where `#@ preaggregate` is the
- * spelling that builds. The line is read as a `#(preaggregate)` declaration
+ * spelling that builds. The line is read as a `#(rollup)` declaration
  * and built over the author's rows by the rollup leg, so it builds and serves
  * as that declaration would: a covered query is answered from the rollup,
  * equal to live, and an uncovered one as it was before, equal to live.

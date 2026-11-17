@@ -21,6 +21,8 @@ import type { components } from "../../../api";
 import {
    isPersistedQuerySourceID,
    isPersistedResultSourceID,
+   isRollupOrigin,
+   type TableOrigin,
 } from "../domain/table_plans";
 
 type BuildPlan = components["schemas"]["BuildPlan"];
@@ -118,7 +120,7 @@ export interface ServeVerdict {
     * (`#@ persist` on a view), `query` (`#@ persist` on a named query), or
     * `preaggregate` (a rollup).
     */
-   origin: "persist" | "materialize" | "view" | "query" | "preaggregate";
+   origin: TableOrigin;
    /** Where its table lives: the source's own connection, or a `storage=` destination. */
    tier: "database" | "storage";
    /**
@@ -211,12 +213,6 @@ export interface ServeVerdictFacts {
     * Absent: none is.
     */
    declaredMaterialize?(sourceID: string): boolean;
-   /**
-    * A refused rollup's real tier, read off its own `storage=` at plan: its
-    * refusal record says `preaggregate`. Absent, or undefined (its placement
-    * was never read), the database.
-    */
-   refusedRollupTier?(sourceID: string): "database" | "storage" | undefined;
    /** Per stored source's plan sourceID, its views' verdicts (a preview). */
    views?: ReadonlyMap<string, ViewServeVerdict[]>;
    /**
@@ -244,7 +240,7 @@ function originOf(
    rollup: boolean,
    facts: Pick<ServeVerdictFacts, "materialize" | "declaredMaterialize">,
 ): ServeVerdict["origin"] {
-   if (rollup) return "preaggregate";
+   if (rollup) return "rollup";
    if (isPersistedResultSourceID(sourceID)) {
       return isPersistedQuerySourceID(sourceID) ? "query" : "view";
    }
@@ -277,22 +273,21 @@ export function computeServeVerdicts(facts: ServeVerdictFacts): ServeVerdict[] {
    for (const [sourceID, refused] of Object.entries(
       facts.plan?.refusedSources ?? {},
    )) {
-      // A preaggregate-tier refusal sits beside its base's own plan entry,
-      // which already has a verdict.
+      // A rollup's refusal may sit beside its own plan entry, which already
+      // has a verdict.
       if (sourceID in sources) continue;
       out.push({
          sourceName: refused.name,
          sourceID,
          ...(refused.modelPath ? { modelPath: refused.modelPath } : {}),
-         origin: originOf(sourceID, refused.tier === "preaggregate", facts),
-         // The tier the table would live in: a rollup's record says
-         // `preaggregate` there, a mechanism and not a place.
-         tier:
-            refused.tier === "preaggregate"
-               ? (facts.refusedRollupTier?.(sourceID) ?? "database")
-               : refused.tier === "storage"
-                 ? "storage"
-                 : "database",
+         origin: originOf(
+            sourceID,
+            // `preaggregate` on `tier` is how a record before this release
+            // said rollup.
+            isRollupOrigin(refused.origin) || refused.tier === "preaggregate",
+            facts,
+         ),
+         tier: refused.tier === "storage" ? "storage" : "database",
          verdict: "live",
          reason: "refused",
          message: `Not built, so queries on it are answered live: ${refused.message}`,
@@ -365,7 +360,7 @@ function verdictFor(
          "row_level_gate",
          `Every published entry point that reads ${subject} carries a ` +
             `row-level gate (#(authorize) or #(access_filter)), which ` +
-            `${origin === "preaggregate" ? "a rollup" : tier === "storage" ? "the storage tier" : "this table"} cannot keep ` +
+            `${origin === "rollup" ? "a rollup" : tier === "storage" ? "the storage tier" : "this table"} cannot keep ` +
             `yet, so every query that reaches it is answered live.`,
          [
             // A database table already follows the first fix: only the
@@ -431,7 +426,7 @@ function verdictSubjectOf(
    source: PersistSourcePlan,
    facts: ServeVerdictFacts,
 ): VerdictSubject {
-   const origin = originOf(sourceID, source.origin === "preaggregate", {
+   const origin = originOf(sourceID, isRollupOrigin(source.origin), {
       materialize: facts.materialize,
    });
    const tier = planTier(source);
@@ -584,7 +579,7 @@ function boundVerdict(
       if (materialized === "not_served") return notServed();
       if (
          materialized === undefined &&
-         origin !== "preaggregate" &&
+         origin !== "rollup" &&
          !facts.servedStorageNames.has(source.name)
       ) {
          return live(

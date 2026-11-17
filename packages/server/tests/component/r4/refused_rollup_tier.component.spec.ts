@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A refused rollup's serve verdict says where its table would live. Its
- * refusal record says `tier: preaggregate` (a mechanism, kept there for one
- * more release, read by Credible's control plane) and `origin:
- * preaggregate`, and the verdict's `tier` is the rollup's own `storage=`
- * placement: a refused `storage=` rollup used to read `tier: colocated`
- * (serve_verdict.ts), because the verdict mapped every record tier that was
- * not `storage` to the database.
+ * A refused rollup's refusal record and serve verdict say where its table
+ * would live, the tier its own `storage=` puts it in, and `origin: rollup`
+ * says it is a rollup. A refused `storage=` rollup used to read
+ * `tier: colocated` on its verdict (serve_verdict.ts), and its record said
+ * `tier: preaggregate`, a mechanism and not a place.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -27,7 +25,7 @@ const model = (
 import "raw.malloy"
 
 source: orders is orders_raw extend {
-  #(preaggregate) grain=["region"]${placement}
+  #(rollup) grain=["region"]${placement}
   private measure: secret_total is amount.sum()
 }
 `;
@@ -47,7 +45,7 @@ describe("a refused rollup's serve verdict", () => {
       ["a storage= rollup", ' storage="lake"', "storage"],
       ["a database rollup", "", "database"],
    ] as const) {
-      it(`${label}: the verdict's tier is ${tier}, the record's preaggregate`, async () => {
+      it(`${label}: the record and the verdict both say ${tier}, origin rollup`, async () => {
          const loader = await loadFixture({
             ...DATA_FILES,
             "raw.malloy": RAW_MODEL,
@@ -56,17 +54,18 @@ describe("a refused rollup's serve verdict", () => {
          try {
             const refused = Object.entries(
                loader.pkg.getBuildPlan()?.refusedSources ?? {},
-            ).filter(([, r]) => r.tier === "preaggregate");
+            ).filter(([, r]) => r.origin === "rollup");
             expect(refused.length).toBe(1);
             const [sourceID, record] = refused[0];
             expect(record.reason).toBe("hidden_field");
-            expect(record.origin).toBe("preaggregate");
+            // The record's tier is the rollup's own placement too.
+            expect(record.tier).toBe(tier);
             const verdict = loader.pkg
                .materialization()
                .serveVerdicts()
                .find((v) => v.sourceID === sourceID);
             expect(verdict).toMatchObject({
-               origin: "preaggregate",
+               origin: "rollup",
                tier,
                verdict: "live",
                reason: "refused",

@@ -116,6 +116,7 @@ import { buildSource } from "./source_build";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 import { uncarryUnownedTables } from "./table_ownership";
+import { isRollupOrigin } from "../domain/table_plans";
 
 /** What a run is asked to do: createMaterialization's options, resolved. */
 export interface RunBuildOptions {
@@ -1680,7 +1681,7 @@ export class MaterializationService {
          }
          reportSourceReused(
             kindByAddress.get(address) ??
-               (entry.origin === "preaggregate" ? "rollup" : "persist"),
+               (isRollupOrigin(entry.origin) ? "rollup" : "persist"),
             entry.storageDestinationName ? "storage" : "database",
          );
       }

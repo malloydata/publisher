@@ -332,7 +332,7 @@ describe("buildQueryPath", () => {
          pick(
             buildQueryPath(
                input({
-                  catalog: catalog([planned("orders_rollup", "preaggregate")], {
+                  catalog: catalog([planned("orders_rollup", "rollup")], {
                      id_orders_rollup: "rollup_t",
                   }),
                   rollups: [
@@ -462,7 +462,7 @@ describe("buildQueryPath", () => {
    });
 
    it("maps a rollup coverage refusal to COUNT_SEMANTICS, or MISSING_FIELD past the rollup's fields", () => {
-      const rollup = planned("orders_rollup", "preaggregate");
+      const rollup = planned("orders_rollup", "rollup");
       const base = {
          catalog: catalog([rollup], { id_orders_rollup: "rollup_t" }),
          rollups: [
@@ -588,7 +588,7 @@ describe("buildQueryPath", () => {
          sourceID: `orders_rollup@file:///${modelPath}#preaggregate`,
          name: "orders_rollup",
          sourceEntityId: id,
-         origin: "preaggregate",
+         origin: "rollup",
          modelPath,
       });
       const rollups = [
@@ -791,7 +791,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       expect(storageReport.warnings?.map((w) => w.code)).toEqual(["refused"]);
 
       // Database: a rollup skipped for the gate, whose verdict is a refusal.
-      const rollup = planned("orders_rollup", "preaggregate");
+      const rollup = planned("orders_rollup", "rollup");
       const rollupInput = (isVisibleSource?: (name: string) => boolean) =>
          input({
             catalog: {
@@ -880,7 +880,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
 
       // Database: a rollup that serves other entry points (no table verdict),
       // queried through a gated source whose own verdict is the gate.
-      const rollup = planned("orders_rollup", "preaggregate");
+      const rollup = planned("orders_rollup", "rollup");
       const gated: PlannedTable = planned("orders_gated");
       const database = buildQueryPath(
          input({
@@ -959,7 +959,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
    });
 
    it("never lets the queried source's verdict replace a skip the router reached by trying the table", () => {
-      const rollup = planned("orders_rollup", "preaggregate");
+      const rollup = planned("orders_rollup", "rollup");
       const gated = planned("orders_gated");
       const report = buildQueryPath(
          input({

@@ -137,7 +137,7 @@ export interface RollupPlan {
    baseSourceID?: string;
    /**
     * The rollup's source-level freshness: what its declarations say
-    * (`freshness.window=`, `freshness.fallback=` on `#(preaggregate)` or
+    * (`freshness.window=`, `freshness.fallback=` on `#(rollup)` or
     * `#@ preaggregate`), per field over what its base's own declaration says.
     * The model-file and package layers resolve under it as for any source
     * (plan_layers.ts). Absent: neither declares any.

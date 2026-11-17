@@ -77,7 +77,7 @@ import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
 import type { KeptTable } from "./domain/types";
-import { originOfTable } from "./domain/table_plans";
+import { isRollupOrigin, originOfTable } from "./domain/table_plans";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
@@ -437,7 +437,7 @@ export class PackageMaterialization {
       }
       const ids = new Set<string>();
       for (const source of Object.values(plan?.sources ?? {})) {
-         if (source.origin === "preaggregate" && source.sourceEntityId) {
+         if (isRollupOrigin(source.origin) && source.sourceEntityId) {
             ids.add(source.sourceEntityId);
          }
       }

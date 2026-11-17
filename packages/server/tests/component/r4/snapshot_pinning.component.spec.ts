@@ -124,7 +124,7 @@ describe("C1b: a database rollup and its query read the same manifest", () => {
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: orders is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 `,

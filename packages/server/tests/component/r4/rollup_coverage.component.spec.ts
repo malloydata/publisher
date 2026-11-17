@@ -116,7 +116,7 @@ source: flights is duckdb.table('flights_raw') -> { select: * } extend {`
 }
 
 for (const [label, route] of [
-   ["v2 #(preaggregate)", `#(preaggregate) grain=["flight_id"]`],
+   ["v2 #(rollup)", `#(rollup) grain=["flight_id"]`],
    ["v1 #@ preaggregate", `#@ preaggregate grain="flight_id"`],
 ] as const) {
    describe(`R4: a ${label} rollup on a zoned source, read through a same-zone join`, () => {
@@ -194,7 +194,7 @@ const TYPED_SEED = [
 
 const ROUTES = {
    v2: (grain: string, placement: string) =>
-      `#(preaggregate) grain=["${grain}"]${placement}`,
+      `#(rollup) grain=["${grain}"]${placement}`,
    v1: (grain: string, placement: string) =>
       `#@ preaggregate grain="${grain}"${placement}`,
 };

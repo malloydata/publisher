@@ -144,7 +144,7 @@ interface ModelRollup {
    baseSourceName: string;
    baseSourceID?: string;
    /**
-    * A `#(preaggregate)` rollup, which the router's rollup leg answers on
+    * A `#(rollup)` rollup, which the router's rollup leg answers on
     * either tier (its `storage=` table too).
     */
    variant?: boolean;
@@ -184,7 +184,7 @@ interface TableState {
    binding?: StorageTable;
    /** For a rollup: its synthesized source name. */
    rollupName?: string;
-   /** A `#(preaggregate)` rollup: the rollup leg decides it on either tier. */
+   /** A `#(rollup)` rollup: the rollup leg decides it on either tier. */
    variant?: boolean;
 }
 
@@ -276,7 +276,7 @@ export interface QueryPathInput {
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
    // One decision per kind; where two candidates share a kind (the v1 and
-   // `#(preaggregate)` rollup legs), the one that answered.
+   // `#(rollup)` rollup legs), the one that answered.
    const decided = new Map<ConsideredVariant["kind"], ConsideredVariant>();
    for (const c of input.considered) {
       if (!decided.has(c.kind) || c.outcome === "used") decided.set(c.kind, c);
@@ -590,7 +590,7 @@ function storageTableDecisions(
 }
 
 /**
- * Rollups the rollup leg decides: database ones, and `#(preaggregate)` ones
+ * Rollups the rollup leg decides: database ones, and `#(rollup)` ones
  * on either tier. Returns whether a rollup answered.
  */
 function databaseRollupDecisions(
@@ -838,7 +838,7 @@ function tablesFor(
          ...(rollupName ? { rollupName } : {}),
          ...(variant ? { variant } : {}),
       };
-      // A `#(preaggregate)` table is the rollup leg's on either tier.
+      // A `#(rollup)` table is the rollup leg's on either tier.
       if (variant && binding) {
          add({ ...storageState(binding, plan, kind, fresh), ...named });
          return;
@@ -867,11 +867,11 @@ function tablesFor(
    for (const sourceID of input.chain) {
       const plan = planned?.get(sourceID);
       const binding = input.storage.all.find(
-         (b) => b.origin !== "preaggregate" && b.sourceIDs?.includes(sourceID),
+         (b) => b.origin !== "rollup" && b.sourceIDs?.includes(sourceID),
       );
       addSource(
          binding,
-         plan?.origin !== "preaggregate" ? plan : undefined,
+         plan?.origin !== "rollup" ? plan : undefined,
          "materialized",
       );
    }
@@ -886,8 +886,7 @@ function tablesFor(
       if (!baseOnChain) continue;
       const binding = input.storage.all.find(
          (b) =>
-            b.origin === "preaggregate" &&
-            b.sourceName === rollup.rollupSourceName,
+            b.origin === "rollup" && b.sourceName === rollup.rollupSourceName,
       );
       addSource(
          binding,
@@ -919,7 +918,7 @@ function planForRollup(
    rollupSourceName: string,
 ): PlannedTable | undefined {
    const named = [...(input.catalog?.planned.values() ?? [])].filter(
-      (p) => p.origin === "preaggregate" && p.name === rollupSourceName,
+      (p) => p.origin === "rollup" && p.name === rollupSourceName,
    );
    if (named.length <= 1) return named[0];
    const own = named.filter((p) => p.modelPath === input.modelPath);
@@ -934,7 +933,7 @@ function stateOfBinding(
    binding: StorageTable,
    fresh: ReadonlySet<string>,
 ): TableState {
-   const rollup = binding.origin === "preaggregate";
+   const rollup = binding.origin === "rollup";
    const plan = rollup
       ? planForRollup(input, binding.sourceName)
       : binding.sourceIDs
@@ -1006,9 +1005,7 @@ function nearbyTables(
    if (!queried || !input.catalog) return [];
    const builtStorage = new Set(
       input.storage.all.flatMap((b) =>
-         b.origin === "preaggregate"
-            ? [b.sourceName]
-            : [...(b.sourceIDs ?? [])],
+         b.origin === "rollup" ? [b.sourceName] : [...(b.sourceIDs ?? [])],
       ),
    );
    const found: (ApiNearby & { distance: number })[] = [];
@@ -1050,13 +1047,13 @@ function nearbyTables(
          built:
             !!input.catalog?.bound[table.sourceEntityId] ||
             builtStorage.has(
-               table.origin === "preaggregate" ? table.name : table.sourceID,
+               table.origin === "rollup" ? table.name : table.sourceID,
             ),
          distance,
       });
    };
    for (const p of input.catalog.planned.values()) {
-      if (p.origin !== "preaggregate") {
+      if (p.origin !== "rollup") {
          consider(p.sourceID, p, "materialized", p.name);
       }
    }

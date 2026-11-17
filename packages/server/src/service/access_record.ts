@@ -333,13 +333,7 @@ interface AccessPath {
 }
 
 /** The mechanisms a path report's `origin` names; anything else is dropped. */
-const ORIGINS = new Set([
-   "persist",
-   "materialize",
-   "view",
-   "query",
-   "preaggregate",
-]);
+const ORIGINS = new Set(["persist", "materialize", "view", "query", "rollup"]);
 
 /**
  * The access record's copy of a path report: which table answered and each

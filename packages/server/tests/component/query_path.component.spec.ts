@@ -453,7 +453,7 @@ describe("the path report over a database rollup", () => {
       );
       expect(report.servedBy).toEqual({
          kind: "rollup",
-         origin: "preaggregate",
+         origin: "rollup",
          tableId: rollupId,
          tier: "database",
       });
@@ -461,7 +461,7 @@ describe("the path report over a database rollup", () => {
          {
             tableId: rollupId,
             kind: "rollup",
-            origin: "preaggregate",
+            origin: "rollup",
             outcome: "used",
          },
       ]);
@@ -478,7 +478,7 @@ describe("the path report over a database rollup", () => {
          {
             tableId: rollupId,
             kind: "rollup",
-            origin: "preaggregate",
+            origin: "rollup",
             outcome: "skipped",
             reason: "COUNT_SEMANTICS",
             // The rollup leg's reason: the count reads the rollup's rows.
@@ -499,7 +499,7 @@ describe("the path report over a database rollup", () => {
          {
             tableId: rollupId,
             kind: "rollup",
-            origin: "preaggregate",
+            origin: "rollup",
             outcome: "skipped",
             reason: "GRAIN_TOO_COARSE",
             detail: expect.stringContaining("`amount`"),
@@ -716,7 +716,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          );
          expect(rolled.path?.servedBy).toMatchObject({
             kind: "rollup",
-            origin: "preaggregate",
+            origin: "rollup",
             tableId: rollupId,
          });
          expect(rolled.result.sql).toContain("built_rollup");

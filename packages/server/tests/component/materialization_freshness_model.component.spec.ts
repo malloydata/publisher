@@ -3,7 +3,7 @@
 
 /**
  * One freshness model: `freshness.window=` and `freshness.fallback=` mean the
- * same thing on `#@ persist`, `#(materialize)` and `#(preaggregate)`, database
+ * same thing on `#@ persist`, `#(materialize)` and `#(rollup)`, database
  * and `storage=`, built by a standalone run. End to end through a real
  * Environment and MaterializationService:
  *
@@ -83,7 +83,7 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"]${place} ${fresh}
+  #(rollup) grain=["cat"]${place} ${fresh}
   measure: amount is amt.sum()
 }
 `;

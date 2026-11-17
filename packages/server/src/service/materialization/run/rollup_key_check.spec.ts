@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The rollup key check (known limitation 29): a `#(preaggregate)` rollup
+ * The rollup key check (known limitation 29): a `#(rollup)` rollup
  * whose grain is the key of a join_one is checked, after its build, for a
  * key value its base holds more than once. Through real builds run after run
  * as auto-run drives them: the record describes the table the checking run
@@ -71,7 +71,7 @@ const SEED = [
 
 const CREW = `source: crew is duckdb.table('crew_src') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: crew_size is size.sum()
 }
 `;
@@ -356,7 +356,7 @@ ${MANY.replace(
  */
 const SEGS = `source: segments is duckdb.table('segs_src') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: seg_miles is miles.sum()
 }
 source: flights is duckdb.table('flights_src') extend {
@@ -659,7 +659,7 @@ source: crew_base is duckdb.table('crew_src') -> { select: * }
 
 source: crew is crew_base extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: crew_size is size.sum()
 }
 
@@ -1128,7 +1128,7 @@ describe("the rollup key record, bound for serving", () => {
             physicalTableName: `crew_${id}_t`,
             connectionName: "duckdb",
             storageDestinationName: "lake",
-            origin: "preaggregate",
+            origin: "rollup",
             schema: [{ name: "flight_id", type: "INTEGER" }],
             keyUniqueness: { keyColumn: "flight_id", unique },
          }) as unknown as ManifestEntry;

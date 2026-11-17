@@ -4,7 +4,7 @@
 /**
  * The v1 `#@ preaggregate` planner: turn validated declarations into rollup
  * plans, one per distinct grain, which the rollup leg reads as
- * `#(preaggregate)` plans and the build plan builds.
+ * `#(rollup)` plans and the build plan builds.
  *
  * ## Determinism is a correctness property
  *
@@ -99,7 +99,7 @@ function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
  * The container a rollup inherits from its base's database `name=`: its
  * `#@ persist name=`, else (with `materialize`, the switch that reads it) its
  * `#(materialize) name=`, everything before the last dot; undefined when there
- * is none to inherit. A rollup of a table belongs beside it, `#(preaggregate)`
+ * is none to inherit. A rollup of a table belongs beside it, `#(rollup)`
  * and `#@ preaggregate` alike.
  *
  * Read from annotations because synthesis runs before a build plan exists.

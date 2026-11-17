@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Compiles the generated `#(preaggregate)` build companion (see rollup_plan.ts),
+ * Compiles the generated `#(rollup)` build companion (see rollup_plan.ts),
  * as materialize_compile.ts compiles the `#(materialize)` one: the text is
  * served from an overlay at a URL beside the declaring model, so its `import`
  * resolves while it never shows up in `getModelPaths()`, the API or the
@@ -70,7 +70,7 @@ import {
    rollupBuildCopyText,
 } from "../text/read_text";
 import { overlayKey } from "../../overlay_key";
-import { PREAGGREGATE_NOT_BUILT_CODE } from "../../annotation_reader";
+import { ROLLUP_NOT_BUILT_CODE } from "../../annotation_reader";
 import type { PersistSource } from "@malloydata/malloy";
 import {
    ownLevelNotes,
@@ -398,8 +398,8 @@ function rollupBuildCopies(
          refused.push({
             plan,
             tier: "unservable",
-            code: PREAGGREGATE_NOT_BUILT_CODE,
-            message: `#(preaggregate) rollup of source "${plan.baseSourceName}" at (${plan.grainDimensions.join(", ")}) is not built, so its measures are served live: ${made.reason}.`,
+            code: ROLLUP_NOT_BUILT_CODE,
+            message: `#(rollup) rollup of source "${plan.baseSourceName}" at (${plan.grainDimensions.join(", ")}) is not built, so its measures are served live: ${made.reason}.`,
             sourceName: plan.baseSourceName,
             refused: measureRefusalKey(
                plan.baseSourceID,
@@ -459,8 +459,8 @@ export async function tryCompileRollupCompanion(args: {
          {
             packageRelativeSourceID: (id) =>
                packageRelativeSourceID(args.packagePath, id),
-            // v1 lines are always planned; `#(preaggregate)` only with its switch.
-            readsPreaggregateDeclarations: getMaterializeEnabled(),
+            // v1 lines are always planned; `#(rollup)` only with its switch.
+            readsRollupDeclarations: getMaterializeEnabled(),
          },
          declaredInModel(modelFile, true),
       );
@@ -496,7 +496,7 @@ export async function tryCompileRollupCompanion(args: {
          // Building over the author's files as they are would chain a rollup
          // onto its base's table; build nothing instead.
          logger.error(
-            "A #(preaggregate) companion was not built: a `#@` line of the author's files could not be left out of it",
+            "A #(rollup) companion was not built: a `#@` line of the author's files could not be left out of it",
             { modelPath: args.modelPath },
          );
          return {
@@ -556,7 +556,7 @@ export async function tryCompileRollupCompanion(args: {
       };
    } catch (error) {
       logger.error(
-         "Failed to plan or compile the generated #(preaggregate) companion",
+         "Failed to plan or compile the generated #(rollup) companion",
          {
             modelPath: args.modelPath,
             error: error instanceof Error ? error.message : String(error),
@@ -802,7 +802,7 @@ export async function compileParentKeyChecks(
       if (sql === undefined) {
          sql = compile(parentKeyCheckQuery(name, keyColumn)).catch((error) => {
             logger.warn(
-               "A source's primary key check did not compile; queries it answers through a #(preaggregate) rollup read through a join are answered live",
+               "A source's primary key check did not compile; queries it answers through a #(rollup) rollup read through a join are answered live",
                {
                   source: name,
                   keyColumn,
@@ -883,7 +883,7 @@ async function compileRollupKeyChecks(
          const sql = await materializer.loadQuery(text).getSQL();
          plan.keyCheck = { keyColumn, sql };
       } catch (error) {
-         logger.warn("A #(preaggregate) rollup's key check did not compile", {
+         logger.warn("A #(rollup) rollup's key check did not compile", {
             modelPath,
             rollup: plan.rollupSourceName,
             error: error instanceof Error ? error.message : String(error),

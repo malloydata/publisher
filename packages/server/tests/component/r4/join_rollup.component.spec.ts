@@ -4,7 +4,7 @@
 /**
  * R4 for join-to-rollup (materialization v2, phase 4, A7): with
  * PUBLISHER_MATERIALIZE on, a query on a source that reads a joined source's
- * measures is answered from the joined source's `#(preaggregate)` rollup,
+ * measures is answered from the joined source's `#(rollup)` rollup,
  * read at its grain through the re-pointed join, and equals live; a query
  * the rollup cannot reproduce is answered live with the path report's
  * reason. The fixture keeps parents with no joined rows (flight 4), a joined
@@ -49,35 +49,35 @@ const seedSql = [
 function model(placement: string): string {
    return `source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${placement}
-  #(preaggregate) grain=["flight_id", "kind"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id", "kind"]${placement}
   measure: seg_miles is miles.sum()
-  #(preaggregate) grain=["flight_id"]${placement}
-  #(preaggregate) grain=["flight_id", "kind"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id", "kind"]${placement}
   measure: longest is miles.max()
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: shortest is miles.min()
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: p_miles is miles.sum() { where: kind = 'p' }
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: spread is longest - shortest
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: seg_count is count()
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: miles_per_seg is miles.sum() / count()
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: padded_miles is sum(miles + 1)
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: floor_longest is max(coalesce(miles, 0))
 }
 
 source: crew is duckdb.table('crew_raw') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: crew_size is size.sum()
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: crew_count is count()
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: most_hours is duty_hours.max()
 }
 
@@ -395,28 +395,28 @@ source: segments is duckdb.table('segs_raw') extend {
   dimension:
     line_kind is lines.kind
     kind_or_p is coalesce(kind, 'p')
-  #(preaggregate) grain=["flight_id", "line_kind"]
+  #(rollup) grain=["flight_id", "line_kind"]
   measure: seg_miles is miles.sum()
-  #(preaggregate) grain=["flight_id", "line_kind"]
+  #(rollup) grain=["flight_id", "line_kind"]
   measure: longest is miles.max()
-  #(preaggregate) grain=["flight_id", "kind"]
+  #(rollup) grain=["flight_id", "kind"]
   measure: kind_weight is kinds.weight.sum()
-  #(preaggregate) grain=["flight_id", "kind"]
+  #(rollup) grain=["flight_id", "kind"]
   measure: heaviest is kinds.weight.max()
-  #(preaggregate) grain=["flight_id", "kind"]
+  #(rollup) grain=["flight_id", "kind"]
   measure: kind_count is kinds.count()
-  #(preaggregate) grain=["flight_id", "seg_id"]
+  #(rollup) grain=["flight_id", "seg_id"]
   measure: line_qty is lines.qty.sum()
-  #(preaggregate) grain=["flight_id", "kind_or_p"]
+  #(rollup) grain=["flight_id", "kind_or_p"]
   measure: p_weight is kinds_or_p.weight.sum()
-  #(preaggregate) grain=["flight_id", "kind_or_p"]
+  #(rollup) grain=["flight_id", "kind_or_p"]
   measure: p_kind_count is kinds_or_p.count()
 }
 source: crew is duckdb.table('crew_raw') extend {
   primary_key: flight_id
   join_many: certs on certs.flight_id = flight_id
   dimension: cert_kind is certs.kind
-  #(preaggregate) grain=["flight_id", "cert_kind"]
+  #(rollup) grain=["flight_id", "cert_kind"]
   measure: crew_size is size.sum()
 }
 source: flights is duckdb.table('flights_raw') extend {
@@ -686,17 +686,17 @@ source: crew is duckdb.table('crew_raw') extend {
   primary_key: flight_id
   join_many: certs on certs.flight_id = flight_id
   dimension: cert_kind is certs.kind
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: crew_size is size.sum()
-  #(preaggregate) grain=["flight_id", "cert_kind"]
+  #(rollup) grain=["flight_id", "cert_kind"]
   measure: crew_by_cert is size.sum()
-  #(preaggregate) grain=["flight_id", "duty_hours"]
+  #(rollup) grain=["flight_id", "duty_hours"]
   measure: crew_by_hours is size.sum()
 }
 source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
   join_one: crew with flight_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: seg_miles is miles.sum()
 }
 source: legs is duckdb.table('legs_raw') extend {
@@ -811,7 +811,7 @@ describe("R4: join-to-rollup (A7) on a gated source", () => {
 given: CARRIER :: string is 'AA'
 source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: seg_miles is miles.sum()
 }
 #(access_filter) carrier = $CARRIER
@@ -854,18 +854,18 @@ describe("R4: join-to-rollup (A7) where live and a rollup disagree by constructi
             "m.malloy": `source: segments is duckdb.table('segs_ts_raw') extend {
   primary_key: seg_id
   dimension: seg_day is seg_ts.day
-  #(preaggregate) grain=["flight_id", "seg_day"]
+  #(rollup) grain=["flight_id", "seg_day"]
   measure: seg_miles is miles.sum()
 }
 source: segs_la is duckdb.table('segs_ts_raw') extend {
   timezone: 'America/Los_Angeles'
   primary_key: seg_id
   dimension: seg_day is seg_ts.day
-  #(preaggregate) grain=["flight_id", "seg_day"]
+  #(rollup) grain=["flight_id", "seg_day"]
   measure: seg_miles is miles.sum()
 }
 source: crew_dup is duckdb.table('crew_dup_raw') extend {
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: crew_size is size.sum()
 }
 source: flights is duckdb.table('flights_raw') extend {
@@ -999,11 +999,11 @@ source: flights_la is flights extend { timezone: 'America/Los_Angeles' }
 /** The fixture's crew, a declared join_one, with flight 1 held twice. */
 const CREW_DUP_MODEL = `source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: seg_miles is miles.sum()
 }
 source: crew_dup is duckdb.table('crew_dup_raw') extend {
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: crew_size is size.sum()
 }
 source: flights is duckdb.table('flights_raw') extend {
@@ -1146,10 +1146,10 @@ const PARENT_KEY_MODEL = `source: certs is duckdb.table('certs_raw') extend {
 }
 source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]
-  #(preaggregate) grain=["flight_id", "kind"]
+  #(rollup) grain=["flight_id"]
+  #(rollup) grain=["flight_id", "kind"]
   measure: seg_miles is miles.sum()
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: key_miles is miles.sum()
 }
 source: flights is duckdb.table('flights_raw') extend {
@@ -1312,7 +1312,7 @@ given: CARRIER :: string is 'AA'
 
 source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: seg_miles is miles.sum()
 }
 source: flights_g is duckdb.table('flights_g_raw') extend {
@@ -1400,13 +1400,13 @@ function nullChildKeyModel(placement: string): string {
    return `source: certs is duckdb.table('certs_raw') extend { primary_key: cert_id }
 source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: seg_miles is miles.sum()
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: seg_count is count()
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: padded_miles is sum(miles + 1)
-  #(preaggregate) grain=["flight_id"]${placement}
+  #(rollup) grain=["flight_id"]${placement}
   measure: longest is miles.max()
 }
 source: flights is duckdb.table('flights_raw') extend {

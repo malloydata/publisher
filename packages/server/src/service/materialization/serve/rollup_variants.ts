@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Rollup variants: the router's rollup leg for `#(preaggregate)`.
+ * Rollup variants: the router's rollup leg for `#(rollup)`.
  *
  * A rollup answers a query on its base by compiling the caller's own text,
  * unchanged, in a model where the base's name means the rollup. That model is
@@ -80,7 +80,7 @@
  *
  * Rollups are offered in the plan's order, cheapest read first (coarsest,
  * then database before `storage=`); the first that answers is used. A
- * `#(preaggregate)` rollup is read only with `materialize.enabled` on; a v1
+ * `#(rollup)` rollup is read only with `materialize.enabled` on; a v1
  * `#@ preaggregate` one is read either way.
  */
 
@@ -213,7 +213,7 @@ interface RollupVariantHost {
       node: SourceNode,
       ctx: {
          packageRelativeSourceID(sourceID: string): string;
-         readsPreaggregateDeclarations?: boolean;
+         readsRollupDeclarations?: boolean;
       },
    ): { plans: RollupVariantPlan[] };
    /**
@@ -406,8 +406,8 @@ export class RollupVariantServe {
                packageRelativeSourceID: (id) =>
                   packageRelativeSourceID(packagePath, id),
                // v1 `#@ preaggregate` rollups are always routed;
-               // `#(preaggregate)` ones only with the materialize switch on.
-               readsPreaggregateDeclarations: getMaterializeEnabled(),
+               // `#(rollup)` ones only with the materialize switch on.
+               readsRollupDeclarations: getMaterializeEnabled(),
             });
             if (plans.length > 0) byBase.set(node.sourceID, plans);
          }
@@ -969,7 +969,7 @@ export class RollupVariantServe {
       if (!variant.materializer) {
          this.warnCompileFailure(
             variant,
-            "A #(preaggregate) join-to-rollup variant did not compile",
+            "A #(rollup) join-to-rollup variant did not compile",
             {
                modelPath: this.host.modelPath(),
                rollup: plan.rollupSourceName,
@@ -1110,7 +1110,7 @@ export class RollupVariantServe {
       if (!variant.materializer) {
          this.warnCompileFailure(
             variant,
-            "A #(preaggregate) join-to-rollup variant in a storage destination did not compile",
+            "A #(rollup) join-to-rollup variant in a storage destination did not compile",
             {
                modelPath: this.host.modelPath(),
                rollup: plan.rollupSourceName,
@@ -1272,7 +1272,7 @@ export class RollupVariantServe {
          // A generated model that does not compile is a publisher bug.
          this.warnCompileFailure(
             variant,
-            "A #(preaggregate) rollup variant did not compile",
+            "A #(rollup) rollup variant did not compile",
             {
                modelPath: this.host.modelPath(),
                rollup: plan.rollupSourceName,
@@ -2836,8 +2836,8 @@ function checkCoverage(
 }
 
 /**
- * The switches {@link planSourceRollups} reads, as a memo key: `#(preaggregate)`
- * with `PUBLISHER_MATERIALIZE` (`readsPreaggregateDeclarations`), and whether a gated base's rollup
+ * The switches {@link planSourceRollups} reads, as a memo key: `#(rollup)`
+ * with `PUBLISHER_MATERIALIZE` (`readsRollupDeclarations`), and whether a gated base's rollup
  * is read.
  */
 function planSwitches(): string {

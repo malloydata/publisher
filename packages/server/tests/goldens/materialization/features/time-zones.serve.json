@@ -21,8 +21,8 @@
     ],
     "warnings": [
       {
-        "code": "preaggregate-not-built",
-        "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+        "code": "rollup-not-built",
+        "message": "#(rollup) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
         "subject": "zoned.total"
       }
     ]
@@ -719,7 +719,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
@@ -754,7 +754,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
           "tier": "database"
         },
@@ -810,7 +810,7 @@
           {
             "detail": "the query sets its own time zone and reads a time the rollup stored in the model's",
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "TIME_ZONE",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -902,7 +902,7 @@
           {
             "detail": "the query sets its own time zone and reads a time the rollup stored in the model's",
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "TIME_ZONE",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -1000,7 +1000,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "orders",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -1078,7 +1078,7 @@
           {
             "detail": "the query's source sets its own time zone, and the rollup was built in its base's",
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "TIME_ZONE",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -1174,7 +1174,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "orders",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -1265,7 +1265,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "orders",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -1366,7 +1366,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "orders",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"

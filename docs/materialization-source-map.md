@@ -221,7 +221,7 @@ verdict tests stay green.
 
 ## Open points
 
-1. **One listing per rollup.** Resolved for `#(preaggregate)` (phase 4 PR 1):
+1. **One listing per rollup.** Resolved for `#(rollup)` (phase 4 PR 1):
    a rollup is planned only in the model that declares its base, keyed by its
    own `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`), so the
    build plan lists it once. `#@ preaggregate` keeps its per-model companions,

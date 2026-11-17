@@ -47,12 +47,12 @@
     "warnings": [
       {
         "code": "deprecated-preaggregate-annotation",
-        "message": "Measure v1_sibling on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "message": "Measure v1_sibling on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
         "subject": "v1_rollups"
       },
       {
         "code": "deprecated-preaggregate-annotation",
-        "message": "Measure v1_nested on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "message": "Measure v1_nested on source v1_rollups uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
         "subject": "v1_rollups"
       }
     ]
@@ -133,7 +133,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -141,7 +141,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -245,7 +245,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -253,7 +253,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -359,7 +359,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -367,7 +367,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -470,7 +470,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -478,7 +478,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -581,7 +581,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -589,7 +589,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -658,7 +658,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
           }
@@ -709,7 +709,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722",
           "tier": "storage"
         },
@@ -763,7 +763,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
           }
@@ -814,7 +814,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1",
           "tier": "storage"
         },
@@ -900,7 +900,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "rollups",
             "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
@@ -908,7 +908,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -916,7 +916,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -1020,7 +1020,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "rollups",
             "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
@@ -1028,7 +1028,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -1036,7 +1036,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -1141,7 +1141,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "rollups",
             "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
@@ -1149,7 +1149,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -1157,7 +1157,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -1270,7 +1270,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "rollups",
             "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
@@ -1278,7 +1278,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -1286,7 +1286,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -1358,7 +1358,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
           }
@@ -1399,7 +1399,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
@@ -1407,7 +1407,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "v1_rollups",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
@@ -1425,7 +1425,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed",
           "tier": "storage"
         },
@@ -1479,7 +1479,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722"
           }
@@ -1520,7 +1520,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "rollups",
             "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
@@ -1538,7 +1538,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "42131d0e5306574e7c19036d724302cd2fc2bffba934d06c111a35fe843cd722",
           "tier": "storage"
         },
@@ -1592,7 +1592,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1"
           }
@@ -1633,7 +1633,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "rollups",
             "tableId": "e7124d2ae508fd5155a0b0924e330916ddb262bdfae41dc5209e342abd15a4ed"
@@ -1651,7 +1651,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "72701c6a3e1f4dea81ae567074bc95701b01bf347a59e6f1213025eaa962fff1",
           "tier": "storage"
         },

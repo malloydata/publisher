@@ -39,7 +39,7 @@ export type MaterializationMode = (typeof MATERIALIZATION_MODES)[number];
 
 /**
  * What a build makes: `materialize` a `#(materialize)` table, `persist` a
- * `#@ persist` table, `rollup` a `#(preaggregate)` or `#@ preaggregate`
+ * `#@ persist` table, `rollup` a `#(rollup)` or `#@ preaggregate`
  * rollup, `view` a persisted view, `pair` a pair table (an inlined join_many).
  */
 export const BUILD_KINDS = [

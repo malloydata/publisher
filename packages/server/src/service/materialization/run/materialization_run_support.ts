@@ -914,7 +914,7 @@ export function refusalRecord(
    return {
       origin:
          tier === "preaggregate"
-            ? "preaggregate"
+            ? "rollup"
             : originOfTable(
                  kind ??
                     (isPersistedResultSourceID(persistSource.sourceID)

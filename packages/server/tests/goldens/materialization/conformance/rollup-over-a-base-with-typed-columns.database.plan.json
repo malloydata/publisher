@@ -229,28 +229,28 @@
   "loadWarnings": [
     {
       "code": "deprecated-preaggregate-annotation",
-      "message": "Measure big_sum on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "message": "Measure big_sum on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "typed"
     },
     {
       "code": "deprecated-preaggregate-annotation",
-      "message": "Measure dec_sum on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "message": "Measure dec_sum on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "typed"
     },
     {
       "code": "deprecated-preaggregate-annotation",
-      "message": "Measure n_by_dec on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "message": "Measure n_by_dec on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "typed"
     },
     {
       "code": "deprecated-preaggregate-annotation",
-      "message": "Measure n_by_tstz on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "message": "Measure n_by_tstz on source typed uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "typed"
@@ -299,7 +299,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "typed__rollup__dec__dadb73aa",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "typed",
           "grainDimensions": [
@@ -336,7 +336,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "typed__rollup__g__b3e24831",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "typed",
           "grainDimensions": [
@@ -370,7 +370,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "typed__rollup__tstz__7a053bfd",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "typed",
           "grainDimensions": [

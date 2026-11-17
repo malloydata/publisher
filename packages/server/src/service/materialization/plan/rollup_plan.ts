@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(preaggregate)`: reading the declarations,
+ * `#(rollup)`: reading the declarations,
  * planning the rollups, and writing their build file.
  *
  *     source: flights is duckdb.table('flights.parquet') extend {
  *       dimension: dep_day is dep_time.day
- *       #(preaggregate) grain=["carrier", "dep_day"]
+ *       #(rollup) grain=["carrier", "dep_day"]
  *       measure: flight_count is count()
  *     }
  *
@@ -107,10 +107,11 @@ import {
 } from "../../governance/ir/declared_notes";
 import { canonicalAuthorizeRoute } from "../../authorize_routes";
 import {
-   PREAGGREGATE_INVALID_CODE,
+   ROLLUP_INVALID_CODE,
+   DEPRECATED_PREAGGREGATE_ANNOTATION_CODE,
    PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
-   PREAGGREGATE_NOT_BUILT_CODE,
-   PREAGGREGATE_ROUTE_KEYS,
+   ROLLUP_NOT_BUILT_CODE,
+   ROLLUP_ROUTE_KEYS,
    routeOfNote,
    type PackageAnnotationFinding,
    type RefusalKey,
@@ -173,8 +174,16 @@ import {
 export type { ParentKeyCheck, RollupKeyCheck };
 import type { SourceMap, SourceNode } from "../text/source_map";
 
-/** The route `#(preaggregate)` is on. */
-const PREAGGREGATE_ROUTE = "preaggregate";
+/** The route `#(rollup)` is on. */
+const ROLLUP_ROUTE = "rollup";
+
+/** `#(preaggregate)`, `#(rollup)`'s deprecated spelling, read the same for one release. */
+const ROLLUP_ALIAS_ROUTE = "preaggregate";
+
+/** Whether a note is on the rollup route, under either spelling. */
+function isRollupRoute(route: string | undefined): boolean {
+   return route === ROLLUP_ROUTE || route === ROLLUP_ALIAS_ROUTE;
+}
 
 /** A v1 `#@ preaggregate` (or `#@ -preaggregate`) line. */
 const V1_PREAGGREGATE_NOTE = /^\s*#@\s*-?preaggregate\b/;
@@ -235,7 +244,7 @@ function baseGateOf(own: boolean): {
 }
 
 /**
- * A rollup the rollup leg planned: a `#(preaggregate)` one, or a v1
+ * A rollup the rollup leg planned: a `#(rollup)` one, or a v1
  * `#@ preaggregate` line read as one.
  */
 function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
@@ -251,7 +260,7 @@ function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
  * rollups): `govern()` grafts and proves the base's gates on the rollup
  * variant, so the tier checks that refuse a gated build (the database and
  * storage `authorize` refusals) do not apply to it. True only for a rollup
- * the rollup leg planned (a `#(preaggregate)` one, or a v1 `#@ preaggregate`
+ * the rollup leg planned (a `#(rollup)` one, or a v1 `#@ preaggregate`
  * line read as one) over a gated base, whose every gate the
  * planner proved exact on the rollup (table 1: each field a grain dimension,
  * no gated join), at a
@@ -315,13 +324,14 @@ export function measureRefusalKey(
    const at = table
       ? `[${[...table.grain].sort().join(",")}${table.storage !== undefined ? ` in ${table.storage}` : ""}]`
       : "";
-   const key = refusalKey(
+   // The tier its table would live in; a refusal of every rollup on a
+   // source names no table, and reads as the database's.
+   return refusalKey(
       `${name}${at}@${rollupCompanionURLOf(url)?.href ?? `${url}${ROLLUP_COMPANION_SUFFIX}`}`,
       name,
       reason,
-      "preaggregate",
+      tierOf(table?.storage),
    );
-   return table ? { ...key, rollupTier: tierOf(table.storage) } : key;
 }
 
 interface FieldLike {
@@ -411,7 +421,7 @@ function scopeOf(map: SourceMap): unknown[] {
 }
 
 /**
- * The `#(preaggregate)` notes `def`'s own statement declared on `field` (A1),
+ * The `#(rollup)` notes `def`'s own statement declared on `field` (A1),
  * by the shared rule (`declaredFieldNotes`): a note a source inherited from
  * the source it extends, renames or imports is that source's, and an
  * include-list item's note is the including source's own.
@@ -421,12 +431,12 @@ function declaredRollupNotes(
    field: FieldLike,
    scope: SourceScope,
 ): AnnotationNote[] {
-   return declaredFieldNotes(def as NotedSourceDef, field, scope).filter(
-      (n) => routeOfNote(n.text) === PREAGGREGATE_ROUTE,
+   return declaredFieldNotes(def as NotedSourceDef, field, scope).filter((n) =>
+      isRollupRoute(routeOfNote(n.text)),
    );
 }
 
-/** One `#(preaggregate)` line, read. */
+/** One `#(rollup)` line, read. */
 interface Declaration {
    measure: string;
    grain: string[];
@@ -464,45 +474,47 @@ function readDeclaration(
    const refuse = (code: string, why: string): RollupRefusal => ({
       tier: "malformed",
       code,
-      message: `#(preaggregate) on measure "${measure}" of source "${sourceName}" ${why}`,
+      message: `#(rollup) on measure "${measure}" of source "${sourceName}" ${why}`,
       sourceName,
       measure,
    });
    if (/@env\./.test(note.text)) {
       return refuse(
-         PREAGGREGATE_INVALID_CODE,
+         ROLLUP_INVALID_CODE,
          "reads the environment (`@env.`); write the value itself",
       );
    }
-   const { tag, log } = readNotes([note], PREAGGREGATE_ROUTE);
+   const { tag, log } = readNotes(
+      [note],
+      routeOfNote(note.text) ?? ROLLUP_ROUTE,
+   );
    const errors = log.filter((m) => m.severity === "error");
    if (errors.length > 0) {
       return refuse(
-         "preaggregate-unparseable",
+         "rollup-unparseable",
          `does not parse (${errors.map((e) => e.message).join("; ")})`,
       );
    }
    const keys = [...tag.entries()].map(([k]) => k);
-   const unknown = keys.filter((k) => !PREAGGREGATE_ROUTE_KEYS.has(k));
+   const unknown = keys.filter((k) => !ROLLUP_ROUTE_KEYS.has(k));
    if (unknown.length > 0) {
       return refuse(
-         "preaggregate-unknown-key",
+         "rollup-unknown-key",
          `has ${unknown.map((k) => `\`${k}=\``).join(", ")}, which it does not read; it reads grain=, storage=, name= and freshness.window= / freshness.fallback=`,
       );
    }
    const fresh = readFreshnessGroup(tag, ["freshness"]);
    if ("unknownKeys" in fresh) {
       return refuse(
-         "preaggregate-unknown-key",
+         "rollup-unknown-key",
          `has ${fresh.unknownKeys.map((k) => `\`freshness.${k}=\``).join(", ")}, which it does not read; use freshness.window= or freshness.fallback=`,
       );
    }
-   if ("invalid" in fresh)
-      return refuse(PREAGGREGATE_INVALID_CODE, fresh.invalid);
+   if ("invalid" in fresh) return refuse(ROLLUP_INVALID_CODE, fresh.invalid);
    const items = tag.array("grain");
    if (!items) {
       return refuse(
-         PREAGGREGATE_INVALID_CODE,
+         ROLLUP_INVALID_CODE,
          'needs grain=[…], a list of the dimensions to store it at, such as grain=["category"]',
       );
    }
@@ -512,14 +524,14 @@ function readDeclaration(
       grain.some((g) => typeof g !== "string" || g.trim() === "")
    ) {
       return refuse(
-         PREAGGREGATE_INVALID_CODE,
+         ROLLUP_INVALID_CODE,
          "has a grain=[…] that names nothing, or holds something other than quoted dimension names",
       );
    }
    const placed = placementOf(tag);
    if ("refused" in placed) {
       return refuse(
-         PREAGGREGATE_INVALID_CODE,
+         ROLLUP_INVALID_CODE,
          "has a storage= that is not a destination name",
       );
    }
@@ -530,7 +542,7 @@ function readDeclaration(
       namespace: keyText("namespace"),
    });
    if ("invalid" in placedIn) {
-      return refuse(PREAGGREGATE_INVALID_CODE, placedIn.invalid);
+      return refuse(ROLLUP_INVALID_CODE, placedIn.invalid);
    }
    const namespace = placedIn.container;
    const storage =
@@ -539,7 +551,7 @@ function readDeclaration(
          : undefined;
    if (storage !== undefined && namespace !== undefined) {
       return refuse(
-         PREAGGREGATE_INVALID_CODE,
+         ROLLUP_INVALID_CODE,
          `names both storage= and ${placedIn.deprecatedNamespace ? "namespace=" : "name="}; a destination places its own tables`,
       );
    }
@@ -605,21 +617,21 @@ interface RollupPlanContext {
     */
    readUnderGates?: boolean;
    /**
-    * Whether v1 `#@ preaggregate` lines are read as `#(preaggregate)`
+    * Whether v1 `#@ preaggregate` lines are read as `#(rollup)`
     * declarations. Absent: they are.
     */
    readsPreaggregateLines?: boolean;
    /**
-    * Whether `#(preaggregate)` declarations are read. Absent: they are. A
+    * Whether `#(rollup)` declarations are read. Absent: they are. A
     * caller that plans v1 rollups whatever the switch passes
-    * `getMaterializeEnabled()`, so `#(preaggregate)` stays unread with its
+    * `getMaterializeEnabled()`, so `#(rollup)` stays unread with its
     * switch off.
     */
-   readsPreaggregateDeclarations?: boolean;
+   readsRollupDeclarations?: boolean;
 }
 
 /**
- * Plan the rollups `node` declares (its own `#(preaggregate)` notes only),
+ * Plan the rollups `node` declares (its own `#(rollup)` notes only),
  * cheapest read first ({@link byReadCost}).
  */
 export function planSourceRollups(
@@ -698,7 +710,7 @@ export function planSourceRollups(
    // One table has one freshness: measures at one grain and placement that
    // declare different ones are malformed, and the rollup is not planned. A
    // conflict among v1 lines alone is v1 validation's to report
-   // (`conflicting_freshness`); one that a `#(preaggregate)` takes part in,
+   // (`conflicting_freshness`); one that a `#(rollup)` takes part in,
    // which v1 validation does not see, is reported here.
    const plans: RollupVariantPlan[] = [];
    const baseFreshness = declaredBaseFreshness(def);
@@ -710,7 +722,7 @@ export function planSourceRollups(
          if (!group.declarations.every((d) => d.v1)) {
             refused.push({
                tier: "malformed",
-               code: PREAGGREGATE_INVALID_CODE,
+               code: ROLLUP_INVALID_CODE,
                message: `rollups of source "${sourceName}" declare a different freshness.${merged.conflict}= on measures at the grain [${group.decl.grain.join(", ")}]; one grain is one rollup table, so give every measure at it the same one`,
                sourceName,
             });
@@ -723,7 +735,7 @@ export function planSourceRollups(
       if (prefixes.size > 1) {
          refused.push({
             tier: "malformed",
-            code: PREAGGREGATE_INVALID_CODE,
+            code: ROLLUP_INVALID_CODE,
             message: `rollups of source "${sourceName}" name different tables (name=) on measures at the grain [${group.decl.grain.join(", ")}]; one grain is one rollup table, so give every measure at it the same name=`,
             sourceName,
          });
@@ -757,7 +769,7 @@ function declaredBaseFreshness(def: SourceLike): DeclaredFreshness | undefined {
 }
 
 /**
- * Every rollup declaration `def` writes, its `#(preaggregate)` notes and its
+ * Every rollup declaration `def` writes, its `#(rollup)` notes and its
  * measures' own v1 `#@ preaggregate` lines, with a refusal
  * for a declaration on a field that is not a measure (malformed).
  */
@@ -771,16 +783,15 @@ function rollupDeclarationsOf(
    const fields = (def.fields ?? []) as FieldLike[];
    const sources = scopeOf(map);
    const declarations: Declaration[] = [];
-   // `#(preaggregate)` is read unless the caller reads only v1's lines below
-   // (`readsPreaggregateDeclarations: false`).
-   const readsPreaggregateDeclarations =
-      ctx.readsPreaggregateDeclarations ?? true;
+   // `#(rollup)` is read unless the caller reads only v1's lines below
+   // (`readsRollupDeclarations: false`).
+   const readsRollupDeclarations = ctx.readsRollupDeclarations ?? true;
    // One placement rule for both spellings: a grain with no container of its
    // own (and no storage=) is created beside its base's database `name=`,
    // and a deprecated `namespace=` is read with a warning naming `name=`.
    const inherited = basePersistNamespace(
       { annotations: def.annotations },
-      { materialize: readsPreaggregateDeclarations },
+      { materialize: readsRollupDeclarations },
    );
    const deprecationWarned = new Set<string>();
    const placed = (decl: Declaration): Declaration => {
@@ -803,7 +814,7 @@ function rollupDeclarationsOf(
          ? { ...decl, namespace: inherited }
          : decl;
    };
-   for (const field of readsPreaggregateDeclarations ? fields : []) {
+   for (const field of readsRollupDeclarations ? fields : []) {
       const name = fieldNameOf(field);
       if (name === undefined) continue;
       const notes = declaredRollupNotes(def, field, sources);
@@ -812,11 +823,35 @@ function rollupDeclarationsOf(
          refused.push({
             tier: "malformed",
             code: "preaggregate-not-a-measure",
-            message: `#(preaggregate) is on "${name}" of source "${sourceName}", which is not a measure; it goes on the measure to store, and the dimensions to store it at go in its grain=[…]`,
+            message: `#(rollup) is on "${name}" of source "${sourceName}", which is not a measure; it goes on the measure to store, and the dimensions to store it at go in its grain=[…]`,
             sourceName,
             measure: name,
          });
          continue;
+      }
+      const aliased = notes.filter(
+         (n) => routeOfNote(n.text) === ROLLUP_ALIAS_ROUTE,
+      );
+      if (aliased.length > 0 && aliased.length < notes.length) {
+         // One spelling per measure: two would read as two declarations of
+         // one rollup, and an author editing one would miss the other.
+         refused.push({
+            tier: "malformed",
+            code: ROLLUP_INVALID_CODE,
+            message: `measure "${name}" of source "${sourceName}" carries both #(rollup) and #(preaggregate); #(preaggregate) is #(rollup)'s deprecated spelling, so write each of its lines as #(rollup)`,
+            sourceName,
+            measure: name,
+         });
+         continue;
+      }
+      if (aliased.length > 0) {
+         refused.push({
+            tier: "deprecated",
+            code: DEPRECATED_PREAGGREGATE_ANNOTATION_CODE,
+            message: `Measure "${name}" of source "${sourceName}" is annotated #(preaggregate), the deprecated spelling of #(rollup), which takes the same keys; it is read as #(rollup) for one release. Write #(rollup).`,
+            sourceName,
+            measure: name,
+         });
       }
       for (const note of notes) {
          const read = readDeclaration(note, name, sourceName);
@@ -827,7 +862,7 @@ function rollupDeclarationsOf(
    // A measure's own v1 `#@ preaggregate` lines, read by v1's own reader (a
    // grain per line, `#@ -preaggregate` clearing those above it, `storage=`
    // and `name=` bound to their line), are this leg's declarations too,
-   // so a v1 rollup is planned, built (under the `#(preaggregate)` rollup's
+   // so a v1 rollup is planned, built (under the `#(rollup)` rollup's
    // table name) and served here. A line v1 reports as unusable is left to
    // v1's own validation. A source with a fan-out join has its v1 rollups
    // refused alone (`base_source_has_fanout_join`, which v1's validation
@@ -873,14 +908,22 @@ function rollupDeclarationsOf(
       }
    }
    // A source-level declaration names no measure.
-   for (const note of readsPreaggregateDeclarations
-      ? ownLevelNotes(def.annotations)
-      : []) {
-      if (routeOfNote(note.text) !== PREAGGREGATE_ROUTE) continue;
+   const sourceNotes = (
+      readsRollupDeclarations ? ownLevelNotes(def.annotations) : []
+   ).filter((note) => isRollupRoute(routeOfNote(note.text)));
+   if (new Set(sourceNotes.map((note) => routeOfNote(note.text))).size > 1) {
+      refused.push({
+         tier: "malformed",
+         code: ROLLUP_INVALID_CODE,
+         message: `source "${sourceName}" carries both #(rollup) and #(preaggregate); #(preaggregate) is #(rollup)'s deprecated spelling, and neither goes on a source: each goes on the measure to store`,
+         sourceName,
+      });
+   }
+   for (const note of sourceNotes) {
       refused.push({
          tier: "malformed",
          code: "preaggregate-not-a-measure",
-         message: `#(preaggregate) is on source "${sourceName}"; it goes on a measure, with the dimensions to store it at in its grain=[…]`,
+         message: `${routeOfNote(note.text) === ROLLUP_ALIAS_ROUTE ? "#(preaggregate)" : "#(rollup)"} is on source "${sourceName}"; it goes on a measure, with the dimensions to store it at in its grain=[…]`,
          sourceName,
       });
    }
@@ -1047,8 +1090,8 @@ function rollupFactsOf(
       why: string,
    ): RollupRefusal => ({
       tier: "unservable",
-      code: PREAGGREGATE_NOT_BUILT_CODE,
-      message: `#(preaggregate) on measure "${decl.measure}" of source "${sourceName}" is not built, so the measure is served live: ${why}.`,
+      code: ROLLUP_NOT_BUILT_CODE,
+      message: `#(rollup) on measure "${decl.measure}" of source "${sourceName}" is not built, so the measure is served live: ${why}.`,
       sourceName,
       measure: decl.measure,
       refused: measureRefusalKey(
@@ -1123,7 +1166,7 @@ function declarationRefusal(
       return {
          tier: "malformed",
          code: "preaggregate-unknown-grain",
-         message: `#(preaggregate) on measure "${decl.measure}" of source "${sourceName}": ${grainProblem}`,
+         message: `#(rollup) on measure "${decl.measure}" of source "${sourceName}": ${grainProblem}`,
          sourceName,
          measure: decl.measure,
       };
@@ -1288,14 +1331,14 @@ function rollupMeasureOf(
          ? {
               tier: "malformed",
               code: "preaggregate-not-mergeable",
-              message: `#(preaggregate) on measure "${decl.measure}" of source "${sourceName}": its partials cannot be merged (${d.detail}). Store sum, count, min and max measures, and derive the rest from them`,
+              message: `#(rollup) on measure "${decl.measure}" of source "${sourceName}": its partials cannot be merged (${d.detail}). Store sum, count, min and max measures, and derive the rest from them`,
               sourceName,
               measure: decl.measure,
            }
          : unservable(
               "unreadable_measure",
               decl,
-              `its definition is outside what #(preaggregate) reads (${d.detail})`,
+              `its definition is outside what #(rollup) reads (${d.detail})`,
            );
    }
    // A2: a join-level aggregate merges only when each joined row falls in
@@ -1635,7 +1678,7 @@ export function rollupRefusalFinding(
    model: string,
 ): PackageAnnotationFinding {
    return {
-      route: PREAGGREGATE_ROUTE,
+      route: ROLLUP_ROUTE,
       tier: refusal.tier,
       code: refusal.code,
       message: refusal.message,

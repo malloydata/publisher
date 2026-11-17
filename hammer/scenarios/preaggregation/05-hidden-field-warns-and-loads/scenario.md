@@ -68,7 +68,7 @@ cites: does not publicly expose
 Under the one code every rollup refused alone carries; the build plan's
 `refusedSources` holds its reason (`hidden_field`).
 
-cites: preaggregate-not-built
+cites: rollup-not-built
 
 ## Build refusals (pkg=ph)
 

@@ -1,7 +1,7 @@
 # Materialization
 
 Builds stored tables from a package's declarations (`#@ persist`,
-`#(materialize)`, `#(preaggregate)`, persisted views) and answers queries from
+`#(materialize)`, `#(rollup)`, persisted views) and answers queries from
 them when, and only when, the answer equals live. The design and its
 decisions are in [`docs/materialization-v2-plan.md`](../../../../../docs/materialization-v2-plan.md);
 this file is the map.

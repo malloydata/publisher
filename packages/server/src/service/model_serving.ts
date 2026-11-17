@@ -699,7 +699,7 @@ export class ModelServing {
                : {}),
          },
          // The served copy is the author's text, gates included, as are a
-         // persisted view's and a `#(preaggregate)` rollup's variants: a
+         // persisted view's and a `#(rollup)` rollup's variants: a
          // row-level gate is grafted and proven on its own compile, so the
          // routed answer keeps it (R3), and an answer let past an entry-point
          // gate is re-proven there. Any other routed shape carries no
@@ -760,7 +760,7 @@ export class ModelServing {
       // No post-hoc gate check is possible on a serve-shape or v1
       // `#@ preaggregate` runnable (it carries no annotations): their
       // correctness rests entirely on `queryEntryPointHasRowLevelGate`. The
-      // served copy, a persisted view and a `#(preaggregate)` rollup are the
+      // served copy, a persisted view and a `#(rollup)` rollup are the
       // exceptions (R3): each keeps the author's gates on the run target's
       // own `sourceID`, and `govern()` above grafted and proved them on its
       // own compile.

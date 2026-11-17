@@ -138,7 +138,7 @@ describe("the build-plan seam", () => {
          // two measures land in one table and one GROUP BY.
          expect(sources).toHaveLength(2);
          for (const source of sources) {
-            expect(source.origin).toBe("preaggregate");
+            expect(source.origin).toBe("rollup");
             // A rollup is declared by no file, so it reports the model holding
             // the annotations it came from — where an author would go to change it.
             expect(source.modelPath).toBe("model.malloy");
@@ -223,9 +223,9 @@ source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.s
          expect(sources).toHaveLength(2);
          expect(byOrigin.get("persist")?.name).toBe("orders");
          expect(byOrigin.get("persist")?.preaggregate ?? null).toBeNull();
-         expect(
-            byOrigin.get("preaggregate")?.preaggregate?.baseSourceName,
-         ).toBe("orders");
+         expect(byOrigin.get("rollup")?.preaggregate?.baseSourceName).toBe(
+            "orders",
+         );
       },
       { timeout: 60000 },
    );
@@ -251,7 +251,7 @@ source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.s
 `);
          const sources = planSources(pkg);
          const authored = sources.find((s) => s.origin === "persist");
-         const synthesized = sources.find((s) => s.origin === "preaggregate");
+         const synthesized = sources.find((s) => s.origin === "rollup");
          const ids = pkg.materialization().getPreaggregateEntityIds();
          expect(ids.size).toBe(1);
          expect(ids.has(synthesized!.sourceEntityId!)).toBe(true);
@@ -533,7 +533,7 @@ source: orders is duckdb.sql("""
          expect(pkg.materialization().getPreaggregateEntityIds().size).toBe(0);
          expect(
             (pkg.getPackageMetadata().warnings ?? []).map((w) => w.code),
-         ).toContain("preaggregate-not-built");
+         ).toContain("rollup-not-built");
          const model = pkg.getModel("model.malloy");
          const { compactResult } = await model!.runQuery(unrecordedAudit(), {
             query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
@@ -782,7 +782,7 @@ source: orders is duckdb.sql("""
          expect(planSources(pkg)).toHaveLength(0);
          expect(
             (pkg.getPackageMetadata().warnings ?? []).map((w) => w.code),
-         ).toContain("preaggregate-not-built");
+         ).toContain("rollup-not-built");
       },
       { timeout: 60000 },
    );

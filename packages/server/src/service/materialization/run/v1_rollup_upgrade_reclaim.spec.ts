@@ -183,7 +183,7 @@ describe("a v1 rollup table from a release that ran the cutover off, after the u
                [id]: {
                   sourceEntityId: id,
                   sourceName: OLD_TABLE,
-                  origin: "preaggregate",
+                  origin: "rollup",
                   physicalTableName: OLD_TABLE,
                   connectionName: "warehouse",
                },

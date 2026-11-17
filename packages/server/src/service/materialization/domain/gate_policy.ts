@@ -125,7 +125,7 @@ const ROWS: Record<GateKind, Row> = {
    // switch, on either tier under G3.
    materialize: (t, s) => materializedKeepsGates(t, s),
    pair: (t, s) => materializedKeepsGates(t, s),
-   // A `#(preaggregate)` rollup's variant redeclares its base with its gates,
+   // A `#(rollup)` rollup's variant redeclares its base with its gates,
    // proven on the rollup; database under the gated-sources switch, in a
    // storage destination only once that is reviewed, a v1 `#@ preaggregate`
    // line read as one alike. A rollup no variant was planned for keeps

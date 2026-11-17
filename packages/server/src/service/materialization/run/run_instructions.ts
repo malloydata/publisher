@@ -236,11 +236,7 @@ function gateSources(
                refused[persistSource.sourceID] = refusalRecord(
                   persistSource,
                   err,
-                  isRollup
-                     ? "preaggregate"
-                     : destination
-                       ? "storage"
-                       : "database",
+                  destination ? "storage" : "database",
                   compiled.tables[persistSource.sourceID]?.modelPath,
                   compiled.tables[persistSource.sourceID]?.kind,
                );
@@ -516,11 +512,7 @@ function tableNameCollision(
             `answered live.`,
          reason: "table_name_collision",
       }),
-      compiled.tables[persistSource.sourceID]?.rollup
-         ? "preaggregate"
-         : destination
-           ? "storage"
-           : "database",
+      destination ? "storage" : "database",
       compiled.tables[persistSource.sourceID]?.modelPath,
       compiled.tables[persistSource.sourceID]?.kind,
    );

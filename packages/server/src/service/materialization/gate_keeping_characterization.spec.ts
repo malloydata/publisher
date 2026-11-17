@@ -105,9 +105,9 @@ source: pair_sto is ${ROWS} extend {
 
 GATE
 source: roll is ${ROWS} extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: total_col is amount.sum()
-  #(preaggregate) grain=["category", "region"] storage="lake"
+  #(rollup) grain=["category", "region"] storage="lake"
   measure: total_sto is amount.sum()
 }
 

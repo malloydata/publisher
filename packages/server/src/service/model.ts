@@ -381,7 +381,7 @@ export class Model {
       | undefined;
    /**
     * The rollup leg: a router candidate when this model sees a rollup; a
-    * `#(preaggregate)` one is read only with `materialize.enabled` on, a v1
+    * `#(rollup)` one is read only with `materialize.enabled` on, a v1
     * `#@ preaggregate` one either way.
     */
    private rollupVariants = new RollupVariantServe({
@@ -2735,7 +2735,7 @@ export class Model {
    }
 
    /**
-    * Whether the router may try the `#(preaggregate)` rollup leg: a model file
+    * Whether the router may try the `#(rollup)` rollup leg: a model file
     * and a rollup declared on a source it sees.
     */
    private rollupVariantsEnabled(): boolean {

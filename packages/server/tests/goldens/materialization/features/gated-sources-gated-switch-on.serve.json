@@ -421,7 +421,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
           }
@@ -430,7 +430,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "by_lock",
             "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
@@ -456,7 +456,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60",
           "tier": "database"
         },
@@ -519,7 +519,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
           }
@@ -528,7 +528,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "by_column",
             "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
@@ -554,7 +554,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20",
           "tier": "database"
         },
@@ -644,7 +644,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "by_column",
             "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
@@ -652,7 +652,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "by_lock",
             "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
@@ -744,7 +744,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "by_column",
             "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
@@ -752,7 +752,7 @@
           {
             "built": true,
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "by_lock",
             "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"

@@ -80,8 +80,6 @@ export class PlanLifecycle {
    rollupsKeepingGates = new Set<string>();
    /** The base and grain of each refused rollup, by its sourceID. */
    refusedRollups: Record<string, RefusedRollup> = {};
-   /** See BuildPlanOutcome.refusedRollupTiers. */
-   refusedRollupTiers: Record<string, "database" | "storage"> = {};
    refusalNotices: RefusalNotices = {};
    /** See BuildPlanOutcome.compilerKeys. */
    compilerKeys: Record<string, string> = {};
@@ -188,7 +186,6 @@ export class PlanLifecycle {
          this.materializePlans = outcome.materializePlans;
          this.rollupsKeepingGates = new Set(outcome.rollupsKeepingGates);
          this.refusedRollups = outcome.refusedRollups;
-         this.refusedRollupTiers = outcome.refusedRollupTiers ?? {};
          this.refusalNotices = outcome.refusalNotices;
          this.compilerKeys = outcome.compilerKeys;
          this.failed = false;
@@ -237,7 +234,6 @@ export class PlanLifecycle {
          this.incrementalPolicySources = [];
          this.rollupsKeepingGates = new Set();
          this.refusedRollups = {};
-         this.refusedRollupTiers = {};
          this.refusalNotices = {};
          this.compilerKeys = {};
          recordBuildPlanComputeFailed();

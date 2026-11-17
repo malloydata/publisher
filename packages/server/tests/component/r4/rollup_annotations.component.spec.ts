@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * R4 for a `#(preaggregate)` rollup's annotations: a rollup answer returns
+ * R4 for a `#(rollup)` rollup's annotations: a rollup answer returns
  * each column with the annotations live's does (`#(classification)`, `#(doc)`,
  * render tags such as `# currency` and `# label`), on both legs (a source's
  * own rollup, database and `storage=`; a joined source's rollup read through
@@ -58,7 +58,7 @@ source: lines is duckdb.table('lines_raw') include {
   #(classification) "none"
   #(doc) "Units shipped"
   # number="#,##0.0"
-  #(preaggregate) grain=["order_id", "kind"]
+  #(rollup) grain=["order_id", "kind"]
   measure: shipped is qty.sum()
 }
 
@@ -84,8 +84,8 @@ source: orders is duckdb.table('orders_raw') include {
   #|
     # description="Net of refunds"
   |#
-  #(preaggregate) grain=["region"]${placement}
-  #(preaggregate) grain=["region", "buyer", "region_tag", "order_month"]${placement}
+  #(rollup) grain=["region"]${placement}
+  #(rollup) grain=["region", "buyer", "region_tag", "order_month"]${placement}
   measure: revenue is amount.sum()
 }
 
@@ -99,7 +99,7 @@ source: open_orders is duckdb.table('orders_raw') include {
   primary_key: id
   #(classification) "none"
   # currency
-  #(preaggregate) grain=["region"]${placement}
+  #(rollup) grain=["region"]${placement}
   measure: open_revenue is amount.sum()
 }
 `;
@@ -117,7 +117,7 @@ describe.each([
    ["database", ""],
    ["in a storage destination", ` storage="${DESTINATION}"`],
 ] as const)(
-   "R4: a #(preaggregate) rollup %s answers with live's annotations",
+   "R4: a #(rollup) rollup %s answers with live's annotations",
    (_label, placement) => {
       let fixture: R4Fixture;
       useMaterializationOn();

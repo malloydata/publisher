@@ -137,7 +137,7 @@ describe("a rollup on a source an index.malloy re-exports", () => {
          expect(JSON.stringify(result)).toContain("built_rollup");
          expect(result.path?.servedBy).toEqual({
             kind: "rollup",
-            origin: "preaggregate",
+            origin: "rollup",
             tier: "database",
             tableId: rollupId,
          });
@@ -145,7 +145,7 @@ describe("a rollup on a source an index.malloy re-exports", () => {
             {
                tableId: rollupId,
                kind: "rollup",
-               origin: "preaggregate",
+               origin: "rollup",
                outcome: "used",
             },
          ]);
@@ -154,7 +154,7 @@ describe("a rollup on a source an index.malloy re-exports", () => {
       const verdicts = pkg
          .materialization()
          .serveVerdicts()
-         .filter((v) => v.origin === "preaggregate");
+         .filter((v) => v.origin === "rollup");
       expect(verdicts.length).toBeGreaterThan(0);
       expect(verdicts.every((v) => v.verdict === "serves")).toBe(true);
    });
@@ -377,9 +377,7 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
             sourceName: entry.name,
             physicalTableName: table,
             storageDestinationName: storage,
-            ...(entry.origin === "preaggregate"
-               ? { origin: "preaggregate" }
-               : {}),
+            ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
             schema: (
                described.rows as { column_name: string; column_type: string }[]
             ).map((r) => ({ name: r.column_name, type: r.column_type })),
@@ -450,7 +448,7 @@ describe("the verdicts, path report, preview and warnings agree on one package",
 
       // The rollup on the re-exported base: serves, and the path report
       // names the rollup.
-      const rollups = verdicts.filter((v) => v.origin === "preaggregate");
+      const rollups = verdicts.filter((v) => v.origin === "rollup");
       expect(rollups.length).toBeGreaterThan(0);
       expect(rollups.every((v) => v.verdict === "serves")).toBe(true);
       const r = await query(

@@ -131,7 +131,7 @@ export interface FreshnessAwareManifestEntry {
     */
    nativeSchema?: { name: string; type: string }[];
    /**
-    * A `#(preaggregate)` rollup's key check (known limitation 29), as the
+    * A `#(rollup)` rollup's key check (known limitation 29), as the
     * auto-run that wrote or carried this table recorded it: whether the rows
     * it grouped held its one grain dimension once per value. Internal, never
     * on the wire; absent (unknown) on every entry a host's manifest binds.

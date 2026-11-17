@@ -13,6 +13,13 @@ import * as fs from "fs";
 import * as path from "path";
 import { BUILD_TIERS } from "../../materialization_metrics";
 import { tierOf } from "./plan/refusal_key";
+import {
+   DEPRECATED_PREAGGREGATE_ANNOTATION_CODE,
+   PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+   ROLLUP_INVALID_CODE,
+   ROLLUP_NOT_BUILT_CODE,
+} from "../annotation_reader";
+import { isRollupOrigin, originOf, originOfTable } from "./domain/table_plans";
 
 const API_DOC = fs.readFileSync(
    path.join(__dirname, "../../../../../api-doc.yaml"),
@@ -52,5 +59,72 @@ describe("the tier vocabulary", () => {
       const start = API_DOC.indexOf("\n    ServeVerdict:\n");
       const block = API_DOC.slice(start, start + 4000);
       expect(block).toMatch(/`database`[\s\S]*`colocated` is\s+retained/);
+   });
+});
+
+describe("the rollup vocabulary", () => {
+   it("produces rollup as a rollup's origin, and reads preaggregate as one", () => {
+      expect(originOfTable("rollup", "r@file:///m.malloy")).toBe("rollup");
+      expect(originOf("preaggregate")).toBe("rollup");
+      expect(originOf(undefined)).toBe("persist");
+      expect(isRollupOrigin("preaggregate")).toBe(true);
+      expect(isRollupOrigin("rollup")).toBe(true);
+      expect(isRollupOrigin("persist")).toBe(false);
+   });
+
+   it("names its codes for #(rollup), keeping the namespace warning's name", () => {
+      expect(ROLLUP_NOT_BUILT_CODE).toBe("rollup-not-built");
+      expect(ROLLUP_INVALID_CODE).toBe("rollup-invalid");
+      expect(DEPRECATED_PREAGGREGATE_ANNOTATION_CODE).toBe(
+         "deprecated-preaggregate-annotation",
+      );
+      expect(PREAGGREGATE_NAMESPACE_DEPRECATED_CODE).toBe(
+         "deprecated-preaggregate-namespace",
+      );
+   });
+
+   it("keeps preaggregate an accepted origin where releases wrote it, and produces none on new fields", () => {
+      for (const schema of [
+         "PersistSourcePlan",
+         "ManifestEntry",
+         "StorageServeBinding",
+      ]) {
+         expect(enumOf(schema, "origin")).toEqual([
+            "persist",
+            "materialize",
+            "view",
+            "query",
+            "rollup",
+            "preaggregate",
+         ]);
+      }
+      for (const schema of [
+         "RefusedSource",
+         "QueryPathServer",
+         "QueryPathCandidate",
+         "QueryPathNearby",
+      ]) {
+         expect(enumOf(schema, "origin")).toEqual([
+            "persist",
+            "materialize",
+            "view",
+            "query",
+            "rollup",
+         ]);
+      }
+   });
+
+   it("lists each renamed code as retained, no longer produced", () => {
+      for (const code of [
+         "preaggregate-invalid",
+         "preaggregate-unknown-key",
+         "preaggregate-unparseable",
+         "preaggregate-not-built",
+      ]) {
+         expect(API_DOC).toContain(`\`${code}\``);
+      }
+      expect(API_DOC).toMatch(
+         /`preaggregate-not-built` is retained, no longer produced/,
+      );
    });
 });

@@ -746,11 +746,11 @@ function eligibilityOf(
    // `Package.storageWarnings` and the auto-run would otherwise treat it as
    // materialized/buildable.
    //
-   // Always tier `preaggregate`, even for a storage refusal: only this tier
-   // may coexist with a `sources` entry, and it is the only provenance
-   // marking the entry as a rollup. Which gate refused is in `reason`.
+   // Its tier is where its table would live; `origin: rollup` (set on
+   // the plan's records) marks it a rollup, the one mechanism whose refusal
+   // may coexist with a `sources` entry. Which gate refused is in `reason`.
    //
-   // A `#(preaggregate)` rollup over a gated base whose gates the variant
+   // A `#(rollup)` rollup over a gated base whose gates the variant
    // grafts at read (rows 1 and 21) is not refused for them; a v1 rollup
    // always is.
    let keepsGate = false;
@@ -760,7 +760,7 @@ function eligibilityOf(
       assertDatabasePersistNotAuthorizeGated(
          source,
          source.name,
-         "preaggregate",
+         "rollup",
          table.gate,
          annotationFields,
          { gateEnforcedAtRead: keepsGate },
@@ -768,7 +768,11 @@ function eligibilityOf(
    });
    if (authorize) {
       return {
-         refused: refusal(authorize, "preaggregate", "authorize"),
+         refused: refusal(
+            authorize,
+            declaresStorage ? "storage" : "database",
+            "authorize",
+         ),
          refusal: authorize,
          inPlan: true,
       };
@@ -782,7 +786,7 @@ function eligibilityOf(
    );
    return storage
       ? {
-           refused: refusal(storage, "preaggregate", "authorize"),
+           refused: refusal(storage, "storage", "authorize"),
            refusal: storage,
            inPlan: false,
         }

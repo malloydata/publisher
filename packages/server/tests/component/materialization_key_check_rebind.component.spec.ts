@@ -590,7 +590,7 @@ describe.skipIf(!url)(
       // flight_id, its key, which must be unique.
       const MODEL = `source: crew is warehouse.table('public.crew') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"] storage="lake"
+  #(rollup) grain=["flight_id"] storage="lake"
   measure: crew_size is size.sum()
 }
 
@@ -654,7 +654,7 @@ describe.skipIf(!url)(
       // `segs`'s rollup through a join keyed on its primary key.
       const MODEL = `source: segs is warehouse.table('public.segs') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"] storage="lake"
+  #(rollup) grain=["flight_id"] storage="lake"
   measure: seg_miles is miles.sum()
 }
 

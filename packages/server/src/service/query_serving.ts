@@ -80,7 +80,7 @@ const DECLINING_LEG = {
 const SKIP_MESSAGE: Record<LegKind, string> = {
    view: "the persisted view does not answer this query",
    query: "the persisted named query does not answer this query",
-   rollup: "no #(preaggregate) rollup answers this query",
+   rollup: "no #(rollup) rollup answers this query",
    served: "served copy cannot answer this query",
 };
 
@@ -251,7 +251,7 @@ export interface QueryServingHost {
    admitsSourceByName(name: string): boolean;
    /** Every source's `sourceID` chain in the model. */
    sourceChains(): ReadonlyMap<string, readonly string[]>;
-   /** The `#(preaggregate)` rollup leg (materialization v2, phase 4). */
+   /** The `#(rollup)` rollup leg (materialization v2, phase 4). */
    readonly rollupVariants: RollupVariantServe;
    /** The `#@ persist` view leg (materialization v2, phase 4, P14). */
    readonly persistedViews: PersistedViewServe;

@@ -11,7 +11,7 @@
     "warnings": [
       {
         "code": "deprecated-preaggregate-annotation",
-        "message": "Measure total on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "message": "Measure total on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
         "subject": "orders"
       }
     ]
@@ -60,7 +60,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
@@ -78,7 +78,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
           "tier": "database"
         },
@@ -132,7 +132,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
@@ -150,7 +150,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
           "tier": "database"
         },
@@ -205,7 +205,7 @@
           {
             "detail": "the query reads `status`, which the rollup's grain does not keep",
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "GRAIN_TOO_COARSE",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -276,7 +276,7 @@
           {
             "detail": "the query aggregates `n`, which the rollup does not store",
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "MISSING_FIELD",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -346,7 +346,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
@@ -364,7 +364,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
           "tier": "database"
         },
@@ -418,7 +418,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
@@ -436,7 +436,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
           "tier": "database"
         },
@@ -491,7 +491,7 @@
           {
             "detail": "the query reads `status`, which the rollup's grain does not keep",
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "GRAIN_TOO_COARSE",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -562,7 +562,7 @@
           {
             "detail": "the query aggregates `n`, which the rollup does not store",
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "MISSING_FIELD",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"

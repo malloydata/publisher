@@ -7,7 +7,7 @@
  * builds the same small models through the real {@link MaterializationService}
  * and checks that the harness still agrees with it, table for table and
  * answer for answer, for a database `#@ persist` table, a `storage=` one, and
- * a database `#(preaggregate)` rollup. A difference here means R4 is proving
+ * a database `#(rollup)` rollup. A difference here means R4 is proving
  * something about a build no run performs.
  *
  * The storage case fakes the DuckLake seams as the other DuckLake component
@@ -76,7 +76,7 @@ source: by_cat is raw -> { group_by: cat; aggregate: total is amt.sum() }
 source: by_cat_v1 is raw -> { group_by: cat; aggregate: total is amt.sum() }
 
 source: orders is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: total is amt.sum()
 }
 `;

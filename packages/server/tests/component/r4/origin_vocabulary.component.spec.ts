@@ -46,9 +46,9 @@ source: v_base is orders_raw extend {
 query: q_lake is orders_raw -> { group_by: status; aggregate: n is count() }
 
 source: rolled is orders_raw extend {
-  #(preaggregate) grain=["region"] storage="lake"
+  #(rollup) grain=["region"] storage="lake"
   measure: total is amount.sum()
-  #(preaggregate) grain=["region"]
+  #(rollup) grain=["region"]
   private measure: secret is amount.sum()
 }
 
@@ -104,10 +104,10 @@ describe("the origin of every reported table", () => {
          (s) => s.preaggregate,
       );
       expect(rollups.length).toBeGreaterThan(0);
-      for (const r of rollups) expect(r.origin).toBe("preaggregate");
+      for (const r of rollups) expect(r.origin).toBe("rollup");
    });
 
-   it("names each refusal record by its mechanism, a rollup's tier still preaggregate", () => {
+   it("names each refusal record by its mechanism, a rollup's by its own tier", () => {
       const refused = Object.values(
          fixture!.pkg.getBuildPlan()?.refusedSources ?? {},
       );
@@ -126,8 +126,8 @@ describe("the origin of every reported table", () => {
          tier: "storage",
       });
       expect(of((r) => r.reason === "hidden_field")).toMatchObject({
-         origin: "preaggregate",
-         tier: "preaggregate",
+         origin: "rollup",
+         tier: "database",
       });
       for (const r of refused) expect(r.origin).toBeDefined();
    });
@@ -139,7 +139,7 @@ describe("the origin of every reported table", () => {
       const origins = new Set(bindings.map((b) => b.origin));
       expect(origins).toContain("persist");
       expect(origins).toContain("materialize");
-      expect(origins).toContain("preaggregate");
+      expect(origins).toContain("rollup");
    });
 
    it("names the answering table's mechanism in the path report", async () => {
@@ -151,7 +151,7 @@ describe("the origin of every reported table", () => {
          [
             "run: rolled -> { group_by: region; aggregate: total }",
             "rollup",
-            "preaggregate",
+            "rollup",
          ],
       ];
       const model = fixture!.pkg.getModel("m.malloy")!;

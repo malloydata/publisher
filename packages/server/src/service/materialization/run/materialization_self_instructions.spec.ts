@@ -440,7 +440,10 @@ describe("deriveSelfInstructions", () => {
          const { instructions, refused } = deriveWith(compiled);
 
          expect(instructions).toHaveLength(0);
-         expect(refused.rollup.tier).toBe("preaggregate");
+         expect(refused.rollup).toMatchObject({
+            origin: "rollup",
+            tier: "database",
+         });
       });
 
       it("still throws when sourceNames names the refused source", () => {

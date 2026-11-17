@@ -309,13 +309,13 @@ function assertNoInheritedGivenWhere(
  * This gate is also the ONLY authorize check on pre-aggregation: rollups are
  * synthesized as database `#@ persist` sources and no `preaggregation_*`
  * module is authorize-aware. A rollup groups across the gated column, so the
- * relaxation never applies to `origin === "preaggregate"` (pinned by the
+ * relaxation never applies to `origin === "rollup"` (pinned by the
  * rollup-shaped test in this module's spec). Do not narrow this gate without
  * accounting for that.
  *
  * `origin` names the annotation the author wrote: a rollup's name is
  * synthesized, so the refusal must point at `#@ preaggregate`, not
- * `#@ persist`. Callers pass `"preaggregate"` when
+ * `#@ persist`. Callers pass `"rollup"` when
  * the source's planned table is a `rollup`.
  *
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
@@ -325,12 +325,12 @@ function assertNoInheritedGivenWhere(
 export function assertDatabasePersistNotAuthorizeGated(
    persistSource: PersistSource,
    sourceName: string = persistSource.name,
-   origin: "persist" | "preaggregate" = "persist",
+   origin: "persist" | "rollup" = "persist",
    gateOutcome?: PersistSourceGateOutcome,
    annotationFields: Record<string, string> = {},
    options: {
       /**
-       * From {@link gateEnforcedAtRead}, for a `#(preaggregate)` rollup whose
+       * From {@link gateEnforcedAtRead}, for a `#(rollup)` rollup whose
        * base gate is grafted and proven on its variant at read (R3): skip
        * only the gate refusal.
        */
@@ -342,7 +342,7 @@ export function assertDatabasePersistNotAuthorizeGated(
       READ_ONLY_DIALECTS.has(persistSource.dialectName)
    ) {
       const what =
-         origin === "preaggregate"
+         origin === "rollup"
             ? `Pre-aggregation rollup '${sourceName}'`
             : `Source '${sourceName}'`;
       throw new MaterializationEligibilityError({
@@ -380,7 +380,7 @@ export function assertDatabasePersistNotAuthorizeGated(
       // re-emission and no fail-closed shape compile. If the rollup build ever
       // stripped its base's read-time terms, it would aggregate across every
       // caller and serve that to all of them.
-      if (origin === "preaggregate") {
+      if (origin === "rollup") {
          throw new MaterializationEligibilityError({
             reason: "given_in_persisted_query",
             message:
@@ -423,13 +423,13 @@ export function assertDatabasePersistNotAuthorizeGated(
       persistSource,
       readTimeDynamicTerms(persistSource),
       annotationFields,
-      origin === "preaggregate"
+      origin === "rollup"
          ? `Pre-aggregation rollup '${sourceName}'`
          : `Source '${sourceName}'`,
    );
 
    if (!referencesAuthorize(persistSource)) return;
-   if (origin === "preaggregate" && options.gateEnforcedAtRead) return;
+   if (origin === "rollup" && options.gateEnforcedAtRead) return;
 
    if (origin === "persist" && gateOutcome?.inheritedRowFilter) {
       throw new MaterializationEligibilityError({
@@ -464,7 +464,7 @@ export function assertDatabasePersistNotAuthorizeGated(
    // Named by the gates' kind, as the storage gate is, different cause: this
    // pass cannot prove the gate is the entry point's own row filter.
    const gated =
-      origin === "preaggregate"
+      origin === "rollup"
          ? `the source '${sourceName}' rolls up is protected by an ` +
            `#(authorize) gate (its own, a joined source's, or inherited ` +
            `from a source it derives from)`
@@ -474,7 +474,7 @@ export function assertDatabasePersistNotAuthorizeGated(
    // materialized" is already true; the fix there is making the gate the entry
    // point's OWN row filter (see `isAuthorizeAttributedToEntryPoint`).
    const remedy =
-      origin === "preaggregate"
+      origin === "rollup"
          ? `If the gate is on the rolled-up source itself, remove the ` +
            `'#@ preaggregate' annotation or move the gate to a source that ` +
            `is not pre-aggregated. If it is reached through a join or a ` +
@@ -487,14 +487,14 @@ export function assertDatabasePersistNotAuthorizeGated(
            `already not materialized -- express the condition as this ` +
            `entry point's own row-level gate, or stop persisting it.`;
    const what =
-      origin === "preaggregate"
+      origin === "rollup"
          ? `Pre-aggregation rollup '${sourceName}' cannot be built`
          : `Source '${sourceName}' cannot be materialized (database ` +
            `'#@ persist')`;
    // Only true of a rollup: it GROUPS, so the gated column is not even
    // present to filter on afterwards.
    const alsoRollup =
-      origin === "preaggregate"
+      origin === "rollup"
          ? ` A rollup also groups ACROSS the gated column, so it could not ` +
            `be row-filtered afterwards even in principle.`
          : "";
@@ -521,7 +521,7 @@ export function assertDatabasePersistNotAuthorizeGated(
 function assertDatabaseTablePlaceable(
    persistSource: PersistSource,
    sourceName: string,
-   origin: "persist" | "preaggregate",
+   origin: "persist" | "rollup",
    annotationFields: Record<string, string>,
 ): void {
    if (
@@ -534,7 +534,7 @@ function assertDatabaseTablePlaceable(
    throw new MaterializationEligibilityError({
       reason: "needs_qualified_name",
       message:
-         origin === "preaggregate"
+         origin === "rollup"
             ? `Pre-aggregation rollup '${sourceName}' cannot be built in ` +
               `its base's warehouse: its connection ` +
               `'${persistSource.connectionName}' is BigQuery, where a ` +
@@ -852,7 +852,7 @@ export function gateEnforcedAtRead(
 ): boolean {
    const table = plan?.tables?.[sourceID];
    // A rollup asks its own question: its base gates are grafted and proven on
-   // its variant (R3 for rollups), for a `#(preaggregate)` rollup and a v1
+   // its variant (R3 for rollups), for a `#(rollup)` rollup and a v1
    // `#@ preaggregate` line read as one alike.
    if (table?.rollup !== undefined) {
       return rollupGateEnforcedAtRead(table.rollup);
@@ -1041,7 +1041,7 @@ export function assertTierEligible(
    assertDatabasePersistNotAuthorizeGated(
       source,
       source.name,
-      rollup ? "preaggregate" : "persist",
+      rollup ? "rollup" : "persist",
       table?.gate,
       annotationFields,
       { gateEnforcedAtRead: !!rollup && rollupGateEnforcedAtRead(rollup) },
@@ -1102,7 +1102,7 @@ export function assertTierEligible(
  * build and serve them until the next rebuild, while a live query reads `now`
  * again every time. Not built, and answered live. `now` in the source's own
  * extend block is re-applied at every read, so it is admitted. A rollup
- * (rollup_plan.ts, `preaggregate-not-built`, reason `current_time`) and a `#(materialize)` source
+ * (rollup_plan.ts, `rollup-not-built`, reason `current_time`) and a `#(materialize)` source
  * (materialize_plan.ts) are judged by their own planners.
  */
 export function assertBuildReadsNoCurrentTime(

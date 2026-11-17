@@ -281,8 +281,8 @@ through a join, and a gate over a source whose build would substitute a given st
 tier. A v1 `#@ preaggregate` rollup over a gated source is never read past a gate, and a `storage=`
 rollup over one waits for that review.
 
-**Database `#(preaggregate)` rollups.** With `PUBLISHER_MATERIALIZE` (on by default) and
-`PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a materialization v2 `#(preaggregate)` rollup over a gated
+**Database `#(rollup)` rollups.** With `PUBLISHER_MATERIALIZE` (on by default) and
+`PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a materialization v2 `#(rollup)` rollup over a gated
 source is built in the source's own warehouse and read past the gate, the same way: the queried source
 is redeclared over the rollup with its own gates and keeps its identity, so this section's rules hold
 on it unchanged — the gate is grafted onto it per request, proven bound to the source's own field, and
@@ -292,7 +292,7 @@ read only when the gates on the rollup equal the live entry point's; otherwise t
 or the query is answered live. One table holds every caller's groups, filtered per caller at read, so the
 staleness contract above applies to it as to any database table. A rollup in a `storage=` destination
 over a gated source stays off until the managed tier's security review, and a v1 `#@ preaggregate`
-rollup is never read past a gate. See [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize).
+rollup is never read past a gate. See [preaggregation.md](preaggregation.md#rollup-materialization-v2-behind-publisher_materialize).
 
 Declare the gate the same way as on any other source — directly above the `source:` line, whether or
 not that line is also tagged `#@ persist`:

@@ -60,7 +60,7 @@ import {
    MATERIALIZE_NOT_BUILT_CODE,
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
-   PREAGGREGATE_NOT_BUILT_CODE,
+   ROLLUP_NOT_BUILT_CODE,
    persistAnnotationFindings,
    persistUnparseableFinding,
    type PackageAnnotationFinding,
@@ -93,6 +93,7 @@ import type { RollupPlan } from "../domain/rollup_measures";
 import {
    isPersistedResultSourceID,
    materializeKindOf,
+   isRollupOrigin,
    originOfTable,
    splitSourceID,
    type TableOrigin,
@@ -909,7 +910,7 @@ async function authorSourceGate(
 }
 
 /**
- * The `#(preaggregate)` rollups a model declares:
+ * The `#(rollup)` rollups a model declares:
  * one build source per rollup, planned only in the model that declares its
  * base, so a rollup is listed once however many models import the base. Each
  * keeps its compiled `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`)
@@ -949,9 +950,9 @@ async function collectGeneratedRollups(
             rollupRefusalFinding(
                {
                   tier: "unservable",
-                  code: PREAGGREGATE_NOT_BUILT_CODE,
+                  code: ROLLUP_NOT_BUILT_CODE,
                   message:
-                     `#(preaggregate) rollup of source "${plan.baseSourceName}" at ` +
+                     `#(rollup) rollup of source "${plan.baseSourceName}" at ` +
                      `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
                      "are served live: its rows read a given, and a table holds one " +
                      "value's rows.",
@@ -959,8 +960,7 @@ async function collectGeneratedRollups(
                   refused: {
                      sourceID: source.sourceID,
                      name: source.name,
-                     tier: "preaggregate",
-                     rollupTier: tierOf(plan.storage),
+                     tier: tierOf(plan.storage),
                      // A given read while the stored relation is built,
                      // as every other mechanism names it.
                      reason: "given_in_persisted_query",
@@ -1418,7 +1418,7 @@ async function collectGeneratedTables(
       });
    }
    // Rollups: v1 `#@ preaggregate` lines are read as their declarations, and
-   // `#(preaggregate)` with PUBLISHER_MATERIALIZE. A model declaring only rollups needs no
+   // `#(rollup)` with PUBLISHER_MATERIALIZE. A model declaring only rollups needs no
    // persistence flag.
    await collectGeneratedRollups(parts, {
       modelPath,
@@ -1458,7 +1458,7 @@ function v1RollupRefusals(
          {
             route: "@",
             tier: "unservable",
-            code: PREAGGREGATE_NOT_BUILT_CODE,
+            code: ROLLUP_NOT_BUILT_CODE,
             message: violation.message,
             subject: violation.fieldName ?? violation.sourceName,
             model: modelPath,
@@ -1849,7 +1849,7 @@ function refuseDatabaseTablesSharedWithARefusal(
    const v1 = (id: string) => !tables[id]?.materialize;
    const database = Object.entries(wireSources).filter(
       ([id, s]) =>
-         s.origin !== "preaggregate" && !s.annotationFields?.storage && v1(id),
+         !isRollupOrigin(s.origin) && !s.annotationFields?.storage && v1(id),
    );
    if (database.length === 0) return;
    const refusals = databaseRefusalsByAddress(
@@ -1901,7 +1901,7 @@ export interface BuildPlanOutcome {
     */
    materializePlans: Record<string, MaterializePlan>;
    /**
-    * The `#(preaggregate)` rollups over a gated base whose gates are grafted
+    * The `#(rollup)` rollups over a gated base whose gates are grafted
     * on their variant at read ({@link rollupGateEnforcedAtRead}), by their
     * sourceID, so the serve verdict does not call them gated out.
     */
@@ -1912,13 +1912,6 @@ export interface BuildPlanOutcome {
     * than the generated name (a refusal may also leave `plan.sources`).
     */
    refusedRollups: Record<string, RefusedRollup>;
-   /**
-    * Each rollup in `plan.refusedSources`, by its sourceID, and the tier its
-    * own `storage=` puts it in: its record's `tier` says `preaggregate`, and
-    * its serve verdict gives the real one. A refusal whose placement was
-    * never read (a v1 refusal of every rollup on a source) is absent.
-    */
-   refusedRollupTiers: Record<string, "database" | "storage">;
    /** See {@link RefusalNotices}. */
    refusalNotices: RefusalNotices;
    /**
@@ -1950,10 +1943,8 @@ export function projectRefusals(
    plan: BuildPlan | null;
    annotationFindings: PackageAnnotationFinding[];
    refusalNotices: RefusalNotices;
-   rollupTiers: Record<string, "database" | "storage">;
 } {
    const kept: PackageAnnotationFinding[] = [];
-   const rollupTiers: Record<string, "database" | "storage"> = {};
    const refusedSources: Record<string, WireRefusedSource> = {
       ...(plan?.refusedSources ?? {}),
    };
@@ -1967,7 +1958,6 @@ export function projectRefusals(
       }
       moved = true;
       if (refusedSources[key.sourceID]) continue;
-      if (key.rollupTier) rollupTiers[key.sourceID] = key.rollupTier;
       refusedSources[key.sourceID] = {
          name: key.name,
          sourceID: key.sourceID,
@@ -1984,14 +1974,11 @@ export function projectRefusals(
       };
       recordEligibilityRefused(key.reason);
    }
-   if (!moved) {
-      return { plan, annotationFindings: kept, refusalNotices, rollupTiers };
-   }
+   if (!moved) return { plan, annotationFindings: kept, refusalNotices };
    return {
       plan: { ...(plan ?? { graphs: [], sources: {} }), refusedSources },
       annotationFindings: kept,
       refusalNotices,
-      rollupTiers,
    };
 }
 
@@ -2084,7 +2071,7 @@ export function deriveBuildPlanOutcome(
          relaxedCollision(f, getPersistCollisionEnforce()),
       ),
    );
-   const { annotationFindings, refusalNotices, rollupTiers } = projected;
+   const { annotationFindings, refusalNotices } = projected;
    const plan = withRefusalOrigins(
       projected.plan,
       compiled.tables,
@@ -2115,11 +2102,6 @@ export function deriveBuildPlanOutcome(
          .map(([sourceID]) => sourceID)
          .sort(),
       refusedRollups: refusedRollupsOf(plan, compiled.tables),
-      refusedRollupTiers: refusedRollupTiersOf(
-         plan,
-         compiled.tables,
-         rollupTiers,
-      ),
       compilerKeys: compilerKeysOf(compiled),
    };
 }
@@ -2239,7 +2221,7 @@ const ORIGIN_OF_NOT_BUILT_CODE: Readonly<Record<string, TableOrigin>> = {
    [MATERIALIZE_NOT_BUILT_CODE]: "materialize",
    [PERSIST_VIEW_NOT_BUILT]: "view",
    [PERSIST_QUERY_NOT_BUILT]: "query",
-   [PREAGGREGATE_NOT_BUILT_CODE]: "preaggregate",
+   [ROLLUP_NOT_BUILT_CODE]: "rollup",
 };
 
 /**
@@ -2257,7 +2239,8 @@ function withRefusalOrigins(
    const refused = plan?.refusedSources;
    if (!plan || !refused || Object.keys(refused).length === 0) return plan;
    const originOf = (sourceID: string, tier: string): TableOrigin => {
-      if (tier === "preaggregate") return "preaggregate";
+      // How a record before this release said rollup.
+      if (tier === "preaggregate") return "rollup";
       if (isPersistedResultSourceID(sourceID)) {
          return originOfTable("view", sourceID);
       }
@@ -2278,37 +2261,15 @@ function withRefusalOrigins(
    };
 }
 
-/** {@link BuildPlanOutcome.refusedRollupTiers}. */
-function refusedRollupTiersOf(
-   plan: BuildPlan | null,
-   tables: Readonly<Record<string, Pick<TablePlan, "rollup">>>,
-   fromRefusals: Readonly<Record<string, "database" | "storage">>,
-): Record<string, "database" | "storage"> {
-   const out: Record<string, "database" | "storage"> = {};
-   for (const [sourceID, refused] of Object.entries(
-      plan?.refusedSources ?? {},
-   )) {
-      if (refused.tier !== "preaggregate") continue;
-      const rollup = tables[sourceID]?.rollup as
-         | { storage?: string }
-         | undefined;
-      const tier = rollup ? tierOf(rollup.storage) : fromRefusals[sourceID];
-      if (tier) out[sourceID] = tier;
-   }
-   return out;
-}
-
 /** {@link BuildPlanOutcome.refusedRollups}. */
 function refusedRollupsOf(
    plan: BuildPlan | null,
    tables: Readonly<Record<string, Pick<TablePlan, "rollup">>>,
 ): Record<string, RefusedRollup> {
    const out: Record<string, RefusedRollup> = {};
-   for (const [sourceID, refused] of Object.entries(
-      plan?.refusedSources ?? {},
-   )) {
+   for (const sourceID of Object.keys(plan?.refusedSources ?? {})) {
       const rollup = tables[sourceID]?.rollup;
-      if (refused.tier !== "preaggregate" || !rollup) continue;
+      if (!rollup) continue;
       out[sourceID] = {
          baseSourceName: rollup.baseSourceName,
          grainDimensions: rollup.grainDimensions,

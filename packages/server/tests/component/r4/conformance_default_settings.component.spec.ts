@@ -5,7 +5,7 @@
  * Every conformance shape under the shipped default, which no
  * other spec runs. The default turns `PUBLISHER_MATERIALIZE` on, so the
  * `#(materialize)` shapes run here too; 6f found one defect only the default
- * reached when it was off (the cutover read `#(preaggregate)` with it off),
+ * reached when it was off (the cutover read `#(rollup)` with it off),
  * which `preaggregate_variants.spec.ts` pins with the switch set `false`.
  * Here only `PERSIST_STORAGE_MODE=on` is set: each query is answered live
  * before any table is bound, then after the bind, and the two must agree on

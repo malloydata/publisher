@@ -69,7 +69,7 @@ source: sb_viewed is sb_orders extend {
 query: sb_query is sb_orders -> { group_by: g; aggregate: total is amount.sum() }
 
 source: sb_rolled is sb_orders extend {
-  #(preaggregate) grain=[g] storage="lake"
+  #(rollup) grain=[g] storage="lake"
   measure: total is amount.sum()
 }
 
@@ -284,7 +284,7 @@ describe.skipIf(!url)(
             ["materialize-not-built", /^sb_materialized$/],
             ["persist-view-not-built", /by_g/],
             ["persist-query-not-built", /sb_query/],
-            ["preaggregate-not-built", /sb_rolled/],
+            ["rollup-not-built", /sb_rolled/],
          ] as const) {
             const warning = refused(code, subject);
             expect(warning, `${code} ${subject}`).toBeDefined();

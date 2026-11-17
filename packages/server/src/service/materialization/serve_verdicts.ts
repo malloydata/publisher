@@ -10,6 +10,7 @@
  * Effects: logs a verdict that cannot be computed, and reports none.
  */
 
+import { isRollupOrigin, originOf } from "./domain/table_plans";
 import { isSourceDef, type SourceDef } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../../config";
 import { logger } from "../../logger";
@@ -189,9 +190,9 @@ export class ServeVerdicts {
             name: source.name,
             sourceEntityId: source.sourceEntityId,
             ...(compilerKey ? { compilerKey } : {}),
-            origin: source.origin ?? "persist",
+            origin: originOf(source.origin),
             ...(source.modelPath ? { modelPath: source.modelPath } : {}),
-            ...(source.origin === "preaggregate"
+            ...(isRollupOrigin(source.origin)
                ? { columns: declaredColumnsOfPlan(source.columns) }
                : {}),
          });
@@ -330,7 +331,7 @@ export class ServeVerdicts {
          // rollup's leg past a gate, with its variant proven at plan; the
          // served copy over a table it keeps the gate on.
          keepsGate: (sourceID, tier) => {
-            if (buildPlan?.sources?.[sourceID]?.origin === "preaggregate") {
+            if (isRollupOrigin(buildPlan?.sources?.[sourceID]?.origin)) {
                return (
                   legMayPassGate("rollup", switches, SERVING_GATE_CONTEXT) &&
                   plan.rollupsKeepingGates.has(sourceID)
@@ -369,7 +370,6 @@ export class ServeVerdicts {
          persistedViewOf: (sourceID) => persistedViews.get(sourceID),
          declaredMaterialize: (sourceID) =>
             this.declaredMaterialize(buildPlan, sourceID),
-         refusedRollupTier: (sourceID) => plan.refusedRollupTiers[sourceID],
          views,
          destinationConfigured: (name) => this.destinationConfigured(name),
          connectionCanHoldTable: (name) =>
@@ -510,7 +510,7 @@ export class ServeVerdicts {
       const refused = eligibility.refused[source.sourceEntityId];
       if (refused !== undefined) return refused;
       if (
-         source.origin !== "preaggregate" &&
+         !isRollupOrigin(source.origin) &&
          !eligibility.eligibleEntityIds.has(source.sourceEntityId)
       ) {
          return never;
@@ -583,7 +583,7 @@ export class ServeVerdicts {
          if (v.verdict === "live" && v.reason === "refused") {
             return { ...v, cutoverPath: "live", cutoverReason: "refused" };
          }
-         if (v.origin === "preaggregate") {
+         if (v.origin === "rollup") {
             return { ...v, cutoverPath: "rollup" };
          }
          // A row-level gate declared on a base the re-root replaces cannot
@@ -630,7 +630,7 @@ export class ServeVerdicts {
          plan.buildPlan?.sources ?? {},
       )) {
          const destinationName = source.annotationFields?.storage?.trim();
-         if (!destinationName || source.origin === "preaggregate") continue;
+         if (!destinationName || isRollupOrigin(source.origin)) continue;
          const schema = (source.columns ?? []).flatMap((column) => {
             const type = PREVIEW_STORED_TYPES[String(column.type ?? "")];
             return column.name && type ? [{ name: column.name, type }] : [];

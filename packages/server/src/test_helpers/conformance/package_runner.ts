@@ -232,7 +232,7 @@ export interface LoadedFixture {
 /** How {@link loadFixture}'s `bind` builds the plan. */
 export interface BindOptions {
    /**
-    * Build the `#(preaggregate)` and `#@ preaggregate` rollups too (default
+    * Build the `#(rollup)` and `#@ preaggregate` rollups too (default
     * false: most callers serve no rollup, so they build none).
     */
    includeRollups?: boolean;
@@ -422,7 +422,7 @@ export async function loadFixture(
             verdicts: pkg
                .materialization()
                .serveVerdicts()
-               .filter((v) => v.origin !== "preaggregate")
+               .filter((v) => v.origin !== "rollup")
                .map(
                   (v) =>
                      `${v.sourceName}:${v.verdict}${v.reason ? `:${v.reason}` : ""}`,
@@ -595,11 +595,11 @@ async function buildAll(
    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "conform-build-"));
    // The declaring source first, so a table is recorded under it rather than
    // an extension that inherits its annotation.
-   // Rollups only when asked (`#@ preaggregate`, `#(preaggregate)`), each
+   // Rollups only when asked (`#@ preaggregate`, `#(rollup)`), each
    // recorded with its origin, as a build records it.
    const entries = Object.entries(pkg.getBuildPlan()?.sources ?? {})
       .map(([sourceID, e]) => ({ ...e, sourceID }))
-      .filter((e) => options.includeRollups || e.origin !== "preaggregate")
+      .filter((e) => options.includeRollups || e.origin !== "rollup")
       .sort(
          (a, b) =>
             Number(b.annotationFields?.name === b.name) -
@@ -659,7 +659,7 @@ async function buildAll(
             : !!entry.annotationFields?.name?.trim();
          const base = (entry.annotationFields?.name || entry.name).trim();
          const table =
-            declared || entry.origin === "preaggregate"
+            declared || entry.origin === "rollup"
                ? base
                : readableTableName({
                     identity: {

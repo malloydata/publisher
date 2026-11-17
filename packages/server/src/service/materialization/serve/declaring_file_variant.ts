@@ -4,7 +4,7 @@
 /**
  * The declaring-file overlay both router legs that compile a caller's text
  * over a stored table share: the persisted-view leg (`view_variants.ts`) and
- * the `#(preaggregate)` rollup leg (`rollup_variants.ts`).
+ * the `#(rollup)` rollup leg (`rollup_variants.ts`).
  *
  * The queried source is redeclared IN AN OVERLAY OF ITS OWN DECLARING FILE,
  * over the stored table, so it keeps the author's `sourceID`, with the

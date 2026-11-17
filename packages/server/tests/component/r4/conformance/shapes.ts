@@ -15,7 +15,7 @@
  *    warehouse)
  *
  * `@PREAGG(dim)` marks a rollup measure (`#@ preaggregate grain=…`, with
- * `storage=` for the `storage` variant, and `#(preaggregate)` for
+ * `storage=` for the `storage` variant, and `#(rollup)` for
  * `materialize`, with `storage=` for `materialize` alone), and `@PVIEW(name)` a persisted view (`#@ persist name=…`).
  *
  * A shape lists its queries and, per variant and switch, any outcome main does
@@ -135,8 +135,8 @@ export function renderFiles(
                : variant === "database"
                  ? `#@ preaggregate grain="${grain}"`
                  : variant === "materialize_database"
-                   ? `#(preaggregate) grain=["${grain}"]`
-                   : `#(preaggregate) grain=["${grain}"] storage="lake"`,
+                   ? `#(rollup) grain=["${grain}"]`
+                   : `#(rollup) grain=["${grain}"] storage="lake"`,
          )
          .replace(/@PVIEW\(([^)]*)\)/g, (_m, name: string) =>
             variant === "storage"
@@ -1544,7 +1544,7 @@ source: east_west_ext is east_west extend {
    },
    {
       name: "v1 rollup on annotated measures",
-      about: "A #@ preaggregate rollup over measures carrying # currency and #(doc) (v2: #(preaggregate)); the v1 cutover's G4",
+      about: "A #@ preaggregate rollup over measures carrying # currency and #(doc) (v2: #(rollup)); the v1 cutover's G4",
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"

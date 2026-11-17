@@ -438,7 +438,7 @@ source: orders__preagg__category is orders -> {
          assertDatabasePersistNotAuthorizeGated(
             sources.orders__preagg__category,
             sources.orders__preagg__category.name,
-            "preaggregate",
+            "rollup",
          );
       } catch (err) {
          message = (err as Error).message;
@@ -548,7 +548,7 @@ source: scoped__preagg__category is scoped -> {
          assertDatabasePersistNotAuthorizeGated(
             sources.scoped__preagg__category,
             sources.scoped__preagg__category.name,
-            "preaggregate",
+            "rollup",
          );
       } catch (caught) {
          err = caught as MaterializationEligibilityError;
@@ -1212,7 +1212,7 @@ source: orders__preagg__category is orders -> {
             assertDatabasePersistNotAuthorizeGated(
                sources.orders__preagg__category,
                sources.orders__preagg__category.name,
-               "preaggregate",
+               "rollup",
                { classification: "row_level", attributed: true },
             ),
          ).toThrow(/authorize/i);
@@ -1576,7 +1576,7 @@ source: join_arg_read is withjoin -> { group_by: n is j.nm }`);
          assertDatabasePersistNotAuthorizeGated(
             sources.inside,
             "orders__preagg__category",
-            "preaggregate",
+            "rollup",
          ),
       ).toThrow(/Pre-aggregation rollup/i);
    });
@@ -1617,11 +1617,7 @@ describe("read-only dialect (database persist)", () => {
          dialectName: "sqlserver",
       });
       expect(() =>
-         assertDatabasePersistNotAuthorizeGated(
-            source,
-            source.name,
-            "preaggregate",
-         ),
+         assertDatabasePersistNotAuthorizeGated(source, source.name, "rollup"),
       ).toThrow(
          /Pre-aggregation rollup 'orders__preagg' cannot be materialized/,
       );
@@ -1642,7 +1638,7 @@ describe("read-only dialect (database persist)", () => {
          assertDatabasePersistNotAuthorizeGated(
             source,
             source.name,
-            "preaggregate",
+            "rollup",
             undefined,
             { storage: "lake" },
          ),

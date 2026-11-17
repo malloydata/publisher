@@ -116,7 +116,7 @@
         "considered": [
           {
             "kind": "rollup",
-            "origin": "preaggregate",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "b906e0e0262575336fd7818bd022af2ec363e5c343e122a47563845a657351bd"
           }
@@ -134,7 +134,7 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "origin": "preaggregate",
+          "origin": "rollup",
           "tableId": "b906e0e0262575336fd7818bd022af2ec363e5c343e122a47563845a657351bd",
           "tier": "storage"
         },

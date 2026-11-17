@@ -370,9 +370,9 @@ describe("R4 (rollup database): a rollup table whose column types drifted", () =
          files: {
             "m.malloy": `##! experimental { persistence }
 source: ev is duckdb.table('ev') extend {
-  #(preaggregate) grain=["flag"]
+  #(rollup) grain=["flag"]
   measure: hi is amt.max()
-  #(preaggregate) grain=["id"]
+  #(rollup) grain=["id"]
   measure: c is count()
 }
 `,

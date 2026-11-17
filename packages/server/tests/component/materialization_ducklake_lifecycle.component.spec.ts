@@ -96,7 +96,7 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: amount is amt.sum()
 }
 `;
@@ -505,7 +505,7 @@ describe.skipIf(process.platform === "win32")(
          }
          expect(daily.origin).toBeUndefined();
          expect(orders.origin).toBeUndefined();
-         expect(sales.origin).toBe("preaggregate");
+         expect(sales.origin).toBe("rollup");
          expect(daily.schema).toEqual([
             { name: "cat", type: "VARCHAR" },
             { name: "total", type: "DECIMAL(38,1)" },
@@ -2288,7 +2288,7 @@ source: sb_viewed is sb_raw extend {
 query: sb_query is sb_raw -> { group_by: cat; aggregate: total is amt.sum() }
 
 source: sb_sales is sb_raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: total is amt.sum()
 }
 `,
@@ -2315,7 +2315,7 @@ source: sb_sales is sb_raw extend {
                "persist-not-built:sb_daily",
                "persist-query-not-built:sb_query__query",
                "persist-view-not-built:sb_viewed__by_cat__view",
-               "preaggregate-not-built:sb_sales",
+               "rollup-not-built:sb_sales",
                // No repeat under the former `persist-source-refused`: no
                // earlier release raised this refusal.
             ].sort(),

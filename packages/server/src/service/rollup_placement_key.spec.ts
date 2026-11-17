@@ -7,7 +7,7 @@
  * table is created in, and its leaf takes the place of the readable prefix
  * (`<leaf>__p<hash>`, where it would read `<pkg>__<file>__<base>_by_<grain>`),
  * as a `name=` does under `scope: "version"`; the hash, and so uniqueness,
- * stays Publisher's. On `#(preaggregate)` and `#@ preaggregate` alike.
+ * stays Publisher's. On `#(rollup)` and `#@ preaggregate` alike.
  * `namespace=`, the older spelling of the container, is read for one more
  * release with a `deprecated-preaggregate-namespace` warning, in the same
  * container under the readable prefix. A
@@ -68,7 +68,7 @@ function tablesOf(
 /** The rollup findings, as [code, subject]. */
 function findingsOf(compiled: FinishedBuildPlan): [string, string][] {
    return (compiled.annotationFindings ?? [])
-      .filter((f) => f.route === "preaggregate")
+      .filter((f) => f.route === "rollup")
       .map((f) => [f.code, f.subject ?? ""] as [string, string])
       .sort();
 }
@@ -85,10 +85,7 @@ const prefixed = (container: string, leaf: string) =>
 
 describe("a rollup's name= places its table", () => {
    for (const [spelling, line] of [
-      [
-         "#(preaggregate)",
-         '#(preaggregate) grain=["category"] name="analytics.anything"',
-      ],
+      ["#(rollup)", '#(rollup) grain=["category"] name="analytics.anything"'],
       [
          "#@ preaggregate",
          '#@ preaggregate grain="category" name="analytics.anything"',
@@ -118,7 +115,7 @@ describe("a rollup's name= places its table", () => {
       const as = async (placement: string, v1: boolean) =>
          compile(
             `source: orders is ${ROWS} extend {
-  ${v1 ? `#@ preaggregate grain="category" ${placement}` : `#(preaggregate) grain=["category"] ${placement}`}
+  ${v1 ? `#@ preaggregate grain="category" ${placement}` : `#(rollup) grain=["category"] ${placement}`}
   measure: total is amount.sum()
 }
 `,
@@ -162,7 +159,7 @@ describe("a rollup's name= places its table", () => {
       ["a name= ending as Publisher's own names do", 'name="a.t__p0123abcd"'],
       [
          "two leaves at one grain",
-         'name="a.t"\n  #(preaggregate) grain=["category"] name="a.u"',
+         'name="a.t"\n  #(rollup) grain=["category"] name="a.u"',
       ],
       ["both name= and namespace=", 'name="a.t" namespace="a"'],
       ["both name= and storage=", 'name="a.t" storage="lake"'],
@@ -170,13 +167,13 @@ describe("a rollup's name= places its table", () => {
       it(`fails the load for ${label}`, async () => {
          const { compiled } = await compile(
             `source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"] ${placement}
+  #(rollup) grain=["category"] ${placement}
   measure: total is amount.sum()
 }
 `,
          );
          const invalid = (compiled.annotationFindings ?? []).filter(
-            (f) => f.code === "preaggregate-invalid",
+            (f) => f.code === "rollup-invalid",
          );
          expect(invalid.map((f) => f.tier)).toEqual(["malformed"]);
       });
@@ -187,7 +184,7 @@ describe("a rollup's name= leaf with no container", () => {
    it("is lowercased in the table's name, and otherwise written as it reads", async () => {
       const { compiled, packagePath } = await compile(
          `source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"] name="OrdersRollup"
+  #(rollup) grain=["category"] name="OrdersRollup"
   measure: total is amount.sum()
 }
 `,
@@ -200,7 +197,7 @@ describe("a rollup's name= leaf with no container", () => {
    it("names its table in the connection's default schema", async () => {
       const { compiled, packagePath } = await compile(
          `source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"] name="orders_rollup"
+  #(rollup) grain=["category"] name="orders_rollup"
   measure: total is amount.sum()
 }
 `,
@@ -223,10 +220,10 @@ describe("a rollup with no placement of its own takes its base's name= container
          const { compiled, packagePath } = await compile(
             `${declaration}
 source: orders is ${ROWS} -> { select: * } extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   #@ preaggregate grain="category"
   measure: total is amount.sum()
-  #(preaggregate) grain=["region"] name="other.t"
+  #(rollup) grain=["region"] name="other.t"
   measure: n is count()
 }
 `,
@@ -246,7 +243,7 @@ source: orders is ${ROWS} -> { select: * } extend {
       const { compiled, packagePath } = await compile(
          `#(materialize) name="analytics.orders_t" storage="lake"
 source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 `,
@@ -265,7 +262,7 @@ describe("a rollup's name= never takes another table (#1794)", () => {
       const { compiled, packagePath } = await compile(
          `#(materialize) name="analytics.orders_t"
 source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"] name="analytics.orders_t"
+  #(rollup) grain=["category"] name="analytics.orders_t"
   measure: total is amount.sum()
 }
 `,
@@ -288,11 +285,11 @@ source: orders is ${ROWS} extend {
          first: string,
          second: string,
       ) => `source: a is ${ROWS} extend {
-  #(preaggregate) grain=["category"] ${first}
+  #(rollup) grain=["category"] ${first}
   measure: total is amount.sum()
 }
 source: b is ${ROWS} extend {
-  #(preaggregate) grain=["category"] ${second}
+  #(rollup) grain=["category"] ${second}
   measure: total is amount.sum()
 }
 `;
@@ -323,8 +320,8 @@ source: b is ${ROWS} extend {
    it("gives one grain placed in two containers two tables at two addresses", async () => {
       const { compiled, packagePath } = await compile(
          `source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"] name="a.t"
-  #(preaggregate) grain=["category"] name="b.t"
+  #(rollup) grain=["category"] name="a.t"
+  #(rollup) grain=["category"] name="b.t"
   measure: total is amount.sum()
 }
 `,

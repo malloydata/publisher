@@ -42,7 +42,7 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: amount is amt.sum()
 }
 
@@ -127,9 +127,7 @@ function bindMistyped(pkg: Package): Record<string, string> {
          sourceName: source.name,
          physicalTableName: `t_${source.sourceEntityId.slice(0, 12)}`,
          storageDestinationName: destination,
-         ...(source.origin === "preaggregate"
-            ? { origin: "preaggregate" }
-            : {}),
+         ...(source.origin === "rollup" ? { origin: "rollup" } : {}),
          schema,
       };
    }
@@ -193,7 +191,7 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: amount is amt.sum()
 }
 `;

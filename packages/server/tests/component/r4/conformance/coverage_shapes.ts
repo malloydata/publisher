@@ -18,7 +18,7 @@ const HEADER = "##! experimental { persistence }";
 export const COVERAGE_SHAPES: Shape[] = [
    {
       name: "rollup read through named views and extensions",
-      about: "A rollup (v1 #@ preaggregate; v2 #(preaggregate)) answering a named view, a view refined from it, and an extension of its base that adds a dimension over the grain. Join-to-rollup is r4/rollup_coverage, whose build checks the parent key the leg needs",
+      about: "A rollup (v1 #@ preaggregate; v2 #(rollup)) answering a named view, a view refined from it, and an extension of its base that adds a dimension over the grain. Join-to-rollup is r4/rollup_coverage, whose build checks the parent key the leg needs",
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -126,7 +126,7 @@ source: typed is duckdb.sql("""
    },
    {
       name: "rollup over a base with an array column",
-      about: "A #(preaggregate) rollup over a base carrying an array column outside its grain (v1 #@ preaggregate refuses that base as a fan-out join and fails the load: r4/coverage_refusals)",
+      about: "A #(rollup) rollup over a base carrying an array column outside its grain (v1 #@ preaggregate refuses that base as a fan-out join and fails the load: r4/coverage_refusals)",
       variants: ["materialize", "materialize_database"],
       files: {
          "m.malloy": `${HEADER}
@@ -151,7 +151,7 @@ source: listed is duckdb.sql("""
    },
    {
       name: "rollup over a zoned base",
-      about: "A rollup declared on a source that sets its own timezone:, as v1 #@ preaggregate and as v2 #(preaggregate): both are refused (preaggregate-not-built, reason time_zone), so every query answers live",
+      about: "A rollup declared on a source that sets its own timezone:, as v1 #@ preaggregate and as v2 #(rollup): both are refused (rollup-not-built, reason time_zone), so every query answers live",
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"

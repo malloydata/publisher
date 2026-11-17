@@ -3,7 +3,7 @@
 
 /**
  * R4 for join-to-rollup in a storage destination (materialization v2, A7,
- * known limitation 26): a joined source's `#(preaggregate) storage=` rollup is
+ * known limitation 26): a joined source's `#(rollup) storage=` rollup is
  * read through the join when the query's source is stored in the same
  * destination (a `#(materialize) storage=` table, or a `#@ persist storage=`
  * source) and served through the served copy. The variant declares the query
@@ -57,29 +57,29 @@ const S = ` storage="${DESTINATION}"`;
 /** The joined sources, with their rollups in the destination. */
 const children = `source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${S}
-  #(preaggregate) grain=["flight_id", "kind"]${S}
+  #(rollup) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id", "kind"]${S}
   measure: seg_miles is miles.sum()
-  #(preaggregate) grain=["flight_id"]${S}
-  #(preaggregate) grain=["flight_id", "kind"]${S}
+  #(rollup) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id", "kind"]${S}
   measure: longest is miles.max()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: shortest is miles.min()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: p_miles is miles.sum() { where: kind = 'p' }
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: spread is longest - shortest
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: seg_count is count()
 }
 
 source: crew is duckdb.table('crew_raw') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: crew_size is size.sum()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: crew_count is count()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: most_hours is duty_hours.max()
 }
 `;
@@ -391,9 +391,9 @@ describe("R4: join-to-rollup in a storage destination, the joined source stored 
             "m.malloy": `#(materialize)${S}
 source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: seg_miles is miles.sum()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: longest is miles.max()
 }
 
@@ -527,7 +527,7 @@ source: flights is duckdb.table('flights_raw') extend {
 #(access_filter) kind = 'p'
 source: p_segs is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id", "kind"]${S}
+  #(rollup) grain=["flight_id", "kind"]${S}
   measure: p_seg_miles is miles.sum()
 }
 
@@ -683,7 +683,7 @@ describe("R4: join-to-rollup in a storage destination, over a source with its ow
    const zonedModel = `source: segs_la is duckdb.table('segs_raw') extend {
   timezone: 'America/Los_Angeles'
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: seg_miles is miles.sum()
 }
 #(materialize)${S}
@@ -842,11 +842,11 @@ describe("R4: join-to-rollup (A7) in a storage destination, the joined source's 
             "m.malloy": `##! experimental.access_modifiers
 source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: seg_miles is miles.sum()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: seg_count is count()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: longest is miles.max()
 }
 #(materialize)${S}

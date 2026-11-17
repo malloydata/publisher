@@ -6,7 +6,7 @@
  * planned table with its kind fixed at plan, and, as plain data the build and
  * the serving legs both read, a `#(materialize)` source's plan (its stored
  * columns, read-time terms, pair layout and the bases its served copy keeps),
- * a persisted view's and a persisted named query's, a `#(preaggregate)`
+ * a persisted view's and a persisted named query's, a `#(rollup)`
  * rollup's and a table's classified gate, with the one reader of the
  * `sourceID` that keys each of them.
  *
@@ -498,13 +498,13 @@ export interface RollupMeasure {
 }
 
 /**
- * One `#(preaggregate)` rollup: one base, one grain, one placement, one table.
+ * One `#(rollup)` rollup: one base, one grain, one placement, one table.
  * A {@link RollupPlan} for the build plan's plumbing (its wire `preaggregate`
  * entry, eligibility and run instructions), with what the variant needs.
  */
 export interface RollupVariantPlan extends RollupPlan {
    /**
-    * Marks a rollup the rollup leg plans and serves: a `#(preaggregate)`
+    * Marks a rollup the rollup leg plans and serves: a `#(rollup)`
     * one, or a v1 `#@ preaggregate` line read as one.
     */
    variant: true;
@@ -646,14 +646,32 @@ type TableKind = "persist" | "materialize" | "pair" | "rollup" | "view";
  * `origin` the wire reports on a plan entry, a refusal record, a storage
  * binding and the path report. `persist` is `#@ persist` on a source,
  * `materialize` is `#(materialize)`, `view` and `query` are `#@ persist` on
- * a view or a named query, and `preaggregate` is a rollup.
+ * a view or a named query, and `rollup` is a rollup (`#(rollup)`, or v1's
+ * `#@ preaggregate`).
  */
 export type TableOrigin =
    | "persist"
    | "materialize"
    | "view"
    | "query"
-   | "preaggregate";
+   | "rollup";
+
+/**
+ * Whether an `origin` names a rollup: `rollup`, or `preaggregate`, the word
+ * releases before this one wrote, which a host may still echo back on a
+ * manifest entry it stored.
+ */
+export function isRollupOrigin(origin: string | null | undefined): boolean {
+   return origin === "rollup" || origin === "preaggregate";
+}
+
+/** An `origin` as read off a plan or an entry: `preaggregate` read as `rollup`, absent as `persist`. */
+export function originOf(
+   origin: TableOrigin | "preaggregate" | null | undefined,
+): TableOrigin {
+   if (origin === "preaggregate") return "rollup";
+   return origin ?? "persist";
+}
 
 /** A table's origin, from its kind and its sourceID (a view's or a query's). */
 export function originOfTable(
@@ -662,7 +680,7 @@ export function originOfTable(
 ): TableOrigin {
    switch (kind) {
       case "rollup":
-         return "preaggregate";
+         return "rollup";
       case "materialize":
       case "pair":
          return "materialize";

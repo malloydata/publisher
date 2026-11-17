@@ -330,7 +330,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "lines__rollup__order_id__906dde44",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "lines",
           "grainDimensions": [
@@ -367,7 +367,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "lines__rollup__order_id_sku__c5895963",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "lines",
           "grainDimensions": [
@@ -407,7 +407,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders__rollup__m_region__7877d8b1",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "orders",
           "grainDimensions": [
@@ -441,7 +441,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders__rollup__region__409e9efb",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "orders",
           "grainDimensions": [

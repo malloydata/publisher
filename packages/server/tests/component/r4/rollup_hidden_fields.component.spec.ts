@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * R4 for a rollup's hidden fields (coverage row `b-hidden`), for `#(preaggregate)`
+ * R4 for a rollup's hidden fields (coverage row `b-hidden`), for `#(rollup)`
  * and `#@ preaggregate`, in the source's own database and in a `storage=`
  * destination:
  *
@@ -48,7 +48,7 @@ function files(mechanism: Mechanism, storage: string): Record<string, string> {
    const pre = (grain: string[]) =>
       mechanism === "v1"
          ? `#@ preaggregate grain="${grain.join(",")}"${storage}`
-         : `#(preaggregate) grain=[${grain.map((g) => `"${g}"`).join(", ")}]${storage}`;
+         : `#(rollup) grain=[${grain.map((g) => `"${g}"`).join(", ")}]${storage}`;
    return {
       "m.malloy": `##! experimental { access_modifiers }
 import "elsewhere.malloy"

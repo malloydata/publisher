@@ -35,6 +35,7 @@ import {
    isPersistedQuerySourceID,
    type MaterializePlan,
    type StoredColumn,
+   isRollupOrigin,
    type TableOrigin,
 } from "../domain/table_plans";
 import { capabilitiesOf } from "../domain/dialect";
@@ -305,7 +306,7 @@ interface DatabasePlanSource {
    sourceEntityId: string;
    connectionName: string;
    dialect?: string;
-   origin?: TableOrigin;
+   origin?: TableOrigin | "preaggregate";
    annotationFields?: Record<string, string>;
 }
 
@@ -347,7 +348,7 @@ export function deriveDatabaseServeBindings(args: {
    const bindings: Binding[] = [];
    for (const [sourceID, source] of Object.entries(planSources)) {
       const plan = materializePlans[sourceID];
-      if (source.origin === "preaggregate") continue;
+      if (isRollupOrigin(source.origin)) continue;
       if (!plan && (!args.v1Schema || args.notV1?.(sourceID))) continue;
       // A `storage=` table is bound from the storage manifest, never here.
       if (
