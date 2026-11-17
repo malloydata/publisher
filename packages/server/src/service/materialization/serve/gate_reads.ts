@@ -345,10 +345,13 @@ class GateReadWalk {
    /**
     * The `where:` terms that scope the rows read from `source`, each field
     * path read by `at` (which resolves it from where the walk started,
-    * through the joins that reached `source`). Stops at a source whose table
-    * the answer reads: its build applied every `where:` inside it before the
-    * table was written, so no read of the table applies them again. A source
-    * that extends it is not stopped at, and judges the terms it inherits.
+    * through the joins that reached `source`). At a source whose table the
+    * answer reads, its own query (the base it runs on, and each stage's
+    * `where:`) is not walked: the build applied it before the table was
+    * written. Everything applied when the table is read is still judged: the
+    * source's own `where:` (a term that reads a given is never in the build,
+    * and a `#@ persist` source's never is), its joins' own `where:`, and its
+    * composite members'. A source that extends it judges what it inherits.
     */
    scope(
       source: unknown,
@@ -363,14 +366,15 @@ class GateReadWalk {
          filterList?: unknown;
          query?: QueryLike;
       };
-      if (typeof s.sourceID === "string" && this.stored.has(s.sourceID)) return;
       for (const f of Array.isArray(s.filterList) ? s.filterList : []) {
          this.scoped = true;
          for (const p of fieldPathsIn((f as { e?: unknown }).e)) at(p);
       }
       this.scopeMembers(source, depth, at, own);
       this.scopeJoins(source, depth, at);
-      if (s.query !== undefined) {
+      const built =
+         typeof s.sourceID === "string" && this.stored.has(s.sourceID);
+      if (s.query !== undefined && !built) {
          this.scopeQuery(source, s.query, depth);
       }
    }
@@ -446,8 +450,9 @@ class GateReadWalk {
  * source, back through each stage of its query to the fields of the source
  * the query runs on, until it reaches a column. `modelDef` resolves a
  * stage's source when it is named rather than inline. `stored` names (by
- * `sourceID`) the sources whose tables the answer reads: a `where:` inside
- * one was applied by its build and is not a scope of the read.
+ * `sourceID`) the sources whose tables the answer reads: the query one runs
+ * was applied by its build and is not a scope of the read; what is applied
+ * when its table is read still is.
  *
  * The scope is every term that scopes the rows, not only one that reads a
  * given: a scope written as a literal (`acct = 9007199254740993`) merges
