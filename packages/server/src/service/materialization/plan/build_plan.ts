@@ -104,7 +104,14 @@ import {
    pairFullRefreshFinding,
 } from "./materialize_plan";
 import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
-import { tryCompileMaterializeCompanion } from "./materialize_compile";
+import {
+   tryCompileMaterializeCompanion,
+   type CrossFileCompanions,
+} from "./materialize_compile";
+export {
+   newCrossFileCompanions,
+   type CrossFileCompanions,
+} from "./materialize_compile";
 import {
    persistedQueryRefusalFinding,
    persistedQueryRefusalKey,
@@ -773,6 +780,7 @@ async function collectGeneratedMaterialize(
       malloyModel: MalloyModel;
       materializer: ModelMaterializer;
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
+      crossFileCompanions?: CrossFileCompanions;
    },
 ): Promise<MaterializedBases | undefined> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
@@ -781,6 +789,8 @@ async function collectGeneratedMaterialize(
          ...args,
          contents: authorDef.contents ?? {},
          givens: authorDef.givens ?? {},
+         sourceRegistry: (authorDef as { sourceRegistry?: unknown })
+            .sourceRegistry,
          // P9's probes compile against the author's model, never run.
          probe: args.materializer,
       },
@@ -1235,6 +1245,12 @@ export async function collectModelBuildPlan(
        * worker, whose plan crosses to the main thread as data.
        */
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
+      /**
+       * The package plan's companions of cross-file parents' files
+       * (materialize_compile.ts), shared by every model the plan collects;
+       * absent, each model compiles its own.
+       */
+      crossFileCompanions?: CrossFileCompanions;
    },
 ): Promise<void> {
    await collectGeneratedTables(parts, args);
@@ -1273,6 +1289,7 @@ async function collectGeneratedTables(
       malloyModel,
       getRuntime,
       keyCheckCompilers,
+      crossFileCompanions,
    } = args;
    // The model's own load-failure lines, read off the author's model as the
    // load reads them (Model.preaggregateViolations, annotationNearMisses).
@@ -1313,6 +1330,7 @@ async function collectGeneratedTables(
          malloyModel,
          materializer,
          keyCheckCompilers,
+         crossFileCompanions,
       });
       // `#@ persist` on a view (P14), under the same switch.
       await collectGeneratedPersistedViews(parts, {

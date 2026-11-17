@@ -60,6 +60,10 @@ import {
    type StoredRollupBase,
 } from "./storage_build_strategy";
 import {
+   storageBuildCasts,
+   storedColumnTypeMismatches,
+} from "../stored_column_types";
+import {
    computeSourceEntityId,
    deriveAnnotationFields,
    tierGateInputs,
@@ -797,7 +801,15 @@ export class InstructedBuild {
       if (!gated) return;
       const { instruction, sourceEntityId, target } = gated;
       const { compiled } = run;
-      const storedBase = storedRollupBase(run, persistSource, gated);
+      // Set by the `storage=` build when it grouped the base's stored table.
+      let stacked = false;
+      const offered = storedRollupBase(run, persistSource, gated);
+      const storedBase = offered && {
+         ...offered,
+         onStacked: () => {
+            stacked = true;
+         },
+      };
       const built = await this.buildGatedSource(
          run,
          (await overStoredBaseSource(run, persistSource, gated)) ??
@@ -810,7 +822,7 @@ export class InstructedBuild {
       if (!built) return;
       // A `storage=` rollup that grouped its base's stored table is anchored
       // at that table, as a colocated one is.
-      if (storedBase && built.upstreamReuse === "reused") {
+      if (storedBase && stacked) {
          (run.readFrom ??= new Map()).set(sourceEntityId, [storedBase.address]);
       }
       const entry = withRollupUpstreamReuse(
@@ -818,6 +830,7 @@ export class InstructedBuild {
          persistSource,
          sourceEntityId,
          built,
+         stacked,
       );
       run.builtSources.push(persistSource.name);
       reportSourceBuilt(
@@ -2232,6 +2245,25 @@ function storedRollupBase(
    if (!baseFreshEnough(run, gated.sourceEntityId, address, entry)) {
       return undefined;
    }
+   // The table must hold every column the base's current build writes, each
+   // of a physical type that serves as its declared type: a carried table
+   // whose types drifted is not grouped as if it were the base.
+   let declared: ReturnType<typeof storageBuildCasts>["declaredColumns"];
+   try {
+      declared = storageBuildCasts(base.source).declaredColumns;
+   } catch {
+      return undefined;
+   }
+   const stored = entry.schema.flatMap((c) =>
+      c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+   );
+   const storedNames = new Set(stored.map((c) => c.name));
+   if (
+      declared.some((c) => !storedNames.has(c.name)) ||
+      storedColumnTypeMismatches(stored, declared).length > 0
+   ) {
+      return undefined;
+   }
    return {
       baseSourceID: table.storedBase.baseSourceID,
       baseName: base.source.name,
@@ -2255,12 +2287,10 @@ function withRollupUpstreamReuse(
    persistSource: PersistSource,
    address: string,
    entry: ManifestEntry,
+   /** A `storage=` rollup's build grouped its base's stored table. */
+   stackedOnBase = false,
 ): ManifestEntry {
-   // A `storage=` build reports what it stacked on itself (stackOnParents).
-   if (
-      run.compiled.tables[persistSource.sourceID]?.kind !== "rollup" ||
-      entry.storageDestinationName
-   ) {
+   if (run.compiled.tables[persistSource.sourceID]?.kind !== "rollup") {
       return entry;
    }
    const {
@@ -2268,7 +2298,12 @@ function withRollupUpstreamReuse(
       upstreamRecomputeReason: _reason,
       ...rest
    } = entry;
-   return run.readFrom?.has(address)
-      ? { ...rest, upstreamReuse: "reused" }
-      : rest;
+   // Colocated: it read the base's table exactly when the run recorded it
+   // (overStoredBaseSource). `storage=`: exactly when it stacked on the
+   // base's stored table in its destination; one built from the warehouse
+   // says nothing, as a colocated one does.
+   const read = entry.storageDestinationName
+      ? stackedOnBase
+      : run.readFrom?.has(address) === true;
+   return read ? { ...rest, upstreamReuse: "reused" } : rest;
 }

@@ -39,6 +39,7 @@ import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
+import { StorageBuildStrategy } from "../../src/service/materialization/run/storage_build_strategy";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type {
    Materialization,
@@ -460,6 +461,8 @@ describe.skipIf(process.platform === "win32")(
          const m = await build({ sourceNames: [rollupName] });
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
          const rollup = entryOf(m, /^daily__rollup__/);
+         // It read the warehouse, and says nothing of a stored upstream.
+         expect(rollup.upstreamReuse).toBeUndefined();
          expect(warehouseReads()).toHaveLength(1);
          expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
          expect(await storedRows(rollup.physicalTableName)).toEqual(
@@ -507,10 +510,33 @@ describe.skipIf(process.platform === "win32")(
             null,
          ]);
          const windowed = entryOf(third, /^daily__rollup__/);
+         expect(windowed.upstreamReuse).toBeUndefined();
          expect(warehouseReads()).toHaveLength(1);
          expect(createdBy(windowed.physicalTableName)).toContain(RAW_MARK);
          expect(await storedRows(windowed.physicalTableName)).toEqual(
             await plannedRows(windowed),
+         );
+      });
+
+      it("builds a storage= rollup from the warehouse, saying so, when its base's build fails in the same run", async () => {
+         await setUp({ "m.malloy": ROLLUP_MODEL });
+         const build_ = StorageBuildStrategy.prototype.build;
+         spies.push(
+            spyOn(StorageBuildStrategy.prototype, "build").mockImplementation(
+               async function (this: StorageBuildStrategy, params) {
+                  if (params.persistSource.name === "daily") {
+                     throw new Error("the base's build failed");
+                  }
+                  return build_.call(this, params);
+               },
+            ),
+         );
+         const m = await build();
+         const rollup = entryOf(m, /^daily__rollup__/);
+         expect(rollup.upstreamReuse).toBeUndefined();
+         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(await storedRows(rollup.physicalTableName)).toEqual(
+            await plannedRows(rollup),
          );
       });
 

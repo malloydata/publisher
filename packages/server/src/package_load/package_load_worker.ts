@@ -111,9 +111,11 @@ import {
    emptyBuildPlanParts,
    finishBuildPlan,
    mergeBuildPlanParts,
+   newCrossFileCompanions,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanParts,
+   type CrossFileCompanions,
    type WirePackageMaterialization,
 } from "../service/materialization/plan/build_plan";
 import type {
@@ -978,6 +980,11 @@ interface LoadContext {
    softDeadline: number;
    /** Each `.malloy` model's plan parts, when the request asked for a plan. */
    planParts?: Map<string, BuildPlanParts>;
+   /**
+    * The companions of cross-file parents' files, compiled once for the
+    * package's plan and shared by every model it collects.
+    */
+   crossFileCompanions?: CrossFileCompanions;
    /** Each model's position in the package's model order. */
    modelOrder: Map<string, number>;
    /** A model failed in a load that wants a plan, which fails anyway; stop the work. */
@@ -1272,6 +1279,8 @@ async function prepareForMainThread(
             malloyModel: model.model,
             runtime: model.runtime,
             getRuntime: companionRuntime,
+            crossFileCompanions: (load.crossFileCompanions ??=
+               newCrossFileCompanions()),
          });
          load.planParts?.set(modelPath, parts);
       } catch (error) {

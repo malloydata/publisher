@@ -216,6 +216,8 @@ export interface StoredRollupBase {
    address: string;
    entry: ManifestEntry;
    companion: { url: string; text: string };
+   /** Called when the build grouped the base's stored table. */
+   onStacked?: () => void;
 }
 
 /** What every stage of one source's storage build reads. */
@@ -771,8 +773,9 @@ export class StorageBuildStrategy
       if (dependsOnStorageUpstream) {
          ({ result, upstreamRecomputeReason } = await this.stackOnParents(ctx));
       } else if (params.storedBase) {
-         result = await this.stackRollupOnStoredBase(ctx, params.storedBase);
-         stackedOnBase = result !== undefined;
+         ({ result, stacked: stackedOnBase } =
+            await this.stackRollupOnStoredBase(ctx, params.storedBase));
+         if (stackedOnBase) params.storedBase.onStacked?.();
       }
 
       // Recompute from raw: run `buildSQL` (storage upstreams inlined) in the
@@ -990,14 +993,14 @@ export class StorageBuildStrategy
     * rollup's own build file over it, compiled and run on the destination
     * alone, so nothing reads the warehouse. Only a table with the columns,
     * and the column types, the planned (warehouse) build writes is kept.
-    * Undefined when the rollup cannot be built that way: it is then built
-    * from the warehouse, as planned, with the same rows. A failure of the
+    * Not `stacked` when the rollup cannot be built that way: it is then
+    * built from the warehouse, as planned, with the same rows. A failure of the
     * destination itself is thrown, as the recompute would meet it too.
     */
    async stackRollupOnStoredBase(
       ctx: StorageBuildContext,
       base: StoredRollupBase,
-   ): Promise<StorageBuildResult | undefined> {
+   ): Promise<{ result?: StorageBuildResult; stacked: boolean }> {
       const { params, destinationName, destinationConnection } = ctx;
       const { persistSource, environment, physicalTableName } = {
          ...params,
@@ -1008,7 +1011,7 @@ export class StorageBuildStrategy
             "A storage= rollup did not build over its base's stored table; it builds from the warehouse",
             { sourceName: persistSource.name, destinationName, detail },
          );
-         return undefined;
+         return { stacked: false };
       };
       if (!environment.chainBuildText) {
          return declined("this package has no served copy to write it from");
@@ -1062,7 +1065,7 @@ export class StorageBuildStrategy
                }),
          );
          recordChainedStorageBuild("parent_reuse");
-         return result;
+         return { result, stacked: true };
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;
          return declined(errMessage(err));

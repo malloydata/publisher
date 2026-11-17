@@ -164,6 +164,18 @@ export async function tryCompileMaterializeCompanion(args: {
     * already on it is not compiled again (an import cycle).
     */
    crossFileStack?: ReadonlySet<string>;
+   /**
+    * Each model file's companion as a cross-file parent's file, compiled
+    * once per package plan and shared by every file that imports it, and by
+    * the companions compiled for it in turn (see {@link crossFileParents}).
+    */
+   crossFileCompanions?: CrossFileCompanions;
+   /**
+    * The author model's source registry, with `contents` what a later
+    * model's cross-file walk reads of this one when it finds this model's
+    * companion in {@link crossFileCompanions}.
+    */
+   sourceRegistry?: unknown;
 }): Promise<{
    generated?: GeneratedMaterialize;
    refused: MaterializeRefusal[];
@@ -205,6 +217,30 @@ export async function tryCompileMaterializeCompanion(args: {
       );
       round = await withoutLeakedBuilds(round, compile, modelFile, refused);
       round = await withCrossFileColumnsKept(round, compile, args, foreign);
+      // Shared with every later model that imports this one: its companion
+      // is not compiled again as a cross-file parent's.
+      if (
+         round.generated &&
+         args.crossFileCompanions &&
+         !args.crossFileCompanions.has(modelFile)
+      ) {
+         const generated = withStoredColumns(round.generated);
+         args.crossFileCompanions.set(
+            modelFile,
+            GeneratedFiles.over(args.getRuntime)
+               .read(pathToFileURL(modelFile))
+               .then((text) => ({
+                  generated,
+                  text,
+                  modelFile,
+                  modelDef: {
+                     contents: args.contents,
+                     sourceRegistry: args.sourceRegistry,
+                  } as unknown as ReturnType<typeof modelDefOf>,
+               }))
+               .catch(() => undefined),
+         );
+      }
       return round.generated
          ? { generated: withStoredColumns(round.generated), refused }
          : { refused };
@@ -615,8 +651,8 @@ async function compileCompanion(
    const dir = path.dirname(modelFile);
    // The companions of the files a cross-file parent is declared in, which
    // a build copy's re-rooted parent imports its build source from, at
-   // their own URLs: the same text there as in that file's own companion,
-   // so the parent's build source is the same build.
+   // their own URLs: the same build sources there as in that file's own
+   // companion, so the parent's build source is the same build.
    const renames = new Map<string, string>();
    for (const plan of plans) {
       const parent = args.foreign?.parents.get(plan.sourceID);
@@ -686,7 +722,15 @@ async function compileCompanion(
       runtime,
       text,
       generatedURLs: new Set(overlay.keys()),
-      files: overlay,
+      // The companion as another file's compile imports it: without the
+      // imports of its own cross-file parents' build sources, which only
+      // make them this companion's build targets. Imported again there, each
+      // would be reached twice per level of a chain, and a compile of a deep
+      // chain would read each file once per path to it.
+      files:
+         text === files.entry
+            ? overlay
+            : new Map([...overlay, [url.href, files.entry]]),
       renames,
       checkCompilers,
       ...(used.size > 0
@@ -1640,6 +1684,29 @@ interface CrossFileParent {
    model: MalloyModel;
 }
 
+/** A model file's companion, compiled as a cross-file parent's file. */
+interface CrossFileCompanion {
+   generated: GeneratedMaterialize;
+   text: string;
+   modelFile: string;
+   modelDef: ReturnType<typeof modelDefOf>;
+}
+
+/**
+ * {@link CrossFileCompanion}s by model file, for one package plan. Made by
+ * the plan's caller ({@link newCrossFileCompanions}) and passed to every
+ * model's companion compile.
+ */
+export type CrossFileCompanions = Map<
+   string,
+   Promise<CrossFileCompanion | undefined>
+>;
+
+/** An empty {@link CrossFileCompanions}, for one package plan. */
+export function newCrossFileCompanions(): CrossFileCompanions {
+   return new Map();
+}
+
 /** The plans, each cross-file extension with its parent set, and the parents. */
 interface CrossFileParents {
    plans: MaterializePlan[];
@@ -1673,18 +1740,7 @@ async function crossFileParents(
    if (candidates.length === 0) return { plans, parents: new Map() };
    const stack = new Set([...(args.crossFileStack ?? []), modelFile]);
    const files = GeneratedFiles.over(args.getRuntime);
-   const companions = new Map<
-      string,
-      Promise<
-         | {
-              generated: GeneratedMaterialize;
-              text: string;
-              modelFile: string;
-              modelDef: ReturnType<typeof modelDefOf>;
-           }
-         | undefined
-      >
-   >();
+   const companions = args.crossFileCompanions ?? new Map();
    const companionOf = (file: string) => {
       let found = companions.get(file);
       if (!found) {
@@ -1709,6 +1765,7 @@ async function crossFileParents(
                getRuntime: args.getRuntime,
                ...(args.probe ? { probe: materializer } : {}),
                crossFileStack: stack,
+               crossFileCompanions: companions,
             });
             return generated
                ? {
@@ -1748,7 +1805,7 @@ async function crossFileParents(
          entry.sourceID,
       )) {
          const parent = companion.generated.plans.find(
-            (p) => p.sourceID === candidate.sourceID,
+            (p: MaterializePlan) => p.sourceID === candidate.sourceID,
          );
          if (!parent) continue;
          if (!chainsOver(plan, parent)) break;
@@ -1864,8 +1921,9 @@ function crossFileCopy(
 /**
  * The round with every cross-file extension whose build over its parent's
  * build source does not keep the columns, and each column's type, its build
- * over the raw chain has, built over the raw chain instead: compiled once
- * more without those parents, and compared field by field. A re-rooted
+ * over the raw chain has, built over the raw chain instead: compared field by
+ * field with the author's compiled source, or, for a column of an inlined
+ * join, with the companion compiled once more without those parents. A re-rooted
  * parent changes where the rows are read from, never which columns the
  * extension stores; the compiler, not the rewrite, is what says so.
  */
@@ -1877,14 +1935,43 @@ async function withCrossFileColumnsKept(
 ): Promise<CompanionRound> {
    const chained = round.plans.filter((p) => p.buildsOver?.crossFile);
    if (!round.generated || chained.length === 0) return round;
-   const unchained = foreign.plans.map((p) =>
-      p.buildsOver?.crossFile ? withoutParent(p) : p,
-   );
-   const raw = await companionCompiler(
-      args,
-      path.resolve(args.packagePath, args.modelPath),
-      [],
-   )(unchained);
+   // The raw chain's shape: each stored column as the author's compiled
+   // source types its field, which is what the build over the raw chain
+   // selects. Compiled again over the raw chain only where that cannot be
+   // read (a column of an inlined join).
+   const authored = (p: MaterializePlan) => {
+      if (p.columns.some((c) => c.join !== undefined)) return undefined;
+      const def = Object.values(args.contents).find(
+         (d) => (d as { sourceID?: unknown } | null)?.sourceID === p.sourceID,
+      ) as
+         | { fields?: { name?: unknown; as?: unknown; type?: unknown }[] }
+         | undefined;
+      const types = new Map(
+         (def?.fields ?? []).map((f) => [String(f.as ?? f.name), f.type]),
+      );
+      const out: [string, string][] = [];
+      for (const c of p.columns) {
+         const type = types.get(c.dimension);
+         if (typeof type !== "string") return undefined;
+         out.push([c.column, type]);
+      }
+      return JSON.stringify(out);
+   };
+   let raw: CompanionRound | undefined;
+   const rawShape = async (p: MaterializePlan) => {
+      const fromAuthor = authored(p);
+      if (fromAuthor !== undefined) return fromAuthor;
+      raw ??= await companionCompiler(
+         args,
+         path.resolve(args.packagePath, args.modelPath),
+         [],
+      )(
+         foreign.plans.map((q) =>
+            q.buildsOver?.crossFile ? withoutParent(q) : q,
+         ),
+      );
+      return shape(raw.generated, p.buildSourceName);
+   };
    const shape = (
       generated: GeneratedMaterialize | undefined,
       name: string,
@@ -1906,12 +1993,11 @@ async function withCrossFileColumnsKept(
            )
          : undefined;
    };
-   const differ = chained.filter((p) => {
+   const differ: MaterializePlan[] = [];
+   for (const p of chained) {
       const kept = shape(round.generated, p.buildSourceName);
-      return (
-         kept === undefined || kept !== shape(raw.generated, p.buildSourceName)
-      );
-   });
+      if (kept === undefined || kept !== (await rawShape(p))) differ.push(p);
+   }
    if (differ.length === 0) return round;
    for (const plan of differ) {
       logger.warn(
