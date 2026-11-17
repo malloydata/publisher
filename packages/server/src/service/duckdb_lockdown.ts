@@ -529,16 +529,39 @@ export async function lockDownDuckDBSession(
       allow = [],
       paths = [],
       lockConfiguration = true,
+      motherDuck,
    }: {
       /** Directories and URL prefixes, beyond those its setup recorded. */
       allow?: string[];
       /** Single files (its own database file and WAL), as `allowed_paths`. */
       paths?: string[];
       lockConfiguration?: boolean;
+      /**
+       * The connection's name when it is a MotherDuck connection, whose
+       * lockdown is untested: any step that fails, and a catalog read after
+       * the lock, fail the connection with {@link MotherDuckLockdownError}
+       * naming the step, rather than leave it half-locked or failing its
+       * queries unexplained.
+       */
+      motherDuck?: string;
    } = {},
 ): Promise<void> {
+   const step = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+      try {
+         return await run();
+      } catch (error) {
+         if (motherDuck === undefined) throw error;
+         throw new MotherDuckLockdownError(motherDuck, name, error);
+      }
+   };
    if (isInstanceLocked(connection)) return;
-   if (isTrue(await setting(connection, "lock_configuration"))) {
+   if (
+      isTrue(
+         await step("read lock_configuration", () =>
+            setting(connection, "lock_configuration"),
+         ),
+      )
+   ) {
       if (isTrue(await setting(connection, "enable_external_access"))) {
          throw new Error(
             "DuckDB instance is locked with external access on; refusing to use it",
@@ -547,19 +570,33 @@ export async function lockDownDuckDBSession(
       markInstanceLocked(connection);
       return;
    }
-   if (!isTrue(await setting(connection, "enable_external_access"))) {
+   if (
+      !isTrue(
+         await step("read enable_external_access", () =>
+            setting(connection, "enable_external_access"),
+         ),
+      )
+   ) {
       // External access is already off: the allowlist is fixed. Only the
       // configuration lock is left to take.
       if (lockConfiguration) {
-         await pinSessionDefaultsGlobally(connection);
-         await connection.runSQL("SET lock_configuration=true");
+         await step("pin session defaults", () =>
+            pinSessionDefaultsGlobally(connection),
+         );
+         await step("lock_configuration", () =>
+            connection.runSQL("SET lock_configuration=true"),
+         );
          markInstanceLocked(connection);
       }
       return;
    }
-   await clearAmbientS3Settings(connection);
+   await step("clear ambient S3 settings", () =>
+      clearAmbientS3Settings(connection),
+   );
    await preloadExcel((sql) => connection.runSQL(sql));
-   const temp = await setting(connection, "temp_directory");
+   const temp = await step("read temp_directory", () =>
+      setting(connection, "temp_directory"),
+   );
    const entries = new Set<string>();
    for (const prefix of [...allowedForLockdown(connection), ...allow]) {
       if (prefix) entries.add(asAllowEntry(prefix));
@@ -570,25 +607,63 @@ export async function lockDownDuckDBSession(
    // Persistent secrets need nothing here: the instance opened with a private
    // secret directory no allowlist names (openTimeLockdownOptions), and DuckDB
    // refuses to change secret settings once a secret exists.
-   await connection.runSQL("SET autoinstall_known_extensions=false");
-   await connection.runSQL("SET autoload_known_extensions=false");
+   await step("extension auto-install and auto-load off", async () => {
+      await connection.runSQL("SET autoinstall_known_extensions=false");
+      await connection.runSQL("SET autoload_known_extensions=false");
+   });
    // Start the secret manager while it can still read its directory: started
    // first after external access is off, it fails, and every later secret
    // lookup (a renewal, a scoped read) with it.
-   await connection.runSQL("SELECT count(*) FROM duckdb_secrets()");
-   await connection.runSQL(
-      `SET allowed_directories=[${[...entries].map(sqlString).join(",")}]`,
+   await step("secret manager start", () =>
+      connection.runSQL("SELECT count(*) FROM duckdb_secrets()"),
    );
-   if (paths.length > 0) {
+   await step("allowlist", async () => {
       await connection.runSQL(
-         `SET allowed_paths=[${paths.map(sqlString).join(",")}]`,
+         `SET allowed_directories=[${[...entries].map(sqlString).join(",")}]`,
+      );
+      if (paths.length > 0) {
+         await connection.runSQL(
+            `SET allowed_paths=[${paths.map(sqlString).join(",")}]`,
+         );
+      }
+   });
+   await step("enable_external_access=false", () =>
+      connection.runSQL("SET enable_external_access=false"),
+   );
+   if (lockConfiguration) {
+      await step("pin session defaults", () =>
+         pinSessionDefaultsGlobally(connection),
+      );
+      await step("lock_configuration", () =>
+         connection.runSQL("SET lock_configuration=true"),
+      );
+      markInstanceLocked(connection);
+   }
+   if (motherDuck !== undefined) {
+      // A read of the MotherDuck catalog once locked: a lock that cut the
+      // connection off from MotherDuck fails here, by name, not on the first
+      // query.
+      await step("a catalog read after the lock", () =>
+         connection.runSQL("SELECT count(*) FROM information_schema.schemata"),
       );
    }
-   await connection.runSQL("SET enable_external_access=false");
-   if (lockConfiguration) {
-      await pinSessionDefaultsGlobally(connection);
-      await connection.runSQL("SET lock_configuration=true");
-      markInstanceLocked(connection);
+}
+
+/**
+ * A MotherDuck connection whose lockdown failed at `step`. MotherDuck under
+ * the lockdown is untested (it needs a real account), so a failure names
+ * MotherDuck and the step instead of serving a half-locked connection.
+ */
+export class MotherDuckLockdownError extends Error {
+   constructor(connectionName: string, step: string, cause: unknown) {
+      super(
+         `MotherDuck connection '${connectionName}' could not be locked down ` +
+            `(step: ${step}): ${cause instanceof Error ? cause.message : String(cause)}. ` +
+            `Publisher does not serve a DuckDB connection it cannot lock; ` +
+            `MotherDuck under the DuckDB lockdown is untested.`,
+         { cause },
+      );
+      this.name = "MotherDuckLockdownError";
    }
 }
 

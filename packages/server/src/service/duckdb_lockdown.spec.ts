@@ -722,6 +722,42 @@ describe("a networked instance with a DuckLake catalog: setup, then lock", () =>
    });
 });
 
+describe("a MotherDuck connection whose lock fails", () => {
+   /** A session that answers like an unlocked instance and fails on `failOn`. */
+   const stubSession = (failOn: RegExp) =>
+      ({
+         runSQL: async (sql: string) => {
+            if (failOn.test(sql))
+               throw new Error("simulated MotherDuck failure");
+            if (/current_setting\('enable_external_access'\)/.test(sql)) {
+               return { rows: [{ v: true }] };
+            }
+            if (/current_setting\('temp_directory'\)/.test(sql)) {
+               return { rows: [{ v: "" }] };
+            }
+            return { rows: [{ v: false }] };
+         },
+      }) as unknown as DuckDBConnection;
+
+   for (const [step, failOn] of [
+      ["secret manager start", /duckdb_secrets\(\)/],
+      ["allowlist", /allowed_directories/],
+      ["enable_external_access=false", /SET enable_external_access=false/],
+      ["lock_configuration", /SET lock_configuration=true/],
+      ["a catalog read after the lock", /information_schema\.schemata/],
+   ] as const) {
+      it(`fails by name, at ${step}, rather than come up half-locked`, async () => {
+         await expect(
+            lockDownDuckDBSession(stubSession(failOn), {
+               motherDuck: "md_prod",
+            }),
+         ).rejects.toThrow(
+            `MotherDuck connection 'md_prod' could not be locked down (step: ${step})`,
+         );
+      });
+   }
+});
+
 describe("azureAllowPrefix", () => {
    it("keeps the directory of a SAS or file URL, never its query", () => {
       expect(

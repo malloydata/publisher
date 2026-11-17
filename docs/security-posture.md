@@ -433,8 +433,10 @@ What it does not cover, so a multi-tenant deployment still has to:
   refuses every file). There the package sandbox is confined to its package the way an
   environment connection with only `setupSQL` is: an allowlist, external access off, and the
   lock, without Malloy's own path checks.
-- **MotherDuck** connections are locked like the networked readers, but have not been exercised
-  with external access off.
+- **MotherDuck** connections are locked like the networked readers, but are untested: they have
+  not been exercised against MotherDuck with external access off. The lock fails safe: if any step
+  of it, or a catalog read after it, fails, the connection fails with an error naming MotherDuck
+  and the step, and is never served half-locked.
 - **Malloy's restricted mode** remains the control for caller-supplied Malloy on a shared worker:
   it refuses `.sql()`, `.table()`, raw SQL functions, `import` and `##!` flags, and the query path
   uses it via `loadRestrictedQuery`. The DuckDB lockdown bounds what the SQL that remains can reach;

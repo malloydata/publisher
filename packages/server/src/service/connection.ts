@@ -3709,6 +3709,9 @@ export function buildEnvironmentMalloyConfig(
                         ? relativeReadEntries(localRoot)
                         : { directories: [], files: [] };
                      await lockDownDuckDBSession(connection, {
+                        ...(metadata?.apiConnection.type === "motherduck"
+                           ? { motherDuck: name ?? "motherduck" }
+                           : {}),
                         allow: localRoot
                            ? [localRoot, ...relative.directories]
                            : [],
