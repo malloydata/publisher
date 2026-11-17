@@ -317,6 +317,24 @@ describe("RollupVariantServe (storage=)", () => {
       expect(sql).toContain('"main"."rollup_t"');
    });
 
+   // P3-06..09: a table a Snowflake session stored with its aliases folded
+   // upper-case is matched by a unique case fold, as the served copy matches.
+   it("P3-07: answers from a stored table whose columns a warehouse upper-cased", async () => {
+      const binding = bindingFor(f, {
+         schema: [
+            { name: "CATEGORY", type: "VARCHAR" },
+            { name: "TOTAL__PARTIAL", type: "DOUBLE" },
+         ],
+      });
+      const answer = await f.rollups.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned: pinnedOf([binding]),
+      });
+      expect(answer.binding).toBe(binding);
+   });
+
    it("declines a fresh binding with no destination to read it as not built", async () => {
       expect(
          await outcomeOf(

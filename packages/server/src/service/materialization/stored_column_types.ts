@@ -1236,3 +1236,48 @@ export function previewNativeSchema(
       nativeSchema: binding.schema.map((c) => ({ name: c.name, type })),
    };
 }
+
+/**
+ * The stored columns to rename to the name the build source declares: each
+ * whose name matches no declared name exactly and exactly one by a case fold,
+ * when no other stored column folds to it. A warehouse that folds quoted
+ * identifiers (Snowflake with `QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE`)
+ * returns Malloy's lower-case aliases upper-cased; stored under the declared
+ * names, every reader finds them by exact name, as live does (P3-06..09).
+ */
+export function canonicalRenames(
+   stored: readonly { name?: string }[],
+   declared: readonly string[],
+): { from: string; to: string }[] {
+   const exact = new Set(declared);
+   const fold = (n: string) => n.toLowerCase();
+   const names = stored.flatMap((c) => (c.name ? [c.name] : []));
+   const storedFolds = new Map<string, number>();
+   for (const name of names) {
+      storedFolds.set(fold(name), (storedFolds.get(fold(name)) ?? 0) + 1);
+   }
+   return names.flatMap((name) => {
+      if (exact.has(name) || storedFolds.get(fold(name)) !== 1) return [];
+      const matches = declared.filter((d) => fold(d) === fold(name));
+      return matches.length === 1 ? [{ from: name, to: matches[0] }] : [];
+   });
+}
+
+/**
+ * A stored schema with each column named as `names` spells it where it
+ * matches only by a unique case fold ({@link canonicalRenames}): what a
+ * reader matching by exact name reads, for a table stored before its build
+ * renamed such columns. DuckDB resolves a column name case-insensitively, so
+ * the renamed name still reads the stored column.
+ */
+export function canonicalStoredSchema<C extends { name: string }>(
+   schema: readonly C[],
+   names: readonly string[],
+): C[] {
+   const renamed = new Map(
+      canonicalRenames(schema, names).map((r) => [r.from, r.to]),
+   );
+   return schema.map((c) =>
+      renamed.has(c.name) ? { ...c, name: renamed.get(c.name)! } : c,
+   );
+}

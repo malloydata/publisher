@@ -1534,5 +1534,10 @@
     "noDatabase": "\n      SELECT QUERY_ID       AS \"job_id\",\n             QUERY_TEXT     AS \"query_text\",\n             BYTES_SCANNED  AS \"bytes_scanned\",\n             EXECUTION_TIME AS \"execution_time_ms\",\n             ROWS_PRODUCED  AS \"rows_produced\"\n      FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(\n                 RESULT_LIMIT => 10000))\n      WHERE QUERY_TAG = '{\"run\":\"r''1\"}'\n        AND EXECUTION_STATUS = 'SUCCESS'"
   },
   "snowflakeSetQueryTagSQL": "SELECT * FROM snowflake_query('ALTER SESSION SET QUERY_TAG = ''{\"team\":\"a\\\\\\\\b''''s\",\"run\":\"r1\"}''', 'sec''ret')",
+  "snowflakeSessionParitySQL": [
+    "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'sec''ret')",
+    "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'sec''ret')",
+    "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'sec''ret')"
+  ],
   "bigQueryQueryLabelValue": "team:a_b_s,run:r1"
 }

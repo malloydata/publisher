@@ -1234,6 +1234,22 @@ describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => 
                   sql.includes("secret_sf"),
             ),
          ).toBe(true);
+         // P3-06..09: Malloy's live session settings, issued on the
+         // federated handle before the build's read.
+         const parity = [
+            "QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE",
+            "TIMEZONE = ''UTC''",
+            "WEEK_START = 7",
+         ].map((p) =>
+            executed.findIndex(
+               (sql) => sql.includes(p) && sql.includes("secret_sf"),
+            ),
+         );
+         expect(parity.every((i) => i >= 0)).toBe(true);
+         const create = executed.findIndex((sql) =>
+            sql.includes("CREATE OR REPLACE TABLE"),
+         );
+         expect(Math.max(...parity)).toBeLessThan(create);
       } finally {
          runSQL.mockRestore();
          rmSync(dir, { recursive: true, force: true });

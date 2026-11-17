@@ -73,6 +73,36 @@ export function snowflakeSetQueryTagSQL(
    return snowflakeSetQueryTagStatement(tag, secretName);
 }
 
+/**
+ * The session parameters Malloy's live Snowflake connection sets on every
+ * session (`@malloydata/db-snowflake`, `SnowflakeExecutor._setSessionParams`):
+ * case-sensitive quoted identifiers, UTC, and weeks starting on Sunday. A
+ * `storage=` passthrough build reads Snowflake on a session of its own, which
+ * otherwise runs in the account's settings: with
+ * `QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE` Malloy's quoted lower-case aliases
+ * come back upper-case, and the account's `TIMEZONE` and `WEEK_START` move a
+ * day or week boundary from live's. Kept in step with db-snowflake by hand;
+ * its output-format settings are left out, since the passthrough reads typed
+ * values, not text.
+ */
+const SNOWFLAKE_SESSION_PARAMETERS = [
+   "ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE",
+   "ALTER SESSION SET TIMEZONE = 'UTC'",
+   "ALTER SESSION SET WEEK_START = 7",
+] as const;
+
+/**
+ * The statements that give a Snowflake build session Malloy's live session
+ * parameters ({@link SNOWFLAKE_SESSION_PARAMETERS}), each through the
+ * passthrough on `secretName`, the way the query tag is set.
+ */
+export function snowflakeSessionParitySQL(secretName: string): string[] {
+   return SNOWFLAKE_SESSION_PARAMETERS.map(
+      (inner) =>
+         `SELECT * FROM snowflake_query('${inner.replace(/'/g, "''")}', '${secretName.replace(/'/g, "''")}')`,
+   );
+}
+
 /** BigQuery's label grammar: lowercase, `[a-z0-9_-]`, at most 63 characters. */
 function sanitizeBigQueryValue(value: string): string {
    return value

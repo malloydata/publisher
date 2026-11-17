@@ -89,7 +89,10 @@ import { TIMEFRAMES } from "./served_copy";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
-import { storedColumnReadPlan } from "../stored_column_types";
+import {
+   canonicalStoredSchema,
+   storedColumnReadPlan,
+} from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
 
 type VirtualMap = Map<string, Map<string, string>>;
@@ -564,7 +567,15 @@ export async function compilePersistedResultVariant(args: {
 }): Promise<CompiledVariant> {
    const { packagePath, packageConfig, plan, table, shape } = args;
    const read = table.binding
-      ? storedColumnCasts(table.binding.schema, shape)
+      ? storedColumnCasts(
+           // Matched by a unique case fold too, as the served copy matches:
+           // a warehouse that folded the build's quoted aliases (P3-06..09).
+           canonicalStoredSchema(
+              table.binding.schema,
+              shape.columns.map((c) => c.name),
+           ),
+           shape,
+        )
       : { casts: new Map<string, ColumnCast>() };
    if ("refusal" in read) return { refusal: read.refusal };
    // The source's own time zone: a `storage=` read truncates each stored

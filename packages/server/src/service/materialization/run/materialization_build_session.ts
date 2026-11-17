@@ -50,6 +50,7 @@ import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
 import { fromSubselect } from "../subselect";
 import {
    type BuildCastOptions,
+   canonicalRenames,
    castToDeclaredTypes,
    wideIntegerColumns,
    isCastConversionError,
@@ -68,6 +69,7 @@ import {
 import {
    bigQueryQueryLabelValue,
    snowflakeQueryTagValue,
+   snowflakeSessionParitySQL,
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
 import {
@@ -170,6 +172,36 @@ function orderByExpressions(
       return selectSQL;
    }
    return `SELECT * ${fromSubselect(selectSQL, "partitioned_build")} ORDER BY ${expressions.join(", ")}`;
+}
+
+/**
+ * Give a Snowflake build session the session parameters Malloy's live
+ * connection runs with (`snowflakeSessionParitySQL`), before any read, so the
+ * stored rows are the rows live computes: the same column-name case, the
+ * same UTC day and the same Sunday week. Issued the way the query tag is,
+ * and as the tag, a refused statement is logged, never the build's failure:
+ * the build stores each column under its declared name either way
+ * (`canonicalRenames`).
+ */
+async function alignSnowflakeSession(
+   session: DuckDBConnection,
+   sourceType: FederatedSourceType,
+   handle: string,
+): Promise<void> {
+   if (sourceType !== "snowflake") return;
+   for (const sql of snowflakeSessionParitySQL(handle)) {
+      try {
+         await session.runSQL(sql);
+      } catch (error) {
+         logger.warn(
+            "Could not give the Snowflake build session Malloy's session settings; a day or week bucket may follow the account's",
+            {
+               statement: sql,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+      }
+   }
 }
 
 /**
@@ -955,6 +987,7 @@ async function buildOnFederatedSession(
       queryMetadata,
    } = params;
    const read = params.deps?.read ?? issuePassthroughRead;
+   await alignSnowflakeSession(session, sourceType, handle);
    await tagSnowflakeSession(session, sourceType, handle, queryMetadata);
 
    // Qualified with the destination catalog: an unqualified name would land
@@ -1766,6 +1799,10 @@ export async function createTableWithDeclaredTypes(
       options.sourceType,
       options.described,
    );
+   options = {
+      ...options,
+      declaredNames: declared.columns.map((c) => c.name),
+   };
    const cast = castToDeclaredTypes(selectSQL, columns, {
       ...declared,
       exactIntegers: await computedWideIntegers(
@@ -1908,6 +1945,12 @@ export async function createTableAndDescribe(
        * (leftover_name_views.ts).
        */
       replacesView?: string[];
+      /**
+       * The column names the build source declares: a stored column that
+       * matches one only by a unique case fold is renamed to it, in the same
+       * transaction ({@link canonicalRenames}).
+       */
+      declaredNames?: readonly string[];
    } = {},
 ): Promise<WireColumn[]> {
    // In the transaction, not create-then-drop-on-failure: a DROP after the
@@ -1920,6 +1963,14 @@ export async function createTableAndDescribe(
       await session.runSQL(
          `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
       );
+      const described = await describeTable(session, quotedTablePath);
+      const renames = canonicalRenames(described, options.declaredNames ?? []);
+      if (renames.length === 0) return described;
+      for (const { from, to } of renames) {
+         await session.runSQL(
+            `ALTER TABLE ${quotedTablePath} RENAME COLUMN ${quoteIdentifier(from, STORAGE_DIALECT)} TO ${quoteIdentifier(to, STORAGE_DIALECT)}`,
+         );
+      }
       return await describeTable(session, quotedTablePath);
    });
 }

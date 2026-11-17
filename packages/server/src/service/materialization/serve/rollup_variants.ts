@@ -172,6 +172,7 @@ import { fieldNotes, noteSource } from "../text/field_notes";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import {
+   canonicalStoredSchema,
    storedColumnReadPlan,
    storedTypeServesAs,
 } from "../stored_column_types";
@@ -2239,7 +2240,15 @@ function storedRollupReads(
    const fields = new Map(
       (base?.fields ?? []).map((f) => [String(f.as ?? f.name), f]),
    );
-   const stored = new Map(binding.schema.map((c) => [c.name, c]));
+   // Matched as the served copy matches, by a unique case fold too: a
+   // warehouse that folded the build's quoted aliases (P3-06..09).
+   const grain = grainColumns(plan, modelDef);
+   const stored = new Map(
+      canonicalStoredSchema(binding.schema, [
+         ...grain.map((g) => g.name),
+         ...plan.rollupMeasures.flatMap((m) => m.partials.map((p) => p.column)),
+      ]).map((c) => [c.name, c]),
+   );
    const columns: StoredRollupReads["columns"] = [];
    const casts = new Map<string, ColumnCast>();
    const read = (
@@ -2287,7 +2296,7 @@ function storedRollupReads(
       columns.push(column);
       return undefined;
    };
-   for (const g of grainColumns(plan, modelDef)) {
+   for (const g of grain) {
       const refusal = read(
          { ...g, kind: "dimension" },
          g.name,

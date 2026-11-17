@@ -325,6 +325,27 @@ describe("PersistedViewServe (storage=)", () => {
       ]);
    });
 
+   // P3-06..09: a table a Snowflake session stored with its aliases folded
+   // upper-case is matched by a unique case fold, as the served copy matches.
+   it("P3-08: answers from a stored table whose columns a warehouse upper-cased", async () => {
+      const binding = storedViewBinding(buildSourceID, {
+         schema: [
+            { name: "REGION", type: "VARCHAR" },
+            { name: "TOTAL", type: "DOUBLE" },
+         ],
+      });
+      const pinned = pinnedOf([binding]);
+      const query = "run: orders -> by_region";
+      const answer = await f.views.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned,
+         buildManifest: pinned.compilerManifest,
+      });
+      expect(answer.binding).toBe(binding);
+   });
+
    it("reports a binding stale past its window, and any binding stale with no destination to read it", () => {
       const old = storedViewBinding(buildSourceID, {
          schema,
