@@ -131,12 +131,14 @@ export function isColocated(b: Pick<Binding, "tier">): boolean {
  * the bind recorded no `heldRead`.
  *
  * The rollup leg hands this binding to the gate policy (`gateTablesRead`),
- * so a gate over a held table is judged on it. Its `moved` columns are the
- * ones a binding's `retypedColumns` (the bind's columns retyped since the
- * build, with the type held now) names: where bindings carry that field, set
- * it here from them (`{ name, type: nativeType ?? type }`), and
- * `gateColumnTypes` judges a moved grain column a gate reads as it does a
- * served copy's.
+ * so a gate over a held table is judged on it. It does not set
+ * `retypedColumns` (a binding's columns retyped since the build, with the
+ * type held now, which the gate policy's `gateColumnTypes` judges a gate
+ * column by): that field is not on `Binding` here. The held read's `moved`
+ * columns are what it would carry (`{ name, type: nativeType ?? type }`),
+ * and whichever change lands second wires the two together. Until then a
+ * moved column is read as it is only on a lossless widening, so a gate over
+ * a held column never compares a rounded value.
  */
 export function heldReadBinding(
    kind: BindingKind,
