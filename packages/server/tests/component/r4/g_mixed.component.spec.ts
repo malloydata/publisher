@@ -537,12 +537,15 @@ describe("g-mixed: a gated entry point over an ungated storage= source (gated so
          "mz_orders:serves",
          "v1_cust:serves",
       ]);
-      // The one source the plan refused derives from a gated one; every
-      // other gate here is on an entry point the plan stores nothing for,
+      // The one source the plan refused derives from a gated one. A v1
+      // extension whose own gate reads through its join (`c.home_region`)
+      // stores into its own table, whose gate columns cannot be listed, so
+      // that table keeps no gate (#1855's rule): its queries answer live.
+      // Every other gate is on an entry point the plan stores nothing for,
       // or a v1 extension's own (G3).
-      expect(fixture.verdicts.filter((v) => v.includes(":live"))).toEqual([
-         "mz_derived:live:refused",
-      ]);
+      expect(
+         fixture.verdicts.filter((v) => v.includes(":live")).sort(),
+      ).toEqual(["mz_derived:live:refused", "v1_by_home:live:row_level_gate"]);
       const plan = fixture.pkg.getBuildPlan()?.sources ?? {};
       const ungated = (
          fixture.pkg.materialization() as unknown as {
