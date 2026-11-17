@@ -14,7 +14,6 @@
  */
 
 import { BuildCancelledError } from "../domain/build_cancelled";
-import { BuildRunFailedError } from "./build_failure_class";
 import {
    InvalidStateTransitionError,
    MaterializationConflictError,
@@ -289,16 +288,12 @@ function statusesInto(next: MaterializationStatus): MaterializationStatus[] {
 
 /**
  * Whether `err` is the build loop's own answer to the cancel (it checks the
- * signal between sources), rather than a failure the cancel raced: also a
- * run that built nothing because every source it reached was cancelled.
+ * signal between sources and after the last, before any whole-run failure is
+ * judged, so a cancelled run always ends in this error), rather than a
+ * failure the cancel raced.
  */
 function isOwnCancellation(err: unknown): boolean {
-   if (err instanceof BuildCancelledError) return true;
-   if (err instanceof BuildRunFailedError) {
-      const failures = Object.values(err.runFailures ?? {});
-      return failures.length > 0 && failures.every((f) => f.cancelled === true);
-   }
-   return false;
+   return err instanceof BuildCancelledError;
 }
 
 /**

@@ -613,7 +613,8 @@ export function recordInstructedBuildFailure(
       reason,
       // Omitted when the error is not recognized, so the consumer keeps its
       // own judgment, as for a Publisher that predates the field; and for a
-      // cancelled source, which did not fail.
+      // source the run's cancel stopped, which did not fail (the run settles
+      // CANCELLED, and its status is the signal).
       ...(retryable !== undefined && !run.signal?.aborted ? { retryable } : {}),
       // Lets a consumer tell a colocated failure from a `storage=` one; it
       // keys by `storageDestinationName ?? connectionName`, like a
@@ -622,8 +623,6 @@ export function recordInstructedBuildFailure(
       ...(instruction.destination
          ? { storageDestinationName: instruction.destination }
          : {}),
-      // The run was cancelled while this source built: stopped, not failed.
-      ...(run.signal?.aborted ? { cancelled: true } : {}),
    };
    // Deprecated mirror into `entries` for consumers that read the failure
    // from `ManifestEntry.error`; without it they would see the source as
