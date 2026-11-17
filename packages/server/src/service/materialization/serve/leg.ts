@@ -42,6 +42,7 @@ import type { ConsideredVariant } from "../../query_router";
 import { type Binding, isColocated, type Pinned } from "../domain/binding";
 import type { BuildManifest } from "../domain/types";
 import type { TableRead } from "../domain/gate_policy";
+import { assertSameCompositeMember } from "./composite_member";
 import type { RollupVariantServe } from "./rollup_variants";
 import type { ServedCopyServe } from "./served_copy_serve";
 import type { PersistedViewServe, ViewTable } from "./view_variants";
@@ -273,6 +274,8 @@ function servedLeg(servedCopy: ServedCopyServe): Leg {
             // A table the query would read, left out of the pin as stale.
             throw await servedCopy.staleDeclineFor(err, q.authorRunnable, p);
          }
+         // A composite answers from the member live resolves to, or live.
+         await assertSameCompositeMember(q.authorRunnable, served.runnable);
          return {
             runnable: served.runnable,
             tablesRead: served.tablesRead,

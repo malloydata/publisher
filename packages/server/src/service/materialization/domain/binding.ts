@@ -82,6 +82,16 @@ export interface Binding {
     */
    ownGateKept?: boolean;
    /**
+    * A database table's columns whose type the bind found moved since its
+    * build, each with the type the warehouse holds it as now (its native
+    * type when known): a column altered in the warehouse, and a 128-bit
+    * integer a DuckLake catalog holds as a DOUBLE (`storedAsDouble`). A
+    * row-level gate over one is judged by that type, so one now stored
+    * inexactly is not read from the table (`domain/gate_policy.ts`,
+    * `gateColumnTypes`). Set by the bind.
+    */
+   retypedColumns?: { name: string; type: string }[];
+   /**
     * The storage destination the table lives in; for a colocated table, the
     * source's own connection.
     */

@@ -632,6 +632,7 @@ export function applyObservedColumns(args: {
       const extra: ObservedDrift["columns"] = [];
       let moved = false;
       const retyped = new Map<string, string>();
+      const movedColumns: { name: string; type: string }[] = [];
       // The binding's decision for each drifted column.
       const decided = new Map<string, ObservedDrift["columns"][number]>();
       const schema = b.schema.flatMap((c) => {
@@ -655,6 +656,8 @@ export function applyObservedColumns(args: {
          }
          if (d.kind === "drop") return [];
          if (d.nativeType !== undefined) retyped.set(c.name, d.nativeType);
+         // What the gate policy judges a gate over this column by.
+         movedColumns.push({ name: c.name, type: d.nativeType ?? d.type });
          return [{ name: c.name, type: d.type }];
       });
       const known = drifted.find((x) => x.sourceEntityId === b.virtualHandle);
@@ -681,7 +684,16 @@ export function applyObservedColumns(args: {
       const nativeSchema = b.nativeSchema?.map((n) =>
          retyped.has(n.name) ? { ...n, type: retyped.get(n.name)! } : n,
       );
-      return [{ ...b, schema, ...(nativeSchema ? { nativeSchema } : {}) }];
+      return [
+         {
+            ...b,
+            schema,
+            ...(nativeSchema ? { nativeSchema } : {}),
+            ...(movedColumns.length > 0
+               ? { retypedColumns: movedColumns }
+               : {}),
+         },
+      ];
    });
    return { entries, bindings, drifted, unread };
 }
