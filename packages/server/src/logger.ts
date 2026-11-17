@@ -22,11 +22,12 @@ const UNREADABLE = "[Unreadable]";
 
 /**
  * Whether a string can hold anything {@link maskedString} masks: every signed
- * URL parameter has an `=` (or an encoded one, `%…3D`), S3's echo a `<`, a
- * Postgres password `password=` or a URI's `://`. One scan, so the strings of
+ * URL parameter has an `=` (or an encoded one: `%…3D`, or JSON-escaped
+ * `\u003d`), S3's echo a `<`, a Postgres password `password=` or a URI's
+ * `://`. One scan, so the strings of
  * an ordinary line cost nothing more.
  */
-const MAY_HOLD_SECRET = /[=%<]|:\/\//;
+const MAY_HOLD_SECRET = /[=%<]|:\/\/|\\u00/;
 
 /**
  * `s` with a signed URL's signature, credential or token and a Postgres
@@ -100,7 +101,9 @@ function masked(value: unknown, walk: Walk, depth: number): unknown {
       if (value instanceof Date) return value;
       const toJSON = (value as { toJSON?: unknown }).toJSON;
       if (typeof toJSON === "function") {
-         return masked(toJSON.call(value), walk, depth + 1);
+         const json: unknown = toJSON.call(value);
+         // A toJSON that returns its own object is read field by field.
+         if (json !== value) return masked(json, walk, depth + 1);
       }
       return maskedFields(value, walk, depth);
    } catch {
@@ -117,6 +120,7 @@ function maskedFields(value: object, walk: Walk, depth: number): unknown {
    walk.walking.add(value);
    let out: unknown[] | undefined;
    let keys: string[] | undefined;
+   let maskedKeys: string[] | undefined;
    try {
       if (Array.isArray(value)) {
          for (let i = 0; i < value.length; i++) {
@@ -129,10 +133,14 @@ function maskedFields(value: object, walk: Walk, depth: number): unknown {
          keys = Object.keys(value);
          const record = value as Record<string, unknown>;
          for (let i = 0; i < keys.length; i++) {
+            // A key can quote a signed URL too.
+            const k = maskedString(keys[i]);
+            if (k !== keys[i] && !maskedKeys) maskedKeys = keys.slice(0, i);
+            maskedKeys?.push(k);
             const v = record[keys[i]];
             const m = masked(v, walk, depth + 1);
             if (m !== v && !out) {
-               out = keys.slice(0, i).map((k) => record[k]);
+               out = keys.slice(0, i).map((key) => record[key]);
             }
             out?.push(m);
          }
@@ -141,7 +149,7 @@ function maskedFields(value: object, walk: Walk, depth: number): unknown {
       walk.walking.delete(value);
    }
    const forced = walk.cycleCopies?.get(value);
-   if (!out && !forced) return value;
+   if (!out && !maskedKeys && !forced) return value;
    if (Array.isArray(value)) {
       const copy = (forced as unknown[] | undefined) ?? [];
       copy.push(...(out ?? value));
@@ -151,9 +159,21 @@ function maskedFields(value: object, walk: Walk, depth: number): unknown {
    const copy =
       (forced as Record<string, unknown> | undefined) ??
       (Object.getPrototypeOf(value) === null ? Object.create(null) : {});
-   keys!.forEach((key, i) => (copy[key] = out ? out[i] : record[key]));
+   keys!.forEach(
+      (key, i) =>
+         (copy[maskedKeys ? maskedKeys[i] : key] = out ? out[i] : record[key]),
+   );
    return copy;
 }
+
+/** Fields Bun adds to every Error, which repeat its stack's first frame. */
+const RUNTIME_ERROR_FIELDS = new Set([
+   "line",
+   "column",
+   "sourceURL",
+   "originalLine",
+   "originalColumn",
+]);
 
 /**
  * An Error as a plain object: its name, message and stack, then every other
@@ -184,6 +204,7 @@ function maskedError(
       copy.stack = read("stack");
       for (const key of Object.getOwnPropertyNames(error)) {
          if (key === "name" || key === "message" || key === "stack") continue;
+         if (RUNTIME_ERROR_FIELDS.has(key)) continue;
          copy[key] = read(key);
       }
    } finally {
@@ -216,10 +237,12 @@ const maskSignedUrlSecrets = winston.format((info) => {
       keys = [];
    }
    for (const key of keys) {
+      // A metadata key can quote a signed URL too.
+      const outKey = maskedString(key);
       try {
-         out[key] = masked((info as Record<string, unknown>)[key], walk, 0);
+         out[outKey] = masked((info as Record<string, unknown>)[key], walk, 0);
       } catch {
-         out[key] = UNREADABLE;
+         out[outKey] = UNREADABLE;
       }
    }
    for (const key of ["message", "stack"]) {
@@ -265,8 +288,9 @@ export const logger = guardedEntries(
 );
 
 /**
- * `log` with each level method (`logger.error(err)`, `logger.warn(obj)`)
- * handed a fresh entry when called with one object: winston writes the level
+ * `log` with each level method (`logger.error(err)`, `logger.warn(obj)`),
+ * and `log.log(obj)` or `log.log(level, obj)`, handed a fresh entry when
+ * called with one object: winston writes the level
  * onto the object it is given, which would alter a caller's Error and throws
  * on a frozen one. The fresh entry carries the object's own fields and its
  * `message` and `stack`; the format step masks them. Exported for its spec.
@@ -289,6 +313,25 @@ export function guardedEntries(log: winston.Logger): winston.Logger {
          return method.apply(this, args);
       };
    }
+   // `log.log(entry)` and `log.log(level, entry)` hand winston the object too.
+   const logMethod = log.log;
+   (log as unknown as { log: unknown }).log = function (
+      this: winston.Logger,
+      ...args: unknown[]
+   ) {
+      const isObject = (v: unknown): v is object =>
+         v !== null && typeof v === "object";
+      if (args.length === 1 && isObject(args[0])) {
+         args = [freshEntry(args[0])];
+      } else if (
+         args.length === 2 &&
+         typeof args[0] === "string" &&
+         isObject(args[1])
+      ) {
+         args = [args[0], freshEntry(args[1])];
+      }
+      return (logMethod as (...a: unknown[]) => unknown).apply(this, args);
+   };
    return log;
 }
 
@@ -301,6 +344,10 @@ function freshEntry(entry: object): Record<string, unknown> {
             const v = (entry as Record<string, unknown>)[key];
             if (v !== undefined) out[key] = v;
          }
+      }
+      // An Error with no message prints its name, never `[object Object]`.
+      if (entry instanceof Error && !entry.message) {
+         out.message = entry.name || "";
       }
       return out;
    } catch {

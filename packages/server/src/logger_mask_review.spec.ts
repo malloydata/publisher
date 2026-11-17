@@ -246,3 +246,53 @@ describe("a log call never throws", () => {
       logged((l) => l.error("x", withGetter));
    });
 });
+
+describe("the rest of the review", () => {
+   it("hands logger.log a fresh entry: a frozen Error does not throw, a caller's Error gains no level", () => {
+      const frozen = Object.freeze(new Error(SIGNED));
+      logged((l) => l.log("error", frozen));
+      const err = new Error(SIGNED);
+      logged((l) => l.log("error", err));
+      logged((l) => l.log({ level: "warn", message: SIGNED }));
+      expect("level" in err).toBe(false);
+   });
+
+   it("masks a signed URL in an object's key", () => {
+      logged((l) => l.warn("x", { refused: { [SIGNED]: 403 } }));
+      logged((l) => l.warn("x", { [SIGNED]: 403 }));
+   });
+
+   it("checks a string whose only separators are JSON-escaped", () => {
+      logged((l) => l.info(`x\\u0026X-Amz-Signature\\u003d${SECRET}`));
+   });
+
+   it("prints an Error with no message by its name, never [object Object]", () => {
+      for (const text of logged((l) => l.error(new TypeError("")))) {
+         expect(text).not.toContain("[object Object]");
+         expect(text).toContain("TypeError");
+      }
+   });
+
+   it("reads an object whose toJSON returns itself field by field", () => {
+      class Self {
+         url = SIGNED;
+         toJSON() {
+            return this;
+         }
+      }
+      for (const text of logged((l) => l.warn("x", { s: new Self() }))) {
+         expect(text).toContain("b.s3.amazonaws.com/k?");
+         expect(text).not.toContain("[Depth]");
+      }
+   });
+
+   it("leaves the runtime's own Error fields out of a nested Error", () => {
+      for (const text of logged((l) =>
+         l.error("Failed", { error: new Error("plain") }),
+      )) {
+         expect(text).not.toContain("sourceURL");
+         expect(text).not.toContain("originalLine");
+         expect(text).toContain("plain");
+      }
+   });
+});
