@@ -393,9 +393,9 @@ What it does not cover, so a multi-tenant deployment still has to:
 
 - **Raw SQL is read-only; the connection's own work is not.** Caller and author SQL on a
   DuckDB-backed connection (the sandbox, and an environment `duckdb`, `ducklake` or `motherduck`
-  connection) runs only as a single SELECT, CTEs included: the connection SQL routes and `.sql()`
-  sources are decided by DuckDB's parser, and a query Malloy builds around author text runs one
-  statement per call. What still writes inside a connection's roots is the operator's `setupSQL`
+  connection) runs only as a single SELECT, CTEs included, decided by DuckDB's parser: at the
+  connection SQL routes, and, for a model, when the package loads (a `.sql()` source must be one
+  SELECT and a raw SQL expression one expression of one SELECT, or the package does not load). What still writes inside a connection's roots is the operator's `setupSQL`
   and Publisher's own work (a `#@ persist` build, a temporary table it creates around a caller's
   SELECT).
 - **An attached `s3` or `gcs` bucket allowlists its whole URL scheme.** These entries name no
