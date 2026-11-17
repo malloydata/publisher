@@ -10,6 +10,13 @@
  * `sqlQuery` an outage's 502.
  */
 
+import { QueryController } from "./controller/query.controller";
+import { QuerySlots } from "./query_concurrency";
+import type {
+   McpExposureReader,
+   PackageLookup,
+} from "./service/environment_ports";
+import { QueryUseCase } from "./usecases/query";
 import type { Connection } from "@malloydata/malloy";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import sinon from "sinon";
@@ -257,5 +264,74 @@ describe("P6-21: a signed URL's secrets never reach the log", () => {
       } finally {
          warn.mockRestore();
       }
+   });
+});
+
+describe("P6-21: the query route judges a refusal by the environment's data paths", () => {
+   async function refusedOn(
+      configured: boolean,
+   ): Promise<StorageAccessDeniedError> {
+      const url =
+         "https://storage.googleapis.com/credible-dev-ducklake/org_123/x.parquet";
+      const model = {
+         carriesReportTag: () => false,
+         runQuery: async () => {
+            throw new StorageAccessDeniedError(GCS, "trips", url);
+         },
+      };
+      const pkg = {
+         getModel: () => model,
+         getDeclaredQueryMetadata: () => null,
+         getVersionId: () => undefined,
+      };
+      const environment = {
+         assertCanAdmitQuery: () => {},
+         getPackage: async () => pkg,
+         getApiConnection: () => {
+            throw new Error("no such connection");
+         },
+         isConfiguredStorageUrl: () => configured,
+      };
+      const store = fakeOf<PackageLookup & McpExposureReader>({
+         getEnvironment: async () => environment as never,
+         mcpIncludeHiddenFilesAndSources: false,
+      });
+      const info = spyOn(logger, "info").mockImplementation(() => logger);
+      try {
+         await new QueryController(
+            new QueryUseCase(store, new QuerySlots()),
+         ).getQuery({
+            environmentName: "env",
+            packageName: "pkg",
+            modelPath: "m.malloy",
+            sourceName: "",
+            queryName: "",
+            query: "run: trips -> { aggregate: n is count() }",
+            compactJson: true,
+            filterParams: {},
+            givens: undefined,
+            bypassAuthorize: false,
+            includeHiddenFilesAndSources: false,
+            identity: { caller: "test@example.com" },
+         });
+      } catch (error) {
+         return error as StorageAccessDeniedError;
+      } finally {
+         info.mockRestore();
+      }
+      throw new Error("the query was not refused");
+   }
+
+   it("says the query is fine for a URL under a configured data path", async () => {
+      const refusal = await refusedOn(true);
+      expect(refusal).toBeInstanceOf(StorageAccessDeniedError);
+      expect(refusal.callerMessage).toContain(
+         "The query and the model are fine",
+      );
+   });
+
+   it("does not, for any other URL", async () => {
+      const refusal = await refusedOn(false);
+      expect(refusal.callerMessage).not.toContain("fine");
    });
 });

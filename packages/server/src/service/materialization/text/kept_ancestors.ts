@@ -215,16 +215,23 @@ export function confirmedAncestors(
 
 /**
  * Whether `runText`, written in the file at `ancestorURL`, reads every name
- * the same way compiled in the file at `childURL` (P2-22, review). Proven
- * only when:
+ * the same way compiled in the file at `childURL` (P2-22, review).
+ *
+ * The guarantee is structural, from two conditions:
  *
  *  - the child imports the ancestor's file whole (`import "<file>"`), never
  *    by a selective import, which may leave a name out for the child to
- *    declare itself;
- *  - the ancestor's file imports nothing, so every source name its run reads
- *    is one it declares, which the whole import hands the child as is;
- *  - no word of the run is a name the child declares or imports selectively
- *    from elsewhere.
+ *    declare itself. A whole import brings every name the ancestor's file
+ *    declares, and Malloy refuses a file that declares again a name it
+ *    imported, so each such name reads the ancestor's own source;
+ *  - the ancestor's file imports nothing. Imports are not transitive, so a
+ *    name the ancestor's file imported would not reach the child through the
+ *    whole import, and the child could bind that name itself. With none,
+ *    every source name the run reads is one the ancestor's file declares.
+ *
+ * A third check is defence in depth: no word of the run (a backticked name
+ * included) is a name the child declares or imports selectively from
+ * elsewhere.
  *
  * Unproven, the blocks are not carried and the source is served as before
  * (or answers live): a join in the run that bound to another source in the
@@ -249,7 +256,7 @@ function bindsAlikeAcrossFiles(
    const runTokens = lexAll(runText);
    if (!runTokens) return false;
    const runWords = new Set(
-      runTokens.flatMap((t) => (t.kind === "word" ? [unquote(t.text)] : [])),
+      runTokens.flatMap((t) => (isName(t) ? [unquote(t.text)] : [])),
    );
    const childNames = namesDeclaredOrImported(childText, childImports);
    if (!childNames) return false;
@@ -288,7 +295,7 @@ function topLevelImports(text: string, url: string): FileImport[] | undefined {
                expectName = true;
                continue;
             }
-            if (expectName && w.kind === "word") {
+            if (expectName && isName(w)) {
                names.push(unquote(w.text));
                expectName = false;
             }
@@ -338,11 +345,16 @@ function namesDeclaredOrImported(
          inStatement = true;
          k++;
          const next = tokens[k + 1];
-         if (next?.kind === "word") names.add(unquote(next.text));
+         if (next && isName(next)) names.add(unquote(next.text));
          continue;
       }
       // A later item of the same statement: `, name is …`.
-      if (inStatement && t.text === "," && tokens[k + 1]?.kind === "word") {
+      if (
+         inStatement &&
+         t.text === "," &&
+         tokens[k + 1] &&
+         isName(tokens[k + 1])
+      ) {
          names.add(unquote(tokens[k + 1].text));
          continue;
       }
@@ -355,6 +367,14 @@ function namesDeclaredOrImported(
       }
    }
    return names;
+}
+
+/** A name: a word, or a backticked name (which the lexer leaves unclassified). */
+function isName(t: { kind: string; text: string }): boolean {
+   return (
+      t.kind === "word" ||
+      (t.text.length > 1 && t.text.startsWith("`") && t.text.endsWith("`"))
+   );
 }
 
 function unquote(word: string): string {
