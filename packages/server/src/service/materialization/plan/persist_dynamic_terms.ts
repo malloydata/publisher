@@ -48,12 +48,16 @@ import {
    type TermUse,
 } from "../domain/read_time_terms";
 
-/** Why a read-time position of a given is refused; each names the position. */
+/**
+ * Why a read-time position of a given is refused. A given the stored relation
+ * would read, wherever it sits (the persisted query, a field, a join's `on:`,
+ * a joined source), is `given_in_persisted_query`, the reason every other
+ * route reports; the detail names where it sits. `dynamic_projection`,
+ * `dynamic_join` and `dynamic_joined_where` are retained on the wire, no
+ * longer produced.
+ */
 type DynamicTermRefusal =
    | "given_in_persisted_query"
-   | "dynamic_projection"
-   | "dynamic_join"
-   | "dynamic_joined_where"
    | "inherited_where_with_given";
 
 /**
@@ -578,9 +582,9 @@ function unreadable(err: unknown, cannotProve: string): FieldRefusal {
  * as written, and the joined source re-applies its own `where:` per caller.
  * See {@link joinedSourceRefusal}.
  *
- * Refused: a given in a join's `on:` (`dynamic_join`), which nothing re-binds
- * per caller, and a dimension or measure reading a given itself
- * (`dynamic_projection`). A field reading a given only THROUGH an admitted join
+ * Refused, as `given_in_persisted_query` with the position in its detail: a
+ * given in a join's `on:`, which nothing re-binds per caller, and a dimension
+ * or measure reading a given itself. A field reading a given only THROUGH an admitted join
  * carries none of its own (Malloy's summaries do not cross a join path).
  */
 function classifyFields(
@@ -605,7 +609,7 @@ function classifyFields(
          if (readsAGiven(f.onExpression, new WeakSet())) {
             return {
                ok: false,
-               reason: "dynamic_join",
+               reason: "given_in_persisted_query",
                detail:
                   `the join '${label}' has a given in its \`on:\` condition, ` +
                   `which decides which rows join per caller`,
@@ -624,7 +628,7 @@ function classifyFields(
       if (readsAGiven(f, new WeakSet())) {
          return {
             ok: false,
-            reason: "dynamic_projection",
+            reason: "given_in_persisted_query",
             detail:
                `the field '${label}' reads a given, so its value would ` +
                `differ per caller`,
@@ -668,7 +672,7 @@ function joinedSourceRefusal(
 ): FieldRefusal | { ok: true; joinedTerms: JoinedDynamicTerms[] } {
    const refuse = (why: string): FieldRefusal => ({
       ok: false,
-      reason: "dynamic_joined_where",
+      reason: "given_in_persisted_query",
       detail: `the source joined as '${label}' is itself scoped by a given, ${why}`,
    });
 

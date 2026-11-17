@@ -320,9 +320,13 @@ applied again over its table at read, so it is not built and is answered live, u
 Move the `where:` onto the persisted source itself to serve it from a table.
 
 Two positions carry a given that is refused even though the build leaves them out: a declared
-`dimension:` or `measure:` that reads a given itself (`dynamic_projection`), and a join's `on:`
-condition (`dynamic_join`). Neither is in the artifact, so neither is a leak; they are refused
-because the served copy has nothing that binds the given per caller in that position.
+`dimension:` or `measure:` that reads a given itself, and a join's `on:` condition. Neither is in
+the artifact, so neither is a leak; they are refused because the served copy has nothing that binds
+the given per caller in that position. Both are refused as `given_in_persisted_query`, the one reason
+every route gives for a stored result that would read a given, and the detail says where the given
+sits ("the field 'x' reads a given", "the join 'g' has a given in its `on:` condition"). The older
+`dynamic_projection`, `dynamic_join` and `dynamic_joined_where` reasons are retained in the API, no
+longer produced.
 
 #### Per-user visibility through a joined grant table
 
@@ -355,8 +359,8 @@ reports the join under `joinedTerms`, beside the source's own `strippedTerms`, n
 source whose binding the per-caller answer depends on. The rule is transitive: a grant table that
 itself joins a further given-scoped source is held to it one level down.
 
-It is refused as `dynamic_joined_where` when the joined source is not persisted, is persisted
-colocated (no `storage=`), would itself be refused, or is joined through an inline refinement
+It is refused as `given_in_persisted_query`, its detail naming the joined source, when the joined
+source is not persisted, is persisted in the database (no `storage=`), would itself be refused, or is joined through an inline refinement
 (`join_one: g is grants extend { … }`), which compiles to an anonymous source nothing can bind.
 Declare the refinement on a named source and join that.
 

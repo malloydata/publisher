@@ -426,7 +426,7 @@ const CASES: ShapeCase[] = [
       name: "v1 #@ persist storage=, the term on a joined source",
       model: "v1_storage.malloy",
       source: "vs_join",
-      path: { kind: "refused_source", reason: "dynamic_joined_where" },
+      path: { kind: "refused_source", reason: "given_in_persisted_query" },
       query: "run: vs_join -> { group_by: b.org; aggregate: n is count(), s is b.amt.sum() }",
       ownRowsOnly: false,
    },

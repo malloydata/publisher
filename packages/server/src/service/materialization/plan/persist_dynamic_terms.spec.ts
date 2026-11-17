@@ -181,8 +181,9 @@ source: p is raw -> { select: * } extend { dimension: mine is org_id = $ORG_ID }
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_projection");
-         expect(result.detail).toContain("mine");
+         // One reason on every route; the detail names where the given sits.
+         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.detail).toContain("the field 'mine' reads a given");
       }
    });
 
@@ -198,7 +199,8 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_join");
+         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.detail).toContain("`on:` condition");
          // The alias the author wrote, not the joined source's `sql://` identity.
          expect(result.detail).toContain("'v'");
       }
@@ -216,7 +218,8 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_joined_where");
+         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.detail).toContain("the source joined as 'v'");
          expect(result.detail).toContain("refinement");
       }
    });
@@ -344,7 +347,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_joined_where");
+         expect(result.reason).toBe("given_in_persisted_query");
          expect(result.detail).toContain("'live_grants'");
          expect(result.detail).toContain("storage destination");
       }
@@ -365,7 +368,10 @@ source: p is raw -> { select: * } extend {
       );
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("dynamic_joined_where");
+      if (!result.ok) {
+         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.detail).toContain("the source joined as 'g'");
+      }
    });
 
    it("refuses the join when the grant table's own build would bake a given", async () => {
@@ -380,7 +386,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_joined_where");
+         expect(result.reason).toBe("given_in_persisted_query");
          expect(result.detail).toContain("BUILT");
       }
    });
@@ -417,7 +423,7 @@ source: p is raw -> { select: * } extend {
       );
       expect(refused.ok).toBe(false);
       if (!refused.ok) {
-         expect(refused.reason).toBe("dynamic_joined_where");
+         expect(refused.reason).toBe("given_in_persisted_query");
          expect(refused.detail).toContain("'teams'");
       }
    });
@@ -432,7 +438,10 @@ source: p is raw -> { select: * } extend {
       );
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("dynamic_projection");
+      if (!result.ok) {
+         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.detail).toContain("the field 'mine' reads a given");
+      }
    });
 
    it("still refuses a given in the join's on: condition", async () => {
@@ -444,6 +453,9 @@ source: p is raw -> { select: * } extend {
       );
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("dynamic_join");
+      if (!result.ok) {
+         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.detail).toContain("`on:` condition");
+      }
    });
 });
