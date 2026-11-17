@@ -200,7 +200,7 @@ const CASES: Case[] = [
    ...both(
       "a nest:",
       (p) =>
-         `run: ${p}_regional -> { group_by: status; aggregate: n; nest: by_region is { group_by: region; aggregate: n } }`,
+         `run: ${p}_regional -> { group_by: status; aggregate: n; nest: by_region is { group_by: region; aggregate: n; order_by: region } }`,
    ),
    // Rebinding the gate's column: refused live, so refused served.
    ...both(
