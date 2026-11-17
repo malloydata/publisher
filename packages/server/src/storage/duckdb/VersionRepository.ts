@@ -114,7 +114,7 @@ export class VersionRepository {
                   version.contentHash,
                   version.sourceLocation,
                   version.manifestPath,
-                  version.manifestPath !== null,
+                  version.hostOwned === true,
                   promoted ? now : null,
                   version.description,
                   now,
@@ -327,15 +327,14 @@ export class VersionRepository {
       packageName: string,
       versionId: string,
       manifestPath: string | null,
-      hostOwned?: boolean,
    ): Promise<Version> {
-      // A manifest marks the version host-owned; a clear keeps the mark.
-      const owned = hostOwned ?? (manifestPath !== null ? true : null);
+      // The mark is set only by a bind that bound (markHostOwned). A row the
+      // backfill never reached keeps what it read as: host-owned when it
+      // named a manifest (the old value, which SET reads).
       const row = await this.db.get<Row>(
-         `UPDATE versions SET manifest_path = ?, host_owned = coalesce(?, host_owned, FALSE), updated_at = ? WHERE ${KEY} RETURNING *`,
+         `UPDATE versions SET manifest_path = ?, host_owned = coalesce(host_owned, manifest_path IS NOT NULL), updated_at = ? WHERE ${KEY} RETURNING *`,
          [
             manifestPath,
-            owned,
             new Date().toISOString(),
             environmentId,
             packageName,
@@ -344,6 +343,17 @@ export class VersionRepository {
       );
       if (!row) throw versionNotFound(packageName, versionId);
       return mapRow(row);
+   }
+
+   async markHostOwned(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      await this.db.run(
+         `UPDATE versions SET host_owned = TRUE, updated_at = ? WHERE ${KEY} AND host_owned IS NOT TRUE`,
+         [new Date().toISOString(), environmentId, packageName, versionId],
+      );
    }
 
    async deleteByPackage(
@@ -430,9 +440,11 @@ function mapRow(row: Row): Version {
       contentHash: row.content_hash as string,
       sourceLocation: text(row.source_location),
       manifestPath: text(row.manifest_path),
-      // NULL on a row the backfill could not reach: not host-owned, unless
-      // it names a manifest.
-      hostOwned: row.host_owned === true || row.manifest_path != null,
+      // NULL on a row the backfill could not reach: host-owned when it names
+      // a manifest.
+      hostOwned:
+         row.host_owned === true ||
+         (row.host_owned == null && row.manifest_path != null),
       archiveStatus: row.archive_status as VersionArchiveStatus,
       archivedAt: date(row.archived_at),
       promotedAt: date(row.promoted_at),

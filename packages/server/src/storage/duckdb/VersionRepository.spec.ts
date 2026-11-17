@@ -558,9 +558,9 @@ describe("VersionRepository", () => {
       );
    });
 
-   it("marks a version host-owned once a manifest is recorded, and keeps the mark through a clear", async () => {
-      const { repo } = await freshRepo();
-      // A publish with no manifest is not host-owned; one with a manifest is.
+   it("marks a version host-owned only when asked, never on a manifest alone, and keeps the mark through a clear", async () => {
+      const { db, repo } = await freshRepo();
+      // A publish records the mark it is given, false when none.
       expect(
          (await repo.commitPublish(newVersion("1.0.0"), always)).version
             .hostOwned,
@@ -568,31 +568,59 @@ describe("VersionRepository", () => {
       expect(
          (
             await repo.commitPublish(
-               newVersion("2.0.0", { manifestPath: "s3://m.json" }),
+               newVersion("2.0.0", {
+                  manifestPath: "s3://m.json",
+                  hostOwned: true,
+               }),
                never,
             )
          ).version.hostOwned,
       ).toBe(true);
 
-      // A clear of a version no host bound leaves it not host-owned.
+      // Recording a manifest does not mark it: only a bind that bound does.
+      expect(
+         (
+            await repo.setVersionManifestPath(
+               ENV_ID,
+               PKG,
+               "1.0.0",
+               "s3://typo.json",
+            )
+         ).hostOwned,
+      ).toBe(false);
       expect(
          (await repo.setVersionManifestPath(ENV_ID, PKG, "1.0.0", null))
             .hostOwned,
       ).toBe(false);
+
+      // Marked, it keeps the mark through a clear.
       await repo.setVersionManifestPath(ENV_ID, PKG, "1.0.0", "s3://m.json");
-      const cleared = await repo.setVersionManifestPath(
-         ENV_ID,
-         PKG,
-         "1.0.0",
-         null,
-      );
-      expect(cleared).toMatchObject({ manifestPath: null, hostOwned: true });
+      await repo.markVersionHostOwned(ENV_ID, PKG, "1.0.0");
+      expect(
+         await repo.setVersionManifestPath(ENV_ID, PKG, "1.0.0", null),
+      ).toMatchObject({ manifestPath: null, hostOwned: true });
       expect((await repo.getVersion(ENV_ID, PKG, "1.0.0"))!.hostOwned).toBe(
          true,
       );
-      // Given explicitly, the mark is put back as it was.
+      // Marking a version with no row does nothing.
+      await repo.markVersionHostOwned(ENV_ID, PKG, "9.0.0");
+
+      // A row the backfill never reached reads as host-owned while it names
+      // a manifest, and a clear keeps that rather than dropping it.
+      await repo.setVersionManifestPath(ENV_ID, PKG, "1.0.0", "s3://m.json");
+      await db.run("UPDATE versions SET host_owned = NULL");
+      expect((await repo.getVersion(ENV_ID, PKG, "1.0.0"))!.hostOwned).toBe(
+         true,
+      );
       expect(
-         (await repo.setVersionManifestPath(ENV_ID, PKG, "1.0.0", null, false))
+         await repo.setVersionManifestPath(ENV_ID, PKG, "1.0.0", null),
+      ).toMatchObject({ manifestPath: null, hostOwned: true });
+      // And one that named none stays not host-owned.
+      await db.run(
+         "UPDATE versions SET host_owned = NULL, manifest_path = NULL WHERE version_id = '2.0.0'",
+      );
+      expect(
+         (await repo.setVersionManifestPath(ENV_ID, PKG, "2.0.0", null))
             .hostOwned,
       ).toBe(false);
    });

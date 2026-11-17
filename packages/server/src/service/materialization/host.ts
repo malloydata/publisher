@@ -129,6 +129,8 @@ export interface MaterializationEnvironment {
     * package's tables are the host's to build and bind.
     */
    isHostOwned(pkg: MaterializationPackage): boolean;
+   /** A host's instructed run of the version committed (see isHostOwned). */
+   markVersionHostOwned(packageName: string, versionId: string): Promise<void>;
    peekVersion(
       packageName: string,
       versionId: string,

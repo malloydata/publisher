@@ -304,6 +304,35 @@ async function settled(
    }
 }
 
+/** A host's instructed run of `version`, building `summary` into `table`, once settled. */
+async function instructedRun(
+   version: string,
+   id: string,
+   table: string,
+): Promise<Materialization> {
+   const pkg = await loadedVersion(version);
+   const source = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
+      (s) => s.sourceEntityId === id,
+   )!;
+   const service = materializationService();
+   return settled(
+      service,
+      (
+         await service.createMaterialization(ENV, PKG, {
+            versionId: VersionRef.parse(version),
+            buildInstructions: [
+               {
+                  sourceID: source.sourceID,
+                  sourceEntityId: id,
+                  physicalTableName: table,
+                  realization: "COPY",
+               },
+            ] as never,
+         })
+      ).id,
+   );
+}
+
 type Rebinder = {
    bindManifest(pkg: Package, uri: string): Promise<void>;
    bindVersionManifest(pkg: Package, uri: string | null): Promise<void>;
@@ -634,6 +663,112 @@ describe("a local run of a host-bound package or version", () => {
       expect((refused as Error).message).toContain("Package solo is bound");
    });
 
+   it("builds a host's instructed run of a cleared host-owned version, and serves it live, through a restart", async () => {
+      const id = await publishLive("1.0.0");
+      const host = writeManifest("host.json", id, "summary_host");
+      await versions().setManifest(PKG, "1.0.0", host);
+      await versions().setManifest(PKG, "1.0.0", null);
+
+      // Accepted (it has buildInstructions), built, and not served: an
+      // instructed run never loads its own tables.
+      const run = await instructedRun("1.0.0", id, "summary_built");
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      const pkg = await loadedVersion("1.0.0");
+      expect(tableOf(pkg, id)).toBeUndefined();
+      expect(await total(pkg)).toBe(1);
+
+      // The store now holds the run's table; a restart still serves live.
+      localStore = { [id]: entryFor(id, "summary_built") };
+      await env.closeAllConnections();
+      env = await bootEnvironment();
+      const restarted = await loadedVersion("1.0.0");
+      expect(tableOf(restarted, id)).toBeUndefined();
+      expect(await total(restarted)).toBe(1);
+   });
+
+   it("builds a host's instructed run of a version still bound to a host manifest, which keeps serving the host's table, through a restart", async () => {
+      const id = await publishLive("1.0.0");
+      const host = writeManifest("host.json", id, "summary_host");
+      await versions().setManifest(PKG, "1.0.0", host);
+      const pkg = await loadedVersion("1.0.0");
+      await storeTables(pkg);
+      expect(await total(pkg)).toBe(42);
+
+      const run = await instructedRun("1.0.0", id, "summary_built");
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      expect(tableOf(pkg, id)).toBe('"summary_host"');
+      expect(await total(pkg)).toBe(42);
+
+      localStore = { [id]: entryFor(id, "summary_built") };
+      await env.closeAllConnections();
+      env = await bootEnvironment();
+      const restarted = await loadedVersion("1.0.0");
+      await storeTables(restarted);
+      expect(tableOf(restarted, id)).toBe('"summary_host"');
+      expect(await total(restarted)).toBe(42);
+   });
+
+   it("makes a version a host built host-owned, though no host bound it", async () => {
+      const id = await publishLive("1.0.0");
+      expect((await versions().getVersion(PKG, "1.0.0")).hostOwned).toBe(false);
+      const run = await instructedRun("1.0.0", id, "summary_built");
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      expect((await versions().getVersion(PKG, "1.0.0")).hostOwned).toBe(true);
+
+      // Its build is in the store; a clear serves live, never it, and a
+      // local run is refused.
+      localStore = { [id]: entryFor(id, "summary_built") };
+      const pkg = await loadedVersion("1.0.0");
+      await versions().setManifest(PKG, "1.0.0", null);
+      expect(tableOf(pkg, id)).toBeUndefined();
+      expect(await total(pkg)).toBe(1);
+      const refused = await materializationService()
+         .createMaterialization(ENV, PKG, {
+            versionId: VersionRef.parse("1.0.0"),
+         })
+         .catch((error: unknown) => error);
+      expect(refused).toBeInstanceOf(MaterializationConflictError);
+   });
+
+   it("does not make a version host-owned when its manifest never binds", async () => {
+      const id = await publishLive("1.0.0");
+      localStore = { [id]: entryFor(id, "summary_local") };
+      const pkg = await loadAfresh("1.0.0");
+      await storeTables(pkg);
+      expect(await total(pkg)).toBe(7);
+
+      // A mistyped manifest: its fetch fails, so nothing binds.
+      await versions().setManifest(
+         PKG,
+         "1.0.0",
+         path.join(root, "no-such-manifest.json"),
+      );
+      expect((await versions().getVersion(PKG, "1.0.0")).hostOwned).toBe(false);
+      expect(env.isHostOwned(pkg)).toBe(true); // it names one, for now
+
+      // Cleared, it is the standalone version it was: its store serves.
+      await versions().setManifest(PKG, "1.0.0", null);
+      expect(env.isHostOwned(pkg)).toBe(false);
+      expect(tableOf(pkg, id)).toBe('"summary_local"');
+      expect(await total(pkg)).toBe(7);
+   });
+
+   it("does not count a run of an unloaded host-owned version as loaded", async () => {
+      const id = await publishLive("1.0.0");
+      const host = writeManifest("host.json", id, "summary_host");
+      await versions().setManifest(PKG, "1.0.0", host);
+      await versions().setManifest(PKG, "1.0.0", null);
+      versions().cache.evict(PKG, "1.0.0");
+      const outcome = await env.loadRunManifest({
+         packageName: PKG,
+         versionId: "1.0.0",
+         colocated: {},
+         storage: {},
+         commit: async () => undefined,
+      });
+      expect(outcome).toMatchObject({ loaded: false, step: "bind" });
+   });
+
    it("is refused with a 409 once a host has bound the version, after it clears the manifest too", async () => {
       const id = await publishLive("1.0.0");
       const host = writeManifest("host.json", id, "summary_host");
@@ -646,7 +781,9 @@ describe("a local run of a host-bound package or version", () => {
          .catch((error: unknown) => error);
       expect(refused).toBeInstanceOf(MaterializationConflictError);
       expect(internalErrorToHttpError(refused as Error).status).toBe(409);
-      expect((refused as Error).message).toContain("has been bound by a host");
+      expect((refused as Error).message).toContain(
+         "has been bound or built by a host",
+      );
       expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
    });
 

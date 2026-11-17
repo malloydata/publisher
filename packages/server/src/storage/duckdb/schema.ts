@@ -136,10 +136,11 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    // version's own publisher.json description. `git_commit_sha` and `git_ref`
    // are reserved for publish provenance; nothing writes them yet.
    //
-   // `host_owned` says a host has bound the version to a manifest at least
-   // once: from then on its binding is the host's, so a clear serves live and
-   // a load with no manifest serves live, never this server's own run store.
-   // Set when a manifest is recorded and never cleared. Declared last and
+   // `host_owned` says a host has bound the version (a manifest it named
+   // bound) or built it (its instructed run committed): from then on its
+   // binding is the host's, so a clear serves live and a load with no
+   // manifest serves live, never this server's own run store. Set by that
+   // bind or run, never by recording a manifest alone, and never cleared. Declared last and
    // nullable, so `reconcileDeclaredColumns` adds it to a store that predates
    // it; `backfillVersionHostOwned` fills the rows it was added under.
    //

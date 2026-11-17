@@ -759,7 +759,7 @@ export class MaterializationService {
                ? version !== null
                   ? `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Pass buildInstructions to build into tables the host names.`
                   : `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`
-               : `${target} has been bound by a host: it serves the host's manifest or live, never a local run's tables, so a local run would build tables it cannot serve. Pass buildInstructions to build into tables the host names.`,
+               : `${target} has been bound or built by a host: it serves the host's manifest or live, never a local run's tables, so a local run would build tables it cannot serve. Pass buildInstructions to build into tables the host names.`,
          );
       }
       const versions = environment.getVersionService();
@@ -1632,9 +1632,15 @@ export class MaterializationService {
          mode,
          startedAt,
       } = run;
-      const { versionId, pkg, reader, compiled } = target;
+      const { versionId, pkg, reader, compiled, environment } = target;
       const { carried, renamed } = derived;
       const { served, failures, sourcesFailed, durationMs } = committed;
+      // A host built this version: it owns it from now on, as a bind would
+      // make it (Environment.isHostOwned), so a clear, reload or restart
+      // never binds what this server's store holds for it.
+      if (orchestrated && versionId !== undefined) {
+         await environment.markVersionHostOwned(packageName, versionId);
+      }
       // Whether every loaded copy of the package now reads this run: its
       // own load, then the other versions' rebinds below.
       let bound = !orchestrated && served?.autoLoad === "loaded";

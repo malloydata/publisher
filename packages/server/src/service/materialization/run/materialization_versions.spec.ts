@@ -1191,7 +1191,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
       expect(refused).toBeInstanceOf(MaterializationConflictError);
    });
 
-   it("a run with instructions that rebuilds another version's table leaves that version serving live", async () => {
+   it("a run with instructions makes its version the host's, which serves live, whoever rebuilds its table", async () => {
       await publish("1.0.0", 1, "package");
       await publish("2.0.0", 2, "package");
       const instruct = async (versionId: string) => {
@@ -1217,10 +1217,12 @@ describe('scope "package": the versions share the package\'s tables', () => {
       env = await newEnvironment();
       service = newService(env);
       await tamper("host_t", 202);
-      expect(await answerOf("2.0.0")).toBe(202);
+      // The host built 2.0.0, so it owns it: with no manifest bound it
+      // serves live, never the table its run left in the store.
+      expect(await answerOf("2.0.0")).toBe(2);
 
-      // 1.0.0's caller names the same table, from 1.0.0's definition: 2.0.0,
-      // loaded and bound to it, serves live at once, and after a restart.
+      // 1.0.0's caller names the same table, from 1.0.0's definition: 2.0.0
+      // still serves live, at once and after a restart.
       expect((await instruct("1.0.0")).status).toBe("MANIFEST_FILE_READY");
       expect(await answerOf("2.0.0")).toBe(2);
       env = await newEnvironment();

@@ -108,17 +108,26 @@ export interface ResourceRepository {
       status: VersionArchiveStatus,
    ): Promise<Version>;
    /**
-    * Record the version's manifest. A non-null one also marks it host-owned
-    * (`Version.hostOwned`); null leaves the mark. `hostOwned`, when given,
-    * sets the mark instead: for putting a row back as it was.
+    * Record the version's manifest. Leaves `hostOwned` as it is, except on
+    * a row the backfill never reached (NULL), which takes whether it named
+    * a manifest before this write.
     */
    setVersionManifestPath(
       environmentId: string,
       packageName: string,
       versionId: string,
       manifestPath: string | null,
-      hostOwned?: boolean,
    ): Promise<Version>;
+   /**
+    * Mark a version host-owned (`Version.hostOwned`): a host bound it to a
+    * manifest that bound, or built it. Never cleared. A version with no row
+    * (yet) is left alone.
+    */
+   markVersionHostOwned(
+      environmentId: string,
+      packageName: string,
+      versionId: string,
+   ): Promise<void>;
    /**
     * Delete a version's row. While other versions remain it refuses the
     * package's `latest` (VERSION_IS_LATEST) and its last version in service
@@ -283,8 +292,8 @@ export interface Version {
    /** The build manifest the version is bound to; null serves live. */
    manifestPath: string | null;
    /**
-    * A host has bound the version to a manifest at least once (a publish or
-    * a `setManifest` naming one). Its binding is then the host's: with no
+    * A host has bound the version to a manifest that bound, or built it (a
+    * run with `buildInstructions`). Its binding is then the host's: with no
     * manifest it serves live, never this server's own run store. Never
     * cleared.
     */
@@ -314,7 +323,9 @@ export type NewVersion = Pick<
    | "sourceLocation"
    | "manifestPath"
    | "description"
->;
+> &
+   /** Whether the publish bound a host manifest; false when absent. */
+   Partial<Pick<Version, "hostOwned">>;
 
 /**
  * Decides, from the package's current `latest` (null when it has none),

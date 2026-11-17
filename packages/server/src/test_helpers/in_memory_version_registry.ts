@@ -164,7 +164,7 @@ export function inMemoryVersionRegistry(): Record<string, unknown> {
          const now = new Date();
          versions.set(key, {
             ...version,
-            hostOwned: version.manifestPath !== null,
+            hostOwned: version.hostOwned === true,
             archiveStatus: "unarchive",
             archivedAt: null,
             promotedAt: null,
@@ -240,17 +240,24 @@ export function inMemoryVersionRegistry(): Record<string, unknown> {
          packageName: string,
          versionId: string,
          manifestPath: string | null,
-         hostOwned?: boolean,
       ) => {
          const target = versions.get(
             versionKey(environmentId, packageName, versionId),
          );
          if (!target) throw notFound(packageName, versionId);
          target.manifestPath = manifestPath;
-         target.hostOwned =
-            hostOwned ?? (manifestPath !== null || target.hostOwned);
          target.updatedAt = new Date();
          return { ...target };
+      },
+      markVersionHostOwned: async (
+         environmentId: string,
+         packageName: string,
+         versionId: string,
+      ) => {
+         const target = versions.get(
+            versionKey(environmentId, packageName, versionId),
+         );
+         if (target) target.hostOwned = true;
       },
       deleteVersion: async (
          environmentId: string,
