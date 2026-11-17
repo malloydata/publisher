@@ -23,12 +23,15 @@ import { pollFor, TERMINAL_STATUSES } from "./polling";
 
 /**
  * The one rename rule across places, through a real server on a Postgres
- * warehouse with two DuckLake storage destinations (catalogs on Postgres):
- * when a source's `storage=` changes, its next auto-run builds it in the new
- * place and, once that run commits and is served, drops the table it left in
- * the old one, which Publisher can prove is its own; a table at an author's
- * exact `name=` that changes is kept, listed on the run and warned about.
- * Every drop is checked against the warehouse and the catalogs themselves.
+ * warehouse with two DuckLake storage destinations (catalogs on Postgres),
+ * and a third name for the first: when a source's `storage=` changes and its
+ * table keeps its name, the table left in the old place may be the very
+ * table served (two names for one DuckLake), so it is never dropped: kept,
+ * listed on the run (`may_be_served`) and warned about, and nothing writes
+ * on it. A table renamed as it moved is dropped once the run commits and is
+ * served, and a table at an author's exact `name=` that changes is kept,
+ * listed and warned about. Every table is checked against the warehouse and
+ * the catalogs themselves.
  *
  * Opt-in: set PUBLISHER_TEST_POSTGRES_URL to a server the test may create
  * and drop databases on, e.g. `postgresql://postgres:pw@127.0.0.1:5432/postgres`.
@@ -263,36 +266,103 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
       for (const dir of dirs) dir.cleanup();
    });
 
-   it("drops the table a storage= change left behind, wherever it moves", async () => {
+   /** What the newest run lists as kept, as `place:name:reason`. */
+   const keptOf = (run: Run) =>
+      (
+         (run.metadata?.keptTables ?? []) as {
+            physicalTableName: string;
+            storageDestinationName?: string;
+            reason: string;
+         }[]
+      )
+         .map(
+            (t) =>
+               `${t.storageDestinationName ?? "pg"}:${t.physicalTableName}:${t.reason}`,
+         )
+         .sort();
+
+   /** Every comment a DuckLake catalog has ever recorded, live or not. */
+   const lakeComments = async (lake: number) =>
+      (
+         await rows(
+            lakes[lake],
+            "SELECT value FROM ducklake_tag WHERE key = 'comment'",
+         )
+      ).map((r) => String(r.value));
+
+   it("keeps and lists the table a storage= change left under the same name, wherever it moves", async () => {
       // In `lake`.
       const first = await build();
       const name = tableOf(first);
       expect(name).toMatch(/__p[0-9a-f]{8}$/);
       expect(await lakeTables(0)).toEqual([name]);
 
-      // `lake` -> `lake2`: built there, and dropped from `lake`.
+      // `lake` -> `lake2`: built there, and the old table kept and listed,
+      // though the two lakes are apart: its name does not say so.
       await edit('#@ persist storage="lake2"');
       const moved = await build();
       expect(Object.values(moved.manifest!.entries!)[0]).toMatchObject({
          storageDestinationName: "lake2",
       });
-      expect(await lakeTables(1)).toEqual([tableOf(moved)]);
-      expect(await lakeTables(0)).toEqual([]);
+      expect(tableOf(moved)).toBe(name);
+      expect(await lakeTables(1)).toEqual([name]);
+      expect(await lakeTables(0)).toEqual([name]);
+      expect(keptOf(moved)).toEqual([`lake:${name}:may_be_served`]);
       expect(await who()).toBe("pa");
 
-      // `lake2` -> the warehouse itself: dropped from `lake2`.
+      // `lake2` -> the warehouse itself: both lakes keep theirs.
       await edit("#@ persist");
       const home = await build();
       expect(await warehouseTables()).toEqual([tableOf(home)]);
-      expect(await lakeTables(1)).toEqual([]);
+      expect(await lakeTables(0)).toEqual([name]);
+      expect(await lakeTables(1)).toEqual([name]);
+      expect(keptOf(home)).toEqual([
+         `lake2:${name}:may_be_served`,
+         `lake:${name}:may_be_served`,
+      ]);
       expect(await who()).toBe("pa");
 
-      // The warehouse -> `lake`: dropped from the warehouse.
+      // The warehouse -> `lake`: served from `lake` again, which is no
+      // longer listed; the warehouse's table is kept and listed.
       await edit('#@ persist storage="lake"');
       const back = await build();
       expect(await lakeTables(0)).toEqual([tableOf(back)]);
-      expect(await warehouseTables()).toEqual([]);
-      expect(back.metadata?.keptTables).toBeUndefined();
+      expect(await warehouseTables()).toEqual([name]);
+      expect(keptOf(back)).toEqual([
+         `lake2:${name}:may_be_served`,
+         `pg:${name}:may_be_served`,
+      ]);
+      expect(await who()).toBe("pa");
+
+      // Raised as warnings that say the table may be the one served, and
+      // never advise a drop.
+      const kept = await pollFor(
+         async () =>
+            (
+               (
+                  (await (await fetch(api())).json()) as {
+                     warnings?: { code?: string; message: string }[];
+                  }
+               ).warnings ?? []
+            ).filter((w) => w.code === "table-kept-after-rename"),
+         (warnings) => warnings.length === 2,
+         "no table-kept-after-rename warnings",
+         30_000,
+      );
+      for (const warning of kept) {
+         expect(warning.message).toContain("may be the very table");
+         expect(warning.message).not.toMatch(
+            /drop it yourself|built it with dropTables/i,
+         );
+      }
+      // The reclaim wrote no comment on any table: no identity probe.
+      for (const lake of [0, 1]) {
+         expect(
+            (await lakeComments(lake)).filter(
+               (c) => !c.startsWith("malloy-publisher:table owner="),
+            ),
+         ).toEqual([]);
+      }
    });
 
    it("keeps an author's exact name= that changed, lists it, and warns", async () => {
@@ -302,17 +372,17 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
       await edit('#@ persist name="summary_v2"');
       const renamed = await build();
       expect(tableOf(renamed)).toBe("summary_v2");
-      expect((await warehouseTables()).sort()).toEqual([
-         "summary_t",
-         "summary_v2",
-      ]);
-      expect(renamed.metadata?.keptTables).toEqual([
+      // The earlier test's same-name tables are still kept beside them.
+      expect(await warehouseTables()).toEqual(
+         expect.arrayContaining(["summary_t", "summary_v2"]),
+      );
+      expect(renamed.metadata?.keptTables).toContainEqual(
          expect.objectContaining({
             physicalTableName: "summary_t",
             connectionName: "pg",
             reason: "author_name",
          }),
-      ]);
+      );
       // Set on the package as the reclaim finishes.
       const kept = await pollFor(
          async () =>
@@ -326,14 +396,18 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
                      }[];
                   }
                ).warnings ?? []
-            ).filter((w) => w.code === "table-kept-after-rename"),
+            ).filter(
+               (w) =>
+                  w.code === "table-kept-after-rename" &&
+                  w.message.includes("`summary_t`"),
+            ),
          (warnings) => warnings.length > 0,
          "no table-kept-after-rename warning",
          30_000,
       );
       expect(kept).toHaveLength(1);
       expect(kept[0].subject).toBe("summary");
-      expect(kept[0].message).toContain("`summary_t`");
+      expect(kept[0].message).toContain("never drops");
       expect(await who()).toBe("pa");
 
       // Read again from the run record when the package loads after a
@@ -354,27 +428,65 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
          "no table-kept-after-rename warning after a restart",
          60_000,
       );
-      expect(afterRestart[0].message).toContain("`summary_t`");
+      expect(afterRestart.map((w) => w.message).join("\n")).toContain(
+         "`summary_t`",
+      );
    });
 
-   it("never drops the table a move between two names for one DuckLake moved to", async () => {
+   it("never drops the table a move between two names for one DuckLake moved to: kept and listed", async () => {
       await edit('#@ persist storage="lake"');
       const first = await build();
       const name = tableOf(first);
       expect(await lakeTables(0)).toContain(name);
+      const commentsBefore = await lakeComments(0);
       await edit('#@ persist storage="lake_alias"');
       const moved = await build();
       // The same name in the same lake: the table moved to is the old one.
       expect(tableOf(moved)).toBe(name);
       expect(await lakeTables(0)).toContain(name);
       expect(await who()).toBe("pa");
-      // Nor listed as kept: it is the table the package serves.
+      // Listed, as one that may be the table served.
+      expect(keptOf(moved)).toContain(`lake:${name}:may_be_served`);
+      // Nothing but the build's own ownership mark was written on it.
       expect(
-         (
-            (moved.metadata?.keptTables ?? []) as {
-               physicalTableName: string;
-            }[]
-         ).map((t) => t.physicalTableName),
-      ).not.toContain(name);
+         (await lakeComments(0))
+            .slice(commentsBefore.length)
+            .filter((c) => !c.startsWith("malloy-publisher:table owner=")),
+      ).toEqual([]);
+   });
+
+   it("still drops a table renamed as it moved between destinations", async () => {
+      await edit('#@ persist storage="lake2"');
+      const readable = tableOf(await build());
+      expect(await lakeTables(1)).toContain(readable);
+      await edit('#@ persist storage="lake" name="summary_moved_t"');
+      const moved = await build();
+      expect(tableOf(moved)).toBe("summary_moved_t");
+      expect(await lakeTables(0)).toContain("summary_moved_t");
+      expect(await lakeTables(1)).not.toContain(readable);
+      expect(keptOf(moved)).not.toContain(`lake2:${readable}:may_be_served`);
+      expect(await who()).toBe("pa");
+   });
+
+   it("never drops the served table when the runs before a move between two names for one DuckLake are deleted with dropTables=true", async () => {
+      await edit('#@ persist storage="lake"');
+      const first = await build();
+      const name = tableOf(first);
+      await edit('#@ persist storage="lake_alias"');
+      const moved = await build();
+      expect(tableOf(moved)).toBe(name);
+      // Every run but the one serving, deleted with its tables.
+      const runs = (await (
+         await fetch(`${api()}/materializations`)
+      ).json()) as Run[];
+      for (const run of runs.filter((m) => m.id !== moved.id)) {
+         const res = await fetch(
+            `${api()}/materializations/${run.id}?dropTables=true`,
+            { method: "DELETE" },
+         );
+         expect(res.status).toBeLessThan(300);
+      }
+      expect(await lakeTables(0)).toContain(name);
+      expect(await who()).toBe("pa");
    });
 });
