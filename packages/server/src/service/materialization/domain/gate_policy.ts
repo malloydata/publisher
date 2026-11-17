@@ -40,7 +40,10 @@
  * The review then covers that consistent behaviour. g-mixed, a gated entry
  * point over an ungated stored source, is the same rule on the `storage=`
  * tier: a table proven to hold only ungated rows counts as a G3 table, as a
- * database table does (pending the question-14 review's sign-off).
+ * database table does (pending the question-14 review's sign-off). The
+ * rollup leg's join branch over an ungated base's database rollup answers
+ * past a gated query source on the existing rollup row (a database table),
+ * its gate grafted on the variant (`joinGateDecline` in rollup_variants.ts).
  * `gate_policy_frozen.spec.ts` enumerates every row this file allows and
  * fails on any change, naming the review.
  */
