@@ -737,7 +737,17 @@ export async function withDestinationSession<T>(
       destinationConnection: ApiConnection;
       environmentPath: string;
    },
-   options: { purpose: string; attachAs?: string; build?: boolean },
+   options: {
+      purpose: string;
+      attachAs?: string;
+      build?: boolean;
+      /**
+       * The run's cancel signal: on abort the session is interrupted
+       * ({@link interruptOnAbort}), so its statement in flight stops at
+       * DuckDB's next poll and nothing after it runs.
+       */
+      signal?: AbortSignal;
+   },
    fn: (session: DuckDBConnection) => Promise<T>,
 ): Promise<T> {
    const { destinationName, destinationConnection, environmentPath } =
@@ -747,29 +757,71 @@ export async function withDestinationSession<T>(
    return withIsolatedSession(
       `${options.purpose}_${destinationName}`,
       async (session) => {
-         await attachDestinationReadWrite(
-            session,
-            alias,
-            destinationConnection,
-            environmentPath,
-         );
-         if (options.build) {
-            await assertDestinationSchemaExists(
-               session,
-               alias,
-               destinationName,
-               destinationConnection,
-            );
-            if (destinationConnection.type === "ducklake") {
-               await session.runSQL(
-                  "SET ducklake_default_data_inlining_row_limit=0",
-               );
-            }
-            await pinSessionToUTC(session);
+         const stopInterrupting = interruptOnAbort(session, options.signal);
+         try {
+            return await onDestinationSession(session);
+         } finally {
+            stopInterrupting();
          }
-         return fn(session);
       },
    );
+
+   async function onDestinationSession(session: DuckDBConnection): Promise<T> {
+      await attachDestinationReadWrite(
+         session,
+         alias,
+         destinationConnection,
+         environmentPath,
+      );
+      if (options.build) {
+         await assertDestinationSchemaExists(
+            session,
+            alias,
+            destinationName,
+            destinationConnection,
+         );
+         if (destinationConnection.type === "ducklake") {
+            await session.runSQL(
+               "SET ducklake_default_data_inlining_row_limit=0",
+            );
+         }
+         await pinSessionToUTC(session);
+      }
+      return fn(session);
+   }
+}
+
+/**
+ * Interrupt `session` when `signal` aborts (now, if it already has), until
+ * the returned function is called. DuckDB stops the statement in flight at
+ * its next poll and refuses the next. A read DuckDB makes through a
+ * warehouse extension (BigQuery's) is not cancelled in the warehouse: its
+ * job runs to completion, and DuckDB raises only once its wait returns.
+ */
+export function interruptOnAbort(
+   session: DuckDBConnection,
+   signal: AbortSignal | undefined,
+): () => void {
+   if (!signal) return () => {};
+   const interrupt = () => {
+      // The node-api connection is library-internal, as in dispose.
+      const connection = (
+         session as unknown as { connection?: { interrupt?: () => void } }
+      ).connection;
+      try {
+         connection?.interrupt?.();
+      } catch (err) {
+         logger.warn("Could not interrupt a cancelled build's session", {
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   };
+   if (signal.aborted) {
+      interrupt();
+      return () => {};
+   }
+   signal.addEventListener("abort", interrupt, { once: true });
+   return () => signal.removeEventListener("abort", interrupt);
 }
 
 /** Result of building one source into a storage destination. */
@@ -941,6 +993,8 @@ export async function buildSourceIntoStorage(params: {
    incremental?: StorageIncrementalRefresh;
    /** See StorageBuildRequest.replacesView. */
    replacesView?: string[];
+   /** The run's cancel signal: interrupts the build's session on abort. */
+   signal?: AbortSignal;
    /**
     * Test seam for federation and the passthrough read; production passes
     * nothing. Lets a spec prove the `finally` closes a proxied source's tunnel
@@ -963,7 +1017,7 @@ export async function buildSourceIntoStorage(params: {
    try {
       return await withDestinationSession(
          params,
-         { purpose: "build", build: true },
+         { purpose: "build", build: true, signal: params.signal },
          async (session) => {
             const federated = await federate(
                session,
@@ -1150,6 +1204,8 @@ async function buildOnFederatedSession(
  * source, so `incremental` is not consulted here.
  */
 async function buildSameCatalogIntoStorage(params: {
+   /** The run's cancel signal: interrupts the build's session on abort. */
+   signal?: AbortSignal;
    destinationName: string;
    destinationConnection: ApiConnection;
    sourceConnection: ApiConnection;
@@ -1174,7 +1230,7 @@ async function buildSameCatalogIntoStorage(params: {
    }
    return withDestinationSession(
       params,
-      { purpose: "build", attachAs: alias, build: true },
+      { purpose: "build", attachAs: alias, build: true, signal: params.signal },
       async (session) => {
          await session.runSQL(managedSearchPathSql(alias));
          const target = quoteManifestTablePath(

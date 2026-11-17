@@ -16,7 +16,7 @@
  * Pure: a reader that cannot place a declaration returns undefined.
  */
 
-import { identifier } from "../../malloy_text";
+import { identifier, stringLiteral } from "../../malloy_text";
 import type { GivenReadTerm, TermUse } from "../domain/read_time_terms";
 import {
    isName,
@@ -768,4 +768,49 @@ export function termSpans(
       spans.push(span);
    }
    return { spans };
+}
+
+/**
+ * The edits that point each top-level `import` of `text` at another path:
+ * the path string of every `import` statement whose path `importOf` answers
+ * for. Undefined when the text does not lex, or an import's path is written
+ * with an escape, which is never guessed at.
+ */
+export function importRewrites(
+   text: string,
+   importOf: (written: string) => string | undefined,
+): TextEdit[] | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const edits: TextEdit[] = [];
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.kind !== "word" || t.text !== "import" || t.depth !== 0) continue;
+      // The path is the statement's first string at the top level: right
+      // after `import`, or after `{ … } from`.
+      let j = k + 1;
+      while (
+         j < tokens.length &&
+         !(tokens[j].depth === 0 && /^["']/.test(tokens[j].text))
+      ) {
+         if (tokens[j].depth === 0 && tokens[j].kind === "word") {
+            if (tokens[j].text !== "from") break;
+         }
+         j++;
+      }
+      const literal = tokens[j];
+      if (!literal || literal.depth !== 0 || !/^["']/.test(literal.text)) {
+         continue;
+      }
+      const body = literal.text.slice(1, -1);
+      if (body.includes("\\")) return undefined;
+      const to = importOf(body);
+      if (to === undefined) continue;
+      edits.push({
+         start: literal.start,
+         end: literal.end,
+         insert: stringLiteral(to),
+      });
+   }
+   return edits;
 }

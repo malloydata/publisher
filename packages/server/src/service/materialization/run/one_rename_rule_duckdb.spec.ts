@@ -368,4 +368,29 @@ describe("the one rename rule on DuckDB", () => {
       expect(next.metadata?.[KEPT_TABLES_KEY]).toEqual([]);
       expect(await keptWarnings()).toEqual([]);
    });
+
+   it("never drops, by reclaim or by a run's delete with dropTables, a table a container-only change still names", async () => {
+      const [{ db: catalog }] = await sql("SELECT current_database() AS db");
+      await edit('#@ persist name="main.summary_t"');
+      const first = await build();
+      expect(tableOf(first)).toBe("main.summary_t");
+      // The same table, through the database's catalog name.
+      await edit(`#@ persist name="${String(catalog)}.summary_t"`);
+      const second = await build();
+      expect(tableOf(second)).toBe(`${String(catalog)}.summary_t`);
+      expect(await tables()).toContain("summary_t");
+      expect(
+         (second.metadata?.[KEPT_TABLES_KEY] as KeptTable[]).map((t) => [
+            t.physicalTableName,
+            t.reason,
+         ]),
+      ).toEqual([["main.summary_t", "may_be_served"]]);
+      // Deleting the first run with dropTables=true keeps the table: the
+      // second run names it.
+      await service.deleteMaterialization(ENV, PKG, first.id, {
+         dropTables: true,
+      });
+      expect(await tables()).toContain("summary_t");
+      expect(await who()).toBe(PKG);
+   });
 });

@@ -53,15 +53,15 @@ describe("the kept walk over a table-backed base", () => {
             ["b2", "b3"],
          );
          expect(
-            names(confirmedAncestors(TEXT, own("renamed_ext"), chain)),
+            names(
+               confirmedAncestors(() => TEXT, URL_, own("renamed_ext"), chain),
+            ),
          ).toEqual(["base", "ev"]);
          const mid = keptAncestorChain(map, idOf("mid_ext"), URL_);
          expect(names(mid)).toEqual(["mid", "base", "ev"]);
-         expect(names(confirmedAncestors(TEXT, own("mid_ext"), mid))).toEqual([
-            "mid",
-            "base",
-            "ev",
-         ]);
+         expect(
+            names(confirmedAncestors(() => TEXT, URL_, own("mid_ext"), mid)),
+         ).toEqual(["mid", "base", "ev"]);
       });
    }
 
@@ -72,6 +72,7 @@ describe("the kept walk over a table-backed base", () => {
       // confirmed, though it names the next alias.
       const at = (name: string) => ({
          sourceID: idOf(name),
+         url: URL_,
          range: own(name),
       });
       const forged = [
@@ -80,17 +81,21 @@ describe("the kept walk over a table-backed base", () => {
             aliases: [at("mid"), at("b2")],
          },
       ];
-      expect(confirmedAncestors(TEXT, own("mid_ext"), forged)).toEqual([]);
+      expect(
+         confirmedAncestors(() => TEXT, URL_, own("mid_ext"), forged),
+      ).toEqual([]);
       // An alias naming a source that is not the one it renames.
       const misnamed = TEXT.replace("source: b3 is b2\n", "source: b3 is ev\n");
-      expect(confirmedAncestors(misnamed, own("renamed_ext"), chain)).toEqual(
-         [],
-      );
+      expect(
+         confirmedAncestors(() => misnamed, URL_, own("renamed_ext"), chain),
+      ).toEqual([]);
       // A child naming a source that is no alias of the ancestor.
       const other = TEXT.replace(
          "source: renamed_ext is b3 extend",
          "source: renamed_ext is ev extend",
       );
-      expect(confirmedAncestors(other, own("renamed_ext"), chain)).toEqual([]);
+      expect(
+         confirmedAncestors(() => other, URL_, own("renamed_ext"), chain),
+      ).toEqual([]);
    });
 });

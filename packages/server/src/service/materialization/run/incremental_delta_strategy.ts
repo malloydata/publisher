@@ -55,6 +55,7 @@ export async function buildColocatedDelta(
          // The CTAS's own SQL, so a delta computes what a rebuild would
          // (see deltaSelect).
          sourceSQL: buildSQL,
+         ...(request.signal ? { abortSignal: request.signal } : {}),
       }),
       manifest,
       upstreamReuse: request.upstreamReuse,

@@ -160,10 +160,11 @@ export interface Reroot {
     */
    keepsIncludes?: true;
    /**
-    * With {@link keepsIncludes}: an `except:` item naming no stored column
-    * (a v1 `storage=` table does not store one its source drops) is deleted
-    * from the kept text, since the re-rooted source has nothing of that name
-    * to exclude and Malloy refuses the statement (`dropExceptItems`).
+    * An `except:` item naming no stored column (no build stores a column its
+    * source drops) is deleted from the kept text, ancestors' kept blocks
+    * included, since the re-rooted source has nothing of that name to
+    * exclude and Malloy refuses the statement (`dropExceptItems`). Set on
+    * every re-root; an item naming a stored column is kept.
     */
    dropsUnstoredExcepts?: true;
    /**
