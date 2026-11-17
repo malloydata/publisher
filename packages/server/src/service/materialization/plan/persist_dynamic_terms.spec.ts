@@ -135,7 +135,7 @@ source: p is raw -> { where: org_id = $ORG_ID; select: * }`,
 
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("given_in_persisted_query");
+      if (!result.ok) expect(result.reason).toBe("reads_given");
    });
 
    it("refuses a given in a group_by, which lands as a projected column", async () => {
@@ -147,7 +147,7 @@ source: p is raw -> { group_by: s, mine is org_id = $ORG_ID; aggregate: n is cou
 
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("given_in_persisted_query");
+      if (!result.ok) expect(result.reason).toBe("reads_given");
    });
 
    it("refuses a query over a given-scoped input source", async () => {
@@ -163,7 +163,7 @@ source: p is scoped -> { group_by: s; aggregate: n is count() }`,
 
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("given_in_persisted_query");
+      if (!result.ok) expect(result.reason).toBe("reads_given");
    });
 });
 
@@ -182,7 +182,7 @@ source: p is raw -> { select: * } extend { dimension: mine is org_id = $ORG_ID }
       expect(result.ok).toBe(false);
       if (!result.ok) {
          // One reason on every route; the detail names where the given sits.
-         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("the field 'mine' reads a given");
       }
    });
@@ -199,7 +199,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("`on:` condition");
          // The alias the author wrote, not the joined source's `sql://` identity.
          expect(result.detail).toContain("'v'");
@@ -218,7 +218,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("the source joined as 'v'");
          expect(result.detail).toContain("refinement");
       }
@@ -347,7 +347,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("'live_grants'");
          expect(result.detail).toContain("storage destination");
       }
@@ -369,7 +369,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("the source joined as 'g'");
       }
    });
@@ -386,7 +386,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("BUILT");
       }
    });
@@ -423,7 +423,7 @@ source: p is raw -> { select: * } extend {
       );
       expect(refused.ok).toBe(false);
       if (!refused.ok) {
-         expect(refused.reason).toBe("given_in_persisted_query");
+         expect(refused.reason).toBe("reads_given");
          expect(refused.detail).toContain("'teams'");
       }
    });
@@ -439,7 +439,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("the field 'mine' reads a given");
       }
    });
@@ -454,7 +454,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("given_in_persisted_query");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("`on:` condition");
       }
    });

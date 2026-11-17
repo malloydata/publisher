@@ -51,14 +51,12 @@ import {
 /**
  * Why a read-time position of a given is refused. A given the stored relation
  * would read, wherever it sits (the persisted query, a field, a join's `on:`,
- * a joined source), is `given_in_persisted_query`, the reason every other
+ * a joined source), is `reads_given`, the reason every other
  * route reports; the detail names where it sits. `dynamic_projection`,
  * `dynamic_join` and `dynamic_joined_where` are retained on the wire, no
  * longer produced.
  */
-type DynamicTermRefusal =
-   | "given_in_persisted_query"
-   | "inherited_where_with_given";
+type DynamicTermRefusal = "reads_given" | "inherited_where_with_given";
 
 /**
  * One extend-block `where:` conjunct that references a given: absent from the
@@ -337,7 +335,7 @@ function classifyDef(def: unknown, depth: number): DynamicTermClassification {
    if (defSubstitutesAGiven(def)) {
       return {
          ok: false,
-         reason: "given_in_persisted_query",
+         reason: "reads_given",
          detail:
             `a given is read while the persisted relation is BUILT, so its ` +
             `value is substituted at build time — from the declaration's ` +
@@ -386,7 +384,7 @@ function classifyDef(def: unknown, depth: number): DynamicTermClassification {
       if (readsAGiven(rest, new WeakSet())) {
          return {
             ok: false,
-            reason: "given_in_persisted_query",
+            reason: "reads_given",
             detail:
                `a given sits in a part of the source this pass cannot place ` +
                `— it is neither an extend-block \`where:\` nor a field ` +
@@ -565,7 +563,7 @@ export function withinDeclaration(
 function unreadable(err: unknown, cannotProve: string): FieldRefusal {
    return {
       ok: false,
-      reason: "given_in_persisted_query",
+      reason: "reads_given",
       detail:
          `its given usage could not be determined ` +
          `(${err instanceof Error ? err.message : String(err)}), so the ` +
@@ -582,7 +580,7 @@ function unreadable(err: unknown, cannotProve: string): FieldRefusal {
  * as written, and the joined source re-applies its own `where:` per caller.
  * See {@link joinedSourceRefusal}.
  *
- * Refused, as `given_in_persisted_query` with the position in its detail: a
+ * Refused, as `reads_given` with the position in its detail: a
  * given in a join's `on:`, which nothing re-binds per caller, and a dimension
  * or measure reading a given itself. A field reading a given only THROUGH an admitted join
  * carries none of its own (Malloy's summaries do not cross a join path).
@@ -609,7 +607,7 @@ function classifyFields(
          if (readsAGiven(f.onExpression, new WeakSet())) {
             return {
                ok: false,
-               reason: "given_in_persisted_query",
+               reason: "reads_given",
                detail:
                   `the join '${label}' has a given in its \`on:\` condition, ` +
                   `which decides which rows join per caller`,
@@ -628,7 +626,7 @@ function classifyFields(
       if (readsAGiven(f, new WeakSet())) {
          return {
             ok: false,
-            reason: "given_in_persisted_query",
+            reason: "reads_given",
             detail:
                `the field '${label}' reads a given, so its value would ` +
                `differ per caller`,
@@ -672,7 +670,7 @@ function joinedSourceRefusal(
 ): FieldRefusal | { ok: true; joinedTerms: JoinedDynamicTerms[] } {
    const refuse = (why: string): FieldRefusal => ({
       ok: false,
-      reason: "given_in_persisted_query",
+      reason: "reads_given",
       detail: `the source joined as '${label}' is itself scoped by a given, ${why}`,
    });
 

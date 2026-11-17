@@ -455,7 +455,7 @@ async function withoutLeakedBuilds(
             refused: {
                reason:
                   givenReadTerms(plan).length > 0
-                     ? "given_in_persisted_query"
+                     ? "reads_given"
                      : leftOutWindowTerms(plan.readTimeTerms).length > 0
                        ? "current_time"
                        : "no_stored_columns",
@@ -1340,7 +1340,7 @@ function copyRefusal(
             "a `where:` reading a given can only be left out of the build " +
             "for a source declared in a local model file, reading givens " +
             "declared in local files",
-         refusal: "given_in_persisted_query",
+         refusal: "reads_given",
       };
    }
    if (given && text === undefined) {
@@ -1348,7 +1348,7 @@ function copyRefusal(
          reason:
             "the model file could not be read to leave its given-reading " +
             `\`where:\` out of the build: ${unreadable}`,
-         refusal: "given_in_persisted_query",
+         refusal: "reads_given",
       };
    }
    // An upper-bound current-time term (option A): taken out of the copy

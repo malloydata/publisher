@@ -957,7 +957,7 @@ async function collectGeneratedRollups(
                      tier: "preaggregate",
                      // A given read while the stored relation is built,
                      // as every other mechanism names it.
-                     reason: "given_in_persisted_query",
+                     reason: "reads_given",
                   },
                },
                args.modelPath,
@@ -1061,7 +1061,7 @@ async function collectGeneratedPersistedViews(
                   {
                      ...plan,
                      reason: readsAGiven,
-                     outcome: { refused: "given_in_persisted_query" },
+                     outcome: { refused: "reads_given" },
                   },
                   args.modelPath,
                ),
@@ -1075,7 +1075,7 @@ async function collectGeneratedPersistedViews(
                   {
                      queryName: query.queryName,
                      reason: readsAGiven,
-                     refusal: "given_in_persisted_query",
+                     refusal: "reads_given",
                      declaringURL: query.declaringURL,
                      ...(query.storage !== undefined
                         ? { storage: query.storage }

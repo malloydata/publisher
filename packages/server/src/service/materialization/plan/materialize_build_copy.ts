@@ -80,7 +80,7 @@ export function buildCopyName(modelFileName: string, index: number): string {
  * query over it) without that other's term, and store its rows for every
  * caller. In a copy of its own, a source that reads another such source still
  * reads that one's given, and the eligibility gate refuses its build
- * (`given_in_persisted_query`).
+ * (`reads_given`).
  *
  * For an extension table (P10), `chain` names its parent's plan and the file
  * the parent's build source is imported from: the copy also re-roots the

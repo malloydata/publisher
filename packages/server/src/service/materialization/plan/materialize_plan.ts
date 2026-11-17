@@ -535,7 +535,7 @@ function callerDependentDimensions(
                `inline= names ${quotedName(j)}, through which a given is read, ` +
                "so its stored columns would hold one caller's values; " +
                "reference the join instead",
-            refusal: "given_in_persisted_query",
+            refusal: "reads_given",
          };
       }
    }

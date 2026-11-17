@@ -22,7 +22,7 @@
  *   to be this; it is now refused, `inherited_where_with_given`.)
  *
  * A query-shaped source over a scoped base is refused by the eligibility gate
- * (`given_in_persisted_query`). A zone-dependent dimension a base declares is
+ * (`reads_given`). A zone-dependent dimension a base declares is
  * stored as built, and a `timezone:` query over the table is answered live.
  */
 
@@ -330,7 +330,7 @@ const CASES: ShapeCase[] = [
       name: "#(materialize) storage=, query-shaped over a scoped base",
       model: "mat_storage.malloy",
       source: "ms_query",
-      path: { kind: "refused_source", reason: "given_in_persisted_query" },
+      path: { kind: "refused_source", reason: "reads_given" },
    },
    {
       name: "#(materialize) storage=, the term on a joined source",
@@ -420,13 +420,13 @@ const CASES: ShapeCase[] = [
       name: "v1 #@ persist storage=, query-shaped over a scoped base",
       model: "v1_storage.malloy",
       source: "vs_query",
-      path: { kind: "refused_source", reason: "given_in_persisted_query" },
+      path: { kind: "refused_source", reason: "reads_given" },
    },
    {
       name: "v1 #@ persist storage=, the term on a joined source",
       model: "v1_storage.malloy",
       source: "vs_join",
-      path: { kind: "refused_source", reason: "given_in_persisted_query" },
+      path: { kind: "refused_source", reason: "reads_given" },
       query: "run: vs_join -> { group_by: b.org; aggregate: n is count(), s is b.amt.sum() }",
       ownRowsOnly: false,
    },

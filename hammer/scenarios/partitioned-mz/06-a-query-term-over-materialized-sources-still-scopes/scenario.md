@@ -23,7 +23,7 @@ that is itself persisted into storage and scoped by a given, so the served copy
 re-roots `vis_all` on its own table with its `where:` kept, and keeps the join as
 written: it reads the re-rooted `vis_all`, whose org term applies with the
 caller's value. A join to a given-scoped source that is NOT
-materialized that way is still refused (`given_in_persisted_query`): nothing could
+materialized that way is still refused (`reads_given`): nothing could
 bind it per caller.
 
 The served copy must also accept the same givens the author's model does, which
