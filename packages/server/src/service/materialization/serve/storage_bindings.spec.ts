@@ -377,7 +377,22 @@ describe("colocatedDriftFindings", () => {
                      observedType: "VARCHAR",
                   },
                   // Gone: left out.
-                  { column: "day", builtType: "DATE" },
+                  {
+                     column: "day",
+                     builtType: "DATE",
+                     gone: true,
+                     leftOut: true,
+                  },
+                  // A zone gained off DuckDB: the bind leaves it out, though
+                  // the type alone would serve as declared.
+                  {
+                     column: "ts",
+                     builtType: "TIMESTAMP",
+                     observedType: "TIMESTAMP WITH TIME ZONE",
+                     leftOut: true,
+                  },
+                  // Now a type Malloy reads as no basic type: left out.
+                  { column: "m", builtType: "VARCHAR", leftOut: true },
                   // Still a number: served as is, so not reported.
                   {
                      column: "id",
@@ -404,6 +419,7 @@ describe("colocatedDriftFindings", () => {
       expect(findings).toEqual([
          {
             sourceID: "orders@m",
+            sourceEntityId: "vh",
             modelPath: "m.malloy",
             subject: "orders",
             mismatches: [
@@ -419,11 +435,24 @@ describe("colocatedDriftFindings", () => {
                   storedType: "VARCHAR",
                   handling: "live",
                },
-               { column: "day", declaredType: "date", handling: "live" },
+               {
+                  column: "day",
+                  declaredType: "date",
+                  gone: true,
+                  handling: "live",
+               },
+               {
+                  column: "ts",
+                  declaredType: "timestamp",
+                  storedType: "TIMESTAMP WITH TIME ZONE",
+                  handling: "live",
+               },
+               { column: "m", declaredType: "string", handling: "live" },
             ],
          },
          {
             sourceID: "r@m",
+            sourceEntityId: "vr",
             modelPath: "m.malloy",
             subject: "orders",
             mismatches: [

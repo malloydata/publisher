@@ -386,6 +386,18 @@ describe("a storage= rollup whose grain no stored read declares", () => {
       }
    });
 
+   it("refuses a dimension that reads such a column, which keeps its type", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `source: orders is ${EXOTIC} extend {
+  dimension: bb is b
+  #(preaggregate) grain=["bb"] storage="lake"
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual(["unreadable_grain"]);
+   });
+
    it("plans a UUID grain in storage, and every one of them colocated", async () => {
       expect((await plan(rollup("u", ' storage="lake"'))).plans).toHaveLength(
          1,

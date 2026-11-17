@@ -40,39 +40,21 @@ import {
    postgresNumericColumns,
 } from "./postgres_numeric_precision";
 
-/**
- * Each Postgres numeric column of `innerSQL` (one the passthrough reads as
- * DOUBLE), with the type the table stores it as. Undefined when there is none.
- */
-async function storedNumericColumns(
+/** What the passthrough's describe and type probe found ({@link postgresNumericColumns}). */
+type NumericRead = Awaited<ReturnType<typeof postgresNumericColumns>>;
+
+/** The table's column types by name, from the destination's own catalog. */
+async function storedTypesOf(
    session: DuckDBConnection,
-   sourceType: FederatedSourceType,
-   handle: string,
-   innerSQL: string,
    quotedTablePath: string,
-): Promise<
-   | { columns: string[]; stored: { column: string; storedType: string }[] }
-   | undefined
-> {
-   const { columns, numeric } = await postgresNumericColumns(
-      session,
-      handle,
-      innerSQL,
-      sourceType,
-   );
-   if (numeric.length === 0) return undefined;
+): Promise<Map<string, string>> {
    const described = await session.runSQL(`DESCRIBE ${quotedTablePath}`);
    const rows = (
       Array.isArray(described) ? described : (described.rows ?? [])
    ) as Record<string, unknown>[];
-   const typeOf = new Map(
+   return new Map(
       rows.map((r) => [String(r.column_name), String(r.column_type)]),
    );
-   const stored = numeric.flatMap((column) => {
-      const storedType = typeOf.get(column);
-      return storedType ? [{ column, storedType }] : [];
-   });
-   return { columns, stored };
 }
 
 /**
@@ -84,28 +66,23 @@ async function storedNumericColumns(
  */
 async function exactNumericColumns(
    session: DuckDBConnection,
-   sourceType: FederatedSourceType,
-   handle: string,
-   innerSQL: string,
+   numericRead: () => Promise<NumericRead>,
    quotedTablePath: string,
 ): Promise<
    | { columns: string[]; stored: { column: string; storedType: string }[] }
    | undefined
 > {
-   const read = await storedNumericColumns(
-      session,
-      sourceType,
-      handle,
-      innerSQL,
-      quotedTablePath,
-   );
-   const stored = (read?.stored ?? []).filter(
-      ({ storedType }) =>
-         decimalTypeOf(storedType) || storedType.toUpperCase() === "VARCHAR",
-   );
-   return read && stored.length > 0
-      ? { columns: read.columns, stored }
-      : undefined;
+   const { columns, numeric } = await numericRead();
+   if (numeric.length === 0) return undefined;
+   const typeOf = await storedTypesOf(session, quotedTablePath);
+   const stored = numeric.flatMap((column) => {
+      const storedType = typeOf.get(column);
+      return storedType &&
+         (decimalTypeOf(storedType) || storedType.toUpperCase() === "VARCHAR")
+         ? [{ column, storedType }]
+         : [];
+   });
+   return stored.length > 0 ? { columns, stored } : undefined;
 }
 
 /**
@@ -137,8 +114,10 @@ interface StorageDeltaTarget {
     * (`0.30000000000000004`) until it is seeded again, since a delta only
     * INSERTs into the column it has. A seed now stores each as DECIMAL (or
     * as text when no DECIMAL holds it), so none is left after one. Empty off
-    * Postgres, or when the passthrough's types cannot be read. Nothing runs
-    * in Postgres: a describe and a `LIMIT 0` type probe.
+    * Postgres, or when the passthrough's types cannot be read. Reads the
+    * table's own catalog first, and probes Postgres (a describe and a
+    * `LIMIT 0`, nothing runs) only for a table holding a DOUBLE column, with
+    * the one probe the delta then reuses.
     */
    numericColumnsStoredAsDouble(): Promise<string[]>;
 }
@@ -187,6 +166,16 @@ export function storageDeltaTarget(params: {
       params.destinationSchema,
    );
    let readCost: BuildReadCost | null = null;
+   // One Postgres probe per refresh, shared by the DOUBLE check and the
+   // delta: the seed's projection names and types the columns a delta reads.
+   let numericProbe: Promise<NumericRead> | undefined;
+   const numericRead = () =>
+      (numericProbe ??= postgresNumericColumns(
+         session,
+         handle,
+         projectToStoredColumns(persistSource, buildSQL),
+         sourceType,
+      ));
 
    // The build SQL and the stored table name a renamed field's column by its
    // own name, so the watermark (and, in the DML, the merge keys) are named
@@ -197,23 +186,23 @@ export function storageDeltaTarget(params: {
       readCost: () => readCost,
       numericColumnsStoredAsDouble: async () => {
          if (!capabilitiesOf(sourceType).passthroughNumericAsDouble) return [];
-         let read: Awaited<ReturnType<typeof storedNumericColumns>>;
+         // The destination's own catalog first: Postgres is probed only for a
+         // table that holds a DOUBLE column at all.
+         let typeOf: Map<string, string>;
          try {
-            read = await storedNumericColumns(
-               session,
-               sourceType,
-               handle,
-               // The seed's columns, as its read projects them.
-               projectToStoredColumns(persistSource, buildSQL),
-               quotedTablePath,
-            );
+            typeOf = await storedTypesOf(session, quotedTablePath);
          } catch {
             // No table to describe: the planner seeds one anyway.
             return [];
          }
-         return (read?.stored ?? [])
-            .filter(({ storedType }) => storedType.toUpperCase() === "DOUBLE")
-            .map(({ column }) => column);
+         const doubles = new Set(
+            [...typeOf]
+               .filter(([, type]) => type.toUpperCase() === "DOUBLE")
+               .map(([column]) => column),
+         );
+         if (doubles.size === 0) return [];
+         const { numeric } = await numericRead();
+         return numeric.filter((column) => doubles.has(column));
       },
       target: {
          dialect: STORAGE_DIALECT,
@@ -246,9 +235,7 @@ export function storageDeltaTarget(params: {
             const exact = capabilitiesOf(sourceType).passthroughNumericAsDouble
                ? await exactNumericColumns(
                     session,
-                    sourceType,
-                    handle,
-                    bounded,
+                    numericRead,
                     quotedTablePath,
                  )
                : undefined;

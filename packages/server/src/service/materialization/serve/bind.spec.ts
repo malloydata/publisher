@@ -758,7 +758,8 @@ describe("applyObservedColumns", () => {
             sourceEntityId: "addr1",
             columns: [
                { column: "amt", builtType: "DOUBLE", observedType: "VARCHAR" },
-               { column: "d", builtType: "DATE" },
+               // The bind's decision rides on the report.
+               { column: "d", builtType: "DATE", gone: true, leftOut: true },
             ],
          },
       ]);

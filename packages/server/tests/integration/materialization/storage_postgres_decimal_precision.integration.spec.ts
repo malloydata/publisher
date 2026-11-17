@@ -453,6 +453,23 @@ describe.skipIf(!url)(
          expect(served.servedBy).toBe("materialized");
          expect(served.rows).toEqual(live.rows);
          expect(live.rows).toEqual([{ su: 1.65501, c: 9 }]);
+
+         // Re-seeded once: the next refresh advances by delta, with no
+         // second re-seed and no Postgres probe for a DOUBLE it no longer has.
+         const seeds = (out: string) =>
+            out.split("Re-seeding to store Postgres numerics exactly").length;
+         const before = server.output();
+         await wh.runSQL(`INSERT INTO t (id, g, u) VALUES (11, 'c', 0.5)`);
+         await build();
+         const after = server.output().slice(before.length);
+         expect(seeds(after)).toBe(1);
+         expect(after).not.toContain(
+            "Rebuilding an incremental source in full",
+         );
+         expect(after).toMatch(
+            /materialization\.build\.finished[^\n]*"method":"delta"[^\n]*"physicalTable":"t_incremental/,
+         );
+         expect(await uType()).toEqual(["decimal(38,5)"]);
       });
    },
 );

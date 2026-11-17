@@ -557,7 +557,8 @@ export class PackageMaterialization {
       for (const [id, o] of reread) next.set(id, o);
       this.observedColumns = next;
       this.publish();
-      this.logObservedOutcome();
+      // Only what this retry read: the rest was logged and counted already.
+      this.logObservedOutcome(new Set(unread));
       this.scheduleUnreadRetry(attempt + 1);
    }
 
@@ -587,15 +588,19 @@ export class PackageMaterialization {
    /**
     * Log and count what the bind's column read found: drifted tables, each
     * column of them the package warning reports counted as a `storage=`
-    * table's is, and tables it could not read.
+    * table's is, and tables it could not read. `only`: the tables a retry
+    * read again, so a table is counted and logged once per read of it.
     */
-   private logObservedOutcome(): void {
+   private logObservedOutcome(only?: ReadonlySet<string>): void {
+      const read = (id: string) => only === undefined || only.has(id);
       for (const finding of this.colocatedDriftFindings()) {
+         if (!read(finding.sourceEntityId)) continue;
          for (const m of finding.mismatches) {
             recordStoredColumnTypeMismatch("serve", m.declaredType);
          }
       }
       for (const drift of this.observedOutcome.drifted) {
+         if (!read(drift.sourceEntityId)) continue;
          logger.warn(
             "A colocated table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
             {
@@ -607,6 +612,7 @@ export class PackageMaterialization {
          );
       }
       for (const miss of this.observedOutcome.unread) {
+         if (!read(miss.sourceEntityId)) continue;
          logger.warn(
             "Could not read a colocated table's column types at bind; its sources answer live",
             {

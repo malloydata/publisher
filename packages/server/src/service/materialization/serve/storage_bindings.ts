@@ -145,6 +145,8 @@ export function boundTableTypeFindings(
  */
 export interface ColocatedDriftFinding {
    sourceID: string;
+   /** The table's content address, as the bind read it. */
+   sourceEntityId: string;
    modelPath?: string;
    /** The name the author wrote: the source, view or query, or a rollup's base. */
    subject: string;
@@ -155,7 +157,10 @@ export interface ColocatedDriftFinding {
     * reaches).
     */
    mismatches: (Omit<StoredColumnTypeMismatch, "storedType"> & {
+      /** Absent when Malloy reads the type it holds now as no basic type. */
       storedType?: string;
+      /** The table no longer has the column. */
+      gone?: true;
       handling: MismatchHandling | "table";
    })[];
 }
@@ -163,10 +168,11 @@ export interface ColocatedDriftFinding {
 /**
  * The warning findings of the colocated tables whose columns moved outside a
  * build ({@link ObservedDrift}), against the columns the plan's build source
- * declares, handled as the bind handles them: a served-copy table
- * (`#(materialize)`, `#@ persist`) reads each moved column through a
- * faithful cast or leaves it out, and skips one whose new type still serves
- * as declared; any other table is answered live whole.
+ * declares, handled as the bind decided ({@link ObservedDrift}): any table
+ * but a served copy's is answered live whole; a served copy leaves out a
+ * column the bind left out, and reads any other with the type it holds now
+ * through a faithful cast, as is when that serves as declared (not
+ * reported), or not at all.
  */
 export function colocatedDriftFindings(
    drifted: readonly ObservedDrift[],
@@ -200,23 +206,33 @@ export function colocatedDriftFindings(
                column: c.column,
                declaredType,
                ...(c.observedType ? { storedType: c.observedType } : {}),
+               ...(c.gone ? { gone: true as const } : {}),
             };
+            // The bind's own decision: a table no cast reaches answers live
+            // whole, and a column it leaves out answers live.
             if (!servedCopy) return [{ ...moved, handling: "table" }];
-            if (!c.observedType) return [{ ...moved, handling: "live" }];
-            if (storedTypeServesAs(c.observedType, declaredType) !== false) {
-               return [];
+            if (c.leftOut || !c.observedType) {
+               return [{ ...moved, handling: "live" }];
             }
+            // Read with the type it holds now, through the one stored-column
+            // read plan: a faithful cast, as is when it serves as declared,
+            // else left out.
             const { casts } = serveTypePlan(
                [{ ...moved, storedType: c.observedType }],
                { queryTimezone },
             );
-            return [{ ...moved, handling: casts.length > 0 ? "cast" : "live" }];
+            if (casts.length > 0) return [{ ...moved, handling: "cast" }];
+            if (storedTypeServesAs(c.observedType, declaredType) !== false) {
+               return [];
+            }
+            return [{ ...moved, handling: "live" }];
          },
       );
       if (mismatches.length === 0) return [];
       return [
          {
             sourceID,
+            sourceEntityId: drift.sourceEntityId,
             ...(source.modelPath ? { modelPath: source.modelPath } : {}),
             subject: source.preaggregate?.baseSourceName ?? source.name,
             mismatches,

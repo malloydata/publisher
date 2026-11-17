@@ -395,11 +395,12 @@ export function storedColumnTypeWarnings(
             code: STORED_COLUMN_TYPE_MISMATCH_CODE,
             severity: "warn",
             message:
-               (m.storedType === undefined
+               (m.gone
                   ? `no longer has column \`${m.column}\` (declared Malloy ` +
                     `type \`${m.declaredType}\`): `
-                  : `stores column \`${m.column}\` as ${m.storedType}, not ` +
-                    `its declared Malloy type \`${m.declaredType}\`: `) +
+                  : `stores column \`${m.column}\` as ` +
+                    `${m.storedType ?? "a type Malloy reads as no basic type"}, ` +
+                    `not its declared Malloy type \`${m.declaredType}\`: `) +
                `its table was altered outside a build. ` +
                DRIFT_HANDLING_TEXT[m.handling](m.declaredType),
          });

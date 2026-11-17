@@ -284,3 +284,82 @@ describe("a colocated table whose column type moved outside a build", () => {
       ).toBe(3);
    });
 });
+
+describe("a colocated table read again after a transient failure", () => {
+   it("counts a drifted table once, not again on the retry", async () => {
+      const envPath = path.join(rootDir, "env");
+      writePackageFiles(
+         path.join(envPath, "pkg"),
+         { "model.malloy": COLOCATED_MODEL },
+         { manifest: { name: "pkg", description: "fixture" } },
+      );
+      const env = await Environment.create("testEnv", envPath, [] as never);
+      await env.addPackage("pkg");
+      const pkg = await env.getPackage(parsePackageName("pkg"), false);
+
+      // One table drifted, one unread by a transient failure, one as built.
+      const entries: Record<string, Record<string, unknown>> = {};
+      const asBuilt = new Map<string, { name: string; type: string }[]>();
+      const observed = new Map<
+         string,
+         { columns: { name: string; type: string }[] } | { unread: string }
+      >();
+      let drifted = 0;
+      for (const source of Object.values(pkg.getBuildPlan()?.sources ?? {})) {
+         const id = source.sourceEntityId;
+         if (entries[id]) continue;
+         const schema = (source.columns ?? []).map((c) => ({
+            name: c.name as string,
+            type: STORED[c.type as string] ?? "VARCHAR",
+         }));
+         entries[id] = {
+            sourceEntityId: id,
+            sourceName: source.name,
+            tableName: `t_${id.slice(0, 12)}`,
+            connectionName: "duckdb",
+            schema,
+         };
+         asBuilt.set(id, schema);
+         if (source.name === "orders") {
+            observed.set(id, {
+               columns: schema.map((c, i) =>
+                  i === 0 ? { ...c, type: "VARCHAR" } : c,
+               ),
+            });
+            drifted++;
+         } else if (source.name === "daily") {
+            observed.set(id, { unread: "a transient failure" });
+         } else {
+            observed.set(id, { columns: schema });
+         }
+      }
+      expect(drifted).toBe(1);
+      const mz = pkg.materialization();
+      // The retry's read succeeds, and finds the table as built.
+      mz.readColocatedColumns = async (retried) =>
+         new Map(
+            Object.keys(retried).map((id) => [
+               id,
+               { columns: asBuilt.get(id) ?? [] },
+            ]),
+         );
+      mz.bind({
+         colocated: entries as never,
+         colocatedAsGiven: true,
+         observed,
+      });
+      expect(mz.hasUnreadColocatedTables()).toBe(true);
+      const deadline = Date.now() + 10_000;
+      while (mz.hasUnreadColocatedTables() && Date.now() < deadline) {
+         await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(mz.hasUnreadColocatedTables()).toBe(false);
+
+      expect(
+         await harness.collectCounter(
+            "publisher_storage_column_type_mismatch_total",
+            { stage: "serve", declared: "number" },
+         ),
+      ).toBe(1);
+   });
+});
