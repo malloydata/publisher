@@ -26,7 +26,7 @@
  * the serve connection is reopened after each run and every look opens a
  * fresh instance.
  *
- * The colocated tier and a `scope: package` version are
+ * The database tier and a `scope: package` version are
  * src/service/materialization/run/shared_address_ownership.spec.ts.
  */
 

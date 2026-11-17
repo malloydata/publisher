@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // v1 `#@ preaggregate` lines read by the rollup leg (G4)
-// beside `#(preaggregate)` lines on the same measure, and inherited v1 lines.
+// beside `#(rollup)` lines on the same measure, and inherited v1 lines.
 import { describe, expect, it } from "bun:test";
 import { materializationFixture } from "../../../test_helpers/materialization_fixture";
 import { planModelRollups } from "./rollup_plan";
@@ -24,7 +24,7 @@ async function plan(text: string) {
 describe("v1 `#@ preaggregate` lines on the rollup leg", () => {
    it("plans one rollup when a measure declares the same grain both ways", async () => {
       const { plans } = await plan(`source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   #@ preaggregate grain="category"
   measure: total is amount.sum()
 }`);

@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 
 # An unused join to an unsupplied persisted source does not refuse
 
-`rollup` is a `storage=` source over the colocated `daily`, and declares
+`rollup` is a `storage=` source over the database `daily`, and declares
 `join_one: c is counts` that it never reads; `counts` is a persist source
 nothing supplies to the build. The compiler inlines only the joins a query
 uses, so `rollup`'s SQL reads `daily`'s table and never touches `counts`:

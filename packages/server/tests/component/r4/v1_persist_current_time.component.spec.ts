@@ -182,7 +182,7 @@ describe("v1 #@ persist over now, through a real package", () => {
          expect(fixture.built.some((b) => b.name === s)).toBe(false);
          const entry = refused.find((r) => r.name === s);
          expect(entry?.reason).toBe("current_time");
-         expect(entry?.tier).toBe(s === "sq_now" ? "storage" : "colocated");
+         expect(entry?.tier).toBe(s === "sq_now" ? "storage" : "database");
          const warning = fixture.warnings.find((w) => w.subject === s);
          expect(warning?.code).toBe("persist-not-built");
          expect(warning?.message).toContain("reads the current time");

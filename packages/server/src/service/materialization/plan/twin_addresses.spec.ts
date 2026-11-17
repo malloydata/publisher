@@ -3,10 +3,10 @@
 
 // P2-21: the same SQL built in its own warehouse and with `storage=` (twins).
 // Malloy groups them into one build target, so they shared one content
-// address: a run's manifest kept one entry, and the colocated chain over the
-// colocated twin found the stored twin's (or nothing) and missed strictly.
+// address: a run's manifest kept one entry, and the database chain over the
+// database twin found the stored twin's (or nothing) and missed strictly.
 // Each `storage=` twin now folds its destination into its address, the
-// colocated twin keeps the plain one, and a downstream source depends only on
+// database twin keeps the plain one, and a downstream source depends only on
 // the twin its own definition reads. No other address moves.
 
 import { openTempDuckDB } from "../../../test_helpers/temp_storage";
@@ -106,7 +106,7 @@ function plan(of: Record<string, PersistSource> = sources) {
    return { tableFolds, at, plain };
 }
 
-describe("P2-21: twins built colocated and with storage=", () => {
+describe("P2-21: twins built in the database tier and with storage=", () => {
    it("are one build target to Malloy (the shape that collided)", () => {
       expect(plannedTargetOf(sources.col_a)).toBe(
          plannedTargetOf(sources.twin_a),
@@ -124,13 +124,13 @@ describe("P2-21: twins built colocated and with storage=", () => {
          [sources.twin_a.sourceID, sources.stored_b.sourceID].sort(),
       );
       expect(at("stored_b")).not.toBe(at("col_b"));
-      // No colocated source, and no source that is not a twin, moves.
+      // No database source, and no source that is not a twin, moves.
       for (const name of ["col_a", "col_b", "other"]) {
          expect(at(name)).toBe(plain(name));
       }
    });
 
-   it("move nothing while storage= is off (both build colocated)", () => {
+   it("move nothing while storage= is off (both build in the database tier)", () => {
       withSettings({ PERSIST_STORAGE_MODE: "off" });
       const { at, tableFolds } = plan();
       expect(tableFolds).toEqual({});
@@ -193,7 +193,7 @@ describe("P2-21: twins that declare one name=", () => {
       );
    });
 
-   it("keep the colocated twin's address; only the storage= twin moves", () => {
+   it("keep the database twin's address; only the storage= twin moves", () => {
       withSettings({ PERSIST_STORAGE_MODE: "on" });
       const { at, plain, tableFolds } = plan(named);
       expect(at("twin_a")).not.toBe(at("col_a"));

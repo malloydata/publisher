@@ -89,7 +89,7 @@ source: r_daily is raw -> {
   aggregate: total is v.sum()
 } extend {
   rename: kind is sub
-  #(preaggregate) grain=["kind"] storage="lake"
+  #(rollup) grain=["kind"] storage="lake"
   measure: amount is total.sum()
 }
 `;
@@ -108,7 +108,7 @@ const CASES: { name: string; malloy: string; column: string }[] = [
       column: "amount",
    },
    {
-      name: "P2-45 #(preaggregate) storage=: a rollup over a renamed base",
+      name: "P2-45 #(rollup) storage=: a rollup over a renamed base",
       malloy:
          "run: r_daily -> { group_by: kind; aggregate: amount; order_by: kind }",
       column: "amount",

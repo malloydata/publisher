@@ -363,7 +363,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
          runSQL(sql: string): Promise<{ rows: Record<string, unknown>[] }>;
       };
       for (const name of DB_ALTERED) {
-         expect(built).toContain(`${name}:colocated`);
+         expect(built).toContain(`${name}:database`);
          const described = await warehouse.runSQL(`DESCRIBE "${name}"`);
          const acct = described.rows.find((r) => r.column_name === "acct");
          expect(acct?.column_type).toBe("DOUBLE");

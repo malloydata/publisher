@@ -713,12 +713,12 @@ describe("R4: row-level gates over a hidden join_many, gated serving on", () => 
    });
 });
 
-// Colocated (no `storage=`): an extension's build can read its parent's
+// Database (no `storage=`): an extension's build can read its parent's
 // build source in the same warehouse, which for a pair table holds each
 // parent once per child. Built over the raw chain instead, the extension's
 // table holds one row per parent and answers with live's rows, a public or a
 // hidden join_many alike.
-const colocatedModel = `##! experimental { access_modifiers }
+const databaseModel = `##! experimental { access_modifiers }
 ${children}
 #(materialize) name="r4h_pub" inline=["segments"]
 source: pub_many is duckdb.table('flights') extend {
@@ -757,7 +757,7 @@ source: private_ext is private_many extend {
 }
 `;
 
-describe("R4: a colocated extension of a pair table, hidden join_many or not", () => {
+describe("R4: a database extension of a pair table, hidden join_many or not", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
@@ -765,7 +765,7 @@ describe("R4: a colocated extension of a pair table, hidden join_many or not", (
          env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
       }).restore;
       fixture = await buildScenario({
-         files: { "m.malloy": colocatedModel },
+         files: { "m.malloy": databaseModel },
          seedSql,
          materialize: true,
       });

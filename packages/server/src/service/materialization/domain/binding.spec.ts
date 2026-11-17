@@ -103,7 +103,7 @@ describe("pin", () => {
       expect(pin(snapshot, later).serves(fresh)).toBe(false);
    });
 
-   it("pins the colocated entries as Malloy's build manifest, never undefined", () => {
+   it("pins the database entries as Malloy's build manifest, never undefined", () => {
       const entries: FreshnessManifest = {
          fresh: { tableName: "fresh_t", ...asOfEntry(1800, "live") },
          ungated: { tableName: "ungated_t", dataAsOf: asOf(999_999) },

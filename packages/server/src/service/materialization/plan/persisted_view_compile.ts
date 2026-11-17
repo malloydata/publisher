@@ -11,7 +11,7 @@
  *   per read: not built. (A view that reads a given is refused by the build
  *   plan, from Malloy's own `readsGivens` on its build target.)
  * - **Nested results on `storage=`.** A destination's `type:` declaration
- *   cannot declare a nested result, so such a view is stored only colocated.
+ *   cannot declare a nested result, so such a view is stored only database.
  * - **Access filters (question 3).** A row-level gate on the view's source is
  *   re-applied to the stored rows at read (route, then govern), which is exact
  *   only when every field the gate reads is one the view groups by, under its

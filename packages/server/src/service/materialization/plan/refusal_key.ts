@@ -11,8 +11,8 @@ import type { RefusalKey } from "../../annotation_reader";
 import type { RefusedReason } from "../domain/types";
 
 /** The tier a table declaring `storage` (or none) is built in. */
-export function tierOf(storage: string | undefined): "colocated" | "storage" {
-   return storage !== undefined ? "storage" : "colocated";
+export function tierOf(storage: string | undefined): "database" | "storage" {
+   return storage !== undefined ? "storage" : "database";
 }
 
 /** A refusal record's key. */

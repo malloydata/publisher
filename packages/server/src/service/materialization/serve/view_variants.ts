@@ -32,7 +32,7 @@
  *
  * so the result keeps the view's name, its columns in their order, its
  * ordering and its render tags. The table is read where it was built: a
- * `storage=` view through `virtual()` on the destination, a colocated one by
+ * `storage=` view through `virtual()` on the destination, a database one by
  * importing its build source from the companion and letting the build
  * manifest substitute its table.
  *
@@ -85,7 +85,7 @@ import { compileDeclaringFileVariant } from "./declaring_file_variant";
 import {
    type Binding,
    heldReadBinding,
-   isColocated,
+   isDatabase,
    type Pinned,
    storageLookupOf,
 } from "../domain/binding";
@@ -141,7 +141,7 @@ export interface ViewAnswer {
 export interface ViewTable {
    /** The table's `sourceEntityId`, when the plan knows it. */
    tableId?: string;
-   tier: "storage" | "colocated";
+   tier: "storage" | "database";
    /** Bound to the package at all. */
    built: boolean;
    /** Bound, but past its freshness window. */
@@ -153,10 +153,10 @@ export interface ResolvedTable extends ViewTable {
    virtualMap?: VirtualMap;
    quotedPath?: string;
    binding?: Binding;
-   /** A colocated table's name as the manifest substitutes it. */
-   colocatedTable?: string;
+   /** A database table's name as the manifest substitutes it. */
+   databaseTable?: string;
    /**
-    * A colocated table's stored columns no faithful cast reads as declared
+    * A database table's stored columns no faithful cast reads as declared
     * since it was altered outside a build (the bind's `leftOutColumns`):
     * every query on a persisted result reads all its columns, so the leg
     * declines while one is.
@@ -261,14 +261,14 @@ export class PersistedViewServe {
          virtualMap,
          quotedPath,
          binding,
-         colocatedTable,
+         databaseTable,
          leftOut,
          ...table
       } = this.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
       void quotedPath;
       void binding;
-      void colocatedTable;
+      void databaseTable;
       void leftOut;
       return table;
    }
@@ -343,7 +343,7 @@ export class PersistedViewServe {
       if (!table.built) {
          throw new LegDecline("view_not_built");
       }
-      if (table.stale || (!table.virtualMap && !table.colocatedTable)) {
+      if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("view_stale");
       }
       const altered = alteredColumnsRefusal(table);
@@ -372,14 +372,14 @@ export class PersistedViewServe {
    }
 
    /**
-    * The key Malloy substitutes `buildSourceID`'s colocated table under,
+    * The key Malloy substitutes `buildSourceID`'s database table under,
     * where it is not the table's address (see PlannedTable.compilerKey).
     */
    compilerKeyOf(buildSourceID: string): string | undefined {
       return this.host.catalog()?.planned.get(buildSourceID)?.compilerKey;
    }
 
-   /** A persisted result's table: a `storage=` binding, or a colocated manifest entry. */
+   /** A persisted result's table: a `storage=` binding, or a database manifest entry. */
    tableOf(
       plan: Pick<PersistedViewPlan, "buildSourceID" | "storage">,
       pinned: Pinned,
@@ -434,7 +434,7 @@ export class PersistedViewServe {
       const bound =
          tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
       if (!bound || tableId === undefined) {
-         return { ...withId, tier: "colocated", built: false, stale: false };
+         return { ...withId, tier: "database", built: false, stale: false };
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
       const fresh = freshManifest?.entries[tableId]?.tableName;
@@ -457,7 +457,7 @@ export class PersistedViewServe {
          return {
             ...withId,
             ...dataAsOf,
-            tier: "colocated",
+            tier: "database",
             built: true,
             stale: false,
             binding: held,
@@ -472,16 +472,16 @@ export class PersistedViewServe {
          ? {
               ...withId,
               ...dataAsOf,
-              tier: "colocated",
+              tier: "database",
               built: true,
               stale: false,
-              colocatedTable: fresh,
+              databaseTable: fresh,
               ...leftOut,
            }
          : {
               ...withId,
               ...dataAsOf,
-              tier: "colocated",
+              tier: "database",
               built: true,
               stale: true,
            };
@@ -497,7 +497,7 @@ export class PersistedViewServe {
          localName,
          table.binding
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
-            : "colocated",
+            : "database",
       ].join("\u0000");
       let compiled = this.compiled.get(key);
       if (!compiled) {
@@ -550,7 +550,7 @@ export class PersistedViewServe {
          table,
          shape,
          redeclare: { sourceID: plan.sourceID },
-         colocatedAlias: `${plan.buildSourceName}__built`,
+         databaseAlias: `${plan.buildSourceName}__built`,
          emit: (read) => {
             // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
             const gates = read.gates;
@@ -586,7 +586,7 @@ ${viewBody}
  * re-rooting the author's own file. A `storage=` table is read through a
  * typed source, each stored column whose type or value does not serve as
  * live's through the served copy's faithful cast (or the variant is refused);
- * a colocated one through its build source, imported from the companion over
+ * a database one through its build source, imported from the companion over
  * the copy so its address is the one the build plan computed. `emit` writes
  * the leg's own declarations over that stored source.
  */
@@ -612,8 +612,8 @@ export async function compilePersistedResultVariant(args: {
            alsoRedeclared: string[];
            alsoExported?: string[];
         };
-   /** The name a colocated build source is imported under. */
-   colocatedAlias: string;
+   /** The name a database build source is imported under. */
+   databaseAlias: string;
    emit(read: {
       gates: string;
       sourceName: string;
@@ -634,9 +634,9 @@ export async function compilePersistedResultVariant(args: {
               shape.columns.map((c) => c.name),
            ),
            shape,
-           isColocated(table.binding)
+           isDatabase(table.binding)
               ? {
-                   colocated: true,
+                   database: true,
                    nativeTypeOf: nativeTypeLookup(table.binding.nativeSchema),
                 }
               : {},
@@ -651,7 +651,7 @@ export async function compilePersistedResultVariant(args: {
       : "";
    const modelFile = path.join(packagePath, args.modelPath);
    const config =
-      table.binding && !isColocated(table.binding) && args.destinations
+      table.binding && !isDatabase(table.binding) && args.destinations
          ? servedCopyConfig(
               packageConfig,
               args.destinations(),
@@ -696,7 +696,7 @@ export async function compilePersistedResultVariant(args: {
          if (!text) return { error: "no companion" };
          const companion = persistedViewCompanionHref(declaringURL.href);
          addFile(new URL(companion), text);
-         const name = args.colocatedAlias;
+         const name = args.databaseAlias;
          return args.emit({
             gates,
             sourceName,
@@ -726,7 +726,7 @@ export async function readStoredVariant(args: {
    subject: string;
    /** The graft cache scope of this variant. */
    cacheScope: string;
-   /** The key Malloy substitutes a colocated table under, when not its address. */
+   /** The key Malloy substitutes a database table under, when not its address. */
    compilerKey?: string;
 }): Promise<ViewAnswer> {
    const { variant, table } = args;
@@ -773,7 +773,7 @@ export async function readStoredVariant(args: {
       );
    }
    // The compiled SQL must read the table, never recompute the result.
-   const read = table.virtualMap ? table.quotedPath : table.colocatedTable;
+   const read = table.virtualMap ? table.quotedPath : table.databaseTable;
    if (!read || !sql.includes(read)) {
       throw new LegDecline("view_stale");
    }
@@ -781,12 +781,12 @@ export async function readStoredVariant(args: {
       virtualMap,
       quotedPath,
       binding,
-      colocatedTable,
+      databaseTable,
       leftOut,
       ...reported
    } = table;
    void quotedPath;
-   void colocatedTable;
+   void databaseTable;
    void leftOut;
    return {
       runnable,
@@ -795,7 +795,7 @@ export async function readStoredVariant(args: {
       // A database table read through its typed source is still a database
       // table to the path report and the gate policy, as through the
       // substitution: only a `storage=` table's binding is reported.
-      ...(binding && !isColocated(binding) ? { binding } : {}),
+      ...(binding && !isDatabase(binding) ? { binding } : {}),
       graftScope: {
          modelDef: variant.modelDef,
          materializer: variant.materializer,
@@ -985,7 +985,7 @@ async function viewShape(
 }
 
 /**
- * Why a colocated persisted result cannot answer with live's columns: a
+ * Why a database persisted result cannot answer with live's columns: a
  * stored column altered outside its build that no faithful cast reads as
  * declared (the bind's `leftOutColumns`), which every query on the result
  * reads. Undefined when none is.
@@ -1017,12 +1017,12 @@ export function storedColumnCasts(
    schema: readonly { name: string; type: string }[],
    shape: Pick<ViewShape, "columns" | "queryTimezone" | "dialect">,
    /**
-    * Where the table is: a database table (`colocated`, read where it was
+    * Where the table is: a database table (`database`, read where it was
     * built, each big integer through the type its catalog names, `nativeTypeOf`),
     * else a `storage=` table in DuckLake.
     */
    site: {
-      colocated?: boolean;
+      database?: boolean;
       nativeTypeOf?: (column: string) => string | undefined;
    } = {},
 ): { casts: Map<string, ColumnCast> } | { refusal: string } {
@@ -1040,8 +1040,8 @@ export function storedColumnCasts(
    const plan = storedColumnReadPlan(schema, declared, {
       queryTimezone: shape.queryTimezone,
       dialect: shape.dialect,
-      ...(site.colocated
-         ? { colocated: true, nativeTypeOf: site.nativeTypeOf }
+      ...(site.database
+         ? { database: true, nativeTypeOf: site.nativeTypeOf }
          : // A storage destination is DuckLake.
            { ducklake: true }),
    });

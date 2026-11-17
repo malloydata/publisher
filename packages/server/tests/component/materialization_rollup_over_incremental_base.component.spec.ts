@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A colocated rollup over an incremental `#@ persist` base on Postgres builds
+ * A database rollup over an incremental `#@ persist` base on Postgres builds
  * from the base's stored table, and stores the rows a build from the
  * warehouse stores: after the seed, and after a delta advanced the base in
  * place.
@@ -84,7 +84,7 @@ function sorted(rows: Row[]): string[] {
 }
 
 describe.skipIf(!POSTGRES_URL)(
-   "a colocated rollup over an incremental #@ persist base",
+   "a database rollup over an incremental #@ persist base",
    () => {
       let root: string;
       let envPath: string;
@@ -130,7 +130,7 @@ describe.skipIf(!POSTGRES_URL)(
 
       /** The rollup's stored rows equal its warehouse build's (its planned SQL). */
       async function expectParity(m: Materialization): Promise<Entry> {
-         const rollup = entries(m).find((e) => e.origin === "preaggregate")!;
+         const rollup = entries(m).find((e) => e.origin === "rollup")!;
          expect(rollup.upstreamReuse).toBe("reused");
          const pkg = await env.getPackage(parsePackageName(PKG), false);
          const planned = Object.values(pkg.getBuildPlan()!.sources).find(
