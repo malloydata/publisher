@@ -65,7 +65,7 @@ interface MaterializationPackage extends BuildPlanPackage {
    chainBuildText(request: ChainBuildRequest): ChainBuildText;
    /**
     * The tables the newest auto-run of this package lists as kept after a
-    * rename, which its warnings name (`table-kept-after-rename`).
+    * rename, which its warnings name (`table-kept`).
     */
    setKeptTables?(tables: readonly KeptTable[]): void;
 }

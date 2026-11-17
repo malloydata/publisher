@@ -129,7 +129,9 @@ describe("joinRollupBranches", () => {
    it("refuses, with reasons, what the rollup's rows cannot stand in for", () => {
       const code = (j: SourceJoin, p?: RollupVariantPlan, f?: Set<string>) =>
          legsOf(j, p, f)[0]?.refusal?.code;
-      expect(code(join(), plan({ baseGated: true }))).toBe("rollup_contract");
+      expect(code(join(), plan({ baseGated: true }))).toBe(
+         "rollup_row_level_gate",
+      );
       expect(code(join({ keyColumn: undefined }))).toBe(
          "rollup_count_semantics",
       );

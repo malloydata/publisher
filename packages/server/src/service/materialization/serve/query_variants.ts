@@ -220,11 +220,11 @@ export class PersistedQueryServe {
    }): Promise<ViewAnswer> {
       this.compiledOver(args.pinned);
       const called = this.calledQuery(args.queryString);
-      if (!called) throw new LegDecline("query_missing_field");
+      if (!called) throw new LegDecline("query_shape_mismatch");
       const { call, plan } = called;
       if (call.refined) {
          throw new LegDecline(
-            "query_missing_field",
+            "query_shape_mismatch",
             `the query refines \`${call.query}\` (\`+ { … }\`), and the stored result holds only the query as written`,
          );
       }
@@ -254,7 +254,7 @@ export class PersistedQueryServe {
          | { type?: unknown; location?: { url?: unknown } }
          | undefined;
       const notTheQuery = new LegDecline(
-         "query_missing_field",
+         "query_shape_mismatch",
          `the query does not call \`${call.query}\` as its file declares it`,
       );
       if (

@@ -516,7 +516,7 @@ describe("deleteMaterialization telemetry", () => {
       expect(
          await harness.collectCounter(DROP_COUNTER, {
             outcome: "success",
-            engine: "in_warehouse",
+            tier: "database",
             occasion: "delete",
          }),
       ).toBe(1);
@@ -554,7 +554,7 @@ describe("deleteMaterialization telemetry", () => {
       expect(
          await harness.collectCounter(DROP_COUNTER, {
             outcome: "success",
-            engine: "in_warehouse",
+            tier: "database",
             occasion: "reclaim",
          }),
       ).toBe(1);

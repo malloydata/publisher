@@ -1670,7 +1670,7 @@ describe("the scheduler, per published version", () => {
 
    async function scheduledRuns(): Promise<Materialization[]> {
       const runs = (await repo.listMaterializations(ENV_ID, PKG)).filter(
-         (m) => m.metadata?.trigger === "SCHEDULER",
+         (m) => m.metadata?.trigger === "scheduler",
       );
       return Promise.all(runs.map((m) => settled(m.id)));
    }

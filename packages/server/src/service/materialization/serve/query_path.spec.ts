@@ -138,7 +138,7 @@ describe("buildQueryPath", () => {
       });
    });
 
-   it("skips every applicable table behind a row-level gate as CONTRACT", () => {
+   it("skips every applicable table behind a row-level gate as ROW_LEVEL_GATE", () => {
       const daily = storageOf("daily");
       const report = buildQueryPath(
          input({
@@ -159,7 +159,7 @@ describe("buildQueryPath", () => {
             tableId: "id_daily",
             kind: "materialized",
             outcome: "skipped",
-            reason: "CONTRACT",
+            reason: "ROW_LEVEL_GATE",
          },
       ]);
    });
@@ -289,10 +289,10 @@ describe("buildQueryPath", () => {
             row("CROSS_CONNECTION"),
          );
          expect(skipFor("served_copy_not_served", withShape)).toEqual(
-            row("WARNED", "served-copy-not-served"),
+            row("NOT_SERVED", "served_copy"),
          );
          expect(skipFor("served_copy_opt_out", withShape)).toEqual(
-            row("WARNED", "persist-opt-out"),
+            row("OPTED_OUT"),
          );
          // A query that does not compile against the table: a field it lacks.
          expect(skipFor(undefined, withShape)).toEqual(row("MISSING_FIELD"));
@@ -379,10 +379,11 @@ describe("buildQueryPath", () => {
          rollup_count_semantics: rollup("rollup_count_semantics"),
          rollup_time_zone: rollup("rollup_time_zone"),
          rollup_not_built: rollup("rollup_not_built"),
-         rollup_contract: rollup("rollup_contract"),
+         rollup_row_level_gate: rollup("rollup_row_level_gate"),
          rollup_cross_connection: rollup("rollup_cross_connection"),
          rollup_unexplained: rollup(undefined),
          view_missing_field: view("view_missing_field"),
+         view_shape_mismatch: view("view_shape_mismatch"),
          view_not_built: view("view_not_built"),
          view_stale: view("view_stale"),
          view_unexplained: view(undefined),
@@ -391,15 +392,11 @@ describe("buildQueryPath", () => {
          served_copy_time_zone: { reason: "TIME_ZONE", detail },
          served_copy_cross_connection: { reason: "CROSS_CONNECTION", detail },
          served_copy_not_served: {
-            reason: "WARNED",
-            code: "served-copy-not-served",
+            reason: "NOT_SERVED",
+            code: "served_copy",
             detail,
          },
-         served_copy_opt_out: {
-            reason: "WARNED",
-            code: "persist-opt-out",
-            detail,
-         },
+         served_copy_opt_out: { reason: "OPTED_OUT", detail },
          served_copy_count_semantics: { reason: "COUNT_SEMANTICS", detail },
          served_copy_joined_annotations: { reason: "MISSING_FIELD", detail },
          served_copy_pair_shape: { reason: "COUNT_SEMANTICS", detail },
@@ -411,10 +408,11 @@ describe("buildQueryPath", () => {
          rollup_count_semantics: { reason: "COUNT_SEMANTICS", detail },
          rollup_time_zone: { reason: "TIME_ZONE", detail },
          rollup_not_built: { reason: "NOT_BUILT", detail },
-         rollup_contract: { reason: "CONTRACT", detail },
+         rollup_row_level_gate: { reason: "ROW_LEVEL_GATE", detail },
          rollup_cross_connection: { reason: "CROSS_CONNECTION", detail },
          rollup_unexplained: { reason: "MISSING_FIELD" },
          view_missing_field: { reason: "MISSING_FIELD", detail },
+         view_shape_mismatch: { reason: "SHAPE_MISMATCH", detail },
          view_not_built: { reason: "NOT_BUILT", detail },
          view_stale: { reason: "STALE", detail },
          view_unexplained: { reason: "MISSING_FIELD" },
@@ -521,7 +519,7 @@ describe("buildQueryPath", () => {
             tableId: "id_daily",
             kind: "materialized",
             outcome: "skipped",
-            reason: "RUN_FAILED",
+            reason: "READ_FAILED",
          },
       ]);
    });
@@ -545,7 +543,7 @@ describe("buildQueryPath", () => {
       expect(JSON.stringify(report)).not.toContain("lake.t_daily");
    });
 
-   it("with the storage tier not routed, reports its table WARNED and still names the database table", () => {
+   it("with the storage tier not routed, reports its table NOT_SERVED and still names the database table", () => {
       const daily = storageOf("daily");
       const tables = catalog([planned("daily")], { id_daily: "daily_t" });
       const warned = buildQueryPath(
@@ -563,7 +561,7 @@ describe("buildQueryPath", () => {
             tableId: "id_daily",
             kind: "materialized",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
          },
          { tableId: "id_daily", kind: "materialized", outcome: "used" },
       ]);
@@ -692,7 +690,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       entries: Record<string, { reason: string; sourceName: string }>,
    ) => new Map(Object.entries(entries));
 
-   it("reports a table the bind refuses as WARNED with its reason, not NOT_BUILT", () => {
+   it("reports a table the bind refuses as NOT_SERVED with its reason, not NOT_BUILT", () => {
       const tables = {
          ...catalog([planned("daily")]),
          liveVerdicts: verdicts({
@@ -705,7 +703,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             tableId: "id_daily",
             kind: "materialized",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
             code: "refused",
          },
       ]);
@@ -719,7 +717,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       ]);
    });
 
-   it("reports a rollup every entry point gates as WARNED row_level_gate, in place of CONTRACT", () => {
+   it("reports a rollup every entry point gates as NOT_SERVED row_level_gate, in place of ROW_LEVEL_GATE", () => {
       const daily = storageOf("daily");
       const report = buildQueryPath(
          input({
@@ -747,14 +745,14 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             tableId: "id_daily",
             kind: "materialized",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
             code: "row_level_gate",
          },
       ]);
       expect(report.warnings?.map((w) => w.code)).toEqual(["row_level_gate"]);
    });
 
-   it("reports a gated source the build refused as WARNED refused, in place of CONTRACT, on either tier", () => {
+   it("reports a gated source the build refused as NOT_SERVED refused, in place of ROW_LEVEL_GATE, on either tier", () => {
       // storage=: the router skipped the stored table for the entry point's
       // gate; the verdict knows the build refused the gated source outright.
       const daily = storageOf("daily");
@@ -784,7 +782,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             tableId: "id_daily",
             kind: "materialized",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
             code: "refused",
          },
       ]);
@@ -817,7 +815,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
          });
       const database = buildQueryPath(rollupInput());
       expect(database.considered[0]).toMatchObject({
-         reason: "WARNED",
+         reason: "NOT_SERVED",
          code: "refused",
       });
       expect(database.warnings?.map((w) => w.code)).toEqual(["refused"]);
@@ -866,7 +864,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
          expect(entry).toMatchObject({
             tableId: "id_daily",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
             code: "refused",
          });
       }
@@ -908,7 +906,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       );
       expect(database.considered[0]).toMatchObject({
          tableId: "id_orders_rollup",
-         reason: "WARNED",
+         reason: "NOT_SERVED",
          code: "row_level_gate",
       });
       // One warning per table: the rollup, and the gated source's own table
@@ -997,14 +995,14 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       const tried = report.considered.find(
          (c) => c.tableId === "id_orders_rollup",
       );
-      expect(tried?.reason).not.toBe("WARNED");
+      expect(tried?.reason).not.toBe("NOT_SERVED");
       expect(tried?.code).toBeUndefined();
       expect(report.warnings?.map((w) => w.tableId)).toEqual([
          "id_orders_gated",
       ]);
    });
 
-   it("keeps what only this query shows: a table that answered, STALE and RUN_FAILED", () => {
+   it("keeps what only this query shows: a table that answered, STALE and READ_FAILED", () => {
       const daily = storageOf("daily");
       const liveVerdicts = verdicts({
          "database:id_daily": { reason: "unreachable", sourceName: "daily" },
@@ -1042,7 +1040,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             runFailed: true,
          }),
       );
-      expect(failed.considered[0]).toMatchObject({ reason: "RUN_FAILED" });
+      expect(failed.considered[0]).toMatchObject({ reason: "READ_FAILED" });
       expect(failed.considered[0]).not.toHaveProperty("code");
    });
 
@@ -1062,7 +1060,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
          }),
       );
       expect(report.considered[0]).toMatchObject({
-         reason: "WARNED",
+         reason: "NOT_SERVED",
          code: "unreachable",
       });
       expect(report.warnings).toEqual([]);
@@ -1092,7 +1090,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             tableId: "id_daily",
             kind: "materialized",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
             code: "storage_mode",
          },
          { tableId: "id_daily", kind: "materialized", outcome: "used" },
@@ -1132,7 +1130,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
       expect(report.warnings).toEqual([]);
    });
 
-   it("keeps CONTRACT when the verdict names a different reason than the gate", () => {
+   it("keeps ROW_LEVEL_GATE when the verdict names a different reason than the gate", () => {
       const daily = storageOf("daily");
       const report = buildQueryPath(
          input({
@@ -1155,7 +1153,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             ],
          }),
       );
-      expect(report.considered[0]).toMatchObject({ reason: "CONTRACT" });
+      expect(report.considered[0]).toMatchObject({ reason: "ROW_LEVEL_GATE" });
       expect(report.considered[0]).not.toHaveProperty("code");
    });
 
@@ -1183,7 +1181,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             tableId: "id_daily",
             kind: "materialized",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
          },
       ]);
       expect(report.warnings).toEqual([]);

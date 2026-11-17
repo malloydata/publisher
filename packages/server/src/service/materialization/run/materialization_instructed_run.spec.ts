@@ -1979,6 +1979,8 @@ describe("executeInstructedBuild", () => {
             materializedTableId: "mt-ref",
             // Permanent until the model changes, so a caller need not retry it.
             refused: true,
+            // The bounded reason as a field, beside the gate's prose.
+            refusalReason: "authorize",
             retryable: false,
          });
          expect(result.failures["bref1bref1bref1b"].reason).toMatch(

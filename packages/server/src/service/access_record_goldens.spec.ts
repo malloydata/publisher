@@ -250,7 +250,11 @@ describe("access record goldens, one per decision path", () => {
    it("denied by row level: the row filter's given is unbound", async () => {
       const record = await golden("run: accounts_src -> { aggregate: n }", {});
       const { error, ...rest } = record;
-      expect(rest).toEqual({ ...RECORD, outcome: "denied_lock", status: 403 });
+      expect(rest).toEqual({
+         ...RECORD,
+         outcome: "denied_filter",
+         status: 403,
+      });
       expect(typeof error).toBe("string");
    });
 

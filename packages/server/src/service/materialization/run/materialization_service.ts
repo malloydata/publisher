@@ -133,7 +133,7 @@ export interface RunBuildOptions {
    referenceManifest: ManifestReference[] | undefined;
    strictUpstreams: boolean | undefined;
    warehouseReach?: WarehouseReach;
-   trigger: "ON_DEMAND" | "SCHEDULER";
+   trigger: "on_demand" | "scheduler";
    runContext?: components["schemas"]["RunContext"];
    /** The version createMaterialization resolved; null when unversioned. */
    version: string | null;
@@ -213,10 +213,12 @@ interface CreateMaterializationOptions {
     */
    ledger?: LedgerEntry[];
    /**
-    * What initiated this run: `ON_DEMAND` (default, manual/API) or
-    * `SCHEDULER` (the standalone scheduler). Recorded on the run metadata.
+    * What initiated this run: `on_demand` (default, manual/API) or
+    * `scheduler` (the standalone scheduler). Recorded on the run metadata;
+    * releases before 0.15 wrote `ON_DEMAND` and `SCHEDULER`, which readers
+    * still accept.
     */
-   trigger?: "ON_DEMAND" | "SCHEDULER";
+   trigger?: "on_demand" | "scheduler";
    /**
     * Caller context attached as query metadata to the build's statements.
     * Its `trigger` can express a publish, which `trigger` cannot; its
@@ -629,7 +631,7 @@ export class MaterializationService {
 
       const forceRefresh = options.forceRefresh ?? false;
       const reseed = options.reseed ?? false;
-      const trigger = options.trigger ?? "ON_DEMAND";
+      const trigger = options.trigger ?? "on_demand";
       const metadata = {
          forceRefresh,
          // Recorded separately: it says whether an incremental source rebuilt
@@ -836,7 +838,7 @@ export class MaterializationService {
       buildInstructions: BuildInstruction[] | undefined;
       forceRefresh: boolean;
       reseed: boolean;
-      trigger: "ON_DEMAND" | "SCHEDULER";
+      trigger: "on_demand" | "scheduler";
    }): Promise<Materialization> {
       const {
          environmentId,

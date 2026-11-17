@@ -202,7 +202,7 @@ export class PackageMaterialization {
       | undefined;
    /** The bindings the models last compiled their served copies over. */
    private publishedBindings: readonly Binding[] | undefined;
-   private manifestBindingStatus: "unbound" | "bound" | "live_fallback" =
+   private manifestBindingStatus: "unbound" | "bound" | "bind_failed" =
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
@@ -291,7 +291,7 @@ export class PackageMaterialization {
     * file.
     */
    bindingState(): {
-      manifestBindingStatus: "unbound" | "bound" | "live_fallback";
+      manifestBindingStatus: "unbound" | "bound" | "bind_failed";
       manifestEntryCount: number;
       boundManifestUri: string | null;
       storageServeBindings: NonNullable<ApiPackage["storageServeBindings"]>;
@@ -462,7 +462,7 @@ export class PackageMaterialization {
     * the package is serving live despite intending to be materialized-routed.
     */
    markManifestBindFailed(): void {
-      this.manifestBindingStatus = "live_fallback";
+      this.manifestBindingStatus = "bind_failed";
    }
 
    /**

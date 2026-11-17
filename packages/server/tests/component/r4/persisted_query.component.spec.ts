@@ -722,7 +722,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
                   "skipped",
                   "MISSING_FIELD",
                ),
-               queryContract: await count("query", "skipped", "CONTRACT"),
+               queryContract: await count("query", "skipped", "ROW_LEVEL_GATE"),
                viewUsed: await count("view", "used", "NONE"),
                liveUsed: await count("live", "used", "NONE"),
             };

@@ -100,12 +100,13 @@ export interface MaterializationMetadata {
    sourceNames?: string[];
    mode?: "auto" | "orchestrated";
    /**
-    * What initiated the run. `SCHEDULER` = the standalone scheduler fired the
-    * package's `materialization.schedule` cron; `ON_DEMAND` (default) = an
+    * What initiated the run. `scheduler` = the standalone scheduler fired the
+    * package's `materialization.schedule` cron; `on_demand` (default) = an
     * explicit API/UI create. Recorded on the run so a scheduled rebuild is
-    * distinguishable from a manual one.
+    * distinguishable from a manual one. Servers before 0.15 wrote
+    * `SCHEDULER` and `ON_DEMAND`; read with {@link isScheduledRun}.
     */
-   trigger?: "ON_DEMAND" | "SCHEDULER";
+   trigger?: "on_demand" | "scheduler" | "ON_DEMAND" | "SCHEDULER";
    sourcesBuilt?: number;
    sourcesReused?: number;
    /**
@@ -180,11 +181,16 @@ export function parseMetadata(
    return (materialization.metadata ?? {}) as MaterializationMetadata;
 }
 
+/** Whether the scheduler fired the run, in either spelling a server wrote. */
+export function isScheduledRun(meta: MaterializationMetadata): boolean {
+   return meta.trigger === "scheduler" || meta.trigger === "SCHEDULER";
+}
+
 /** Human label for how a run was initiated. */
 export function triggerLabel(
    meta: MaterializationMetadata,
 ): "Scheduled" | "Manual" {
-   return meta.trigger === "SCHEDULER" ? "Scheduled" : "Manual";
+   return isScheduledRun(meta) ? "Scheduled" : "Manual";
 }
 
 /** Human-readable elapsed time between two ISO timestamps (to now if open). */

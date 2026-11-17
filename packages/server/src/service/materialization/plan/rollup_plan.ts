@@ -109,7 +109,7 @@ import { canonicalAuthorizeRoute } from "../../authorize_routes";
 import {
    ROLLUP_INVALID_CODE,
    DEPRECATED_PREAGGREGATE_ANNOTATION_CODE,
-   PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+   ROLLUP_NAMESPACE_DEPRECATED_CODE,
    ROLLUP_NOT_BUILT_CODE,
    ROLLUP_ROUTE_KEYS,
    routeOfNote,
@@ -801,7 +801,7 @@ function rollupDeclarationsOf(
             deprecationWarned.add(key);
             refused.push({
                tier: "deprecated",
-               code: PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+               code: ROLLUP_NAMESPACE_DEPRECATED_CODE,
                message: `Measure "${decl.measure}" of source "${sourceName}" places its rollup with namespace="${decl.namespace}": ${namespaceRewrite(decl.namespace)}.`,
                sourceName,
                measure: decl.measure,
@@ -822,7 +822,7 @@ function rollupDeclarationsOf(
       if (!isMeasure(field)) {
          refused.push({
             tier: "malformed",
-            code: "preaggregate-not-a-measure",
+            code: "rollup-not-a-measure",
             message: `#(rollup) is on "${name}" of source "${sourceName}", which is not a measure; it goes on the measure to store, and the dimensions to store it at go in its grain=[…]`,
             sourceName,
             measure: name,
@@ -922,7 +922,7 @@ function rollupDeclarationsOf(
    for (const note of sourceNotes) {
       refused.push({
          tier: "malformed",
-         code: "preaggregate-not-a-measure",
+         code: "rollup-not-a-measure",
          message: `${routeOfNote(note.text) === ROLLUP_ALIAS_ROUTE ? "#(preaggregate)" : "#(rollup)"} is on source "${sourceName}"; it goes on a measure, with the dimensions to store it at in its grain=[…]`,
          sourceName,
       });
@@ -1165,7 +1165,7 @@ function declarationRefusal(
       if (decl.v1) return "skip";
       return {
          tier: "malformed",
-         code: "preaggregate-unknown-grain",
+         code: "rollup-unknown-grain",
          message: `#(rollup) on measure "${decl.measure}" of source "${sourceName}": ${grainProblem}`,
          sourceName,
          measure: decl.measure,
@@ -1330,7 +1330,7 @@ function rollupMeasureOf(
       return d.kind === "not_mergeable"
          ? {
               tier: "malformed",
-              code: "preaggregate-not-mergeable",
+              code: "rollup-not-mergeable",
               message: `#(rollup) on measure "${decl.measure}" of source "${sourceName}": its partials cannot be merged (${d.detail}). Store sum, count, min and max measures, and derive the rest from them`,
               sourceName,
               measure: decl.measure,
@@ -1386,7 +1386,7 @@ function rollupMeasureOf(
       if (joinProblem) break;
    }
    if (joinProblem) {
-      return unservable("join_level", decl, joinProblem);
+      return unservable("join_not_in_grain", decl, joinProblem);
    }
    const columns =
       d.leaves.length === 1
@@ -1395,7 +1395,7 @@ function rollupMeasureOf(
    const clash = columns.find((c) => byName.has(c));
    if (clash) {
       return unservable(
-         "name_clash",
+         "partial_name_collision",
          decl,
          `the source already has a field named \`${clash}\`, the column its partial is stored as`,
       );

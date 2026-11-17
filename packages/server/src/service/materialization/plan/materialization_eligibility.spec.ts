@@ -1603,7 +1603,7 @@ describe("read-only dialect (database persist)", () => {
       }
       expect(caught).toBeInstanceOf(MaterializationEligibilityError);
       expect((caught as MaterializationEligibilityError).reason).toBe(
-         "read_only_dialect",
+         "connection_cannot_hold_table",
       );
       expect((caught as Error).message).toContain("'mssql'");
       expect((caught as Error).message).toContain("'sqlserver'");

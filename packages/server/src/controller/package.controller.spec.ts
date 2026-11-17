@@ -1976,7 +1976,7 @@ describe("PackageController.dryRunPackage", () => {
          sourceID: "orders@file:///pkg/m.malloy",
          origin: "persist",
          tier: "database",
-         verdict: "not_built",
+         verdict: "awaiting_build",
          message: "`orders` will serve from its table once a build binds it.",
       };
       const { controller } = controllerWith(async (options) =>

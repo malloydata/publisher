@@ -81,7 +81,7 @@ describe("a package's serve verdicts", () => {
       const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.orders).toMatchObject({
          tier: "database",
-         verdict: "not_built",
+         verdict: "awaiting_build",
       });
       expect(verdicts.staging).toMatchObject({
          verdict: "live",
@@ -105,9 +105,9 @@ describe("a package's serve verdicts", () => {
       const verdicts = loaded.pkg.materialization().serveVerdicts();
       // orders_public extends a persisted source, so it inherits #@ persist.
       expect(verdicts.map((v) => [v.sourceName, v.verdict])).toEqual([
-         ["orders", "not_built"],
-         ["orders_public", "not_built"],
-         ["staging", "not_built"],
+         ["orders", "awaiting_build"],
+         ["orders_public", "awaiting_build"],
+         ["staging", "awaiting_build"],
       ]);
       expect(
          (loaded.pkg.getPackageMetadata().warnings ?? []).some(
@@ -128,8 +128,8 @@ export { by_region, joined }
 `,
       });
       const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
-      expect(verdicts.staging.verdict).toBe("not_built");
-      expect(verdicts.orders.verdict).toBe("not_built");
+      expect(verdicts.staging.verdict).toBe("awaiting_build");
+      expect(verdicts.orders.verdict).toBe("awaiting_build");
    });
 
    it("reaches a source only a published named query reads", async () => {
@@ -141,7 +141,7 @@ export { orders_public, top_regions }
 `,
       });
       const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
-      expect(verdicts.staging.verdict).toBe("not_built");
+      expect(verdicts.staging.verdict).toBe("awaiting_build");
       expect(
          (loaded.pkg.getPackageMetadata().warnings ?? []).some(
             (w) => w.code === MATERIALIZATION_UNREACHABLE_CODE,
@@ -194,7 +194,7 @@ source: secure_orders is orders -> { select: * }
             byName(loaded.pkg.materialization().serveVerdicts()).orders,
          ).toMatchObject({
             tier: "storage",
-            verdict: "not_built",
+            verdict: "awaiting_build",
          });
       });
 
@@ -229,7 +229,7 @@ export { by_one }
          loaded = await loadTempPackage({ "orders.malloy": GATED });
          expect(
             byName(loaded.pkg.materialization().serveVerdicts()).orders.verdict,
-         ).toBe("not_built");
+         ).toBe("awaiting_build");
       });
    });
 
@@ -246,12 +246,15 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
       const warnings = loaded.pkg.getPackageMetadata().warnings ?? [];
       const refused = warnings.filter((w) => w.code === "persist-not-built");
       expect(refused).toHaveLength(1);
-      expect(refused[0]).toMatchObject({ subject: "orders", severity: "warn" });
-      // Its former code, beside it with the same message, for one release.
-      const alias = warnings.filter((w) => w.code === "persist-source-refused");
-      expect(alias).toEqual([
-         { ...refused[0], code: "persist-source-refused" },
-      ]);
+      expect(refused[0]).toMatchObject({
+         subject: "orders",
+         severity: "warn",
+         reason: "given_in_persisted_query",
+      });
+      // 0.14's one-release alias is gone.
+      expect(
+         warnings.filter((w) => w.code === "persist-source-refused"),
+      ).toEqual([]);
    });
 
    // GET …/status reads the verdicts on every poll: the entry-point walk is
@@ -294,7 +297,7 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
       });
       const verdicts = byName(loaded.pkg.materialization().serveVerdicts());
       expect(verdicts.orders.verdict).toBe("serves");
-      expect(verdicts.staging.verdict).toBe("not_built");
+      expect(verdicts.staging.verdict).toBe("awaiting_build");
    });
 
    it("serves nothing from storage while PERSIST_STORAGE_MODE is off", async () => {

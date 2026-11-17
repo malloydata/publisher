@@ -418,13 +418,13 @@ describe("the build loop's instruments", () => {
       expect(
          await harness.collectCounter(
             "publisher_materialization_stale_upstream_entry_total",
-            { build: "storage" },
+            { tier: "storage" },
          ),
       ).toBe(2);
       expect(
          await harness.collectCounter(
             "publisher_materialization_stale_upstream_entry_total",
-            { build: "database" },
+            { tier: "database" },
          ),
       ).toBe(1);
    });

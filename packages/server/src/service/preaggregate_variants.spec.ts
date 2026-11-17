@@ -172,9 +172,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category") -> {
          expect((error as Error).message).toContain(
             "its partials cannot be merged",
          );
-         expect((error as Error).message).toContain(
-            "[preaggregate-not-mergeable]",
-         );
+         expect((error as Error).message).toContain("[rollup-not-mergeable]");
       },
       { timeout: 60000 },
    );
@@ -201,7 +199,7 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
             Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
                (r) => r.reason,
             ),
-         ).toEqual(["join_level"]);
+         ).toEqual(["join_not_in_grain"]);
          expect(formatPublishRejections(pkg)).toBeUndefined();
       },
       { timeout: 60000 },

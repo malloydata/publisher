@@ -395,7 +395,7 @@ describe("published versions across a restart", () => {
       };
       expect(bound.manifestLocation).toBe(manifestUri);
       // It tried its own manifest, which cannot be fetched here.
-      expect(bound.manifestBindingStatus).toBe("live_fallback");
+      expect(bound.manifestBindingStatus).toBe("bind_failed");
       const res = await fetch(`${pkgApi("kept")}?versionId=1.1.0`);
       expect(res.status).toBe(200);
       const other = (await res.json()) as {

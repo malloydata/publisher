@@ -344,9 +344,9 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
                      warnings?: { code?: string; message: string }[];
                   }
                ).warnings ?? []
-            ).filter((w) => w.code === "table-kept-after-rename"),
+            ).filter((w) => w.code === "table-kept"),
          (warnings) => warnings.length === 2,
-         "no table-kept-after-rename warnings",
+         "no table-kept warnings",
          30_000,
       );
       for (const warning of kept) {
@@ -398,11 +398,10 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
                ).warnings ?? []
             ).filter(
                (w) =>
-                  w.code === "table-kept-after-rename" &&
-                  w.message.includes("`summary_t`"),
+                  w.code === "table-kept" && w.message.includes("`summary_t`"),
             ),
          (warnings) => warnings.length > 0,
-         "no table-kept-after-rename warning",
+         "no table-kept warning",
          30_000,
       );
       expect(kept).toHaveLength(1);
@@ -423,9 +422,9 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
                      warnings?: { code?: string; message: string }[];
                   }
                ).warnings ?? []
-            ).filter((w) => w.code === "table-kept-after-rename"),
+            ).filter((w) => w.code === "table-kept"),
          (warnings) => warnings.length > 0,
-         "no table-kept-after-rename warning after a restart",
+         "no table-kept warning after a restart",
          60_000,
       );
       expect(afterRestart.map((w) => w.message).join("\n")).toContain(

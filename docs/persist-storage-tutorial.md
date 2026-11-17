@@ -799,7 +799,7 @@ Everything you need is on the package status and the logs:
 - Metrics (OpenTelemetry, under the `publisher` meter):
   - `publisher_query_route_total{leg,outcome,reason}` — the serve hit rate; the
     headline signal for "is the tier actually serving?" `outcome="fallback"`
-    (`reason="RUN_FAILED"`) is the one to watch: the query **routed** and then the
+    (`reason="READ_FAILED"`) is the one to watch: the query **routed** and then the
     store failed under it, so the caller still got a correct answer from the
     warehouse while the tier is broken. The hit rate alone will not show that.
 

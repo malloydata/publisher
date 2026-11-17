@@ -1072,8 +1072,7 @@ async function compileMalloyModel(
       ),
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
-      authorizeWarnings:
-         warnings.length > 0 ? warnings.map((w) => w.message) : undefined,
+      gateWarnings: warnings.length > 0 ? warnings : undefined,
       renderTagResults,
       renderTagResultsDigest,
       preaggregateCompanion,
@@ -1358,10 +1357,8 @@ async function compileNotebookModel(
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
       problems: job.collectProblems ? compiled?.problems : undefined,
-      authorizeWarnings:
-         checked && checked.warnings.length > 0
-            ? checked.warnings.map((w) => w.message)
-            : undefined,
+      gateWarnings:
+         checked && checked.warnings.length > 0 ? checked.warnings : undefined,
       governsAccess: modelDef ? governsAccess(modelDef) : undefined,
    };
 }

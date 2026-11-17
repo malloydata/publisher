@@ -19,6 +19,7 @@ import type { Manifest, PersistSource } from "@malloydata/malloy";
 import {
    BadRequestError,
    MaterializationEligibilityError,
+   TableOwnershipError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import type {
@@ -623,6 +624,10 @@ export function recordInstructedBuildFailure(
          : {}),
       // The run was cancelled while this source built: stopped, not failed.
       ...(run.signal?.aborted ? { cancelled: true } : {}),
+      // A bounded code beside the prose, for a refusal a client branches on.
+      ...(buildErr instanceof TableOwnershipError
+         ? { code: buildErr.code }
+         : {}),
    };
    // Deprecated mirror into `entries` for consumers that read the failure
    // from `ManifestEntry.error`; without it they would see the source as

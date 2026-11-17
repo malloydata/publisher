@@ -219,7 +219,7 @@ export type KeptTableReason =
 /**
  * A table an auto-run replaced and Publisher keeps, listed on the run record
  * (`metadata.keptTables`) and raised as a package warning
- * (`table-kept-after-rename`) until the table is dropped or the name is
+ * (`table-kept`) until the table is dropped or the name is
  * reused: one at an author's exact `name=` (`author_name`), which Publisher
  * never drops; one in a storage destination that is no longer configured
  * (`destination_missing`), which it cannot reach; or one at the name the

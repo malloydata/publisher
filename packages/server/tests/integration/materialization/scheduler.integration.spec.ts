@@ -133,7 +133,7 @@ describe("MaterializationScheduler (E2E, real build)", () => {
          await scheduler.tick(T0);
          expect(
             (await listMaterializations()).filter(
-               (m) => triggerOf(m) === "SCHEDULER",
+               (m) => triggerOf(m) === "scheduler",
             ).length,
          ).toBe(0);
 
@@ -141,7 +141,7 @@ describe("MaterializationScheduler (E2E, real build)", () => {
          await scheduler.tick(T0 + THREE_DAYS_MS);
 
          const scheduled = (await listMaterializations()).filter(
-            (m) => triggerOf(m) === "SCHEDULER",
+            (m) => triggerOf(m) === "scheduler",
          );
          expect(scheduled.length).toBe(1);
 
@@ -155,7 +155,7 @@ describe("MaterializationScheduler (E2E, real build)", () => {
          // The SCHEDULER trigger must survive the build commit (not just exist
          // while the run is in-flight) — otherwise a completed scheduled run is
          // indistinguishable from a manual one.
-         expect(triggerOf(built)).toBe("SCHEDULER");
+         expect(triggerOf(built)).toBe("scheduler");
 
          // Cleanup: drop the table + record so the negative case starts clean.
          const del = await fetch(

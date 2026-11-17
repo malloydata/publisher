@@ -1537,6 +1537,7 @@ function recordPendingRefusal(
          // Marks the failure permanent, so a caller that retries failures can
          // tell it from one that may clear.
          refused: true,
+         ...(err.reason ? { refusalReason: err.reason } : {}),
          retryable: false,
          connectionName: persistSource.connectionName,
          ...(instruction.destination

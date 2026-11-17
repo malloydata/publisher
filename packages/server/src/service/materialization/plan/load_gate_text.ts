@@ -342,7 +342,7 @@ export const PREAGG_WARN_ONLY: ReadonlyMap<
    // its base's annotation.
    ["non_public_measure", "hidden_field"],
    // A rollup over a fan-out join, as `#(rollup)` refuses one.
-   ["base_source_has_fanout_join", "join_level"],
+   ["base_source_has_fanout_join", "join_not_in_grain"],
 ]);
 
 /**
@@ -352,14 +352,14 @@ export const PREAGG_WARN_ONLY: ReadonlyMap<
 function preaggregateViolationCode(code: PreaggregateViolationCode): string {
    if (code === "unknown_key") return "rollup-unknown-key";
    if (code === "unparseable") return "rollup-unparseable";
-   if (code === "non_additive_measure") return "preaggregate-not-mergeable";
-   if (code.startsWith("misplaced_")) return "preaggregate-not-a-measure";
+   if (code === "non_additive_measure") return "rollup-not-mergeable";
+   if (code.startsWith("misplaced_")) return "rollup-not-a-measure";
    if (
       code === "unknown_grain_dimension" ||
       code.startsWith("grain_") ||
       code === "truncation_on_non_temporal"
    ) {
-      return "preaggregate-unknown-grain";
+      return "rollup-unknown-grain";
    }
    return ROLLUP_INVALID_CODE;
 }

@@ -59,7 +59,28 @@ export interface CheckedModel {
    /** Every source this file can resolve; see `collectSourceInfos`. */
    sourceInfos: Malloy.SourceInfo[];
    /** Non-fatal gate findings: the model still serves, the caller reports them. */
-   warnings: { sourceName: string; message: string }[];
+   warnings: GateLoadWarning[];
+}
+
+/**
+ * The package warning code of each non-fatal gate finding at load:
+ * `row-level-gate-unexpressible`, an inherited gate this entry point cannot
+ * express, so it denies every request; `row-level-gate-reads-no-given`, a
+ * gate that reads no given, a fixed predicate rather than an access rule;
+ * `row-level-gate-negated-membership`, a gate that negates a membership test
+ * (or nests too deeply to tell), which an empty given turns into match-all.
+ */
+export const GATE_LOAD_WARNING_CODES = {
+   entry_point_unexpressible: "row-level-gate-unexpressible",
+   source_line_gate_no_given_reference: "row-level-gate-reads-no-given",
+   source_line_gate_negated_membership: "row-level-gate-negated-membership",
+} as const;
+
+/** One non-fatal gate finding at load, as the package's warnings carry it. */
+export interface GateLoadWarning {
+   sourceName: string;
+   code: (typeof GATE_LOAD_WARNING_CODES)[keyof typeof GATE_LOAD_WARNING_CODES];
+   message: string;
 }
 
 /**
@@ -140,6 +161,7 @@ export async function extractCheckedModel(
       onRowLevelGateUnexpressible: (sourceName, detail) => {
          warnings.push({
             sourceName,
+            code: GATE_LOAD_WARNING_CODES.entry_point_unexpressible,
             message: `Row-level #(access_filter) gate not expressible at this entry point ("${sourceName}"); every query against it will be denied: ${detail}`,
          });
       },
@@ -160,6 +182,7 @@ export async function extractCheckedModel(
                recordRowLevelGateRejected(cause);
                warnings.push({
                   sourceName,
+                  code: GATE_LOAD_WARNING_CODES[cause],
                   message: `#(${route}) gate warning on "${sourceName}" (${cause}): ${detail}`,
                });
             },

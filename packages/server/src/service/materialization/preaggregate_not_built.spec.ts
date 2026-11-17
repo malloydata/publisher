@@ -5,8 +5,9 @@
  * A valid rollup a compile-time gate refuses alone (a read-only dialect, a
  * base scoped by a given, a shared table name, the `storage=` gate) is
  * reported as `rollup-not-built`, its message naming its base, its grain
- * and the gate's reason, while a refused `#@ persist` source keeps
- * `persist-source-refused`. Which rollups are refused does not change.
+ * and the gate's reason, while a refused `#@ persist` source is
+ * `persist-not-built`. Each carries the record's reason. Which rollups are
+ * refused does not change.
  */
 import { rollupPlansIn } from "../../test_helpers/materialization_test_fixtures";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
@@ -80,7 +81,7 @@ function refusedPlan(
             sourceID: "r@file:///m.malloy",
             modelPath: "m.malloy",
             tier,
-            reason: "read_only_dialect",
+            reason: "connection_cannot_hold_table",
             message: GATE_MESSAGE,
          },
       },
@@ -112,7 +113,7 @@ describe("rollup-not-built", () => {
          ).toMatchObject({
             origin: "rollup",
             tier: "database",
-            reason: "read_only_dialect",
+            reason: "connection_cannot_hold_table",
          });
          expect(
             outcome.plan?.sources?.[rollupID as string]?.preaggregate,
@@ -156,6 +157,7 @@ describe("rollup-not-built", () => {
       }).persistRefusalWarnings();
       expect(warning).toEqual({
          code: "rollup-not-built",
+         reason: "connection_cannot_hold_table",
          severity: "warn",
          model: "m.malloy",
          subject: "orders",
@@ -174,7 +176,7 @@ describe("rollup-not-built", () => {
       );
    });
 
-   it("warns persist-not-built for a refused #@ persist source, and its former code beside it for one release", () => {
+   it("warns persist-not-built for a refused #@ persist source, with its reason, and no longer its 0.14 alias", () => {
       const warnings = holding(
          refusedPlan("database"),
       ).persistRefusalWarnings();
@@ -185,8 +187,11 @@ describe("rollup-not-built", () => {
          message: GATE_MESSAGE,
       };
       expect(warnings).toEqual([
-         { ...expected, code: "persist-not-built" },
-         { ...expected, code: "persist-source-refused" },
+         {
+            ...expected,
+            code: "persist-not-built",
+            reason: "connection_cannot_hold_table",
+         },
       ]);
    });
 });

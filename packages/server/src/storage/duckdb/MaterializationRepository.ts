@@ -102,7 +102,8 @@ export class MaterializationRepository {
    }
 
    /**
-    * `created_at` of the newest scheduler-fired (metadata.trigger=SCHEDULER)
+    * `created_at` of the newest scheduler-fired (metadata.trigger `scheduler`,
+    * or `SCHEDULER` as releases before 0.15 wrote it)
     * materialization for (env, package), or null if none. The standalone
     * scheduler re-anchors `nextFireAt` to `nextAfter(lastScheduledFire)` so a
     * restart fires exactly one catch-up instead of skipping the occurrence.
@@ -116,7 +117,7 @@ export class MaterializationRepository {
       const row = await this.db.get<{ created_at: unknown }>(
          `SELECT created_at FROM materializations
            WHERE environment_id = ? AND package_name = ?
-             AND json_extract_string(metadata, '$.trigger') = 'SCHEDULER'
+             AND json_extract_string(metadata, '$.trigger') IN ('scheduler', 'SCHEDULER')
              ${version !== undefined ? "AND version = ?" : ""}
            ORDER BY created_at DESC
            LIMIT 1`,

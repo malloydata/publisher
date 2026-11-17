@@ -605,7 +605,7 @@ for (const [placement, gatedSources] of [
             { ...EAST.givens, CARRIER: "AA" },
          );
          const skipped = (path?.considered ?? []).filter(
-            (c) => (c as { reason?: string }).reason === "CONTRACT",
+            (c) => (c as { reason?: string }).reason === "ROW_LEVEL_GATE",
          );
          expect(skipped.length).toBeGreaterThan(0);
          for (const c of skipped) {
@@ -629,7 +629,7 @@ for (const [placement, gatedSources] of [
          fixture.setBindings(fixture.bindings);
          const { path } = await fixture.runAsIs(malloy, EAST.givens);
          const contract = (path?.considered ?? []).filter(
-            (c) => (c as { reason?: string }).reason === "CONTRACT",
+            (c) => (c as { reason?: string }).reason === "ROW_LEVEL_GATE",
          );
          expect(contract.length).toBeGreaterThan(0);
          for (const c of contract) {

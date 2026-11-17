@@ -25,8 +25,8 @@ import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 /**
  * The v1 cutover's dry-run verdict (6e, plan question 15):
  * `POST …/packages?dryRun=true` names the path that will serve each
- * materialized source (`cutoverPath`: `served_copy`, `rollup`, or `live` with
- * `cutoverReason`), judged by compiling the served copy over bindings
+ * materialized source (`servePath`: `served_copy`, `rollup`, or `live` with
+ * `servePathReason`), judged by compiling the served copy over bindings
  * declared from the plan, before any table is built.
  */
 describe("the dry run's verdicts", () => {
@@ -48,7 +48,7 @@ describe("the dry run's verdicts", () => {
          return Object.fromEntries(
             verdicts.map((v) => [
                v.sourceName,
-               [v.cutoverPath, v.cutoverReason],
+               [v.servePath, v.servePathReason],
             ]),
          );
       } finally {
@@ -104,7 +104,7 @@ source: inherited is rows_base -> { select: id, region, amount }
             const paths = Object.fromEntries(
                (await pkg.previewServeVerdicts()).map((v) => [
                   v.sourceName,
-                  [v.cutoverPath, v.cutoverReason],
+                  [v.servePath, v.servePathReason],
                ]),
             );
             expect(paths.inherited?.[0]).toBe("live");
@@ -166,7 +166,7 @@ describe("the dry run against what serves", () => {
                   for (const v of verdicts) {
                      byName.set(v.sourceName, [
                         ...(byName.get(v.sourceName) ?? []),
-                        `${v.cutoverPath}:${v.cutoverReason ?? ""}:${v.origin ?? ""}`,
+                        `${v.servePath}:${v.servePathReason ?? ""}:${v.origin ?? ""}`,
                      ]);
                   }
                   const servedRoots = new Map<string, boolean>();
@@ -216,7 +216,7 @@ describe("the dry run against what serves", () => {
                      }
                   }
                   for (const v of verdicts) {
-                     if (v.cutoverPath === "rollup") {
+                     if (v.servePath === "rollup") {
                         const anyRolled = [...rolledRoots.values()].some(
                            Boolean,
                         );
@@ -267,7 +267,7 @@ describe("the dry run against what serves", () => {
                const q = query ?? shape.queries[0].malloy;
                const out = await fixture.run(Object.keys(shape.files)[0], q);
                const via = "error" in out ? out.error : out.answer.via;
-               expect({ said: verdict?.cutoverPath, via }).toEqual(
+               expect({ said: verdict?.servePath, via }).toEqual(
                   via === "served_copy"
                      ? { said: "served_copy", via }
                      : { said: "live", via },
@@ -312,7 +312,7 @@ source: orders is orders_raw extend {
             const by = "error" in out ? out.error : out.answer.servedBy;
             const said = verdicts
                .filter((v) => v.origin === "rollup")
-               .map((v) => v.cutoverPath);
+               .map((v) => v.servePath);
             if (by !== "rollup") expect(said).not.toContain("rollup");
          } finally {
             restore();

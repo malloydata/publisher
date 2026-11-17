@@ -300,7 +300,7 @@ for (const gatedSwitch of [true, false]) {
             if (gatedSwitch) {
                expect(result.path?.servedBy.kind).toBe("view");
             } else {
-               expect(view?.reason).toBe("CONTRACT");
+               expect(view?.reason).toBe("ROW_LEVEL_GATE");
             }
          });
       }

@@ -6,7 +6,8 @@
  * source, a `#(materialize)` source, a rollup, a persisted view and a
  * persisted named query each bound over a table that stores a column as
  * another type than its build declares report the
- * `storage-column-type-mismatch` package warning and tick
+ * `storage-column-type-mismatch` package warning (a database table's drift:
+ * `database-column-type-mismatch`) and tick
  * `publisher_storage_column_type_mismatch_total{stage="serve"}`. So does a
  * database table whose column type the bind found moved outside a build.
  */
@@ -248,8 +249,14 @@ describe("a database table whose column type moved outside a build", () => {
          observed,
       });
 
-      const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "storage-column-type-mismatch",
+      const all = pkg.getPackageMetadata().warnings ?? [];
+      // The database tier's drift has its own code; the storage tier's code
+      // names no database table.
+      expect(
+         all.filter((w) => w.code === "storage-column-type-mismatch"),
+      ).toEqual([]);
+      const warnings = all.filter(
+         (w) => w.code === "database-column-type-mismatch",
       );
       const bySubject = new Map(warnings.map((w) => [w.subject, w.message]));
       expect([...bySubject.keys()].sort()).toEqual([
