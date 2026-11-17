@@ -166,6 +166,7 @@ export function gateReads(
       source: unknown,
       path: readonly string[],
       chain: readonly string[],
+      joins: readonly string[] = [],
    ): void => {
       if (tooDeep() || path.length === 0) {
          unresolved = true;
@@ -182,16 +183,19 @@ export function gateReads(
             unresolved = true;
             return;
          }
-         resolve(f, path.slice(1), []);
+         // A stored table holds a joined source's fields under the join's
+         // name: an inlined join's record, or flattened as `<join>__<field>`.
+         resolve(f, path.slice(1), [...chain, path[0]], [...joins, path[0]]);
          return;
       }
-      field(source, f, chain);
+      field(source, f, chain, joins);
    };
 
    const field = (
       source: unknown,
       f: FieldLike,
       chain: readonly string[],
+      joins: readonly string[] = [],
    ): void => {
       const name = activeName(f);
       const stored = typeof f.name === "string" ? f.name : name;
@@ -199,7 +203,7 @@ export function gateReads(
       names.add(stored);
       const along = [...chain, name, stored];
       if (f.e !== undefined) {
-         for (const p of fieldPathsIn(f.e)) resolve(source, p, along);
+         for (const p of fieldPathsIn(f.e)) resolve(source, p, along, joins);
          return;
       }
       if (f.join !== undefined) {
@@ -210,10 +214,12 @@ export function gateReads(
       const query = (source as { query?: { pipeline?: unknown[] } } | undefined)
          ?.query;
       if (query !== undefined) {
-         throughStages(source, stored, along);
+         throughStages(source, stored, along, joins);
          return;
       }
-      columns.push([...new Set(along)]);
+      const flattened =
+         joins.length === 0 ? [] : along.map((n) => [...joins, n].join("__"));
+      columns.push([...new Set([...along, ...flattened])]);
    };
 
    /** Follow an output field of a query-shaped source back to its base. */
@@ -221,6 +227,7 @@ export function gateReads(
       source: unknown,
       output: string,
       chain: readonly string[],
+      joins: readonly string[],
    ): void => {
       const query = (
          source as {
@@ -286,7 +293,7 @@ export function gateReads(
          unresolved = true;
          return;
       }
-      for (const w of wanted) resolve(base, w.path, w.chain);
+      for (const w of wanted) resolve(base, w.path, w.chain, joins);
    };
 
    const read = gatePaths(exprs);
