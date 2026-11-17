@@ -69,7 +69,11 @@ export interface ConformanceQuery {
    malloy: string;
    givens?: Record<string, unknown>;
    /** Default `served`; by variant when they differ. */
-   expect?: Expect | Partial<Record<Variant, Expect>>;
+   /**
+    * Default `served`; by variant when they differ, and by variant on the
+    * Parquet run (`<variant>@parquet`) when that differs again.
+    */
+   expect?: Expect | Partial<Record<Variant | `${Variant}@parquet`, Expect>>;
 }
 
 /**

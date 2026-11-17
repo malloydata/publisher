@@ -409,8 +409,14 @@ export async function loadFixture(
             stored,
             async rebind() {
                // Empty first, so the package derives every binding afresh.
-               pkg.materialization().bind({ database: {} });
-               pkg.materialization().bind({ database: database as never });
+               const mz = pkg.materialization();
+               mz.bind({ database: {} });
+               // With the column read the server binds with (package.ts),
+               // so a stored column's guard runs as it does there.
+               mz.bind({
+                  database: database as never,
+                  observed: await mz.readDatabaseColumns(database as never),
+               });
                pkg.materialization().bind({ storage: stored as never });
                await settle();
             },
@@ -756,7 +762,14 @@ async function buildAll(
    } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
    }
-   pkg.materialization().bind({ database: database as never });
+   // With the column read the server binds with (package.ts), so a stored
+   // column the database holds as another type (F-13: a HUGEINT DuckLake
+   // keeps as a DOUBLE) is guarded here as it is there.
+   const mz = pkg.materialization();
+   mz.bind({
+      database: database as never,
+      observed: await mz.readDatabaseColumns(database as never),
+   });
    pkg.materialization().bind({ storage: stored as never });
    return { built, buildErrors, database, stored };
 }

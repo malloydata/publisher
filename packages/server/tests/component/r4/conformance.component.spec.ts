@@ -203,12 +203,17 @@ function expectedTier(
    query: ConformanceQuery,
    variant: Variant,
    on: Switch,
+   lake: LakeFormat,
 ): Expect {
    // `#(materialize)` is served only by the served copy, which the switch turns on.
    if (MATERIALIZE_VARIANTS.includes(variant) && on === "off") return "live";
    return typeof query.expect === "string"
       ? query.expect
-      : (query.expect?.[variant] ?? "served");
+      : ((lake === "parquet"
+           ? query.expect?.[`${variant}@parquet`]
+           : undefined) ??
+           query.expect?.[variant] ??
+           "served");
 }
 
 function gapFor(
@@ -393,7 +398,7 @@ for (const lake of LAKES) {
 
             for (const on of SWITCHES) {
                for (const q of shape.queries) {
-                  const want = expectedTier(q, variant, on);
+                  const want = expectedTier(q, variant, on, lake);
                   const gap = gapFor(shape, q, variant, on, lake);
                   const title = `${q.name}, switch ${on}: ${want === "database" ? "served" : want}, equal to live`;
                   const test = () => {

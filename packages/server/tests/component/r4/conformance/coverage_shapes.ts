@@ -94,21 +94,18 @@ source: typed is duckdb.sql("""
             name: "a BIGINT sum past 2^53",
             malloy:
                "run: typed -> { group_by: g; aggregate: big_sum; order_by: g }",
-            expect: "rollup",
-            gaps: {
-               "database@parquet": {
-                  kind: "wrong",
-                  reason:
-                     "F-13, still open after #1846: a database rollup on a DuckDB connection that attached and USEd a DuckLake stores its BIGINT sum's HUGEINT column in Parquet as a DOUBLE (this fixture builds the table without the build session's DECIMAL(38,0) cast), and the serve path reads the rounded value as the DOUBLE it holds rather than answering live: -9007199254740992 for -9007199254740993",
-                  issue: "F-13",
-               },
-            },
+            // F-13: DuckLake keeps the sum's HUGEINT column in Parquet as a
+            // DOUBLE, so the bind's column read guards it and the query is
+            // answered live, with every digit (#1846).
+            expect: { database: "rollup", "database@parquet": "live" },
          },
          {
             name: "a DECIMAL sum",
             malloy:
                "run: typed -> { group_by: g; aggregate: dec_sum; order_by: g }",
-            expect: "rollup",
+            // Its table is the BIGINT sum's (one grain, one rollup), and a rollup
+            // declines as a whole when a column it stores has no exact read.
+            expect: { database: "rollup", "database@parquet": "live" },
          },
          {
             name: "a DECIMAL grain",
