@@ -202,6 +202,26 @@ class SearchTargets(unittest.TestCase):
         self.assertIn("a `dimension` target can never return "
                       "measure:order_items:total_sales", f[0])
 
+    def test_an_absent_target_names_no_required_id_and_may_name_its_closest(self):
+        self.assertEqual(findings(case(searchTargets=[
+            {"target_type": "measure", "search_text": "net revenue", "tags": ["not-found"],
+             "expectedEntities": {"absent": True, "closest": ["measure:order_items:total_sales"]}}])), [])
+        f = findings(case(searchTargets=[
+            {"target_type": "measure", "search_text": "net revenue",
+             "expectedEntities": {"absent": True, "required": ["measure:order_items:total_sales"]}},
+            {"target_type": "measure", "search_text": "revenue", "tags": "not-found",
+             "expectedEntities": {"required": ["measure:order_items:total_sales"],
+                                  "closest": ["measure:order_items:total_margin"]}}]))
+        self.assertIn("`absent` says nothing in the model answers this target", f[0])
+        self.assertIn("`tags` must be a list of strings", f[1])
+        self.assertIn("`closest` is the near miss an `absent` target may return", f[2])
+
+    def test_a_value_target_may_be_keyed_to_the_dimension_that_holds_the_value(self):
+        """Publisher indexes no values, so it returns nothing for one; a host that does returns the dimension."""
+        self.assertEqual(findings(case(searchTargets=[
+            {"target_type": "dimensional_value", "search_text": "cancelled",
+             "expectedEntities": {"required": ["dimension:order_items:status"]}}])), [])
+
     def test_a_group_with_one_returnable_member_is_fine(self):
         self.assertEqual(findings(case(searchTargets=[
             {"target_type": "measure", "search_text": "margin rate",

@@ -99,6 +99,14 @@ class Request(unittest.TestCase):
         self.assertEqual(got["search_targets"], [{"target_type": "source"},
                                                  {"target_type": "measure", "search_text": "revenue"}])
 
+    def test_a_cases_own_scope_replaces_the_sets(self):
+        case = a_case()
+        case["scope"] = {"environment": "e2", "package": "p2", "source": "orders"}
+        got = rr.request_for(case, {"environment": "e", "package": "p"})
+        self.assertEqual(got["scopes"], [{"environment": "e2", "package": "p2", "source": "orders"}])
+        case["scope"] = {"environment": "e2", "package": 7}
+        self.assertIn("q1: scope must be an object of get_context scope fields", rr.case_problems(case)[0])
+
     def test_no_question_sends_no_user_prompt(self):
         case = a_case()
         del case["question"]
@@ -184,17 +192,20 @@ class Score(unittest.TestCase):
 
 class StubMcp(http.server.BaseHTTPRequestHandler):
     """Answers each tools/call with the next of `first`, then with `body`, and records each
-    request's headers and arguments."""
+    request's headers and arguments. With `rest` set it is a REST get_context instead: the
+    request body is the arguments and the reply is the payload."""
     body: dict = {}
     first: list = []
     seen: list = []
+    rest = False
 
     def do_POST(self):  # noqa: N802
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        StubMcp.seen.append((dict(self.headers), req["params"]["arguments"]))
+        StubMcp.seen.append((dict(self.headers), req if StubMcp.rest else req["params"]["arguments"]))
         text = json.dumps(StubMcp.first.pop(0) if StubMcp.first else StubMcp.body)
-        out = json.dumps({"jsonrpc": "2.0", "id": 1,
-                          "result": {"content": [{"type": "text", "text": text}]}}).encode()
+        out = text.encode() if StubMcp.rest else json.dumps(
+            {"jsonrpc": "2.0", "id": 1,
+             "result": {"content": [{"type": "text", "text": text}]}}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
@@ -203,6 +214,88 @@ class StubMcp(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass
+
+
+class PerTarget(unittest.TestCase):
+    def body(self):
+        """Two targets answered on one card, each entity naming the target that matched it."""
+        return {"sources": [{"source_info": {"resource_id": {"source": "order_items"}}, "entities": [
+            {"entity_id": SALES, "relevance": 0.94,
+             "matched_targets": [{"search_text": "revenue", "relevance": 0.94}]},
+            {"entity_id": MARGIN, "relevance": 0.9,
+             "matched_targets": [{"search_text": "revenue", "relevance": 0.9}]},
+            {"entity_id": BRAND, "relevance": 0.6,
+             "matched_targets": [{"search_text": "shipping carrier", "relevance": 0.6}]}]}]}
+
+    def case(self):
+        case = a_case("q1", required=[SALES])
+        case["searchTargets"].append({"target_type": "dimension", "search_text": "shipping carrier",
+                                      "tags": ["not-found"], "expectedEntities": {"absent": True}})
+        return case
+
+    def test_each_target_is_scored_on_what_it_returned(self):
+        row = scored(self.case(), self.body())
+        first, second = row["targets"]
+        self.assertEqual((first["n_found"], first["n_returned"], first["n_ok"], first["best_pick_ok"]),
+                         (1, 2, 1, True))
+        # The absent target returned a field nobody labelled as its closest: a wrong pick.
+        self.assertEqual((second["not_found_ok"], second["n_returned"], second["n_ok"]), (False, 1, 0))
+
+    def test_the_summary_pools_targets_and_reads_a_target_tag(self):
+        rows = [dict(scored(self.case(), self.body()), latency_s=1.0),
+                dict(scored(a_case("q2", required=[MARGIN]), self.body()), latency_s=3.0)]
+        s = rr.summarize(rows, 0)
+        pt = s["per_target"]
+        self.assertEqual((pt["targets"], pt["required_answers"], pt["recall"], pt["returned"]), (3, 2, 1.0, 5))
+        self.assertAlmostEqual(pt["precision"], 2 / 5)
+        self.assertEqual((pt["best_pick"], pt["not_found"], pt["not_found_targets"]), (0.5, 0.0, 1))
+        self.assertEqual(s["by_tag"]["not-found"]["per_target"]["targets"], 1)
+        self.assertEqual((s["latency_p50_s"], s["latency_p95_s"]), (1.0, 3.0))
+
+    def test_a_case_with_only_absent_targets_has_no_case_recall_and_still_counts_per_target(self):
+        case = {"qid": "q", "tags": [], "searchTargets": [
+            {"target_type": "dimension", "search_text": "shipping carrier",
+             "expectedEntities": {"absent": True}}]}
+        row = scored(case, {"sources": []})
+        self.assertIsNone(row["recall"])
+        self.assertEqual(rr.summarize([row], 0)["per_target"]["not_found"], 1.0)
+
+
+class Compare(unittest.TestCase):
+    def rows(self, *ids):
+        """One case with a required measure, a two-answer dimension target and an absent target."""
+        case = a_case("q1", required=[SALES])
+        case["searchTargets"] += [
+            {"target_type": "dimension", "search_text": "category",
+             "expectedEntities": {"required": [CAT, BRAND]}},
+            {"target_type": "dimension", "search_text": "carrier", "expectedEntities": {"absent": True}}]
+        text = {SALES: "revenue", MARGIN: "revenue", CAT: "category", BRAND: "category", PCAT: "carrier"}
+        body = {"sources": [{"source_info": {"resource_id": {"source": "order_items"}}, "entities": [
+            {"entity_id": e, "relevance": 0.9, "matched_targets": [{"search_text": text[e], "relevance": 0.9}]}
+            for e in ids]}]}
+        return [dict(scored(case, body), latency_s=1.0)]
+
+    def test_gains_and_losses_are_counted_per_required_answer(self):
+        c = rr.compare(self.rows(SALES, CAT), self.rows(CAT, BRAND, PCAT))
+        self.assertEqual((c["targets_compared"], c["targets_set_aside"]), (3, 0))
+        r = c["recall"]
+        self.assertEqual((r["units"], r["a"], r["b"]), (3, 2, 2))
+        self.assertEqual((r["gained"], r["lost"]), ([["q1", 2, BRAND]], [["q1", 1, SALES]]))
+        self.assertEqual(c["not_found"]["lost"], [["q1", 3]])
+        self.assertEqual(c["best_pick"]["lost"], [["q1", 1]])
+        self.assertIn("required answers   2 -> 2 of 3   gained 1, lost 1", "\n".join(rr.fmt_compare(c, "a", "b")))
+
+    def test_a_target_sent_or_labelled_differently_is_set_aside(self):
+        a, b = self.rows(SALES), self.rows()
+        b[0]["targets"][0]["search_text"] = "sales"
+        c = rr.compare(a, b)
+        self.assertEqual((c["targets_compared"], c["targets_set_aside"], c["recall"]["lost"]), (2, 1, []))
+
+    def test_an_errored_case_is_set_aside_and_qids_limit_the_comparison(self):
+        b = self.rows(SALES)
+        b[0]["error"] = "boom"
+        self.assertEqual(rr.compare(self.rows(SALES), b)["targets_set_aside"], 3)
+        self.assertEqual(rr.compare(self.rows(SALES), self.rows(SALES), qids=["other"])["targets_compared"], 0)
 
 
 class EndToEnd(unittest.TestCase):
@@ -263,6 +356,30 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual((s["cases"], s["skipped_no_search_targets"], s["recall_exact"], s["precision"]),
                          (2, 1, 0.5, 1 / 6))
         self.assertEqual(len(ledger.read_jsonl(out / "events.jsonl")), 2)
+
+    def test_a_rest_endpoint_takes_the_request_as_its_body_with_no_gate_and_each_cases_scope(self):
+        cases = [dict(a_case("q1", required=[SALES]), scope={"environment": "org", "package": "pk", "source": "order_items"})]
+        (self.d / "cases.jsonl").write_text("".join(json.dumps(c) + "\n" for c in cases))
+        StubMcp.rest = True
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = rr.main(["--set", str(self.d), "--get-context-url", self.url, "--case-scopes",
+                                "--mcp-header", "X-Engine: new", "--label", "r1"])
+        finally:
+            StubMcp.rest = False
+        self.assertEqual(code, 0)
+        # One request: no readiness probes on a REST endpoint.
+        self.assertEqual(len(StubMcp.seen), 1)
+        headers, body = StubMcp.seen[0]
+        self.assertEqual(headers.get("X-Engine"), "new")
+        self.assertEqual(body["scopes"], [{"environment": "org", "package": "pk", "source": "order_items"}])
+        run = json.loads((self.d / "work" / "runs" / "r1" / "run.json").read_text())
+        self.assertEqual((run["getContextUrl"], run["caseScopes"], run["target"]), (self.url, True, "platform"))
+
+    def test_case_scopes_refuses_a_case_without_one(self):
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stdout(io.StringIO()):
+            rr.main(["--set", str(self.d), "--get-context-url", self.url, "--case-scopes", "--label", "r1"])
+        self.assertIn("--case-scopes: 2 case(s) carry no scope", str(e.exception))
 
     def test_retrieval_that_stops_ranking_mid_run_is_an_error_not_a_miss(self):
         StubMcp.first = [payload(SALES), payload(SALES)]        # the two gate probes

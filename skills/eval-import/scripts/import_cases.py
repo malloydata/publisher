@@ -164,7 +164,20 @@ def search_target_findings(case: dict[str, Any], where: str,
         if not isinstance(exp, dict):
             out.append(f"{at}: `expectedEntities` is not an object")
             continue
+        tags = t.get("tags")
+        if tags is not None and not (isinstance(tags, list)
+                                     and all(isinstance(x, str) for x in tags)):
+            out.append(f"{at}: `tags` must be a list of strings")
         req = [[r] for r in exp.get("required") or []]
+        if exp.get("absent") not in (None, True, False):
+            out.append(f"{at}: `absent` must be true or false")
+        if exp.get("absent") and (req or exp.get("requiredAnyOf")):
+            out.append(f"{at}: `absent` says nothing in the model answers this "
+                       f"target, so it cannot also name a required id. Fix: "
+                       f"drop one, or move a near miss to `closest`")
+        if exp.get("closest") and not exp.get("absent"):
+            out.append(f"{at}: `closest` is the near miss an `absent` target "
+                       f"may return. Fix: set `absent: true`, or use `acceptable`")
         for g in exp.get("requiredAnyOf") or []:
             if not isinstance(g, list):
                 out.append(f"{at}: a `requiredAnyOf` group is "
@@ -173,14 +186,19 @@ def search_target_findings(case: dict[str, Any], where: str,
                 continue
             req.append(g)
         bad = False
-        for eid in [e for g in req for e in g] + list(exp.get("acceptable") or []):
+        for eid in ([e for g in req for e in g] + list(exp.get("acceptable") or [])
+                    + list(exp.get("closest") or [])):
             parts = eid.split(":", 2) if isinstance(eid, str) else []
             if len(parts) < 3 or not all(parts):
                 bad = True
                 out.append(f"{at}: {eid!r} is not a kind:source:name id. Fix: "
                            f'"measure:order_items:total_sales"')
         kinds = KINDS_BY_TARGET.get(t.get("target_type"))
-        if bad or kinds is None:
+        # An empty set is a target type Publisher answers with nothing
+        # (`dimensional_value`: it indexes no values). A host that does index
+        # them returns the dimension holding the value, so a key there is not
+        # a mistake and is left to `check_findable.py`.
+        if bad or not kinds:
             continue
         for g in req:
             if not any(e.split(":", 1)[0] in kinds for e in g):

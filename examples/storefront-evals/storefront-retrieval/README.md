@@ -13,8 +13,9 @@ written from the field's `#(doc)` without using the field's name. One more
 question needs a field reached through a join (the customer's state; only the
 `customers` source counts, since a joined copy shows only customers that have
 order lines). Two ask for things the model does not hold (shipping cost,
-warehouse). They carry no label, so they have no recall, and the replay reports
-how many fields came back for them anyway.
+warehouse). Their targets are labelled `"absent": true`: the right answer is
+that nothing comes back, and the replay scores it as `not_found` in its
+per-target numbers. They still have no recall, since they require nothing.
 
 The labels started as storefront-tour's `expectedEntities` and differ from them
 in four cases, because a retrieval label must name a field the model defines:

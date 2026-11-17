@@ -299,6 +299,17 @@ class EntityHits(unittest.TestCase):
         ids = [h["entity_id"] for h in entity_hits(dup)]
         self.assertEqual(ids.count("measure:f:x"), 1)
 
+    def test_a_card_that_states_its_own_attribution_carries_it(self):
+        """A host that attributes source cards says so on the card; Publisher's card stays unattributed."""
+        body = {"sources": [
+            {"source_info": {"resource_id": {"source": "orders"}}, "relevance": 0.9,
+             "matched_targets": [{"search_text": "order facts", "relevance": 0.9}], "entities": []},
+            {"source_info": {"resource_id": {"source": "customers"}}, "entities": []}]}
+        h = {x["entity_id"]: x for x in entity_hits(body)}
+        self.assertEqual((h["source:orders:orders"]["relevance"], h["source:orders:orders"]["matched_targets"]),
+                         (0.9, [{"search_text": "order facts", "relevance": 0.9}]))
+        self.assertIsNone(h["source:customers:customers"]["matched_targets"])
+
     def test_an_empty_payload_is_no_hits(self):
         self.assertEqual(entity_hits({}), [])
 

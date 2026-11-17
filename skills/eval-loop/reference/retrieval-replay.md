@@ -42,6 +42,20 @@ serve both kinds of run.
   once. An any-of group whose members would come back from different targets
   (a measure or a view that answers it) goes on the case's own
   `expectedEntities`, not on one target.
+- A target whose `expectedEntities` says `"absent": true` is labelled as not
+  found in the model: nothing answers it. That is a label with a right answer,
+  unlike a target nobody labelled. `closest` lists the near misses a response
+  may offer instead (gross revenue for a "net revenue" target). An absent
+  target names no required id; `import_cases.py` refuses one that does.
+- A target may carry its own `tags`, for what is hard about that one search
+  (`not-found`, `several-readings`). They add to the per-tag breakdown of the
+  per-target numbers, and never choose which cases run: `--tag` and
+  `slices.json` read case tags only.
+- A case may carry its own `scope`, a `get_context` scope object
+  (`{"environment", "package", "model_path", "source"}`). It is sent in place
+  of the set's scope, so a set built from real requests can span packages,
+  model files and pinned sources. `--case-scopes` says every case has one, and
+  then no `--environment` or `--package` is needed.
 - A case whose labels name no required field has no recall. It is reported
   as unlabelled with the number of entities that came back, which is the
   measurement for a question the model cannot answer.
@@ -69,6 +83,12 @@ Another MCP server works too: pass `--mcp-url`, and `--target platform` with
 `eval.toml`. `--mcp-header 'Name: value'` (repeatable) adds a header to every
 request, for example `Authorization`. Only header names are written to the run.
 
+A host whose retrieval service is reachable over plain HTTP can be replayed
+without its MCP server: `--get-context-url <url>` posts each request as the
+JSON body and reads the reply as the payload, with the `--mcp-header` values as
+its headers. Use it to send a header the MCP server does not forward, such as
+one that selects a retrieval engine. No readiness probe runs on this route.
+
 When the set came from a versioned bundle, `--set-version` and `--set-manifest`
 record the version and the sha256 of its manifest file in `run.json`, beside
 the `datasetVersion` and `datasetSha` every run records.
@@ -86,9 +106,32 @@ weighs the same), in `summary.json` and on the console:
 | `missing`, `noise` | the needs that did not come back, and the returned ids that are not labelled |
 | `targets` | per target: the recall and precision of what THAT search returned against the target's own `expectedEntities`, scored by `score_targets.py` (`skill:eval-answer`). Shows which search of a case missed. Pooled as `target_recall` |
 
-`by_tag` repeats the pooled numbers for each tag. `events.jsonl` holds one
+`summary.json` also holds `per_target`, the same run pooled over search
+targets instead of cases (`target_outcomes.py` in `skill:eval-answer`). These
+are the numbers to tune a retrieval engine on, because a case with seven
+targets and a case with one otherwise weigh the same:
+
+| field | meaning |
+|---|---|
+| `recall` | required answers that came back for their own target, over required answers; exact ids only. A target with two required groups counts twice |
+| `recall_anywhere` | the same, counting an answer that came back under any target of the call |
+| `precision` | of the entities the labelled targets returned, the share that are required, acceptable or a labelled closest field. One ratio over all targets, and source cards count only for a `source` target |
+| `best_pick` | targets whose highest-relevance entity is a required answer. Entities tied at the top all count |
+| `not_found` | `absent` targets that returned nothing, or only a `closest` field |
+
+`latency_p50_s` and `latency_p95_s` are the request times as the replay saw
+them, one request at a time.
+
+`by_tag` repeats the pooled numbers for each tag, with its own `per_target`. `events.jsonl` holds one
 `tool_call` event per case, in the shape an answer run writes, with every
 returned id; `ledger.py validate` checks the run like any other.
+
+Compare two replays with `flip_table.py --a <run> --b <run>` (add `--set <set>
+--slice <name>` or `--tag` for part of the set). It lists the required answers
+the second run gained and lost for their own target, the best picks and
+not-found targets that changed, and precision and latency side by side. A
+target whose search or label differs between the runs is set aside, not
+counted as a flip.
 
 Two runs compare only when they replayed the same cases (`datasetSha`, or
 `setVersion` and `setManifestSha256`) against the same retriever

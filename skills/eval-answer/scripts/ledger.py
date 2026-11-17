@@ -289,6 +289,9 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # names (never the values) of extra headers the requests
                 # carried, since a header can change what the server returns.
                 "setVersion", "setManifestSha256", "mcpHeaderNames",
+                # A replay sent to a REST get_context instead of an MCP server,
+                # and one whose cases each carried their own scope.
+                "getContextUrl", "caseScopes",
                 # A query replay (eval-loop's query_replay.py): the run its
                 # queries came from, how it timed them, and what the package
                 # persisted and had built when it ran.

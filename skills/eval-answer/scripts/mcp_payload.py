@@ -143,7 +143,11 @@ def entity_hits(payload: dict[str, Any]) -> list[dict[str, Any]]:
         src = rid.get("source") if isinstance(rid, dict) else None
         if not isinstance(src, str) or not src:
             continue
-        add(f"source:{src}:{src}", src, None, 0)
+        # A host that attributes source cards states it on the card itself;
+        # Publisher does not, and the card then reads as before (None).
+        card = ({"relevance": node.get("relevance"), "matched_targets": node.get("matched_targets")}
+                if isinstance(node.get("matched_targets"), list) else None)
+        add(f"source:{src}:{src}", src, card, 0)
         for i, ent in enumerate(node.get("entities") or [], 1):
             if not isinstance(ent, dict):
                 continue

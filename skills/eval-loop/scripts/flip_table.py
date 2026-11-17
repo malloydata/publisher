@@ -18,6 +18,12 @@ golden: its `question_sha` and `golden_revision` must match. One that differs
 is set aside and listed, never counted as a flip. So editing one case's key
 leaves the stored results for every other case usable.
 
+Two retrieval replays (`retrieval_replay.py`, phase `replay`) are compared
+one required answer at a time: which answers the second run gained and lost
+for their own search target, the same for best picks and not-found targets,
+and precision and latency side by side. No verdict is involved. Run it on two
+replays of one configuration to see how many answers move with nothing changed.
+
 Two query replays (`query_replay.py`, phase `query-replay`) are compared on
 speed instead: rows first (a query whose rows changed blocks, exit 1), then
 which queries got faster or slower than `--latency-band` (default: the newer
@@ -541,6 +547,31 @@ def incomparable(A: dict[str, dict[str, Any]], B: dict[str, dict[str, Any]]) -> 
     return out
 
 
+def retrieval_report(args: argparse.Namespace, la: str, lb: str, phases: list[Any]) -> int:
+    """Two retrieval replays, required answer by required answer."""
+    from retrieval_replay import compare, fmt_compare
+    if phases != ["replay", "replay"]:
+        print(f"one run is a retrieval replay and the other is not ({phases[0]}, {phases[1]}): "
+              "this comparison needs two retrieval replays.")
+        return 2
+    ca, cb = config(args.a), config(args.b)
+    if ca.get("datasetSha") != cb.get("datasetSha"):
+        print("note: the two replays ran different versions of the set; targets whose search "
+              "or label changed are set aside")
+    A = [json.loads(x) for x in (args.a / "results.jsonl").read_text().splitlines() if x.strip()]
+    B = [json.loads(x) for x in (args.b / "results.jsonl").read_text().splitlines() if x.strip()]
+    qids = None
+    if args.slice or args.tag:
+        if not args.set_dir:
+            print("--slice and --tag need --set, to read the set's slices.json and tags")
+            return 2
+        cases = [json.loads(x) for x in
+                 (args.set_dir / "cases.jsonl").read_text().splitlines() if x.strip()]
+        qids = slices.resolve(args.set_dir, cases, args.slice, args.tag)["qids"]
+    print("\n".join(fmt_compare(compare(A, B, qids), la, lb)))
+    return 0
+
+
 def speed_report(args: argparse.Namespace, la: str, lb: str, phases: list[Any]) -> int:
     """Two query replays, query by query: rows first, then speed."""
     from query_replay import compare, fmt_compare
@@ -607,6 +638,8 @@ def main() -> int:
     phases = [config(r).get("phase") for r in (a_args.a, a_args.b)]
     if "query-replay" in phases:
         return speed_report(a_args, la, lb, phases)
+    if "replay" in phases:
+        return retrieval_report(a_args, la, lb, phases)
     A, B = verdicts(a_args.a), verdicts(a_args.b)
     B2 = verdicts(a_args.b2) if a_args.b2 else None
     picked = None

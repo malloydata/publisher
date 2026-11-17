@@ -3,6 +3,7 @@
 
   python3 retrieval_replay.py --set <set-dir> [--label <name>] [--mcp-url URL]
                               [--mcp-header 'Name: value' ...]
+                              [--get-context-url URL]   # a REST get_context, no MCP
                               [--set-version 1.2.0 --set-manifest <bundle>/manifest.json]
   # or: python3 eval.py replay --set <set-dir> --label <name>
 
@@ -20,7 +21,15 @@ CASE FORMAT (a line of the set's cases.jsonl; `reference/retrieval-replay.md`)
 
 A case's labels are its own `expectedEntities` plus every target's, merged.
 `required` ids, `requiredAnyOf` groups and `acceptable` ids mean what they mean
-for an answer run (eval-answer's ledger-schema.md).
+for an answer run (eval-answer's ledger-schema.md). A target may also say
+`"absent": true` (nothing in the model answers it; `closest` lists the near
+misses a response may offer), and a case may carry its own `scope`, sent in
+place of the set's, so one set can span packages and pinned sources.
+
+PER TARGET. Each target is also scored on its own (`target_outcomes.py`):
+recall over required answers, precision over what that target returned, whether
+its best pick is a required answer, and whether an `absent` target came back
+empty. These pool over targets, not cases, in `summary.json` `per_target`.
 
 SCORING is `score_retrieval.score_case`, the code that scores an answer run, on
 a `tool_call` event this script writes. So `precision` and the credited
@@ -59,7 +68,7 @@ from import_cases import search_target_findings  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits, entity_ids,  # noqa: E402
                          search_targets, search_terms, target_shapes)
 from score_retrieval import groups, score_case  # noqa: E402
-from score_targets import score_attempt  # noqa: E402
+import target_outcomes  # noqa: E402
 
 PHASE = "replay"
 LABEL_KEYS = ("required", "requiredAnyOf", "acceptable")
@@ -90,6 +99,11 @@ def case_problems(case: dict[str, Any]) -> list[str]:
         return [f"{qid}: searchTargets must be a non-empty list of "
                 '{"target_type", "search_text"} objects']
     out = search_target_findings(case, "cases.jsonl", qid)
+    scope = case.get("scope")
+    if scope is not None and not (isinstance(scope, dict) and scope and all(
+            isinstance(k, str) and isinstance(v, str) and v for k, v in scope.items())):
+        out.append(f"{qid}: scope must be an object of get_context scope fields, such as "
+                   '{"environment": "e", "package": "p", "source": "s"}')
     out += label_problems(case.get("expectedEntities"), f"{qid}: expectedEntities")
     return out
 
@@ -162,7 +176,9 @@ def request_for(case: dict[str, Any], scope: dict[str, str]) -> dict[str, Any]:
         if t.get("search_text"):
             target["search_text"] = t["search_text"]
         sent.append(target)
-    args: dict[str, Any] = {"search_targets": sent, "scopes": [scope]}
+    # A case's own scope replaces the set's: a set built from real requests
+    # spans packages, model files and pinned sources.
+    args: dict[str, Any] = {"search_targets": sent, "scopes": [case.get("scope") or scope]}
     if isinstance(case.get("question"), str) and case["question"].strip():
         args["user_prompt"] = case["question"]
     return args
@@ -205,15 +221,13 @@ def score(case: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
                      [event], (qid, None, PHASE), verdict=None)
     keep = ("recall", "precision", "n_required", "n_returned", "delivery", "missing", "noise")
     out = {**base, "error": None, **{k: row[k] for k in keep}}
+    out["scope"] = case.get("scope")
     out["recall_exact"] = None if row["recall"] is None else recall_exact(labels, row["delivery"])
     out["returned"] = event["rankedSummary"]["entityIds"]
     # Per target: what each search returned against that target's own key.
     # Every target is sent as written, so each one is asked; a target with no
     # key of its own has no recall here and still counts in the case's labels.
-    per = score_attempt(case, [event], (qid, None, PHASE), None)["targets"]
-    out["targets"] = [{k: t[k] for k in ("index", "target_type", "search_text", "recall",
-                                          "precision", "missing", "n_returned", "attribution")}
-                      for t in per]
+    out["targets"] = target_outcomes.outcomes(case, event)
     out["retrieval_mode"] = event.get("retrieval_mode")
     return out
 
@@ -221,6 +235,23 @@ def score(case: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
 def mean(xs: list[Any]) -> float | None:
     xs = [x for x in xs if x is not None]
     return sum(xs) / len(xs) if xs else None
+
+
+def percentile(xs: list[float], p: float) -> float | None:
+    """Nearest-rank percentile; None for no values."""
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    return xs[min(len(xs) - 1, max(0, int(round(p * (len(xs) - 1)))))]
+
+
+def per_target(rows: list[dict[str, Any]], tag: str | None = None) -> dict[str, Any]:
+    """Every answered case's targets pooled as ratios of sums. With `tag`, the
+    targets that carry it themselves or sit in a case that does."""
+    ok = [r for r in rows if not r.get("error")]
+    targets = [t for r in ok for t in r.get("targets") or []
+               if tag is None or tag in r["tags"] or tag in (t.get("tags") or [])]
+    return target_outcomes.pool(targets)
 
 
 def pooled(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -239,6 +270,8 @@ def pooled(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "target_recall": mean([t["recall"] for r in scored for t in r.get("targets") or []]),
         "empty_responses": sum(1 for r in scored if r["n_returned"] == 0),
         "mean_returned": mean([r["n_returned"] for r in scored]),
+        "latency_p50_s": percentile([r.get("latency_s") for r in rows if not r.get("error")], 0.5),
+        "latency_p95_s": percentile([r.get("latency_s") for r in rows if not r.get("error")], 0.95),
     }
 
 
@@ -252,10 +285,105 @@ def summarize(rows: list[dict[str, Any]], skipped: int) -> dict[str, Any]:
         "skipped_no_search_targets": skipped,
         **pooled(rows),
     }
-    tags = sorted({t for r in rows for t in r.get("tags") or []})
+    out["per_target"] = per_target(rows)
+    tags = sorted({t for r in rows for t in r.get("tags") or []}
+                  | {g for r in rows for t in r.get("targets") or [] for g in t.get("tags") or []})
     out["by_tag"] = {t: {"cases": sum(1 for r in rows if t in r["tags"]),
-                         **pooled([r for r in rows if t in r["tags"]])} for t in tags}
+                         **pooled([r for r in rows if t in r["tags"]]),
+                         "per_target": per_target(rows, t)} for t in tags}
     return out
+
+
+# --------------------------------------------------------------------------- two replays
+
+def _answers(rows: list[dict[str, Any]]) -> dict[str, dict[tuple, bool]]:
+    """Every scored unit of a replay, keyed so two replays line up.
+
+    `recall`: one entry per required answer (case, target, group) and whether it
+    came back for its target. `best_pick` and `not_found`: one entry per target
+    that has one. `sent`: what each target sent, to tell a changed case apart.
+    """
+    out: dict[str, dict[tuple, Any]] = {"recall": {}, "best_pick": {}, "not_found": {}, "sent": {}}
+    for r in rows:
+        if r.get("error"):
+            continue
+        for t in r.get("targets") or []:
+            key = (r["qid"], t["index"])
+            out["sent"][key] = (t["target_type"], t.get("search_text"),
+                                tuple(sorted((t.get("found") or []) + (t.get("missing") or []))),
+                                bool(t.get("absent")))
+            for g in t.get("found") or []:
+                out["recall"][key + (g,)] = True
+            for g in t.get("missing") or []:
+                out["recall"][key + (g,)] = False
+            if t.get("best_pick_ok") is not None:
+                out["best_pick"][key] = t["best_pick_ok"]
+            if t.get("not_found_ok") is not None:
+                out["not_found"][key] = t["not_found_ok"]
+    return out
+
+
+def compare(a_rows: list[dict[str, Any]], b_rows: list[dict[str, Any]],
+            qids: list[str] | None = None) -> dict[str, Any]:
+    """Two replays of one set, unit by unit: what B gained and lost against A.
+
+    A target counts only where both runs sent the same search and scored it
+    against the same label; one that differs, or that errored in either run,
+    is set aside and counted, never read as a flip. Run it on two replays of
+    one configuration first: those flips are the band a change has to clear.
+    """
+    if qids is not None:
+        keep = set(qids)
+        a_rows = [r for r in a_rows if r["qid"] in keep]
+        b_rows = [r for r in b_rows if r["qid"] in keep]
+    A, B = _answers(a_rows), _answers(b_rows)
+    same = {k for k in A["sent"].keys() & B["sent"].keys() if A["sent"][k] == B["sent"][k]}
+    out: dict[str, Any] = {
+        "targets_compared": len(same),
+        "targets_set_aside": len((A["sent"].keys() | B["sent"].keys()) - same),
+    }
+    for measure in ("recall", "best_pick", "not_found"):
+        keys = sorted(k for k in A[measure].keys() & B[measure].keys() if k[:2] in same)
+        gained = [k for k in keys if not A[measure][k] and B[measure][k]]
+        lost = [k for k in keys if A[measure][k] and not B[measure][k]]
+        out[measure] = {"units": len(keys),
+                        "a": sum(1 for k in keys if A[measure][k]),
+                        "b": sum(1 for k in keys if B[measure][k]),
+                        "gained": [list(k) for k in gained], "lost": [list(k) for k in lost]}
+    for name, rows in (("a", a_rows), ("b", b_rows)):
+        pt = per_target([r for r in rows if not r.get("error")])
+        lat = [r.get("latency_s") for r in rows if not r.get("error")]
+        out[f"precision_{name}"] = pt["precision"]
+        out[f"returned_{name}"] = pt["returned"]
+        out[f"latency_p50_{name}"] = percentile(lat, 0.5)
+        out[f"latency_p95_{name}"] = percentile(lat, 0.95)
+    return out
+
+
+def fmt_compare(c: dict[str, Any], la: str, lb: str, show: int = 20) -> list[str]:
+    names = {"recall": "required answers", "best_pick": "best picks", "not_found": "not-found targets"}
+    lines = [f"{la} -> {lb}: {c['targets_compared']} targets compared"
+             + (f", {c['targets_set_aside']} set aside (sent or labelled differently, or errored in one run)"
+                if c["targets_set_aside"] else "")]
+    for m, title in names.items():
+        v = c[m]
+        if not v["units"]:
+            continue
+        lines.append(f"  {title:18s} {v['a']} -> {v['b']} of {v['units']}   "
+                     f"gained {len(v['gained'])}, lost {len(v['lost'])}")
+    lines.append(f"  precision          {fmt(c['precision_a'])} of {c['returned_a']} returned -> "
+                 f"{fmt(c['precision_b'])} of {c['returned_b']}")
+    lines.append(f"  latency            p50 {fmt(c['latency_p50_a'])} -> {fmt(c['latency_p50_b'])} s   "
+                 f"p95 {fmt(c['latency_p95_a'])} -> {fmt(c['latency_p95_b'])} s")
+    for m, title in names.items():
+        for way in ("lost", "gained"):
+            ks = c[m][way]
+            if ks:
+                lines.append(f"\n{title} {way} ({len(ks)}):")
+                lines += [f"  {k[0]}  target {k[1]}" + (f"  {k[2]}" if len(k) > 2 else "") for k in ks[:show]]
+                if len(ks) > show:
+                    lines.append(f"  ... and {len(ks) - show} more")
+    return lines
 
 
 # --------------------------------------------------------------------------- run
@@ -277,9 +405,38 @@ def print_report(rows: list[dict[str, Any]], s: dict[str, Any], mode: str) -> No
     print(f"recall (exact ids) {fmt(s['recall_exact'])}   recall (credited) {fmt(s['recall'])}   "
           f"precision {fmt(s['precision'])}   complete {s['complete']}/{s['scored']}   "
           f"returned/case {fmt(s['mean_returned'])}   empty {s['empty_responses']}")
+    def target_line(pt: dict[str, Any]) -> str:
+        return (f"recall {fmt(pt['recall'])} of {pt['required_answers']} required answers "
+                f"(anywhere in the response {fmt(pt['recall_anywhere'])})   "
+                f"precision {fmt(pt['precision'])} of {pt['returned']} returned   "
+                f"best pick {fmt(pt['best_pick'])} of {pt['best_pick_targets']}   "
+                f"not found {fmt(pt['not_found'])} of {pt['not_found_targets']}")
+    pt = s["per_target"]
+    print(f"per target ({pt['labelled']} labelled of {pt['targets']}): {target_line(pt)}")
+    print(f"latency p50 {fmt(s['latency_p50_s'])} s   p95 {fmt(s['latency_p95_s'])} s")
     for t, v in s["by_tag"].items():
-        print(f"  tag {t:28s} scored {v['scored']:3d} of {v['cases']:3d}  recall exact {fmt(v['recall_exact'])}  "
-              f"precision {fmt(v['precision'])}")
+        if v["cases"]:
+            print(f"  tag {t:28s} scored {v['scored']:3d} of {v['cases']:3d}  recall exact {fmt(v['recall_exact'])}  "
+                  f"precision {fmt(v['precision'])}")
+        else:  # a tag only targets carry
+            print(f"  tag {t}")
+        if v["per_target"]["labelled"]:
+            print(f"      per target ({v['per_target']['labelled']}): {target_line(v['per_target'])}")
+
+
+def rest_call(url: str, arguments: dict[str, Any], timeout: int,
+              headers: dict[str, str]) -> Any:
+    """One get_context over plain HTTP: the arguments are the JSON body and the
+    reply is the payload an MCP call would have carried. For a host whose
+    retrieval service is reachable directly, so a replay can send headers the
+    MCP server does not forward."""
+    req = urllib.request.Request(url, data=json.dumps(arguments).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", **headers})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from e
 
 
 def file_sha256(path: pathlib.Path) -> str:
@@ -296,10 +453,16 @@ def resolve(a: argparse.Namespace) -> config.Config:
     package from eval.toml, which describes a local server.
     """
     cfg = config.load(a.set_dir)
+    if a.get_context_url:
+        # A REST endpoint is a host's, never the local Publisher's.
+        a.target = "platform"
     if a.target == "platform":
-        if not (a.environment and a.package and a.mcp_url):
-            raise SystemExit("--target platform needs --mcp-url, --environment and --package; "
-                             "none of them is read from eval.toml, which describes a local server.")
+        if not (a.mcp_url or a.get_context_url):
+            raise SystemExit("--target platform needs --mcp-url or --get-context-url.")
+        if not (a.environment and a.package) and not a.case_scopes:
+            raise SystemExit("--target platform needs --environment and --package, or --case-scopes "
+                             "when every case carries its own scope; none of them is read from "
+                             "eval.toml, which describes a local server.")
     else:
         a.environment = cfg.need(a.environment, "model", "environment", "--environment")
         a.package = cfg.need(a.package, "model", "package", "--package")
@@ -334,18 +497,26 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     # wrong --target-version is refused with nothing spent.
     version = rb.version_pin(a)
     a.out.mkdir(parents=True, exist_ok=True)
-    scope = {"environment": a.environment, "package": a.package}
+    scope = {k: v for k, v in (("environment", a.environment), ("package", a.package)) if v}
     if a.model_path:
         scope["model_path"] = a.model_path
+    unscoped = [c["qid"] for c in cases if not c.get("scope")]
+    if a.case_scopes and unscoped:
+        raise SystemExit(f"--case-scopes: {len(unscoped)} case(s) carry no scope, first {unscoped[0]}.")
     started = ledger.now()
 
-    try:
-        ready, gate = rb.wait_retrieval_ready(a, tries=a.ready_tries, pause=a.ready_pause)
-    except rb.AuthRequired as e:
-        raise SystemExit(f"{e}: the MCP server wants credentials. Fix: pass them with "
-                         "--mcp-header 'Authorization: Bearer <token>'.")
-    if not ready:
-        raise SystemExit(f"retrieval is not ready: {gate}")
+    if a.get_context_url:
+        # No readiness call exists on a bare REST endpoint; an unready index
+        # shows as errors or as `retrieval: indexing` on the first cases.
+        gate = "not checked (--get-context-url)"
+    else:
+        try:
+            ready, gate = rb.wait_retrieval_ready(a, tries=a.ready_tries, pause=a.ready_pause)
+        except rb.AuthRequired as e:
+            raise SystemExit(f"{e}: the MCP server wants credentials. Fix: pass them with "
+                             "--mcp-header 'Authorization: Bearer <token>'.")
+        if not ready:
+            raise SystemExit(f"retrieval is not ready: {gate}")
     print(f"retrieval gate: {gate}", flush=True)
 
     events, rows = [], []
@@ -354,18 +525,23 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
         payload, error = None, None
         t0 = time.time()
         try:
-            payload = rb.mcp_call(a.mcp_url, "get_context", args, timeout=a.timeout,
-                                  headers=a.mcp_headers)
+            if a.get_context_url:
+                payload = rest_call(a.get_context_url, args, a.timeout, a.mcp_headers)
+            else:
+                payload = rb.mcp_call(a.mcp_url, "get_context", args, timeout=a.timeout,
+                                      headers=a.mcp_headers)
             state = payload.get("retrieval") if isinstance(payload, dict) else None
             if state in ("indexing", "error"):
                 # No ranking happened, so there is nothing to score; a zero here would read as a miss.
                 error = f"retrieval {state} mid-run ({payload.get('retrieval_reason') or 'no reason given'})"
         except (OSError, ValueError, urllib.error.URLError) as e:
             error = f"{type(e).__name__}: {str(e)[:300]}"
+        latency = round(time.time() - t0, 3)
         ev = call_event(case["qid"], args, payload, error)
         events.append(ev)
         row = score(case, ev)
-        row["latency_s"] = round(time.time() - t0, 3)
+        # Timed around the request alone, so it is the server's latency as a caller sees it.
+        row["latency_s"] = latency
         rows.append(row)
         if i % 10 == 0 or i == len(cases):
             print(f"[{a.label}] {i}/{len(cases)}", flush=True)
@@ -382,7 +558,8 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
         "datasetVersion": a.set_meta.get("datasetVersion"),
         "datasetSha": ledger.dataset_sha(a.set_dir),
         "environment": a.environment, "package": a.package, "modelPath": a.model_path,
-        "mcpUrl": a.mcp_url, "mcpHeaderNames": sorted(a.mcp_headers),
+        "mcpUrl": a.mcp_url, "getContextUrl": a.get_context_url,
+        "caseScopes": bool(a.case_scopes), "mcpHeaderNames": sorted(a.mcp_headers),
         "retrievalMode": mode, "retrievalCalls": calls, "retrievalGate": gate,
         "harnessVersion": ledger.skills_git_sha(),
     }
@@ -434,6 +611,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mcp-header", action="append", default=[], metavar="'NAME: VALUE'",
                     help="an extra header on every MCP request, such as auth. Repeatable. "
                          "Only the names are recorded")
+    ap.add_argument("--get-context-url", default=None,
+                    help="POST each request to this REST get_context endpoint instead of an MCP "
+                         "server; --mcp-header values are sent as its headers")
+    ap.add_argument("--case-scopes", action="store_true",
+                    help="every case carries its own `scope`, so no --environment or --package "
+                         "is needed and a case without one is refused")
     ap.add_argument("--set-version", default=None,
                     help="the version the set was published under, recorded in run.json")
     ap.add_argument("--set-manifest", type=pathlib.Path, default=None,
