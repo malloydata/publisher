@@ -44,7 +44,12 @@ import {
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { previewNativeSchema } from "./stored_column_types";
-import { reachableSourceIDs } from "./text/source_map";
+import { reachableSourceIDs, SourceMap } from "./text/source_map";
+import {
+   entryPointGateExprs,
+   gateColumnTypes,
+   gateReadNames,
+} from "./serve/gate_reads";
 import { ownLevelNotes, type AnnotationsDef } from "../annotations";
 import { routeOfNote } from "../annotation_reader";
 
@@ -304,6 +309,31 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
+      // The stored types of the columns a bound `storage=` table's own gate
+      // reads, for the policy's exactness rule; the router reads each
+      // query's. A table not bound yet has none to read, and is judged once
+      // it is bound.
+      const ownGateColumnTypes = (sourceID: string): string[] | undefined => {
+         const bound = storageBindings.filter((b) =>
+            b.sourceIDs?.includes(sourceID),
+         );
+         if (bound.length === 0) return [];
+         for (const model of models.values()) {
+            const modelDef = model.getModelDef();
+            const def = modelDef
+               ? SourceMap.of(modelDef).node(sourceID)?.def
+               : undefined;
+            if (def === undefined) continue;
+            const exprs = entryPointGateExprs(def, modelDef);
+            const names =
+               exprs === undefined ? undefined : gateReadNames(def, exprs);
+            const types = bound.map((b) => gateColumnTypes(names, b.schema));
+            return types.some((t) => t === undefined)
+               ? undefined
+               : types.flatMap((t) => t ?? []);
+         }
+         return undefined;
+      };
       const switches = gateSwitches();
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(host.snapshot(), new Date());
@@ -343,6 +373,9 @@ export class ServeVerdicts {
                   {
                      tier,
                      ownGateKept: tier === "storage" && ownGateKept(sourceID),
+                     ...(tier === "storage"
+                        ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
+                        : {}),
                   },
                ],
                switches,

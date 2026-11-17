@@ -13,9 +13,17 @@
  * Every check that judges stored values against live ones must read these too.
  */
 
+import type {
+   ModelDef,
+   QueryMaterializer,
+   SourceDef,
+} from "@malloydata/malloy";
 import { collectEntryPointGates } from "../../gate_classification";
+import {
+   readPreparedQuery,
+   resolveStructRefSource,
+} from "../../governance/ir/prepared_query";
 import { malloyIdentifiers } from "../../query_text";
-import type { ModelDef, SourceDef } from "@malloydata/malloy";
 
 /** Every field path an expression reads (`node: "field"`), at any depth. */
 export function fieldPathsIn(
@@ -100,6 +108,41 @@ export function entryPointGateExprs(
       // The walk's fail-closed deny (no entry point to graft on).
       if (entries.some((e) => e.struct === undefined)) return undefined;
       return entries.flatMap((e) => [...e.exprs]);
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * The stored types of `schema`'s columns that `names` reads, for the gate
+ * policy's exactness rule (`gateColumnTypes` in `domain/gate_policy.ts`), or
+ * undefined when either is unknown, which the policy reads as not exact on a
+ * `storage=` table.
+ */
+export function gateColumnTypes(
+   names: ReadonlySet<string> | undefined,
+   schema: readonly { name: string; type: string }[] | undefined,
+): string[] | undefined {
+   if (names === undefined || schema === undefined) return undefined;
+   return schema.filter((c) => names.has(c.name)).map((c) => c.type);
+}
+
+/**
+ * {@link gateReadNames} for the source a compiled query runs on, read from
+ * the author's compile (the live one), or undefined when it cannot be read.
+ */
+export async function gateReadNamesOfQuery(
+   runnable: QueryMaterializer,
+): Promise<Set<string> | undefined> {
+   try {
+      const prepared = await readPreparedQuery(runnable);
+      if (prepared.modelDef === undefined) return undefined;
+      const struct = resolveStructRefSource(
+         prepared.structRef as never,
+         prepared.modelDef as never,
+      );
+      const exprs = entryPointGateExprs(struct, prepared.modelDef);
+      return exprs === undefined ? undefined : gateReadNames(struct, exprs);
    } catch {
       return undefined;
    }

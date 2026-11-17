@@ -792,6 +792,8 @@ export interface StorageIncrementalRefresh {
 export interface BuildSessionDeps {
    federate?: typeof federateSourceForPassthrough;
    read?: typeof issuePassthroughRead;
+   /** The Postgres column-type read a build stores exact numerics by. */
+   numericColumns?: typeof postgresNumericColumns;
 }
 
 /**
@@ -988,7 +990,12 @@ async function buildOnFederatedSession(
    // text instead, staged, and stored as the DECIMAL that holds it
    // (postgres_numeric_precision.ts).
    const numeric = capabilitiesOf(sourceType).passthroughNumericAsDouble
-      ? await postgresNumericColumns(session, handle, buildSQL, sourceType)
+      ? await (params.deps?.numericColumns ?? postgresNumericColumns)(
+           session,
+           handle,
+           buildSQL,
+           sourceType,
+        )
       : { columns: [], numeric: [] };
    const passthrough = await read(
       session,

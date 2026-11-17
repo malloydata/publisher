@@ -1,8 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { QueryMaterializer, VirtualMap } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import {
+   type QueryMaterializer,
+   SingleConnectionRuntime,
+   type VirtualMap,
+} from "@malloydata/malloy";
+import { afterAll, describe, expect, it } from "bun:test";
 import {
    type Binding,
    EMPTY_SNAPSHOT,
@@ -28,6 +33,23 @@ import { answerOf, recordingManifest, variantsOf } from "./query_serving";
 
 const runnable = { tag: "routed" } as unknown as QueryMaterializer;
 const virtualMap = new Map() as unknown as VirtualMap;
+
+// The author's compile the router reads an entry point's gate columns from:
+// `gated` reads `acct`, `open` has no gate.
+const authorConnection = new DuckDBConnection("duckdb", ":memory:");
+const authorModel = new SingleConnectionRuntime({
+   connection: authorConnection,
+}).loadModel(`##! experimental { givens }
+given: ACCT :: number
+#(access_filter) acct = $ACCT
+source: gated is duckdb.sql("SELECT 1 AS id, CAST(2 AS DECIMAL(20,0)) AS acct")
+source: open is duckdb.sql("SELECT 1 AS id, CAST(2 AS DECIMAL(20,0)) AS acct")
+`);
+const author = (source: "gated" | "open"): QueryMaterializer =>
+   authorModel.loadQuery(`run: ${source} -> { select: id }`);
+afterAll(async () => {
+   await authorConnection.close();
+});
 
 const binding = (sourceName: string, extra: Partial<Binding> = {}): Binding =>
    ({
@@ -282,14 +304,14 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
          {
             queryString: "run: orders -> { aggregate: total }",
             givens: undefined,
-            authorRunnable: runnable,
+            authorRunnable: author("gated"),
          },
          pinned,
          { modelPath: "m.malloy" },
       ).find((c) => c.kind === "rollup");
 
    for (const on of [true, false]) {
-      it(`is tried past the gate with gated sources ${on ? "on" : "off (G3)"}, and keeps it off only for a colocated rollup`, () => {
+      it(`is tried past the gate with gated sources ${on ? "on" : "off (G3)"}, and keeps it off only for a colocated rollup`, async () => {
          const { restore } = installSettings({
             env: {
                PUBLISHER_MATERIALIZE: "true",
@@ -303,11 +325,13 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
                candidate?.keepsContractsFor?.({
                   runnable,
                   tablesRead: undefined,
-                  gateTablesRead: [{ tier }],
+                  gateTablesRead: [
+                     tier === "storage" ? { tier, schema: [] } : { tier },
+                  ],
                   shapeBindings: [],
                } as never);
-            expect(read("colocated")).toBe(true);
-            expect(read("storage")).toBe(on);
+            expect(await read("colocated")).toBe(true);
+            expect(await read("storage")).toBe(on);
          } finally {
             restore();
          }
@@ -366,7 +390,10 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
    // `"main"."s_tbl"` (sqlTableReads ignores case), so it finds only "c_tbl".
    const sql =
       'SELECT 1 FROM "c_tbl" AS base LEFT JOIN main.s_tbl AS j ON j.id = base.id';
-   const servedCandidate = (gateTablesRead: Binding[] | undefined) =>
+   const servedCandidate = (
+      gateTablesRead: Binding[] | undefined,
+      authorRunnable: QueryMaterializer = author("gated"),
+   ) =>
       variantsOf(
          makeLegs(pinned, {
             servedCopy: {
@@ -385,7 +412,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          {
             queryString: "run: gated -> { aggregate: n }",
             givens: undefined,
-            authorRunnable: runnable,
+            authorRunnable,
          },
          pinned,
          { modelPath: "m.malloy" },
@@ -418,7 +445,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          const routed = await candidate.attempt();
          // …but the answer it produced reads a storage table: not kept.
          expect(routed.extra?.gateTablesRead).toEqual([colocated, storage]);
-         expect(candidate.keepsContractsFor!(routed.extra!)).toBe(false);
+         expect(await candidate.keepsContractsFor!(routed.extra!)).toBe(false);
       });
    });
 
@@ -426,7 +453,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
       await withG3(async () => {
          const candidate = servedCandidate([colocated]);
          const routed = await candidate.attempt();
-         expect(candidate.keepsContractsFor!(routed.extra!)).toBe(true);
+         expect(await candidate.keepsContractsFor!(routed.extra!)).toBe(true);
       });
    });
 
@@ -445,7 +472,9 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          ] as const) {
             const candidate = servedCandidate([...read]);
             const routed = await candidate.attempt();
-            expect(candidate.keepsContractsFor!(routed.extra!)).toBe(keeps);
+            expect(await candidate.keepsContractsFor!(routed.extra!)).toBe(
+               keeps,
+            );
          }
          // The kept table found, the other spelled another way: the fail
          // closed read still counts the other, so the answer stays live.
@@ -455,8 +484,67 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          expect(judged).toEqual([kept, other]);
          const candidate = servedCandidate(judged);
          expect(
-            candidate.keepsContractsFor!((await candidate.attempt()).extra!),
+            await candidate.keepsContractsFor!(
+               (await candidate.attempt()).extra!,
+            ),
          ).toBe(false);
       });
+   });
+
+   it("L2: keeps no answer whose gate column a storage table stores as a float, under any switch", async () => {
+      const stored = (type: string) =>
+         binding("s", {
+            kind: "materialize",
+            tablePath: "main.s_tbl",
+            ownGateKept: true,
+            schema: [
+               { name: "id", type: "BIGINT" },
+               { name: "acct", type },
+            ],
+         });
+      for (const gatedSources of ["false", "true"]) {
+         const { restore } = installSettings({
+            env: {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: gatedSources,
+            },
+         });
+         try {
+            for (const [type, keeps] of [
+               ["DECIMAL(38,0)", true],
+               ["BIGINT", true],
+               ["DOUBLE", false],
+               ["FLOAT", false],
+               ["HUGEINT", false],
+            ] as const) {
+               const candidate = servedCandidate([stored(type)]);
+               expect(
+                  await candidate.keepsContractsFor!(
+                     (await candidate.attempt()).extra!,
+                  ),
+                  `${type}, gated sources ${gatedSources}`,
+               ).toBe(keeps);
+            }
+            // An entry point whose gate reads no float column is unaffected.
+            const open = servedCandidate([stored("DOUBLE")], author("open"));
+            expect(
+               await open.keepsContractsFor!((await open.attempt()).extra!),
+            ).toBe(true);
+            // Gate columns that cannot be read off the author's compile: a
+            // storage table keeps nothing, a database table keeps its gate.
+            const unread = servedCandidate([stored("DECIMAL(38,0)")], runnable);
+            expect(
+               await unread.keepsContractsFor!((await unread.attempt()).extra!),
+            ).toBe(false);
+            const unreadColocated = servedCandidate([colocated], runnable);
+            expect(
+               await unreadColocated.keepsContractsFor!(
+                  (await unreadColocated.attempt()).extra!,
+               ),
+            ).toBe(true);
+         } finally {
+            restore();
+         }
+      }
    });
 });

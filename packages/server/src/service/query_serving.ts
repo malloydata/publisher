@@ -26,7 +26,9 @@ import {
    GATE_LEGS,
    legMayPassGate,
    SERVING_GATE_CONTEXT,
+   type TableRead,
 } from "./materialization/domain/gate_policy";
+import { gateColumnTypes, gateReadNamesOfQuery } from "./materialization";
 import { logger } from "../logger";
 import { sourceChain } from "./materialization/text/source_map";
 import {
@@ -111,6 +113,11 @@ export function variantsOf(
    args: { modelPath: string },
 ): Variant<LegAnswer>[] {
    const switches = gateSwitches();
+   // What the entry point's gates read, from the author's compile: read once
+   // per query, and only when an answer past a gate read a `storage=` table.
+   let names: Promise<Set<string> | undefined> | undefined;
+   const gateNames = () =>
+      (names ??= gateReadNamesOfQuery(facts.authorRunnable));
    return legs.map((leg) => {
       // A leg with no row in the gate policy (the query leg) is never tried
       // past an entry-point gate: the policy fails closed.
@@ -123,11 +130,14 @@ export function variantsOf(
          keepsContracts:
             gateLeg !== undefined &&
             legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
-         keepsContractsFor: (answer: LegAnswer) =>
+         keepsContractsFor: async (answer: LegAnswer) =>
             gateLeg !== undefined &&
             answerKeepsGates(
                gateLeg,
-               answer.gateTablesRead ?? answer.tablesRead ?? [],
+               await withGateColumnTypes(
+                  answer.gateTablesRead ?? answer.tablesRead ?? [],
+                  gateNames,
+               ),
                switches,
                SERVING_GATE_CONTEXT,
             ),
@@ -153,6 +163,32 @@ export function variantsOf(
          onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
       };
    });
+}
+
+/**
+ * Each `storage=` table an answer read, with the stored types of the columns
+ * the entry point's gates read (`gateColumnTypes`), for the gate policy's
+ * exactness rule: a gate column stored as a float, which an exact number
+ * rounds to, admits a neighbour's rows. A database table is built in the
+ * source's own types and is left as it is.
+ */
+async function withGateColumnTypes(
+   tables: readonly TableRead[],
+   gateNames: () => Promise<Set<string> | undefined>,
+): Promise<TableRead[]> {
+   if (!tables.some((t) => t.tier === "storage")) return [...tables];
+   const names = await gateNames();
+   return tables.map((t) =>
+      t.tier === "storage"
+         ? {
+              ...t,
+              gateColumnTypes: gateColumnTypes(
+                 names,
+                 (t as Partial<Pick<Binding, "schema">>).schema,
+              ),
+           }
+         : t,
+   );
 }
 
 /** The answer the router's decision describes, before anything runs. */
