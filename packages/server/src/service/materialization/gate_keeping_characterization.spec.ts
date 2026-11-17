@@ -322,9 +322,11 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
    },
    "a gate above it, materialize on, gated sources off": {
       mat_col: "planned | colocated | not_built",
-      mat_sto: "planned | storage | live row_level_gate",
+      // g-mixed (question 14): a `storage=` table that holds only ungated
+      // rows serves a gated entry point above it, as a database table does.
+      mat_sto: "planned | storage | not_built",
       pair_col: "planned | colocated | not_built",
-      pair_sto: "planned | storage | live row_level_gate",
+      pair_sto: "planned | storage | not_built",
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
       roll__rollup__category_region__7617040b:
