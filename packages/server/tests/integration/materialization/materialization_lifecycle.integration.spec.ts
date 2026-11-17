@@ -181,15 +181,17 @@ describe("Materialization REST API: single-call (E2E)", () => {
             expect(refused.status).toBe(400);
             expect(
                ((await refused.json()) as { message: string }).message,
-            ).toContain("dropTables is no longer supported");
+            ).toContain("dropTables=true is no longer supported");
             expect((await fetch(url(`/materializations/${id}`))).status).toBe(
                200,
             );
 
-            // Cleanup: delete the record.
-            const deleteRes = await fetch(url(`/materializations/${id}`), {
-               method: "DELETE",
-            });
+            // Cleanup: delete the record, as an older client does, with
+            // dropTables=false, which asks for what a delete does.
+            const deleteRes = await fetch(
+               url(`/materializations/${id}?dropTables=false`),
+               { method: "DELETE" },
+            );
             expect(deleteRes.status).toBe(204);
          },
          { timeout: 120_000 },

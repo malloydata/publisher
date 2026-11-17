@@ -469,7 +469,8 @@ distributes serve bindings (the orchestrated build path), not of the auto-run
 server.
 
 Deleting a materialization record is record-only: the table it built stays in
-the destination. Drop it yourself afterwards, once no remaining run names it
+the destination. Drop it yourself afterwards, once no remaining run of any
+version names a table with that name, in any place
 ([Dropping a run's tables](materialization.md#dropping-a-runs-tables)):
 
 ```bash

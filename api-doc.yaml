@@ -4081,9 +4081,10 @@ paths:
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
         materialization record. A delete is record-only: it never drops a
         table, and the caller owns table GC. To drop a table this run produced,
-        check that no remaining run still serves it, then drop it through its
-        connection. A request that sends the removed `dropTables` parameter, in
-        any spelling, is refused with 400 and deletes nothing.
+        check that no remaining run, of any version, names a table with that
+        name in any place, then drop it through its connection.
+        `dropTables=true` is refused with 400 and deletes nothing;
+        `dropTables=false`, which older clients send, is accepted and ignored.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"

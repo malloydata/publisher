@@ -83,6 +83,11 @@ import {
 } from "./run_instructions";
 import { hasReservedTableSuffix } from "../domain/table_name";
 
+/**
+ * The one occasion a reclaim drops on: a run's delete is record-only, so
+ * `delete` is left to a caller dropping a storage destination's table.
+ */
+type ReclaimOccasion = Extract<DropOccasion, "reclaim">;
 /** The tiers a drop reaches a table through. */
 const COLOCATED = new ColocatedTier();
 // Only its drop. A build goes through the service's adapter, which routes a
@@ -313,7 +318,7 @@ function dropReach(
    environmentName: string,
    packageName: string,
    materializationId: string,
-   occasion: DropOccasion,
+   occasion: ReclaimOccasion,
    connectionFor: (name: string) => Promise<MalloyConnection | undefined>,
 ) {
    const connectionCache = new Map<string, MalloyConnection>();
@@ -385,7 +390,7 @@ async function dropStorageTable(
    environment: BuildEnvironment,
    destinationName: string,
    table: Parameters<typeof STORAGE.drop>[1],
-   occasion: DropOccasion,
+   occasion: ReclaimOccasion,
    materializationId?: string,
 ): Promise<boolean> {
    const destinationConnection = destinationForCleanup(
@@ -896,7 +901,7 @@ export class Reclaimer {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      occasion: DropOccasion,
+      occasion: ReclaimOccasion,
       entries: ManifestEntry[],
       stillReferenced: Set<string>,
       connectionFor: (name: string) => Promise<MalloyConnection | undefined>,

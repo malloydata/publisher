@@ -83,7 +83,7 @@ Frame each recommendation with the evidence from Step 2 (the run IDs, timings, b
   malloy-pub delete materialization <old-id> --environment <env> --package <pkg>
   ```
 
-  > Deleting a run is **record-only**: it never drops a table. It re-derives the package's serve bindings from the latest remaining ready run (or clears them to serve live), so a delete does not break queries. To drop the old table, read its `physicalTableName` from the old run's manifest, check that no remaining ready run names it (with the stable names an auto-run assigns, a table the new run carried forward is still served), then drop it through its connection.
+  > Deleting a run is **record-only**: it never drops a table. It re-derives the package's serve bindings from the latest remaining ready run (or clears them to serve live), so a delete does not break queries. To drop the old table, read its `physicalTableName` from the old run's manifest, check that no remaining ready run, of any version, names a table with that name in any place (the runs list answers for the latest version only, so list each version's runs with `versionId`; with the stable names an auto-run assigns, a table the new run carried forward is still served, and two destination names can reach one DuckLake), then drop it through its connection.
 
 - **Change the schedule / cadence:**
 

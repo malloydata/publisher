@@ -47,8 +47,10 @@ describe("a malformed boolean query param answers { code, message }", () => {
       ["GET", `${PKG}/models/m.malloy`, "includeHiddenFilesAndSources"],
       ["GET", `${PKG}/entities`, "includeHiddenFilesAndSources"],
       ["POST", `${ENV}/packages`, "dryRun"],
+      ["DELETE", `${PKG}/materializations/m1`, "dropTables"],
       ["GET", PROJECT, "reload"],
       ["GET", LEGACY_PKG, "reload"],
+      ["DELETE", `${LEGACY_PKG}/materializations/m1`, "dropTables"],
    ])("%s %s?%s=1", async (method, path, name) => {
       const res = await request(app)
          [method.toLowerCase() as "get"](`${path}?${name}=1`)
@@ -58,23 +60,23 @@ describe("a malformed boolean query param answers { code, message }", () => {
    });
 });
 
-describe("dropTables on a materialization delete answers { code, message }", () => {
-   it.each([
-      [`${PKG}/materializations/m1`, "true"],
-      [`${PKG}/materializations/m1`, "false"],
-      [`${LEGACY_PKG}/materializations/m1`, "true"],
-   ])("DELETE %s?dropTables=%s", async (path, value) => {
-      const res = await request(app).delete(`${path}?dropTables=${value}`);
-      expect(res.status).toBe(400);
-      expect(res.body).toEqual({
-         code: 400,
-         message:
-            "dropTables is no longer supported: deleting a materialization is " +
-            "record-only and never drops a table. Delete without dropTables, " +
-            "and drop any table you want gone yourself through its " +
-            "connection, after checking that no run still serves it.",
-      });
-   });
+describe("dropTables=true on a materialization delete answers { code, message }", () => {
+   it.each([`${PKG}/materializations/m1`, `${LEGACY_PKG}/materializations/m1`])(
+      "DELETE %s?dropTables=true",
+      async (path) => {
+         const res = await request(app).delete(`${path}?dropTables=true`);
+         expect(res.status).toBe(400);
+         expect(res.body).toEqual({
+            code: 400,
+            message:
+               "dropTables=true is no longer supported: deleting a " +
+               "materialization is record-only and never drops a table. " +
+               "Delete without dropTables, and drop any table you want gone " +
+               "yourself through its connection, after checking that no " +
+               "remaining run, of any version, names a table with that name.",
+         });
+      },
+   );
 });
 
 describe("reload on a collection answers { code, message }", () => {

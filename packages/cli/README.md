@@ -71,7 +71,7 @@ Resource (CRUD) verbs:
 - `malloy-pub get <resource> [name]` - Get resource details (environment, package, connection, materialization, model, notebook, manifest)
 - `malloy-pub create <resource> [name]` - Create a resource (environment, package, connection)
 - `malloy-pub update <resource> [name]` - Update a resource (environment, package, connection)
-- `malloy-pub delete <resource> [name]` - Delete a resource (environment, package, connection, materialization). `delete materialization <id>` deletes the run's record only; the tables it built stay, so drop any you no longer need through their connection after checking that no remaining run still serves them.
+- `malloy-pub delete <resource> [name]` - Delete a resource (environment, package, connection, materialization). `delete materialization <id>` deletes the run's record only; the tables it built stay, so drop any you no longer need through their connection after checking that no remaining run, of any version, names a table with that name in any place.
 
 Action commands:
 

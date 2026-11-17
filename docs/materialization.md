@@ -1037,14 +1037,14 @@ malloy-pub delete materialization <id> --environment <env> --package <pkg>
 
 The `schedule` commands share the server's publish-gate validation: an invalid cron or an illegal scope/freshness combination is rejected, so a rejection means the change was unsafe.
 
-> **Deleting a run is record-only: it never drops a table.** Deleting a run re-derives the package's serve bindings from the latest remaining ready run (or clears them, so queries compute live), so a delete does not break queries, and it leaves every table the run built where it is. A request that still sends `dropTables` is refused with 400 and deletes nothing.
+> **Deleting a run is record-only: it never drops a table.** Deleting a run re-derives the package's serve bindings from the latest remaining ready run (or clears them, so queries compute live), so a delete does not break queries, and it leaves every table the run built where it is. A request that sends `dropTables=true` is refused with 400 and deletes nothing; `dropTables=false`, which older clients send, is accepted and changes nothing.
 
 <a id="dropping-a-runs-tables"></a>
 
 **Dropping a run's tables.** Table cleanup is the caller's job. Auto-run assigns stable table names and carries unchanged sources forward, so an old run's manifest can name a table a newer run still serves. Before dropping a table:
 
 1. Read the run's manifest (`get materialization <id>`) for each entry's `physicalTableName`, `connectionName` and, for a `storage=` table, `storageDestinationName`.
-2. List the package's runs (`list materialization`) and check that no remaining `MANIFEST_FILE_READY` run names the same table in the same place. If one does, the table is still served: leave it.
+2. Check every remaining run, of every version. The runs list (`GET …/materializations`, and `malloy-pub list materialization`) answers for the latest version only, so list the package's versions (`GET …/packages/{pkg}/versions`) and the runs of each with `?versionId=<version>`. If any remaining `MANIFEST_FILE_READY` run names a table with that name (its last segment), in any place, leave the table: it may be the one served. Two places can reach one table (two storage destination names for one DuckLake, a connection that reaches a destination), so a run that names it elsewhere does not prove it is another table.
 3. Drop it through its connection: `DROP TABLE` in the source's own warehouse, or, for a table in a storage destination, the admin API's `DELETE /catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}`.
 
 To remove a persisted source, delete its annotation, `materialize --wait`, delete the old runs that name its table, then drop the table as above.

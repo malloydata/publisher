@@ -168,20 +168,41 @@ describe("collection routes refuse ?reload", () => {
          expect(json.message).toContain("Invalid reload value");
       });
 
-      it("refuses dropTables in any spelling, before the lookup", async () => {
-         // A delete is record-only, so dropTables is refused rather than
-         // ignored: ignoring it would answer 204 to a caller who believes the
-         // tables went too. The guard runs before the lookup, so a missing
-         // environment still reaches 400 rather than 404.
-         for (const value of ["true", "false", "1"]) {
-            const res = await fetch(
-               `${baseUrl}/api/v0/environments/${MISSING_ENV}/packages/nope/materializations/m1?dropTables=${value}`,
-               { method: "DELETE" },
-            );
-            expect(res.status).toBe(400);
-            const json = (await res.json()) as { message: string };
-            expect(json.message).toContain("dropTables is no longer supported");
-         }
+      it("refuses dropTables=true, before the lookup", async () => {
+         // A delete is record-only, so asking it to drop tables is refused
+         // rather than ignored: ignoring it would answer 204 to a caller who
+         // believes the tables went too. The guard runs before the lookup, so
+         // a missing environment still reaches 400 rather than 404.
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${MISSING_ENV}/packages/nope/materializations/m1?dropTables=true`,
+            { method: "DELETE" },
+         );
+         expect(res.status).toBe(400);
+         const json = (await res.json()) as { message: string };
+         expect(json.message).toContain(
+            "dropTables=true is no longer supported",
+         );
+      });
+
+      it("refuses a malformed dropTables as a malformed boolean", async () => {
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${MISSING_ENV}/packages/nope/materializations/m1?dropTables=1`,
+            { method: "DELETE" },
+         );
+         expect(res.status).toBe(400);
+         const json = (await res.json()) as { message: string };
+         expect(json.message).toContain(`Invalid dropTables value "1"`);
+         expect(json.message).toContain("Fix: DELETE ");
+      });
+
+      it("accepts dropTables=false, which older clients send on every delete", async () => {
+         // It asks for exactly what a delete does, so it passes the guard to
+         // the real lookup (404 on a nonexistent environment).
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${MISSING_ENV}/packages/nope/materializations/m1?dropTables=false`,
+            { method: "DELETE" },
+         );
+         expect(res.status).toBe(404);
       });
 
       it("accepts reload=false, and absent, without reloading", async () => {
