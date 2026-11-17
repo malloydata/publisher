@@ -24,7 +24,7 @@
  */
 
 import { sqlLiteral } from "../../db_utils";
-import { quoteIdentifier, quoteTablePath } from "../../quoting";
+import { quoteIdentifier, quotePathParts, quoteTablePath } from "../../quoting";
 import {
    capabilitiesOf,
    registeredDialect,
@@ -863,7 +863,8 @@ function informationSchemaType(row: Record<string, unknown>): string {
  * Undefined for an unqualified BigQuery name, which has no dataset to read.
  */
 export function nativeTypeCatalogRead(
-   physicalTableName: string,
+   /** The table's path, unquoted and dot-separated, or its parts. */
+   physicalTableName: string | readonly string[],
    dialect: string,
 ):
    | {
@@ -872,8 +873,11 @@ export function nativeTypeCatalogRead(
         tableOf?: (row: Record<string, unknown>) => string;
      }
    | undefined {
-   const quoted = quoteTablePath(physicalTableName, dialect);
-   const parts = physicalTableName.split(".");
+   const parts =
+      typeof physicalTableName === "string"
+         ? physicalTableName.split(".")
+         : [...physicalTableName];
+   const quoted = quotePathParts(parts, dialect);
    const table = parts[parts.length - 1];
    const knownDialect = registeredDialect(dialect);
    switch (knownDialect) {
@@ -892,7 +896,7 @@ export function nativeTypeCatalogRead(
             sql:
                "SELECT row_to_json(c) AS row FROM (" +
                "SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum " +
-               `FROM pg_attribute a WHERE a.attrelid = to_regclass(${doubledQuoteString(quoted)}) ` +
+               `FROM pg_attribute a WHERE a.attrelid = to_regclass(${sqlString(quoted, dialect)}) ` +
                "AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum",
             read: (r) => ({
                name: String(field(r, "name")),
@@ -901,7 +905,7 @@ export function nativeTypeCatalogRead(
          };
       case "standardsql": {
          if (parts.length < 2) return undefined;
-         const dataset = quoteTablePath(parts.slice(0, -1).join("."), dialect);
+         const dataset = quotePathParts(parts.slice(0, -1), dialect);
          return {
             sql:
                `SELECT column_name, data_type FROM ${dataset}.INFORMATION_SCHEMA.COLUMNS ` +
@@ -926,6 +930,38 @@ export function nativeTypeCatalogRead(
 }
 
 /**
+ * The precision columns `information_schema.columns` is read with: none on
+ * Trino and Presto, whose `data_type` carries them (`decimal(38,0)`).
+ */
+function informationSchemaPrecision(
+   knownDialect: DialectName | undefined,
+): string {
+   switch (knownDialect) {
+      case "trino":
+      case "presto":
+         return "";
+      default:
+         return ", numeric_precision, numeric_scale";
+   }
+}
+
+/**
+ * The schema filter for an unqualified name: MySQL resolves one in the
+ * connection's database, and its `information_schema` shows every
+ * database's tables; elsewhere none.
+ */
+function unqualifiedSchemaFilter(
+   knownDialect: DialectName | undefined,
+): string {
+   switch (knownDialect) {
+      case "mysql":
+         return " AND table_schema = DATABASE()";
+      default:
+         return "";
+   }
+}
+
+/**
  * {@link nativeTypeCatalogRead} from `information_schema.columns`, for every
  * dialect but DuckDB, Postgres and BigQuery, an unknown one included.
  * `dialect` is the connection's own name, `knownDialect` it narrowed.
@@ -946,22 +982,11 @@ function informationSchemaCatalogRead(
    // unqualified, the view is the session's, where a table of the same
    // schema and name would be read instead.
    const catalog =
-      parts.length > 2
-         ? `${quoteTablePath(parts.slice(0, -2).join("."), dialect)}.`
-         : "";
-   // Trino's `information_schema.columns` has no precision columns: its
-   // `data_type` carries them (`decimal(38,0)`).
-   const precision =
-      knownDialect === "trino" || knownDialect === "presto"
-         ? ""
-         : ", numeric_precision, numeric_scale";
-   // MySQL resolves an unqualified name in the connection's database,
-   // and its `information_schema` shows every database's tables.
+      parts.length > 2 ? `${quotePathParts(parts.slice(0, -2), dialect)}.` : "";
+   const precision = informationSchemaPrecision(knownDialect);
    const schemaFilter = schema
       ? ` AND lower(table_schema) = lower(${sqlString(schema, dialect)})`
-      : knownDialect === "mysql"
-        ? " AND table_schema = DATABASE()"
-        : "";
+      : unqualifiedSchemaFilter(knownDialect);
    return {
       sql:
          "SELECT table_catalog, table_schema, table_name, column_name, data_type" +
@@ -978,6 +1003,220 @@ function informationSchemaCatalogRead(
          ["table_catalog", "table_schema", "table_name"]
             .map((k) => String(field(r, k)))
             .join("."),
+   };
+}
+
+/** One table a batched catalog read asks for: a caller's key and its path's parts. */
+export interface CatalogTable {
+   key: string;
+   parts: readonly string[];
+}
+
+/**
+ * One catalog query for several tables ({@link nativeTypeCatalogBatches}):
+ * its SQL, the keys it answers, and how its rows read back as each key's
+ * columns. A key the rows do not name is absent (no such table); a key whose
+ * name matched more than one table is `ambiguous`.
+ */
+export interface CatalogBatch {
+   sql: string;
+   keys: string[];
+   columnsOf(
+      rows: Record<string, unknown>[],
+   ): Map<string, NativeColumn[] | "ambiguous">;
+}
+
+/** Tables per catalog query: keeps an `IN (...)` list and its SQL bounded. */
+const CATALOG_BATCH_SIZE = 100;
+
+/** `items` in chunks of {@link CATALOG_BATCH_SIZE}. */
+function chunks<T>(items: readonly T[]): T[][] {
+   const out: T[][] = [];
+   for (let i = 0; i < items.length; i += CATALOG_BATCH_SIZE) {
+      out.push(items.slice(i, i + CATALOG_BATCH_SIZE));
+   }
+   return out;
+}
+
+/** `items` grouped by `keyOf`, in first-seen order. */
+function groupBy<T>(items: readonly T[], keyOf: (t: T) => string): T[][] {
+   const groups = new Map<string, T[]>();
+   for (const item of items) {
+      const k = keyOf(item);
+      groups.set(k, [...(groups.get(k) ?? []), item]);
+   }
+   return [...groups.values()];
+}
+
+/**
+ * The catalog queries that read several tables' columns with their
+ * warehouse types, as few as the dialect allows: one per schema or dataset
+ * (`information_schema.columns ... table_name IN (...)` and the like), one
+ * for every Postgres table, and DuckDB's in-process `DESCRIBE` per table.
+ * Each literal is escaped for the dialect ({@link sqlString}) and each
+ * identifier quoted ({@link quotePathParts}). A table the dialect cannot read
+ * (an unqualified BigQuery name) is in no batch.
+ *
+ * The same reads, row for row, as {@link nativeTypeCatalogRead}'s.
+ */
+export function nativeTypeCatalogBatches(
+   tables: readonly CatalogTable[],
+   dialect: string,
+): CatalogBatch[] {
+   const knownDialect = registeredDialect(dialect);
+   const lit = (v: string) => sqlString(v, dialect);
+   const tableOf = (t: CatalogTable) => t.parts[t.parts.length - 1];
+   switch (knownDialect) {
+      case "duckdb":
+         return tables.map((t) => {
+            const single = nativeTypeCatalogRead(t.parts, dialect)!;
+            return {
+               sql: single.sql,
+               keys: [t.key],
+               columnsOf: (rows) => new Map([[t.key, rows.map(single.read)]]),
+            };
+         });
+      case "postgres":
+         return chunks(tables).map((batch) => ({
+            sql:
+               "SELECT row_to_json(c) AS row FROM (" +
+               "SELECT r.k AS key, a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum " +
+               `FROM (VALUES ${batch
+                  .map(
+                     (t) =>
+                        `(${lit(t.key)}, to_regclass(${lit(quotePathParts(t.parts, dialect))}))`,
+                  )
+                  .join(", ")}) AS r(k, oid) ` +
+               "JOIN pg_attribute a ON a.attrelid = r.oid " +
+               "WHERE a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.key, c.attnum",
+            keys: batch.map((t) => t.key),
+            columnsOf: (rows) => {
+               const out = new Map<string, NativeColumn[]>();
+               for (const r of rows) {
+                  const key = String(field(r, "key"));
+                  out.set(key, [
+                     ...(out.get(key) ?? []),
+                     {
+                        name: String(field(r, "name")),
+                        type: String(field(r, "type")),
+                     },
+                  ]);
+               }
+               return out;
+            },
+         }));
+      case "standardsql":
+         return groupBy(
+            tables.filter((t) => t.parts.length >= 2),
+            (t) => JSON.stringify(t.parts.slice(0, -1)),
+         ).flatMap((group) =>
+            chunks(group).map((batch) => ({
+               sql:
+                  "SELECT table_name, column_name, data_type FROM " +
+                  `${quotePathParts(batch[0].parts.slice(0, -1), dialect)}.INFORMATION_SCHEMA.COLUMNS ` +
+                  `WHERE table_name IN (${batch.map((t) => lit(tableOf(t))).join(", ")}) ` +
+                  "ORDER BY table_name, ordinal_position",
+               keys: batch.map((t) => t.key),
+               columnsOf: (rows) => {
+                  const out = new Map<string, NativeColumn[]>();
+                  for (const t of batch) {
+                     const own = rows.filter(
+                        (r) => String(field(r, "table_name")) === tableOf(t),
+                     );
+                     if (own.length === 0) continue;
+                     out.set(
+                        t.key,
+                        own.map((r) => ({
+                           name: String(field(r, "column_name")),
+                           type: String(field(r, "data_type")),
+                        })),
+                     );
+                  }
+                  return out;
+               },
+            })),
+         );
+      // Snowflake, Databricks, Trino, Presto, MySQL, SQL Server, and an
+      // unknown dialect: `information_schema.columns`.
+      default:
+         return groupBy(tables, (t) =>
+            JSON.stringify(t.parts.slice(0, Math.max(0, t.parts.length - 2))),
+         ).flatMap((group) =>
+            chunks(group).map((batch) =>
+               informationSchemaBatch(batch, dialect, knownDialect),
+            ),
+         );
+   }
+}
+
+/**
+ * {@link nativeTypeCatalogBatches} from `information_schema.columns`, for
+ * tables in one catalog: the rows of every table asked, each matched back by
+ * its schema and name as {@link informationSchemaCatalogRead} matches one.
+ */
+function informationSchemaBatch(
+   batch: readonly CatalogTable[],
+   dialect: string,
+   knownDialect: DialectName | undefined,
+): CatalogBatch {
+   const lit = (v: string) => sqlString(v, dialect);
+   const parts = batch[0].parts;
+   const catalog =
+      parts.length > 2 ? `${quotePathParts(parts.slice(0, -2), dialect)}.` : "";
+   const precision = informationSchemaPrecision(knownDialect);
+   const named = batch.map((t) => ({
+      key: t.key,
+      table: t.parts[t.parts.length - 1],
+      schema: t.parts.length > 1 ? t.parts[t.parts.length - 2] : undefined,
+   }));
+   const condition = named
+      .map(
+         (t) =>
+            `(lower(table_name) = lower(${lit(t.table)})` +
+            (t.schema !== undefined
+               ? ` AND lower(table_schema) = lower(${lit(t.schema)})`
+               : unqualifiedSchemaFilter(knownDialect)) +
+            ")",
+      )
+      .join(" OR ");
+   return {
+      sql:
+         "SELECT table_catalog, table_schema, table_name, column_name, data_type" +
+         precision +
+         ` FROM ${catalog}information_schema.columns WHERE ${condition}` +
+         " ORDER BY table_catalog, table_schema, table_name, ordinal_position",
+      keys: batch.map((t) => t.key),
+      columnsOf: (rows) => {
+         const out = new Map<string, NativeColumn[] | "ambiguous">();
+         for (const t of named) {
+            const own = rows.filter(
+               (r) =>
+                  String(field(r, "table_name")).toLowerCase() ===
+                     t.table.toLowerCase() &&
+                  (t.schema === undefined ||
+                     String(field(r, "table_schema")).toLowerCase() ===
+                        t.schema.toLowerCase()),
+            );
+            if (own.length === 0) continue;
+            const tables = new Set(
+               own.map((r) =>
+                  ["table_catalog", "table_schema", "table_name"]
+                     .map((k) => String(field(r, k)))
+                     .join("."),
+               ),
+            );
+            out.set(
+               t.key,
+               tables.size > 1
+                  ? "ambiguous"
+                  : own.map((r) => ({
+                       name: String(field(r, "column_name")),
+                       type: informationSchemaType(r),
+                    })),
+            );
+         }
+         return out;
+      },
    };
 }
 

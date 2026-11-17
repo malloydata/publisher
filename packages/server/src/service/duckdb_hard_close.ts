@@ -168,7 +168,8 @@ function sameMembers(proto: object, expected: readonly string[]): boolean {
 /**
  * Whether db-duckdb's connection classes have exactly the members this module
  * was audited against. Checked once at install; a mismatch leaves every close
- * a refcount close.
+ * a refcount close. duckdb_statement_gate.ts relies on the same audit, assuming
+ * `setup()` runs before its gate and setup statements go through `runDuckDBQuery`.
  */
 export function dbDuckDBHardCloseInternalsMatch(): boolean {
    const proto = DuckDBConnection.prototype;

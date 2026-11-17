@@ -321,7 +321,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'east' AS reg
   measure: total is amount_sum.sum()
 }
 `,
-            ["reads_given"],
+            ["given_in_persisted_query"],
          ],
       ];
       for (const [label, template, codes] of cases) {

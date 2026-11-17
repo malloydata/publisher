@@ -671,15 +671,28 @@ export type TablePlan = TablePlanFacts &
            rollup: RollupPlan;
            materialize?: undefined;
            /**
-            * The rollup as compiled over its base's stored table, at the same
-            * address: set for a colocated rollup over a colocated
-            * `#@ persist` base, and compiled on the first call
+            * The rollup as compiled over its base's stored table: set for a
+            * colocated rollup over a colocated `#@ persist` or
+            * `#(materialize)` base, and compiled on the first call
             * (rollup_compile.ts). A run builds from it only when its build
             * manifest holds the base's table (instructed_build.ts).
             */
-           overStoredBase?: () => Promise<PersistSource | undefined>;
+           overStoredBase?: () => Promise<OverStoredBase | undefined>;
         }
    );
+
+/**
+ * A rollup compiled to build from its base's stored table (rollup_compile.ts).
+ * Over a `#@ persist` base, `source` is the rollup at its planned address.
+ * Over a `#(materialize)` base, the base is re-rooted on its generated build
+ * source, so `source`'s SQL, and so its own address, differs from the plan's,
+ * and `baseBuildSource` is that build source as the same compile holds it:
+ * the table the rollup reads, which a run checks is the base's table.
+ */
+export interface OverStoredBase {
+   source: PersistSource;
+   baseBuildSource?: PersistSource;
+}
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */
 export function materializeKindOf(

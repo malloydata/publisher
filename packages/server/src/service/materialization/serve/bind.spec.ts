@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import type { MaterializePlan } from "../domain/table_plans";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import {
+   applyObservedColumns,
    bindColocatedEntries,
    bindStorageEntries,
    deriveColocatedServeBindings,
@@ -695,5 +696,255 @@ describe("the bind functions at their edges", () => {
             },
          ),
       ).toBe("view");
+   });
+});
+
+describe("applyObservedColumns", () => {
+   const built = [
+      { name: "id", type: "BIGINT" },
+      { name: "amt", type: "DOUBLE" },
+      { name: "d", type: "DATE" },
+   ];
+   const binding: Binding = {
+      kind: "materialize",
+      tier: "colocated",
+      sourceName: "orders",
+      sourceIDs: [ID],
+      destinationName: "pg",
+      virtualHandle: "addr1",
+      tablePath: "orders_t",
+      schema: built,
+   };
+   const entries = {
+      addr1: { tableName: "orders_t", schema: built },
+      rollup1: {
+         tableName: "orders_by_d",
+         schema: [{ name: "total__partial", type: "DOUBLE" }],
+      },
+   };
+
+   it("with no observation, returns everything as bound", () => {
+      const out = applyObservedColumns({
+         entries,
+         bindings: [binding],
+         observed: undefined,
+      });
+      expect(out.entries).toBe(entries);
+      expect(out.bindings).toEqual([binding]);
+      expect(out.drifted).toEqual([]);
+   });
+
+   it("keeps a table whose columns read as their built types, a wider number included", () => {
+      const out = applyObservedColumns({
+         entries,
+         bindings: [binding],
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  columns: [
+                     { name: "id", type: "BIGINT" },
+                     // A number of another width: the same Malloy type.
+                     { name: "amt", type: "BIGINT" },
+                     { name: "d", type: "DATE" },
+                  ],
+               },
+            ],
+            ["rollup1", { columns: entries.rollup1.schema }],
+         ]),
+      });
+      expect(out.bindings).toEqual([binding]);
+      expect(out.entries).toEqual(entries);
+      expect(out.drifted).toEqual([]);
+   });
+
+   it("declares a served-copy table's drifted column with its observed type, and leaves a gone one out", () => {
+      const out = applyObservedColumns({
+         entries,
+         bindings: [binding],
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  columns: [
+                     { name: "ID", type: "BIGINT" },
+                     { name: "amt", type: "VARCHAR" },
+                  ],
+               },
+            ],
+            ["rollup1", { columns: entries.rollup1.schema }],
+         ]),
+      });
+      expect(out.bindings[0].schema).toEqual([
+         { name: "id", type: "BIGINT" },
+         { name: "amt", type: "VARCHAR" },
+      ]);
+      // A served-copy table stays bound: its read plan casts or leaves out.
+      expect(Object.keys(out.entries).sort()).toEqual(["addr1", "rollup1"]);
+      expect(out.drifted).toEqual([
+         {
+            sourceEntityId: "addr1",
+            columns: [
+               { column: "amt", builtType: "DOUBLE", observedType: "VARCHAR" },
+               { column: "d", builtType: "DATE" },
+            ],
+         },
+      ]);
+   });
+
+   it("leaves out a substituted table (a rollup) whose column drifted: no cast reaches it", () => {
+      const out = applyObservedColumns({
+         entries,
+         bindings: [binding],
+         observed: new Map([
+            ["addr1", { columns: built }],
+            [
+               "rollup1",
+               { columns: [{ name: "total__partial", type: "VARCHAR" }] },
+            ],
+         ]),
+      });
+      expect(Object.keys(out.entries)).toEqual(["addr1"]);
+      expect(out.bindings).toEqual([binding]);
+   });
+
+   it("leaves out a table that was not read, binding and entry alike (fail safe)", () => {
+      const out = applyObservedColumns({
+         entries,
+         bindings: [binding],
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  unread: "connection_failed" as const,
+                  detail: "connection refused",
+               },
+            ],
+         ]),
+      });
+      expect(out.entries).toEqual({});
+      expect(out.bindings).toEqual([]);
+      expect(out.unread).toEqual([
+         {
+            sourceEntityId: "addr1",
+            reason: "connection_failed",
+            detail: "connection refused",
+         },
+         { sourceEntityId: "rollup1", reason: "not_read" },
+      ]);
+   });
+
+   it("re-reads a big integer altered to a decimal: retyped, and cast to the type it holds now", () => {
+      const big: Binding = {
+         ...binding,
+         schema: [{ name: "n", type: "BIGINT" }],
+         nativeSchema: [{ name: "n", type: "bigint" }],
+      };
+      const out = applyObservedColumns({
+         entries: {
+            addr1: {
+               tableName: "orders_t",
+               schema: [{ name: "n", type: "BIGINT" }],
+               nativeSchema: [{ name: "n", type: "bigint" }],
+            },
+         },
+         bindings: [big],
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  dialect: "postgres",
+                  columns: [
+                     { name: "n", type: "DOUBLE", nativeType: "numeric(10,2)" },
+                  ],
+               },
+            ],
+         ]),
+      });
+      // Never cast to the bigint it was built as: that truncates a fraction.
+      expect(out.bindings[0].schema).toEqual([{ name: "n", type: "DOUBLE" }]);
+      expect(out.bindings[0].nativeSchema).toEqual([
+         { name: "n", type: "numeric(10,2)" },
+      ]);
+      expect(out.drifted.map((d) => d.columns.map((c) => c.column))).toEqual([
+         ["n"],
+      ]);
+   });
+
+   it("leaves out a timestamp whose zone changed, unless the session is DuckDB's UTC", () => {
+      const ts: Binding = {
+         ...binding,
+         schema: [{ name: "at", type: "TIMESTAMP" }],
+      };
+      const read = (dialect: string) =>
+         applyObservedColumns({
+            entries: {
+               addr1: {
+                  tableName: "orders_t",
+                  schema: [{ name: "at", type: "TIMESTAMP" }],
+               },
+            },
+            bindings: [ts],
+            observed: new Map([
+               [
+                  "addr1",
+                  {
+                     dialect,
+                     columns: [
+                        {
+                           name: "at",
+                           type: "TIMESTAMP WITH TIME ZONE",
+                           nativeType: "timestamp with time zone",
+                        },
+                     ],
+                  },
+               ],
+            ]),
+         });
+      expect(read("postgres").bindings[0].schema).toEqual([]);
+      expect(read("duckdb").bindings[0].schema).toEqual(ts.schema);
+   });
+
+   it("leaves out a rollup whose big integer's native type moved", () => {
+      const out = applyObservedColumns({
+         entries: {
+            rollup1: {
+               tableName: "orders_by_d",
+               schema: [{ name: "total__partial", type: "BIGINT" }],
+               nativeSchema: [{ name: "total__partial", type: "bigint" }],
+            },
+         },
+         bindings: [],
+         observed: new Map([
+            [
+               "rollup1",
+               {
+                  dialect: "postgres",
+                  columns: [
+                     {
+                        name: "total__partial",
+                        type: "DOUBLE",
+                        nativeType: "double precision",
+                     },
+                  ],
+               },
+            ],
+         ]),
+      });
+      expect(out.entries).toEqual({});
+   });
+
+   it("passes a storage binding through untouched", () => {
+      const storage: Binding = {
+         ...binding,
+         tier: "storage",
+         virtualHandle: "s1",
+      };
+      const out = applyObservedColumns({
+         entries: {},
+         bindings: [storage],
+         observed: new Map(),
+      });
+      expect(out.bindings).toEqual([storage]);
    });
 });

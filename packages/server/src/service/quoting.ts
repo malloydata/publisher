@@ -98,10 +98,15 @@ export function decodeBackslashEscapes(sql: string, dialect: string): string {
  * plane sends `physicalTableName` unquoted; quoting is the publisher's job.
  */
 export function quoteTablePath(tableName: string, dialect: string): string {
-   return tableName
-      .split(".")
-      .map((segment) => quoteIdentifier(segment, dialect))
-      .join(".");
+   return quotePathParts(tableName.split("."), dialect);
+}
+
+/** Dialect-quote each part of a table path and join them: {@link quoteTablePath}'s rule. */
+export function quotePathParts(
+   parts: readonly string[],
+   dialect: string,
+): string {
+   return parts.map((part) => quoteIdentifier(part, dialect)).join(".");
 }
 
 /**
@@ -160,7 +165,7 @@ export function isQuotedIdentifierPath(tableName: string): boolean {
 }
 
 /** One identifier of a table path written as SQL, as the dialect reads it. */
-export interface SqlTablePathPart {
+interface TablePathPart {
    /** The identifier, its quotes and escapes removed; unquoted, not folded. */
    value: string;
    /** Whether it was quoted, so its case is kept as written. */
@@ -168,37 +173,50 @@ export interface SqlTablePathPart {
 }
 
 /**
- * The identifiers of a table path written as SQL in `dialect`, bare or
- * quoted, or undefined when it does not parse or holds a part
- * {@link quoteIdentifier} would refuse, so a path that cannot be read and one
- * that cannot be re-quoted are one refusal.
+ * The identifier parts of a table path, quoted or not: the inverse of
+ * {@link quoteTablePath}, and the one parser of a bound table name.
+ * Undefined when the path does not parse, or holds a part
+ * {@link quoteIdentifier} would refuse in `dialect`, so a path that cannot be
+ * read and one that cannot be re-quoted are one refusal.
  *
- * - A bare part runs to the next dot and holds no quote character.
- * - A quoted part uses the dialect's quote character: a backtick on BigQuery,
- *   MySQL and Databricks, else a double quote. On BigQuery `\` escapes the
- *   next character (`\n`, `\r` and `\t` read as those controls, which are
- *   then refused); elsewhere a doubled quote is one quote.
- * - On BigQuery one backtick pair may wrap a dotted path (`` `p.d.t` ``),
- *   which BigQuery reads as the whole path, so its dots still separate parts.
+ * - An unquoted part runs to the next dot and holds no quote character.
+ * - A part in double quotes or backticks runs to its closing quote, and a dot
+ *   inside it is part of the name (`"my.schema"."t"` is two parts). Inside
+ *   it, a doubled quote is one quote character, except in a BigQuery
+ *   (`standardsql`) backtick part, where `\` escapes the next character, as
+ *   BigQuery reads one (`` \` ``, `\\`; `\n`, `\r` and `\t` read as those
+ *   controls, which BigQuery then refuses).
+ * - On BigQuery one backtick pair around a dotted path (`` `proj.ds.t` ``) is
+ *   the whole path, as BigQuery reads it, so its dots still separate parts.
  *
- * Kept apart from #1838's `tablePathParts` until the two are unified.
+ * `dialect` "" reads with no dialect's rules but these: a display, or a
+ * check every dialect must pass ({@link isUsableTableName}'s).
  */
-export function sqlTablePathParts(
+export function tablePathParts(
    path: string,
    dialect: string,
-): SqlTablePathPart[] | undefined {
+): string[] | undefined {
+   return parseTablePath(path, dialect)?.map((p) => p.value);
+}
+
+/** {@link tablePathParts}, with whether each part was quoted. */
+function parseTablePath(
+   path: string,
+   dialect: string,
+): TablePathPart[] | undefined {
    const bigQuery = dialect === "standardsql";
-   const q = BACKTICK_DIALECTS.has(dialect) ? "`" : '"';
-   const parts: SqlTablePathPart[] = [];
+   const parts: TablePathPart[] = [];
    let i = 0;
    for (;;) {
-      if (path[i] === q) {
+      const q = path[i];
+      if (q === '"' || q === "`") {
+         const backslashes = bigQuery && q === "`";
          let value = "";
          let j = i + 1;
          for (;;) {
             if (j >= path.length) return undefined;
             const c = path[j];
-            if (bigQuery && c === "\\") {
+            if (backslashes && c === "\\") {
                if (j + 1 >= path.length) return undefined;
                const e = path[j + 1];
                value +=
@@ -207,7 +225,7 @@ export function sqlTablePathParts(
                continue;
             }
             if (c === q) {
-               if (!bigQuery && path[j + 1] === q) {
+               if (!backslashes && path[j + 1] === q) {
                   value += q;
                   j += 2;
                   continue;
@@ -217,9 +235,10 @@ export function sqlTablePathParts(
             value += c;
             j++;
          }
-         if (bigQuery && value.includes(".")) {
-            for (const v of value.split("."))
+         if (backslashes && value.includes(".")) {
+            for (const v of value.split(".")) {
                parts.push({ value: v, quoted: true });
+            }
          } else {
             parts.push({ value, quoted: true });
          }
@@ -237,6 +256,22 @@ export function sqlTablePathParts(
       if (i >= path.length) return undefined;
    }
    return parts.every((p) => quotable(p.value, dialect)) ? parts : undefined;
+}
+
+/**
+ * Whether a table name from outside this server (a host, a manifest) parses
+ * the same in every dialect, so the controller, the manifest loader, the
+ * build and the bind accept or refuse it alike: no backslash and no control
+ * character anywhere, and a path {@link tablePathParts} reads both with no
+ * dialect and as BigQuery (the one dialect whose reading differs: its
+ * backslash escapes and its whole-path backticks).
+ */
+export function isUsableTableName(name: string): boolean {
+   if (name.includes("\\") || CONTROL_CHARACTER.test(name)) return false;
+   return (
+      parseTablePath(name, "") !== undefined &&
+      parseTablePath(name, "standardsql") !== undefined
+   );
 }
 
 /** Whether {@link quoteIdentifier} quotes `identifier` rather than refusing it. */
@@ -266,7 +301,7 @@ function foldUnquoted(identifier: string, dialect: string): string {
  *   case-folding engine (Snowflake) resolves the table the builder wrote.
  * - A path written as SQL (it holds a quote character: a legacy manifest's
  *   entry, or an author's own `manifestLocation` manifest) is parsed by
- *   {@link sqlTablePathParts} and each part re-quoted, an unquoted part folded
+ *   {@link tablePathParts} and each part re-quoted, an unquoted part folded
  *   as the dialect folds it, so it names the same table it named as written.
  *   It is never inlined as given.
  *
@@ -280,7 +315,7 @@ export function quoteManifestTablePath(
    if (!isQuotedIdentifierPath(tableName)) {
       return quoteTablePath(tableName, dialect);
    }
-   const parts = sqlTablePathParts(tableName, dialect);
+   const parts = parseTablePath(tableName, dialect);
    if (parts === undefined) {
       throw new UnquotableIdentifierError(
          tableName,

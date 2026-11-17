@@ -17,7 +17,7 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { buildCopyText } from "./materialize_build_copy";
+import { buildCopyText, storedSourceCopyText } from "./materialize_build_copy";
 
 /**
  * A `#(materialize)` source's build copy (`materialize_build_copy.ts`): the
@@ -739,5 +739,75 @@ source: orders is base extend { dimension: east is region_code = 'EAST' }
             { timeout: 30000 },
          );
       }
+   });
+});
+
+describe("storedSourceCopyText: a source re-rooted on its own build source", () => {
+   const text = [
+      "##! experimental.persistence",
+      "source: raw is duckdb.table('t')",
+      "",
+      "source: orders is raw extend {",
+      "  dimension: upper_cat is upper(cat)",
+      "  measure: grand is amt.sum()",
+      "}",
+      "",
+   ].join("\n");
+   const declaration = {
+      url: "file:///pkg/m.malloy",
+      range: {
+         start: { line: 3, character: 8 },
+         end: { line: 6, character: 1 },
+      },
+   };
+   const plan = {
+      sourceName: "orders",
+      sourceID: "orders@file:///pkg/m.malloy",
+      buildSourceName: "orders__mat",
+      columns: [
+         { dimension: "cat", column: "cat", computed: false },
+         { dimension: "amt", column: "amt", computed: false },
+         { dimension: "upper_cat", column: "upper_cat", computed: true },
+      ],
+      persist: {},
+   } as unknown as MaterializePlan;
+
+   it("re-roots the declaration, drops the stored computed dimension, keeps the measures, and imports the build source", () => {
+      expect(
+         storedSourceCopyText(
+            text,
+            plan,
+            declaration as never,
+            "m.malloy.materialize.malloy",
+         ),
+      ).toBe(
+         [
+            "##! experimental.persistence",
+            "import { orders__mat } from 'm.malloy.materialize.malloy'",
+            "source: raw is duckdb.table('t')",
+            "",
+            "source: orders is orders__mat extend {",
+            "  measure: grand is amt.sum()",
+            "}",
+            "",
+         ].join("\n"),
+      );
+   });
+
+   it("is undefined when the declaration is not where the range says", () => {
+      expect(
+         storedSourceCopyText(
+            text,
+            plan,
+            {
+               ...declaration,
+               range: {
+                  start: { line: 40, character: 0 },
+                  end: { line: 41, character: 0 },
+               },
+            } as never,
+            "m.malloy.materialize.malloy",
+         ),
+      ).toBeUndefined();
    });
 });

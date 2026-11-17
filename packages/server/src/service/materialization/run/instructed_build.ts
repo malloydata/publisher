@@ -25,9 +25,14 @@ import {
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
-import type { ParentKeyCheck, RollupKeyCheck } from "../domain/table_plans";
+import type {
+   OverStoredBase,
+   ParentKeyCheck,
+   RollupKeyCheck,
+} from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
-import { buildSQLOf } from "../plan/addressing";
+import { buildSQLOf, presentAs } from "../plan/addressing";
+import { outputColumnsOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
    PersistSource,
@@ -2027,28 +2032,6 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
 }
 
 /**
- * The source a colocated rollup builds from when this run holds its base's
- * table: the rollup compiled over that table (rollup_compile.ts), so its
- * build reads the table rather than the warehouse, through the build
- * manifest as any chained build does. Only when every one of these holds,
- * otherwise undefined and the rollup builds from the warehouse as planned:
- *
- *  - the rollup builds colocated, and its base is a colocated `#@ persist`
- *    source (the plan offers the compile only then);
- *  - the run's entries hold the base's table at the address the plan gives
- *    it, built this run or carried under the reuse rules, colocated and at
- *    the tier the base declares now. The colocated gate refused nothing on
- *    that address, or it would not be built or carried, and a table's rows
- *    do not depend on any gate: each is applied when a query reads it;
- *  - the compiled source has the rollup's own address, so it builds the
- *    same table.
- *
- *  - with a declared window, the base's table is new enough
- *    ({@link baseFreshEnough}), whoever instructed the run.
- *
- * Records the base as what the rollup read, for its freshness anchor.
- */
-/**
  * Whether a rollup with a declared window may read its base's table: the
  * base was built in this run, or its data anchor is known and inside the
  * rollup's window at the run's start. A table of unknown age is never read
@@ -2073,6 +2056,27 @@ function baseFreshEnough(
    );
 }
 
+/**
+ * The source a colocated rollup builds from when this run holds its base's
+ * table: the rollup compiled over that table (rollup_compile.ts), so its
+ * build reads the table rather than the warehouse, through the build
+ * manifest as any chained build does. Only when every one of these holds,
+ * otherwise undefined and the rollup builds from the warehouse as planned:
+ *
+ *  - the rollup builds colocated, and its base is a colocated `#@ persist`
+ *    source or a colocated `#(materialize)` plain table (the plan offers the
+ *    compile only then);
+ *  - the run's entries hold the base's table at the address the plan gives
+ *    it, built this run or carried under the reuse rules, colocated and at
+ *    the tier the base declares now. The colocated gate refused nothing on
+ *    that address, or it would not be built or carried, and a table's rows
+ *    do not depend on any gate: each is applied when a query reads it;
+ *  - with a declared window, the base's table is new enough
+ *    ({@link baseFreshEnough}), whoever instructed the run;
+ *  - the compiled source builds the planned table ({@link buildsPlannedTable}).
+ *
+ * Records the base as what the rollup read, for its freshness anchor.
+ */
 async function overStoredBaseSource(
    run: InstructedRun,
    persistSource: PersistSource,
@@ -2084,7 +2088,9 @@ async function overStoredBaseSource(
    if (gated.instruction.destination) return undefined;
    const baseID = table.rollup.baseSourceID;
    const base = baseID === undefined ? undefined : compiled.tables[baseID];
-   if (!base || base.kind !== "persist") return undefined;
+   if (!base || (base.kind !== "persist" && base.kind !== "materialize")) {
+      return undefined;
+   }
    let baseAddress: string;
    try {
       baseAddress = computeSourceEntityId(
@@ -2107,21 +2113,25 @@ async function overStoredBaseSource(
    if (!baseFreshEnough(run, gated.sourceEntityId, baseAddress, baseEntry)) {
       return undefined;
    }
-   let variant: PersistSource | undefined;
+   let variant: OverStoredBase | undefined;
    try {
       variant = await table.overStoredBase();
    } catch {
       return undefined;
    }
-   if (!variant) return undefined;
+   if (
+      !variant ||
+      (base.kind === "materialize") !== (variant.baseBuildSource !== undefined)
+   ) {
+      return undefined;
+   }
    try {
       if (
-         computeSourceEntityId(
-            variant,
-            compiled.connectionDigests,
-            undefined,
-            compiled.tableFolds,
-         ) !== gated.sourceEntityId
+         !buildsPlannedTable(run, persistSource, variant, {
+            base: base.source,
+            baseAddress,
+            rollupAddress: gated.sourceEntityId,
+         })
       ) {
          return undefined;
       }
@@ -2129,7 +2139,89 @@ async function overStoredBaseSource(
       return undefined;
    }
    (run.readFrom ??= new Map()).set(gated.sourceEntityId, [baseAddress]);
-   return variant;
+   return variant.source;
+}
+
+/**
+ * Whether `variant`, the rollup compiled over its base's stored table, builds
+ * the table the plan gives the rollup `planned`:
+ *
+ *  - over a `#@ persist` base, it has the rollup's own planned address: its
+ *    SQL, the base's inlined, is the plan's;
+ *  - over a `#(materialize)` base, the base is re-rooted on its generated
+ *    build source, which moves the rollup's SQL, so its own address cannot
+ *    match. The build source must instead be at the base's planned address
+ *    (the same build source, so the same table), the rollup's SQL rendered
+ *    over the base's entry alone must read that table, and its columns must
+ *    be the planned rollup's, by name, type and numeric subtype. The rows
+ *    are the base's either way, as an extension's build over its parent's
+ *    table (P10).
+ *
+ * The three `#(materialize)` checks are defensive: a compile that re-roots
+ * the base as planned passes all three, so none is false in practice. Each
+ * guards a drift between the second compile and the plan (another build
+ * source, a rollup that no longer reads the base's table, other columns) and
+ * fails closed, to the warehouse build. Exported for its unit spec.
+ */
+export function buildsPlannedTable(
+   run: InstructedRun,
+   planned: PersistSource,
+   variant: OverStoredBase,
+   at: { base: PersistSource; baseAddress: string; rollupAddress: string },
+): boolean {
+   const { compiled } = run;
+   if (!variant.baseBuildSource) {
+      return (
+         computeSourceEntityId(
+            variant.source,
+            compiled.connectionDigests,
+            undefined,
+            compiled.tableFolds,
+         ) === at.rollupAddress
+      );
+   }
+   const buildSource = presentAs(variant.baseBuildSource, {
+      name: at.base.name,
+      sourceID: at.base.sourceID,
+   });
+   if (
+      computeSourceEntityId(
+         buildSource,
+         compiled.connectionDigests,
+         undefined,
+         compiled.tableFolds,
+      ) !== at.baseAddress
+   ) {
+      return false;
+   }
+   const table = run.manifest.buildManifest.entries[at.baseAddress]?.tableName;
+   if (table === undefined) return false;
+   const only = new Manifest();
+   only.update(at.baseAddress, { tableName: table });
+   if (!readsTable(buildSQLOf(variant.source, only.buildManifest), table)) {
+      return false;
+   }
+   return sameColumns(variant.source, planned);
+}
+
+/**
+ * Whether `sql` reads the table `table` (a manifest's table path) by its whole
+ * reference: not as the tail of another schema's path, nor as the head of a
+ * longer one.
+ */
+function readsTable(sql: string, table: string): boolean {
+   const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(sql);
+}
+
+/**
+ * Whether two sources output the same columns, by name, type and numeric
+ * subtype, in order: an integer column where the plan has a float is drift.
+ */
+function sameColumns(a: PersistSource, b: PersistSource): boolean {
+   return (
+      JSON.stringify(outputColumnsOf(a)) === JSON.stringify(outputColumnsOf(b))
+   );
 }
 
 /**

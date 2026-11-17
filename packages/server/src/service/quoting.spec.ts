@@ -9,7 +9,8 @@ import {
    quoteManifestTablePath,
    quoteRenameTarget,
    quoteTablePath,
-   sqlTablePathParts,
+   isUsableTableName,
+   tablePathParts,
    UnquotableIdentifierError,
 } from "./quoting";
 import { getDialect } from "@malloydata/malloy";
@@ -408,44 +409,30 @@ describe("quoteManifestTablePath", () => {
    });
 });
 
-describe("sqlTablePathParts", () => {
+describe("tablePathParts on hostile parts, per dialect", () => {
    // Hostile parts, minus a dot: BigQuery reads a dot inside backticks as a
    // path separator, so a part holding one does not survive a round trip.
    const PARTS = HOSTILE.filter((p) => !p.includes("."));
 
    for (const dialect of Object.keys(READERS)) {
-      it(`${dialect} reads back every hostile part quoteTablePath writes`, () => {
+      it(`${dialect} reads back every hostile part quoteIdentifier writes`, () => {
          for (const a of PARTS) {
             for (const b of ["t", ...PARTS]) {
                const quoted = [a, b]
                   .map((p) => quoteIdentifier(p, dialect))
                   .join(".");
-               expect(sqlTablePathParts(quoted, dialect)).toEqual([
-                  { value: a, quoted: true },
-                  { value: b, quoted: true },
-               ]);
+               expect(tablePathParts(quoted, dialect)).toEqual([a, b]);
             }
          }
       });
    }
 
-   it("reads bare and partly quoted paths, keeping bare parts unfolded", () => {
-      expect(sqlTablePathParts('"S".t', "snowflake")).toEqual([
-         { value: "S", quoted: true },
-         { value: "t", quoted: false },
-      ]);
-      expect(sqlTablePathParts("my-proj.ds.t", "standardsql")).toEqual([
-         { value: "my-proj", quoted: false },
-         { value: "ds", quoted: false },
-         { value: "t", quoted: false },
-      ]);
-   });
-
-   it("reads one BigQuery backtick pair around a dotted path as the whole path", () => {
-      expect(sqlTablePathParts("`p-1.ds.t`", "standardsql")).toEqual([
-         { value: "p-1", quoted: true },
-         { value: "ds", quoted: true },
-         { value: "t", quoted: true },
+   it("reads bare and partly quoted paths", () => {
+      expect(tablePathParts('"S".t', "snowflake")).toEqual(["S", "t"]);
+      expect(tablePathParts("my-proj.ds.t", "standardsql")).toEqual([
+         "my-proj",
+         "ds",
+         "t",
       ]);
    });
 
@@ -467,8 +454,48 @@ describe("sqlTablePathParts", () => {
          ["`ds`.`a``b`", "standardsql"],
       ];
       for (const [path, dialect] of refused) {
-         expect(sqlTablePathParts(path, dialect)).toBeUndefined();
+         expect(tablePathParts(path, dialect)).toBeUndefined();
       }
+   });
+});
+
+describe("isUsableTableName: one rule for every dialect", () => {
+   const NAMES = [
+      "s.t",
+      '"S".t',
+      "`p.d.t`",
+      "`a.`.t",
+      '"a""b".t',
+      "`a``b`.t",
+      "s..t",
+      '"s"x.t',
+      "a\\b",
+      "`a\\`b`.t",
+      "s.a\nb",
+      '"s"."a\u0000b"',
+      "my-proj.ds.T x",
+   ];
+
+   it("accepts a name only when every dialect reads and quotes it", () => {
+      for (const name of NAMES) {
+         const everyDialect = Object.keys(READERS).every(
+            (d) => tablePathParts(name, d) !== undefined,
+         );
+         if (isUsableTableName(name)) expect(everyDialect).toBe(true);
+      }
+   });
+
+   it("refuses a backslash or control character anywhere, and a path BigQuery reads differently", () => {
+      expect(isUsableTableName("a\\b")).toBe(false);
+      expect(isUsableTableName("`a\\`b`.t")).toBe(false);
+      expect(isUsableTableName("s.a\nb")).toBe(false);
+      // A doubled backtick reads as one on every dialect but BigQuery.
+      expect(isUsableTableName("`a``b`.t")).toBe(false);
+      // A backticked dot is one part elsewhere, a separator (here, an empty
+      // part) on BigQuery.
+      expect(isUsableTableName("`a.`.t")).toBe(false);
+      expect(isUsableTableName('"S".t')).toBe(true);
+      expect(isUsableTableName("`p.d.t`")).toBe(true);
    });
 });
 
@@ -540,5 +567,52 @@ describe("quoteRenameTarget", () => {
    it("is a no-op on an already-unqualified name", () => {
       expect(quoteRenameTarget("orders_v3", "snowflake")).toBe('"orders_v3"');
       expect(quoteRenameTarget("orders_v3", "postgres")).toBe('"orders_v3"');
+   });
+});
+
+describe("tablePathParts: the one parser of a bound table name", () => {
+   const cases: [string, string, string[] | undefined][] = [
+      ["an unquoted path", "s.t", ["s", "t"]],
+      ["a quoted path", '"s"."t"', ["s", "t"]],
+      ["a quoted part holding a dot", '"my.schema"."t"', ["my.schema", "t"]],
+      ["a doubled quote inside a part", '"s"."t""q"', ["s", 't"q']],
+      ["a mix of quoted and unquoted parts", 's."T x"', ["s", "T x"]],
+      ["backtick parts", "`p`.`d`.`t`", ["p", "d", "t"]],
+      ["a doubled backtick", "`a``b`", ["a`b"]],
+      ["an unclosed quote", '"s.t', undefined],
+      ["text after a closing quote", '"s"x.t', undefined],
+      ["an empty part", "s..t", undefined],
+   ];
+   for (const [label, path, parts] of cases) {
+      it(label, () => {
+         expect(tablePathParts(path, "postgres")).toEqual(parts);
+      });
+   }
+
+   it("reads a BigQuery path in one pair of backticks as its parts", () => {
+      expect(tablePathParts("`proj.ds.t`", "standardsql")).toEqual([
+         "proj",
+         "ds",
+         "t",
+      ]);
+      // Elsewhere a backticked dot is part of the name.
+      expect(tablePathParts("`a.b`", "mysql")).toEqual(["a.b"]);
+   });
+
+   it("is the inverse of quoteTablePath", () => {
+      for (const dialect of ["postgres", "standardsql", "snowflake"]) {
+         for (const path of [
+            "s.t",
+            "proj-1.ds.T x",
+            'a.b"c',
+            "a.b`c",
+            "a.b\\c",
+            "a`.\\b.c\\`",
+         ]) {
+            expect(
+               tablePathParts(quoteTablePath(path, dialect), dialect),
+            ).toEqual(path.split("."));
+         }
+      }
    });
 });
