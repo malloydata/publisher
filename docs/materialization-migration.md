@@ -566,8 +566,8 @@ source: sales is orders extend {
 ```
 
 `storage=` carries over unchanged. `namespace="x"` is deprecated on both spellings: write
-`name="x.<table>"`, whose container places the table where `namespace=` did (one or the other
-of `name=` and `storage=`, never both). A `#(preaggregate)` with neither now takes its base's
+`name="x.<table>"`, whose container places the table where `namespace=` did and whose leaf
+starts its name (`x.<table>__p<hash>`; one or the other of `name=` and `storage=`, never both). A `#(preaggregate)` with neither now takes its base's
 `name=` container, as `#@ preaggregate` always has. A query the rollup
 answers reports `servedBy.kind: "rollup"`. What differs from `#@ preaggregate`:
 
