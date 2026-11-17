@@ -82,6 +82,33 @@ source: t is duckdb.table('ev') -> {
       );
    });
 
+   // P4-01: an older build stored a computed 128-bit integer, which DuckLake
+   // holds as a DOUBLE; a rebuild stores it as DECIMAL(38,0), so the source
+   // re-seeds once, but never for a value past 38 digits, whose rebuild would
+   // store the 128-bit type again and re-seed on every run.
+   it("P4-01: names a stored 128-bit integer a rebuild stores exactly, once", async () => {
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE wide_t AS SELECT 4530000000000225187::HUGEINT AS id, DATE '2026-02-28' AS d_next, true AS flag",
+      );
+      expect(
+         (await columnsARebuildWouldRecast(duckdb, "wide_t", source)).map(
+            (m) => [m.column, m.storedType, m.declaredType],
+         ),
+      ).toEqual([["id", "HUGEINT", "number"]]);
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE wide_dec_t AS SELECT 4530000000000225187::DECIMAL(38,0) AS id, DATE '2026-02-28' AS d_next, true AS flag",
+      );
+      expect(
+         await columnsARebuildWouldRecast(duckdb, "wide_dec_t", source),
+      ).toEqual([]);
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE wide_over_t AS SELECT 150000000000000000000000000000000000001::HUGEINT AS id, DATE '2026-02-28' AS d_next, true AS flag",
+      );
+      expect(
+         await columnsARebuildWouldRecast(duckdb, "wide_over_t", source),
+      ).toEqual([]);
+   });
+
    it("names none when the table cannot be described", async () => {
       expect(
          await columnsARebuildWouldRecast(duckdb, "no_such_table", source),

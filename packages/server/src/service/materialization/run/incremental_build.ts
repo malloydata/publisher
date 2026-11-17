@@ -29,7 +29,9 @@ import {
    rebuildWouldRecast,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
    type StoredColumnTypeMismatch,
+   wideIntegerColumns,
 } from "../stored_column_types";
+import { quoteIdentifier } from "../../quoting";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { recordIncrementalStep } from "../../../materialization_metrics";
@@ -982,9 +984,63 @@ export async function columnsARebuildWouldRecast(
          ? [{ name: r.column_name, type: r.column_type }]
          : [],
    );
-   return rebuildWouldRecast(
-      schema,
-      persistSourceDeclaredColumns(persistSource),
-      { queryTimezone: persistSourceQueryTimezone(persistSource) },
-   );
+   const declared = persistSourceDeclaredColumns(persistSource);
+   return [
+      ...rebuildWouldRecast(schema, declared, {
+         queryTimezone: persistSourceQueryTimezone(persistSource),
+      }),
+      ...(await wideIntegersARebuildStoresExactly(
+         session,
+         quotedTablePath,
+         schema,
+         declared,
+      )),
+   ];
+}
+
+/**
+ * The 128-bit integer columns of a table an older build stored (P4-01), which
+ * DuckLake holds as a DOUBLE and a rebuild now stores as `DECIMAL(38,0)`
+ * (`wideIntegerColumns`), so the source re-seeds once. Only when every value
+ * fits: one past 38 digits fails the rebuild's cast, which stores the 128-bit
+ * type again and would re-seed on every run. The stored values are already
+ * rounded, so the bound is read with a margin. None when the read fails.
+ */
+async function wideIntegersARebuildStoresExactly(
+   session: { runSQL(sql: string): Promise<unknown> },
+   quotedTablePath: string,
+   schema: readonly { name: string; type: string }[],
+   declared: readonly { name: string; type: string }[],
+): Promise<StoredColumnTypeMismatch[]> {
+   const wide = wideIntegerColumns(schema);
+   if (wide.length === 0) return [];
+   const quoted = wide.map((c) => quoteIdentifier(c, STORAGE_DIALECT));
+   let row: Record<string, unknown> | undefined;
+   try {
+      const result = (await session.runSQL(
+         `SELECT ${quoted
+            .map(
+               (c, i) =>
+                  `coalesce(max(abs(${c}::DOUBLE)) < 9e37, true) AS fits_${i}`,
+            )
+            .join(", ")} FROM ${quotedTablePath}`,
+      )) as Record<string, unknown>[] | { rows?: Record<string, unknown>[] };
+      row = (Array.isArray(result) ? result : (result.rows ?? []))[0];
+   } catch {
+      return [];
+   }
+   return wide.flatMap((column, i) => {
+      if (row?.[`fits_${i}`] !== true) return [];
+      const stored = schema.find((c) => c.name === column);
+      const field = declared.find(
+         (d) => d.name.toLowerCase() === column.toLowerCase(),
+      );
+      return [
+         {
+            column,
+            storedType: stored?.type ?? "HUGEINT",
+            declaredType: field?.type ?? "number",
+         },
+      ];
+   });
 }

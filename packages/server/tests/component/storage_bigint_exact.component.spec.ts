@@ -4,18 +4,21 @@
 /**
  * P4-01: DuckLake (DuckDB 1.5) writes a 128-bit integer column to Parquet as
  * a DOUBLE while its catalog still reports HUGEINT, so a sum of BIGINTs
- * stored in a `storage=` table comes back rounded
- * (4530000000000225187 as 4530000000000225280). Publisher trusted the
- * catalog and read the column as an exact `HUGEINT`, so the path report said
- * "materialized" while the digits were wrong.
+ * stored in a `storage=` table came back rounded
+ * (4530000000000225187 as 4530000000000225280), and Publisher, trusting the
+ * catalog, read it as an exact `HUGEINT` and reported it materialized.
  *
  * End to end on a real DuckLake (file catalog, Parquet data), with the
- * lifecycle spec's three seams (materialization_ducklake_lifecycle): every
- * answer that reads a stored 128-bit integer equals live digit for digit and
- * is answered live, for a `#@ persist storage=` source, a `#(materialize)`
- * source, a `#(preaggregate)` rollup and a persisted view. Controls: a
- * `BIGINT` and a `DECIMAL(38,0)` column in the same destination still serve
- * from the table.
+ * lifecycle spec's three seams (materialization_ducklake_lifecycle):
+ *
+ * - The fix: a build stores a 128-bit integer it computed as DECIMAL(38,0),
+ *   which Parquet keeps exactly, so a `#@ persist storage=` source, a
+ *   `#(materialize)` source, a `#(preaggregate)` rollup and a persisted view
+ *   are served from the table and equal live digit for digit.
+ * - The guard: a value past 38 digits fails that cast, the build stores the
+ *   128-bit type (as an older build did), and every answer reading it is
+ *   answered live, the path report saying why.
+ * - Controls: a `BIGINT` and a `DECIMAL(38,0)` column serve as before.
  */
 
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
@@ -53,6 +56,8 @@ const BIG = 4530000000000225186n;
 const SUM = `${BIG + 1n}`;
 /** Groups: each sums BIG and 1, so every stored row is SUM. */
 const GROUPS = 600;
+/** Past DECIMAL(38,0), within HUGEINT: no exact storage type in DuckLake. */
+const WIDE = "150000000000000000000000000000000000001";
 
 /**
  * `raw` has, per key `k`, one row of BIG and one of 1 (`v`, a BIGINT), and
@@ -100,6 +105,26 @@ source: m_sum is sums extend { primary_key: k }
 
 #(materialize) storage="lake"
 source: m_ctl is raw extend {}
+
+// One HUGEINT per key past DECIMAL(38,0): every table over it falls back to
+// the 128-bit type, which DuckLake stores as a DOUBLE.
+source: wide_base is warehouse.sql("""
+  SELECT 'k' || lpad(i::VARCHAR, 5, '0') AS k, ${WIDE}::HUGEINT AS h
+  FROM range(${GROUPS}) AS t(i)
+""")
+
+source: wide is wide_base extend {
+  #(preaggregate) grain=["k"] storage="lake"
+  measure: h_total is h.sum()
+  #@ persist storage="lake"
+  view: by_k_wide is { group_by: k; aggregate: ht is h.sum() }
+}
+
+#@ persist storage="lake"
+source: p_wide is wide -> { group_by: k; aggregate: hs is h.sum(), n is count() }
+
+#(materialize) storage="lake"
+source: m_wide is wide_base extend {}
 `;
 
 /** Each query, what it reads, and whether the table answers it. */
@@ -117,24 +142,48 @@ const CASES: {
       name: "P4-01 #@ persist storage=: a stored sum of BIGINTs",
       malloy: "run: p_sum -> { select: k, total; order_by: k }",
       exact: { column: "total", value: SUM },
-      leg: "materialized",
+      served: true,
    },
    {
       name: "P4-01 #(materialize) storage=: a stored HUGEINT column",
       malloy: "run: m_sum -> { select: k, total; order_by: k }",
       exact: { column: "total", value: SUM },
-      leg: "materialized",
+      served: true,
    },
    {
       name: "P4-01 #(preaggregate) storage=: a rollup of a BIGINT sum",
       malloy: "run: raw -> { group_by: k; aggregate: v_total; order_by: k }",
       exact: { column: "v_total", value: SUM },
-      leg: "rollup",
+      served: true,
    },
    {
       name: "P4-01 #@ persist on a view, storage=: a stored BIGINT sum",
       malloy: "run: raw -> by_k",
       exact: { column: "total", value: SUM },
+      served: true,
+   },
+   {
+      name: "P4-01 guard, #@ persist storage=: a 128-bit sum past 38 digits answers live",
+      malloy: "run: p_wide -> { select: k, hs; order_by: k }",
+      exact: { column: "hs", value: WIDE },
+      leg: "materialized",
+   },
+   {
+      name: "P4-01 guard, #(materialize) storage=: a HUGEINT past 38 digits answers live",
+      malloy: "run: m_wide -> { select: k, h; order_by: k }",
+      exact: { column: "h", value: WIDE },
+      leg: "materialized",
+   },
+   {
+      name: "P4-01 guard, #(preaggregate) storage=: a rollup of it answers live",
+      malloy: "run: wide -> { group_by: k; aggregate: h_total; order_by: k }",
+      exact: { column: "h_total", value: WIDE },
+      leg: "rollup",
+   },
+   {
+      name: "P4-01 guard, a persisted view of it answers live",
+      malloy: "run: wide -> by_k_wide",
+      exact: { column: "ht", value: WIDE },
       leg: "view",
    },
    {
@@ -443,7 +492,7 @@ describe.skipIf(process.platform === "win32")(
          }
       });
 
-      it("builds every table into the lake as Parquet; the sums are stored rounded", async () => {
+      it("builds every table into the lake as Parquet: a computed sum as DECIMAL(38,0), every digit kept", async () => {
          const run = await build();
          expect([run.status, run.error]).toEqual(["MANIFEST_FILE_READY", null]);
          const entries = Object.values(
@@ -460,24 +509,34 @@ describe.skipIf(process.platform === "win32")(
                }
             ).entries,
          );
-         const pSum = entries.find((e) => e.sourceName === "p_sum")!;
-         expect(pSum.schema).toContainEqual({
-            name: "total",
+         const entry = (name: string) =>
+            entries.find((e) => e.sourceName === name)!;
+         for (const name of ["p_sum", "m_sum"]) {
+            expect(entry(name).schema).toContainEqual({
+               name: "total",
+               type: "DECIMAL(38,0)",
+            });
+         }
+         // Past 38 digits the cast fails and the 128-bit type is stored.
+         expect(entry("p_wide").schema).toContainEqual({
+            name: "hs",
             type: "HUGEINT",
          });
-         await inspect(async (c) => {
-            const files = await c.runSQL(
-               `SELECT data_file FROM ducklake_list_files('${LAKE}', '${pSum.physicalTableName}')`,
-            );
-            expect(files.rows.length).toBeGreaterThan(0);
-            const stored = await c.runSQL(
-               `SELECT DISTINCT total::VARCHAR AS total FROM ${LAKE}.main."${pSum.physicalTableName}"`,
-            );
-            // The defect itself, measured: the digits are gone at rest.
-            expect(stored.rows.map((r) => String(r.total))).toEqual([
-               "4530000000000225280",
-            ]);
-         });
+         const stored = (name: string, column: string) =>
+            inspect(async (c) => {
+               const table = entry(name).physicalTableName;
+               const files = await c.runSQL(
+                  `SELECT data_file FROM ducklake_list_files('${LAKE}', '${table}')`,
+               );
+               expect(files.rows.length).toBeGreaterThan(0);
+               const rows = await c.runSQL(
+                  `SELECT DISTINCT ${column}::VARCHAR AS v FROM ${LAKE}.main."${table}"`,
+               );
+               return rows.rows.map((r) => String(r.v));
+            });
+         expect(await stored("p_sum", "total")).toEqual([SUM]);
+         // What the guard answers live: the digits are gone at rest.
+         expect(await stored("p_wide", "hs")).not.toContain(WIDE);
       });
 
       for (const c of CASES) {

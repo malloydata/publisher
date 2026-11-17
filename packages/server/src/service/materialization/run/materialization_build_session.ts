@@ -51,6 +51,7 @@ import { fromSubselect } from "../subselect";
 import {
    type BuildCastOptions,
    castToDeclaredTypes,
+   wideIntegerColumns,
    isCastConversionError,
    keepsWarehouseType,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
@@ -1765,7 +1766,15 @@ export async function createTableWithDeclaredTypes(
       options.sourceType,
       options.described,
    );
-   const cast = castToDeclaredTypes(selectSQL, columns, declared);
+   const cast = castToDeclaredTypes(selectSQL, columns, {
+      ...declared,
+      exactIntegers: await computedWideIntegers(
+         session,
+         selectSQL,
+         options.sourceType,
+         options.described,
+      ),
+   });
    if (cast === selectSQL) {
       return createTableAndDescribe(
          session,
@@ -1799,6 +1808,37 @@ export async function createTableWithDeclaredTypes(
          selectSQL,
          options,
       );
+   }
+}
+
+/**
+ * The output columns a DuckDB-computed build (same-catalog or chained: no
+ * passthrough `sourceType`) produces as a 128-bit integer, which DuckLake
+ * would store as a DOUBLE (P4-01): stored as `DECIMAL(38,0)` instead
+ * ({@link wideIntegerColumns}). Read by describing the SELECT in the
+ * destination's session, which prepares it and runs nothing: the SELECT
+ * reads only the destination's own tables. A passthrough's columns arrive
+ * in the warehouse's types (a BigQuery INT64 as BIGINT, a Snowflake or
+ * Postgres number as DECIMAL), so it is not described, though a description
+ * the caller already holds is read. A describe that fails casts nothing; the
+ * build itself reports the error.
+ */
+async function computedWideIntegers(
+   session: DuckDBConnection,
+   selectSQL: string,
+   sourceType: FederatedSourceType | undefined,
+   described: readonly { name: string; type: string }[] | undefined,
+): Promise<string[]> {
+   if (described) return wideIntegerColumns(described);
+   if (sourceType !== undefined) return [];
+   try {
+      return wideIntegerColumns(await describeTable(session, `(${selectSQL})`));
+   } catch (err) {
+      logger.warn(
+         "Could not describe a storage build's computed columns; storing its integers as computed",
+         { errorCode: errorCodeOf(err) },
+      );
+      return [];
    }
 }
 

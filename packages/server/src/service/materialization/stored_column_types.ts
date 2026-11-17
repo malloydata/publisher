@@ -221,12 +221,21 @@ export function castToDeclaredTypes(
    declared: readonly DeclaredColumn[],
    options: BuildCastOptions = {},
 ): string {
+   const cast = new Set<string>();
    const casts = declared.flatMap((d) => {
       const target = buildCastTarget(d.type, options);
       if (!target) return [];
+      cast.add(d.name.toLowerCase());
       const column = quoteIdentifier(d.name, STORAGE_DIALECT);
       return [`CAST(${column} AS ${target}) AS ${column}`];
    });
+   for (const name of options.exactIntegers ?? []) {
+      if (cast.has(name.toLowerCase())) continue;
+      const column = quoteIdentifier(name, STORAGE_DIALECT);
+      casts.push(
+         `CAST(${column} AS ${EXACT_INTEGER_STORAGE_TYPE}) AS ${column}`,
+      );
+   }
    if (casts.length === 0) return selectSQL;
    return `SELECT * REPLACE (${casts.join(", ")}) ${fromSubselect(selectSQL, "__declared_types")}`;
 }
@@ -262,6 +271,31 @@ export interface BuildCastOptions {
     * could store the day before. The serve side decides such a column instead.
     */
    queryTimezone?: string;
+   /**
+    * Output columns the build computed in DuckDB as a 128-bit integer
+    * ({@link wideIntegerColumns}): each is stored as `DECIMAL(38,0)`, which
+    * DuckLake's Parquet keeps exactly, where it would store the 128-bit type
+    * as a DOUBLE ({@link ducklakeStoresAsDouble}).
+    */
+   exactIntegers?: readonly string[];
+}
+
+/** The type a 128-bit integer column is stored as, every digit kept. */
+const EXACT_INTEGER_STORAGE_TYPE = "DECIMAL(38,0)";
+
+/**
+ * The columns of a described SELECT that DuckLake would store as a DOUBLE: a
+ * 128-bit integer, such as DuckDB's sum of BIGINTs. A build stores each as
+ * {@link EXACT_INTEGER_STORAGE_TYPE}; a value past 38 digits fails that cast,
+ * and the build stores the warehouse's types instead
+ * ({@link isCastConversionError}), which the serve side answers live.
+ */
+export function wideIntegerColumns(
+   described: readonly { name?: string; type?: string }[],
+): string[] {
+   return described.flatMap((c) =>
+      c.name && c.type && ducklakeStoresAsDouble(c.type) ? [c.name] : [],
+   );
 }
 
 /** The DuckDB type a declared Malloy type is cast to at build, or undefined. */

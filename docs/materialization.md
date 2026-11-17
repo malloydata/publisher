@@ -610,7 +610,8 @@ no type declares is counted in `publisher_storage_serve_shape_type_fallback_tota
 reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A
 column whose field Malloy types as a big integer (a DuckDB `BIGINT`, `HUGEINT` or `UBIGINT`, a
 BigQuery `INT64`, a Snowflake `NUMBER(p,0)`, or a sum or max over one) is therefore read through a
-native cast: `::"HUGEINT"` in a `storage=` table, and, in a colocated one (a colocated
+native cast: `::"HUGEINT"` in a `storage=` table when the column is stored as a 64-bit or narrower
+integer or a `DECIMAL(p,0)` (a 128-bit integer column in DuckLake is not exact; see below), and, in a colocated one (a colocated
 `#(materialize)` table, or a v1 `#@ persist` one), the
 column's own warehouse type, which each colocated build reads from the warehouse's catalog and
 records on its manifest entry (`nativeSchema`). Malloy types the cast as a big integer, so the
@@ -634,6 +635,28 @@ live; the next full rebuild records the types and clears it. Served never exceed
 (Postgres returns its rows through JSON), a `storage=` table reads the column as a plain number,
 which rounds the same way, and a colocated one reads it through Postgres's own `bigint` type, on
 live's own path ([known limitation 12](materialization-v2-plan.md#known-limitations-to-revisit)).
+
+**A 128-bit integer in DuckLake.** DuckLake (DuckDB 1.5) writes a `HUGEINT` or `UHUGEINT` column to
+its Parquet files as a `DOUBLE`, while its catalog still reports the 128-bit type, so a value past
+2^53 is rounded at rest: a sum of `BIGINT`s, 4530000000000225187, reads back as
+4530000000000225280. Only rows DuckLake keeps inlined in its catalog stay exact, and a reader
+cannot tell which it has. A plain DuckDB table keeps every digit. So:
+
+- A build that computes its columns in DuckDB (a same-catalog DuckLake build, a chained build over a
+  stored upstream, or a stored rollup) stores each 128-bit integer column it computes as
+  `DECIMAL(38,0)`, which Parquet keeps exactly and the serve side reads with every digit. A value
+  past 38 digits fails that cast, and the build stores the 128-bit type instead.
+- A 128-bit integer column in a `storage=` table, or in a database table on a `ducklake`
+  connection, is never read as exact. A `#@ persist` or `#(materialize)` table leaves the column out,
+  so only a query that reads it is answered live. A rollup, persisted view or persisted query whose
+  table stores one answers live; the path report skips that table with `MISSING_FIELD` and says the
+  stored column cannot hold live's integer exactly.
+- An incremental source whose table an older build stored with such a column re-seeds once on its
+  next run, so the rebuild stores it as `DECIMAL(38,0)`, unless a value is past 38 digits. Other
+  tables built before this change keep the 128-bit column, answered live, until their next full
+  build; nothing forces that rebuild.
+- A colocated build on a `ducklake` connection still stores the 128-bit type, which is answered
+  live as above.
 
 A run's record (`GET …/packages/{packageName}/materializations/{materializationId}`, and the
 listing) returns its build manifest. Each entry names the physical table it built, and a colocated
