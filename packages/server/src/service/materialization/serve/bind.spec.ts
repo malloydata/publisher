@@ -1375,3 +1375,86 @@ describe("applyObservedColumns", () => {
       expect(out.bindings).toEqual([storage]);
    });
 });
+
+/** One colocated served-copy binding over `x`, with what its build captured. */
+function bindSpelled(args: {
+   declared: string;
+   builtNative?: string;
+   builtSchema?: string;
+   now: string;
+   nowNative: string;
+}) {
+   const entry = {
+      tableName: "t",
+      connectionName: "c",
+      ...(args.builtSchema
+         ? { schema: [{ name: "x", type: args.builtSchema }] }
+         : {}),
+      ...(args.builtNative
+         ? { nativeSchema: [{ name: "x", type: args.builtNative }] }
+         : {}),
+   };
+   const binding = {
+      kind: "materialize",
+      tier: "colocated",
+      sourceName: "s",
+      destinationName: "c",
+      virtualHandle: "e",
+      tablePath: "t",
+      schema: [{ name: "x", type: args.declared }],
+   };
+   const out = applyObservedColumns({
+      entries: { e: entry } as never,
+      bindings: [binding] as never,
+      observed: new Map([
+         [
+            "e",
+            {
+               dialect: "postgres",
+               columns: [
+                  { name: "x", type: args.now, nativeType: args.nowNative },
+               ],
+            },
+         ],
+      ]) as never,
+   });
+   return {
+      column: out.bindings[0]?.schema.find((c) => c.name === "x"),
+      drifted: out.drifted.length > 0,
+   };
+}
+
+// The bind compares spelled types for a narrowing only when the build
+// captured no native type: a binding's declared type may stand in for a
+// captured one, and a column whose native type is as built has not moved.
+describe("the spelled-type narrowing check runs only with no native capture", () => {
+   it("a column natively as built is read, not left out, when its declared type stands in", () => {
+      const r = bindSpelled({
+         declared: "BIGINT",
+         builtNative: "integer",
+         now: "INTEGER",
+         nowNative: "integer",
+      });
+      expect(r.column).toBeDefined();
+      expect(r.drifted).toBe(false);
+   });
+   it("with no native capture, a narrowing seen only in the spelled types is left out", () => {
+      expect(
+         bindSpelled({
+            declared: "DECIMAL(10,1)",
+            builtSchema: "DECIMAL(10,1)",
+            now: "DECIMAL(10,0)",
+            nowNative: "numeric(10,0)",
+         }).column,
+      ).toBeUndefined();
+      // A gate column: two tenants either side of 2^53 would read alike.
+      expect(
+         bindSpelled({
+            declared: "BIGINT",
+            builtSchema: "BIGINT",
+            now: "DOUBLE",
+            nowNative: "double precision",
+         }).column,
+      ).toBeUndefined();
+   });
+});
