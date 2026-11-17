@@ -131,21 +131,48 @@ function tableRows(): string[] {
 /** Every leg, switch setting and tables read the router lets past a gate. */
 function legRows(): string[] {
    const out: string[] = [];
+   // A `storage=` read carries the stored types of its gate columns, as the
+   // router lists them; exact unless the row's name says otherwise.
+   const exact = { gateColumnTypes: ["BIGINT", "VARCHAR"] };
    const reads = {
       none: [],
       database: [{ tier: "database" as const }],
-      storage: [{ tier: "storage" as const }],
-      mixed: [{ tier: "database" as const }, { tier: "storage" as const }],
+      storage: [{ tier: "storage" as const, ...exact }],
+      mixed: [
+         { tier: "database" as const },
+         { tier: "storage" as const, ...exact },
+      ],
       // A `storage=` table plan admitted past its own gate (G3), alone,
       // beside a database one, and beside one it did not admit.
-      own: [{ tier: "storage" as const, ownGateKept: true }],
+      own: [{ tier: "storage" as const, ownGateKept: true, ...exact }],
       own_database: [
          { tier: "database" as const },
-         { tier: "storage" as const, ownGateKept: true },
+         { tier: "storage" as const, ownGateKept: true, ...exact },
       ],
       own_storage: [
-         { tier: "storage" as const, ownGateKept: true },
-         { tier: "storage" as const },
+         { tier: "storage" as const, ownGateKept: true, ...exact },
+         { tier: "storage" as const, ...exact },
+      ],
+      // Question 14 (L2): a gate column stored as a float or a 128-bit
+      // integer, or one whose type was not listed, keeps no answer under any
+      // switch, on either tier.
+      own_inexact: [
+         {
+            tier: "storage" as const,
+            ownGateKept: true,
+            gateColumnTypes: ["DOUBLE"],
+         },
+      ],
+      own_hugeint: [
+         {
+            tier: "storage" as const,
+            ownGateKept: true,
+            gateColumnTypes: ["HUGEINT"],
+         },
+      ],
+      own_unlisted: [{ tier: "storage" as const, ownGateKept: true }],
+      database_inexact: [
+         { tier: "database" as const, gateColumnTypes: ["DOUBLE"] },
       ],
    };
    for (const leg of LEGS)

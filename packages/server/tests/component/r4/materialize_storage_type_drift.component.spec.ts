@@ -25,8 +25,10 @@
  * | d2     | DATE      | TIMESTAMP   | cast to DATE             |
  *
  * The `storage=` table and the database ones are held to the same answers.
- * A database rollup, read through Malloy's build-manifest substitution where
- * no cast reaches, answers live once a column it stores drifted. The
+ * A database rollup whose column drifted is read through a typed source, as
+ * a `storage=` rollup is, so only a query reading that column answers live
+ * (database_table_drift_substituted.component.spec.ts holds every drift kind
+ * on a rollup, a persisted view and a persisted query). The
  * `storage-column-type-mismatch` warning's cast or live handling is pinned in
  * storage_bindings.spec.ts.
  */

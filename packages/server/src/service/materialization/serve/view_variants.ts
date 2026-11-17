@@ -82,7 +82,13 @@ import {
 } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import { type Binding, type Pinned, storageLookupOf } from "../domain/binding";
+import {
+   type Binding,
+   heldReadBinding,
+   isDatabase,
+   type Pinned,
+   storageLookupOf,
+} from "../domain/binding";
 import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { TIMEFRAMES } from "./served_copy";
@@ -91,6 +97,7 @@ import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
 import {
    canonicalStoredSchema,
+   nativeTypeLookup,
    storedColumnReadPlan,
 } from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
@@ -148,6 +155,13 @@ export interface ResolvedTable extends ViewTable {
    binding?: Binding;
    /** A database table's name as the manifest substitutes it. */
    databaseTable?: string;
+   /**
+    * A database table's stored columns no faithful cast reads as declared
+    * since it was altered outside a build (the bind's `leftOutColumns`):
+    * every query on a persisted result reads all its columns, so the leg
+    * declines while one is.
+    */
+   leftOut?: readonly string[];
 }
 
 export interface CompiledVariant {
@@ -243,12 +257,19 @@ export class PersistedViewServe {
    reportedTable(queryString: string, pinned: Pinned): ViewTable | undefined {
       const called = this.calledView(queryString);
       if (!called) return undefined;
-      const { virtualMap, quotedPath, binding, databaseTable, ...table } =
-         this.tableOf(called.plan, pinned, pinned.compilerManifest);
+      const {
+         virtualMap,
+         quotedPath,
+         binding,
+         databaseTable,
+         leftOut,
+         ...table
+      } = this.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
       void quotedPath;
       void binding;
       void databaseTable;
+      void leftOut;
       return table;
    }
 
@@ -324,6 +345,13 @@ export class PersistedViewServe {
       }
       if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("view_stale");
+      }
+      const altered = alteredColumnsRefusal(table);
+      if (altered) {
+         throw new LegDecline(
+            "view_missing_field",
+            `the stored result cannot answer \`${call.view}\` with live's columns: ${altered}`,
+         );
       }
       const variant = await this.compiledVariant(plan, localName, table);
       if (variant.refusal) {
@@ -410,6 +438,36 @@ export class PersistedViewServe {
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
       const fresh = freshManifest?.entries[tableId]?.tableName;
+      const leftOut = bound.leftOutColumns?.length
+         ? { leftOut: bound.leftOutColumns }
+         : {};
+      // Altered outside its build: read as a `storage=` table is, through a
+      // typed source on its own connection, never by the substitution.
+      const held =
+         fresh !== undefined
+            ? heldReadBinding(
+                 isPersistedQuerySourceID(plan.buildSourceID)
+                    ? "query"
+                    : "view",
+                 tableId,
+                 bound,
+              )
+            : undefined;
+      if (held) {
+         return {
+            ...withId,
+            ...dataAsOf,
+            tier: "database",
+            built: true,
+            stale: false,
+            binding: held,
+            quotedPath: held.tablePath,
+            virtualMap: new Map([
+               [held.destinationName, new Map([[tableId, held.tablePath]])],
+            ]),
+            ...leftOut,
+         };
+      }
       return fresh
          ? {
               ...withId,
@@ -418,6 +476,7 @@ export class PersistedViewServe {
               built: true,
               stale: false,
               databaseTable: fresh,
+              ...leftOut,
            }
          : {
               ...withId,
@@ -575,6 +634,12 @@ export async function compilePersistedResultVariant(args: {
               shape.columns.map((c) => c.name),
            ),
            shape,
+           isDatabase(table.binding)
+              ? {
+                   database: true,
+                   nativeTypeOf: nativeTypeLookup(table.binding.nativeSchema),
+                }
+              : {},
         )
       : { casts: new Map<string, ColumnCast>() };
    if ("refusal" in read) return { refusal: read.refusal };
@@ -586,7 +651,7 @@ export async function compilePersistedResultVariant(args: {
       : "";
    const modelFile = path.join(packagePath, args.modelPath);
    const config =
-      table.binding && args.destinations
+      table.binding && !isDatabase(table.binding) && args.destinations
          ? servedCopyConfig(
               packageConfig,
               args.destinations(),
@@ -712,15 +777,25 @@ export async function readStoredVariant(args: {
    if (!read || !sql.includes(read)) {
       throw new LegDecline("view_stale");
    }
-   const { virtualMap, quotedPath, binding, databaseTable, ...reported } =
-      table;
+   const {
+      virtualMap,
+      quotedPath,
+      binding,
+      databaseTable,
+      leftOut,
+      ...reported
+   } = table;
    void quotedPath;
    void databaseTable;
+   void leftOut;
    return {
       runnable,
       table: reported,
       ...(virtualMap ? { virtualMap } : {}),
-      ...(binding ? { binding } : {}),
+      // A database table read through its typed source is still a database
+      // table to the path report and the gate policy, as through the
+      // substitution: only a `storage=` table's binding is reported.
+      ...(binding && !isDatabase(binding) ? { binding } : {}),
       graftScope: {
          modelDef: variant.modelDef,
          materializer: variant.materializer,
@@ -910,6 +985,26 @@ async function viewShape(
 }
 
 /**
+ * Why a database persisted result cannot answer with live's columns: a
+ * stored column altered outside its build that no faithful cast reads as
+ * declared (the bind's `leftOutColumns`), which every query on the result
+ * reads. Undefined when none is.
+ */
+export function alteredColumnsRefusal(
+   table: Pick<ResolvedTable, "leftOut">,
+): string | undefined {
+   return table.leftOut?.length
+      ? alteredColumnsDetail(table.leftOut)
+      : undefined;
+}
+
+/** Why a stored table's columns the bind left out cannot be read, for a decline. */
+export function alteredColumnsDetail(leftOut: readonly string[]): string {
+   const detail = `its table was altered outside a build, and no cast reads ${leftOut.map((c) => `\`${c}\``).join(", ")} as declared`;
+   return detail;
+}
+
+/**
  * The stored columns of a `storage=` view's table read through a cast, by
  * name ({@link storedColumnReadPlan}: a faithful `DATE` or `BOOLEAN`, or a big
  * integer's native read), or why the stored table cannot give live's values:
@@ -921,6 +1016,15 @@ async function viewShape(
 export function storedColumnCasts(
    schema: readonly { name: string; type: string }[],
    shape: Pick<ViewShape, "columns" | "queryTimezone" | "dialect">,
+   /**
+    * Where the table is: a database table (`database`, read where it was
+    * built, each big integer through the type its catalog names, `nativeTypeOf`),
+    * else a `storage=` table in DuckLake.
+    */
+   site: {
+      database?: boolean;
+      nativeTypeOf?: (column: string) => string | undefined;
+   } = {},
 ): { casts: Map<string, ColumnCast> } | { refusal: string } {
    const native = shape.columns.find(
       (c) => c.type === "sql native" || c.type === "json",
@@ -936,8 +1040,10 @@ export function storedColumnCasts(
    const plan = storedColumnReadPlan(schema, declared, {
       queryTimezone: shape.queryTimezone,
       dialect: shape.dialect,
-      // A storage destination is DuckLake.
-      ducklake: true,
+      ...(site.database
+         ? { database: true, nativeTypeOf: site.nativeTypeOf }
+         : // A storage destination is DuckLake.
+           { ducklake: true }),
    });
    const [unservable] = plan.leftOut;
    if (unservable) {

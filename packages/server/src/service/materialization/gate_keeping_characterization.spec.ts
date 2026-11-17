@@ -739,12 +739,14 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tier: "database" | "storage";
       sourceName: string;
       tablePath: string;
+      schema: { name: string; type: string }[];
       ownGateKept?: boolean;
    } => ({
       kind: "materialize",
       tier,
       sourceName: `t_${tier}`,
       tablePath: `t_${tier}`,
+      schema: [{ name: "id", type: "BIGINT" }],
    });
    const reads: Record<string, ReturnType<typeof table>[]> = {
       "database tables": [table("database")],
@@ -762,6 +764,28 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       "no table": [],
    };
    const runnable = {} as never;
+   // The author's compile the router lists the gate's columns from: a source
+   // whose stored columns the gate reads none of, so every table's gate
+   // columns are exact and the rows below are the policy's by tier alone.
+   const authorRunnable = {
+      getPreparedQuery: async () => ({
+         _query: { structRef: "s" },
+         _modelDef: {
+            name: "m",
+            exports: [],
+            contents: {
+               s: {
+                  type: "table",
+                  name: "s",
+                  tablePath: "s",
+                  connection: "duckdb",
+                  dialect: "duckdb",
+                  fields: [{ name: "id", type: "number" }],
+               },
+            },
+         },
+      }),
+   } as never;
 
    function host(tables: ReturnType<typeof table>[]): Required<LegContext> {
       return {
@@ -824,7 +848,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
                      {
                         queryString: "run: s -> v",
                         givens: undefined,
-                        authorRunnable: runnable,
+                        authorRunnable,
                      },
                      pinned,
                      { modelPath: "m.malloy" },

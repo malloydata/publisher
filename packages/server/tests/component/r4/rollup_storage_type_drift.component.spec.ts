@@ -8,13 +8,15 @@
  * grain column and each partial is checked against the type the rollup's
  * build source declares for it, whatever expression the partial aggregates:
  * a faithful cast reads it back where one exists, and any other drifted
- * column declines the rollup (`MISSING_FIELD`), so the query answers live.
- * Every answer equals live's.
+ * column is left out of the rollup's read, so only a query that reads it is
+ * declined (`MISSING_FIELD`) and answers live; the rollup's other columns
+ * keep serving. Every answer equals live's.
  *
  * | Rollup     | Column                       | Declared | Stored    | Read            |
  * | ---------- | ---------------------------- | -------- | --------- | --------------- |
  * | by `code`  | code (grain)                 | number   | VARCHAR   | declined: live  |
  * | by `region`| hi__partial (max)            | number   | VARCHAR   | declined: live  |
+ * | by `region`| rn's partial, undrifted      | number   | BIGINT    | as stored       |
  * | by `g`     | lo_d__partial (min)          | date     | VARCHAR   | declined: live  |
  * | by `r2`    | gm's, lm's partials (exprs)  | number   | VARCHAR   | declined: live  |
  * | by `flag`  | flag (grain)                 | boolean  | INTEGER   | cast to BOOLEAN |
@@ -112,6 +114,8 @@ source: ev is duckdb.table('ev') extend {
   measure: top is amt.max()
   ${annotate("region")}
   measure: hi is amt.max()
+  ${annotate("region")}
+  measure: rn is count()
   ${annotate("g")}
   measure: lo_d is min(d)
   ${annotate("flag")}
@@ -182,6 +186,17 @@ source: ev is duckdb.table('ev') extend {
             malloy: "run: ev -> { where: r2 = 'east'; aggregate: gm }",
          });
          expect(run.served).toEqual([{ gm: 10 }]);
+      });
+
+      it("a measure of a rollup whose other partial drifted: still served from the rollup, equal to live", async () => {
+         const run = await fixture.run({
+            name: "undrifted partial beside a drifted one",
+            malloy:
+               "run: ev -> { group_by: region; aggregate: rn; order_by: region }",
+         });
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedBy?.kind).toBe("rollup");
       });
 
       it("an undrifted rollup whose measure is a boolean over a partial: served from the rollup, equal to live", async () => {

@@ -6,7 +6,7 @@
  * re-applied at read is left out of the build plan with a
  * `rollup-not-built` warning, under the reason `#(materialize)` gives
  * the same case: `given_where_over_unstored_field` for a term over a column
- * the grain drops (the fix is the grain), `given_in_persisted_query` for a
+ * the grain drops (the fix is the grain), `reads_given` for a
  * given its build reads (the table would hold one given value's rows, served
  * to every caller). A rollup in the same model that reads no given is still
  * planned. Drives `Package.create` on the worker path with
@@ -101,7 +101,7 @@ describe("#(rollup) rollups whose given-reading where: cannot be re-applied", ()
             .map((r) => [r.name.split(/[.]|__rollup__/)[0], r.reason])
             .sort(),
       ).toEqual([
-         ["baked", "given_in_persisted_query"],
+         ["baked", "reads_given"],
          ["scoped", "given_where_over_unstored_field"],
       ]);
       const planned = Object.values(pkg.getBuildPlan()?.sources ?? {}).map(

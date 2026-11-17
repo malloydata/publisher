@@ -555,7 +555,7 @@ source: scoped__preagg__category is scoped -> {
       }
       // The one reason every mechanism gives a build that reads a given;
       // `preaggregate_over_dynamic_source` is retained, no longer produced.
-      expect(err?.reason).toBe("given_in_persisted_query");
+      expect(err?.reason).toBe("reads_given");
       // Not the advice that leads nowhere.
       expect(err?.message).not.toContain("extend block");
       expect(err?.message).toContain("no read-time re-application");
@@ -1196,7 +1196,7 @@ source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
       it("keeps refusing a pre-aggregation rollup UNCONDITIONALLY, even with a row_level + attributed outcome", async () => {
          // A rollup groups across the gated column by construction, so there is
          // no row left to filter afterward — the relaxation must never reach
-         // `origin === "preaggregate"` no matter what the outcome says.
+         // `origin === "rollup"` no matter what the outcome says.
          const sources =
             await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]

@@ -218,9 +218,12 @@ export interface LoadedFixture {
    /**
     * Bind the built tables again under the settings installed now, and settle
     * every model's served copy: the bindings a switch read at bind (the v1
-    * cutover's database tables) follow it.
+    * cutover's database tables) follow it. The database tables are always
+    * bound as a server binds them, read as their warehouse holds them now
+    * (`readDatabaseColumns`), so a table altered after its build is bound
+    * with its drift; `observe` is accepted and changes nothing.
     */
-   rebind(): Promise<void>;
+   rebind(options?: { observe?: boolean }): Promise<void>;
    run(
       modelPath: string,
       query: string,
@@ -407,7 +410,7 @@ export async function loadFixture(
             tables,
             buildErrors,
             stored,
-            async rebind() {
+            async rebind(_options: { observe?: boolean } = {}) {
                // Empty first, so the package derives every binding afresh.
                const mz = pkg.materialization();
                mz.bind({ database: {} });

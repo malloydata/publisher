@@ -60,9 +60,12 @@
       "path": {
         "considered": [
           {
+            "code": "served-copy-not-served",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "persist",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "WARNED",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
           }
         ],
@@ -78,17 +81,13 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "materialized",
-          "origin": "persist",
-          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "summary in a.malloy",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "off"
     },
     {
@@ -133,9 +132,12 @@
       "path": {
         "considered": [
           {
+            "code": "served-copy-not-served",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "persist",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "WARNED",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
           }
         ],
@@ -151,17 +153,13 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "materialized",
-          "origin": "persist",
-          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "summary in b.malloy",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "off"
     },
     {
@@ -206,9 +204,12 @@
       "path": {
         "considered": [
           {
+            "code": "served-copy-not-served",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "persist",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "WARNED",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
           }
         ],
@@ -224,17 +225,13 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "materialized",
-          "origin": "persist",
-          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "summary in a.malloy",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "on"
     },
     {
@@ -279,9 +276,12 @@
       "path": {
         "considered": [
           {
+            "code": "served-copy-not-served",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "persist",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "WARNED",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
           }
         ],
@@ -297,17 +297,13 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "materialized",
-          "origin": "persist",
-          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "summary in b.malloy",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "on"
     }
   ]

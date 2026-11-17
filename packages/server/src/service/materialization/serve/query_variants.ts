@@ -57,6 +57,7 @@ import type {
 import type { BuildManifest } from "../domain/types";
 import { viewNoteTexts } from "../text/read_text";
 import {
+   alteredColumnsRefusal,
    callerTextDecline,
    compilePersistedResultVariant,
    type CompiledVariant,
@@ -193,12 +194,19 @@ export class PersistedQueryServe {
    ): (ViewTable & { kind: "query" }) | undefined {
       const called = this.calledQuery(queryString);
       if (!called) return undefined;
-      const { virtualMap, quotedPath, binding, databaseTable, ...table } =
-         this.views.tableOf(called.plan, pinned, pinned.compilerManifest);
+      const {
+         virtualMap,
+         quotedPath,
+         binding,
+         databaseTable,
+         leftOut,
+         ...table
+      } = this.views.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
       void quotedPath;
       void binding;
       void databaseTable;
+      void leftOut;
       return { ...table, kind: "query" };
    }
 
@@ -289,6 +297,13 @@ export class PersistedQueryServe {
       if (!table.built) throw new LegDecline("query_not_built");
       if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("query_stale");
+      }
+      const altered = alteredColumnsRefusal(table);
+      if (altered) {
+         throw new LegDecline(
+            "query_missing_field",
+            `the stored result cannot answer \`${call.query}\` with live's columns: ${altered}`,
+         );
       }
       const variant = await this.compiledVariant(plan, table);
       if (variant.refusal) {
