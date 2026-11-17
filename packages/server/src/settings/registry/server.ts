@@ -124,6 +124,15 @@ export const server = [
       aliases: { env: ["PUBLISHER_PACKAGE_INLINE_FIELDS"] },
    }),
    setting({
+      key: "refusalReasonCompat",
+      type: oneOf(["off", "0.12"]),
+      default: "off",
+      description:
+         "0.12 writes each build-plan refusal reason Publisher 0.12 did not declare as not_duckdb_portable, for clients generated from the 0.12 API; off writes every reason as it is. A transition setting a later release removes.",
+      notes: "`off` or `0.12`: whether a build plan in a response (a package's inline `buildPlan`, `GET …/build-plan`, a dry run's) carries refusal reasons a client generated from the Publisher 0.12 API rejects. Under `0.12`, a `refusedSources` entry whose `reason` 0.12 did not declare (any added since, such as `current_time` or `table_name_collision`) is written with `reason` `not_duckdb_portable`, which 0.12 declared and no current plan produces, and its `message` prefixed with the real reason in brackets. Only responses change: the plan the server builds and serves from, and its refusals, are the same either way. For a rolling upgrade from 0.12 whose clients roll after the server; turn it off once every client reads the current API. A transition setting: a later release removes it. Any other value fails startup.",
+      aliases: { env: ["PUBLISHER_REFUSAL_REASON_COMPAT"] },
+   }),
+   setting({
       key: "modelPage",
       type: oneOf(["explorer", "viewer"]),
       default: "explorer",

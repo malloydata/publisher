@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — `PUBLISHER_REFUSAL_REASON_COMPAT=0.12` bridges a rolling upgrade from 0.12
+
+A client generated from the Publisher 0.12 API declares a build plan's `RefusedSource.reason` as a closed enum, so it rejects a whole package response, or a `GET /status` entry, that carries a reason added since 0.12 (such as `current_time` or `table_name_collision`). Upgrading the server before its clients broke them for as long as both ran.
+
+- **A new transition setting, off by default.** With `PUBLISHER_REFUSAL_REASON_COMPAT=0.12`, a build plan in a response (a package's inline `buildPlan`, `GET …/build-plan`, a dry run's) writes each such reason as `not_duckdb_portable`, which 0.12 declared and no current plan produces, and prefixes the entry's `message` with the real reason in brackets. Every refused source is still listed: a client needs each entry to know what not to build.
+- **Only responses change.** The plan the server builds and serves from, and its refusals, are the same with the setting on or off.
+- **Turn it off once every client reads the current API.** A later release removes the setting.
+
 ## [Unreleased] — BREAKING: `dropTables` removed from the materialization delete; a delete is record-only
 
 **BREAKING: `DELETE …/materializations/{id}` no longer takes `dropTables`.** Deleting a materialization run now removes its record and nothing else, every time: it never drops a table. Table cleanup is the caller's job. Removed with it: the `dropTables` query parameter on the delete (on the `/environments/…` route and the legacy `/projects/…` route), the generated clients' `dropTables` argument (the TypeScript SDK's and CLI's `deleteMaterialization` lose their fourth parameter, and the Python client is generated from the same spec), the "Also drop the materialized tables this run produced" checkbox in the Console's delete dialog, and the `malloy-pub delete materialization --drop-tables` flag.

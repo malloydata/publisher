@@ -478,6 +478,34 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value(false),
       },
    ],
+   refusalReasonCompat: [
+      { name: "unset", expect: value("off") },
+      {
+         name: "PUBLISHER_REFUSAL_REASON_COMPAT 0.12",
+         env: { PUBLISHER_REFUSAL_REASON_COMPAT: "0.12" },
+         expect: value("0.12"),
+      },
+      {
+         name: "any case, with surrounding space",
+         env: { PUBLISHER_REFUSAL_REASON_COMPAT: " OFF " },
+         expect: value("off"),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_REFUSAL_REASON_COMPAT: "" },
+         expect: value("off"),
+      },
+      {
+         name: "a version it does not bridge fails",
+         env: { PUBLISHER_REFUSAL_REASON_COMPAT: "0.13" },
+         expect: fails("PUBLISHER_REFUSAL_REASON_COMPAT"),
+      },
+      {
+         name: "the file, under its key",
+         file: { refusalReasonCompat: "0.12" },
+         expect: value("0.12"),
+      },
+   ],
    modelPage: [
       { name: "unset", expect: value("explorer") },
       {

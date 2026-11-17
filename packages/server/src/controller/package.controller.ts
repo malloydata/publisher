@@ -28,6 +28,7 @@ import type { RetrievalService } from "../retrieval/service";
 import type { PackageAdmin } from "../service/environment_ports";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
+import { compatBuildPlan } from "../service/refusal_reason_compat";
 import { formatPublishRejections } from "../service/publish_checks";
 import {
    type PackageDryRunOutcome,
@@ -315,7 +316,7 @@ export class PackageController {
          );
       }
       return (
-         pkg.getBuildPlan() ?? {
+         compatBuildPlan(pkg.getBuildPlan()) ?? {
             graphs: [],
             sources: {},
             refusedSources: {},
@@ -555,7 +556,7 @@ export class PackageController {
                   // What a publish would build and serve (#7090): the
                   // verdicts, views checked, and the plan they come from.
                   const serveVerdicts = await pkg.previewServeVerdicts();
-                  const buildPlan = pkg.getBuildPlan();
+                  const buildPlan = compatBuildPlan(pkg.getBuildPlan());
                   return {
                      ...pkg.getPackageMetadata(),
                      location: bodyLocation,

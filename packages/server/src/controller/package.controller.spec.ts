@@ -2069,3 +2069,71 @@ describe("PackageController.dryRunPackage", () => {
       ).toBe(503);
    });
 });
+
+describe("PackageController.getPackageBuildPlan under PUBLISHER_REFUSAL_REASON_COMPAT", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   const plan: components["schemas"]["BuildPlan"] = {
+      graphs: [],
+      sources: {},
+      refusedSources: {
+         "orders@m.malloy": {
+            name: "orders",
+            sourceID: "orders@m.malloy",
+            tier: "storage",
+            reason: "current_time",
+            message: "reads the current time",
+         },
+      },
+      omittedSources: [],
+      omittedFiles: [],
+   };
+
+   const controllerServing = () => {
+      const environmentStore = fakeOf<PackageAdmin>({});
+      const controller = new PackageController(
+         environmentStore,
+         testRetrieval(environmentStore),
+      );
+      sinon
+         .stub(
+            controller as unknown as { loadedPackage: () => Promise<unknown> },
+            "loadedPackage",
+         )
+         .resolves({
+            whenBuildPlanCurrent: async () => {},
+            isBuildPlanUnavailable: () => false,
+            getBuildPlan: () => plan,
+         });
+      return controller;
+   };
+
+   const buildPlanUnder = async (env: Record<string, string>) => {
+      const { restore } = installSettings({ env });
+      try {
+         return await controllerServing().getPackageBuildPlan("env", "pkg");
+      } finally {
+         restore();
+      }
+   };
+
+   it("writes a reason 0.12 did not declare as one it did under 0.12", async () => {
+      const written = await buildPlanUnder({
+         PUBLISHER_REFUSAL_REASON_COMPAT: "0.12",
+      });
+      expect(written.refusedSources?.["orders@m.malloy"]).toMatchObject({
+         reason: "not_duckdb_portable",
+         message: "[current_time] reads the current time",
+      });
+      // The plan the package holds is untouched.
+      expect(plan.refusedSources?.["orders@m.malloy"]?.reason).toBe(
+         "current_time",
+      );
+   });
+
+   it("writes the plan as it is when unset", async () => {
+      expect(await buildPlanUnder({})).toBe(plan);
+   });
+});

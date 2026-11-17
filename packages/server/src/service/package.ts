@@ -113,6 +113,7 @@ import {
 } from "../utils";
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
+import { compatBuildPlan } from "./refusal_reason_compat";
 import type {
    ColocatedSourceEligibility,
    SourceEligibility,
@@ -2086,9 +2087,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          // The deprecated inline fields, added while
          // PUBLISHER_PACKAGE_INLINE_FIELDS is on: the serving and binding
          // fields (getOperationalFields, also at `GET …/packages/{pkg}/status`)
-         // and the build plan and agents (also at their own routes).
+         // and the build plan and agents (also at their own routes). The plan
+         // as PUBLISHER_REFUSAL_REASON_COMPAT writes it, memoized per plan.
          Object.assign(metadata, this.getOperationalFields(), {
-            buildPlan: this.buildPlan,
+            buildPlan: compatBuildPlan(this.buildPlan),
             // Overlaid so a metadata PATCH body can neither set nor wipe it.
             agents:
                this.rawAgents === undefined ? undefined : this.listAgents(),

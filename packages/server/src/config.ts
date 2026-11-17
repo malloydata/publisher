@@ -1231,6 +1231,19 @@ export const isPackageInlineFieldsEnabled = (): boolean =>
    settings.get("packageInlineFields") === "on";
 
 /**
+ * `PUBLISHER_REFUSAL_REASON_COMPAT`: `off` (the default) or `0.12`. A TRANSITION
+ * setting for a rolling upgrade from Publisher 0.12: under `0.12` a build plan
+ * in a response writes each refusal reason 0.12 did not declare as one it did
+ * (see `compatBuildPlan`), so a client generated from the 0.12 API reads it.
+ * A later release removes it.
+ */
+export type RefusalReasonCompat = "off" | "0.12";
+
+/** The refusal-reason compatibility level (`PUBLISHER_REFUSAL_REASON_COMPAT`; off when unset). */
+export const getRefusalReasonCompat = (): RefusalReasonCompat =>
+   settings.get("refusalReasonCompat");
+
+/**
  * Whether a publish from a location publishes versions
  * (`PUBLISHER_PACKAGE_VERSIONING`, on unless set to `off`).
  */

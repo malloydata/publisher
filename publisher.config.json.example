@@ -10,6 +10,7 @@
   "packageVersioning": "on",
   "versionPromotion": "on-publish",
   "packageInlineFields": "on",
+  "refusalReasonCompat": "off",
   "modelPage": "explorer",
   "theme": null,
   "environments": null,

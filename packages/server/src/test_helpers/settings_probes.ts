@@ -42,6 +42,7 @@ import {
    isDuckdbSetupSqlAllowed,
    isMcpIncludeHiddenFilesAndSources,
    isPackageInlineFieldsEnabled,
+   getRefusalReasonCompat,
    isPublisherConfigFrozen,
    isVersioningEnabled,
    schemaEmbeddingEnabled,
@@ -87,6 +88,7 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    packageVersioning: () => isVersioningEnabled(),
    versionPromotion: () => getVersionPromotionMode(),
    packageInlineFields: () => isPackageInlineFieldsEnabled(),
+   refusalReasonCompat: () => getRefusalReasonCompat(),
    modelPage: () => getModelPageMode(),
    theme: ({ serverRoot }) => getInstanceTheme(serverRoot),
    environments: ({ serverRoot }) =>
