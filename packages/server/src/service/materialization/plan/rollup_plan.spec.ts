@@ -363,6 +363,53 @@ source: orders is ${ROWS} extend {
    });
 });
 
+describe("a storage= rollup whose grain no stored read declares", () => {
+   const EXOTIC = `duckdb.sql("""
+  SELECT 1 AS id, 10 AS amount, 'ab'::BLOB AS b, INTERVAL 2 DAY AS iv,
+    MAP {'k': 1} AS m, '{"a": 1}'::JSON AS j, uuid() AS u
+""")`;
+   const rollup = (grain: string, storage: string) => ({
+      "orders.malloy": `source: orders is ${EXOTIC} extend {
+  #(preaggregate) grain=["${grain}"]${storage}
+  measure: total is amount.sum()
+}`,
+   });
+
+   it("refuses a BLOB, INTERVAL, MAP or JSON grain at plan, as unreadable_grain", async () => {
+      for (const grain of ["b", "iv", "m", "j"]) {
+         const { plans, refused } = await plan(
+            rollup(grain, ' storage="lake"'),
+         );
+         expect(plans).toEqual([]);
+         expect(refused.map((r) => why(r))).toEqual(["unreadable_grain"]);
+         expect(refused[0]?.message).toContain(`\`${grain}\``);
+      }
+   });
+
+   it("refuses a dimension that reads such a column, which keeps its type", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `source: orders is ${EXOTIC} extend {
+  dimension: bb is b
+  #(preaggregate) grain=["bb"] storage="lake"
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual(["unreadable_grain"]);
+   });
+
+   it("plans a UUID grain in storage, and every one of them colocated", async () => {
+      expect((await plan(rollup("u", ' storage="lake"'))).plans).toHaveLength(
+         1,
+      );
+      for (const grain of ["b", "iv", "m", "j", "u"]) {
+         const { plans, refused } = await plan(rollup(grain, ""));
+         expect(refused).toEqual([]);
+         expect(plans).toHaveLength(1);
+      }
+   });
+});
+
 describe("#(preaggregate) access filters through a join (A4, fail closed)", () => {
    it("leaves out every rollup when the gate reads through a join, which no grain keeps", async () => {
       const { plans, refused } = await plan(

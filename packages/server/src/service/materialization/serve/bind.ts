@@ -507,7 +507,20 @@ export interface UnreadTable {
 export interface ObservedDrift {
    sourceEntityId: string;
    /** Each column whose type is no longer the one its build wrote, or that is gone. */
-   columns: { column: string; builtType: string; observedType?: string }[];
+   columns: {
+      column: string;
+      builtType: string;
+      observedType?: string;
+      /** The table no longer has the column. */
+      gone?: true;
+      /**
+       * The bind leaves the column out of a served-copy binding, so a query
+       * reading it answers live (gone, a type Malloy reads as no basic type,
+       * or a timestamp that gained or lost its zone off DuckDB); otherwise
+       * it is read with the type it holds now.
+       */
+      leftOut?: true;
+   }[];
 }
 
 /**
@@ -611,6 +624,8 @@ export function applyObservedColumns(args: {
       const extra: ObservedDrift["columns"] = [];
       let moved = false;
       const retyped = new Map<string, string>();
+      // The binding's decision for each drifted column.
+      const decided = new Map<string, ObservedDrift["columns"][number]>();
       const schema = b.schema.flatMap((c) => {
          const d = columnDrift(
             built.get(c.name) ?? c,
@@ -620,14 +635,19 @@ export function applyObservedColumns(args: {
          if (d.kind === "none") return [c];
          moved = true;
          if (!built.has(c.name)) extra.push(d.report);
+         decided.set(c.name, d.report);
          if (d.kind === "drop") return [];
          if (d.nativeType !== undefined) retyped.set(c.name, d.nativeType);
          return [{ name: c.name, type: d.type }];
       });
+      const known = drifted.find((x) => x.sourceEntityId === b.virtualHandle);
+      if (known) {
+         known.columns = known.columns.map((k) => {
+            const d = decided.get(k.column);
+            return d?.leftOut ? { ...k, leftOut: true as const } : k;
+         });
+      }
       if (extra.length > 0) {
-         const known = drifted.find(
-            (x) => x.sourceEntityId === b.virtualHandle,
-         );
          if (known) {
             for (const e of extra) {
                if (!known.columns.some((k) => k.column === e.column)) {
@@ -663,7 +683,7 @@ function nativeDriftOf(
             ? { observedType: now.nativeType }
             : {}),
       };
-      if (!now) return [report];
+      if (!now) return [{ ...report, gone: true as const }];
       return now.nativeType !== undefined &&
          normalizedType(now.nativeType) !== normalizedType(c.type)
          ? [report]
@@ -716,13 +736,19 @@ function columnDrift(
       builtType: built.type,
       ...(now?.type !== undefined ? { observedType: now.type } : {}),
    };
-   if (!now) return { kind: "drop", report };
+   if (!now) {
+      return {
+         kind: "drop",
+         report: { ...report, gone: true, leftOut: true },
+      };
+   }
+   const dropped = { ...report, leftOut: true as const };
    const nativeMoved =
       builtNative !== undefined &&
       now.nativeType !== undefined &&
       normalizedType(builtNative) !== normalizedType(now.nativeType);
    if (now.type === undefined) {
-      return nativeMoved ? { kind: "drop", report } : { kind: "none" };
+      return nativeMoved ? { kind: "drop", report: dropped } : { kind: "none" };
    }
    if (
       typeFamily(now.type) === "timestamp" &&
@@ -731,7 +757,7 @@ function columnDrift(
    ) {
       return capabilitiesOf(read.dialect).utcSessions
          ? { kind: "none" }
-         : { kind: "drop", report };
+         : { kind: "drop", report: dropped };
    }
    if (typeFamily(now.type) !== typeFamily(built.type) || nativeMoved) {
       return {

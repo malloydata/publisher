@@ -10752,6 +10752,7 @@ components:
               join_level,
               name_clash,
               given_where_over_unstored_field,
+              unreadable_grain,
             ]
           description: >-
             The bounded refusal reason; `message` says the specifics.
@@ -10837,9 +10838,12 @@ components:
             gate's kind as on every mechanism), `time_zone` (the source sets its own
             time zone, so no query reads the rollup), `unreadable_measure` (a
             measure definition outside what a rollup reads), `join_level` (a
-            measure that aggregates through a join its grain does not key), and
+            measure that aggregates through a join its grain does not key),
             `name_clash` (a field already takes the name of the measure's
-            stored partial).
+            stored partial), and `unreadable_grain` (a `storage=` rollup
+            over a DuckDB source whose grain dimension is stored as a type no
+            stored read declares, a BLOB, INTERVAL, MAP or JSON, so no query
+            would read its table; colocated, it is built).
 
 
             Retained, no longer produced: `given` (replaced by the positional

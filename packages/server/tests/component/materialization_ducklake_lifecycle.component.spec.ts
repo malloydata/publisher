@@ -1508,10 +1508,13 @@ source: events is warehouse.sql("""
             advancedByMaterializationId: m.id,
          });
          expect(lake.attaches).toEqual([{ fn: "readWrite", dbName: LAKE }]);
-         // No CTAS: the shape and emptiness probes on the lake table, the
-         // frontier through the passthrough, the delta's column types (a
-         // describe, which runs nothing), then the delta as one script.
+         // No CTAS: the recast probe, the stored types (a DOUBLE column would
+         // be probed in Postgres for a numeric to re-seed; there is none), the
+         // shape and emptiness probes on the lake table, the frontier through
+         // the passthrough, the delta's column types (a describe, which runs
+         // nothing), then the delta as one script.
          expect(lake.statements.map(statementShape)).toEqual([
+            `DESCRIBE "lake"."${TABLE}"`,
             `DESCRIBE "lake"."${TABLE}"`,
             'SELECT column_name AS "column_name"',
             `SELECT 1 AS present FROM "lake"."${TABLE}" LIMIT 1`,

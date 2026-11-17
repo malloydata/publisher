@@ -40,36 +40,41 @@ import {
    postgresNumericColumns,
 } from "./postgres_numeric_precision";
 
+/** What the passthrough's describe and type probe found ({@link postgresNumericColumns}). */
+type NumericRead = Awaited<ReturnType<typeof postgresNumericColumns>>;
+
+/** The table's column types by name, from the destination's own catalog. */
+async function storedTypesOf(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+): Promise<Map<string, string>> {
+   const described = await session.runSQL(`DESCRIBE ${quotedTablePath}`);
+   const rows = (
+      Array.isArray(described) ? described : (described.rows ?? [])
+   ) as Record<string, unknown>[];
+   return new Map(
+      rows.map((r) => [String(r.column_name), String(r.column_type)]),
+   );
+}
+
 /**
  * The Postgres numeric columns of a delta that the table stores exactly: as a
  * DECIMAL, or as the text a seed kept when no DECIMAL held it. A column an
- * older build stored as DOUBLE keeps the passthrough's DOUBLE until the table
- * is next seeded. Undefined when there is none.
+ * older build stored as DOUBLE re-seeds the table before any delta
+ * ({@link StorageDeltaTarget.numericColumnsStoredAsDouble}). Undefined when
+ * there is none.
  */
 async function exactNumericColumns(
    session: DuckDBConnection,
-   sourceType: FederatedSourceType,
-   handle: string,
-   innerSQL: string,
+   numericRead: () => Promise<NumericRead>,
    quotedTablePath: string,
 ): Promise<
    | { columns: string[]; stored: { column: string; storedType: string }[] }
    | undefined
 > {
-   const { columns, numeric } = await postgresNumericColumns(
-      session,
-      handle,
-      innerSQL,
-      sourceType,
-   );
+   const { columns, numeric } = await numericRead();
    if (numeric.length === 0) return undefined;
-   const described = await session.runSQL(`DESCRIBE ${quotedTablePath}`);
-   const rows = (
-      Array.isArray(described) ? described : (described.rows ?? [])
-   ) as Record<string, unknown>[];
-   const typeOf = new Map(
-      rows.map((r) => [String(r.column_name), String(r.column_type)]),
-   );
+   const typeOf = await storedTypesOf(session, quotedTablePath);
    const stored = numeric.flatMap((column) => {
       const storedType = typeOf.get(column);
       return storedType &&
@@ -103,6 +108,18 @@ interface StorageDeltaTarget {
     * issued one (it reads only if every check passes).
     */
    readCost(): BuildReadCost | null;
+   /**
+    * The Postgres numeric columns the table stores as DOUBLE: a table built
+    * before a seed kept them exact, which serves binary-float sums
+    * (`0.30000000000000004`) until it is seeded again, since a delta only
+    * INSERTs into the column it has. A seed now stores each as DECIMAL (or
+    * as text when no DECIMAL holds it), so none is left after one. Empty off
+    * Postgres, or when the passthrough's types cannot be read. Reads the
+    * table's own catalog first, and probes Postgres (a describe and a
+    * `LIMIT 0`, nothing runs) only for a table holding a DOUBLE column, with
+    * the one probe the delta then reuses.
+    */
+   numericColumnsStoredAsDouble(): Promise<string[]>;
 }
 
 export function storageDeltaTarget(params: {
@@ -149,6 +166,16 @@ export function storageDeltaTarget(params: {
       params.destinationSchema,
    );
    let readCost: BuildReadCost | null = null;
+   // One Postgres probe per refresh, shared by the DOUBLE check and the
+   // delta: the seed's projection names and types the columns a delta reads.
+   let numericProbe: Promise<NumericRead> | undefined;
+   const numericRead = () =>
+      (numericProbe ??= postgresNumericColumns(
+         session,
+         handle,
+         projectToStoredColumns(persistSource, buildSQL),
+         sourceType,
+      ));
 
    // The build SQL and the stored table name a renamed field's column by its
    // own name, so the watermark (and, in the DML, the merge keys) are named
@@ -157,6 +184,26 @@ export function storageDeltaTarget(params: {
    const watermarkColumn = storedColumn(lineage.watermarkName);
    return {
       readCost: () => readCost,
+      numericColumnsStoredAsDouble: async () => {
+         if (!capabilitiesOf(sourceType).passthroughNumericAsDouble) return [];
+         // The destination's own catalog first: Postgres is probed only for a
+         // table that holds a DOUBLE column at all.
+         let typeOf: Map<string, string>;
+         try {
+            typeOf = await storedTypesOf(session, quotedTablePath);
+         } catch {
+            // No table to describe: the planner seeds one anyway.
+            return [];
+         }
+         const doubles = new Set(
+            [...typeOf]
+               .filter(([, type]) => type.toUpperCase() === "DOUBLE")
+               .map(([column]) => column),
+         );
+         if (doubles.size === 0) return [];
+         const { numeric } = await numericRead();
+         return numeric.filter((column) => doubles.has(column));
+      },
       target: {
          dialect: STORAGE_DIALECT,
          storedColumn,
@@ -188,9 +235,7 @@ export function storageDeltaTarget(params: {
             const exact = capabilitiesOf(sourceType).passthroughNumericAsDouble
                ? await exactNumericColumns(
                     session,
-                    sourceType,
-                    handle,
-                    bounded,
+                    numericRead,
                     quotedTablePath,
                  )
                : undefined;
