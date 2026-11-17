@@ -50,6 +50,7 @@ import {
 } from "./stored_column_types";
 import type {
    BoundTableTypeFinding,
+   DatabaseDriftFinding,
    MismatchHandling,
 } from "./serve/storage_bindings";
 
@@ -65,6 +66,25 @@ const MISMATCH_HANDLING_TEXT: Record<
       `No cast reproduces its values faithfully, so queries that read it are ` +
       `answered live. Give the field a native cast in the model (for example ` +
       `\`::"double"\`) so the warehouse returns the declared type.`,
+};
+
+/**
+ * What a database-table drift warning says of how the column is read: the table
+ * was altered outside a build, so rebuilding it is the fix.
+ */
+const DRIFT_HANDLING_TEXT: Record<
+   DatabaseDriftFinding["mismatches"][number]["handling"],
+   (declaredType: string) => string
+> = {
+   cast: (declaredType) =>
+      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
+      `from the table; rebuilding the table clears this.`,
+   live: () =>
+      `No cast reads it as declared, so queries that read it are answered ` +
+      `live until the table is rebuilt.`,
+   table: () =>
+      `This table is read without a cast, so every query on it is answered ` +
+      `live until it is rebuilt.`,
 };
 
 type ApiPackage = components["schemas"]["Package"];
@@ -323,12 +343,14 @@ export function servedCopyWarnings(
  * Warnings for stored columns whose type does not serve as the type Malloy
  * declares, one per source and column, read from the bindings bound now:
  * each model's `#@ persist` sources', then every other `storage=` table's
- * (`bound`). Keyed by the source's sourceID, so two models' same-named
+ * (`bound`), then each database table's whose columns moved outside a build
+ * (`database`). Keyed by the source's sourceID, so two models' same-named
  * sources both report and a source several models import reports once.
  */
 export function storedColumnTypeWarnings(
    models: Models,
    bound: readonly BoundTableTypeFinding[],
+   database: readonly DatabaseDriftFinding[] = [],
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const seen = new Set<string>();
@@ -364,6 +386,28 @@ export function storedColumnTypeWarnings(
    for (const finding of bound) {
       for (const m of finding.mismatches) {
          add(finding.modelPath ?? "", finding.subject, finding.sourceID, m);
+      }
+   }
+   for (const finding of database) {
+      for (const m of finding.mismatches) {
+         const key = `${finding.sourceID}\u0000${m.column}`;
+         if (seen.has(key)) continue;
+         seen.add(key);
+         warnings.push({
+            model: finding.modelPath ?? "",
+            subject: finding.subject,
+            code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+            severity: "warn",
+            message:
+               (m.gone
+                  ? `no longer has column \`${m.column}\` (declared Malloy ` +
+                    `type \`${m.declaredType}\`): `
+                  : `stores column \`${m.column}\` as ` +
+                    `${m.storedType ?? "a type Malloy reads as no basic type"}, ` +
+                    `not its declared Malloy type \`${m.declaredType}\`: `) +
+               `its table was altered outside a build. ` +
+               DRIFT_HANDLING_TEXT[m.handling](m.declaredType),
+         });
       }
    }
    return warnings;

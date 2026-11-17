@@ -41,7 +41,7 @@ import {
 } from "../../malloy_text";
 import { noteSource } from "../text/field_notes";
 import type { MaterializeReadTimeTerm } from "../domain/read_time_terms";
-import { storedMalloyType, storedTypeText } from "../stored_column_types";
+import { storedMalloyType } from "../stored_column_types";
 
 export { storedMalloyType };
 import {
@@ -1565,8 +1565,15 @@ export function typeDeclaration(
    );
    // malloy-text: the author's own notes, then names through identifier and a Malloy type name
    const fields = [...r.columns, ...joined]
-      .map(
-         (c) =>
+      .flatMap((c) => {
+         // A column no Malloy type declares (a BLOB, an INTERVAL, a MAP) is
+         // left out, so a query reading it finds no field and answers live:
+         // there is no type to write (`json` is not one a `type:` takes).
+         const type = c.timestamptz
+            ? "timestamptz"
+            : (c.declaredType ?? storedMalloyType(c.type));
+         if (type === undefined) return [];
+         return [
             // A timeframe or cast column's notes go on its redefined field
             // instead, all but its `#(classification)`, which stays on the
             // column too: the internal name it is renamed to keeps it, so a
@@ -1579,9 +1586,9 @@ export function typeDeclaration(
                : (c.notes ?? [])
             )
                .map((note) => noteSource(note, "   "))
-               .join("") +
-            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : (c.declaredType ?? storedTypeText(c.type))}`,
-      )
+               .join("") + `   ${identifier(c.name)}::${type}`,
+         ];
+      })
       .join(",\n");
    return `type: ${identifier(r.typeName)} is {\n${fields}\n}`;
 }

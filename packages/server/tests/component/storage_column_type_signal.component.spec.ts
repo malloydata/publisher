@@ -7,7 +7,8 @@
  * persisted named query each bound over a table that stores a column as
  * another type than its build declares report the
  * `storage-column-type-mismatch` package warning and tick
- * `publisher_storage_column_type_mismatch_total{stage="serve"}`.
+ * `publisher_storage_column_type_mismatch_total{stage="serve"}`. So does a
+ * colocated table whose column type the bind found moved outside a build.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -18,6 +19,7 @@ import { resetMaterializationTelemetryForTesting } from "../../src/materializati
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
+import type { ObservedColumns } from "../../src/service/materialization/domain/types";
 import type { Package } from "../../src/service/package";
 import {
    startMetricsHarness,
@@ -174,5 +176,188 @@ describe("a stored column whose type drifted", () => {
             { stage: "serve", declared: "number" },
          ),
       ).toBe(5);
+   });
+});
+
+const COLOCATED_MODEL = `##! experimental.persistence
+source: raw is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'a', 1.0), (2, 'a', 2.0), (3, 'b', 4.0)) AS t(id, cat, amt)
+""") extend { primary_key: id }
+
+#@ persist name="daily_t"
+source: daily is raw -> { group_by: cat; aggregate: total is amt.sum() }
+
+#(materialize) name="orders_t"
+source: orders is raw extend {
+  measure: order_total is amt.sum()
+}
+
+source: sales is raw extend {
+  #(preaggregate) grain=["cat"]
+  measure: amount is amt.sum()
+}
+`;
+
+describe("a colocated table whose column type moved outside a build", () => {
+   it("warns and counts as a storage= table does, once per table", async () => {
+      const envPath = path.join(rootDir, "env");
+      writePackageFiles(
+         path.join(envPath, "pkg"),
+         { "model.malloy": COLOCATED_MODEL },
+         { manifest: { name: "pkg", description: "fixture" } },
+      );
+      const env = await Environment.create("testEnv", envPath, [] as never);
+      await env.addPackage("pkg");
+      const pkg = await env.getPackage(parsePackageName("pkg"), false);
+
+      // Each planned colocated table as its build captured it, and as the
+      // bind reads it now: its first number column altered to VARCHAR.
+      const entries: Record<string, Record<string, unknown>> = {};
+      const observed = new Map<
+         string,
+         { columns: { name: string; type: string }[] }
+      >();
+      const moved: Record<string, string> = {};
+      for (const source of Object.values(pkg.getBuildPlan()?.sources ?? {})) {
+         if (entries[source.sourceEntityId]) continue;
+         const schema = (source.columns ?? []).map((c) => ({
+            name: c.name as string,
+            type: STORED[c.type as string] ?? "VARCHAR",
+         }));
+         let changed = false;
+         const now = schema.map((c) => {
+            if (!changed && c.type === "DOUBLE") {
+               changed = true;
+               moved[source.name] = c.name;
+               return { ...c, type: "VARCHAR" };
+            }
+            return c;
+         });
+         entries[source.sourceEntityId] = {
+            sourceEntityId: source.sourceEntityId,
+            sourceName: source.name,
+            tableName: `t_${source.sourceEntityId.slice(0, 12)}`,
+            connectionName: "duckdb",
+            schema,
+         };
+         observed.set(source.sourceEntityId, { columns: now });
+      }
+      // A rollup's plan source is its own; the warning names its base.
+      expect(Object.keys(moved)).toHaveLength(3);
+      pkg.materialization().bind({
+         colocated: entries as never,
+         colocatedAsGiven: true,
+         observed,
+      });
+
+      const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
+         (w) => w.code === "storage-column-type-mismatch",
+      );
+      const bySubject = new Map(warnings.map((w) => [w.subject, w.message]));
+      expect([...bySubject.keys()].sort()).toEqual([
+         "daily",
+         "orders",
+         "sales",
+      ]);
+      expect(warnings).toHaveLength(3);
+      for (const message of bySubject.values()) {
+         expect(message).toContain("altered outside a build");
+      }
+      // The served copy leaves the column out; a rollup, which no cast
+      // reaches, answers live whole.
+      expect(bySubject.get("orders")).toContain(
+         "queries that read it are answered live",
+      );
+      expect(bySubject.get("daily")).toContain(
+         "queries that read it are answered live",
+      );
+      expect(bySubject.get("sales")).toContain(
+         "every query on it is answered live",
+      );
+
+      // Asked again, still counted once per table.
+      pkg.getPackageMetadata();
+      expect(
+         await harness.collectCounter(
+            "publisher_storage_column_type_mismatch_total",
+            { stage: "serve", declared: "number" },
+         ),
+      ).toBe(3);
+   });
+});
+
+describe("a colocated table read again after a transient failure", () => {
+   it("counts a drifted table once, not again on the retry", async () => {
+      const envPath = path.join(rootDir, "env");
+      writePackageFiles(
+         path.join(envPath, "pkg"),
+         { "model.malloy": COLOCATED_MODEL },
+         { manifest: { name: "pkg", description: "fixture" } },
+      );
+      const env = await Environment.create("testEnv", envPath, [] as never);
+      await env.addPackage("pkg");
+      const pkg = await env.getPackage(parsePackageName("pkg"), false);
+
+      // One table drifted, one unread by a transient failure, one as built.
+      const entries: Record<string, Record<string, unknown>> = {};
+      const asBuilt = new Map<string, { name: string; type: string }[]>();
+      const observed = new Map<string, ObservedColumns>();
+      let drifted = 0;
+      for (const source of Object.values(pkg.getBuildPlan()?.sources ?? {})) {
+         const id = source.sourceEntityId;
+         if (entries[id]) continue;
+         const schema = (source.columns ?? []).map((c) => ({
+            name: c.name as string,
+            type: STORED[c.type as string] ?? "VARCHAR",
+         }));
+         entries[id] = {
+            sourceEntityId: id,
+            sourceName: source.name,
+            tableName: `t_${id.slice(0, 12)}`,
+            connectionName: "duckdb",
+            schema,
+         };
+         asBuilt.set(id, schema);
+         if (source.name === "orders") {
+            observed.set(id, {
+               columns: schema.map((c, i) =>
+                  i === 0 ? { ...c, type: "VARCHAR" } : c,
+               ),
+            });
+            drifted++;
+         } else if (source.name === "daily") {
+            observed.set(id, { unread: "timed_out" });
+         } else {
+            observed.set(id, { columns: schema });
+         }
+      }
+      expect(drifted).toBe(1);
+      const mz = pkg.materialization();
+      // The retry's read succeeds, and finds the table as built.
+      mz.readDatabaseColumns = async (retried) =>
+         new Map(
+            Object.keys(retried).map((id) => [
+               id,
+               { columns: asBuilt.get(id) ?? [] },
+            ]),
+         );
+      mz.bind({
+         colocated: entries as never,
+         colocatedAsGiven: true,
+         observed,
+      });
+      expect(mz.hasUnreadDatabaseTables()).toBe(true);
+      const deadline = Date.now() + 10_000;
+      while (mz.hasUnreadDatabaseTables() && Date.now() < deadline) {
+         await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(mz.hasUnreadDatabaseTables()).toBe(false);
+
+      expect(
+         await harness.collectCounter(
+            "publisher_storage_column_type_mismatch_total",
+            { stage: "serve", declared: "number" },
+         ),
+      ).toBe(1);
    });
 });

@@ -67,6 +67,8 @@ import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
+   type DatabaseDriftFinding,
+   databaseDriftFindings,
 } from "./serve/storage_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import { tablePathParts } from "../quoting";
@@ -589,7 +591,8 @@ export class PackageMaterialization {
       for (const [id, o] of reread) next.set(id, o);
       this.observedColumns = next;
       this.publish();
-      this.logObservedOutcome();
+      // Only what this retry read: the rest was logged and counted already.
+      this.logObservedOutcome(new Set(unread));
       this.scheduleUnreadRetry(attempt + 1);
    }
 
@@ -616,9 +619,22 @@ export class PackageMaterialization {
       });
    }
 
-   /** Log what the bind's column read found: drifted tables, and tables it could not read. */
-   private logObservedOutcome(): void {
+   /**
+    * Log and count what the bind's column read found: drifted tables, each
+    * column of them the package warning reports counted as a `storage=`
+    * table's is, and tables it could not read. `only`: the tables a retry
+    * read again, so a table is counted and logged once per read of it.
+    */
+   private logObservedOutcome(only?: ReadonlySet<string>): void {
+      const read = (id: string) => only === undefined || only.has(id);
+      for (const finding of this.databaseDriftFindings()) {
+         if (!read(finding.sourceEntityId)) continue;
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+      }
       for (const drift of this.observedOutcome.drifted) {
+         if (!read(drift.sourceEntityId)) continue;
          const asDouble = drift.columns.filter((c) => c.storedAsDouble);
          if (asDouble.length > 0) {
             logger.warn(
@@ -643,6 +659,7 @@ export class PackageMaterialization {
          );
       }
       for (const miss of this.observedOutcome.unread) {
+         if (!read(miss.sourceEntityId)) continue;
          logger.warn(
             "Could not read a database table's column types at bind; its sources answer live, and it is read again",
             {
@@ -1050,7 +1067,30 @@ export class PackageMaterialization {
       return warnings.storedColumnTypeWarnings(
          this.owner.models(),
          this.boundTypeFindings,
+         this.databaseDriftFindings(),
       );
+   }
+
+   /**
+    * The colocated tables whose columns the last bind found moved outside a
+    * build, as the `storage-column-type-mismatch` warning reports them.
+    */
+   private databaseDriftFindings(): DatabaseDriftFinding[] {
+      const { bindings } = this.snapshot();
+      const { drifted } = this.observedOutcome;
+      if (drifted.length === 0) return [];
+      return databaseDriftFindings(drifted, this.plan.buildPlan, {
+         servedCopy: (id) =>
+            bindings.some(
+               (b) => b.tier === "colocated" && b.virtualHandle === id,
+            ),
+         queryTimezone: (sourceID, source) =>
+            queryTimezoneOf(
+               source.preaggregate
+                  ? this.baseDeclaration(source)
+                  : this.declarationLookup(sourceID),
+            ),
+      });
    }
 
    /**
