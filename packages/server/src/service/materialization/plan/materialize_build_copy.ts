@@ -21,6 +21,7 @@ import {
    declarationSpans,
    accessLiftEdits,
    dropDimensions,
+   dropExceptItems,
    inverseRenameBlocks,
    type TextEdit,
 } from "../text/declaration_text";
@@ -526,12 +527,24 @@ function rerootOnBuildSource(
       new Set(stored.filter((c) => c.computed).map((c) => c.dimension)),
    );
    if (!kept) return undefined;
-   const renames = inverseRenameBlocks(
+   // An `except:` naming a column the table does not store has nothing to
+   // exclude from the build source, as on the served copy's re-root.
+   const storedNames = new Set(
+      stored.flatMap((c) =>
+         [c.column, c.dimension].map((n) => n.toLowerCase()),
+      ),
+   );
+   const excepted = dropExceptItems(
       kept.text,
+      (n) => !storedNames.has(n.toLowerCase()),
+   );
+   if (excepted === undefined) return undefined;
+   const renames = inverseRenameBlocks(
+      excepted.text,
       new Set(stored.map((c) => c.column)),
    );
    if (renames === undefined) return undefined;
-   let text = kept.text;
+   let text = excepted.text;
    if (options.joinRecords) {
       const records = parentJoinRecords(parent);
       for (const j of records) {

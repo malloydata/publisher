@@ -1608,10 +1608,12 @@ export class ServedCopyServe {
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
+         // An `except:` naming a column the table does not store has nothing
+         // to exclude on any re-root, v1 or `#(materialize)` (P2-29).
+         dropsUnstoredExcepts: true as const,
          ...(!plan
             ? {
                  keepsIncludes: true as const,
-                 dropsUnstoredExcepts: true as const,
                  ...(refinesUnfilteredBase(map.node(node.sourceID), map)
                     ? { refinementRooted: true as const }
                     : {}),
