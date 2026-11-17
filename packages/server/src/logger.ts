@@ -14,60 +14,106 @@ import { redactSignedUrlParams } from "./pg_helpers";
 
 const isTelemetryEnabled = Boolean(externalEnv("OTEL_EXPORTER_OTLP_ENDPOINT"));
 
-/** How deep {@link maskedForLog} walks a logged value. */
-const MAX_MASK_DEPTH = 8;
-
 /**
- * `value` with every string in it passed through `redactSignedUrlParams`: a
- * signed URL's signature, credential or token never reaches the log, from any
- * line (a driver's error a package load, a publish or a request quotes).
- * Copies only what changes, so a caller's object is never altered.
+ * `value` with every string in it, at any depth, passed through
+ * `redactSignedUrlParams`: a signed URL's signature, credential or token
+ * never reaches the log, from any line (a driver's error a package load, a
+ * publish or a request quotes).
+ *
+ * - A plain object, an array and an Error are copied, never altered, so a
+ *   caller's object is left as it was. Each is copied once, before its
+ *   contents are walked, so a cycle reaches the copy, never the original's
+ *   unmasked strings.
+ * - An Error stays an Error of its own class, with its message, stack and
+ *   every other own field (`cause`, `code`, …) masked.
+ * - Binary data (a Buffer, a typed array, an ArrayBuffer) holds no text a
+ *   format prints and is passed through unwalked.
+ * - Any other object (a Date, a class instance) is passed through unless an
+ *   own field changes, then copied as a plain object.
+ *
  * Exported for its spec.
  */
-export function maskedForLog(value: unknown, depth = 0): unknown {
+export function maskedForLog(value: unknown): unknown {
+   return masked(value, new WeakMap());
+}
+
+function masked(value: unknown, seen: WeakMap<object, unknown>): unknown {
    if (typeof value === "string") return redactSignedUrlParams(value);
-   if (depth >= MAX_MASK_DEPTH || value === null || typeof value !== "object") {
-      return value;
-   }
+   if (value === null || typeof value !== "object") return value;
+   if (seen.has(value)) return seen.get(value);
+   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
    if (value instanceof Error) {
-      const message = maskedForLog(value.message, depth + 1);
-      const stack = maskedForLog(value.stack, depth + 1);
-      return message === value.message && stack === value.stack
-         ? value
-         : { name: value.name, message, stack };
+      const copy = Object.create(Object.getPrototypeOf(value)) as Error;
+      seen.set(value, copy);
+      for (const key of Object.getOwnPropertyNames(value)) {
+         const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+         Object.defineProperty(copy, key, {
+            ...descriptor,
+            ...("value" in descriptor
+               ? { value: masked(descriptor.value, seen) }
+               : {}),
+         });
+      }
+      return copy;
    }
    if (Array.isArray(value)) {
-      let changed = false;
-      const out = value.map((v) => {
-         const m = maskedForLog(v, depth + 1);
-         if (m !== v) changed = true;
-         return m;
-      });
-      return changed ? out : value;
+      const copy: unknown[] = [];
+      seen.set(value, copy);
+      for (const item of value) copy.push(masked(item, seen));
+      return copy;
    }
+   const proto = Object.getPrototypeOf(value);
+   if (proto === Object.prototype || proto === null) {
+      const copy: Record<string, unknown> = {};
+      seen.set(value, copy);
+      for (const [key, v] of Object.entries(value)) copy[key] = masked(v, seen);
+      return copy;
+   }
+   // A Date, a class instance: itself unless an own field changes.
+   seen.set(value, value);
    let copy: Record<string, unknown> | undefined;
    for (const [key, v] of Object.entries(value)) {
-      const m = maskedForLog(v, depth + 1);
+      const m = masked(v, seen);
       if (m !== v) {
          copy ??= { ...(value as Record<string, unknown>) };
          copy[key] = m;
       }
    }
+   if (copy) seen.set(value, copy);
    return copy ?? value;
 }
 
-/** The format step that masks every line's strings ({@link maskedForLog}). */
+/**
+ * The format step that masks every line's strings ({@link maskedForLog}):
+ * each enumerable field, and `message` and `stack` themselves, which a whole
+ * Error logged as the entry (`logger.error(err)`) holds non-enumerable.
+ */
 const maskSignedUrlSecrets = winston.format((info) => {
+   const seen = new WeakMap<object, unknown>();
    for (const key of Object.keys(info)) {
-      info[key] = maskedForLog(info[key]);
+      info[key] = masked(info[key], seen);
+   }
+   for (const key of ["message", "stack"] as const) {
+      const v = (info as Record<string, unknown>)[key];
+      if (typeof v === "string") {
+         Object.defineProperty(info, key, {
+            value: redactSignedUrlParams(v),
+            writable: true,
+            configurable: true,
+            enumerable: Object.prototype.propertyIsEnumerable.call(info, key),
+         });
+      }
    }
    return info;
 });
 
-export const logger = winston.createLogger({
-   // An unknown level is the default, debug, with a startup warning.
-   level: settings.get("logging.level"),
-   format: isTelemetryEnabled
+/**
+ * The log's format: JSON when telemetry is on, the readable line otherwise,
+ * each starting with {@link maskSignedUrlSecrets}. Exported for its spec,
+ * which runs both.
+ */
+export function publisherLogFormat(json: boolean): winston.Logform.Format {
+   return json
       ? winston.format.combine(
            maskSignedUrlSecrets(),
            winston.format.uncolorize(),
@@ -79,7 +125,13 @@ export const logger = winston.createLogger({
            maskSignedUrlSecrets(),
            winston.format.colorize(),
            winston.format.simple(),
-        ),
+        );
+}
+
+export const logger = winston.createLogger({
+   // An unknown level is the default, debug, with a startup warning.
+   level: settings.get("logging.level"),
+   format: publisherLogFormat(isTelemetryEnabled),
    transports: [new winston.transports.Console()],
 });
 

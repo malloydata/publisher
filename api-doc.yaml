@@ -4100,7 +4100,8 @@ paths:
         table, and the caller owns table GC. To drop a table this run produced,
         check that no remaining run, of any version, names a table with that
         name in any place, then drop it through its connection.
-        `dropTables=true` is refused with 400 and deletes nothing;
+        `dropTables=true` is refused with 400 and deletes nothing, as is any
+        value other than `true` or `false` (the fix is to omit it);
         `dropTables=false`, which older clients send, is accepted and ignored.
       parameters:
         - $ref: "#/components/parameters/environmentName"

@@ -1265,6 +1265,102 @@ describe("applyObservedColumns", () => {
       expect(out.entries.rollup1?.leftOutColumns).toEqual(["total__partial"]);
    });
 
+   // A build whose schema read failed (an unqualified Postgres table) records
+   // only native types, so the binding's declared `date` stands in for what
+   // it wrote: a date truncation the warehouse returns as a timestamp.
+   for (const { dialect, nativeType, observedType } of [
+      {
+         dialect: "postgres",
+         nativeType: "timestamp with time zone",
+         observedType: "TIMESTAMP WITH TIME ZONE",
+      },
+      {
+         dialect: "postgres",
+         nativeType: "timestamp without time zone",
+         observedType: "TIMESTAMP",
+      },
+      { dialect: "duckdb", nativeType: "TIMESTAMP", observedType: "TIMESTAMP" },
+   ]) {
+      const truncation = (now: string) =>
+         applyObservedColumns({
+            entries: {
+               addr1: {
+                  tableName: "orders_t",
+                  nativeSchema: [{ name: "d_month", type: nativeType }],
+               },
+            },
+            bindings: [
+               {
+                  ...binding,
+                  schema: [{ name: "d_month", type: "DATE" }],
+                  nativeSchema: [{ name: "d_month", type: nativeType }],
+               },
+            ],
+            observed: new Map([
+               [
+                  "addr1",
+                  {
+                     dialect,
+                     columns: [
+                        {
+                           name: "d_month",
+                           type: now === nativeType ? observedType : "VARCHAR",
+                           nativeType: now,
+                        },
+                     ],
+                  },
+               ],
+            ]),
+         });
+
+      it(`a date truncation stored as its build wrote it (${dialect} ${nativeType}) is read as it holds, and is not drift`, () => {
+         const out = truncation(nativeType);
+         expect(out.drifted).toEqual([]);
+         expect(Object.keys(out.entries)).toEqual(["addr1"]);
+         // Still read with the type it holds, so the read plan casts it.
+         expect(out.bindings[0].schema).toEqual([
+            { name: "d_month", type: observedType },
+         ]);
+      });
+
+      it(`a date truncation altered after its build (${dialect} ${nativeType} to text) is still drift`, () => {
+         const out = truncation(dialect === "postgres" ? "text" : "VARCHAR");
+         expect(out.bindings[0].schema).toEqual([
+            { name: "d_month", type: "VARCHAR" },
+         ]);
+         // Reported against the native type its build captured.
+         expect(out.drifted.map((d) => d.columns.map((c) => c.column))).toEqual(
+            [["d_month"]],
+         );
+      });
+   }
+
+   it("with no native type captured, a column that reads as another type than declared is still drift", () => {
+      const out = applyObservedColumns({
+         entries: { addr1: { tableName: "orders_t" } },
+         bindings: [{ ...binding, schema: [{ name: "d", type: "DATE" }] }],
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  dialect: "postgres",
+                  columns: [
+                     { name: "d", type: "TIMESTAMP", nativeType: "timestamp" },
+                  ],
+               },
+            ],
+         ]),
+      });
+      expect(out.drifted).toEqual([
+         {
+            sourceEntityId: "addr1",
+            columns: [
+               { column: "d", builtType: "DATE", observedType: "TIMESTAMP" },
+            ],
+         },
+      ]);
+   });
+
    it("passes a storage binding through untouched", () => {
       const storage: Binding = {
          ...binding,
