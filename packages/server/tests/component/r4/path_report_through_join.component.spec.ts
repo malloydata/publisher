@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Under the v1 cutover's default, a query on a colocated
+ * Under the v1 cutover's default, a query on a database
  * persisted source through its join to another persisted source is answered
  * by the served copy from both tables, and the path report must name the
  * queried source's own table. It named the first table the served copy read,
@@ -40,7 +40,7 @@ describe("the path report names the queried source's table through a join", () =
       }).restore;
       await freshLoadPool();
       const shape = SHAPES.find((s) => s.name === SHAPE)!;
-      const files = renderFiles(shape, "colocated");
+      const files = renderFiles(shape, "database");
       // The joined source on the surface too, to read its table's id.
       files["index.malloy"] = `import "facts.malloy"
 import "dims.malloy"
@@ -62,7 +62,13 @@ export { order_facts, c_only }
       const model = fixture.pkg.getModel("index.malloy")!;
       const result = await model.runQuery(unrecordedAudit(), { query });
       return result.path?.servedBy as
-         | { kind: string; tableId?: string; tier?: string; via?: string }
+         | {
+              kind: string;
+              origin?: string;
+              tableId?: string;
+              tier?: string;
+              via?: string;
+           }
          | undefined;
    }
 
@@ -78,6 +84,7 @@ export { order_facts, c_only }
       const joined = await servedBy(THROUGH_JOIN);
       expect(joined).toEqual({
          kind: "materialized",
+         origin: "persist",
          tier: "database",
          tableId: facts!.tableId,
          via: "served_copy",
@@ -97,7 +104,7 @@ describe("P2-32: each rollup read through a join carries its own reason", () => 
 source: trips is duckdb.sql("""
   SELECT * FROM (VALUES (DATE '2020-01-01', 1), (DATE '2020-01-01', 2), (DATE '2020-01-02', 2), (DATE '2020-01-03', 3)) AS t(start_day, start_station_id)
 """) extend {
-${grains.map((g) => `  #(preaggregate) grain=["${g}"]`).join("\n")}
+${grains.map((g) => `  #(rollup) grain=["${g}"]`).join("\n")}
   measure: trip_count is count()
 }
 source: stations_j is duckdb.sql("""

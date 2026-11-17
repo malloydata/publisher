@@ -450,7 +450,7 @@ const PARENT_NOT_REROOTED =
  * ({@link rerootOnBuildSource}), and the build source imported from
  * `importFrom`: a query over the source in the copy reads its stored table
  * through a run's build manifest. Read by the rollup companion, so a
- * colocated rollup over a colocated `#(materialize)` base builds from the
+ * database rollup over a database `#(materialize)` base builds from the
  * base's table (rollup_compile.ts). Undefined when the declaration is not
  * where `declaration` says or does not re-root.
  */

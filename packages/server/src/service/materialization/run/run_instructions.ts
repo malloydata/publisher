@@ -209,11 +209,11 @@ function gateSources(
          if (include && !include.has(persistSource.name)) continue;
 
          // A source that DECLARES `storage=` must never silently downgrade
-         // to a colocated CTAS into its own warehouse when
+         // to a database CTAS into its own warehouse when
          // PERSIST_STORAGE_MODE=off: the author did not ask for that, and
          // production grants read-only warehouse access. It serves LIVE and
          // Package.storageWarnings reports it. A plain `#@ persist` is
-         // unaffected; colocated is its intent.
+         // unaffected; database is its intent.
          if (
             getPersistStorageMode() === "off" &&
             declaredStorage(persistSource)
@@ -230,7 +230,7 @@ function gateSources(
          // ineligible source does not stop the rest of the package refreshing.
          // The run throws only when nothing else is left to build, or when
          // `sourceNames` asked for exactly this source.
-         // A colocated `#@ persist` is just as frozen as a storage build, so
+         // A database `#@ persist` is just as frozen as a storage build, so
          // an authorize-gated source materialized there would be served to
          // every caller.
          try {
@@ -258,12 +258,9 @@ function gateSources(
                refused[persistSource.sourceID] = refusalRecord(
                   persistSource,
                   err,
-                  isRollup
-                     ? "preaggregate"
-                     : destination
-                       ? "storage"
-                       : "colocated",
+                  destination ? "storage" : "database",
                   compiled.tables[persistSource.sourceID]?.modelPath,
+                  compiled.tables[persistSource.sourceID]?.kind,
                );
                // A refused rollup never fails the run: the author asked for
                // nothing they can see.
@@ -280,7 +277,7 @@ function gateSources(
          }
          cleared.set(
             persistSource.sourceID,
-            destination ? "storage" : "colocated",
+            destination ? "storage" : "database",
          );
          sources.push({
             persistSource,
@@ -553,12 +550,9 @@ function tableNameCollision(
             `answered live.`,
          reason: "table_name_collision",
       }),
-      compiled.tables[persistSource.sourceID]?.rollup
-         ? "preaggregate"
-         : destination
-           ? "storage"
-           : "colocated",
+      destination ? "storage" : "database",
       compiled.tables[persistSource.sourceID]?.modelPath,
+      compiled.tables[persistSource.sourceID]?.kind,
    );
 }
 
@@ -644,7 +638,7 @@ function tableNameDecision(
 } {
    // Orchestrated builds use the host-supplied `physicalTableName`. A
    // storage build replaces its table atomically (`CREATE OR REPLACE` in
-   // ONE transaction), and a colocated one swaps it in, so a rebuild
+   // ONE transaction), and a database one swaps it in, so a rebuild
    // never empties the table it serves and no generation is needed.
    const named =
       !!naming &&

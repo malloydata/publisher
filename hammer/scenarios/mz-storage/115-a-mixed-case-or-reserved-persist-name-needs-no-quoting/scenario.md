@@ -13,7 +13,7 @@ SPDX-License-Identifier: MIT
 Persist names are plain identifier paths, and Publisher quotes every segment for the
 target warehouse itself (`a-quoted-persist-name-is-refused`). So an author never needs
 to quote inside the name (the value itself is a quoted string, `name="OrdersDaily"`): a mixed-case name keeps its case, and a reserved word is a valid table name.
-One of each here, `OrdersDaily` on the `storage=` tier and `order` colocated in the
+One of each here, `OrdersDaily` on the `storage=` tier and `order` database in the
 source warehouse (their queries differ, so each is its own table). Each is asserted on the table actually written (by its exact,
 quoted name) and on a stale answer after the source changes, which holds only if the
 serve side found that table.
@@ -79,7 +79,7 @@ Expect:
 
 ## SQL reserved table
 
-The colocated table is the reserved word itself, in the source warehouse.
+The database table is the reserved word itself, in the source warehouse.
 
 ```sql
 SELECT count(*) AS n FROM "order";
@@ -115,7 +115,7 @@ Expect:
 
 ## Query reserved
 
-Stale (150) means the colocated table `order` was read; 1150 would mean the serve side
+Stale (150) means the database table `order` was read; 1150 would mean the serve side
 never found it.
 
 ```malloy

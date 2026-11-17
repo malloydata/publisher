@@ -39,7 +39,7 @@ export type MaterializationMode = (typeof MATERIALIZATION_MODES)[number];
 
 /**
  * What a build makes: `materialize` a `#(materialize)` table, `persist` a
- * `#@ persist` table, `rollup` a `#(preaggregate)` or `#@ preaggregate`
+ * `#@ persist` table, `rollup` a `#(rollup)` or `#@ preaggregate`
  * rollup, `view` a persisted view, `pair` a pair table (an inlined join_many).
  */
 export const BUILD_KINDS = [
@@ -53,7 +53,7 @@ export const BUILD_KINDS = [
 export type BuildKind = (typeof BUILD_KINDS)[number];
 
 /** Where a table is built: the source's own warehouse, or a `storage=` destination. */
-export const BUILD_TIERS = ["colocated", "storage"] as const;
+export const BUILD_TIERS = ["database", "storage"] as const;
 export type BuildTier = (typeof BUILD_TIERS)[number];
 
 /** A full rebuild, or an incremental delta applied in place. */
@@ -276,7 +276,7 @@ const buildCounter = lazyCounter(
    "publisher_materialization_build_total",
    "Source builds, one per source per run at its finish or failure. Labels: " +
       "kind ('materialize'|'persist'|'rollup'|'view'|'query'|'pair'), tier " +
-      "('colocated'|'storage'), outcome ('built'|'reused'|'refused'|'failed'|" +
+      "('database'|'storage'), outcome ('built'|'reused'|'refused'|'failed'|" +
       "'cancelled'), failure_class ('none' unless outcome is 'failed'; then " +
       "'deterministic'|'transient'|'unclassified'|'billed_read_lost'). " +
       "'billed_read_lost' is the expensive one: the warehouse read ran and was " +
@@ -316,7 +316,7 @@ const buildPlanComputeFailedCounter = lazyCounter(
    "Package loads whose build plan failed to compute. The ROOT-CAUSE signal for " +
       "served_copy_bind{reason='build_plan_unavailable'}, which fires only " +
       "per declined entry per load -- a package that loads once and is never " +
-      "reloaded ticks that counter once and then sits with its colocated tier " +
+      "reloaded ticks that counter once and then sits with its database tier " +
       "off and a flat total, indistinguishable from healthy.",
 );
 const autoLoadCounter = lazyCounter(
@@ -335,7 +335,7 @@ const servedCopyBindCounter = lazyCounter(
       "'bound'|'partial'|'declined' for a source: 'partial' is a source that " +
       "serves with a join read as written or left out), reason ('none' when " +
       "bound, else why: 'build_plan_unavailable' when the package's build " +
-      "plan failed to compute, so every colocated source reverts to live; " +
+      "plan failed to compute, so every database source reverts to live; " +
       "'refused'; 'missing_table'; or the served copy's reason, as its " +
       "package warning, 'inline_join_kept' and 'cross_connection_join' being " +
       "the partial ones). Units differ by who counts: 'bound' and the bind's " +
@@ -480,7 +480,7 @@ const staleUpstreamEntryCounter = lazyCounter(
       "different tier than the upstream is declared on now (ms2data/service#7087: " +
       "a source moved to or from storage= keeps its content address). The build " +
       "recomputes that upstream from raw instead, which reads the warehouse. " +
-      "Label: build ('colocated'|'storage'), the tier of the build that " +
+      "Label: build ('database'|'storage'), the tier of the build that " +
       "recomputed.",
 );
 
@@ -703,8 +703,8 @@ export function recordSourceBound(): void {
  * Record one source entry declined: by the bind (the plan, its refusal, a
  * table built from another definition) or by the served copy's compile (the
  * reason its package warning gives). `build_plan_unavailable` is the one to
- * alert on: colocated is the default tier and is not gated by
- * PERSIST_STORAGE_MODE, so every colocated source of the package reverts to
+ * alert on: database is the default tier and is not gated by
+ * PERSIST_STORAGE_MODE, so every database source of the package reverts to
  * live until a load succeeds.
  */
 export function recordSourceDeclined(reason: BindDeclineReason): void {
@@ -790,7 +790,7 @@ export function recordAttributionSkipped(
 /**
  * Record a materialization-eligibility refusal. A build plan records each
  * source in its `refusedSources` once per derivation, under the reason there,
- * and never a source it does not refuse (a colocated source only unservable
+ * and never a source it does not refuse (a database source only unservable
  * from storage); a run records the refusals only it can find. The `given`
  * reason is a security
  * refusal (a frozen given-filtered table would leak rows across tenants); worth
@@ -876,7 +876,7 @@ export function recordChainedStorageBuild(
  * manifest entry is at a different tier than it is declared on now (see
  * {@link staleUpstreamEntryCounter}). Once per run per upstream.
  */
-export function recordStaleUpstreamEntry(build: "colocated" | "storage"): void {
+export function recordStaleUpstreamEntry(build: "database" | "storage"): void {
    staleUpstreamEntryCounter().add(1, { build });
 }
 

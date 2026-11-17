@@ -862,7 +862,7 @@ describe("BuildPlan.refusedSources", () => {
    afterEach(() => packages.cleanup());
 
    it(
-      "refuses a colocated source whose table a refused source shares, with that source's reason",
+      "refuses a database source whose table a refused source shares, with that source's reason",
       async () => {
          // `ok` and `leaky` compile to the same SQL, so one table (`ok` names
          // none, and `leaky`'s route, `name=` included, is dropped, so neither
@@ -886,7 +886,7 @@ source: leaky is base -> { aggregate: c is count() }
          const refused = Object.values(plan?.refusedSources ?? {});
          const ok = refused.find((r) => r.name === "ok");
          expect(ok).toMatchObject({
-            tier: "colocated",
+            tier: "database",
             reason: "env_reference",
          });
          expect(ok?.message).toStartWith(
@@ -1011,11 +1011,11 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
    );
 
    it(
-      "does NOT report a colocated gated source as refused once the row-level relaxation admits it (the storage-rules SourceEligibility.refused trap)",
+      "does NOT report a database gated source as refused once the row-level relaxation admits it (the storage-rules SourceEligibility.refused trap)",
       async () => {
          // Plain `#@ persist` (no `storage=`): the entry point's own
          // `#(access_filter)` gate classifies row_level + attributed, so the
-         // colocated relaxation admits it. The OLD `SourceEligibility.refused`
+         // database relaxation admits it. The OLD `SourceEligibility.refused`
          // (computed with the unconditional storage-tier assert) would report
          // this same source as `refused: authorize` — refusedSources must not
          // repeat that mistake now that it can actually build.
@@ -1068,7 +1068,7 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (${amount}, 'A')) AS t(amo
          const { plan } = await computePackageBuildPlan(pkg);
 
          const rollups = Object.values(plan?.sources ?? {}).filter(
-            (s) => s.origin === "preaggregate",
+            (s) => s.origin === "rollup",
          );
          expect(rollups.map((r) => r.modelPath).sort()).toEqual([
             "a.malloy",
@@ -1104,7 +1104,7 @@ export { orders }
 
          expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
          const rollups = Object.values(plan?.sources ?? {}).filter(
-            (s) => s.origin === "preaggregate",
+            (s) => s.origin === "rollup",
          );
          expect(rollups.map((r) => r.modelPath)).toEqual(["jaffle.malloy"]);
       },
@@ -1131,7 +1131,7 @@ export { notes }
 
          expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
          const rollups = Object.values(plan?.sources ?? {}).filter(
-            (s) => s.origin === "preaggregate",
+            (s) => s.origin === "rollup",
          );
          // Once, under the declaring model, and named for `orders`, not the
          // alias `o`.
@@ -1188,9 +1188,7 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
          const { plan } = await computePackageBuildPlan(pkg);
 
          const entries = Object.values(plan?.sources ?? {});
-         expect(
-            entries.filter((s) => s.origin === "preaggregate"),
-         ).toHaveLength(1);
+         expect(entries.filter((s) => s.origin === "rollup")).toHaveLength(1);
          expect(entries.map((s) => s.name)).toContain("orders");
          expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
          // Every graph node is planned or refused.
@@ -1227,7 +1225,7 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (99, 'A')) AS t(amount, ca
 
          expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
          const rollups = Object.values(plan?.sources ?? {}).filter(
-            (s) => s.origin === "preaggregate",
+            (s) => s.origin === "rollup",
          );
          // Each model's rollup is its own table: a.malloy's over its stored
          // base, b.malloy's over the warehouse.
@@ -1253,7 +1251,7 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
          const { plan } = await computePackageBuildPlan(pkg);
          expect(
             Object.values(plan?.sources ?? {}).filter(
-               (s) => s.origin === "preaggregate",
+               (s) => s.origin === "rollup",
             ),
          ).toHaveLength(1);
       },
@@ -1277,7 +1275,7 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
 
          expect(
             Object.values(plan?.sources ?? {}).filter(
-               (s) => s.origin === "preaggregate",
+               (s) => s.origin === "rollup",
             ),
          ).toHaveLength(1);
          expect(plan?.refusedSources ?? {}).toEqual({});
@@ -1320,9 +1318,9 @@ source: orders is duckdb.sql("""
                r.tier,
                r.reason,
             ]),
-         ).toEqual([["orders.total", "preaggregate", "access_filter"]]);
+         ).toEqual([["orders.total", "database", "access_filter"]]);
          expect(annotationFindings.map((f) => f.code)).not.toContain(
-            "preaggregate-not-built",
+            "rollup-not-built",
          );
       },
       { timeout: 20000 },

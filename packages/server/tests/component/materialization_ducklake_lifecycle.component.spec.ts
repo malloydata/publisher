@@ -96,7 +96,7 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: amount is amt.sum()
 }
 `;
@@ -132,7 +132,13 @@ type Entry = {
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
-   servedBy: { kind: string; tableId?: string; tier?: string; via?: string };
+   servedBy: {
+      kind: string;
+      origin?: string;
+      tableId?: string;
+      tier?: string;
+      via?: string;
+   };
 };
 
 describe.skipIf(process.platform === "win32")(
@@ -499,7 +505,7 @@ describe.skipIf(process.platform === "win32")(
          }
          expect(daily.origin).toBeUndefined();
          expect(orders.origin).toBeUndefined();
-         expect(sales.origin).toBe("preaggregate");
+         expect(sales.origin).toBe("rollup");
          expect(daily.schema).toEqual([
             { name: "cat", type: "VARCHAR" },
             { name: "total", type: "DECIMAL(38,1)" },
@@ -561,10 +567,12 @@ describe.skipIf(process.platform === "win32")(
          }
          expect((await ask("daily")).servedBy).toMatchObject({
             kind: "materialized",
+            origin: "persist",
             via: "served_copy",
          });
          expect((await ask("orders")).servedBy).toMatchObject({
             kind: "materialized",
+            origin: "materialize",
             via: "served_copy",
          });
          expect((await ask("sales")).servedBy.kind).toBe("rollup");
@@ -1452,6 +1460,7 @@ source: events is warehouse.sql("""
          expect(served.servedFrom).toBe("storage");
          expect(served.servedBy).toMatchObject({
             kind: "materialized",
+            origin: "materialize",
             tableId: address,
          });
          expect(served.rows).toEqual(live.rows);
@@ -2222,12 +2231,14 @@ describe.skipIf(process.platform === "win32")(
          }
          expect((await lake.ask(QUERIES.view)).servedBy).toEqual({
             kind: "view",
+            origin: "view",
             tableId: entries.ops__by_cat__view.sourceEntityId,
             tier: "storage",
          });
          for (const name of ["pairs", "parent", "child"] as const) {
             expect((await lake.ask(QUERIES[name])).servedBy).toEqual({
                kind: "materialized",
+               origin: "materialize",
                tableId: entries[name].sourceEntityId,
                tier: "storage",
                via: "served_copy",
@@ -2276,7 +2287,7 @@ source: sb_viewed is sb_raw extend {
 query: sb_query is sb_raw -> { group_by: cat; aggregate: total is amt.sum() }
 
 source: sb_sales is sb_raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: total is amt.sum()
 }
 `,
@@ -2303,7 +2314,7 @@ source: sb_sales is sb_raw extend {
                "persist-not-built:sb_daily",
                "persist-query-not-built:sb_query__query",
                "persist-view-not-built:sb_viewed__by_cat__view",
-               "preaggregate-not-built:sb_sales",
+               "rollup-not-built:sb_sales",
                // No repeat under the former `persist-source-refused`: no
                // earlier release raised this refusal.
             ].sort(),

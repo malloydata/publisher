@@ -281,13 +281,18 @@ export function readsBuildCopy(
  * replaced by `true` (each found where the compiler says it is, {@link
  * termSpans}) and, with `lift`, its own access modifiers lifted and its
  * declaration wrapped in `include { public: * }` under the flag that needs
- * (as a `#(materialize)` build copy lifts them). Made the same by the plan's
+ * (as a `#(materialize)` build copy lifts them), and those of the sources
+ * it extends that declare a private grain dimension (`liftedAncestors`).
+ * Made the same by the plan's
  * companion and the serving variant, so the build source's SQL, and so its
  * table, is one. Or why it cannot be made.
  */
 export function rollupBuildCopyText(
    text: string,
-   plan: Pick<RollupVariantPlan, "readTimeTerms" | "declaration">,
+   plan: Pick<
+      RollupVariantPlan,
+      "readTimeTerms" | "declaration" | "liftedAncestors"
+   >,
    lift: boolean,
 ): { copy: string } | { reason: string } {
    const edits: TextEdit[] = [];
@@ -320,6 +325,30 @@ export function rollupBuildCopyText(
          { start: to, end: to, insert: " include { public: * }" },
          { start: 0, end: 0, insert: "##! experimental.access_modifiers\n" },
       );
+      // A private grain dimension a source it extends declares: that
+      // source's statement, and each between it and the base, lifted too,
+      // so the field reaches the base public in the copy.
+      for (const ancestor of plan.liftedAncestors ?? []) {
+         const at = offsetOf(text, ancestor.range.start);
+         const end = offsetOf(text, ancestor.range.end);
+         const ancestorLifts =
+            at >= 0 && end >= at
+               ? accessLiftEdits(text.slice(at, end))
+               : undefined;
+         if (!ancestorLifts) {
+            return {
+               reason:
+                  "the declaration of a source it extends could not be read to lift its access modifiers for the build",
+            };
+         }
+         edits.push(
+            ...ancestorLifts.map((e) => ({
+               ...e,
+               start: at + e.start,
+               end: at + e.end,
+            })),
+         );
+      }
    }
    const copy = applyEdits(text, edits);
    return copy === undefined ? { reason: TERM_NOT_FOUND } : { copy };

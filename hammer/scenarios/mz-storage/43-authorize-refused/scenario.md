@@ -17,7 +17,7 @@ query time against the caller's givens. This source's gate is the bare sentinel
 loads and no build runs: the build is refused, citing the gate.
 
 (A `storage=` source whose own gate is a proven row filter or lock is no longer
-refused: it is built and served with the gate re-applied at read, as a colocated
+refused: it is built and served with the gate re-applied at read, as a database
 one is (G3). What stays refused on this tier is a gate the source inherits as a
 row filter, one reached through a join, and one whose build would substitute a
 given — see the eligibility unit tests and

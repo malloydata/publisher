@@ -27,7 +27,7 @@
  * The companion reads the author's files with every source-level `#@` line
  * blanked (positions kept), so a persisted view never chains onto its source's
  * own table: it reads the rows the live query reads (the same reason the
- * `#(preaggregate)` companion blanks them).
+ * `#(rollup)` companion blanks them).
  *
  * Keying: a declaration by its source's `sourceID` and the view's name; the
  * stored table by the generated source's `sourceEntityId` and destination,

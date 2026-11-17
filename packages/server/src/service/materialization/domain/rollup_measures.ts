@@ -114,7 +114,7 @@ export interface RollupPlan {
    /**
     * The storage destination this rollup is built into and served from — this
     * grain's own `#@ preaggregate storage=`, and only ever that. Undefined for a
-    * colocated rollup built into the base's own warehouse.
+    * database rollup built into the base's own warehouse.
     *
     * NOT inherited from the base's `#@ persist storage=`; see
     * {@link basePersistNamespace} for why a destination is not inherited.
@@ -137,7 +137,7 @@ export interface RollupPlan {
    baseSourceID?: string;
    /**
     * The rollup's source-level freshness: what its declarations say
-    * (`freshness.window=`, `freshness.fallback=` on `#(preaggregate)` or
+    * (`freshness.window=`, `freshness.fallback=` on `#(rollup)` or
     * `#@ preaggregate`), per field over what its base's own declaration says.
     * The model-file and package layers resolve under it as for any source
     * (plan_layers.ts). Absent: neither declares any.

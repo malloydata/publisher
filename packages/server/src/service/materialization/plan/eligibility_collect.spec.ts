@@ -20,7 +20,7 @@ const rollupModel = (
    category: string,
 ) => `##! experimental.persistence
 source: orders is duckdb.sql("SELECT ${id} AS id, ${id * 10} AS amount, '${category}' AS category") extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }`;
 
@@ -90,7 +90,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
                refused: expect.objectContaining({
                   name: "orders",
                   reason: "table_name_collision",
-                  tier: "colocated",
+                  tier: "database",
                }),
             },
             {
@@ -104,7 +104,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
                refused: expect.objectContaining({
                   name: "placed",
                   reason: "table_name_collision",
-                  tier: "colocated",
+                  tier: "database",
                }),
             },
          ]);

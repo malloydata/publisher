@@ -11,12 +11,12 @@
     "warnings": [
       {
         "code": "deprecated-preaggregate-annotation",
-        "message": "Measure summe on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "message": "Measure summe on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
         "subject": "bestellungen"
       },
       {
         "code": "deprecated-preaggregate-annotation",
-        "message": "Measure 件数 on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+        "message": "Measure 件数 on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
         "subject": "bestellungen"
       }
     ]
@@ -70,6 +70,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
           }
@@ -88,6 +89,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "rollup",
           "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323",
           "tier": "storage"
         },
@@ -146,6 +148,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
           }
@@ -164,6 +167,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "rollup",
           "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323",
           "tier": "storage"
         },

@@ -116,7 +116,7 @@ describe("stagingSuffix", () => {
 });
 
 describe("manifestExcludingStorage (chained-storage inline)", () => {
-   it("drops storage entries, keeps colocated entries with the manifest's quoting, preserves strict", () => {
+   it("drops storage entries, keeps database entries with the manifest's quoting, preserves strict", () => {
       // The source manifest is already dialect-quoted by the seed loop (#904);
       // manifestExcludingStorage reuses that quoting for the kept entries.
       const manifest = new Manifest();
@@ -128,7 +128,7 @@ describe("manifestExcludingStorage (chained-storage inline)", () => {
             sourceEntityId: "wh_up",
             physicalTableName: "wh_up_v1",
             connectionName: "duckdb",
-            // no storageDestinationName -> colocated, keep it
+            // no storageDestinationName -> database, keep it
          },
          lake_up: {
             sourceEntityId: "lake_up",
@@ -153,7 +153,7 @@ describe("upstreamEntryIsCurrent", () => {
    const facts = {
       declaredTiersByAddress: {
          stored: ["lake"],
-         colocated: [null],
+         database: [null],
          split: [null, "lake"],
       },
    };
@@ -165,15 +165,15 @@ describe("upstreamEntryIsCurrent", () => {
             facts,
          ),
       ).toBe(true);
-      expect(upstreamEntryIsCurrent("colocated", {}, facts)).toBe(true);
+      expect(upstreamEntryIsCurrent("database", {}, facts)).toBe(true);
    });
    it("rejects an entry from before its source moved tier", () => {
       // A warehouse table, or an unlabeled reference, for a source now stored.
       expect(upstreamEntryIsCurrent("stored", {}, facts)).toBe(false);
-      // A stored table for a source now colocated, or now in another destination.
+      // A stored table for a source now database, or now in another destination.
       expect(
          upstreamEntryIsCurrent(
-            "colocated",
+            "database",
             { storageDestinationName: "lake" },
             facts,
          ),
@@ -201,17 +201,17 @@ describe("upstreamEntryIsCurrent", () => {
    it("drops a stale warehouse entry from the warehouse manifest", () => {
       const manifest = new Manifest();
       manifest.update("stored", { tableName: '"up__g004"' });
-      manifest.update("colocated", { tableName: '"co_v1"' });
+      manifest.update("database", { tableName: '"co_v1"' });
       const built: Record<string, ManifestEntry> = {
          stored: { sourceEntityId: "stored", physicalTableName: "up__g004" },
-         colocated: { sourceEntityId: "colocated", physicalTableName: "co_v1" },
+         database: { sourceEntityId: "database", physicalTableName: "co_v1" },
       };
       const reduced = manifestExcludingStorage(manifest, built, facts);
-      expect(Object.keys(reduced.entries)).toEqual(["colocated"]);
+      expect(Object.keys(reduced.entries)).toEqual(["database"]);
       // Without plan facts, every warehouse entry is kept, as before.
       const legacy = manifestExcludingStorage(manifest, built);
       expect(Object.keys(legacy.entries).sort()).toEqual([
-         "colocated",
+         "database",
          "stored",
       ]);
    });
@@ -299,7 +299,7 @@ describe("upstreamReuseFromManifest", () => {
          substituted: { "addr-daily": {}, "addr-sites": {} },
          full: { "addr-daily": {}, "addr-sites": {} },
          builtEntries: {},
-         tier: "colocated",
+         tier: "database",
       });
       expect(out).toEqual({
          fields: { upstreamReuse: "reused" },
@@ -323,12 +323,12 @@ describe("upstreamReuseFromManifest", () => {
                physicalTableName: "daily__g1",
             },
          },
-         tier: "colocated",
+         tier: "database",
       });
       expect(out.fields).toEqual({ upstreamReuse: "reused" });
    });
 
-   it("a colocated build recomputes a storage-tier upstream and says which destination holds it", () => {
+   it("a database build recomputes a storage-tier upstream and says which destination holds it", () => {
       const out = upstreamReuseFromManifest({
          reached: [daily],
          addressBySourceId,
@@ -337,7 +337,7 @@ describe("upstreamReuseFromManifest", () => {
          substituted: {},
          full: { "addr-daily": {} },
          builtEntries,
-         tier: "colocated",
+         tier: "database",
       });
       expect(out.inManifestOnly).toEqual(["daily"]);
       expect(out.fields.upstreamReuse).toBe("recomputed");
@@ -390,7 +390,7 @@ describe("upstreamReuseFromManifest", () => {
             substituted: {},
             full: {},
             builtEntries: {},
-            tier: "colocated",
+            tier: "database",
          }).fields,
       ).toEqual({});
    });
@@ -802,7 +802,7 @@ describe("noteWrongTierRecompute", () => {
          const note = (upstream: string) =>
             noteWrongTierRecompute({
                planFacts: run,
-               build: "colocated",
+               build: "database",
                sourceName: "down",
                upstream,
                detail: "d",
@@ -812,7 +812,7 @@ describe("noteWrongTierRecompute", () => {
          note("other");
          noteWrongTierRecompute({
             planFacts: {},
-            build: "colocated",
+            build: "database",
             sourceName: "down",
             upstream: "up",
             detail: "d",

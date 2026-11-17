@@ -61,7 +61,7 @@ source: sw is raw -> { group_by: sub; aggregate: total is v.sum(), n is count() 
       // no warehouse type captured (an entry from before the capture).
       const binding: Binding = {
          kind: "persist",
-         tier: "colocated",
+         tier: "database",
          sourceName: "sw",
          destinationName: "duckdb",
          virtualHandle: "addr_sw",

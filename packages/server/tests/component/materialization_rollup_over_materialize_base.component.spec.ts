@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A colocated rollup over a colocated `#(materialize)` base builds from the
+ * A database rollup over a database `#(materialize)` base builds from the
  * base's stored table when the run holds it, rather than from the warehouse,
  * and stores the same rows, as one over a `#@ persist` base does
  * (materialization_rollup_over_stored_base.component.spec.ts). End to end
@@ -79,7 +79,7 @@ function modelOf(
    rollupExtra = "",
    materializeExtra = "",
 ): string {
-   const rollup = `#(preaggregate) grain=["${grain}"]${rollupExtra}`;
+   const rollup = `#(rollup) grain=["${grain}"]${rollupExtra}`;
    return `##! experimental.persistence
 source: raw is ${RAW}
 
@@ -95,7 +95,7 @@ source: orders is raw extend {
 }
 
 source: plain is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: plain_total is amt.sum()
 }
 `;
@@ -119,7 +119,7 @@ type Entry = {
    dataAsOf?: string;
 };
 
-describe("a colocated rollup over a colocated #(materialize) base", () => {
+describe("a database rollup over a database #(materialize) base", () => {
    let root: string;
    let envPath: string;
    let db: DuckDBConnection;
@@ -219,7 +219,7 @@ describe("a colocated rollup over a colocated #(materialize) base", () => {
    const rollupOf = (m: Materialization, base: string) => {
       const hit = entries(m).find(
          (e) =>
-            e.origin === "preaggregate" &&
+            e.origin === "rollup" &&
             e.sourceName.startsWith(`${base}__rollup__`),
       );
       if (!hit) throw new Error(`no rollup of ${base}`);
@@ -358,7 +358,7 @@ describe("a colocated rollup over a colocated #(materialize) base", () => {
       await setUp();
       const pkg = await env.getPackage(parsePackageName(PKG), false);
       const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
-         (s) => s.origin === "preaggregate" && s.name.startsWith("orders__"),
+         (s) => s.origin === "rollup" && s.name.startsWith("orders__"),
       )!.name;
       const m = await build({ sourceNames: [rollupName] });
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
@@ -390,13 +390,13 @@ source: raw is ${RAW}
 
 #@ persist name="porders_tbl"
 source: porders is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: pgrand is amt.sum()
 }
 
 #(materialize) name="orders_mat"
 source: orders is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: grand is amt.sum()
 }
 
@@ -406,7 +406,7 @@ source: tagged is raw extend {
 }
 extend {
   except: tag
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: tgrand is amt.sum()
 }
 `);
@@ -443,14 +443,14 @@ source: raw is ${RAW}
 
 #(materialize) name="orders_mat"
 source: orders is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: grand is amt.sum()
 }
 
 #(materialize) name="clipped_mat"
 source: clipped is raw extend {
   except: mark
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: cgrand is amt.sum()
 }
 `);
@@ -576,7 +576,7 @@ source: raw is ${RAW}
 #(access_filter) cat = $CAT
 #(materialize) name="orders_mat"
 source: orders is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: grand is amt.sum()
 }
 `;
@@ -632,7 +632,7 @@ source: orders is raw extend {
 #(materialize) name="tagged_mat"
 source: tagged is orders extend {
   dimension: tag is concat(upper_cat, '-', sub)
-  #(preaggregate) grain=["tag"]
+  #(rollup) grain=["tag"]
   measure: grand is amt.sum()
 }
 `);

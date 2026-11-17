@@ -90,7 +90,7 @@ interface PreaggregateGrain {
    /**
     * The storage destination this rollup's table is built into and served from,
     * when the author named one (`#@ preaggregate grain="category"
-    * storage=lake`). Undefined means colocated: built into the base's own
+    * storage=lake`). Undefined means database: built into the base's own
     * warehouse.
     *
     * Unlike `namespace`, NOTHING supplies it when unspecified: a destination is
@@ -101,7 +101,7 @@ interface PreaggregateGrain {
    /**
     * This grain's own `freshness` group, when its line writes one
     * (`#@ preaggregate grain="category" freshness.window="1h"`), read as
-    * `#(preaggregate)` reads it (freshness_declaration.ts).
+    * `#(rollup)` reads it (freshness_declaration.ts).
     */
    freshness?: DeclaredFreshness;
 }
@@ -231,7 +231,7 @@ function orderedNotes(annotations: unknown): OrderedNote[] {
 }
 
 /**
- * A `#@ preaggregate` line's `freshness` group, read as `#(preaggregate)`
+ * A `#@ preaggregate` line's `freshness` group, read as `#(rollup)`
  * reads it (freshness_declaration.ts); the nested form wins, as for grain=.
  */
 function readLineFreshness(

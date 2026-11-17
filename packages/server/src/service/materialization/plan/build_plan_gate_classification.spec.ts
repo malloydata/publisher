@@ -26,7 +26,7 @@ import {
    type GateClassificationDeps,
 } from "../../gate_classification";
 import { malloyGivenToApi, type MalloyGiven } from "../../given";
-import { assertColocatedPersistNotAuthorizeGated } from "./materialization_eligibility";
+import { assertDatabasePersistNotAuthorizeGated } from "./materialization_eligibility";
 
 const ROOT = "file:///gate-classify/";
 let connections: FixedConnectionMap;
@@ -245,7 +245,7 @@ source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
       // `derived` writes no gate of its own: it reads `locked`'s
       // `#(access_filter)` by extending it, and joins a second copy of
       // `locked` carrying the same note object, so note identity cannot see
-      // the join and `attributed` reads true. The colocated relaxation used
+      // the join and `attributed` reads true. The database relaxation used
       // to admit it on that alone. The served copy re-roots `derived` on its
       // table, replacing `locked`, so it cannot graft the gate and declines
       // every query: the table, holding every caller's rows, would never be
@@ -279,7 +279,7 @@ source: derived is locked extend {
          inheritedRowFilter: true,
       });
       expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
+         assertDatabasePersistNotAuthorizeGated(
             sources.derived,
             sources.derived.name,
             "persist",
