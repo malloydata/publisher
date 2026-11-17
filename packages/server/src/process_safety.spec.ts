@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
    describeRejection,
    installProcessSafetyHandlers,
@@ -13,7 +14,9 @@ import { startMetricsHarness } from "./test_helpers/metrics_harness";
 
 // A real unhandled rejection fails bun's running test, so each is raised in a
 // child process that installs the backstop and reports whether it survived.
-const MODULE = new URL("./process_safety.ts", import.meta.url).pathname;
+// fileURLToPath, not URL.pathname: on Windows the pathname is "/D:/...", which
+// the child cannot import, so it would exit before installing anything.
+const MODULE = fileURLToPath(new URL("./process_safety.ts", import.meta.url));
 const CHILD = `
 import { installProcessSafetyHandlers } from ${JSON.stringify(MODULE)};
 installProcessSafetyHandlers();
@@ -42,11 +45,11 @@ function raise(which: string) {
       encoding: "utf8",
       env: { ...process.env, NODE_ENV: "test" },
    });
-   return {
-      status: run.status,
-      stdout: run.stdout,
-      out: run.stdout + run.stderr,
-   };
+   const out = run.stdout + run.stderr;
+   // A child that dies says why, or a failed status assertion shows only "1".
+   if (run.status !== 0)
+      console.error(`child for ${which} exited ${run.status}:\n${out}`);
+   return { status: run.status, stdout: run.stdout, out };
 }
 
 describe("installProcessSafetyHandlers", () => {

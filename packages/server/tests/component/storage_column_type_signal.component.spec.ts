@@ -263,17 +263,13 @@ describe("a colocated table whose column type moved outside a build", () => {
       for (const message of bySubject.values()) {
          expect(message).toContain("altered outside a build");
       }
-      // The served copy leaves the column out; a rollup, which no cast
-      // reaches, answers live whole.
-      expect(bySubject.get("orders")).toContain(
-         "queries that read it are answered live",
-      );
-      expect(bySubject.get("daily")).toContain(
-         "queries that read it are answered live",
-      );
-      expect(bySubject.get("sales")).toContain(
-         "every query on it is answered live",
-      );
+      // The served copy leaves the column out, and a rollup's typed read
+      // does the same: only queries that read it answer live.
+      for (const subject of ["orders", "daily", "sales"]) {
+         expect(bySubject.get(subject)).toContain(
+            "queries that read it are answered live",
+         );
+      }
 
       // Asked again, still counted once per table.
       pkg.getPackageMetadata();

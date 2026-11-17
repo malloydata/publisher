@@ -5995,7 +5995,7 @@ components:
                   `-join-level` and `-name-clash`, now each
                   `preaggregate-not-built` with the reasons `hidden_field`,
                   `access_filter` (or `authorize`), `time_zone`,
-                  `current_time`, `given_in_persisted_query`,
+                  `current_time`, `reads_given`,
                   `inherited_where_with_given` or
                   `given_where_over_unstored_field`, `unreadable_measure`,
                   `join_level` and `name_clash`.
@@ -10877,16 +10877,15 @@ components:
             On every mechanism: `free_parameter`; a row-level gate the
             table could not keep, named by the gate's kind, `access_filter`
             for a row filter (`#(access_filter)`, any of the gates that
-            refused it) and `authorize` for a lock (`#(authorize)`); the four that
-            name where a given the build could not strip sits
-            (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
-            `dynamic_joined_where`), where `given_in_persisted_query` is the
-            one reason every mechanism gives for a build that would read a
-            given, so its table would hold one caller's rows (a given in a
-            `#@ persist` source's persisted query, a persisted view or query
-            whose result reads one, a rollup whose build reads one); the other
-            three are raised by a `storage=` `#@ persist` alone, naming the
-            position more finely; `inherited_where_with_given` (a
+            refused it) and `authorize` for a lock (`#(authorize)`);
+            `reads_given`, the one reason every mechanism gives
+            for a stored result that would read a given, so its table would
+            hold one caller's rows or could not be read per caller (a given in
+            a `#@ persist` source's persisted query, in a field it declares, in
+            a join's `on:` condition or in a source it joins that is not
+            stored per caller; a persisted view or query whose result reads
+            one; a rollup whose build reads one), with `message` naming where
+            the given sits; `inherited_where_with_given` (a
             given-reading `where:` or dimension the declaration inherits from
             a source it is built from, in its own file or another, rather than
             writing it in its own declaration: only the declaration's own
@@ -10933,7 +10932,7 @@ components:
             `nested_result` (a result that nests, which its table cannot
             answer yet), `access_filter` or `authorize` (it reaches a
             row-level gate its stored result cannot keep, named by the gate's
-            kind), `given_in_persisted_query` (its result reads a given),
+            kind), `reads_given` (its result reads a given),
             `current_time` (its result reads `now`), `no_stored_columns` (it has no stage to store) and
             `generated_build_failed` (its build does not compile on its own).
 
@@ -10963,14 +10962,18 @@ components:
 
 
             Retained, no longer produced: `given` (replaced by the positional
-            given reasons above), `reads_given` (a persisted view or query
-            whose result reads a given, and a rollup's given-reading refusals,
-            now `given_in_persisted_query`, `inherited_where_with_given` or
-            `given_where_over_unstored_field`; never in a release),
+            given reasons above), `given_in_persisted_query` (shipped in
+            0.14.0: a `#@ persist` source's persisted query, or a
+            `#(materialize)` source, whose build reads a given; now
+            `reads_given`, the one name every mechanism gives the case),
             `preaggregate_over_dynamic_source` (shipped in 0.14.0: a rollup
-            over a caller-scoped source, now `given_in_persisted_query`,
+            over a caller-scoped source, now `reads_given`,
             `given_where_over_unstored_field` or `inherited_where_with_given`,
-            as every mechanism names the same case), `not_duckdb_portable` (a `storage=` table no
+            as every mechanism names the same case), `dynamic_projection`,
+            `dynamic_join` and `dynamic_joined_where` (a `storage=`
+            `#@ persist` source's given in a field it declares, in a join's
+            `on:` condition, or in a source it joins; now `reads_given`,
+            whose `message` still names the position), `not_duckdb_portable` (a `storage=` table no
             column of which Malloy can type is now built, and its source is
             answered live), the three `partition_*` reasons (`partition=` is a
             retired key, which fails the publish and the load as

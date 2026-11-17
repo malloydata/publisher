@@ -38,6 +38,8 @@ import {
 } from "../domain/table_plans";
 import { capabilitiesOf } from "../domain/dialect";
 import {
+   driftDeclaredType,
+   driftedColumnRead,
    storedColumnsOfOutput,
    storedMalloyType,
 } from "../stored_column_types";
@@ -546,9 +548,13 @@ export interface ObservedDrift {
  * - a served-copy binding (`#(materialize)`, `#@ persist`) declares each
  *   drifted column with its observed type, and the one stored-column read
  *   plan casts it or leaves it out (a gone column is left out);
- * - an entry read by Malloy's build-manifest substitution alone (a rollup, a
- *   persisted view or query), which no cast reaches, is left out of the
- *   entries, so its leg finds no table and the query answers live;
+ * - an entry read by Malloy's build-manifest substitution (a rollup, a
+ *   persisted view or query), which no cast reaches, records the columns its
+ *   table holds now (`heldRead`) and those it left out (`leftOutColumns`):
+ *   its leg then reads it through a typed source as a `storage=` table is
+ *   read, each moved column cast faithfully or left out by the same rule
+ *   ({@link driftedColumnRead}), so only a query reading a left-out column
+ *   answers live;
  * - a table whose read failed (`unread`), or that was not read, is left out
  *   of both: it answers live (fail safe).
  *
@@ -558,6 +564,12 @@ export function applyObservedColumns(args: {
    entries: FreshnessManifest;
    bindings: readonly Binding[];
    observed: ReadonlyMap<string, ObservedColumns> | undefined;
+   /**
+    * The columns a substituted entry's build source declares, by name, and
+    * the time zone its reader reads it in: what a drifted column must read
+    * as. Without it, each column's declared type is the one its build wrote.
+    */
+   declared?: (sourceEntityId: string) => DriftDeclaration | undefined;
 }): {
    entries: FreshnessManifest;
    bindings: Binding[];
@@ -612,14 +624,23 @@ export function applyObservedColumns(args: {
          : // A build that captured only native types (a warehouse whose
            // schema reader refused the name): those are what moved or not.
            nativeDriftOf(entry.nativeSchema ?? [], read);
-      if (columns.length > 0) {
-         drifted.push({ sourceEntityId: id, columns });
-         // Read by Malloy's manifest substitution alone: no cast reaches it.
-         if (!served.has(id)) {
-            left.add(id);
-            continue;
-         }
+      if (columns.length > 0 && !served.has(id)) {
+         // Read by Malloy's manifest substitution alone: each moved column
+         // cast in a projection substituted for the table, or left out.
+         const substituted = substitutedRead(
+            entry,
+            columns,
+            read,
+            args.declared?.(id),
+         );
+         drifted.push({
+            sourceEntityId: id,
+            columns: substituted?.columns ?? columns,
+         });
+         if (substituted) entries[id] = substituted.entry;
+         continue;
       }
+      if (columns.length > 0) drifted.push({ sourceEntityId: id, columns });
       entries[id] = entry;
    }
    const bindings = args.bindings.flatMap((b): Binding[] => {
@@ -632,6 +653,7 @@ export function applyObservedColumns(args: {
       const extra: ObservedDrift["columns"] = [];
       let moved = false;
       const retyped = new Map<string, string>();
+      const movedColumns: { name: string; type: string }[] = [];
       // The binding's decision for each drifted column.
       const decided = new Map<string, ObservedDrift["columns"][number]>();
       const schema = b.schema.flatMap((c) => {
@@ -655,6 +677,8 @@ export function applyObservedColumns(args: {
          }
          if (d.kind === "drop") return [];
          if (d.nativeType !== undefined) retyped.set(c.name, d.nativeType);
+         // What the gate policy judges a gate over this column by.
+         movedColumns.push({ name: c.name, type: d.nativeType ?? d.type });
          return [{ name: c.name, type: d.type }];
       });
       const known = drifted.find((x) => x.sourceEntityId === b.virtualHandle);
@@ -681,12 +705,276 @@ export function applyObservedColumns(args: {
       const nativeSchema = b.nativeSchema?.map((n) =>
          retyped.has(n.name) ? { ...n, type: retyped.get(n.name)! } : n,
       );
-      return [{ ...b, schema, ...(nativeSchema ? { nativeSchema } : {}) }];
+      return [
+         {
+            ...b,
+            schema,
+            ...(nativeSchema ? { nativeSchema } : {}),
+            ...(movedColumns.length > 0
+               ? { retypedColumns: movedColumns }
+               : {}),
+         },
+      ];
    });
    return { entries, bindings, drifted, unread };
 }
 
-/** The built native columns whose native type moved, or that are gone. */
+/** What a substituted table's moved columns must read as. */
+export interface DriftDeclaration {
+   /** The build source's declared columns, with their Malloy types. */
+   columns: readonly { name?: string; type?: string }[];
+   /** The connection its table is on, when its entry does not name it. */
+   connectionName?: string;
+   /** The time zone its reader reads it in ({@link BuildCastOptions}). */
+   queryTimezone?: string;
+}
+
+/**
+ * A table read by Malloy's build-manifest substitution whose columns moved,
+ * each column left out where the bind's own rule leaves it out (gone, a type
+ * Malloy reads as no basic type, a zone gained or lost off DuckDB), or where
+ * its digits are lost (a 128-bit integer a DuckLake table holds as a DOUBLE,
+ * a big integer now a float). Its leg reads the rest as they are now
+ * (`heldRead`), through the one stored-column read plan, which casts a moved
+ * column faithfully or leaves it out ({@link driftedColumnRead}). Each column
+ * report carries `leftOut` as {@link driftedColumnRead} decides it, for the
+ * warning. Undefined when the table's connection is not known: it answers
+ * live (fail safe).
+ */
+function substitutedRead(
+   entry: FreshnessManifest[string],
+   columns: ObservedDrift["columns"],
+   read: Extract<ObservedColumns, { columns: unknown }>,
+   declared: DriftDeclaration | undefined,
+):
+   | { entry: FreshnessManifest[string]; columns: ObservedDrift["columns"] }
+   | undefined {
+   const connectionName = entry.connectionName ?? declared?.connectionName;
+   if (!connectionName) return undefined;
+   const leftOut: string[] = [];
+   const decided = columns.map((c) => {
+      const lost =
+         c.leftOut ||
+         c.storedAsDouble ||
+         roundsBigInteger(c) ||
+         !c.observedType;
+      if (lost) leftOut.push(c.column);
+      // Decided on the type as the build's capture spells it, whatever the
+      // report names (a warehouse's own spelling, when the build captured
+      // only those).
+      const spelled = columnNamed(read.columns, c.column)?.type;
+      const how = lost
+         ? ({ read: "left_out" } as const)
+         : driftedColumnRead(
+              { ...c, ...(spelled ? { observedType: spelled } : {}) },
+              driftDeclaredType(
+                 declared?.columns,
+                 c.column,
+                 storedMalloyType(c.builtType) ?? c.builtType,
+              ),
+              declared?.queryTimezone
+                 ? { queryTimezone: declared.queryTimezone }
+                 : {},
+           );
+      // Read as is only when no value can change: a lossless widening
+      // (INTEGER to BIGINT, DECIMAL(10,1) to DECIMAL(12,2), FLOAT to DOUBLE).
+      // Any other move inside a type family (DECIMAL(10,1) to DECIMAL(10,0),
+      // a BIGINT past 2^53 to DOUBLE) rounds what the table holds, so the
+      // column is left out, never served as live's value.
+      const narrowed =
+         how.read === "as_is" &&
+         !losslessWidening(
+            nativeTypeOf(entry.nativeSchema, c.column) ?? c.builtType,
+            columnNamed(read.columns, c.column)?.nativeType ??
+               spelled ??
+               c.observedType ??
+               "",
+         );
+      if (narrowed) leftOut.push(c.column);
+      return how.read === "left_out" || narrowed
+         ? { ...c, leftOut: true as const }
+         : c;
+   });
+   const out = new Set(leftOut.map((c) => c.toLowerCase()));
+   const moved = new Set(columns.map((c) => c.column.toLowerCase()));
+   const held = read.columns.flatMap((c) =>
+      c.type !== undefined && !out.has(c.name.toLowerCase())
+         ? [
+              {
+                 name: c.name,
+                 type: c.type,
+                 ...(c.nativeType !== undefined
+                    ? { nativeType: c.nativeType }
+                    : {}),
+                 ...(moved.has(c.name.toLowerCase())
+                    ? { moved: true as const }
+                    : {}),
+              },
+           ]
+         : [],
+   );
+   return {
+      entry: {
+         ...entry,
+         heldRead: { connectionName, columns: held },
+         ...(leftOut.length > 0 ? { leftOutColumns: leftOut } : {}),
+      },
+      columns: decided,
+   };
+}
+
+/** A stored type, parsed as far as {@link losslessWidening} compares one. */
+type ParsedType =
+   | { kind: "int"; rank: number; unsigned: boolean }
+   | { kind: "decimal"; precision: number; scale: number }
+   | { kind: "float"; rank: number }
+   | { kind: "text"; length: number }
+   /** Fixed-length, blank-padded text (`character(n)`, `bpchar`). */
+   | { kind: "char"; length: number }
+   | { kind: "other"; spelling: string };
+
+/** Each integer's width, by its spellings, with the decimal digits it holds. */
+const INTEGER_WIDTHS: Record<string, { rank: number; unsigned: boolean }> = {
+   tinyint: { rank: 1, unsigned: false },
+   int1: { rank: 1, unsigned: false },
+   smallint: { rank: 2, unsigned: false },
+   int2: { rank: 2, unsigned: false },
+   short: { rank: 2, unsigned: false },
+   integer: { rank: 3, unsigned: false },
+   int: { rank: 3, unsigned: false },
+   int4: { rank: 3, unsigned: false },
+   signed: { rank: 3, unsigned: false },
+   bigint: { rank: 4, unsigned: false },
+   int8: { rank: 4, unsigned: false },
+   int64: { rank: 4, unsigned: false },
+   long: { rank: 4, unsigned: false },
+   hugeint: { rank: 5, unsigned: false },
+   int128: { rank: 5, unsigned: false },
+   utinyint: { rank: 1, unsigned: true },
+   usmallint: { rank: 2, unsigned: true },
+   uinteger: { rank: 3, unsigned: true },
+   ubigint: { rank: 4, unsigned: true },
+   uhugeint: { rank: 5, unsigned: true },
+};
+
+/** The decimal digits each integer width holds in full. */
+const INTEGER_DIGITS = [0, 3, 5, 10, 19, 39];
+
+function parsedType(type: string): ParsedType {
+   const t = type.trim().replace(/\s+/g, " ").toLowerCase();
+   const width = INTEGER_WIDTHS[t];
+   if (width) return { kind: "int", ...width };
+   const decimal =
+      /^(decimal|numeric|number|dec)\s*(?:\((\d+)\s*(?:,\s*(\d+))?\))?$/.exec(
+         t,
+      );
+   if (decimal) {
+      if (decimal[2] === undefined) {
+         // Unconstrained: Postgres's `numeric` holds any value exactly;
+         // Snowflake's `NUMBER` is NUMBER(38,0).
+         return decimal[1] === "number"
+            ? { kind: "decimal", precision: 38, scale: 0 }
+            : { kind: "decimal", precision: Infinity, scale: Infinity };
+      }
+      return {
+         kind: "decimal",
+         precision: Number(decimal[2]),
+         scale: Number(decimal[3] ?? 0),
+      };
+   }
+   if (t === "bignumeric") return { kind: "decimal", precision: 76, scale: 38 };
+   if (/^(real|float4|float)$/.test(t)) return { kind: "float", rank: 1 };
+   if (/^(double|double precision|float8|float64)$/.test(t)) {
+      return { kind: "float", rank: 2 };
+   }
+   // Fixed-length text pads with blanks, so a move to or from it adds or
+   // strips them ('ab' against 'ab '): a kind apart from varying text.
+   const fixed = /^(bpchar|char|character)\s*(?:\((\d+)\))?$/.exec(t);
+   if (fixed) {
+      return {
+         kind: "char",
+         length: fixed[2] !== undefined ? Number(fixed[2]) : Infinity,
+      };
+   }
+   const text =
+      /^(varchar|text|string|character varying|char varying|nvarchar)\s*(?:\((\d+)\))?$/.exec(
+         t,
+      );
+   if (text) {
+      return {
+         kind: "text",
+         length: text[2] !== undefined ? Number(text[2]) : Infinity,
+      };
+   }
+   return { kind: "other", spelling: t };
+}
+
+/**
+ * Whether a column moved from `built` to `now` holds every value it held
+ * exactly as before: the same type, or a widening that loses nothing (a
+ * wider integer, a decimal with no fewer integer or fraction digits, an
+ * integer into a decimal or float that holds all its digits, FLOAT to DOUBLE,
+ * a longer varying text). A move between fixed-length text (`character(n)`)
+ * and varying text, or between two fixed lengths, adds or strips padding, so
+ * it is never one. Anything else inside a family may have rounded or cut a
+ * value, so it is never read as is.
+ */
+function losslessWidening(built: string, now: string): boolean {
+   const from = parsedType(built);
+   const to = parsedType(now);
+   if (from.kind === "int") {
+      if (to.kind === "int") {
+         return from.unsigned
+            ? to.rank > from.rank || (to.unsigned && to.rank === from.rank)
+            : !to.unsigned && to.rank >= from.rank;
+      }
+      if (to.kind === "decimal") {
+         return to.precision - to.scale >= INTEGER_DIGITS[from.rank];
+      }
+      // A DOUBLE holds every 32-bit integer exactly; a FLOAT every 16-bit one.
+      if (to.kind === "float") return from.rank <= to.rank + 1;
+      return false;
+   }
+   if (from.kind === "decimal") {
+      return (
+         to.kind === "decimal" &&
+         to.scale >= from.scale &&
+         to.precision - to.scale >= from.precision - from.scale
+      );
+   }
+   if (from.kind === "float") {
+      return to.kind === "float" && to.rank >= from.rank;
+   }
+   if (from.kind === "text") {
+      return to.kind === "text" && to.length >= from.length;
+   }
+   // Another length pads differently; varying text holds no padding.
+   if (from.kind === "char") {
+      return to.kind === "char" && to.length === from.length;
+   }
+   return to.kind === "other" && to.spelling === from.spelling;
+}
+
+/**
+ * A 64- or 128-bit integer now held as a float: its digits past 2^53 are
+ * already lost, so no read gives live's exact integer (the stored-column read
+ * plan's refusal of a big integer stored as a float).
+ */
+function roundsBigInteger(c: ObservedDrift["columns"][number]): boolean {
+   return (
+      /^(BIGINT|HUGEINT|UBIGINT|UHUGEINT|INT8|LONG)$/i.test(
+         c.builtType.trim(),
+      ) &&
+      /^(DOUBLE|FLOAT|REAL|FLOAT4|FLOAT8)$/i.test((c.observedType ?? "").trim())
+   );
+}
+
+/**
+ * The built native columns whose native type moved, or that are gone, each
+ * left out as {@link columnDrift} leaves one out: gone, now a type Malloy
+ * reads as no basic type, or a timestamp that gained or lost its zone off
+ * DuckDB.
+ */
 function nativeDriftOf(
    built: readonly { name: string; type: string }[],
    read: Extract<ObservedColumns, { columns: unknown }>,
@@ -701,13 +989,36 @@ function nativeDriftOf(
             : {}),
          ...(now?.storedAsDouble ? { storedAsDouble: true as const } : {}),
       };
-      if (!now) return [{ ...report, gone: true as const }];
+      if (!now)
+         return [{ ...report, gone: true as const, leftOut: true as const }];
       if (now.storedAsDouble) return [report];
-      return now.nativeType !== undefined &&
-         normalizedType(now.nativeType) !== normalizedType(c.type)
-         ? [report]
-         : [];
+      if (
+         now.nativeType === undefined ||
+         normalizedType(now.nativeType) === normalizedType(c.type)
+      ) {
+         return [];
+      }
+      const zoneMoved =
+         isNativeTimestamp(c.type) &&
+         isNativeTimestamp(now.nativeType) &&
+         isNativeZoned(c.type) !== isNativeZoned(now.nativeType);
+      if (zoneMoved && capabilitiesOf(read.dialect).utcSessions) return [];
+      return now.type === undefined || zoneMoved
+         ? [{ ...report, leftOut: true as const }]
+         : [report];
    });
+}
+
+/** A timestamp, as a warehouse's catalog names it. */
+function isNativeTimestamp(type: string): boolean {
+   return /^(timestamp|datetime)/i.test(type.trim());
+}
+
+/** A zoned timestamp, as a warehouse's catalog names it. */
+function isNativeZoned(type: string): boolean {
+   return /with time zone|^timestamptz|^timestamp_tz|^timestamp_ltz/i.test(
+      type.trim(),
+   );
 }
 
 /**
@@ -760,9 +1071,12 @@ type ColumnDrift =
  *   alike;
  * - a 128-bit integer in a DuckLake table (`storedAsDouble`): `retype`, as
  *   the DOUBLE its Parquet files hold;
- * - another Malloy type, or the same one with another native type (a
- *   `bigint` altered to `numeric(10,2)`): `retype`, read through the one
- *   stored-column read plan with the type it holds now;
+ * - the same Malloy type with another native type: `retype` (read as it
+ *   is now) only when the move loses nothing (`losslessWidening`: a
+ *   `bigint` altered to `numeric(22,2)`), else `drop` (a `bigint` altered
+ *   to `numeric(10,2)`, DECIMAL(10,1) to DECIMAL(10,0));
+ * - another Malloy type: `retype`, read through the one stored-column read
+ *   plan with the type it holds now (a faithful cast, or left out);
  * - otherwise `none`.
  */
 function columnDrift(
@@ -810,6 +1124,28 @@ function columnDrift(
             : {}),
          report: { ...report, storedAsDouble: true },
       };
+   }
+   // A move inside one Malloy type is read as it is only when it loses
+   // nothing (a lossless widening); any other (DECIMAL(10,1) to
+   // DECIMAL(10,0), a big integer into a decimal too narrow for its digits)
+   // may have rounded what the table holds, so the column is left out. A
+   // move across types goes to the read plan, which casts it faithfully or
+   // leaves it out.
+   // The spelled types decide only with no native capture to compare: a
+   // binding's declared type may stand in for a captured one, and a column
+   // whose native type is the one its build captured has not moved.
+   const spelledMoved =
+      builtNative === undefined &&
+      normalizedType(now.type) !== normalizedType(built.type);
+   if (
+      typeFamily(now.type) === typeFamily(built.type) &&
+      (nativeMoved || spelledMoved) &&
+      !losslessWidening(
+         nativeMoved ? builtNative! : built.type,
+         nativeMoved ? now.nativeType! : now.type,
+      )
+   ) {
+      return { kind: "drop", report: dropped };
    }
    if (typeFamily(now.type) !== typeFamily(built.type) || nativeMoved) {
       return {
