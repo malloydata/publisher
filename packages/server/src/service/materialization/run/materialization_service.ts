@@ -742,19 +742,24 @@ export class MaterializationService {
       const buildInstructions = options.buildInstructions;
       const orchestrated = buildInstructions !== undefined;
       // A package or version bound to a host manifest serves the host's
-      // tables, and a run's own tables are never applied to it
-      // (Environment.loadRunManifest), so an auto-run would build tables it
-      // cannot serve. Refused before anything is built, as the scheduler
-      // skips it; a host building into tables it names (buildInstructions)
-      // is what such a package's runs are for.
-      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
-      if (!orchestrated && manifestLocation) {
+      // tables, and a version a host has bound serves its manifest or live
+      // (Environment.isHostOwned): a run's own tables are never applied to
+      // either (Environment.loadRunManifest), so an auto-run would build
+      // tables it cannot serve. Refused before anything is built, as the
+      // scheduler skips it; a host building into tables it names
+      // (buildInstructions) is what such a package's runs are for.
+      if (!orchestrated && environment.isHostOwned(pkg)) {
+         const manifestLocation = pkg.getPackageMetadata().manifestLocation;
          const target =
             version !== null
                ? `Version ${version} of package ${packageName}`
                : `Package ${packageName}`;
          throw new MaterializationConflictError(
-            `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`,
+            manifestLocation
+               ? version !== null
+                  ? `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Pass buildInstructions to build into tables the host names.`
+                  : `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`
+               : `${target} has been bound by a host: it serves the host's manifest or live, never a local run's tables, so a local run would build tables it cannot serve. Pass buildInstructions to build into tables the host names.`,
          );
       }
       const versions = environment.getVersionService();

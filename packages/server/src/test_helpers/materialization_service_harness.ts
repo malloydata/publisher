@@ -195,6 +195,9 @@ export const UNVERSIONED_ENVIRONMENT = {
    getVersionService: () => null,
    getLoadedVersionIds: () => [],
    peekVersion: () => undefined,
+   isHostOwned: (pkg: {
+      getPackageMetadata(): { manifestLocation?: string | null };
+   }) => Boolean(pkg.getPackageMetadata().manifestLocation),
    registerVersionBuild: () => () => undefined,
    // Nothing configured is refused, and nothing is stale.
    publishRefusedConfiguredPackage: async () => undefined,

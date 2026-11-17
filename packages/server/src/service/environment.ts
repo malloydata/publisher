@@ -564,6 +564,9 @@ export class Environment {
    private readonly storeBindingReads = new WeakMap<Package, string>();
    // The loaded versions already settled once they became findable.
    private readonly settledVersions = new WeakSet<Package>();
+   // The loaded versions a host owns: loaded or bound with a host manifest at
+   // least once (their registry row's `hostOwned`). See isHostOwned.
+   private readonly hostOwnedVersions = new WeakSet<Package>();
    // Called when a version is archived, to reclaim the tables it alone owns.
    // Set by EnvironmentStore (see setVersionArchivedHook).
    private versionArchivedHook:
@@ -2258,7 +2261,8 @@ export class Environment {
     * Skipped when the package has a `manifestLocation`: the host's manifest is
     * then authoritative, and this rebind (which runs after
     * {@link bindManifestIfConfigured}) would overwrite it with a possibly
-    * staler local generation.
+    * staler local generation. Skipped too for a version a host owns with no
+    * manifest bound ({@link isHostOwned}): the host cleared it to serve live.
     */
    private async rebindServeBindingsFromLocalStore(
       pkg: Package,
@@ -2283,7 +2287,7 @@ export class Environment {
       ) {
          return;
       }
-      if (pkg.getManifestLocation()) return;
+      if (this.isHostOwned(pkg)) return;
       const packageName = pkg.getPackageName();
       try {
          const rawEntries = await this.storageBindingResolver(
@@ -3011,6 +3015,7 @@ export class Environment {
          versionId: string;
          manifestPath: string | null;
          sourceLocation: string | null;
+         hostOwned: boolean;
       },
    ): Promise<Package> {
       // A failed load names the version's files package-relative, as a
@@ -3049,6 +3054,9 @@ export class Environment {
                : {}),
             manifestLocation: version.manifestPath,
          });
+         if (version.hostOwned || version.manifestPath) {
+            this.hostOwnedVersions.add(loaded);
+         }
          await this.bindManifestIfConfigured(loaded, manifest);
          await this.rebindServeBindingsFromLocalStore(loaded);
          return loaded;
@@ -3090,7 +3098,8 @@ export class Environment {
     * version's lock, so two of these never apply out of the order they read
     * in. `read` answers for the version as a reader (see ServingReader);
     * `onlyIfMoved` skips a bind when the store says what this version last
-    * bound from it. A version bound to a host manifest is the host's.
+    * bound from it. A version a host owns ({@link isHostOwned}) is the
+    * host's, bound to its manifest or live.
     *
     * A version whose rebind fails is taken out of service at once: it would
     * otherwise keep a binding the store no longer vouches for, possibly a
@@ -3118,7 +3127,7 @@ export class Environment {
                   versionId,
                   "rebind it from the store",
                   async (pkg): Promise<"done" | "retry"> => {
-                     if (pkg.getManifestLocation()) {
+                     if (this.isHostOwned(pkg)) {
                         return "done";
                      }
                      try {
@@ -3269,11 +3278,14 @@ export class Environment {
     * After its host manifest is cleared, bind what this server's own store
     * holds for the package (or version), so tables already built here serve
     * at once; with none, or when the store cannot be read, revert it to
-    * live. An unversioned package reads the store only where it restores
-    * from it on load ({@link restoreUnversionedFromLocalStore}); elsewhere
-    * it goes live, as it would load. `wasBound`: it served bound tables
-    * before the clear. Says whether the models were recompiled. The caller
-    * holds the package's (or version's) lock.
+    * live. A version a host owns ({@link isHostOwned}) always goes live: the
+    * host cleared it to stop serving stored tables, which it may be about to
+    * drop, so what this server's store holds for it is not to be served. An
+    * unversioned package reads the store only where it restores from it on
+    * load ({@link restoreUnversionedFromLocalStore}); elsewhere it goes live,
+    * as it would load. `wasBound`: it served bound tables before the clear.
+    * Says whether the models were recompiled. The caller holds the package's
+    * (or version's) lock.
     */
    private async bindLocalStoreOrLive(
       pkg: Package,
@@ -3281,8 +3293,9 @@ export class Environment {
    ): Promise<boolean> {
       let entries: Record<string, ManifestEntry> = {};
       const restores =
-         pkg.getVersionId() !== undefined ||
-         this.restoreUnversionedFromLocalStore;
+         (pkg.getVersionId() !== undefined && !this.isHostOwned(pkg)) ||
+         (pkg.getVersionId() === undefined &&
+            this.restoreUnversionedFromLocalStore);
       if (this.storageBindingResolver && restores) {
          try {
             entries = await this.storageBindingResolver(
@@ -3306,11 +3319,28 @@ export class Environment {
             this.splitStoreEntries(pkg, entries),
          );
       }
+      // Nothing bound now: the binding status still names the manifest that
+      // was (an empty one, or one whose fetch failed), so say live.
+      pkg.materialization().markServingLive();
       if (!wasBound) return false;
       // Drop both tiers so nothing still routes to a materialized table.
       await pkg.reloadAllModels({});
       pkg.materialization().bind({ storage: {} });
       return true;
+   }
+
+   /**
+    * Whether a host owns the binding of this package: it is bound to a host
+    * manifest now, or it is a version a host has loaded or bound with one at
+    * least once (its registry row's `hostOwned`, which survives a restart). A
+    * host-owned package never binds this server's own run store: with no
+    * manifest it serves live until the host binds it again. A version a host
+    * never bound (standalone, or orchestrated by this server) is not.
+    */
+   public isHostOwned(pkg: Package): boolean {
+      return (
+         Boolean(pkg.getManifestLocation()) || this.hostOwnedVersions.has(pkg)
+      );
    }
 
    /** Rebind a loaded version to a build manifest, or revert it to live. */
@@ -3323,16 +3353,21 @@ export class Environment {
          loaded.materialization().hasBoundTableNameManifest() ||
          loaded.materialization().hasStorageServeBindings();
       const previous = loaded.getManifestLocation() ?? null;
+      const wasOwned = this.hostOwnedVersions.has(loaded);
       loaded.updateStoredMetadata({ manifestLocation: manifestPath });
+      // A host binding a manifest owns the version from now on (the registry
+      // row records it too); a clear leaves the mark.
+      if (manifestPath) this.hostOwnedVersions.add(loaded);
       try {
          if (manifestPath) {
             await this.trackPackageLoad(packageName, () =>
                this.bindManifest(loaded, manifestPath),
             );
          } else {
-            // Cleared: what this server's own store holds for it now serves,
-            // at once, else it serves live. Inline rather than through
-            // rebindVersionFromStore, whose version lock the caller holds.
+            // Cleared: a host-owned version serves live; another serves what
+            // this server's own store holds for it, at once, else live.
+            // Inline rather than through rebindVersionFromStore, whose
+            // version lock the caller holds.
             await this.trackPackageLoad(packageName, () =>
                this.bindLocalStoreOrLive(loaded, wasBound),
             );
@@ -3340,6 +3375,7 @@ export class Environment {
       } catch (error) {
          // The models still use the previous binding, so the metadata says so.
          loaded.updateStoredMetadata({ manifestLocation: previous });
+         if (!wasOwned) this.hostOwnedVersions.delete(loaded);
          throw error;
       }
    }
@@ -4157,9 +4193,9 @@ export class Environment {
     * one before it. A version that is not loaded binds from the store when
     * it next loads, which is after `commit`, so it counts as loaded.
     *
-    * A package or version bound to a host manifest (`manifestLocation`)
-    * serves the host's tables: the run's entries, neither tier, are applied
-    * to it. Creating such a run is refused up front (409); this holds when a
+    * A package or version bound to a host manifest (`manifestLocation`),
+    * or a version a host owns ({@link isHostOwned}), serves the host's
+    * tables or live: the run's entries, neither tier, are applied to it. Creating such a run is refused up front (409); this holds when a
     * manifest is bound while one runs. The run still commits its rows, and
     * says it was not served, as one whose bind did not take does.
     */
@@ -4196,6 +4232,18 @@ export class Environment {
                   `bound to a host manifest (${manifestLocation}) while the ` +
                   `run built: its tables are served from that manifest, so ` +
                   `this run's tables are not served`,
+            };
+         }
+         // A version a host owns with no manifest serves live until the
+         // host binds it again.
+         if (this.isHostOwned(pkg)) {
+            return {
+               loaded: false,
+               step: "bind",
+               error:
+                  `bound by a host while the run built: a version a host ` +
+                  `has bound serves the host's manifest or live, so this ` +
+                  `run's tables are not served`,
             };
          }
          try {

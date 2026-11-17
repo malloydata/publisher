@@ -459,6 +459,18 @@ export class PackageMaterialization {
    }
 
    /**
+    * Record that no manifest is bound and the package serves live: a cleared
+    * `manifestLocation` with nothing taking its place. The status otherwise
+    * keeps naming a manifest that bound nothing (an empty one) or did not
+    * bind (a failed fetch). Binds nothing; a caller with tables bound drops
+    * them too.
+    */
+   markServingLive(): void {
+      this.boundManifestUri = null;
+      this.manifestBindingStatus = "unbound";
+   }
+
+   /**
     * Mark that a configured `manifestLocation` could not be fetched/bound, so
     * the package is serving live despite intending to be materialized-routed.
     */

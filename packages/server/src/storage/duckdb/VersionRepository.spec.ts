@@ -558,6 +558,45 @@ describe("VersionRepository", () => {
       );
    });
 
+   it("marks a version host-owned once a manifest is recorded, and keeps the mark through a clear", async () => {
+      const { repo } = await freshRepo();
+      // A publish with no manifest is not host-owned; one with a manifest is.
+      expect(
+         (await repo.commitPublish(newVersion("1.0.0"), always)).version
+            .hostOwned,
+      ).toBe(false);
+      expect(
+         (
+            await repo.commitPublish(
+               newVersion("2.0.0", { manifestPath: "s3://m.json" }),
+               never,
+            )
+         ).version.hostOwned,
+      ).toBe(true);
+
+      // A clear of a version no host bound leaves it not host-owned.
+      expect(
+         (await repo.setVersionManifestPath(ENV_ID, PKG, "1.0.0", null))
+            .hostOwned,
+      ).toBe(false);
+      await repo.setVersionManifestPath(ENV_ID, PKG, "1.0.0", "s3://m.json");
+      const cleared = await repo.setVersionManifestPath(
+         ENV_ID,
+         PKG,
+         "1.0.0",
+         null,
+      );
+      expect(cleared).toMatchObject({ manifestPath: null, hostOwned: true });
+      expect((await repo.getVersion(ENV_ID, PKG, "1.0.0"))!.hostOwned).toBe(
+         true,
+      );
+      // Given explicitly, the mark is put back as it was.
+      expect(
+         (await repo.setVersionManifestPath(ENV_ID, PKG, "1.0.0", null, false))
+            .hostOwned,
+      ).toBe(false);
+   });
+
    it("deletes a package's versions with the package, and an environment's with it", async () => {
       const { repo, packageId } = await freshRepo();
       await repo.commitPublish(newVersion("1.0.0"), always);
@@ -702,6 +741,7 @@ describe("versions schema upgrade", () => {
          "git_ref",
          "created_at",
          "updated_at",
+         "host_owned",
       ]);
 
       const repo = createDuckDBRepository(db);
@@ -718,6 +758,47 @@ describe("versions schema upgrade", () => {
       expect(
          (await repo.getPackageByName("env-1", "sales"))!.latestVersion,
       ).toBe("1.0.0");
+   });
+
+   it("marks the rows a store held before host_owned by their manifest, or a host's build of them", async () => {
+      const { db, repo } = await freshRepo();
+      for (const v of ["1.0.0", "2.0.0", "3.0.0", "4.0.0"]) {
+         await repo.commitPublish(newVersion(v), never);
+      }
+      await repo.setVersionManifestPath(ENV_ID, PKG, "2.0.0", "s3://m.json");
+      // As the reconcile leaves a store that predates the column: added, NULL.
+      await db.run("UPDATE versions SET host_owned = NULL");
+      // 3.0.0 a host built (and cleared, so it names no manifest); 4.0.0
+      // only this server did.
+      for (const [id, version, mode] of [
+         ["m-3", "3.0.0", "orchestrated"],
+         ["m-4", "4.0.0", "auto"],
+      ]) {
+         await db.run(
+            `INSERT INTO materializations (id, environment_id, package_name, status, metadata, created_at, updated_at, version)
+             VALUES (?, ?, ?, 'MANIFEST_FILE_READY', ?, now(), now(), ?)`,
+            [id, ENV_ID, PKG, JSON.stringify({ mode }), version],
+         );
+      }
+
+      await initializeSchema(db);
+
+      const owned = Object.fromEntries(
+         (await repo.listVersions(ENV_ID, PKG)).map((v) => [
+            v.versionId,
+            v.hostOwned,
+         ]),
+      );
+      expect(owned).toEqual({
+         "1.0.0": false,
+         "2.0.0": true,
+         "3.0.0": true,
+         "4.0.0": false,
+      });
+      // Filled once: every row has a value, so a later boot changes nothing.
+      expect(
+         await db.all("SELECT 1 FROM versions WHERE host_owned IS NULL"),
+      ).toEqual([]);
    });
 
    it("lets a release that predates versions reset the store with --init", async () => {

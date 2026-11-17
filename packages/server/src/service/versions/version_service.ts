@@ -47,12 +47,17 @@ export type VersionRegistry = Pick<
 export interface VersionHost<P> {
    /**
     * Compile the version whose files are at `versionPath`, bound to
-    * `manifestPath` when one is set. Throws when it does not load.
+    * `manifestPath` when one is set. A `hostOwned` version with no manifest
+    * serves live, never this server's own run store. Throws when it does not
+    * load.
     */
    loadVersion(
       packageName: string,
       versionPath: string,
-      version: Pick<Version, "versionId" | "manifestPath" | "sourceLocation">,
+      version: Pick<
+         Version,
+         "versionId" | "manifestPath" | "sourceLocation" | "hostOwned"
+      >,
    ): Promise<P>;
    /** Release a loaded version's connections; it is no longer served. */
    releaseVersion(packageName: string, versionId: string, loaded: P): void;
@@ -671,6 +676,7 @@ export class VersionService<P = unknown> {
                   versionId,
                   manifestPath: options.manifestLocation || null,
                   sourceLocation: options.sourceLocation,
+                  hostOwned: Boolean(options.manifestLocation),
                },
             );
             const refusal = options.validate?.(loaded);
@@ -1230,6 +1236,7 @@ export class VersionService<P = unknown> {
                   packageName,
                   versionId,
                   current.manifestPath,
+                  current.hostOwned,
                )
                .catch((restoreError) =>
                   logger.error(

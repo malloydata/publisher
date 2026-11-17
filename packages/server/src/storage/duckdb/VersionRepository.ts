@@ -103,8 +103,8 @@ export class VersionRepository {
          let row: Row | null;
          try {
             row = await tx.get<Row>(
-               `INSERT INTO versions (version_id, environment_id, package_name, dir_name, content_hash, source_location, manifest_path, archive_status, archived_at, promoted_at, demoted_at, description, git_commit_sha, git_ref, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'unarchive', NULL, ?, NULL, ?, NULL, NULL, ?, ?)
+               `INSERT INTO versions (version_id, environment_id, package_name, dir_name, content_hash, source_location, manifest_path, host_owned, archive_status, archived_at, promoted_at, demoted_at, description, git_commit_sha, git_ref, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unarchive', NULL, ?, NULL, ?, NULL, NULL, ?, ?)
                 RETURNING *`,
                [
                   versionId,
@@ -114,6 +114,7 @@ export class VersionRepository {
                   version.contentHash,
                   version.sourceLocation,
                   version.manifestPath,
+                  version.manifestPath !== null,
                   promoted ? now : null,
                   version.description,
                   now,
@@ -326,11 +327,15 @@ export class VersionRepository {
       packageName: string,
       versionId: string,
       manifestPath: string | null,
+      hostOwned?: boolean,
    ): Promise<Version> {
+      // A manifest marks the version host-owned; a clear keeps the mark.
+      const owned = hostOwned ?? (manifestPath !== null ? true : null);
       const row = await this.db.get<Row>(
-         `UPDATE versions SET manifest_path = ?, updated_at = ? WHERE ${KEY} RETURNING *`,
+         `UPDATE versions SET manifest_path = ?, host_owned = coalesce(?, host_owned, FALSE), updated_at = ? WHERE ${KEY} RETURNING *`,
          [
             manifestPath,
+            owned,
             new Date().toISOString(),
             environmentId,
             packageName,
@@ -425,6 +430,9 @@ function mapRow(row: Row): Version {
       contentHash: row.content_hash as string,
       sourceLocation: text(row.source_location),
       manifestPath: text(row.manifest_path),
+      // NULL on a row the backfill could not reach: not host-owned, unless
+      // it names a manifest.
+      hostOwned: row.host_owned === true || row.manifest_path != null,
       archiveStatus: row.archive_status as VersionArchiveStatus,
       archivedAt: date(row.archived_at),
       promotedAt: date(row.promoted_at),

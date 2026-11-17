@@ -107,11 +107,17 @@ export interface ResourceRepository {
       versionId: string,
       status: VersionArchiveStatus,
    ): Promise<Version>;
+   /**
+    * Record the version's manifest. A non-null one also marks it host-owned
+    * (`Version.hostOwned`); null leaves the mark. `hostOwned`, when given,
+    * sets the mark instead: for putting a row back as it was.
+    */
    setVersionManifestPath(
       environmentId: string,
       packageName: string,
       versionId: string,
       manifestPath: string | null,
+      hostOwned?: boolean,
    ): Promise<Version>;
    /**
     * Delete a version's row. While other versions remain it refuses the
@@ -276,6 +282,13 @@ export interface Version {
    sourceLocation: string | null;
    /** The build manifest the version is bound to; null serves live. */
    manifestPath: string | null;
+   /**
+    * A host has bound the version to a manifest at least once (a publish or
+    * a `setManifest` naming one). Its binding is then the host's: with no
+    * manifest it serves live, never this server's own run store. Never
+    * cleared.
+    */
+   hostOwned: boolean;
    archiveStatus: VersionArchiveStatus;
    archivedAt: Date | null;
    /** When it last became the package's `latest`. */

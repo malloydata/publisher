@@ -41,10 +41,40 @@ export async function initializeSchema(
    if (initialized) {
       await reconcileDeclaredColumns(db);
    }
+   await backfillVersionHostOwned(db);
 
    // After the reconcile, so an index over a newly added column can be created
    // in the same boot.
    await createDeclaredIndexes(db);
+}
+
+/**
+ * Fill `versions.host_owned` on rows written before the column existed (NULL),
+ * once: a row is host-owned when it names a manifest, or when a host has
+ * built it (an orchestrated run of that version), since a host that built a
+ * version and then cleared its manifest left no other trace. Every row
+ * written since sets the column, so this touches nothing after the first
+ * boot. Best-effort, like the reconcile: a failure is logged, and the rows
+ * stay NULL, which reads as not host-owned.
+ */
+async function backfillVersionHostOwned(db: DuckDBConnection): Promise<void> {
+   try {
+      await db.run(
+         `UPDATE versions SET host_owned = (
+            manifest_path IS NOT NULL OR EXISTS (
+               SELECT 1 FROM materializations m
+               WHERE m.environment_id = versions.environment_id
+                 AND m.package_name = versions.package_name
+                 AND m.version = versions.version_id
+                 AND coalesce(json_extract_string(m.metadata, '$.mode'), '') = 'orchestrated'
+            )
+         ) WHERE host_owned IS NULL`,
+      );
+   } catch (err) {
+      logger.warn("Could not mark which package versions a host owns", {
+         error: err instanceof Error ? err.message : String(err),
+      });
+   }
 }
 
 /**
@@ -106,6 +136,13 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    // version's own publisher.json description. `git_commit_sha` and `git_ref`
    // are reserved for publish provenance; nothing writes them yet.
    //
+   // `host_owned` says a host has bound the version to a manifest at least
+   // once: from then on its binding is the host's, so a clear serves live and
+   // a load with no manifest serves live, never this server's own run store.
+   // Set when a manifest is recorded and never cleared. Declared last and
+   // nullable, so `reconcileDeclaredColumns` adds it to a store that predates
+   // it; `backfillVersionHostOwned` fills the rows it was added under.
+   //
    // Keyed on the package's NAME, like `materializations`, and deleted with the
    // package by hand (DuckDBRepository), since nothing here cascades.
    //
@@ -132,6 +169,7 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       git_ref VARCHAR,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
+      host_owned BOOLEAN,
       PRIMARY KEY (environment_id, package_name, version_id)
     )
   `);

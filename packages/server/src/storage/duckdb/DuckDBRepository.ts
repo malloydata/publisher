@@ -91,12 +91,14 @@ export function createDuckDBRepository(
          packageName,
          versionId,
          manifestPath,
+         hostOwned,
       ) =>
          versions.setManifestPath(
             environmentId,
             packageName,
             versionId,
             manifestPath,
+            hostOwned,
          ),
       deleteVersion: (environmentId, packageName, versionId) =>
          versions.delete(environmentId, packageName, versionId),
