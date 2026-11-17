@@ -29,8 +29,9 @@ import {
    type TableRead,
 } from "./materialization/domain/gate_policy";
 import {
-   gateColumnTypes,
-   gateReadNamesOfQuery,
+   type GateReads,
+   gateColumnTypesOf,
+   gateReadsOfQuery,
 } from "./materialization/serve/gate_reads";
 import { logger } from "../logger";
 import { sourceChain } from "./materialization/text/source_map";
@@ -118,9 +119,9 @@ export function variantsOf(
    const switches = gateSwitches();
    // What the entry point's gates read, from the author's compile: read once
    // per query, and only when an answer past a gate read a `storage=` table.
-   let names: Promise<Set<string> | undefined> | undefined;
-   const gateNames = () =>
-      (names ??= gateReadNamesOfQuery(facts.authorRunnable));
+   let reads: Promise<GateReads | undefined> | undefined;
+   const gateReadsOnce = () =>
+      (reads ??= gateReadsOfQuery(facts.authorRunnable));
    return legs.map((leg) => {
       // A leg with no row in the gate policy (the query leg) is never tried
       // past an entry-point gate: the policy fails closed.
@@ -139,7 +140,7 @@ export function variantsOf(
                gateLeg,
                await withGateColumnTypes(
                   answer.gateTablesRead ?? answer.tablesRead ?? [],
-                  gateNames,
+                  gateReadsOnce,
                ),
                switches,
                SERVING_GATE_CONTEXT,
@@ -177,34 +178,37 @@ export function variantsOf(
  */
 async function withGateColumnTypes(
    tables: readonly TableRead[],
-   gateNames: () => Promise<Set<string> | undefined>,
+   gateReadsOnce: () => Promise<GateReads | undefined>,
 ): Promise<TableRead[]> {
    const asDouble = (t: TableRead) =>
       (t as Partial<Pick<Binding, "storedAsDouble">>).storedAsDouble ?? [];
-   if (!tables.some((t) => t.tier === "storage" || asDouble(t).length > 0)) {
+   const storage = tables.filter((t) => t.tier === "storage");
+   if (storage.length === 0 && !tables.some((t) => asDouble(t).length > 0)) {
       return [...tables];
    }
-   const names = await gateNames();
+   const reads = await gateReadsOnce();
+   // Judged together: a gate column held by none of the storage tables the
+   // answer read leaves every one of them unproven.
+   const types = gateColumnTypesOf(
+      reads,
+      storage.map((t) => (t as Partial<Pick<Binding, "schema">>).schema),
+   );
+   const typeOf = new Map(storage.map((t, i) => [t, types[i]]));
+   const held = new Set((reads?.columns ?? []).flat());
    return tables.map((t) => {
       if (t.tier === "storage") {
-         return {
-            ...t,
-            gateColumnTypes: gateColumnTypes(
-               names,
-               (t as Partial<Pick<Binding, "schema">>).schema,
-            ),
-         };
+         return { ...t, gateColumnTypes: typeOf.get(t) };
       }
       // A database table: only a column its DuckLake catalog holds as a
-      // DOUBLE is inexact. Unlisted gates fail closed on such a table.
+      // DOUBLE is inexact. Unreadable gates fail closed on such a table.
       const doubles = asDouble(t);
       if (doubles.length === 0) return t;
       return {
          ...t,
          gateColumnTypes:
-            names === undefined
+            reads === undefined || reads.unresolved
                ? ["DOUBLE"]
-               : doubles.filter((c) => names.has(c)).map(() => "DOUBLE"),
+               : doubles.filter((c) => held.has(c)).map(() => "DOUBLE"),
       };
    });
 }

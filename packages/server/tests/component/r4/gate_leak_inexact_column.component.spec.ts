@@ -60,10 +60,29 @@ source: acct_v1 is accounts -> { where: id > -2; select: id, acct, region, amoun
 #(access_filter) acct = $ACCT
 #(materialize) name="acct_exact" storage="${LAKE}"
 source: acct_exact is accounts -> { where: id > -3; select: * } extend { measure: n is count() }
+
+// Entry points over an ungated stored base, each gated on its column under
+// another shape: a query stage that renames it, a grouping stage, an
+// extension, a dimension over it, and a join to it.
+#(materialize) name="acct_ub" storage="${LAKE}"
+source: ub is accounts -> { where: id > -4; select: * } extend { measure: n is count() }
+#(access_filter) k = $ACCT
+source: renamed is ub -> { select: id, region, amount, k is acct }
+#(access_filter) k = $ACCT
+source: renamed_grouped is ub -> { group_by: k is acct, region; aggregate: c2 is count() }
+#(access_filter) acct = $ACCT
+source: ub_ext is ub extend {}
+#(access_filter) k2 = $ACCT
+source: ub_dim is ub extend { dimension: k2 is acct }
+#(access_filter) u.acct = $ACCT
+source: via_join is accounts extend { join_one: u is ub on id = u.id }
 `;
 
 /** The tables whose gate column is altered to DOUBLE after the build. */
-const INEXACT = ["acct_mz", "acct_v1"];
+const INEXACT = ["acct_mz", "acct_v1", "ub"];
+
+/** Entry points that read an inexact table's gate column under another shape. */
+const OVER_INEXACT = ["renamed", "renamed_grouped", "ub_ext", "ub_dim"];
 
 const QUERIES: { source: string; malloy: string }[] = [
    ...["acct_mz", "acct_v1", "acct_exact"].map((source) => ({
@@ -78,6 +97,10 @@ const QUERIES: { source: string; malloy: string }[] = [
       source: "acct_exact",
       malloy: "run: acct_exact -> { group_by: region; aggregate: n }",
    },
+   ...[...OVER_INEXACT, "via_join"].map((source) => ({
+      source,
+      malloy: `run: ${source} -> { group_by: region; aggregate: c is count(); order_by: region }`,
+   })),
 ];
 
 // Big ids are sent as strings: a JSON number cannot carry 2^53 + 1.
@@ -219,11 +242,16 @@ describe("L2: a gate over a column stored inexactly is never read from the table
                   }
                }
             });
-            it(`${q.malloy}: is answered from ${INEXACT.includes(q.source) ? "live" : "the table"}`, () => {
+            // A join to the stored base is held to live's rows above; where
+            // it is answered from depends on the switch, not on this rule.
+            if (q.source === "via_join") continue;
+            const goesLive =
+               INEXACT.includes(q.source) || OVER_INEXACT.includes(q.source);
+            it(`${q.malloy}: is answered from ${goesLive ? "live" : "the table"}`, () => {
                const got = served.get(key(q.malloy, "the ...992 caller"))![0];
                expect("answer" in got).toBe(true);
                if (!("answer" in got)) return;
-               if (INEXACT.includes(q.source)) {
+               if (goesLive) {
                   expect(got.answer.servedBy).toBe("live");
                } else {
                   expect(got.answer.via).toBe("served_copy");

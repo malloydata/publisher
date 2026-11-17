@@ -4954,7 +4954,9 @@ function gateNamesOf(
       return undefined;
    }
    const exprs = entryPointGateExprs(struct, compiled.modelDef);
-   return exprs === undefined ? undefined : gateReadNames(struct, exprs);
+   return exprs === undefined
+      ? undefined
+      : gateReadNames(struct, exprs, compiled.modelDef);
 }
 
 /**

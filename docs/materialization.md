@@ -197,18 +197,22 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
   a join or the source joins a gated source. A caller's own join into a gated source keeps the
   query off every rollup too. [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize)
   has the full rule, which v1 and v2 rollups share.
-- **Two more conditions hold on every tier and under every switch**, so that a gate filters the
-  stored rows exactly as it filters live's. Each covers every field the gate reads and every field
-  that field is computed from.
+- **Two more conditions hold under every switch**, so that a gate filters the stored rows exactly
+  as it filters live's. Each covers every field the gate reads and every field that field is
+  computed from, through renames, joins and the stages of a query-shaped source.
   - A query that sets its own `timezone:` (or reads a table built in another zone) answers live
     when the gate reads a time value the table stored in its build's zone: a truncation computed
     in a query stage, or a rollup's time grain. The path report says `served_copy_time_zone` or
     `rollup_time_zone`. A gate over a column the served copy leaves out answers live rather than
     denying every caller.
-  - A table is never read past a gate whose column it stores as a binary float or a 128-bit
-    integer (which DuckLake holds as a float): two exact values can store as one. Such a query
-    answers live. A Postgres `storage=` build that cannot read the warehouse's column types fails
-    rather than store a `numeric` as a float.
+  - A `storage=` table is never read past a gate whose column it stores as a binary float or a
+    128-bit integer (which DuckLake holds as a float), or whose column it cannot be shown to hold
+    at all: two exact values can store as one. The type judged is the one recorded when the table
+    was built; a table altered in the destination afterwards is not re-read (anyone who can alter
+    the destination can read it directly anyway). A database table is built by the source's own
+    warehouse in its own types, so only a column its DuckLake catalog holds as a float, as the
+    bind reads it, is judged inexact. Such a query answers live. A Postgres `storage=` build that
+    cannot read the warehouse's column types fails rather than store a `numeric` as a float.
 
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to

@@ -47,8 +47,8 @@ import { previewNativeSchema } from "./stored_column_types";
 import { reachableSourceIDs, SourceMap } from "./text/source_map";
 import {
    entryPointGateExprs,
-   gateColumnTypes,
-   gateReadNames,
+   gateColumnTypesOf,
+   gateReads,
 } from "./serve/gate_reads";
 import { ownLevelNotes, type AnnotationsDef } from "../annotations";
 import { routeOfNote } from "../annotation_reader";
@@ -325,9 +325,14 @@ export class ServeVerdicts {
                : undefined;
             if (def === undefined) continue;
             const exprs = entryPointGateExprs(def, modelDef);
-            const names =
-               exprs === undefined ? undefined : gateReadNames(def, exprs);
-            const types = bound.map((b) => gateColumnTypes(names, b.schema));
+            const reads =
+               exprs === undefined
+                  ? undefined
+                  : gateReads(def, exprs, modelDef);
+            const types = gateColumnTypesOf(
+               reads,
+               bound.map((b) => b.schema),
+            );
             return types.some((t) => t === undefined)
                ? undefined
                : types.flatMap((t) => t ?? []);

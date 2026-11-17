@@ -23,6 +23,7 @@ import {
    readPreparedQuery,
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
+import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import { malloyIdentifiers } from "../../query_text";
 
 /** Every field path an expression reads (`node: "field"`), at any depth. */
@@ -53,39 +54,262 @@ export function gateIdentifiers(exprs: readonly string[]): string[] {
    return [...new Set(exprs.flatMap((expr) => malloyIdentifiers(expr)))];
 }
 
+/** Words a gate's text may hold that name no field. */
+const GATE_KEYWORDS = new Set([
+   "and",
+   "or",
+   "not",
+   "in",
+   "is",
+   "true",
+   "false",
+   "null",
+]);
+
+/**
+ * The field paths a gate's text reads (`u.acct = $ACCT` reads `u.acct`), its
+ * givens, literals and keywords left out; `unresolved` when the text holds a
+ * form this reader does not follow (a quoted name).
+ */
+function gatePaths(exprs: readonly string[]): {
+   paths: string[][];
+   unresolved: boolean;
+} {
+   const paths: string[][] = [];
+   let unresolved = false;
+   for (const expr of exprs) {
+      if (expr.includes("`")) unresolved = true;
+      const text = stripMalloyCommentsAndLiterals(expr).replace(
+         /\$[A-Za-z_][A-Za-z_0-9]*/g,
+         " ",
+      );
+      for (const m of text.matchAll(
+         /(?<![\w$.])[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*/g,
+      )) {
+         const rest = text.slice((m.index ?? 0) + m[0].length);
+         // A function call names no field.
+         if (/^\s*\(/.test(rest)) continue;
+         const path = m[0].split(".");
+         if (path.length === 1 && GATE_KEYWORDS.has(path[0].toLowerCase())) {
+            continue;
+         }
+         paths.push(path);
+      }
+   }
+   return { paths, unresolved };
+}
+
+/** What an entry point's row-level gates read. */
+export interface GateReads {
+   /**
+    * Every name the gates read, and every field those are computed from,
+    * through renames, expressions, joins and query stages. Over-collected on
+    * purpose, for the readers that decline on a match (the zone checks).
+    */
+   readonly names: ReadonlySet<string>;
+   /**
+    * Each stored column the gates read, as the names it goes by along the way
+    * from the gate to the column (a rename's, a query stage's output, the
+    * base column's), any of which a stored table may hold it under.
+    */
+   readonly columns: readonly (readonly string[])[];
+   /**
+    * A name the gates read that could not be followed to a column: a reader
+    * that judges the columns must fail closed.
+    */
+   readonly unresolved: boolean;
+}
+
+interface FieldLike {
+   name?: unknown;
+   as?: unknown;
+   e?: unknown;
+   join?: unknown;
+   type?: unknown;
+   path?: unknown;
+   fields?: unknown;
+}
+
+function activeName(f: FieldLike): string {
+   return String(f.as ?? f.name);
+}
+
+function fieldsOf(struct: unknown): Map<string, FieldLike> {
+   const out = new Map<string, FieldLike>();
+   for (const f of ((struct as { fields?: unknown[] } | undefined)?.fields ??
+      []) as FieldLike[]) {
+      out.set(activeName(f), f);
+   }
+   return out;
+}
+
+/**
+ * {@link GateReads} for the gates (`exprs`) on `struct`. A name is followed
+ * through a rename to the field it renames, through a computed field to every
+ * field its expression reads, through a join to the joined source's field,
+ * and, on a query-shaped source, back through each stage of its query to the
+ * fields of the source the query runs on, until it reaches a column.
+ * `modelDef` resolves a stage's source when it is named rather than inline.
+ */
+export function gateReads(
+   struct: unknown,
+   exprs: readonly string[],
+   modelDef?: unknown,
+): GateReads {
+   const names = new Set<string>();
+   const columns: string[][] = [];
+   let unresolved = false;
+   let steps = 0;
+   const tooDeep = () => ++steps > 4096;
+
+   const resolve = (
+      source: unknown,
+      path: readonly string[],
+      chain: readonly string[],
+   ): void => {
+      if (tooDeep() || path.length === 0) {
+         unresolved = true;
+         return;
+      }
+      const f = fieldsOf(source).get(path[0]);
+      names.add(path[0]);
+      if (f === undefined) {
+         unresolved = true;
+         return;
+      }
+      if (path.length > 1) {
+         if (f.join === undefined) {
+            unresolved = true;
+            return;
+         }
+         resolve(f, path.slice(1), []);
+         return;
+      }
+      field(source, f, chain);
+   };
+
+   const field = (
+      source: unknown,
+      f: FieldLike,
+      chain: readonly string[],
+   ): void => {
+      const name = activeName(f);
+      const stored = typeof f.name === "string" ? f.name : name;
+      names.add(name);
+      names.add(stored);
+      const along = [...chain, name, stored];
+      if (f.e !== undefined) {
+         for (const p of fieldPathsIn(f.e)) resolve(source, p, along);
+         return;
+      }
+      if (f.join !== undefined) {
+         // A gate comparing a join itself reads no column it can name.
+         unresolved = true;
+         return;
+      }
+      const query = (source as { query?: { pipeline?: unknown[] } } | undefined)
+         ?.query;
+      if (query !== undefined) {
+         throughStages(source, stored, along);
+         return;
+      }
+      columns.push([...new Set(along)]);
+   };
+
+   /** Follow an output field of a query-shaped source back to its base. */
+   const throughStages = (
+      source: unknown,
+      output: string,
+      chain: readonly string[],
+   ): void => {
+      const query = (
+         source as {
+            query?: {
+               pipeline?: { queryFields?: unknown[] }[];
+               structRef?: unknown;
+            };
+         }
+      ).query!;
+      const stages = Array.isArray(query.pipeline) ? query.pipeline : [];
+      if (stages.length === 0) {
+         unresolved = true;
+         return;
+      }
+      let wanted: { path: string[]; chain: string[] }[] = [
+         { path: [output], chain: [...chain] },
+      ];
+      for (let i = stages.length - 1; i >= 0; i--) {
+         const byName = new Map<string, FieldLike>();
+         for (const qf of (stages[i].queryFields ?? []) as FieldLike[]) {
+            if (qf.type === "fieldref" && Array.isArray(qf.path)) {
+               const p = qf.path as string[];
+               byName.set(p[p.length - 1], qf);
+            } else if (qf.name !== undefined) {
+               byName.set(activeName(qf), qf);
+            }
+         }
+         const next: { path: string[]; chain: string[] }[] = [];
+         for (const w of wanted) {
+            if (w.path.length !== 1 || tooDeep()) {
+               unresolved = true;
+               continue;
+            }
+            const qf = byName.get(w.path[0]);
+            names.add(w.path[0]);
+            if (qf === undefined) {
+               unresolved = true;
+            } else if (qf.type === "fieldref" && Array.isArray(qf.path)) {
+               const p = qf.path as string[];
+               next.push({ path: p, chain: [...w.chain, w.path[0]] });
+            } else if (qf.e !== undefined) {
+               const read = fieldPathsIn(qf.e);
+               if (read.length === 0) unresolved = true;
+               for (const p of read) {
+                  next.push({ path: p, chain: [...w.chain, w.path[0]] });
+               }
+            } else {
+               unresolved = true;
+            }
+         }
+         // An earlier stage's output is one name; only the first stage reads
+         // the source, through a join path or a name.
+         if (i > 0 && next.some((n) => n.path.length !== 1)) unresolved = true;
+         wanted = next;
+      }
+      const ref = query.structRef;
+      const base =
+         typeof ref === "string"
+            ? (modelDef as { contents?: Record<string, unknown> } | undefined)
+                 ?.contents?.[ref]
+            : ref;
+      if (base === undefined || base === null) {
+         unresolved = true;
+         return;
+      }
+      for (const w of wanted) resolve(base, w.path, w.chain);
+   };
+
+   const read = gatePaths(exprs);
+   if (read.unresolved) unresolved = true;
+   for (const p of read.paths) resolve(struct, p, []);
+   return { names, columns, unresolved };
+}
+
 /**
  * Every name the gates (`exprs`) read from `struct`, and every field each of
- * those is computed from, through its expression, transitively: a gate on
- * `d_month is d.month` reads `d` too, and a rename reads the field it
- * renames. Over-collects on purpose: each identifier the gate text names is
- * kept whether or not it is a field (a given's name, a joined field's last
- * name), since a reader only ever declines on a match, so an extra name can
- * send an answer live and never serve a wrong one.
+ * those is computed from ({@link gateReads}), for the readers that decline on
+ * a match.
  */
 export function gateReadNames(
    struct: unknown,
    exprs: readonly string[],
+   modelDef?: unknown,
 ): Set<string> {
-   const fields = new Map<string, { name?: unknown; e?: unknown }>();
-   for (const f of ((struct as { fields?: unknown[] } | undefined)?.fields ??
-      []) as { name?: unknown; as?: unknown; e?: unknown }[]) {
-      fields.set(String(f.as ?? f.name), f);
-   }
-   const out = new Set<string>();
-   const visit = (name: string, depth: number): void => {
-      if (out.has(name) || depth > 64) return;
-      out.add(name);
-      const f = fields.get(name);
-      if (!f) return;
-      if (typeof f.name === "string" && f.name !== name) {
-         visit(f.name, depth + 1);
-      }
-      for (const p of fieldPathsIn(f.e)) {
-         for (const segment of p) visit(segment, depth + 1);
-      }
-   };
-   for (const id of gateIdentifiers(exprs)) visit(id, 0);
-   return out;
+   const names = new Set(gateReads(struct, exprs, modelDef).names);
+   // Every identifier the text names too, fields or not: an extra name can
+   // only send an answer live.
+   for (const id of gateIdentifiers(exprs)) names.add(id);
+   return names;
 }
 
 /**
@@ -113,27 +337,43 @@ export function entryPointGateExprs(
    }
 }
 
-/**
- * The stored types of `schema`'s columns that `names` reads, for the gate
- * policy's exactness rule (`gateColumnTypes` in `domain/gate_policy.ts`), or
- * undefined when either is unknown, which the policy reads as not exact on a
- * `storage=` table.
- */
-export function gateColumnTypes(
-   names: ReadonlySet<string> | undefined,
-   schema: readonly { name: string; type: string }[] | undefined,
-): string[] | undefined {
-   if (names === undefined || schema === undefined) return undefined;
-   return schema.filter((c) => names.has(c.name)).map((c) => c.type);
+type Schema = readonly { name: string; type: string }[];
+
+/** The stored types of `schema`'s columns that hold one of the gates' columns. */
+function typesIn(reads: GateReads, schema: Schema): string[] {
+   const held = new Set(reads.columns.flat());
+   return schema.filter((c) => held.has(c.name)).map((c) => c.type);
 }
 
 /**
- * {@link gateReadNames} for the source a compiled query runs on, read from
- * the author's compile (the live one), or undefined when it cannot be read.
+ * The stored types of each table's gate columns, for the gate policy's
+ * exactness rule (`gateColumnTypes` in `domain/gate_policy.ts`), by the
+ * tables' order. Fail closed: when the gates cannot be read, or a column they
+ * read is held by none of the tables (under any name it goes by), every
+ * entry is undefined, which the policy reads as not exact on a `storage=`
+ * table. A gate that reads no column lists none.
  */
-export async function gateReadNamesOfQuery(
+export function gateColumnTypesOf(
+   reads: GateReads | undefined,
+   schemas: readonly (Schema | undefined)[],
+): (string[] | undefined)[] {
+   const none = schemas.map(() => undefined);
+   if (reads === undefined || reads.unresolved) return none;
+   if (schemas.some((s) => s === undefined)) return none;
+   const held = new Set(schemas.flatMap((s) => (s ?? []).map((c) => c.name)));
+   if (!reads.columns.every((alts) => alts.some((n) => held.has(n)))) {
+      return none;
+   }
+   return schemas.map((s) => typesIn(reads, s ?? []));
+}
+
+/**
+ * {@link gateReads} for the source a compiled query runs on, read from the
+ * author's compile (the live one), or undefined when it cannot be read.
+ */
+export async function gateReadsOfQuery(
    runnable: QueryMaterializer,
-): Promise<Set<string> | undefined> {
+): Promise<GateReads | undefined> {
    try {
       const prepared = await readPreparedQuery(runnable);
       if (prepared.modelDef === undefined) return undefined;
@@ -142,7 +382,9 @@ export async function gateReadNamesOfQuery(
          prepared.modelDef as never,
       );
       const exprs = entryPointGateExprs(struct, prepared.modelDef);
-      return exprs === undefined ? undefined : gateReadNames(struct, exprs);
+      return exprs === undefined
+         ? undefined
+         : gateReads(struct, exprs, prepared.modelDef);
    } catch {
       return undefined;
    }
