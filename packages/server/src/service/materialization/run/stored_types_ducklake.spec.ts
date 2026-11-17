@@ -124,6 +124,25 @@ describe("a DuckDB-computed 128-bit integer on a DuckLake build (P4-01)", () => 
       expect(stored.rows).toEqual([{ total: "4530000000000225187" }]);
    }, 120000);
 
+   it("past 38 digits, keeps the other columns' declared casts", async () => {
+      const conn = await lake();
+      const schema = await createTableWithDeclaredTypes(
+         conn,
+         "lake.t",
+         "SELECT 150000000000000000000000000000000000001::HUGEINT AS h, 1 AS flag",
+         {
+            columns: [
+               { name: "h", type: "number" },
+               { name: "flag", type: "boolean" },
+            ],
+         },
+      );
+      expect(schema).toEqual([
+         { name: "h", type: "HUGEINT" },
+         { name: "flag", type: "BOOLEAN" },
+      ]);
+   }, 120000);
+
    it("past 38 digits, stores the 128-bit type it computed", async () => {
       const conn = await lake();
       const schema = await createTableWithDeclaredTypes(

@@ -1834,49 +1834,48 @@ export async function createTableWithDeclaredTypes(
       ...options,
       declaredNames: declared.columns.map((c) => c.name),
    };
-   const cast = castToDeclaredTypes(selectSQL, columns, {
-      ...declared,
-      exactIntegers: await computedWideIntegers(
-         session,
-         selectSQL,
-         options.sourceType,
-         options.described,
-      ),
-   });
-   if (cast === selectSQL) {
-      return createTableAndDescribe(
-         session,
-         quotedTablePath,
-         selectSQL,
-         options,
-      );
+   const exactIntegers = await computedWideIntegers(
+      session,
+      selectSQL,
+      options.sourceType,
+      options.described,
+   );
+   // Each class of cast is tried alone after the whole set fails, so one
+   // value past 38 digits does not leave every other column uncast: the
+   // declared-type casts and the exact-integer casts, then the computed
+   // types as they are.
+   const attempts = [
+      castToDeclaredTypes(selectSQL, columns, { ...declared, exactIntegers }),
+      castToDeclaredTypes(selectSQL, columns, { ...declared }),
+      castToDeclaredTypes(selectSQL, [], { exactIntegers }),
+      selectSQL,
+   ].filter((sql, i, all) => all.indexOf(sql) === i);
+   for (const [i, sql] of attempts.entries()) {
+      try {
+         return await createTableAndDescribe(
+            session,
+            quotedTablePath,
+            sql,
+            options,
+         );
+      } catch (err) {
+         if (!isCastConversionError(err) || i === attempts.length - 1) {
+            throw err;
+         }
+         // Once per build, as before: one cast failed.
+         if (i === 0) recordStoredColumnTypeMismatch("build", "cast_failed");
+         logger.warn(
+            "A declared-type cast could not convert a stored value; storing that class of column as the warehouse computed it",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               table: quotedTablePath,
+               // Not the message: it quotes the value the cast refused.
+               errorCode: errorCodeOf(err),
+            },
+         );
+      }
    }
-   try {
-      return await createTableAndDescribe(
-         session,
-         quotedTablePath,
-         cast,
-         options,
-      );
-   } catch (err) {
-      if (!isCastConversionError(err)) throw err;
-      recordStoredColumnTypeMismatch("build", "cast_failed");
-      logger.warn(
-         "A declared-type cast could not convert a stored value; storing the warehouse's types instead",
-         {
-            code: STORED_COLUMN_TYPE_MISMATCH_CODE,
-            table: quotedTablePath,
-            // Not the message: it quotes the value the cast refused.
-            errorCode: errorCodeOf(err),
-         },
-      );
-      return await createTableAndDescribe(
-         session,
-         quotedTablePath,
-         selectSQL,
-         options,
-      );
-   }
+   throw new Error("unreachable: the last attempt returns or throws");
 }
 
 /**
