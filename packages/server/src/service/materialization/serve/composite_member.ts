@@ -119,6 +119,7 @@ function placeMembers(
    resolved: StructLike,
    path: string,
    out: string[],
+   modelDef: unknown,
 ): boolean {
    if (source.partitionComposite !== undefined) return false;
    if (source.type === "composite") {
@@ -136,7 +137,7 @@ function placeMembers(
          const m = members[i];
          if (m.type === "composite" || m.partitionComposite !== undefined) {
             const inner: string[] = [];
-            if (placeMembers(m, resolved, `${path}/${i}`, inner)) {
+            if (placeMembers(m, resolved, `${path}/${i}`, inner, modelDef)) {
                out.push(`${path}:${i}`, ...inner);
                return true;
             }
@@ -144,12 +145,67 @@ function placeMembers(
          }
          if (isResolvedMember(m, resolved)) {
             out.push(`${path}:${i}`);
-            return placeJoins(m, resolved, path, out);
+            return (
+               placeQuery(m, path, out, modelDef) &&
+               placeJoins(m, resolved, path, out, modelDef)
+            );
          }
       }
       return false;
    }
-   return placeJoins(source, resolved, path, out);
+   return (
+      placeQuery(source, path, out, modelDef) &&
+      placeJoins(source, resolved, path, out, modelDef)
+   );
+}
+
+/**
+ * For a query-shaped source (`compose(a, b) -> { … }`), the members its own
+ * query resolved, read from the resolution Malloy recorded when it compiled
+ * that query, not from the query that reads it. True when it holds no
+ * composite; false when one cannot be placed.
+ */
+function placeQuery(
+   source: StructLike,
+   path: string,
+   out: string[],
+   modelDef: unknown,
+): boolean {
+   const query = (source as { query?: unknown }).query as
+      | {
+           structRef?: unknown;
+           pipeline?: unknown;
+           compositeResolvedSourceDef?: unknown;
+        }
+      | undefined;
+   if (query === undefined || !holdsComposite(query)) return true;
+   // A composite the query's own stages hold is not placed here.
+   if (holdsComposite(query.pipeline)) return false;
+   const base =
+      typeof query.structRef === "string"
+         ? (modelDef as { contents?: Record<string, unknown> } | undefined)
+              ?.contents?.[query.structRef]
+         : query.structRef;
+   const resolved = query.compositeResolvedSourceDef;
+   if (base === null || typeof base !== "object") return false;
+   if (resolved === null || typeof resolved !== "object") {
+      // Its query resolved none: any composite it holds must be one the
+      // query does not reach (an unused join), placed as such.
+      return placeMembers(
+         base as StructLike,
+         base as StructLike,
+         `${path}->`,
+         out,
+         modelDef,
+      );
+   }
+   return placeMembers(
+      base as StructLike,
+      resolved as StructLike,
+      `${path}->`,
+      out,
+      modelDef,
+   );
 }
 
 /** {@link placeMembers} for each joined source of `source` that holds a composite. */
@@ -158,6 +214,7 @@ function placeJoins(
    resolved: StructLike,
    path: string,
    out: string[],
+   modelDef: unknown,
 ): boolean {
    const byName = new Map(fieldsOf(resolved).map((f) => [activeName(f), f]));
    for (const f of fieldsOf(source)) {
@@ -170,7 +227,9 @@ function placeJoins(
       // A joined composite the query does not use is left as it is: it is
       // not part of the answer.
       if (r.type === "composite" && canon(r) === canon(f)) continue;
-      if (!placeMembers(f, r, `${path}.${activeName(f)}`, out)) return false;
+      if (!placeMembers(f, r, `${path}.${activeName(f)}`, out, modelDef)) {
+         return false;
+      }
    }
    return true;
 }
@@ -186,18 +245,33 @@ async function membersResolved(
    // A composite the query's own stages hold (a query-level `extend`, a
    // nest's join) is not placed here.
    if (holdsComposite(view.pipeline)) return undefined;
-   // Malloy records a resolution exactly when the query resolved a
-   // composite, through its source or a join of it: none, none reached.
    const resolved = view.compositeResolvedSourceDef as StructLike | undefined;
-   if (resolved === undefined || resolved === null) return [];
-   if (view.modelDef === undefined) return undefined;
+   if (view.modelDef === undefined) {
+      // Nothing to place against: only a source that holds no composite,
+      // which an inline one can be read for, is answered from.
+      if (resolved !== undefined && resolved !== null) return undefined;
+      return holdsComposite(view.structRef) ? undefined : [];
+   }
    const source = resolveStructRefSource<StructLike>(
       view.structRef as never,
       view.modelDef as never,
    );
    if (source === undefined) return undefined;
+   if (!holdsComposite(source)) return [];
    const out: string[] = [];
-   return placeMembers(source, resolved, "", out) ? out : undefined;
+   // Malloy records a resolution when the query resolves a composite through
+   // its source or a join of it. With none, a composite the source still
+   // holds is one inside a query-shaped source (resolved when that source
+   // compiled) or a join the query does not use: each placed as such.
+   return placeMembers(
+      source,
+      resolved === undefined || resolved === null ? source : resolved,
+      "",
+      out,
+      view.modelDef,
+   )
+      ? out
+      : undefined;
 }
 
 /**
