@@ -230,11 +230,13 @@ async function withGateColumnTypes(
 }
 
 /**
- * A served answer over a source whose `where:` reads a given (a row scope
- * decided per caller, with or without a gate) is kept only when the columns
- * that scope reads are stored exactly, by the gate policy's own rule
- * (`gateColumnsExact`): the policy itself is asked only past an entry-point
- * gate, and a scope on a column stored as a float admits a neighbour's rows.
+ * A served answer over a source whose rows a `where:` scopes (its own, one it
+ * extends, a composite member's, a query-shaped source's base's or stage's,
+ * gated or not) is kept only when the columns that scope reads are stored
+ * exactly, by the gate policy's own rule (`gateColumnsExact`): the policy
+ * itself is asked only past an entry-point gate, and a scope on a column
+ * stored as a float admits a neighbour's rows. Every term counts, not only one
+ * that reads a given: a scope written as a literal merges neighbours too.
  * Fails closed on a source whose reads cannot be listed.
  */
 async function assertRowScopeExact(
@@ -245,7 +247,9 @@ async function assertRowScopeExact(
    const judged = await withGateColumnTypes(tables, gateReadsOnce);
    if (judged === tables) return;
    const reads = await gateReadsOnce();
-   if (reads !== undefined && !reads.scoped) return;
+   // A gated entry point's scope is judged by the gate policy, past the gate
+   // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
+   if (reads !== undefined && (!reads.scoped || reads.gated)) return;
    if (judged.every(gateColumnsExact)) return;
    throw new LegDecline(
       "served_copy_not_served",

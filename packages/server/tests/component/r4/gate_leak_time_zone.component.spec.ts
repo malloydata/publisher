@@ -55,6 +55,13 @@ ${EVENTS}
 #@ persist name="tz_v1_sto" storage="${LAKE}"
 source: v1_sto is ev -> { where: id > -1; select: id, tenant, amount, ts, dday is ts.day }
 
+// An ungated stored day, scoped per caller by a where: that reads it through
+// a dimension, and inside a query-shaped source over it.
+#@ persist name="tz_open_sto" storage="${LAKE}"
+source: open_sto is ev -> { where: id > -9; select: id, tenant, amount, ts, dday is ts.day }
+source: scope_dim is open_sto extend { dimension: mine is dday = $ON_DAY; where: mine }
+source: scope_qs is open_sto extend { where: dday = $ON_DAY } -> { select: id, tenant, amount }
+
 #(access_filter) dday = $ON_DAY
 #@ persist name="tz_v1_db"
 source: v1_db is ev -> { where: id > -2; select: id, tenant, amount, ts, dday is ts.day }
@@ -111,6 +118,8 @@ const STORED: [string, boolean][] = [
    ["derived_sto", true],
    ["srctz_sto", false],
    ["srctz_mz", false],
+   ["scope_dim", true],
+   ["scope_qs", true],
 ];
 
 interface Case {
@@ -217,7 +226,11 @@ describe("L1: a caller's time zone never widens a gate over a stored truncation"
    it("builds every stored table and the rollup", () => {
       expect(fixture.buildErrors).toEqual({});
       const built = fixture.built.map((b) => `${b.name}:${b.tier}`);
-      for (const [name] of STORED) {
+      // The scoped sources are entry points over `open_sto`'s table.
+      for (const name of [
+         ...STORED.map(([n]) => n).filter((n) => !n.startsWith("scope_")),
+         "open_sto",
+      ]) {
          expect(built.some((b) => b.startsWith(`${name}:`))).toBe(true);
       }
    });
