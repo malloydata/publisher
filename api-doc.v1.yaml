@@ -1644,7 +1644,7 @@ paths:
             `COMPILE_ERROR`, `QUERY_REJECTED`."
         "403":
           $ref: "#/components/responses/Forbidden"
-          description: "Refused. `reason`: `ACCESS_DENIED`, a gate refused this caller (supply the givens it reads,
+          description: "Refused. `reason`: `ACCESS_DENIED`, a gate (`#(authorize)` or `#(access_filter)`) refused this caller (supply the givens it reads,
             `Source.gates`); `STORAGE_ACCESS_DENIED`, the database ran the query and storage the environment configures
             (a DuckLake data path) refused its read, so the query is fine and the database's storage credentials are
             not; `PATH_ACCESS_DENIED`, a path the query itself reads refused access, so the query or its grant is at
@@ -1713,7 +1713,7 @@ paths:
             `COMPILE_ERROR`."
         "403":
           $ref: "#/components/responses/Forbidden"
-          description: "Refused by policy. `reason`: `ACCESS_DENIED`, a gate refused this caller."
+          description: "Refused by policy. `reason`: `ACCESS_DENIED`, the `#(authorize)` gate refused this caller."
         "404":
           $ref: "#/components/responses/NotFound"
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
@@ -2908,20 +2908,12 @@ paths:
           description: "The request conflicts with the state of what it names. `reason`: `RUN_ACTIVE`."
         "412":
           $ref: "#/components/responses/PreconditionFailed"
-        "424":
-          $ref: "#/components/responses/DependencyFailed"
-          description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
-        "502":
-          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/Unavailable"
-        "504":
-          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/packages/{packageName}/runs/{runId}/manifest:
@@ -6165,9 +6157,10 @@ components:
         - view
         - query
         - rollup
-      description: "What declared a persisted source: `persist`, the modeler's `#@ persist` on it; `materialize`, a
-        `#(materialize)` on it; `view` or `query`, a persisted view or named query; or `rollup`, a rollup the server
-        synthesized from `#(rollup)` annotations (or the deprecated `#@ preaggregate`)."
+      description: "What a persisted source is: `persist`, a source the modeler persists with `#@ persist`; `materialize`,
+        a source carrying `#(materialize)`; `view` or `query`, a persisted view or named query; or `rollup`, a rollup the
+        server synthesized from `#(rollup)` annotations (or the deprecated `#@ preaggregate`). v0 reports this as a serve
+        verdict's or a refusal's `origin`; v1 calls it `kind`, keeping `origin` for provenance."
 
     PersistSourcePlan:
       type: object
@@ -6720,7 +6713,7 @@ components:
           type: string
           format: date-time
           description: The moment the table's rows reflect, as on its manifest entry. Absent when `kind` is `live`, whose rows are
-            read now.
+            read now, or when the manifest entry does not record it.
           readOnly: true
       readOnly: true
 
@@ -6946,8 +6939,10 @@ components:
           $ref: "#/components/schemas/RefusalReason"
           description: "Why the source is refused, decided at compile time: `FREE_PARAMETER`; `AUTHORIZE`; `READS_GIVEN` (the stored
             result would read a given the build cannot strip, wherever it sits: in the query, a projection, a join, a
-            joined `where:`, or the base a rollup is built over, so the table would hold one caller's slice; a given in
-            the source's extend block is applied per caller at read and is admitted); `MERGE_KEY_SCOPE_UNRESOLVED` (a
+            joined `where:`, or the base a rollup is built over, so the table would hold one caller's slice; a given the
+            source's extend block reads is generally applied per caller at read and admitted, but a declaration's own
+            given-reading `where:` over a field the table does not store is refused, which v0 reports as
+            `given_where_over_unstored_field`); `MERGE_KEY_SCOPE_UNRESOLVED` (a
             `merge_key=` whose caller scope cannot be expressed over the stored table's own columns); and
             `READ_ONLY_DIALECT` (a `database` build on a dialect that cannot create tables). The build-time refusals are on the run's
             `SourceFailure.reason`."

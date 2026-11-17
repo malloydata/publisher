@@ -35,6 +35,7 @@ every doc below points back to one of them, and each example's README points bac
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | [architecture.md](architecture.md)         | Understand how Malloy, Render, Publisher, and the SDK fit together.                                      |
 | [api-overview.md](api-overview.md)         | Understand the REST + MCP surfaces and the resource hierarchy.                                           |
+| [api-v1-overview.md](api-v1-overview.md)   | _Planned:_ the `/api/v1` surface the v1 plan designs; no release serves it yet.                          |
 | [packages.md](packages.md)                 | Understand the package format: `publisher.json`, models, data files, and how a package gets served.      |
 | [package-versions.md](package-versions.md) | Publish immutable versions, read one by `versionId`, move `latest`, archive, and build per version.      |
 | [scaffolding.md](scaffolding.md)           | Scaffold a package with `npm create` — the `@latest` rule, the workspace it writes, seeding from a file. |
