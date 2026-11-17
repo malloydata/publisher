@@ -501,8 +501,9 @@ export class RollupVariantServe {
          sourceName: localName,
       });
       // Anywhere in the query, a nest's own `timezone:` included: the build
-      // truncated the grain's times in the model's zone, so a zoned query is
-      // read from a rollup only where it reads no time (`zoneDecline`).
+      // evaluated the grain's dimensions and the measures in the model's
+      // zone, so a zoned query is read from a rollup only where nothing the
+      // build evaluated depends on the zone (`zoneDecline`).
       const zoned = setsTimezone(prepared.query)
          ? { usage: queryFieldUsagePaths(prepared) }
          : undefined;
@@ -556,10 +557,26 @@ export class RollupVariantServe {
       // join branches, inside the rollup step.
       const usage = branches.length > 0 ? queryFieldUsagePaths(prepared) : [];
       for (const { branch, refusal } of branches) {
-         // Through a join, a zoned query is read live (A5).
+         // Through a join, a zoned query is read from the joined source's
+         // rollup by the same rule as its own (A5): what the query reads
+         // through the join, and the grain the join meets, must not depend
+         // on the zone the build evaluated it in.
          if (zoned) {
-            first ??= zonedQueryDecline();
-            continue;
+            const zone = zoneDecline(
+               branch.plan,
+               SourceMap.of(this.host.modelDef()).node(branch.plan.baseSourceID)
+                  ?.def as object | undefined,
+               usage === undefined
+                  ? undefined
+                  : usage
+                       .filter((p) => p[0] === branch.join.name)
+                       .map((p) => p.slice(1)),
+               branch.plan.grainDimensions.map((d) => [d]),
+            );
+            if (zone) {
+               first ??= zone;
+               continue;
+            }
          }
          // A join branch redeclares the author's source around the join, not
          // over its declaring file, so it carries no gate to prove: past an
@@ -2982,21 +2999,45 @@ function fieldPathsIn(e: unknown, out: string[][] = [], depth = 0): string[][] {
    return out;
 }
 
+/** Literals and calls whose value an expression takes in the zone it is evaluated in. */
+const ZONED_NODES = new Set(["now", "timestampLiteral", "timestamptzLiteral"]);
+
+/** Whether an expression holds a literal or call read in the evaluating zone (`now`, a timestamp literal). */
+function hasZonedNode(e: unknown, depth = 0): boolean {
+   if (depth > 64 || e === null || typeof e !== "object") return false;
+   if (Array.isArray(e)) return e.some((x) => hasZonedNode(x, depth + 1));
+   if (ZONED_NODES.has(String((e as { node?: unknown }).node))) return true;
+   return Object.values(e).some((v) => hasZonedNode(v, depth + 1));
+}
+
 /**
  * Why a query that sets its own `timezone:` is not read from `plan`, or
- * undefined (A5). The build truncated and compared times in the model's
- * zone, so the rollup answers a zoned query only when nothing it reads
- * depends on a zone: no field path the query reads (expanded through its
- * dimensions and measures), no stored partial and no `where:` of the base
- * reads a temporal field, directly or through a computed dimension, nor
- * anything through a join. Fails closed on usage that could not be read.
+ * undefined (A5). It is the served copy's rule: what the build evaluated in
+ * the model's zone must not depend on the zone, and what the query evaluates
+ * itself it evaluates in its own zone over the stored values, as live does.
+ *
+ * - A column stored as the base has it (a `date`, a `timestamp`, anything
+ *   without an expression) holds the same value in every zone, so the query
+ *   may read it, truncate it or filter on it; but not a column a query base
+ *   truncated (it carries a timeframe), stored in the base's zone.
+ * - A computed dimension or a measure was evaluated by the build: it depends
+ *   on the zone when its expression reads a time (a truncation, an
+ *   extraction, a comparison), directly or through another computed field,
+ *   or holds `now` or a timestamp literal.
+ * - The stored partials and the base's `where:` were evaluated by the
+ *   build: any time they read depends on the zone.
+ * - A field reached through one of the base's joins is not proved: declined.
+ *
+ * `extra` are build-evaluated reads the caller adds (a join branch's grain).
+ * Fails closed on usage that could not be read.
  */
 function zoneDecline(
    plan: RollupVariantPlan,
-   struct: object,
+   struct: object | undefined,
    usage: readonly (readonly string[])[] | undefined,
+   extra: readonly (readonly string[])[] = [],
 ): LegDecline | undefined {
-   if (usage === undefined) return zonedQueryDecline();
+   if (usage === undefined || struct === undefined) return zonedQueryDecline();
    const def = struct as { fields?: unknown[]; filterList?: unknown[] };
    const fields = new Map(
       (def.fields ?? []).map((f) => {
@@ -3004,27 +3045,57 @@ function zoneDecline(
          return [String(field.as ?? field.name), f as object];
       }),
    );
-   const seen = new Set<string>();
-   const readsTime = (path: readonly string[]): boolean => {
+   type Field = {
+      type?: unknown;
+      e?: unknown;
+      join?: unknown;
+      timeframe?: unknown;
+   };
+   const memo = new Map<string, boolean>();
+   // A field's value as the table holds it: does it depend on the zone?
+   const storedDependsOnZone = (path: readonly string[]): boolean => {
       const [name] = path;
       // An empty path reads no field (`count()`).
       if (name === undefined) return false;
       if (path.length !== 1) return true;
-      if (seen.has(name)) return false;
-      seen.add(name);
-      const f = fields.get(name) as
-         | { type?: unknown; e?: unknown; join?: unknown }
-         | undefined;
+      const f = fields.get(name) as Field | undefined;
       if (!f) return false;
-      if (f.join !== undefined || ZONED_TYPES.has(String(f.type))) return true;
-      return fieldPathsIn(f.e).some(readsTime);
+      if (f.join !== undefined) return true;
+      // A column a query base truncated (`group_by: d is t.day`) carries its
+      // timeframe: a truncation stored in the base's zone.
+      if (f.e === undefined) {
+         return f.timeframe !== undefined && ZONED_TYPES.has(String(f.type));
+      }
+      const known = memo.get(name);
+      if (known !== undefined) return known;
+      // A cycle cannot compile; read as independent while it is walked.
+      memo.set(name, false);
+      const depends =
+         hasZonedNode(f.e) || fieldPathsIn(f.e).some(evaluatedReadsTime);
+      memo.set(name, depends);
+      return depends;
+   };
+   // A read inside an expression the build evaluated: any time is zoned.
+   const evaluatedReadsTime = (path: readonly string[]): boolean => {
+      const [name] = path;
+      if (name === undefined) return false;
+      if (path.length !== 1) return true;
+      const f = fields.get(name) as Field | undefined;
+      if (!f) return false;
+      if (f.e === undefined && f.join === undefined) {
+         return ZONED_TYPES.has(String(f.type));
+      }
+      return storedDependsOnZone(path);
    };
    const stored = plan.rollupMeasures.flatMap((m) =>
       m.partials.flatMap((p) => [p.leaf.joinPath, ...p.leaf.reads]),
    );
    const where = fieldPathsIn(def.filterList);
-   return [...usage, ...where].some(readsTime) ||
-      stored.some((p) => p.length > 0 && readsTime(p))
+   return usage.some(storedDependsOnZone) ||
+      extra.some(storedDependsOnZone) ||
+      where.some(evaluatedReadsTime) ||
+      hasZonedNode(def.filterList) ||
+      stored.some((p) => p.length > 0 && evaluatedReadsTime(p))
       ? zonedQueryDecline()
       : undefined;
 }

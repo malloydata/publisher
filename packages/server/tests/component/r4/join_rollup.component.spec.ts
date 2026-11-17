@@ -202,6 +202,16 @@ const SERVED = [
       "a grand total of parent and joined aggregates through a join_one checked unique",
       "run: flights -> { aggregate: flight_count, crew.crew_size, crew.most_hours, crew.crew_count }",
    ],
+   // A query's own zone, reading nothing through the join that the build
+   // evaluated in the model's zone (b-tz-caller).
+   [
+      "a query in its own time zone that reads no time through the join",
+      "run: flights -> { timezone: 'America/Los_Angeles'; group_by: carrier; aggregate: segments.seg_miles }",
+   ],
+   [
+      "a nest in its own time zone that reads no time through the join",
+      "run: flights -> { group_by: carrier; nest: n is { timezone: 'America/Los_Angeles'; group_by: segments.kind; aggregate: segments.seg_miles } }",
+   ],
 ] as const;
 
 const LIVE = [
@@ -234,16 +244,6 @@ const LIVE = [
       "a select: of joined rows",
       "run: flights -> { select: id, segments.kind }",
       "COUNT_SEMANTICS",
-   ],
-   [
-      "a query in its own time zone",
-      "run: flights -> { timezone: 'America/Los_Angeles'; group_by: carrier; aggregate: segments.seg_miles }",
-      "TIME_ZONE",
-   ],
-   [
-      "a nest in its own time zone",
-      "run: flights -> { group_by: carrier; nest: n is { timezone: 'America/Los_Angeles'; group_by: segments.kind; aggregate: segments.seg_miles } }",
-      "TIME_ZONE",
    ],
    [
       "a source whose own where: reads the join",
@@ -912,6 +912,11 @@ source: flights_la is flights extend { timezone: 'America/Los_Angeles' }
       [
          "a joined source read in the query source's time zone, not its own",
          "run: flights -> { group_by: segs_la.seg_day; aggregate: segs_la.seg_miles }",
+         "TIME_ZONE",
+      ],
+      [
+         "a query in its own time zone, reading a joined truncation stored in the model's",
+         "run: flights -> { timezone: 'America/Los_Angeles'; group_by: segments.seg_day; aggregate: segments.seg_miles }",
          "TIME_ZONE",
       ],
       [

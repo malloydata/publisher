@@ -218,6 +218,12 @@ const SERVED = [
       "the parent's own aggregates beside a join_one checked unique",
       "run: flights -> { group_by: carrier; aggregate: flight_count, crew.crew_size }",
    ],
+   // A query's own zone, reading nothing through the join that the build
+   // evaluated in the model's zone (b-tz-caller).
+   [
+      "a query in its own time zone that reads no time through the join",
+      "run: flights -> { timezone: 'America/Los_Angeles'; group_by: carrier; aggregate: segments.seg_miles }",
+   ],
 ] as const;
 
 const DECLINED = [
@@ -240,11 +246,6 @@ const DECLINED = [
       "a count written over the join",
       "run: flights -> { group_by: carrier; aggregate: c is segments.count() }",
       "COUNT_SEMANTICS",
-   ],
-   [
-      "a query in its own time zone",
-      "run: flights -> { timezone: 'America/Los_Angeles'; group_by: carrier; aggregate: segments.seg_miles }",
-      "TIME_ZONE",
    ],
 ] as const;
 
