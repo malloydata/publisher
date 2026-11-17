@@ -113,6 +113,11 @@ function splitLiterals(
          for (;;) {
             if (j >= sql.length) throw new Error(`unclosed literal in ${sql}`);
             const c = sql[j];
+            // A MySQL literal holding `\\` reads one way with
+            // NO_BACKSLASH_ESCAPES and another without: never written.
+            if (c === "\\" && dialect === "mysql") {
+               throw new Error(`a MySQL literal holds a backslash in ${sql}`);
+            }
             if (c === "\\" && BACKSLASH.has(dialect)) {
                value += sql[j + 1];
                j += 2;

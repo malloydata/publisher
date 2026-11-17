@@ -514,9 +514,15 @@ describe("bindColocatedEntries", () => {
       });
       expect(bound.entries).toEqual({
          a: { tableName: '"order"' },
-         b: { tableName: "kept" },
       });
+      // `b` has no dialect to quote its name in: declined, never bound as
+      // given.
       expect(bound.declined).toEqual([
+         {
+            reason: "unquotable_name",
+            sourceEntityId: "b",
+            detail: "no dialect is known for its table, to quote its name in",
+         },
          {
             reason: "refused",
             sourceEntityId: "c",

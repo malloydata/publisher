@@ -348,34 +348,50 @@ export class InstructedBuild {
    /**
     * Quote a seeded upstream's physical path for the in-memory build Manifest,
     * mirroring the CREATE side ({@link quoteManifestTablePath}) so a downstream
-    * resolves it on a case-folding engine. Without a resolvable connection the
-    * path binds unquoted; on a case-folding engine the downstream CREATE then
-    * fails loudly.
+    * resolves it on a case-folding engine. Quoted for its own connection's
+    * dialect; with no connection named, for the one dialect every connection
+    * of this build shares. Undefined, never the name as given, when no dialect
+    * is found: the seed is not bound, and a downstream reads its upstream
+    * live (or, strict, fails its own compile). Throws
+    * {@link UnquotableIdentifierError} for a name its dialect cannot quote.
     */
    private quoteSeedTablePath(
       sourceEntityId: string,
       physicalTableName: string,
       connectionName: string | undefined,
       connections: Map<string, MalloyConnection>,
-   ): string {
-      const connection = connectionName
-         ? connections.get(connectionName)
-         : undefined;
-      if (!connection) {
-         // Only a named-but-absent connection is a real gap; a missing name is
-         // the benign older-caller default.
-         if (connectionName) {
-            recordManifestBindDegraded();
-            logger.warn(
-               "Seeded upstream names a connection not present in this build; " +
-                  "leaving its manifest path unquoted (a downstream build will " +
-                  "fail on a case-folding engine)",
-               { sourceEntityId, connectionName },
+   ): string | undefined {
+      if (connectionName) {
+         const connection = connections.get(connectionName);
+         if (connection) {
+            return quoteManifestTablePath(
+               physicalTableName,
+               connection.dialectName,
             );
          }
-         return physicalTableName;
+         recordManifestBindDegraded();
+         logger.warn(
+            "Seeded upstream names a connection not present in this build; " +
+               "not binding it for downstream reads",
+            { sourceEntityId, connectionName },
+         );
+         return undefined;
       }
-      return quoteManifestTablePath(physicalTableName, connection.dialectName);
+      // An older caller names no connection: the build's own dialect, when
+      // its connections agree on one.
+      const dialects = new Set(
+         [...connections.values()].map((c) => c.dialectName),
+      );
+      if (dialects.size === 1) {
+         return quoteManifestTablePath(physicalTableName, [...dialects][0]);
+      }
+      logger.warn(
+         "Seeded upstream names no connection, and this build's connections " +
+            "do not share one dialect to quote it in; not binding it for " +
+            "downstream reads",
+         { sourceEntityId },
+      );
+      return undefined;
    }
 
    /**
@@ -1409,11 +1425,6 @@ function refusedForItsConnection(
 }
 
 /**
- * Record one source's gate refusal on `run`: counted and logged now, held
- * against its address until {@link settleRefusals} knows whether an eligible
- * sibling built that address.
- */
-/**
  * Why `instruction`'s table name cannot be quoted for the dialect it is
  * written in (the source's own, or the storage destination's), or undefined
  * when it can.
@@ -1434,6 +1445,11 @@ function unquotableTargetName(
    }
 }
 
+/**
+ * Record one source's gate refusal on `run`: counted and logged now, held
+ * against its address until {@link settleRefusals} knows whether an eligible
+ * sibling built that address.
+ */
 function recordPendingRefusal(
    run: InstructedRun,
    persistSource: PersistSource,

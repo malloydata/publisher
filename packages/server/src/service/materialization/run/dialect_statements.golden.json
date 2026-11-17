@@ -479,7 +479,11 @@
         "sch",
         "Or ders"
       ],
-      "backtick": null,
+      "backtick": [
+        "p-1",
+        "ds",
+        "t"
+      ],
       "escapedBacktick": null
     },
     "postgres": {
@@ -493,7 +497,11 @@
         "sch",
         "Or ders"
       ],
-      "backtick": null,
+      "backtick": [
+        "p-1",
+        "ds",
+        "t"
+      ],
       "escapedBacktick": null
     },
     "standardsql": {
@@ -502,7 +510,11 @@
         "Sch",
         "Orders"
       ],
-      "quoted": null,
+      "quoted": [
+        "Cat",
+        "sch",
+        "Or ders"
+      ],
       "backtick": [
         "p-1",
         "ds",
@@ -525,7 +537,11 @@
         "sch",
         "Or ders"
       ],
-      "backtick": null,
+      "backtick": [
+        "p-1",
+        "DS",
+        "T"
+      ],
       "escapedBacktick": null
     },
     "databricks": {

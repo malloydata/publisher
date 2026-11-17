@@ -20,8 +20,6 @@
  * between the commit and the ledger advance costs a repeat, not a corruption.
  */
 
-import { decodeDottedTablePath } from "@malloydata/malloy";
-
 import { logger } from "../../../logger";
 import { errorCodeOf } from "./error_code";
 import type { IncrementalStepReason } from "../../../materialization_metrics";
@@ -29,7 +27,7 @@ import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface"
 import type { IncrementalStrategy } from "../domain/types";
 import { capabilitiesOf, dialectsWith } from "../domain/dialect";
 import { errMessage } from "../../../utils";
-import { quoteIdentifier } from "../../quoting";
+import { foldedTablePathParts, quoteIdentifier } from "../../quoting";
 import {
    escapeSqlString,
    inOneTransaction,
@@ -256,76 +254,33 @@ export type SqlRunner = (
 ) => Promise<{ rows: unknown[] }>;
 
 /**
- * Per-dialect table-path decoding. The physical name arrives as SQL (bare or
- * quoted segments) while `information_schema` compares RAW identifier text, so it
- * is decoded first, with the escape `quoting.ts` writes: a doubled quote, or on
- * BigQuery a backslash escape. Postgres folds bare segments to lower case,
- * Snowflake to UPPER, BigQuery not at all (its names are case-sensitive).
+ * The dialects whose target table's columns the incremental refresh probes
+ * by decoded path: Postgres, Snowflake, BigQuery and DuckDB (a `storage=`
+ * destination's `<destination>.[<schema>.]<name>`).
  */
-const TABLE_PATH_OPTIONS: Record<
-   string,
-   {
-      quoteChar: string;
-      escapeStyle: "doubled" | "backslash";
-      bareIdentRegex: RegExp;
-      foldCase?: "lower" | "upper";
-   }
-> = {
-   postgres: {
-      quoteChar: '"',
-      escapeStyle: "doubled",
-      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$]*/,
-      foldCase: "lower",
-   },
-   snowflake: {
-      quoteChar: '"',
-      escapeStyle: "doubled",
-      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$]*/,
-      foldCase: "upper",
-   },
-   standardsql: {
-      quoteChar: "`",
-      escapeStyle: "backslash",
-      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_-]*/,
-   },
-   // A `storage=` destination path: `<destination>.<name>` or
-   // `<destination>.<schema>.<name>`. No case folding: DuckDB stores identifiers
-   // as written and the metadata read compares stored text, so folding would miss
-   // a mixed-case table.
-   //
-   // `-` is admitted because this is a LOGICAL path built from a destination name
-   // and a persist name, neither charset-validated. Rejecting it would make
-   // `my-lake` build and serve fine while this probe failed, seeding every run.
-   duckdb: {
-      quoteChar: '"',
-      escapeStyle: "doubled",
-      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$-]*/,
-   },
-};
+const DECODED_PATH_DIALECTS = new Set([
+   "postgres",
+   "snowflake",
+   "standardsql",
+   "duckdb",
+]);
 
 /**
- * The raw identifier segments of a physical table path, or undefined when the
- * path cannot be decoded for this dialect (which leads to a SEED, not a throw).
+ * The raw identifier segments of a physical table path, as its catalog stores
+ * them, or undefined when the path cannot be decoded for this dialect (which
+ * leads to a SEED, not a throw). The physical name arrives as SQL (bare or
+ * quoted segments) while `information_schema` compares RAW identifier text,
+ * so it is decoded by the one parser of a table name
+ * ({@link foldedTablePathParts}): a bare segment folded as the engine folds
+ * it (Postgres to lower case, Snowflake to UPPER, ASCII only; BigQuery and
+ * DuckDB not at all), a quoted one kept.
  */
 export function decodeTablePathSegments(
    dialect: string,
    tablePath: string,
 ): string[] | undefined {
-   const opts = TABLE_PATH_OPTIONS[dialect];
-   if (!opts) return undefined;
-   const decoded = decodeDottedTablePath(tablePath, {
-      quoteChar: opts.quoteChar,
-      escapeStyle: opts.escapeStyle,
-      bareIdentRegex: opts.bareIdentRegex,
-      dialectName: dialect,
-   });
-   if (!decoded.ok) return undefined;
-   return decoded.segments.map((s) => {
-      if (s.quoted || !opts.foldCase) return s.value;
-      return opts.foldCase === "lower"
-         ? s.value.toLowerCase()
-         : s.value.toUpperCase();
-   });
+   if (!DECODED_PATH_DIALECTS.has(dialect)) return undefined;
+   return foldedTablePathParts(tablePath, dialect);
 }
 
 /** A probe's rows as plain objects (see {@link probeSelect}). */

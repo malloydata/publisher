@@ -42,8 +42,11 @@ const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
  * - BigQuery (`standardsql`): backticks, with `\` as the escape character, as
  *   BigQuery's lexer reads a quoted identifier (the escape sequences of a
  *   string literal): `\` becomes `\\` and a backtick `` \` ``. An empty
- *   name or one holding a control character (a newline among them) is
- *   refused with {@link UnquotableIdentifierError}.
+ *   name, one holding a control character (a newline among them), and one
+ *   holding a `.` are refused with {@link UnquotableIdentifierError}: BigQuery
+ *   reads a dot inside backticks as a path separator (`` `a.b` `` is the path
+ *   `a`.`b`), so a dotted name part would name another table. Elsewhere a
+ *   quoted part may hold a dot (`"my.schema"."t"` on Postgres).
  * - MySQL and Databricks: backticks, an embedded backtick doubled; a
  *   backslash is an ordinary character in their quoted identifiers.
  * - Everything else: double quotes, an embedded double quote doubled.
@@ -72,6 +75,13 @@ export function quoteIdentifier(identifier: string, dialect: string): string {
             identifier,
             dialect,
             "a quoted identifier cannot contain a newline or other control character",
+         );
+      }
+      if (identifier.includes(".")) {
+         throw new UnquotableIdentifierError(
+            identifier,
+            dialect,
+            "a quoted identifier cannot contain a dot, which BigQuery reads as a path separator",
          );
       }
       return "`" + identifier.replace(/[\\`]/g, (c) => "\\" + c) + "`";
@@ -181,7 +191,8 @@ interface TablePathPart {
  *
  * - An unquoted part runs to the next dot and holds no quote character.
  * - A part in double quotes or backticks runs to its closing quote, and a dot
- *   inside it is part of the name (`"my.schema"."t"` is two parts). Inside
+ *   inside it is part of the name (`"my.schema"."t"` is two parts; BigQuery
+ *   cannot quote such a part, so on BigQuery the path is refused). Inside
  *   it, a doubled quote is one quote character, except in a BigQuery
  *   (`standardsql`) backtick part, where `\` escapes the next character, as
  *   BigQuery reads one (`` \` ``, `\\`; `\n`, `\r` and `\t` read as those
@@ -199,10 +210,25 @@ export function tablePathParts(
    return parseTablePath(path, dialect)?.map((p) => p.value);
 }
 
+/**
+ * {@link tablePathParts}, each unquoted part folded as `dialect` folds it
+ * ({@link foldUnquoted}): the identifiers as the warehouse's catalog stores
+ * them.
+ */
+export function foldedTablePathParts(
+   path: string,
+   dialect: string,
+): string[] | undefined {
+   return parseTablePath(path, dialect)?.map((p) =>
+      p.quoted ? p.value : foldUnquoted(p.value, dialect),
+   );
+}
+
 /** {@link tablePathParts}, with whether each part was quoted. */
 function parseTablePath(
    path: string,
    dialect: string,
+   { dottedParts = false }: { dottedParts?: boolean } = {},
 ): TablePathPart[] | undefined {
    const bigQuery = dialect === "standardsql";
    const parts: TablePathPart[] = [];
@@ -255,7 +281,9 @@ function parseTablePath(
       i++;
       if (i >= path.length) return undefined;
    }
-   return parts.every((p) => quotable(p.value, dialect)) ? parts : undefined;
+   return parts.every((p) => quotable(p.value, dialect, dottedParts))
+      ? parts
+      : undefined;
 }
 
 /**
@@ -265,28 +293,47 @@ function parseTablePath(
  * character anywhere, and a path {@link tablePathParts} reads both with no
  * dialect and as BigQuery (the one dialect whose reading differs: its
  * backslash escapes and its whole-path backticks).
+ *
+ * One exception, by design: a quoted part holding a dot (`"my.schema"."t"`)
+ * is usable, since it names one table on Postgres and the rest, but BigQuery
+ * cannot quote it, so a BigQuery build or bind refuses that name alone.
  */
 export function isUsableTableName(name: string): boolean {
    if (name.includes("\\") || CONTROL_CHARACTER.test(name)) return false;
    return (
       parseTablePath(name, "") !== undefined &&
-      parseTablePath(name, "standardsql") !== undefined
+      parseTablePath(name, "standardsql", { dottedParts: true }) !== undefined
    );
 }
 
-/** Whether {@link quoteIdentifier} quotes `identifier` rather than refusing it. */
-function quotable(identifier: string, dialect: string): boolean {
+/**
+ * Whether {@link quoteIdentifier} quotes `identifier` rather than refusing it;
+ * with `dottedParts`, a dot is let through on BigQuery too
+ * ({@link isUsableTableName}'s every-dialect check).
+ */
+function quotable(
+   identifier: string,
+   dialect: string,
+   dottedParts = false,
+): boolean {
    if (identifier === "" || identifier.includes("\0")) return false;
-   return dialect !== "standardsql" || !CONTROL_CHARACTER.test(identifier);
+   if (dialect !== "standardsql") return true;
+   if (CONTROL_CHARACTER.test(identifier)) return false;
+   return dottedParts || !identifier.includes(".");
 }
 
 /**
- * How `dialect` folds an unquoted identifier: Postgres to lower case,
- * Snowflake to UPPER, as `decodeTablePathSegments` reads them.
+ * How `dialect` folds an unquoted identifier, ASCII letters only, as the
+ * engine does: Postgres `A`-`Z` to lower case (its `downcase_identifier`
+ * leaves a multibyte character alone), Snowflake `a`-`z` to UPPER.
  */
-function foldUnquoted(identifier: string, dialect: string): string {
-   if (dialect === "postgres") return identifier.toLowerCase();
-   if (dialect === "snowflake") return identifier.toUpperCase();
+export function foldUnquoted(identifier: string, dialect: string): string {
+   if (dialect === "postgres") {
+      return identifier.replace(/[A-Z]/g, (c) => c.toLowerCase());
+   }
+   if (dialect === "snowflake") {
+      return identifier.replace(/[a-z]/g, (c) => c.toUpperCase());
+   }
    return identifier;
 }
 

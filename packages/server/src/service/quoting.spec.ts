@@ -159,6 +159,14 @@ describe("quoteIdentifier on hostile name parts", () => {
    for (const [dialect, read] of Object.entries(READERS)) {
       for (const part of HOSTILE) {
          it(`${dialect} reads ${JSON.stringify(part)} back whole`, () => {
+            if (dialect === "standardsql" && part.includes(".")) {
+               // BigQuery reads a dot inside backticks as a path separator,
+               // so a dotted part is refused, never quoted as another path.
+               expect(() => quoteIdentifier(part, dialect)).toThrow(
+                  UnquotableIdentifierError,
+               );
+               return;
+            }
             const quoted = quoteIdentifier(part, dialect);
             // Followed by more SQL, the identifier still ends where the
             // quoting ends: no early close, no swallowed closing quote.
@@ -205,7 +213,9 @@ describe("quoteIdentifier on hostile name parts", () => {
       // Malloy's standardsql dialect escapes with backslashes too, but refuses
       // a backtick outright and encodes a newline that this module refuses.
       const malloy = getDialect("standardsql");
-      for (const part of HOSTILE.filter((p) => !p.includes("`"))) {
+      for (const part of HOSTILE.filter(
+         (p) => !p.includes("`") && !p.includes("."),
+      )) {
          expect(quoteIdentifier(part, "standardsql")).toBe(
             malloy.sqlQuoteIdentifier(part),
          );
@@ -524,6 +534,37 @@ describe("quoteManifestTablePath on a path written as SQL", () => {
       expect(quoteManifestTablePath("Sch.Orders", "snowflake")).toBe(
          '"Sch"."Orders"',
       );
+   });
+});
+
+describe("a dotted quoted part, and folding", () => {
+   it("is usable everywhere but refused alone at a BigQuery build or bind, never quoted as another path", () => {
+      for (const name of ['"a.b".t', '"a.".t', '"my.schema"."t"']) {
+         expect(isUsableTableName(name)).toBe(true);
+         expect(() => quoteManifestTablePath(name, "standardsql")).toThrow(
+            UnquotableIdentifierError,
+         );
+         expect(tablePathParts(name, "standardsql")).toBeUndefined();
+      }
+      expect(quoteManifestTablePath('"my.schema"."t"', "postgres")).toBe(
+         '"my.schema"."t"',
+      );
+      expect(quoteManifestTablePath('"a.b".t', "mysql")).toBe("`a.b`.`t`");
+   });
+
+   it("folds a bare part's ASCII letters only, as Postgres and Snowflake do", () => {
+      expect(quoteManifestTablePath('"s".Ä', "postgres")).toBe('"s"."Ä"');
+      expect(quoteManifestTablePath('"s".ÄbC', "postgres")).toBe('"s"."Äbc"');
+      expect(quoteManifestTablePath('"s".straße', "snowflake")).toBe(
+         '"s"."STRAßE"',
+      );
+   });
+
+   it("refuses a legacy name holding a doubled backtick, which BigQuery reads otherwise", () => {
+      // Readable on MySQL and Databricks, but not one name in every dialect:
+      // refused where host names are checked, so its source answers live.
+      expect(tablePathParts("`s`.`a``b`", "mysql")).toEqual(["s", "a`b"]);
+      expect(isUsableTableName("`s`.`a``b`")).toBe(false);
    });
 });
 

@@ -1664,10 +1664,9 @@ describe("executeInstructedBuild", () => {
       });
    });
 
-   it("seeds unquoted when the upstream's connection is absent from the build (older CP / cross-connection)", async () => {
-      // No connectionName on the seed (an older control plane) -> bind verbatim,
-      // exactly the pre-change behavior. Non-case-folding engines are unaffected;
-      // a case-folding engine self-signals by failing the downstream CREATE.
+   it("seeds an upstream that names no connection quoted for the build's one dialect, never as given", async () => {
+      // No connectionName on the seed (an older control plane): quoted for the
+      // dialect every connection of the build shares.
       let seen:
          | {
               buildManifest?: {
@@ -1707,7 +1706,67 @@ describe("executeInstructedBuild", () => {
          { up: { sourceEntityId: "up", physicalTableName: "orders_base" } },
       );
 
-      expect(seen?.buildManifest?.entries?.up?.tableName).toBe("orders_base");
+      expect(seen?.buildManifest?.entries?.up?.tableName).toBe('"orders_base"');
+   });
+
+   it("does not seed an upstream with no dialect to quote it in", async () => {
+      // Named but absent, or unnamed over connections of two dialects: not
+      // bound, so a downstream reads it live.
+      let seen:
+         | {
+              buildManifest?: {
+                 entries?: Record<string, { tableName?: string }>;
+              };
+           }
+         | undefined;
+      const sf = {
+         runSQL: sinon.stub().resolves(),
+         dialectName: "snowflake",
+      } as unknown as MalloyConnection;
+      const pg = {
+         runSQL: sinon.stub().resolves(),
+         dialectName: "postgres",
+      } as unknown as MalloyConnection;
+      const down = fakeSource({
+         name: "down",
+         sourceEntityId: "bdownaaaaaaaaaa",
+         dialectName: "snowflake",
+         onGetSQL: (o) => {
+            seen = o as typeof seen;
+         },
+      });
+      const compiled = compiledWith(
+         { down },
+         [["down"]],
+         new Map([
+            ["duckdb", sf],
+            ["pg", pg],
+         ]),
+      );
+
+      await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bdownaaaaaaaaaa",
+               materializedTableId: "mt-d",
+               physicalTableName: "down_v1",
+               realization: "COPY",
+            },
+         ],
+         {
+            up: { sourceEntityId: "up", physicalTableName: "orders_base" },
+            gone: {
+               sourceEntityId: "gone",
+               physicalTableName: "gone_base",
+               connectionName: "elsewhere",
+            },
+         },
+      );
+
+      expect(seen?.buildManifest).toBeDefined();
+      expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+      expect(seen?.buildManifest?.entries?.gone).toBeUndefined();
    });
 
    it("throws when an instructed build's connection is missing", async () => {

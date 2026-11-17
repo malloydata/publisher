@@ -235,7 +235,14 @@ export function bindColocatedEntries(args: {
       if (eligibility?.eligibleEntityIds.has(sourceEntityId)) {
          const dialect = args.dialects.get(sourceEntityId);
          if (!dialect) {
-            entries[sourceEntityId] = entry;
+            // Never inlined as given: with no dialect to quote it in, the
+            // entry is not bound.
+            declined.push({
+               reason: "unquotable_name",
+               sourceEntityId,
+               detail:
+                  "no dialect is known for its table, to quote its name in",
+            });
             continue;
          }
          try {
@@ -367,16 +374,15 @@ export function deriveColocatedServeBindings(args: {
          continue;
       }
       if (!args.eligible(sourceID)) continue;
-      let tablePath = entry.tableName;
-      if (source.dialect) {
-         try {
-            tablePath = quoteManifestTablePath(entry.tableName, source.dialect);
-         } catch (err) {
-            if (!(err instanceof UnquotableIdentifierError)) throw err;
-            // Not bound: the source answers live, as for any entry the
-            // bind cannot serve.
-            continue;
-         }
+      // Never inlined as given: with no dialect, or a name the dialect
+      // cannot read or quote, it is not bound and the source answers live.
+      if (!source.dialect) continue;
+      let tablePath: string;
+      try {
+         tablePath = quoteManifestTablePath(entry.tableName, source.dialect);
+      } catch (err) {
+         if (!(err instanceof UnquotableIdentifierError)) throw err;
+         continue;
       }
       bindings.push({
          kind: plan ? "materialize" : "persist",
