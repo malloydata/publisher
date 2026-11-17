@@ -25,6 +25,8 @@ const DECIDED: Record<Flag, DialectName[]> = {
    mergeGatedByServerVersion: ["postgres"],
    pairDelta: ["duckdb"],
    passthroughNumericAsDouble: ["postgres"],
+   // A kept table a probe cannot see may be hidden by a grant, not gone.
+   catalogHidesTables: ["mysql", "snowflake"],
    transactionalSwap: ["duckdb", "postgres"],
    dependencyGuard: ["postgres"],
    relationProbe: [

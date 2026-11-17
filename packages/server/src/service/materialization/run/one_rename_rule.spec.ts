@@ -17,6 +17,7 @@ import {
 } from "./reclaimer";
 import type { KeptTable } from "../domain/types";
 import type { RenamedTable } from "./run_instructions";
+import { WRITES_TABLES_KEY } from "../../versions/materialization_scope";
 
 /**
  * The one rename rule, decided by Reclaimer.reclaimRenamedTables over a fake
@@ -100,10 +101,19 @@ async function reclaim(
       connectionType?: string;
       /** Runs that commit while the reclaim waits for the run lock. */
       commitWhileLocking?: Materialization[];
+      /** Destination schemas, by destination name. */
+      schemas?: Record<string, string>;
+      /**
+       * Whether a table is the served one, as the identity probe on the
+       * table itself would answer; by default, one exactly when both are
+       * in the same DuckLake (aliases).
+       */
+      sameTable?: (old: string, served: string) => boolean | undefined;
    } = {},
 ) {
    const dropped: string[] = [];
    let locks = 0;
+   let probes = 0;
    const records = new Map(runs.map((m) => [m.id, m.metadata ?? null]));
    const repository = {
       getEnvironmentByName: async () => ({ id: "env-1" }),
@@ -142,6 +152,9 @@ async function reclaim(
                            },
                         },
                         storage: { bucketUrl: `/data/${lake}` },
+                        ...(options.schemas?.[name]
+                           ? { destinationSchema: options.schemas[name] }
+                           : {}),
                      },
                   };
                },
@@ -158,6 +171,20 @@ async function reclaim(
             }) as never,
       } as never,
       lifecycle: {} as never,
+      sameTable: async (old, served) => {
+         probes += 1;
+         const lakeOf = (t: { storageDestinationName?: string }) =>
+            t.storageDestinationName === undefined
+               ? `own:${CONN}`
+               : (options.aliases?.[t.storageDestinationName] ??
+                 t.storageDestinationName);
+         return options.sameTable
+            ? options.sameTable(
+                 old.storageDestinationName ?? CONN,
+                 served.storageDestinationName ?? CONN,
+              )
+            : lakeOf(old) === lakeOf(served);
+      },
       withRunLock: async (_e, _i, _p, _v, fn) => {
          locks += 1;
          for (const m of options.commitWhileLocking ?? []) {
@@ -203,6 +230,7 @@ async function reclaim(
       dropped,
       kept,
       locks,
+      probes,
       renamedOn: (id: string) =>
          (records.get(id)?.[RENAMED_TABLES_KEY] as
             | RenamedTable[]
@@ -634,6 +662,113 @@ describe("a move between places that may be one", () => {
          expect(r.dropped).toEqual([]);
          expect(guards).toEqual(["still-served"]);
       }
+   });
+});
+
+describe("two names for one DuckLake the config does not tell apart", () => {
+   const move = (name: string, from: string, to: string) => [
+      run("old", { a1: entry(name, "a1", from) }),
+      run(
+         "now",
+         { a1: entry(name, "a1", to) },
+         {
+            metadata: recording(
+               renamed(name, name, {
+                  storageDestinationName: to,
+                  previousPlace: { storageDestinationName: from },
+               }),
+            ),
+         },
+      ),
+   ];
+
+   it("a destination schema spelled in another case is the same schema", async () => {
+      const r = await reclaim(
+         move("pa__sales__summary__p0123abcd", "lake", "lake2"),
+         "now",
+         {
+            destinations: ["lake", "lake2"],
+            aliases: { lake2: "lake" },
+            schemas: { lake2: "MAIN" },
+            sameTable: () => undefined,
+         },
+      );
+      expect(r.dropped).toEqual([]);
+      expect(guards).toEqual(["still-served"]);
+   });
+
+   it("a name with its own container is one table in one lake, whatever the schemas", async () => {
+      const r = await reclaim(
+         move(
+            "analytics.pa__sales__summary__v1_0_0__p0123abcd",
+            "lake",
+            "lake2",
+         ),
+         "now",
+         {
+            destinations: ["lake", "lake2"],
+            aliases: { lake2: "lake" },
+            schemas: { lake2: "s2" },
+            sameTable: () => undefined,
+         },
+      );
+      expect(r.dropped).toEqual([]);
+      expect(guards).toEqual(["still-served"]);
+   });
+
+   it("one the config calls apart is still tested on the table itself: kept when it is the served table", async () => {
+      // The configs differ (a catalog spelled another way, say), but the
+      // table at the old place is the one the package serves.
+      const r = await reclaim(
+         move("pa__sales__summary__p0123abcd", "lake", "lake2"),
+         "now",
+         { destinations: ["lake", "lake2"], sameTable: () => true },
+      );
+      expect(r.probes).toBe(1);
+      expect(r.dropped).toEqual([]);
+      expect(guards).toEqual(["still-served"]);
+      expect(r.renamedOn("now")).toEqual([]);
+   });
+
+   it("kept, and tried again, when the table cannot be asked", async () => {
+      const r = await reclaim(
+         move("pa__sales__summary__p0123abcd", "lake", "lake2"),
+         "now",
+         { destinations: ["lake", "lake2"], sameTable: () => undefined },
+      );
+      expect(r.dropped).toEqual([]);
+      expect(guards).toEqual(["identity-unknown"]);
+      expect(r.renamedOn("now")).toHaveLength(1);
+   });
+});
+
+describe("an active run outside the serving line", () => {
+   it("that has claimed the old name to write keeps it", async () => {
+      const OLD = "pa__sales__summary__p0123abcd";
+      const runs = [
+         run("old", { a1: entry(OLD) }, { version: "1.0.0" }),
+         run(
+            "now",
+            { a1: entry("summary_t") },
+            {
+               version: "2.0.0",
+               metadata: recording(renamed(OLD, "summary_t")),
+            },
+         ),
+         run(
+            "orch",
+            {},
+            {
+               version: "3.0.0",
+               status: "MANIFEST_ROWS_READY",
+               metadata: { mode: "orchestrated", [WRITES_TABLES_KEY]: [OLD] },
+            },
+         ),
+      ];
+      const r = await reclaim(runs, "now", { reader: { versionId: "2.0.0" } });
+      expect(r.dropped).toEqual([]);
+      expect(guards).toEqual(["still-referenced"]);
+      expect(r.renamedOn("now")).toHaveLength(1);
    });
 });
 

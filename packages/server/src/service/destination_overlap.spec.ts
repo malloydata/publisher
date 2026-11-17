@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import type { components } from "../api";
 import {
    connectionApartFromDestination,
@@ -106,12 +109,18 @@ describe("destinationOverlap", () => {
 });
 
 describe("destinationsApart: whether two destinations provably hold different tables of one name", () => {
+   const T = "t__p0123abcd";
    const a = lake("a", { host: "pg", databaseName: "cat_a" }, "s3://b/a");
-   it("different catalogs with data paths that do not overlap", () => {
+   const withSchema = (d: ApiConnection, destinationSchema: string) => {
+      d.ducklakeConnection!.destinationSchema = destinationSchema;
+      return d;
+   };
+   it("different catalogs, written alike, with data paths that do not overlap", () => {
       expect(
          destinationsApart(
             a,
             lake("b", { host: "pg", databaseName: "cat_b" }, "s3://b/b"),
+            T,
          ),
       ).toBe(true);
    });
@@ -120,36 +129,98 @@ describe("destinationsApart: whether two destinations provably hold different ta
          destinationsApart(
             a,
             lake("a2", { host: "pg", databaseName: "cat_a" }, "s3://b/a"),
+            T,
          ),
       ).toBe(false);
       expect(
          destinationsApart(
             a,
             lake("b", { host: "pg", databaseName: "cat_b" }, "s3://b/a/sub"),
+            T,
          ),
       ).toBe(false);
       // A data path left to the catalog cannot be compared.
       expect(
-         destinationsApart(a, lake("b", { host: "pg", databaseName: "cat_b" })),
+         destinationsApart(
+            a,
+            lake("b", { host: "pg", databaseName: "cat_b" }),
+            T,
+         ),
       ).toBe(false);
    });
-   it("one catalog: apart only by the schema each builds into", () => {
-      const schema = (name: string, destinationSchema?: string) => {
-         const d = lake(
-            name,
-            { host: "pg", databaseName: "cat_a" },
-            "s3://b/a",
-         );
-         if (destinationSchema)
-            d.ducklakeConnection!.destinationSchema = destinationSchema;
-         return d;
-      };
-      expect(destinationsApart(schema("x"), schema("y", "staging"))).toBe(true);
-      expect(destinationsApart(schema("x"), schema("y", "main"))).toBe(false);
+   it("one catalog: apart only by the schema each builds into, compared without case, for a name with no container", () => {
+      const x = () =>
+         lake("x", { host: "pg", databaseName: "cat_a" }, "s3://b/a");
+      expect(destinationsApart(x(), withSchema(x(), "staging"), T)).toBe(true);
+      expect(destinationsApart(x(), withSchema(x(), "main"), T)).toBe(false);
+      expect(destinationsApart(x(), withSchema(x(), "MAIN"), T)).toBe(false);
+      // A name with its own container is placed there, whatever the schema.
+      expect(
+         destinationsApart(x(), withSchema(x(), "staging"), `analytics.${T}`),
+      ).toBe(false);
+   });
+   it("one catalog or data path spelled two ways is one", () => {
+      const pg = (catalog: Record<string, unknown>, bucketUrl: string) =>
+         ({
+            name: "y",
+            type: "ducklake",
+            ducklakeConnection: {
+               catalog: { postgresConnection: catalog },
+               storage: { bucketUrl },
+            },
+         }) as ApiConnection;
+      const local = pg(
+         { host: "localhost", port: 5432, databaseName: "cat" },
+         "/data/lake",
+      );
+      // Loopback spelled otherwise, and a data path with a `.` segment.
+      expect(
+         destinationsApart(
+            local,
+            pg(
+               { host: "127.0.0.1", port: 5432, databaseName: "other" },
+               "/data/./lake",
+            ),
+            T,
+         ),
+      ).toBe(false);
+      // The same catalog as a URL.
+      expect(
+         destinationsApart(
+            local,
+            pg(
+               { connectionString: "postgresql://u:p@127.0.0.1:5432/cat" },
+               "/data/x",
+            ),
+            T,
+         ),
+      ).toBe(false);
+      // Different catalogs written in different forms are never proven apart.
+      expect(
+         destinationsApart(
+            local,
+            pg(
+               { connectionString: "postgresql://u:p@pg2:5432/other" },
+               "/data/x",
+            ),
+            T,
+         ),
+      ).toBe(false);
+      // A scheme in upper case is the same bucket.
+      const s3 = (bucketUrl: string, databaseName: string) =>
+         pg({ host: "pg", databaseName }, bucketUrl);
+      expect(
+         destinationsApart(
+            s3("s3://bucket/lake", "c1"),
+            s3("S3://bucket/lake/", "c2"),
+            T,
+         ),
+      ).toBe(false);
    });
 });
 
 describe("connectionApartFromDestination", () => {
+   const T = "t__p0123abcd";
    const destination = lake(
       "dest",
       { host: "pg", databaseName: "cat" },
@@ -160,6 +231,7 @@ describe("connectionApartFromDestination", () => {
          connectionApartFromDestination(
             { name: "pg", type: "postgres" } as ApiConnection,
             destination,
+            T,
          ),
       ).toBe(true);
       expect(
@@ -170,6 +242,7 @@ describe("connectionApartFromDestination", () => {
                duckdbConnection: {},
             } as ApiConnection,
             destination,
+            T,
          ),
       ).toBe(true);
    });
@@ -182,25 +255,58 @@ describe("connectionApartFromDestination", () => {
                duckdbConnection: { setupSQL: "ATTACH 'ducklake:...'" },
             } as ApiConnection,
             destination,
+            T,
          ),
       ).toBe(false);
       expect(
          connectionApartFromDestination(
             { name: "m", type: "motherduck" } as ApiConnection,
             destination,
+            T,
          ),
       ).toBe(false);
       expect(
          connectionApartFromDestination(
             lake("c", { host: "pg", databaseName: "cat" }, "s3://b/lake"),
             destination,
+            T,
          ),
       ).toBe(false);
       expect(
          connectionApartFromDestination(
             lake("c", { host: "pg", databaseName: "other" }, "s3://b/other"),
             destination,
+            T,
          ),
       ).toBe(true);
+   });
+});
+
+describe("a local data path reached through a symlink", () => {
+   it("is the path it links to", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "overlap-"));
+      try {
+         fs.mkdirSync(path.join(root, "lake"));
+         fs.symlinkSync(path.join(root, "lake"), path.join(root, "link"));
+         const at = (databaseName: string, dir: string) =>
+            lake("x", { host: "pg", databaseName }, path.join(root, dir));
+         expect(
+            destinationsApart(
+               at("c1", "lake"),
+               at("c2", "link"),
+               "t__p0123abcd",
+            ),
+         ).toBe(false);
+         fs.mkdirSync(path.join(root, "other"));
+         expect(
+            destinationsApart(
+               at("c1", "lake"),
+               at("c2", "other"),
+               "t__p0123abcd",
+            ),
+         ).toBe(true);
+      } finally {
+         fs.rmSync(root, { recursive: true, force: true });
+      }
    });
 });

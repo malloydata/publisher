@@ -57,6 +57,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import type { PersistSource } from "@malloydata/malloy";
 import { BadRequestError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -453,6 +454,78 @@ export async function tableExistsAt(
       return rows.some(
          (row) => String(field(row, "kind") ?? "").toUpperCase() !== "VIEW",
       );
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * Whether the table `old` names at its site is the very table `served` names
+ * at its own, tested on the table itself rather than on how the two places
+ * are configured: a nonce is written as `old`'s comment, then read back
+ * from `served`, and `old`'s comment is put back. True when the nonce comes
+ * back (one table, reached twice); false when it does not, or when `served`
+ * is not there at all; undefined when any step cannot run (a dialect that
+ * cannot be asked, `old` not found, a failed statement), which the caller
+ * reads as "keep it". Called under the run lock, so no build writes either
+ * table's comment meanwhile. Never throws.
+ */
+export async function sameTableProbe(
+   old: OwnedTableTarget,
+   served: OwnedTableTarget,
+   context: TableSiteContext,
+): Promise<boolean | undefined> {
+   const nonce = `malloy-publisher:identity-probe ${randomUUID()}`;
+   const tables = (rows: Record<string, unknown>[]) =>
+      rows.filter(
+         (row) => String(field(row, "kind") ?? "").toUpperCase() !== "VIEW",
+      );
+   const probe = (site: TableSite, name: string) =>
+      site.run(ownedTableProbeSql(site.segments(name), site.dialect));
+   try {
+      // The old table's comment as it is, and the nonce in its place.
+      const original = await atTableSite(old, context, async (site) => {
+         if (!tableOwnershipDialectSupported(site.dialect)) return undefined;
+         const [row] = tables(await probe(site, old.physicalTableName));
+         if (!row) return undefined;
+         const comment = field(row, "comment");
+         await site.run(
+            tableCommentSql(
+               site.segments(old.physicalTableName),
+               nonce,
+               site.dialect,
+            ),
+         );
+         return { comment: typeof comment === "string" ? comment : "" };
+      });
+      if (original === undefined) return undefined;
+      try {
+         return await atTableSite(served, context, async (site) => {
+            if (!tableOwnershipDialectSupported(site.dialect)) return undefined;
+            const rows = tables(await probe(site, served.physicalTableName));
+            return rows.some((row) =>
+               String(field(row, "comment") ?? "").includes(nonce),
+            );
+         });
+      } finally {
+         await atTableSite(old, context, (site) =>
+            site.run(
+               tableCommentSql(
+                  site.segments(old.physicalTableName),
+                  original.comment,
+                  site.dialect,
+               ),
+            ),
+         ).catch((err) =>
+            logger.warn(
+               "Could not restore a table's comment after its identity probe",
+               {
+                  physicalTableName: old.physicalTableName,
+                  error: errMessage(err),
+               },
+            ),
+         );
+      }
    } catch {
       return undefined;
    }

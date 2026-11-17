@@ -36,6 +36,8 @@ import {
    newestServingEntries,
    readsRun,
    type ServingReader,
+   tableNamesIn,
+   WRITES_TABLES_KEY,
    writeTargetsIn,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
@@ -65,8 +67,13 @@ import {
    type RecordedNameView,
 } from "./leftover_name_views";
 import { packageOwner } from "./table_mark_sql";
-import { ownedElsewhere, tableExistsAt } from "./table_ownership";
-import { atTableSite } from "./table_site";
+import {
+   ownedElsewhere,
+   sameTableProbe,
+   tableExistsAt,
+} from "./table_ownership";
+import { atTableSite, type TableSiteContext } from "./table_site";
+import { capabilitiesOf } from "../domain/dialect";
 import type { RunLifecycle } from "./run_lifecycle";
 import {
    mayBeOneTable,
@@ -191,7 +198,11 @@ const TRANSIENT_GUARDS: ReadonlySet<string> = new Set([
    "replacement-not-committed",
    "not-serving-replacement",
    "still-referenced",
+   "identity-unknown",
 ]);
+
+/** How many kept tables' existence is probed at once. */
+const KEPT_PROBES_AT_ONCE = 4;
 
 /** One old table, wherever it is recorded: where it is, and its name. */
 function renamedKey(
@@ -604,7 +615,7 @@ function keptOf(entry: ManifestEntry, reason: KeptTableReason): KeptTable {
 }
 
 /** The reclaim's "kept" log line, for a table a guard after the decision kept. */
-function logKept(entry: ManifestEntry, guard: KeptTableReason): void {
+function logKept(entry: ManifestEntry, guard: string): void {
    logger.info("Keeping a table a readable name replaced", {
       physicalTableName: entry.physicalTableName,
       guard,
@@ -618,7 +629,8 @@ type Place = {
 };
 
 /** Whether two places may hold one table under one name. */
-type MayBeOnePlace = (a: Place, b: Place) => boolean;
+/** Whether two places may hold one table under `name` (as each spells it). */
+type MayBeOnePlace = (a: Place, b: Place, name: string) => boolean;
 
 /**
  * Whether two places may be one, by the environment's configs: the same
@@ -642,7 +654,7 @@ function placeAliasing(environment: MaterializationEnvironment): MayBeOnePlace {
       configOf(() => environment.getStorageDestination(name));
    const connection = (name: string) =>
       configOf(() => environment.getApiConnection(name));
-   return (a, b) => {
+   return (a, b, name) => {
       const da = a.storageDestinationName ?? undefined;
       const db = b.storageDestinationName ?? undefined;
       if (da === undefined && db === undefined) return true;
@@ -650,12 +662,12 @@ function placeAliasing(environment: MaterializationEnvironment): MayBeOnePlace {
          if (da === db) return true;
          const x = destination(da);
          const y = destination(db);
-         return !(x && y && destinationsApart(x, y));
+         return !(x && y && destinationsApart(x, y, name));
       }
       const [own, stored] = da === undefined ? [a, db!] : [b, da];
       const c = connection(own.connectionName ?? "");
       const d = destination(stored);
-      return !(c && d && connectionApartFromDestination(c, d));
+      return !(c && d && connectionApartFromDestination(c, d, name));
    };
 }
 
@@ -701,7 +713,7 @@ function keptAfter(
    const at = (t: KeptTable, e: ManifestEntry): boolean =>
       !!e.physicalTableName &&
       mayBeOneTable(e.physicalTableName, t.physicalTableName) &&
-      mayBeOne(e, t);
+      mayBeOne(e, t, t.physicalTableName);
    const named = (t: KeptTable) =>
       runs.some(
          (m) =>
@@ -750,6 +762,11 @@ export class Reclaimer {
           * run starts while the reclaim decides and drops. Absent: no lock
           * (a spec's).
           */
+         /**
+          * Whether two tables are one (sameTableProbe, the default); a spec
+          * whose destinations are fakes passes its own.
+          */
+         sameTable?: typeof sameTableProbe;
          withRunLock?: <T>(
             environment: MaterializationEnvironment,
             environmentId: string,
@@ -1107,6 +1124,22 @@ export class Reclaimer {
          // A table that becomes reclaimable only under the lock waits for a
          // later run: the package was not asked to bind for it.
          const bound = before.reclaimable.length > 0 && (await ensureBound());
+         // Whether each table this run may list as kept still exists,
+         // probed before the lock (a probe can be slow, and billed) and a
+         // few at a time. A table listed only under the lock is not probed,
+         // and stays listed.
+         const gone = await this.keptTablesGone(
+            keptAfter(before.run, before.runs, reader, before.kept, mayBeOne)
+               .tables,
+            dropReach(
+               environment,
+               environmentName,
+               packageName,
+               runId,
+               "reclaim",
+               connectionFor,
+            ).viewContext,
+         );
          const withRunLock =
             this.deps.withRunLock ??
             ((_e, _i, _p, _v, fn: () => Promise<KeptTable[] | undefined>) =>
@@ -1146,7 +1179,7 @@ export class Reclaimer {
                   runId,
                   reader,
                   now,
-                  { bound, connectionFor, mayBeOne },
+                  { bound, connectionFor, mayBeOne, gone },
                );
             },
          );
@@ -1180,6 +1213,8 @@ export class Reclaimer {
          bound: boolean;
          connectionFor: (name: string) => Promise<MalloyConnection | undefined>;
          mayBeOne: MayBeOnePlace;
+         /** The kept tables found gone, by keptKey. */
+         gone: ReadonlySet<string>;
       },
    ): Promise<KeptTable[]> {
       const { runs, run, recordedOn, decided, retried, kept } = decision;
@@ -1195,6 +1230,22 @@ export class Reclaimer {
             continue;
          }
          toDrop.push(entry);
+      }
+      if (toDrop.length > 0 && options.bound) {
+         await this.dropOnlyOtherTables(
+            toDrop,
+            runs,
+            reader,
+            retried,
+            dropReach(
+               environment,
+               environmentName,
+               packageName,
+               runId,
+               "reclaim",
+               options.connectionFor,
+            ).viewContext,
+         );
       }
       if (toDrop.length > 0 && !options.bound) {
          logger.warn(
@@ -1239,29 +1290,10 @@ export class Reclaimer {
          ),
       );
       const listed = keptAfter(run, runs, reader, kept, options.mayBeOne);
-      // A kept table dropped by hand is no longer listed; one whose site
-      // cannot be asked stays.
-      const { viewContext } = dropReach(
-         environment,
-         environmentName,
-         packageName,
-         runId,
-         "reclaim",
-         options.connectionFor,
+      // A kept table dropped by hand is no longer listed.
+      const present = listed.tables.filter(
+         (t) => !options.gone.has(keptKey(t)),
       );
-      const present: KeptTable[] = [];
-      for (const table of listed.tables) {
-         const exists = await atTableSite(table, viewContext, (site) =>
-            tableExistsAt(site, table.physicalTableName),
-         ).catch(() => undefined);
-         if (exists === false) {
-            logger.info("No longer listing a kept table: it is gone", {
-               physicalTableName: table.physicalTableName,
-            });
-            continue;
-         }
-         present.push(table);
-      }
       const write = listed.write || present.length !== listed.tables.length;
       // Forget what was decided; keep what a drop still owes, what it left
       // in place, and what a passing guard may yet let a later run drop.
@@ -1291,6 +1323,97 @@ export class Reclaimer {
          }
       }
       return present;
+   }
+
+   /**
+    * Take out of `toDrop` each table that may be the one the package serves
+    * now under the same name in another place (two names for one DuckLake,
+    * a connection that reaches a destination: what the place rules could
+    * not rule out by config). Each is tested on the table itself
+    * (sameTableProbe): one that is the served table is kept and forgotten,
+    * and one the probe cannot tell about is kept, to be tried again.
+    */
+   private async dropOnlyOtherTables(
+      toDrop: ManifestEntry[],
+      runs: Materialization[],
+      reader: ServingReader,
+      retried: Set<string>,
+      context: TableSiteContext,
+   ): Promise<void> {
+      const served = Object.values(newestServingEntries(runs, reader));
+      const keep = new Set<ManifestEntry>();
+      for (const entry of toDrop) {
+         for (const other of served) {
+            if (
+               !other.physicalTableName ||
+               !mayBeOneTable(other.physicalTableName, entry.physicalTableName)
+            ) {
+               continue;
+            }
+            const same = await (this.deps.sameTable ?? sameTableProbe)(
+               {
+                  physicalTableName: entry.physicalTableName,
+                  connectionName: entry.connectionName ?? "",
+                  ...(entry.storageDestinationName
+                     ? { storageDestinationName: entry.storageDestinationName }
+                     : {}),
+               },
+               {
+                  physicalTableName: other.physicalTableName,
+                  connectionName: other.connectionName ?? "",
+                  ...(other.storageDestinationName
+                     ? { storageDestinationName: other.storageDestinationName }
+                     : {}),
+               },
+               context,
+            );
+            if (same === false) continue;
+            const guard = same ? "still-served" : "identity-unknown";
+            logKept(entry, guard);
+            if (!same) retried.add(entryRenamedKey(entry));
+            keep.add(entry);
+            break;
+         }
+      }
+      const left = toDrop.filter((entry) => !keep.has(entry));
+      toDrop.length = 0;
+      toDrop.push(...left);
+   }
+
+   /**
+    * The keptKeys of `tables` found gone, probed a few at a time. A table
+    * whose site cannot be asked, or that a dialect may hide from the
+    * session (Snowflake, MySQL: not visible need not mean gone), is not.
+    */
+   private async keptTablesGone(
+      tables: KeptTable[],
+      context: TableSiteContext,
+   ): Promise<Set<string>> {
+      const gone = new Set<string>();
+      const queue = [...tables];
+      const worker = async () => {
+         for (let table = queue.shift(); table; table = queue.shift()) {
+            const current = table;
+            const exists = await atTableSite(current, context, async (site) =>
+               capabilitiesOf(site.dialect).catalogHidesTables
+                  ? undefined
+                  : tableExistsAt(site, current.physicalTableName),
+            ).catch(() => undefined);
+            if (exists === false) {
+               logger.info("No longer listing a kept table: it is gone", {
+                  physicalTableName: current.physicalTableName,
+               });
+               gone.add(keptKey(current));
+            }
+         }
+      };
+      await Promise.all(
+         Array.from(
+            { length: Math.min(KEPT_PROBES_AT_ONCE, queue.length) },
+            worker,
+         ),
+      );
+      return gone;
    }
 
    /**
@@ -1449,7 +1572,7 @@ export class Reclaimer {
       const namesIt = (e: ManifestEntry) =>
          !!e.physicalTableName &&
          mayBeOneTable(e.physicalTableName, table.previousName) &&
-         mayBeOne(e, oldAt);
+         mayBeOne(e, oldAt, table.previousName);
       // 5: no table the package serves now may be it (another source's, or
       // the source's own under a name, or in a place, that may be it).
       if (Object.values(serving).some(namesIt)) return "still-served";
@@ -1460,6 +1583,19 @@ export class Reclaimer {
                m.status === "MANIFEST_FILE_READY" &&
                !readsRun(m, reader) &&
                Object.values(m.manifest?.entries ?? {}).some(namesIt),
+         )
+      ) {
+         return "still-referenced";
+      }
+      // 5: no active run (an orchestrated run of another version, say) has
+      // claimed a name that may be it, to write.
+      if (
+         runs.some(
+            (m) =>
+               isActiveRun(m.status) &&
+               tableNamesIn(m.metadata, WRITES_TABLES_KEY).some((name) =>
+                  mayBeOneTable(name, table.previousName),
+               ),
          )
       ) {
          return "still-referenced";
