@@ -25,7 +25,6 @@ import {
 } from "../../governance/ir/prepared_query";
 import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import { malloyIdentifiers } from "../../query_text";
-import { readsAGiven } from "../../governance/ir/compiled_model";
 
 /** Every field path an expression reads (`node: "field"`), at any depth. */
 export function fieldPathsIn(
@@ -120,11 +119,13 @@ export interface GateReads {
     */
    readonly unresolved: boolean;
    /**
-    * The entry point (or a member of its composite) has a `where:` term that
-    * reads a given: a row scope decided per caller, whose columns are read
-    * here as a gate's are.
+    * The rows the query reads are scoped by a `where:` (the source's own, one
+    * it extends, a composite member's, or a query-shaped source's base's or
+    * stage's): its columns are read here as a gate's are.
     */
    readonly scoped: boolean;
+   /** The entry point carries a gate: the gate policy judges these columns past it. */
+   readonly gated: boolean;
 }
 
 interface FieldLike {
@@ -162,12 +163,6 @@ export function gateReads(
    struct: unknown,
    exprs: readonly string[],
    modelDef?: unknown,
-   /**
-    * Which of the source's own `where:` terms are read too: `"given"`, each
-    * that reads a given (the row scope, held to a gate's rules), the
-    * default; `"all"`, every term (for the readers that decline on a name).
-    */
-   filters: "given" | "all" = "given",
 ): GateReads {
    const names = new Set<string>();
    const columns: string[][] = [];
@@ -241,6 +236,8 @@ export function gateReads(
       output: string,
       chain: readonly string[],
       joins: readonly string[],
+      /** The stage whose output `output` names; the last one by default. */
+      fromStage?: number,
    ): void => {
       const query = (
          source as {
@@ -258,7 +255,7 @@ export function gateReads(
       let wanted: { path: string[]; chain: string[] }[] = [
          { path: [output], chain: [...chain] },
       ];
-      for (let i = stages.length - 1; i >= 0; i--) {
+      for (let i = fromStage ?? stages.length - 1; i >= 0; i--) {
          const byName = new Map<string, FieldLike>();
          for (const qf of (stages[i].queryFields ?? []) as FieldLike[]) {
             if (qf.type === "fieldref" && Array.isArray(qf.path)) {
@@ -312,48 +309,82 @@ export function gateReads(
    const read = gatePaths(exprs);
    if (read.unresolved) unresolved = true;
    for (const p of read.paths) resolve(struct, p, []);
+   // Every `where:` that scopes the rows the query reads: the source's own
+   // (its `filterList` already holds the terms of each source it extends),
+   // each member's of a composite, and, for a query-shaped source, its base's
+   // and each stage's own, a later stage's read back through the earlier
+   // ones. Every term, not only one that reads a given: a scope written as a
+   // literal (`acct = 9007199254740993`) merges neighbours just the same.
    let scoped = false;
-   for (const term of whereTerms(struct)) {
-      let given: boolean;
-      try {
-         given = readsAGiven(term.e);
-      } catch {
-         // Too deep to read: counted as the row scope it may be.
-         given = true;
+   /**
+    * The `where:` terms of `source`, each field path read by `at`, which
+    * resolves it from the source the walk started at (through the joins
+    * that reached `source`).
+    */
+   const scope = (
+      source: unknown,
+      depth: number,
+      at: (path: readonly string[]) => void,
+      /** `at` resolves from `source` itself, through no join. */
+      own: boolean,
+   ): void => {
+      if (depth > 32 || source === null || typeof source !== "object") return;
+      const s = source as {
+         filterList?: unknown;
+         type?: unknown;
+         sources?: unknown;
+         fields?: unknown;
+         query?: { structRef?: unknown; pipeline?: unknown };
+      };
+      for (const f of Array.isArray(s.filterList) ? s.filterList : []) {
+         scoped = true;
+         for (const p of fieldPathsIn((f as { e?: unknown }).e)) at(p);
       }
-      if (given) scoped = true;
-      if (!given && filters === "given") continue;
-      for (const p of fieldPathsIn(term.e)) resolve(term.source, p, []);
-   }
-   return { names, columns, unresolved, scoped };
-}
-
-/**
- * Each `where:` term that applies to `struct` when it is queried, with the
- * source whose fields it reads: its own `filterList`, which already holds
- * the terms of each source it extends, and, for a composite, each member's
- * (a member of a nested composite included), since the member answering a
- * query brings its terms with it.
- */
-function whereTerms(
-   struct: unknown,
-   depth = 0,
-): { source: unknown; e: unknown }[] {
-   if (depth > 32 || struct === null || typeof struct !== "object") return [];
-   const s = struct as {
-      filterList?: unknown;
-      type?: unknown;
-      sources?: unknown;
+      if (s.type === "composite" && Array.isArray(s.sources)) {
+         // A member's terms read the member's own fields; reached through a
+         // join, they are read through that join's path.
+         for (const m of s.sources) {
+            scope(m, depth + 1, own ? (p) => resolve(m, p, []) : at, own);
+         }
+      }
+      // A joined source's own `where:` filters the rows the join reaches.
+      for (const f of (Array.isArray(s.fields)
+         ? s.fields
+         : []) as FieldLike[]) {
+         if (f.join === undefined) continue;
+         const name = activeName(f);
+         scope(f, depth + 1, (p) => at([name, ...p]), false);
+      }
+      const query = s.query;
+      if (query === undefined) return;
+      const ref = query.structRef;
+      const base =
+         typeof ref === "string"
+            ? (modelDef as { contents?: Record<string, unknown> } | undefined)
+                 ?.contents?.[ref]
+            : ref;
+      const atBase = (p: readonly string[]) => {
+         if (base === undefined || base === null) unresolved = true;
+         else resolve(base, p, []);
+      };
+      if (base === undefined || base === null) unresolved = true;
+      else scope(base, depth + 1, atBase, true);
+      const stages = Array.isArray(query.pipeline) ? query.pipeline : [];
+      stages.forEach((stage, i) => {
+         const where = (stage as { filterList?: unknown }).filterList;
+         for (const f of Array.isArray(where) ? where : []) {
+            scoped = true;
+            for (const p of fieldPathsIn((f as { e?: unknown }).e)) {
+               if (i === 0) atBase(p);
+               else if (p.length === 1) {
+                  throughStages(source, p[0], [], [], i - 1);
+               } else unresolved = true;
+            }
+         }
+      });
    };
-   const own = (Array.isArray(s.filterList) ? s.filterList : []).map((f) => ({
-      source: struct,
-      e: (f as { e?: unknown }).e,
-   }));
-   const members =
-      s.type === "composite" && Array.isArray(s.sources)
-         ? s.sources.flatMap((m) => whereTerms(m, depth + 1))
-         : [];
-   return [...own, ...members];
+   scope(struct, 0, (p) => resolve(struct, p, []), true);
+   return { names, columns, unresolved, scoped, gated: exprs.length > 0 };
 }
 
 /**
@@ -366,7 +397,7 @@ export function gateReadNames(
    exprs: readonly string[],
    modelDef?: unknown,
 ): Set<string> {
-   const names = new Set(gateReads(struct, exprs, modelDef, "all").names);
+   const names = new Set(gateReads(struct, exprs, modelDef).names);
    // Every identifier the text names too, fields or not: an extra name can
    // only send an answer live.
    for (const id of gateIdentifiers(exprs)) names.add(id);

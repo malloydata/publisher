@@ -101,6 +101,21 @@ source: w_plain is ub extend { where: acct = $ACCT }
 source: ub_exact is accounts -> { where: id > -9; select: * } extend { measure: n is count() }
 source: w_plain_exact is ub_exact extend { where: acct = $ACCT }
 
+// Row scopes the given need not be read in directly: through a dimension,
+// inside a query-shaped source, through a join, and written as a literal.
+source: wd_dim is ub extend { dimension: mine is acct = $ACCT; where: mine }
+source: wd_dim2 is ub extend { dimension: k is pick 1 when acct = $ACCT else 0; where: k = 1 }
+source: wd_qs is ub extend { where: acct = $ACCT } -> { select: id, region, amount }
+source: wd_join is accounts extend { join_one: u is ub extend { where: acct = $ACCT } on id = u.id } -> { select: id, region, ua is u.amount }
+#(authorize) 'analyst' = $ROLE
+source: wl_dim is ub extend { dimension: mine is acct = $ACCT; where: mine }
+#(authorize) 'analyst' = $ROLE
+source: wl_dim2 is ub extend { dimension: k is pick 1 when acct = $ACCT else 0; where: k = 1 }
+#(authorize) 'analyst' = $ROLE
+source: wl_qs is ub extend { where: acct = $ACCT } -> { select: id, region, amount }
+#(authorize) 'analyst' = $ROLE
+source: wl_literal is ub extend { where: acct = 9007199254740993 }
+
 // Database tables whose exact gate column is altered to DOUBLE in the
 // warehouse after the build, and rebound: the bind observes the drift.
 #(access_filter) acct = $ACCT
@@ -151,6 +166,13 @@ const OVER_INEXACT = [
    "w_lock",
    "w_comp",
    "w_plain",
+   "wd_dim",
+   "wd_dim2",
+   "wd_qs",
+   "wl_dim",
+   "wl_dim2",
+   "wl_qs",
+   "wl_literal",
 ];
 
 const QUERIES: { source: string; malloy: string }[] = [
@@ -170,7 +192,7 @@ const QUERIES: { source: string; malloy: string }[] = [
       source,
       malloy: `run: ${source} -> { select: id, region; order_by: id }`,
    })),
-   ...[...OVER_INEXACT, "via_join"].map((source) => ({
+   ...[...OVER_INEXACT, "via_join", "wd_join"].map((source) => ({
       source,
       malloy: `run: ${source} -> { group_by: region; aggregate: c is count(); order_by: region }`,
    })),
@@ -343,7 +365,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
             });
             // A join to the stored base is held to live's rows above; where
             // it is answered from depends on the switch, not on this rule.
-            if (q.source === "via_join") continue;
+            if (q.source === "via_join" || q.source === "wd_join") continue;
             const goesLive =
                INEXACT.includes(q.source) ||
                OVER_INEXACT.includes(q.source) ||
