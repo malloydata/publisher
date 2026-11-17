@@ -163,10 +163,13 @@ interface StoredBaseBuild {
 
 /**
  * The `storage=` rollups that may build over their base's stored table: a
- * rollup over a base whose own notes declare `#@ persist` in the same
- * destination, read from the base itself (no build copy, so no given-reading
- * term is left out of the base's rows). Each with the one-rollup build file
- * that a run compiles in the destination over the base re-rooted on its
+ * rollup over a base stored in the same destination, read from the base
+ * itself (no build copy, so no given-reading term is left out of the base's
+ * rows), and with no gate. The base's own notes declare `#@ persist` there, or a
+ * `#(materialize)` there that `materialized` planned as a plain table (not a
+ * pair table, which holds a row per pair, and with no read-time term, whose
+ * rows its source filters again at read). Each with the one-rollup build
+ * file that a run compiles in the destination over the base re-rooted on its
  * table, which reads nothing but that table (storage_build_strategy.ts).
  */
 function storedBaseBuildsOf(
@@ -174,27 +177,23 @@ function storedBaseBuildsOf(
    plans: readonly RollupVariantPlan[],
    companionHref: string,
    modelFileName: string,
+   materialized: MaterializedBases | undefined,
 ): Map<string, StoredBaseBuild> {
    const out = new Map<string, StoredBaseBuild>();
    for (const plan of plans) {
       if (plan.storage === undefined || readsBuildCopy(plan)) continue;
+      // A gated base's table holds every caller's rows: a rollup grouped
+      // from it is never offered, whatever the gate policy plans.
+      if (plan.baseGated) continue;
       const def = map.node(plan.baseSourceID)?.def as
          | { annotations?: AnnotationsDef }
          | undefined;
-      const own = ownLevelNotes(def?.annotations).filter(
-         (n) => routeOfNote(n.text) === "@",
-      );
-      if (!notesDeclarePersist(own)) continue;
-      const tag = readNotesIfAny(own, "@");
-      const placed = tag ? placementOf(tag, "persist") : undefined;
-      if (
-         !placed ||
-         !("placement" in placed) ||
-         placed.placement.tier !== "storage" ||
-         placed.placement.destination !== plan.storage
-      ) {
-         continue;
-      }
+      const notes = ownLevelNotes(def?.annotations);
+      const own = notes.filter((n) => routeOfNote(n.text) === "@");
+      const stored = notesDeclarePersist(own)
+         ? persistStoredIn(own)
+         : materializeStoredIn(notes, plan.baseSourceID, materialized);
+      if (stored === undefined || stored !== plan.storage) continue;
       const text = generateRollupBuildFile([plan], modelFileName);
       if (text === undefined) continue;
       out.set(`${plan.rollupSourceName}@${companionHref}`, {
@@ -203,6 +202,44 @@ function storedBaseBuildsOf(
       });
    }
    return out;
+}
+
+/** The destination a base's own `#@ persist` notes store it in, if any. */
+function persistStoredIn(own: readonly { text: string }[]): string | undefined {
+   const tag = readNotesIfAny(own, "@");
+   const placed = tag ? placementOf(tag, "persist") : undefined;
+   return placed && "placement" in placed && placed.placement.tier === "storage"
+      ? placed.placement.destination
+      : undefined;
+}
+
+/**
+ * The destination a base's own `#(materialize)` notes store it in, when the
+ * companion planned it there as a plain table: no pair table, no table of
+ * several inlined paths, no read-time term. Undefined otherwise.
+ */
+function materializeStoredIn(
+   notes: readonly { text: string }[],
+   baseSourceID: string,
+   materialized: MaterializedBases | undefined,
+): string | undefined {
+   const own = notes.filter((n) => routeOfNote(n.text) === "materialize");
+   if (own.length === 0 || !materialized) return undefined;
+   const tag = readNotesIfAny(own, "materialize");
+   const placed = tag ? placementOf(tag) : undefined;
+   if (!placed || !("placement" in placed)) return undefined;
+   if (placed.placement.tier !== "storage") return undefined;
+   const plan = materialized.plans.find((p) => p.sourceID === baseSourceID);
+   if (
+      !plan ||
+      plan.pair ||
+      plan.pairBlocks ||
+      plan.persist.storage !== placed.placement.destination ||
+      (plan.readTimeTerms ?? []).length > 0
+   ) {
+      return undefined;
+   }
+   return plan.persist.storage;
 }
 
 /**
@@ -549,6 +586,7 @@ export async function tryCompileRollupCompanion(args: {
                planned.plans,
                url.href,
                path.basename(args.modelPath),
+               args.materialized,
             ),
          },
          refused,

@@ -2049,15 +2049,8 @@ export function crossFileEntries(
       const def = map.node(sourceID)?.def as SourceDefLike | undefined;
       return def ? declarationOf(def) : undefined;
    };
-   const declares = (sourceID: string) => {
-      const def = map.node(sourceID)?.def as PlannedDef | undefined;
-      if (!def) return false;
-      try {
-         return readMaterializeDeclaration(def, contents) !== undefined;
-      } catch {
-         return true;
-      }
-   };
+   const declares = (sourceID: string) =>
+      declaresMaterialize(map, contents, sourceID);
    const out: ReturnType<typeof crossFileEntries> = [];
    for (const plan of plans) {
       if (plan.buildsOver) continue;
@@ -2092,6 +2085,25 @@ export function crossFileEntries(
 }
 
 /**
+ * Whether the source `sourceID` declares `#(materialize)` itself, planned or
+ * refused; an unreadable declaration counts as one. A chain walk stops at
+ * such a source: whether it is a parent is its own file's plan to say.
+ */
+function declaresMaterialize(
+   map: SourceMap,
+   contents: Record<string, unknown>,
+   sourceID: string,
+): boolean {
+   const def = map.node(sourceID)?.def as PlannedDef | undefined;
+   if (!def) return false;
+   try {
+      return readMaterializeDeclaration(def, contents) !== undefined;
+   } catch {
+      return true;
+   }
+}
+
+/**
  * The sources of one file a chain entering it at `entrySourceID` is built
  * on (P10 across files), nearest first, read in that file's own compile:
  * the entry, then each source it is built on through `extend` and renames
@@ -2123,6 +2135,46 @@ export function chainWithinFile(
       sourceID = base.sourceID;
    }
    return out;
+}
+
+/**
+ * A file a chain passes through on its way to a parent in a file beyond it
+ * (P10 across files), read in that file's own compile from the source the
+ * chain enters it at: the declarations of the sources it walks there
+ * ({@link chainWithinFile}), root first; whether any of them declares
+ * `#(materialize)` itself (`declares`), planned or refused, so the file is no
+ * pass-through; and the source the walk leaves the file at, by `extend` or a
+ * rename, when it does (`next`). No `next` means the chain ends in the file,
+ * at a table or a query-shaped hop.
+ */
+export function chainThroughFile(
+   modelDef: { contents?: unknown; sourceRegistry?: unknown },
+   entrySourceID: string,
+): {
+   declarations: TermUse[];
+   declares: boolean;
+   next?: { sourceID: string; url: string };
+} {
+   const walked = chainWithinFile(modelDef, entrySourceID);
+   const map = SourceMap.of(modelDef);
+   const contents = (modelDef.contents ?? {}) as Record<string, unknown>;
+   const declarations = walked.map((w) => w.declaration).reverse();
+   const declares = walked.some((w) =>
+      declaresMaterialize(map, contents, w.sourceID),
+   );
+   const last = walked[walked.length - 1];
+   const base = last ? map.node(last.sourceID)?.base : undefined;
+   const url =
+      base && base.hop !== "query" && base.sourceID !== undefined
+         ? splitSourceID(base.sourceID)?.url
+         : undefined;
+   return {
+      declarations,
+      declares,
+      ...(url !== undefined && url !== last?.declaration.url
+         ? { next: { sourceID: base!.sourceID!, url } }
+         : {}),
+   };
 }
 
 /**

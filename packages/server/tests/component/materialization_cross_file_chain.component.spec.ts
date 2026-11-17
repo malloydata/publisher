@@ -413,24 +413,99 @@ source: child is mid extend {
       await expectChained(m, chain, queries, false);
    });
 
-   it("builds a child from the warehouse when its chain passes through a third file, with the same rows", async () => {
+   /** A child in b.malloy over `parent` in a.malloy, through c.malloy's `mid`. */
+   const THROUGH_THIRD = {
+      "a.malloy": TWO_FILES["a.malloy"],
+      "c.malloy": `import "a.malloy"
+source: mid is parent extend {
+  measure: avg_amt is amt.avg()
+  dimension: sub_up is upper(sub)
+}
+`,
+      "b.malloy": `import "c.malloy"
+
+#(materialize) name="child_t"
+source: child is mid extend {
+  where: cat != 'c'
+  dimension: label is concat(cat, '-', sub_up)
+}
+`,
+   };
+
+   it("builds a child over its parent's table through a third file: the warehouse build's rows, and live's answers", async () => {
+      await setUp(THROUGH_THIRD);
+      const chain = [["child", "parent", "b.malloy"]] as const;
+      const queries = [
+         [
+            "b.malloy",
+            "run: child -> { group_by: label, big; aggregate: total, avg_amt }",
+         ],
+      ] as const;
+      await takeLive(queries, chain);
+      const m = await build();
+      await expectChained(m, chain, queries, false);
+   });
+
+   it("builds a child over its parent's table through two files between, with a selective import on the way", async () => {
       await setUp({
          "a.malloy": TWO_FILES["a.malloy"],
          "c.malloy": `import "a.malloy"
 source: mid is parent extend {
+  dimension: sub_up is upper(sub)
+}
+`,
+         "d.malloy": `import { mid } from "c.malloy"
+source: mid2 is mid extend {
   measure: avg_amt is amt.avg()
 }
 `,
-         "b.malloy": `import "c.malloy"
+         "b.malloy": `import "d.malloy"
 
 #(materialize) name="child_t"
-source: child is mid extend {
-  dimension: label is concat(cat, '-', sub)
+source: child is mid2 extend {
+  dimension: label is concat(cat, '-', sub_up)
+}
+`,
+      });
+      const chain = [["child", "parent", "b.malloy"]] as const;
+      const queries = [
+         [
+            "b.malloy",
+            "run: child -> { group_by: label; aggregate: total, avg_amt }",
+         ],
+      ] as const;
+      await takeLive(queries, chain);
+      const m = await build();
+      await expectChained(m, chain, queries, false);
+   });
+
+   it("builds a child from the warehouse when a file between declares a #(materialize) it does not plan, with the same rows", async () => {
+      await setUp({
+         ...THROUGH_THIRD,
+         // Refused, for itself alone: its inlined join's rows read the
+         // current time, which a stored copy would freeze. The child reads
+         // the join through the served join, so it is planned.
+         "c.malloy": `import "a.malloy"
+source: cats is raw -> { group_by: cat } extend {
+  primary_key: cat
+  where: year(now()) > 2000
+}
+#(materialize) inline=["k"]
+source: mid is parent extend {
+  join_one: k is cats on cat = k.cat
+  measure: avg_amt is amt.avg()
+  dimension: sub_up is upper(sub)
 }
 `,
       });
       const m = await build();
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+      const pkg = await env.getPackage(parsePackageName(PKG), false);
+      expect(
+         Object.values(pkg.getBuildPlan()!.sources).some(
+            (s) => s.name === "mid",
+         ),
+      ).toBe(false);
       const child = entryOf(m, "child");
       expect(createdBy(child.physicalTableName)).toContain(RAW_MARK);
       expect(await rowsOf(`SELECT * FROM ${child.physicalTableName}`)).toEqual(
