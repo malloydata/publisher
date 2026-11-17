@@ -192,9 +192,15 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
          path.join(pkg.dir, "model.malloy"),
          model('#@ persist storage="lake"'),
       );
+      const data = new Map<string, string>();
       const destination = (name: string, catalog: string) => {
-         const data = tempDir(`rr-${name}-`);
-         dirs.push(data);
+         // One data path per catalog: two destinations on one catalog are
+         // two names for one DuckLake.
+         if (!data.has(catalog)) {
+            const dir = tempDir(`rr-${name}-`);
+            dirs.push(dir);
+            data.set(catalog, dir.dir);
+         }
          return {
             name,
             type: "ducklake",
@@ -202,7 +208,7 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
                catalog: {
                   postgresConnection: { ...pg, databaseName: catalog },
                },
-               storage: { bucketUrl: data.dir },
+               storage: { bucketUrl: data.get(catalog)! },
             },
          };
       };
@@ -230,6 +236,8 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
                      storageDestinations: [
                         destination("lake", catalogs[0]),
                         destination("lake2", catalogs[1]),
+                        // Another name for `lake`.
+                        destination("lake_alias", catalogs[0]),
                      ],
                   },
                ],
@@ -347,5 +355,26 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
          60_000,
       );
       expect(afterRestart[0].message).toContain("`summary_t`");
+   });
+
+   it("never drops the table a move between two names for one DuckLake moved to", async () => {
+      await edit('#@ persist storage="lake"');
+      const first = await build();
+      const name = tableOf(first);
+      expect(await lakeTables(0)).toContain(name);
+      await edit('#@ persist storage="lake_alias"');
+      const moved = await build();
+      // The same name in the same lake: the table moved to is the old one.
+      expect(tableOf(moved)).toBe(name);
+      expect(await lakeTables(0)).toContain(name);
+      expect(await who()).toBe("pa");
+      // Nor listed as kept: it is the table the package serves.
+      expect(
+         (
+            (moved.metadata?.keptTables ?? []) as {
+               physicalTableName: string;
+            }[]
+         ).map((t) => t.physicalTableName),
+      ).not.toContain(name);
    });
 });

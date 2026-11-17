@@ -292,11 +292,10 @@ describe("auto-run's table names", () => {
          PKG,
       );
       // The bare `summary` another package may have written since: rebuilt,
-      // and offered to the reclaim, which keeps it (no Publisher suffix
-      // proves it is this package's) and lists it as kept.
+      // and never reclaimed (nothing proves it is this package's).
       expect(names(r).a1).toBe(now.a1);
       expect(r.carried.a1).toBeUndefined();
-      expect(r.renamed.map((t) => t.previousName)).toEqual(["summary"]);
+      expect(r.renamed).toEqual([]);
       // An author's name= is carried, but only while its mark says it is
       // this package's (the service asks, uncarryUnownedTables).
       expect(Object.keys(r.carried).sort()).toEqual(["a2", "a3"]);

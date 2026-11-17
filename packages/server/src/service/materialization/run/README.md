@@ -64,6 +64,12 @@ A run's locks are taken in one order, so no two callers wait on each other:
    package cannot prove its own is retired (`tableNotOwned`, which takes the
    locks above) once the lock is let go.
 
+A run's start takes 1 (unversioned) or 2 then 3 (a version) for its
+active-run check. The rename reclaim (`Reclaimer.reclaimRenamedTables`)
+takes the same locks in the same order (`withRunLock`) to decide and drop,
+and takes them only after its rebind, which needs 1: so no run starts while
+it decides, and it never waits on a lock while holding one a start needs.
+
 `TableClaims.withTableLock` refuses, under test, to be taken while an
 owned-name lock is held (logged otherwise); the package and version locks
 live outside `run/` and are not checked.

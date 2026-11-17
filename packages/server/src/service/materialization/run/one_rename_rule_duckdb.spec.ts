@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import { unrecordedAudit } from "../../access_record";
 import type {
    Materialization,
    ResourceRepository,
@@ -257,5 +258,114 @@ describe("the one rename rule on DuckDB", () => {
       expect(await tables()).toContain(theirs);
       const pb = await env.getPackage(parsePackageName("pb"), false);
       expect(pb.getBuildPlan()).not.toBeNull();
+   });
+
+   /** The run's background work, its reclaim included, finished. */
+   async function finished(id: string): Promise<Materialization> {
+      const deadline = Date.now() + 60_000;
+      const running = (
+         service as unknown as { runningAbortControllers: Map<string, unknown> }
+      ).runningAbortControllers;
+      for (;;) {
+         const m = await repo.getMaterializationById(id);
+         if (
+            m &&
+            ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(m.status) &&
+            !running.has(id)
+         ) {
+            return m;
+         }
+         if (Date.now() > deadline) throw new Error("run never settled");
+         await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+   }
+
+   async function who(): Promise<string> {
+      const pkg = await env.getPackage(parsePackageName(PKG), false);
+      const result = await pkg
+         .getModel("model.malloy")!
+         .runQuery(unrecordedAudit(), {
+            query: "run: summary -> { select: who }",
+         });
+      return (result as unknown as { compactResult: { who: string }[] })
+         .compactResult[0].who;
+   }
+
+   it("never drops the table a run committed while an earlier run's reclaim was deciding", async () => {
+      const readable = tableOf(await build());
+      await edit('#@ persist name="summary_t"');
+      // Hold the renaming run's reclaim at its bind, after it has decided
+      // the readable table is reclaimable, until a later run has committed.
+      const committer = (
+         service as unknown as {
+            committer: {
+               rebindLoadedVersions: (...a: unknown[]) => Promise<boolean>;
+            };
+         }
+      ).committer;
+      const rebind = committer.rebindLoadedVersions.bind(committer);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let entered!: () => void;
+      const held = new Promise<void>((resolve) => (entered = resolve));
+      let calls = 0;
+      committer.rebindLoadedVersions = async (...a: unknown[]) => {
+         calls += 1;
+         if (calls === 1) {
+            entered();
+            await gate;
+         }
+         return rebind(...a);
+      };
+      const renaming = await service.createMaterialization(ENV, PKG, {});
+      await held;
+      // The author reverts: the next run rebuilds the readable name.
+      await edit("#@ persist");
+      const reverted = await build();
+      expect(tableOf(reverted)).toBe(readable);
+      release();
+      await finished(renaming.id);
+      expect(await tables()).toContain(readable);
+      expect(await who()).toBe(PKG);
+   });
+
+   it("drops a table whose record outlived its replacement (A to B to C) once it is provably this package's", async () => {
+      const a = tableOf(await build());
+      await sql(`COMMENT ON TABLE ${a} IS '${ownedTableComment(`${ENV}/pb`)}'`);
+      await edit('#@ persist name="b_t"');
+      const r2 = await build();
+      // Another package's mark: left in place, still recorded.
+      expect(r2.metadata?.[RENAMED_TABLES_KEY]).toHaveLength(1);
+      await edit('#@ persist name="c_t"');
+      await build();
+      expect(await tables()).toContain(a);
+      // The mark goes: A is now provably this package's.
+      await sql(`COMMENT ON TABLE ${a} IS NULL`);
+      const r4 = await build();
+      expect(r4.status).toBe("MANIFEST_FILE_READY");
+      expect(await tables()).not.toContain(a);
+      const records = (await repo.listMaterializations(ENV_ID, PKG)).filter(
+         (m) => Array.isArray(m.metadata?.[RENAMED_TABLES_KEY]),
+      );
+      expect(records).toEqual([]);
+      // B, an author's name, is kept and listed; C serves.
+      expect(
+         (r4.metadata?.[KEPT_TABLES_KEY] as KeptTable[]).map(
+            (t) => t.physicalTableName,
+         ),
+      ).toEqual(["b_t"]);
+      expect(await who()).toBe(PKG);
+   });
+
+   it("stops listing, and warning about, a kept table dropped by hand", async () => {
+      await edit('#@ persist name="summary_t"');
+      await build();
+      await edit('#@ persist name="summary_v2"');
+      await build();
+      expect(await keptWarnings()).toHaveLength(1);
+      await sql("DROP TABLE summary_t");
+      const next = await build();
+      expect(next.metadata?.[KEPT_TABLES_KEY]).toEqual([]);
+      expect(await keptWarnings()).toEqual([]);
    });
 });

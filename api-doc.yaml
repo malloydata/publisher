@@ -5989,9 +5989,12 @@ components:
                   when its source's table was renamed or moved, which
                   Publisher keeps rather than drops: one at an author's exact
                   `name=` (never dropped), or one in a storage destination
-                  that is no longer configured. Listed on the newest run's
-                  `metadata.keptTables` until the table is dropped or its
-                  name is used again (one per table, `model` the model
+                  that is no longer configured (which, when the destination
+                  was renamed rather than removed, may be the table served
+                  under the new name). Listed on the newest run's
+                  `metadata.keptTables` until the table is dropped (a run
+                  notices one dropped by hand) or its name is used again
+                  (one per table, `model` the model
                   declaring the source, `subject` the source or a rollup's
                   base, the message naming the table and where it is;
                   `warn`; see docs/materialization.md).

@@ -23,6 +23,8 @@ import {
    readableTableName,
    readableVersion,
    sourceLabel,
+   hasReservedTableSuffix,
+   tableNameParts,
    tableNamesMeet,
 } from "../domain/table_name";
 import { getPersistStorageMode } from "../../../config";
@@ -673,6 +675,19 @@ function supersededTable(
 ): RenamedTable | undefined {
    if (!prior?.physicalTableName) return undefined;
    if (prior.connectionName !== persistSource.connectionName) return undefined;
+   // The bare name a run built before package-owned names (the source's
+   // own name, unsuffixed), which another package on the same schema may
+   // have written since: not provably this package's, nor an author's
+   // name=, so neither reclaimed nor listed.
+   if (
+      !hasReservedTableSuffix(prior.physicalTableName) &&
+      mayBeOneTable(
+         tableNameParts(prior.physicalTableName).leaf,
+         persistSource.name,
+      )
+   ) {
+      return undefined;
+   }
    const before = prior.storageDestinationName ?? undefined;
    const moved = before !== destination;
    if (!moved && mayBeOneTable(prior.physicalTableName, built)) {

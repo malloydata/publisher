@@ -154,9 +154,11 @@ const KEPT_REASON_TEXT: Record<KeptTable["reason"], string> = {
       "a reader outside Malloy may rely on it. Drop it yourself once nothing " +
       "reads it, or delete the runs that built it with dropTables=true.",
    destination_missing:
-      "Its storage destination is no longer configured, so Publisher cannot " +
-      "reach it to drop it. Configure the destination again for the next " +
-      "run to try, or drop the table in the destination yourself.",
+      "Its storage destination is no longer configured under that name, so " +
+      "Publisher cannot reach it to drop it. If the destination was renamed " +
+      "rather than removed, this may be a table the package still serves " +
+      "under the new name: check that before dropping anything. Configure " +
+      "the destination again for the next run to decide it.",
 };
 
 /**

@@ -145,10 +145,14 @@ describe("reclaiming a table a readable name replaced", () => {
       expect(r.records.get("now")?.[RENAMED_TABLES_KEY]).toBeUndefined();
    });
 
-   it("keeps it when the replacement did not commit under its new name (guard 2)", async () => {
+   it("keeps it while the run committed no table for its source (guard 2)", async () => {
       const old = run("old", { a1: entry(OLD) });
-      // The run committed the source elsewhere (a failed build, say).
-      const now = run("now", { a1: entry("other") }, { metadata: withRenamed });
+      // The run committed without the source (a failed build, say).
+      const now = run(
+         "now",
+         { b2: entry("b", "b2") },
+         { metadata: withRenamed },
+      );
       const r = await reclaim([old, now], "now");
       expect(r.dropped).toEqual([]);
       // Kept recorded: a later run's replacement may commit.

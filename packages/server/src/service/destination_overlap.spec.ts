@@ -3,7 +3,12 @@
 
 import { describe, expect, it } from "bun:test";
 import type { components } from "../api";
-import { destinationOverlap, destinationOverlaps } from "./destination_overlap";
+import {
+   connectionApartFromDestination,
+   destinationOverlap,
+   destinationOverlaps,
+   destinationsApart,
+} from "./destination_overlap";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -97,5 +102,105 @@ describe("destinationOverlap", () => {
             [destination],
          ).map((o) => [o.connection, o.destination]),
       ).toEqual([["same", "dest"]]);
+   });
+});
+
+describe("destinationsApart: whether two destinations provably hold different tables of one name", () => {
+   const a = lake("a", { host: "pg", databaseName: "cat_a" }, "s3://b/a");
+   it("different catalogs with data paths that do not overlap", () => {
+      expect(
+         destinationsApart(
+            a,
+            lake("b", { host: "pg", databaseName: "cat_b" }, "s3://b/b"),
+         ),
+      ).toBe(true);
+   });
+   it("not two names for one DuckLake, nor catalogs sharing a data path", () => {
+      expect(
+         destinationsApart(
+            a,
+            lake("a2", { host: "pg", databaseName: "cat_a" }, "s3://b/a"),
+         ),
+      ).toBe(false);
+      expect(
+         destinationsApart(
+            a,
+            lake("b", { host: "pg", databaseName: "cat_b" }, "s3://b/a/sub"),
+         ),
+      ).toBe(false);
+      // A data path left to the catalog cannot be compared.
+      expect(
+         destinationsApart(a, lake("b", { host: "pg", databaseName: "cat_b" })),
+      ).toBe(false);
+   });
+   it("one catalog: apart only by the schema each builds into", () => {
+      const schema = (name: string, destinationSchema?: string) => {
+         const d = lake(
+            name,
+            { host: "pg", databaseName: "cat_a" },
+            "s3://b/a",
+         );
+         if (destinationSchema)
+            d.ducklakeConnection!.destinationSchema = destinationSchema;
+         return d;
+      };
+      expect(destinationsApart(schema("x"), schema("y", "staging"))).toBe(true);
+      expect(destinationsApart(schema("x"), schema("y", "main"))).toBe(false);
+   });
+});
+
+describe("connectionApartFromDestination", () => {
+   const destination = lake(
+      "dest",
+      { host: "pg", databaseName: "cat" },
+      "s3://b/lake",
+   );
+   it("a warehouse that cannot attach a DuckLake, or a DuckDB with nothing attached", () => {
+      expect(
+         connectionApartFromDestination(
+            { name: "pg", type: "postgres" } as ApiConnection,
+            destination,
+         ),
+      ).toBe(true);
+      expect(
+         connectionApartFromDestination(
+            {
+               name: "d",
+               type: "duckdb",
+               duckdbConnection: {},
+            } as ApiConnection,
+            destination,
+         ),
+      ).toBe(true);
+   });
+   it("not a DuckDB with setup SQL or attachments, MotherDuck, or the same lake", () => {
+      expect(
+         connectionApartFromDestination(
+            {
+               name: "d",
+               type: "duckdb",
+               duckdbConnection: { setupSQL: "ATTACH 'ducklake:...'" },
+            } as ApiConnection,
+            destination,
+         ),
+      ).toBe(false);
+      expect(
+         connectionApartFromDestination(
+            { name: "m", type: "motherduck" } as ApiConnection,
+            destination,
+         ),
+      ).toBe(false);
+      expect(
+         connectionApartFromDestination(
+            lake("c", { host: "pg", databaseName: "cat" }, "s3://b/lake"),
+            destination,
+         ),
+      ).toBe(false);
+      expect(
+         connectionApartFromDestination(
+            lake("c", { host: "pg", databaseName: "other" }, "s3://b/other"),
+            destination,
+         ),
+      ).toBe(true);
    });
 });

@@ -22,6 +22,7 @@
  */
 
 import type { components } from "../api";
+import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
 
 type ApiConnection = components["schemas"]["Connection"];
 type PostgresConnection = components["schemas"]["PostgresConnection"];
@@ -90,4 +91,84 @@ export function destinationOverlaps(
       }
    }
    return out;
+}
+
+/**
+ * Whether two DuckLake configs provably hold different tables under one
+ * name: the same catalog (database and metadata schema) with different
+ * table schemas, or different catalogs whose data paths are both known and
+ * do not overlap. Anything else may be one DuckLake reached twice (a
+ * destination renamed, or two names for one lake), so it is not proven.
+ * `schemaOf` gives the schema each builds its tables into.
+ */
+function ducklakesApart(
+   a: ApiConnection,
+   b: ApiConnection,
+   schemaOf: (c: ApiConnection) => string,
+): boolean {
+   if (a.type !== "ducklake" || b.type !== "ducklake") return false;
+   const x = a.ducklakeConnection;
+   const y = b.ducklakeConnection;
+   if (!x || !y) return false;
+   const xCatalog = catalogKey(x.catalog?.postgresConnection);
+   const yCatalog = catalogKey(y.catalog?.postgresConnection);
+   if (xCatalog === undefined || yCatalog === undefined) return false;
+   const sameCatalog =
+      xCatalog === yCatalog &&
+      (x.catalog?.metadataSchema ?? "") === (y.catalog?.metadataSchema ?? "");
+   if (sameCatalog) return schemaOf(a) !== schemaOf(b);
+   const xPath = dataPath(x.storage?.bucketUrl);
+   const yPath = dataPath(y.storage?.bucketUrl);
+   return (
+      !!xPath && !!yPath && !xPath.startsWith(yPath) && !yPath.startsWith(xPath)
+   );
+}
+
+/**
+ * Whether two storage destinations provably hold different tables under one
+ * name (see ducklakesApart), each in the schema it builds into.
+ */
+export function destinationsApart(a: ApiConnection, b: ApiConnection): boolean {
+   return ducklakesApart(a, b, destinationSchemaOf);
+}
+
+/** Connection types that cannot reach a DuckLake table by its name. */
+const NEVER_REACH_A_DUCKLAKE: ReadonlySet<string> = new Set([
+   "postgres",
+   "bigquery",
+   "snowflake",
+   "trino",
+   "databricks",
+   "mysql",
+   "sqlserver",
+]);
+
+/**
+ * Whether a table on `connection`, in its own database, provably is not the
+ * table of the same name in `destination`. A warehouse that cannot attach a
+ * DuckLake never reaches it; a DuckDB connection does only through its
+ * setup SQL or attached databases; a DuckLake connection does unless it is
+ * provably another lake. MotherDuck, a Publisher proxy, and anything else
+ * are not proven.
+ */
+export function connectionApartFromDestination(
+   connection: ApiConnection,
+   destination: ApiConnection,
+): boolean {
+   const type = connection.type ?? "";
+   if (NEVER_REACH_A_DUCKLAKE.has(type)) return true;
+   if (type === "duckdb") {
+      const duckdb = connection.duckdbConnection;
+      return (
+         !duckdb?.setupSQL?.trim() &&
+         (duckdb?.attachedDatabases ?? []).length === 0
+      );
+   }
+   if (type === "ducklake") {
+      // A connection's tables are in the lake's `main`.
+      return ducklakesApart(connection, destination, (c) =>
+         c === connection ? "main" : destinationSchemaOf(c),
+      );
+   }
+   return false;
 }

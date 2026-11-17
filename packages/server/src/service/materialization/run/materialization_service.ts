@@ -351,6 +351,26 @@ export class MaterializationService {
          lifecycle: this.lifecycle,
          dropManifestEntries: (...args) =>
             this.collaborators.dropManifestEntries(...args),
+         // The locks a run's start takes for its active-run check, in the
+         // same order (see createMaterialization), so a reclaim never
+         // decides while a run starts, and never waits on a run's start
+         // while holding a lock that start needs.
+         withRunLock: (
+            environment,
+            environmentId,
+            packageName,
+            versionId,
+            fn,
+         ) => {
+            if (versionId === undefined) {
+               return environment.withPackageLock(packageName, fn);
+            }
+            const versions = environment.getVersionService();
+            if (!versions) return fn();
+            return versions.withVersionLock(packageName, versionId, () =>
+               this.claims.withTableLock(environmentId, packageName, fn),
+            );
+         },
       });
       const real = this.realCollaborators();
       this.collaborators = {
