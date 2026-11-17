@@ -68,7 +68,9 @@ jobs:
     # nor fail.
     timeout-minutes: 30
     name: Verify the published tarball
-    runs-on: ubuntu-latest
+    # On Credible's donated runners when CREDIBLE_RUNNERS is on; the publish
+    # job below stays on GitHub's runners.
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:

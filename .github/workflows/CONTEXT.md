@@ -88,8 +88,9 @@ timeout-minutes: 30
 The organization variable `CREDIBLE_RUNNERS` is the kill switch: set it to `false` and every such job
 goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, the Linux leg of
 `cross-platform-tests.yml`, `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
-`image-scan.yml` (amd64 build only), and `python-sdk.yml` when `build.yml` calls it (not when
-`release.yml` does). `docker_smoke_test` reads a registry layer cache there and writes it only from
+`image-scan.yml` (amd64 build only), `python-sdk.yml` when `build.yml` calls it (not when
+`release.yml` does), `release-sync.yml`, `skills-npm.yml`'s tarball check (not its publish job), and
+`hammer-nightly.yml`. `docker_smoke_test` reads a registry layer cache there and writes it only from
 `main`, through the `layer-cache-writer` identity bound to `main`'s OIDC subject.
 
 **Keep off them:** any job that uses a repository or organization secret, holds `id-token: write`
