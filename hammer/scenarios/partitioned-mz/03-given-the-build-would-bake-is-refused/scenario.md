@@ -61,4 +61,4 @@ Expect:
 
 | source | tier    | reason                   |
 | ------ | ------- | ------------------------ |
-| orders | storage | given_in_persisted_query |
+| orders | storage | reads_given |

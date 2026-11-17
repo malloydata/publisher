@@ -170,7 +170,7 @@ interface LockCase {
    missing: Givens[];
 }
 
-const ADMIN = { ROLE: "admin" };
+const ADMIN: Givens = { ROLE: "admin" };
 const CASES: LockCase[] = [
    {
       source: "inh1",
@@ -380,7 +380,7 @@ for (const placement of ["colocated", "storage"] as const) {
                   ],
                   [{ ROLE: "viewer", REGION: "east" }, ADMIN],
                ],
-            ] as const) {
+            ] as [string, string, Givens[], Givens[]][]) {
                expect(refused.includes(source)).toBe(!colocated);
                for (const givens of admitted) {
                   const run = await fixture.run({
@@ -400,7 +400,7 @@ for (const placement of ["colocated", "storage"] as const) {
          });
 
          it("answers a lock with a row filter as live does", async () => {
-            for (const givens of [
+            for (const givens of <Givens[]>[
                { ROLE: "admin", REGION: "east" },
                { ROLE: "admin", REGION: "west" },
                { ROLE: "admin", REGION: "north" },
@@ -419,7 +419,10 @@ for (const placement of ["colocated", "storage"] as const) {
                   expectLive(run);
                }
             }
-            for (const givens of [{ ROLE: "viewer", REGION: "east" }, ADMIN]) {
+            for (const givens of <Givens[]>[
+               { ROLE: "viewer", REGION: "east" },
+               ADMIN,
+            ]) {
                await expectDeniedAsLive(
                   fixture,
                   "run: lock_and_filter -> { group_by: category; aggregate: total }",
@@ -441,7 +444,7 @@ for (const placement of ["colocated", "storage"] as const) {
                // keep: never answered from it, on any tier or switch.
                expectLive(run);
             }
-            for (const givens of [
+            for (const givens of <Givens[]>[
                { ROLE: "viewer", REGION: "east" },
                { REGION: "east" },
                ADMIN,
@@ -471,7 +474,10 @@ for (const placement of ["colocated", "storage"] as const) {
                   expectLive(run);
                }
             }
-            for (const givens of [{ ROLE: "viewer", CAT: "A" }, ADMIN]) {
+            for (const givens of <Givens[]>[
+               { ROLE: "viewer", CAT: "A" },
+               ADMIN,
+            ]) {
                await expectDeniedAsLive(
                   fixture,
                   "run: inh1_by_cat -> { group_by: category; aggregate: total }",
@@ -600,7 +606,7 @@ for (const placement of ["colocated", "storage"] as const) {
                });
                expect(run.servedBy?.kind).not.toBe("rollup");
                expect(rowDifference(run.live, run.served)).toBeUndefined();
-               for (const givens of [{ ROLE: "viewer" }, {}]) {
+               for (const givens of <Givens[]>[{ ROLE: "viewer" }, {}]) {
                   await expectDeniedAsLive(fixture, query(source), givens);
                }
             });

@@ -58,6 +58,7 @@ import {
 } from "./materialize_stored_chain";
 import {
    chainsOver,
+   chainThroughFile,
    chainWithinFile,
    crossFileEntries,
    planModelMaterialize,
@@ -65,6 +66,8 @@ import {
 } from "./materialize_plan";
 import { splitSourceID, type MaterializePlan } from "../domain/table_plans";
 import type { TermUse } from "../domain/read_time_terms";
+import { SourceMap } from "../text/source_map";
+import { wholeImportsOf } from "../text/declaration_text";
 import {
    compileInMemory,
    companionOmissions,
@@ -452,7 +455,7 @@ async function withoutLeakedBuilds(
             refused: {
                reason:
                   givenReadTerms(plan).length > 0
-                     ? "given_in_persisted_query"
+                     ? "reads_given"
                      : leftOutWindowTerms(plan.readTimeTerms).length > 0
                        ? "current_time"
                        : "no_stored_columns",
@@ -559,10 +562,11 @@ interface BuildCopy {
    text: string;
    /**
     * For an extension whose parent is in another file: the copy of that
-    * file re-rooted on the parent's build source, by URL, which this copy
-    * imports in the file's place ({@link crossFileCopyTexts}).
+    * file re-rooted on the parent's build source, and a copy of each file
+    * the chain passes through on the way, by URL, each importing the next
+    * one's copy in the file's place ({@link crossFileCopyTexts}).
     */
-   parentCopy?: { url: string; text: string };
+   chainCopies?: { url: string; text: string }[];
    /**
     * For a chained copy (P10): the declaration off the chain a place in the
     * copy lies in, if any, by sourceID and its range in the author's file
@@ -662,9 +666,7 @@ async function compileCompanion(
    }
    for (const copy of used.values()) {
       overlay.set(pathToFileURL(path.join(dir, copy.fileName)).href, copy.text);
-      if (copy.parentCopy) {
-         overlay.set(copy.parentCopy.url, copy.parentCopy.text);
-      }
+      for (const c of copy.chainCopies ?? []) overlay.set(c.url, c.text);
    }
    for (const [name, level] of files.levels) {
       overlay.set(pathToFileURL(path.join(dir, name)).href, level);
@@ -675,7 +677,7 @@ async function compileCompanion(
    const copyOwners = new Map(
       [...used].flatMap(([sourceID, c]) => [
          [pathToFileURL(path.join(dir, c.fileName)).href, sourceID] as const,
-         ...(c.parentCopy ? [[c.parentCopy.url, sourceID] as const] : []),
+         ...(c.chainCopies ?? []).map((f) => [f.url, sourceID] as const),
       ]),
    );
    const model = await materializer.getModel().catch((error: unknown) => {
@@ -895,7 +897,7 @@ async function copyDeclaredBuilds(
          const copy = copies.get(name);
          return [
             [pathToFileURL(path.join(dir, copy?.fileName ?? "")).href, name],
-            ...(copy?.parentCopy ? [[copy.parentCopy.url, name]] : []),
+            ...(copy?.chainCopies ?? []).map((f) => [f.url, name]),
          ] as [string, string][];
       }),
    );
@@ -1156,10 +1158,23 @@ async function copiedPlan(
    // destination over the parent's stored table, lifted as its build copy
    // is (P3); without it, the raw chain.
    if (plan.buildsOver && parent && plan.persist.storage !== undefined) {
-      const overStored = storedChainText(text as string, plan, parent, {
-         liftAccess,
-         ...(foreign ? { parentText: foreign.text } : {}),
-      });
+      const overStored =
+         foreign && !foreign.carriesAlike
+            ? undefined
+            : storedChainText(text as string, plan, parent, {
+                 liftAccess,
+                 ...(foreign
+                    ? {
+                         parentText: foreign.text,
+                         between: new Map(
+                            foreign.via.map((v) => [
+                               pathToFileURL(v.modelFile).href,
+                               v.text,
+                            ]),
+                         ),
+                      }
+                    : {}),
+              });
       plan = overStored
          ? { ...plan, buildsOver: { ...plan.buildsOver, overStored } }
          : withoutParent(plan);
@@ -1325,7 +1340,7 @@ function copyRefusal(
             "a `where:` reading a given can only be left out of the build " +
             "for a source declared in a local model file, reading givens " +
             "declared in local files",
-         refusal: "given_in_persisted_query",
+         refusal: "reads_given",
       };
    }
    if (given && text === undefined) {
@@ -1333,7 +1348,7 @@ function copyRefusal(
          reason:
             "the model file could not be read to leave its given-reading " +
             `\`where:\` out of the build: ${unreadable}`,
-         refusal: "given_in_persisted_query",
+         refusal: "reads_given",
       };
    }
    // An upper-bound current-time term (option A): taken out of the copy
@@ -1682,11 +1697,31 @@ interface CrossFileParent {
    renames: ReadonlyMap<string, string>;
    /** That companion's model, which declares the parent's build source. */
    model: MalloyModel;
+   /**
+    * The files the chain passes through between the extension's and the
+    * parent's (`buildsOver.crossFile.via`), the extension's side first: each
+    * one's path, text and compiled contents.
+    */
+   via: {
+      modelFile: string;
+      text: string;
+      contents?: Record<string, unknown>;
+   }[];
+   /**
+    * Whether the chain's declarations read every name alike when carried out
+    * of their files into one text (a `storage=` build's, {@link
+    * storedChainText}): each file imports the next whole, and no file on the
+    * chain names another's chain source otherwise ({@link carriesAlike}).
+    */
+   carriesAlike: boolean;
 }
 
-/** A model file's companion, compiled as a cross-file parent's file. */
+/**
+ * A model file's companion, compiled as a cross-file parent's file, or a
+ * file a chain passes through; `generated` is absent when it plans nothing.
+ */
 interface CrossFileCompanion {
-   generated: GeneratedMaterialize;
+   generated?: GeneratedMaterialize;
    text: string;
    modelFile: string;
    modelDef: ReturnType<typeof modelDefOf>;
@@ -1767,14 +1802,14 @@ async function crossFileParents(
                crossFileStack: stack,
                crossFileCompanions: companions,
             });
-            return generated
-               ? {
-                    generated,
-                    text: await files.read(url),
-                    modelFile: file,
-                    modelDef: def,
-                 }
-               : undefined;
+            // A file that plans nothing is kept too: a chain may pass
+            // through it to a parent in a file beyond.
+            return {
+               ...(generated ? { generated } : {}),
+               text: await files.read(url),
+               modelFile: file,
+               modelDef: def,
+            };
          })().catch((error: unknown) => {
             logger.warn(
                "An extension table's parent in another file could not be planned here; it builds over the raw chain",
@@ -1792,58 +1827,205 @@ async function crossFileParents(
    };
    const parents = new Map<string, CrossFileParent>();
    const chained = new Map<string, MaterializePlan>();
+   let ownText: Promise<string | undefined> | undefined;
+   const readOwnText = () =>
+      (ownText ??= files.read(pathToFileURL(modelFile)).catch(() => undefined));
    for (const { plan, entry, path: below } of candidates) {
-      const file = localPath(entry.url);
-      if (file === undefined) continue;
-      const companion = await companionOf(file);
-      if (!companion) continue;
-      // The nearest source on the chain its own file's companion plans is
-      // the parent: that file's compile, not this one's, tells its own
-      // `#(materialize)` from one it shares with its base.
-      for (const candidate of chainWithinFile(
-         companion.modelDef as { contents?: unknown; sourceRegistry?: unknown },
-         entry.sourceID,
-      )) {
-         const parent = companion.generated.plans.find(
-            (p: MaterializePlan) => p.sourceID === candidate.sourceID,
-         );
-         if (!parent) continue;
-         if (!chainsOver(plan, parent)) break;
-         const buildSourceID = (
-            modelDefOf(companion.generated.model).contents?.[
-               parent.buildSourceName
-            ] as { sourceID?: unknown } | undefined
-         )?.sourceID;
-         const buildSourceURL =
-            typeof buildSourceID === "string"
-               ? splitSourceID(buildSourceID)?.url
-               : undefined;
-         if (buildSourceURL === undefined) break;
-         chained.set(plan.sourceID, {
-            ...plan,
-            buildsOver: {
-               sourceID: parent.sourceID,
-               sourceName: parent.sourceName,
-               declaration: candidate.declaration,
-               path: [...candidate.path, ...below],
-               crossFile: { modelFile: file, buildSourceURL },
+      // The chain enters `file` at `entryID`. A file that plans no parent on
+      // it and declares no `#(materialize)` there is passed through: the
+      // walk goes on into the file it is built on, each companion compiled
+      // once for the package plan (`companions`), so a deep chain costs one
+      // compile per file.
+      let file = localPath(entry.url);
+      let entryID = entry.sourceID;
+      let pathBelow = below;
+      const via: CrossFileParent["via"] = [];
+      for (let hops = 0; file !== undefined && hops < 64; hops++) {
+         const companion = await companionOf(file);
+         if (!companion) break;
+         const found = chainOver(plan, companion, entryID, pathBelow, via);
+         if (found === "stop") break;
+         if (found) {
+            chained.set(plan.sourceID, found.plan);
+            parents.set(plan.sourceID, {
+               ...found.parent,
+               carriesAlike: carriesAlike(
+                  { modelFile, text: await readOwnText() },
+                  args.contents,
+                  plan.sourceID,
+                  via,
+                  found.parent,
+                  companion.modelDef,
+               ),
+            });
+            break;
+         }
+         const through = chainThroughFile(
+            companion.modelDef as {
+               contents?: unknown;
+               sourceRegistry?: unknown;
             },
-         });
-         parents.set(plan.sourceID, {
-            plan: parent,
+            entryID,
+         );
+         // A file between that declares `#(materialize)` on the chain, planned
+         // or refused, is no pass-through: the extension builds from the
+         // warehouse.
+         if (through.declares || !through.next) break;
+         const next = localPath(through.next.url);
+         if (next === undefined || next === file) break;
+         via.push({
             modelFile: file,
             text: companion.text,
-            overlay: companion.generated.files,
-            renames: companion.generated.renames,
-            model: companion.generated.model,
+            contents: (
+               companion.modelDef as { contents?: Record<string, unknown> }
+            ).contents,
          });
-         break;
+         pathBelow = [...through.declarations, ...pathBelow];
+         entryID = through.next.sourceID;
+         file = next;
       }
    }
    return {
       plans: plans.map((p) => chained.get(p.sourceID) ?? p),
       parents,
    };
+}
+
+/**
+ * The parent the chain entering `companion`'s file at `entryID` builds over
+ * there: the nearest source on the chain that file's own companion plans
+ * ({@link chainWithinFile}; that file's compile, not this one's, tells its
+ * own `#(materialize)` from one it shares with its base), with the
+ * extension's plan given its `buildsOver`. `"stop"` when that source may not
+ * be chained on ({@link chainsOver}) or its build source cannot be found;
+ * undefined when the file plans no source on the chain.
+ */
+function chainOver(
+   plan: MaterializePlan,
+   companion: CrossFileCompanion,
+   entryID: string,
+   below: TermUse[],
+   via: CrossFileParent["via"],
+):
+   | { plan: MaterializePlan; parent: Omit<CrossFileParent, "carriesAlike"> }
+   | "stop"
+   | undefined {
+   const generated = companion.generated;
+   if (!generated) return undefined;
+   for (const candidate of chainWithinFile(
+      companion.modelDef as { contents?: unknown; sourceRegistry?: unknown },
+      entryID,
+   )) {
+      const parent = generated.plans.find(
+         (p: MaterializePlan) => p.sourceID === candidate.sourceID,
+      );
+      if (!parent) continue;
+      if (!chainsOver(plan, parent)) return "stop";
+      const buildSourceID = (
+         modelDefOf(generated.model).contents?.[parent.buildSourceName] as
+            | { sourceID?: unknown }
+            | undefined
+      )?.sourceID;
+      const buildSourceURL =
+         typeof buildSourceID === "string"
+            ? splitSourceID(buildSourceID)?.url
+            : undefined;
+      if (buildSourceURL === undefined) return "stop";
+      return {
+         plan: {
+            ...plan,
+            buildsOver: {
+               sourceID: parent.sourceID,
+               sourceName: parent.sourceName,
+               declaration: candidate.declaration,
+               path: [...candidate.path, ...below],
+               crossFile: {
+                  modelFile: companion.modelFile,
+                  buildSourceURL,
+                  ...(via.length > 0
+                     ? { via: via.map((v) => v.modelFile) }
+                     : {}),
+               },
+            },
+         },
+         parent: {
+            plan: parent,
+            modelFile: companion.modelFile,
+            text: companion.text,
+            overlay: generated.files,
+            renames: generated.renames,
+            model: generated.model,
+            via: [...via],
+         },
+      };
+   }
+   return undefined;
+}
+
+/**
+ * Whether the declarations on a cross-file chain read every name alike when
+ * carried out of their files into one text, as a `storage=` build compiles
+ * them ({@link storedChainText}), the rule a served copy's kept blocks keep
+ * across files: each file on the chain imports the next one whole (a
+ * selective import may leave a name out for the importing file to declare
+ * itself), and no file on the chain binds the name of a chain source declared
+ * in another file to any other source. Otherwise a carried declaration could
+ * read, in the one text, a source its own file never meant.
+ */
+function carriesAlike(
+   own: { modelFile: string; text: string | undefined },
+   ownContents: Record<string, unknown>,
+   extensionID: string,
+   via: CrossFileParent["via"],
+   parent: Omit<CrossFileParent, "carriesAlike">,
+   parentDef: unknown,
+): boolean {
+   const parentContents = (parentDef as { contents?: Record<string, unknown> })
+      ?.contents;
+   const chainFiles = [
+      { modelFile: own.modelFile, text: own.text, contents: ownContents },
+      ...via,
+      {
+         modelFile: parent.modelFile,
+         text: parent.text,
+         contents: parentContents,
+      },
+   ];
+   for (let k = 0; k + 1 < chainFiles.length; k++) {
+      const from = chainFiles[k];
+      if (from.text === undefined) return false;
+      const whole = wholeImportsOf(
+         from.text,
+         pathToFileURL(from.modelFile).href,
+      );
+      const next = pathToFileURL(chainFiles[k + 1].modelFile).href;
+      if (!whole?.includes(next)) return false;
+   }
+   // The chain's sources, by file: the extension's own file's from the
+   // extension down to where it leaves the file, and the parent's and each
+   // file between's from the plan's path.
+   const chainIDs = new Set<string>([parent.plan.sourceID]);
+   const map = SourceMap.of({ contents: ownContents });
+   let node = map.node(extensionID);
+   for (let hops = 0; node && hops < 64; hops++) {
+      chainIDs.add(node.sourceID);
+      const base = node.base;
+      if (!base || base.hop === "query" || base.sourceID === undefined) break;
+      chainIDs.add(base.sourceID);
+      node = map.node(base.sourceID);
+   }
+   for (const file of chainFiles) {
+      const href = pathToFileURL(file.modelFile).href;
+      for (const id of chainIDs) {
+         const split = splitSourceID(id);
+         if (!split || split.url === href) continue;
+         const bound = (
+            file.contents?.[split.name] as { sourceID?: unknown } | undefined
+         )?.sourceID;
+         if (bound !== undefined && bound !== id) return false;
+      }
+   }
+   return true;
 }
 
 /**
@@ -1860,16 +2042,6 @@ function crossFileCopy(
 ): BuildCopy | undefined {
    const over = plan.buildsOver;
    if (!over?.crossFile || ctx.text === undefined) return undefined;
-   const parentFile = parent.modelFile;
-   const parentDir = path.dirname(parentFile);
-   const parentCopyFile = path.join(
-      parentDir,
-      chainCopyName(
-         path.basename(parentFile),
-         ctx.modelFileName,
-         ctx.copies.size,
-      ),
-   );
    const posix = (from: string, to: string) => {
       const relative = path.relative(from, to).split(path.sep).join("/");
       return relative.startsWith(".") ? relative : `./${relative}`;
@@ -1880,25 +2052,47 @@ function crossFileCopy(
    } catch {
       return undefined;
    }
-   const modelURL = pathToFileURL(ctx.modelFile);
-   const parentHref = pathToFileURL(parentFile).href;
+   // Each file on the chain past the extension's, and its copy beside it:
+   // the files between, then the parent's.
+   const copyOf = new Map<string, string>(
+      [...parent.via.map((v) => v.modelFile), parent.modelFile].map((file) => [
+         pathToFileURL(file).href,
+         path.join(
+            path.dirname(file),
+            chainCopyName(
+               path.basename(file),
+               ctx.modelFileName,
+               ctx.copies.size,
+            ),
+         ),
+      ]),
+   );
+   // An import, written in `fromFile`, of a file on the chain points at
+   // that file's copy instead.
+   const importOf = (fromFile: string) => (written: string) => {
+      let href: string;
+      try {
+         href = new URL(written, pathToFileURL(fromFile)).href;
+      } catch {
+         return undefined;
+      }
+      const copy = copyOf.get(href);
+      return copy === undefined
+         ? undefined
+         : posix(path.dirname(fromFile), copy);
+   };
+   const parentDir = path.dirname(parent.modelFile);
    const made = crossFileCopyTexts({
       text: ctx.text,
       parentText: parent.text,
       plan,
       parent: parent.plan,
       buildSourceFrom: posix(parentDir, buildSourceFile),
-      importOf: (written) => {
-         let href: string;
-         try {
-            href = new URL(written, modelURL).href;
-         } catch {
-            return undefined;
-         }
-         return href === parentHref
-            ? posix(path.dirname(ctx.modelFile), parentCopyFile)
-            : undefined;
-      },
+      importOf: importOf(ctx.modelFile),
+      between: parent.via.map((v) => ({
+         text: v.text,
+         importOf: importOf(v.modelFile),
+      })),
       liftAccess,
    });
    if ("reason" in made) {
@@ -1908,13 +2102,18 @@ function crossFileCopy(
       );
       return undefined;
    }
+   const urlOf = (file: string) =>
+      pathToFileURL(copyOf.get(pathToFileURL(file).href)!).href;
    return {
       fileName: buildCopyName(ctx.modelFileName, ctx.copies.size),
       text: made.copy,
-      parentCopy: {
-         url: pathToFileURL(parentCopyFile).href,
-         text: made.parentCopy,
-      },
+      chainCopies: [
+         ...parent.via.map((v, k) => ({
+            url: urlOf(v.modelFile),
+            text: made.betweenCopies[k],
+         })),
+         { url: urlOf(parent.modelFile), text: made.parentCopy },
+      ],
    };
 }
 

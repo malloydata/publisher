@@ -325,6 +325,12 @@ export function servedFromOf(answer: Answer): ServedFrom | undefined {
          ? "database"
          : "storage";
    }
+   // Decided by the table's own tier: a database table altered outside its
+   // build is read through `virtual()` too, on its own connection, and is
+   // still a database read, as the path report's `servedBy.tier` says.
+   const tier =
+      answer.answer.viewTable?.tier ?? answer.answer.gateTablesRead?.[0]?.tier;
+   if (tier !== undefined) return tier === "storage" ? "storage" : "database";
    // A `storage=` persisted view or rollup reads through `virtual()`; a
    // colocated one through the build manifest.
    return virtualMap !== undefined ? "storage" : "database";

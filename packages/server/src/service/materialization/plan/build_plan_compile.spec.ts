@@ -426,7 +426,7 @@ source: scoped is base -> { where: category = $TENANT; group_by: category }
             expect(droppedPersistSources).toEqual([]);
             const refused = Object.values(plan?.refusedSources ?? {});
             expect(refused.map((r) => [r.name, r.reason])).toEqual([
-               ["scoped", "given_in_persisted_query"],
+               ["scoped", "reads_given"],
             ]);
          },
          { timeout: 20000 },
