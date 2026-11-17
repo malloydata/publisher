@@ -1,7 +1,7 @@
 # `materialization/plan/`
 
 Turns a compiled package's declarations (`#@ persist`, `#(materialize)`,
-`#(preaggregate)`, v1 `#@ preaggregate`, a persisted view) into the tables a
+`#(rollup)`, v1 `#@ preaggregate`, a persisted view) into the tables a
 run should build, or a refusal or omission for each. It compiles and never
 runs: on the package-load worker its connection refuses SQL.
 
@@ -69,8 +69,8 @@ package load keeps, which crosses the load worker as plain data.
 | `persisted_view.ts`                    | `#@ persist` on a view or a named query: its declaration, refusals and companion text                                                                         | the build plan, `model.ts` (for the view and query legs), run telemetry          |
 | `persisted_query.ts`                   | `#@ persist` on a named query: reading the declarations, its key findings and its warning                                                                     | the build plan, `persisted_view.ts`                                              |
 | `persisted_view_compile.ts`            | Compiling the persisted-view companion, and judging each view and named query                                                                                 | the build plan                                                                   |
-| `rollup_plan.ts`                       | `#(preaggregate)` rollups: grain, measures, key checks                                                                                                        | the build plan, `model.ts` (for the rollup leg), the instructed build            |
-| `rollup_compile.ts`                    | Compiling the `#(preaggregate)` companion                                                                                                                     | the build plan                                                                   |
+| `rollup_plan.ts`                       | `#(rollup)` rollups: grain, measures, key checks                                                                                                        | the build plan, `model.ts` (for the rollup leg), the instructed build            |
+| `rollup_compile.ts`                    | Compiling the `#(rollup)` companion                                                                                                                     | the build plan                                                                   |
 | `refusal_key.ts`                       | A refusal record's key and the tier a declaration would have been built in                                                                                    | every planner that refuses a valid declaration                                   |
 | `rollup_measure_grammar.ts`            | Which measures a rollup can store and merge                                                                                                                   | the rollup plan                                                                  |
 | `preaggregation_annotation.ts`         | Reading the v1 `#@ preaggregate` annotation                                                                                                                   | the v1 rollup planner and validation                                             |

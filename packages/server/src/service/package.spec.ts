@@ -849,11 +849,11 @@ describe("service/package", () => {
       });
    });
 
-   // The colocated-tier analogue of the storage gate above — a positive
-   // eligibility check on `bindColocatedServeManifest`, keyed by
-   // sourceEntityId (what a colocated binding actually carries; see
-   // `ColocatedSourceEligibility`'s doc in build_plan.ts).
-   describe("bindColocatedServeManifest eligibility gate", () => {
+   // The database-tier analogue of the storage gate above — a positive
+   // eligibility check on `bindDatabaseServeManifest`, keyed by
+   // sourceEntityId (what a database binding actually carries; see
+   // `DatabaseSourceEligibility`'s doc in build_plan.ts).
+   describe("bindDatabaseServeManifest eligibility gate", () => {
       const packageWith = (
          eligibility:
             | {
@@ -874,9 +874,9 @@ describe("service/package", () => {
          // compiled package. Set directly to isolate the filter.
          (
             pkg as unknown as {
-               colocatedSourceEligibility: typeof eligibility;
+               databaseSourceEligibility: typeof eligibility;
             }
-         ).colocatedSourceEligibility = eligibility;
+         ).databaseSourceEligibility = eligibility;
          // Each examined source's dialect, as a real plan carries it: an
          // entry with none is never bound as given.
          (pkg as unknown as { buildPlan: unknown }).buildPlan = {
@@ -898,7 +898,7 @@ describe("service/package", () => {
          });
 
          pkg.materialization().bind({
-            colocated: {
+            database: {
                "eid-eligible": { tableName: "t_eligible" },
                "eid-refused": { tableName: "t_refused" },
             },
@@ -913,7 +913,7 @@ describe("service/package", () => {
          const pkg = packageWith(undefined);
 
          pkg.materialization().bind({
-            colocated: {
+            database: {
                "eid-eligible": { tableName: "t_eligible" },
             },
          });
@@ -930,7 +930,7 @@ describe("service/package", () => {
          });
 
          pkg.materialization().bind({
-            colocated: {
+            database: {
                "eid-known": { tableName: "t_known" },
                "eid-unknown": { tableName: "t_unknown" },
             },

@@ -422,7 +422,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "by_column__rollup__region_status__5f704d70",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "by_column",
           "grainDimensions": [
@@ -456,7 +456,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "by_lock__rollup__status__eb4380b4",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "by_lock",
           "grainDimensions": [
@@ -520,7 +520,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "gated_mat",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -576,7 +576,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "locked_mat",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

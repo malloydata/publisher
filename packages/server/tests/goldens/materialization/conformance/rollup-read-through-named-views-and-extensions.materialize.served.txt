@@ -11,9 +11,9 @@ type: orders__rollup__region__d4f76546__type is {
 }
 source: orders__rollup__region__d4f76546__served is __served_copy_alias_of_lake.virtual('f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18')::orders__rollup__region__d4f76546__type extend {
   measure:
-    #(preaggregate) grain=["region"] storage="lake"
+    #(rollup) grain=["region"] storage="lake"
     n is n__partial.sum()
-    #(preaggregate) grain=["region"] storage="lake"
+    #(rollup) grain=["region"] storage="lake"
     total is total__partial.sum()
 }
 source: orders is orders__rollup__region__d4f76546__served include { internal: n__partial, total__partial public: * } extend {
@@ -32,9 +32,9 @@ type: orders__rollup__region__d4f76546__type is {
 }
 source: orders__rollup__region__d4f76546__served is __served_copy_alias_of_lake.virtual('f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18')::orders__rollup__region__d4f76546__type extend {
   measure:
-    #(preaggregate) grain=["region"] storage="lake"
+    #(rollup) grain=["region"] storage="lake"
     n is n__partial.sum()
-    #(preaggregate) grain=["region"] storage="lake"
+    #(rollup) grain=["region"] storage="lake"
     total is total__partial.sum()
 }
 source: orders is orders__rollup__region__d4f76546__served include { internal: n__partial, total__partial public: * } extend {
@@ -54,9 +54,9 @@ type: orders__rollup__region__d4f76546__type is {
 }
 source: orders__rollup__region__d4f76546__served is __served_copy_alias_of_lake.virtual('f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18')::orders__rollup__region__d4f76546__type extend {
   measure:
-    #(preaggregate) grain=["region"] storage="lake"
+    #(rollup) grain=["region"] storage="lake"
     n is n__partial.sum()
-    #(preaggregate) grain=["region"] storage="lake"
+    #(rollup) grain=["region"] storage="lake"
     total is total__partial.sum()
 }
 source: orders_ext is orders__rollup__region__d4f76546__served include { internal: n__partial, total__partial public: * } extend {
@@ -69,9 +69,9 @@ export { orders_ext, orders }
 import "raw.malloy"
 
 source: orders is orders_raw extend {
-  #(preaggregate) grain=["region"] storage="lake"
+  #(rollup) grain=["region"] storage="lake"
   measure: total is amount.sum()
-  #(preaggregate) grain=["region"] storage="lake"
+  #(rollup) grain=["region"] storage="lake"
   measure: n is count()
   view: by_region is { group_by: region; aggregate: total, n }
   view: by_region_sorted is by_region + { order_by: region }

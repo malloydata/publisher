@@ -122,7 +122,7 @@ source: alias_ms_alias is base_ms_alias
 #(materialize) storage="lake"
 source: ms_alias is alias_ms_alias extend { measure: total is amt.sum() }
 `,
-   "mat_colocated.malloy": `${HEAD}
+   "mat_database.malloy": `${HEAD}
 given: ORG :: string
 ${root("mc_own")}
 ${base("mc_one")}
@@ -187,7 +187,7 @@ source: vs_join is ev_vs_join extend {
   measure: total is amt.sum()
 }
 `,
-   "v1_colocated.malloy": `${HEAD}
+   "v1_database.malloy": `${HEAD}
 given: ORG :: string
 ${root("vc_own")}
 ${base("vc_one")}
@@ -254,8 +254,8 @@ const CASES: ShapeCase[] = [
       path: { kind: "simple" },
    },
    {
-      name: "#(materialize) colocated, the term on the source itself",
-      model: "mat_colocated.malloy",
+      name: "#(materialize) database, the term on the source itself",
+      model: "mat_database.malloy",
       source: "mc_own",
       path: { kind: "simple" },
    },
@@ -307,8 +307,8 @@ const CASES: ShapeCase[] = [
       path: { kind: "simple" },
    },
    {
-      name: "#(materialize) colocated, the term on a base in the same file",
-      model: "mat_colocated.malloy",
+      name: "#(materialize) database, the term on a base in the same file",
+      model: "mat_database.malloy",
       source: "mc_one",
       path: {
          kind: "refused_warning",
@@ -367,14 +367,14 @@ const CASES: ShapeCase[] = [
       path: { kind: "simple" },
    },
    {
-      name: "v1 #@ persist colocated, the term on the source itself",
-      model: "v1_colocated.malloy",
+      name: "v1 #@ persist database, the term on the source itself",
+      model: "v1_database.malloy",
       source: "vc_own",
       path: { kind: "simple" },
    },
    {
-      name: "v1 #@ persist colocated, query-shaped, the term in its own trailing extend",
-      model: "v1_colocated.malloy",
+      name: "v1 #@ persist database, query-shaped, the term in its own trailing extend",
+      model: "v1_database.malloy",
       source: "vc_own_query",
       path: { kind: "simple" },
    },
@@ -385,8 +385,8 @@ const CASES: ShapeCase[] = [
       path: { kind: "refused_source", reason: "inherited_where_with_given" },
    },
    {
-      name: "v1 #@ persist colocated, the term on a base in the same file",
-      model: "v1_colocated.malloy",
+      name: "v1 #@ persist database, the term on a base in the same file",
+      model: "v1_database.malloy",
       source: "vc_one",
       path: { kind: "refused_source", reason: "inherited_where_with_given" },
    },

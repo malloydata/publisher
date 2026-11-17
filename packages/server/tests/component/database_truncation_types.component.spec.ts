@@ -331,7 +331,7 @@ for (const tier of tiers) {
             await warehouse.runSQL(tier.alter(physicalTableName, "d_month"));
          }
          await f.pkg.reloadAllModels(
-            f.pkg.materialization().boundColocatedEntries() ?? {},
+            f.pkg.materialization().boundDatabaseEntries() ?? {},
          );
          const warned = mismatches(f);
          expect(warned.map((w) => w.subject).sort()).toEqual(["mat", "v1"]);

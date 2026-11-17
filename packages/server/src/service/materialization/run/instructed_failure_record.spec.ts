@@ -43,7 +43,7 @@ function record(run: ReturnType<typeof runOf>, err: Error) {
       { physicalTableName: "src_v1", materializedTableId: "mt" } as never,
       ID,
       err,
-      { kind: "persist", tier: "colocated", method: "full" } as never,
+      { kind: "persist", tier: "database", method: "full" } as never,
    );
    return run.failures[ID];
 }

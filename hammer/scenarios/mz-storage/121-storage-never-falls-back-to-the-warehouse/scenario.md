@@ -53,7 +53,7 @@ source: daily is orders -> {
 }
 
 #@ persist
-source: colocated_daily is orders -> {
+source: database_daily is orders -> {
   group_by: category
   aggregate: n is count()
 }
@@ -68,21 +68,21 @@ when it resolved none. Every other guard on this path tests what the instruction
 for; this one tests what the source DECLARED, which is the only thing that says the
 warehouse is off limits.
 
-It fails as its own source and the run carries on, which is what the colocated sibling
+It fails as its own source and the run carries on, which is what the database sibling
 below is here to demonstrate. A host that resolved no destination for one source has
-partly resolved its list, so failing the run would take down colocated sources that have
+partly resolved its list, so failing the run would take down database sources that have
 no destination to resolve and nothing to do with the refusal.
 
 - daily -> nw_daily_tbl (failed)
-- colocated_daily -> nw_colocated_tbl
+- database_daily -> nw_database_tbl
 
 ## Operator orders_pg
 
 `nw_daily_tbl` is absent — the refused source wrote nothing. Everything else is present:
-`nw_colocated_tbl` from the instructed sibling, and `nw__nw__colocated_daily__p<hash>`
+`nw_database_tbl` from the instructed sibling, and `nw__nw__database_daily__p<hash>`
 from the auto-run that publishing kicked off (auto-run names a table the author did not
 name `<pkg>__<file>__<source>__p<hash>`; the hash depends on the environment, so it is
-masked here), both of which are colocated and unaffected.
+masked here), both of which are in the database tier and unaffected.
 
 Asked of the warehouse directly rather than inferred from the failure, because the refusal
 and the write are separate events: a build could refuse after having already created the
@@ -96,8 +96,8 @@ Expect:
 
 | table_name                       |
 | -------------------------------- |
-| nw__nw__colocated_daily__p<hash> |
-| nw_colocated_tbl                 |
+| nw__nw__database_daily__p<hash> |
+| nw_database_tbl                 |
 | nw_orders                        |
 
 ## Note

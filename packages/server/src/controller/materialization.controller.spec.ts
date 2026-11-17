@@ -202,7 +202,7 @@ describe("MaterializationController.createMaterialization validation", () => {
 
    it("preserves the storage `destination` on a build instruction", async () => {
       // Regression: `destination` is the orchestrated `storage=` axis. Dropping it
-      // here silently downgrades an orchestrated build to a colocated
+      // here silently downgrades an orchestrated build to a database
       // build, so it never materializes into the storage destination.
       const parsed = await parse({
          buildInstructions: {

@@ -1965,7 +1965,7 @@ describe("what a run's load binds, read back from the store", () => {
       await env.loadRunManifest({
          packageName: PKG,
          versionId: "1.0.0",
-         colocated: {},
+         database: {},
          // As the committer passes them: every entry, the stored one with its key check.
          storage: { rollup: { ...stored, keyUniqueness } as never },
          commit: async () => {},

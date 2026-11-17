@@ -3,7 +3,7 @@
 
 /**
  * A host-computed build manifest, fetched and split by tier
- * ({@link fetchManifestEntries}, {@link splitManifestEntries}): colocated
+ * ({@link fetchManifestEntries}, {@link splitManifestEntries}): database
  * entries become the same-connection `tableName` substitution, `storage=`
  * entries are kept whole for their serve bindings. Read by environment.ts when
  * it binds a package's manifest, and by the manifest committer.
@@ -37,7 +37,7 @@ type WireBuildManifest = components["schemas"]["BuildManifest"];
  * same-connection `tableName` substitution.
  */
 export interface FetchedManifest {
-   /** Colocated entries: same-connection `tableName` substitution. */
+   /** Database entries: same-connection `tableName` substitution. */
    tableNameManifest: FreshnessManifest;
    /** `storage=` entries by sourceEntityId, kept whole for serve bindings. */
    storageEntries: Record<string, ManifestEntry>;
@@ -127,7 +127,7 @@ export function isUsableTableName(name: string): boolean {
 }
 
 /**
- * Split a manifest entry map by tier into {@link FetchedManifest}. A colocated
+ * Split a manifest entry map by tier into {@link FetchedManifest}. A database
  * entry's wire `physicalTableName` becomes the runtime's `tableName`, keeping
  * the freshness fields (gated per query) and `connectionName` (for
  * dialect-specific quoting). Pure; `source` labels the skip log, which

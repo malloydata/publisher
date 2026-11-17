@@ -3,7 +3,7 @@
 
 /**
  * A join to a query-shaped source whose query reads the current time, under
- * v2 `#(materialize)` and `#(preaggregate)`, at a pinned clock that then
+ * v2 `#(materialize)` and `#(rollup)`, at a pinned clock that then
  * moves. Every value read through the join depends on `now`, so a dimension
  * that reads it is computed at read, never stored, and a rollup measure that
  * reads it is not built, nor is a rollup grain that reads it, nor a
@@ -109,7 +109,7 @@ source: mi is ev extend {
    }
 });
 
-describe("#(preaggregate): a measure read through a join to a query-shaped source that reads now", () => {
+describe("#(rollup): a measure read through a join to a query-shaped source that reads now", () => {
    let fixture: R4Fixture;
    useMaterializationOn();
    beforeAll(async () => {
@@ -118,11 +118,11 @@ describe("#(preaggregate): a measure read through a join to a query-shaped sourc
             "m.malloy": `${BASE}
 source: p is ev extend {
   join_one: r is recent_ids on r.id = id
-  #(preaggregate) grain=["g"]
+  #(rollup) grain=["g"]
   measure: in_window is count(r.id)
   dimension: in_w is r.id is not null
-  #(preaggregate) grain=["g"]
-  #(preaggregate) grain=["in_w"]
+  #(rollup) grain=["g"]
+  #(rollup) grain=["in_w"]
   measure: total is amt.sum()
 }
 `,

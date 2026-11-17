@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 
 # An unused join to a supplied stored source does not start a chain
 
-`rollup` is a `storage=` source over the colocated `daily`, and it declares
+`rollup` is a `storage=` source over the database `daily`, and it declares
 `join_one: c is counts` to a source stored in `lake` — a join it never
 reads. `counts` is supplied by reference. The compiler prunes the unused
 join, so `rollup`'s SQL reads `daily`'s warehouse table and nothing in the

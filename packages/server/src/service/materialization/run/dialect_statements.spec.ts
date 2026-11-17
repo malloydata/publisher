@@ -5,7 +5,7 @@
  * Every statement whose text depends on the warehouse dialect, per dialect,
  * frozen in `dialect_statements.golden.json`: the ownership probe and mark,
  * the relation and view probes and the view drop, the incremental refresh's
- * probes, bounds, range replace, merge and pair delta, the colocated swap
+ * probes, bounds, range replace, merge and pair delta, the database swap
  * and drop, the native-type catalog read, the read-cost and query-tag
  * statements, and the leftover `name=` view's in-transaction drop. A statement a dialect
  * refuses is recorded as the refusal's message.
@@ -26,8 +26,8 @@ import {
    snowflakeSessionParitySQL,
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
-import { ColocatedTier, swapIntoPlace } from "./colocated_build_strategy";
-import { capturedNativeSchema } from "./colocated_native_types";
+import { DatabaseTier, swapIntoPlace } from "./database_build_strategy";
+import { capturedNativeSchema } from "./database_native_types";
 import { describeDialects } from "../domain/dialect";
 import {
    decodeTablePathSegments,
@@ -292,7 +292,7 @@ async function statements(): Promise<Record<string, unknown>> {
    ]);
    out.deltaScript = deltaScript(["BEGIN", "DELETE FROM t", "COMMIT"]);
 
-   // The colocated swap, as the statements it sends on a clean run.
+   // The database swap, as the statements it sends on a clean run.
    out.swapIntoPlace = await perDialectAsync(async (d) => {
       const r = recorder();
       await swapIntoPlace({
@@ -372,15 +372,15 @@ async function statements(): Promise<Record<string, unknown>> {
       failingSwap(d, 3),
    );
 
-   // The colocated drop: the table, then the staging and backup names a
+   // The database drop: the table, then the staging and backup names a
    // crash can leave beside it when the table names its source.
-   const colocatedDrop = (
+   const databaseDrop = (
       leftoversOf?: string,
       physicalTableName = "sch.Orders x__m1",
    ) =>
       perDialectAsync(async (d) => {
          const r = recorder();
-         await new ColocatedTier().drop(
+         await new DatabaseTier().drop(
             {
                connection: { runSQL: r.run, dialectName: d } as never,
                runOptions: {},
@@ -389,9 +389,9 @@ async function statements(): Promise<Record<string, unknown>> {
          );
          return r.statements;
       });
-   out["ColocatedTier.drop"] = await colocatedDrop();
-   out["ColocatedTier.drop.leftoversOf"] = await colocatedDrop("orders");
-   out["ColocatedTier.drop.hostile"] = await colocatedDrop(
+   out["DatabaseTier.drop"] = await databaseDrop();
+   out["DatabaseTier.drop.leftoversOf"] = await databaseDrop("orders");
+   out["DatabaseTier.drop.hostile"] = await databaseDrop(
       undefined,
       's`c\\.Or"d`ers__m1',
    );

@@ -394,7 +394,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          ]);
          // The bound URI is recorded even though no tableName manifest bound.
          expect(patched.boundManifestUri).toBe(manifestFile);
-         // And it reports BOUND despite the zero colocated entry count. This is
+         // And it reports BOUND despite the zero database entry count. This is
          // what a control plane reads to decide whether the worker honoured the
          // manifest it distributed; reporting `unbound` after a successful bind
          // reads as drift, and the package is rebound on every reconcile tick.
@@ -427,7 +427,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          ).json()) as Record<string, unknown>;
          expect(failed.manifestBindingStatus).toBe("live_fallback");
 
-         // A pure-`storage=` manifest binds with no colocated entry to recompile, so
+         // A pure-`storage=` manifest binds with no database entry to recompile, so
          // nothing on that path recomputes the status — the successful bind has to
          // report itself. Otherwise the package stays live_fallback while healthily
          // bound, which reads as degraded to a caller that alerts on it.
