@@ -3,7 +3,7 @@
 
 /**
  * Giving back what materializations built ({@link Reclaimer}): the tables of a
- * deleted run, of a failed run that committed no manifest, of an archived or
+ * deleted run, of a failed run whose manifest names no table, of an archived or
  * deleted version, the tables a readable name replaced, and at startup a
  * version reclaim a crash cut short. Each table is dropped through its own
  * tier's adapter, with any `name=` view an earlier release left beside it.
@@ -488,7 +488,7 @@ type DropManifestEntries = Reclaimer["dropManifestEntries"];
 
 /**
  * Giving back what materializations built: the tables of a deleted run, of a
- * failed run that committed no manifest, and of an archived or deleted
+ * failed run whose manifest names no table, and of an archived or deleted
  * version, and finishing at startup a version reclaim a crash cut short.
  * Every drop is best-effort and never drops a table another committed run of
  * the package still references.
@@ -516,8 +516,9 @@ export class Reclaimer {
    }
 
    /**
-    * Drop the storage tables a FAILED run created: the run commits no manifest,
-    * and GC reclaims only what a manifest records. Each guard closes a way to
+    * Drop the storage tables a FAILED run created: the run's manifest records
+    * no entry (at most each source's failure), and GC reclaims only the tables
+    * a manifest's entries record. Each guard closes a way to
     * destroy live data:
     *
     * - ORCHESTRATED runs only (no `owner` for auto-run). Host-assigned

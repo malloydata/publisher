@@ -10466,9 +10466,13 @@ components:
           description: >-
             Build output. Null until the tables are built (status
             MANIFEST_ROWS_READY), and on a run that failed or was cancelled
-            before then. A run interrupted at MANIFEST_ROWS_READY (the server
+            before then, with one exception: a run that FAILED because every
+            source it was asked to build failed or was refused carries a
+            manifest whose `failures` holds each such source's own reason and
+            `retryable`, keyed by sourceEntityId, and whose `entries` is
+            empty. A run interrupted at MANIFEST_ROWS_READY (the server
             stopped while it loaded its manifest) ends FAILED with its
-            manifest; that manifest is never served.
+            manifest. A FAILED run's manifest is never served or bound.
         startedAt:
           type: ["string", "null"]
           format: date-time
@@ -10488,10 +10492,10 @@ components:
             top-level `Materialization` property is a breaking schema change
             that orchestrated clients must adopt first; do not do it casually.
             `errorRetryable` (boolean) is set on a FAILED run that built
-            nothing, which commits no manifest and so reports no per-source
-            `failures`: `false` when every source failed deterministically or
-            was refused, `true` when any failure was transient, with the same
-            rules as `SourceFailure.retryable`. Absent when unclassified, for a
+            nothing, the whole run's answer beside each source's own in
+            `manifest.failures`: `false` when every source failed
+            deterministically or was refused, `true` when any failure was
+            transient, with the same rules as `SourceFailure.retryable`. Absent when unclassified, for a
             cancelled run, and from a Publisher that predates it.
             `errorAtCancel` (string) is set on a CANCELLED run whose last
             error was not the cancellation itself: the message of the failure
@@ -11593,7 +11597,9 @@ components:
             some of its sources still returns the ones that succeeded in
             `entries`, so this is how a consumer tells a partial failure from a
             clean run and learns which source failed. Empty or absent on a run
-            where every source built.
+            where every source built. Present on a FAILED run too, when every
+            source it was asked to build failed or was refused: there it names
+            each of them, and `entries` is empty.
         strict:
           type: boolean
           description: Whether unresolved references should error.

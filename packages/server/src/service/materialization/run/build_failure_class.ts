@@ -38,6 +38,7 @@ import {
    strictMissSourceId,
 } from "./materialization_run_support";
 import { InlinedJoinNotUniqueError } from "./inline_uniqueness";
+import type { SourceFailure } from "../domain/types";
 
 /**
  * Whether retrying one source's failed build could succeed, as reported on
@@ -275,8 +276,8 @@ export function combineRetryable(
 /**
  * The run that built nothing: every source failed or was refused. Thrown in
  * place of the joined message so the run's record can say whether retrying
- * the run could help (`metadata.errorRetryable`), since a run that commits no
- * manifest reports no per-source `failures`.
+ * the run could help (`metadata.errorRetryable`); each source's own answer is
+ * on the manifest the failed run records ({@link withFailedRunManifest}).
  */
 export class BuildRunFailedError extends Error {
    readonly retryable: BuildRetryable;
@@ -286,6 +287,37 @@ export class BuildRunFailedError extends Error {
       this.name = "BuildRunFailedError";
       this.retryable = retryable;
    }
+}
+
+/**
+ * What a run that built nothing records as its manifest: each source's own
+ * failure, keyed by its address, and no entries. Recorded on the FAILED run
+ * so a consumer can attribute the failure per source; never served, since
+ * every reader that binds or reuses a run counts MANIFEST_FILE_READY runs
+ * only.
+ */
+export interface FailedRunManifest {
+   failures: Record<string, SourceFailure>;
+}
+
+const failedRunManifests = new WeakMap<object, FailedRunManifest>();
+
+/** `err`, carrying the manifest its failed run records. */
+export function withFailedRunManifest<E extends Error>(
+   err: E,
+   manifest: FailedRunManifest,
+): E {
+   failedRunManifests.set(err, manifest);
+   return err;
+}
+
+/** The manifest a run that threw `err` records, if it carries one. */
+export function failedRunManifestOf(
+   err: unknown,
+): FailedRunManifest | undefined {
+   return typeof err === "object" && err !== null
+      ? failedRunManifests.get(err)
+      : undefined;
 }
 
 /** Whether retrying a whole run that threw `err` could succeed. */

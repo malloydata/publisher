@@ -2001,7 +2001,7 @@ describe.skipIf(process.platform === "win32")(
          expect(orders.rows).toEqual(live.orders);
       });
 
-      it("fails a run whose every build fails, commits no manifest, and leaves the catalog and serving as they were", async () => {
+      it("F-17: fails a run whose every build fails, records each source's failure on a manifest that is never served, and leaves the catalog and serving as they were", async () => {
          const filesBefore = await lake.dataFiles();
          const failed = await failing(
             (sql) => {
@@ -2012,7 +2012,22 @@ describe.skipIf(process.platform === "win32")(
             () => lake.run({ forceRefresh: true }),
          );
          expect(failed.status).toBe("FAILED");
-         expect(failed.manifest ?? null).toBeNull();
+         // Each source's own reason, and no entry: the run names no table.
+         expect(failed.manifest?.entries).toEqual({});
+         expect(
+            Object.values(failed.manifest?.failures ?? {})
+               .map((f) => [f.sourceName, f.reason])
+               .sort(),
+         ).toEqual([
+            [
+               "daily",
+               "Failed to materialize source 'daily' into storage destination 'lake': injected: write failed",
+            ],
+            [
+               "orders",
+               "Failed to materialize source 'orders' into storage destination 'lake': injected: write failed",
+            ],
+         ]);
          expect(failed.error).toBe(
             "orders: Failed to materialize source 'orders' into storage destination 'lake': injected: write failed; " +
                "daily: Failed to materialize source 'daily' into storage destination 'lake': injected: write failed",

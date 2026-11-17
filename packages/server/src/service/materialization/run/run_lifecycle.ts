@@ -19,7 +19,7 @@ import {
    MaterializationConflictError,
    MaterializationNotFoundError,
 } from "../../../errors";
-import { classifyRunFailure } from "./build_failure_class";
+import { classifyRunFailure, failedRunManifestOf } from "./build_failure_class";
 import { logger } from "../../../logger";
 import {
    MaterializationMode,
@@ -159,10 +159,14 @@ export class RunLifecycle {
             const next = cancelled ? "CANCELLED" : "FAILED";
             const code = errorCodeOf(err);
             // Whether retrying the run could help, for a consumer that
-            // decides on retries: a failed run commits no manifest, so no
-            // per-source `failures` carry it. Omitted when unclassified, and
+            // decides on retries. A run that built nothing also records each
+            // source's own answer, in its manifest's `failures`; any other
+            // failed run commits no manifest. Omitted when unclassified, and
             // for a cancel, which was asked for.
             const retryable = cancelled ? undefined : classifyRunFailure(err);
+            // Never served: every reader that binds or reuses a run counts
+            // MANIFEST_FILE_READY runs only.
+            const failed = cancelled ? undefined : failedRunManifestOf(err);
             const extra: Record<string, unknown> = {
                ...(retryable !== undefined
                   ? { errorRetryable: retryable }
@@ -224,6 +228,16 @@ export class RunLifecycle {
                         completedAt: new Date(),
                         error: cancelled ? "Cancelled" : message,
                         ...(metadata ? { metadata } : {}),
+                        ...(failed
+                           ? {
+                                manifest: {
+                                   builtAt: new Date().toISOString(),
+                                   entries: {},
+                                   failures: failed.failures,
+                                   strict: false,
+                                },
+                             }
+                           : {}),
                      },
                      statusesInto(next),
                   );
