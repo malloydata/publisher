@@ -37,6 +37,7 @@ The lockdown is part of each instance's configuration identity, so a locked inst
 - A model or query that reads a remote file (`https://`, `s3://`, `gs://`) through a plain `duckdb` connection, the package sandbox included, now fails. Read it through a configured connection instead: a `duckdb` connection whose `attachedDatabases` holds a credential for the bucket, or a `ducklake` connection.
 - `setupSQL` on an environment `duckdb` connection with no `attachedDatabases` runs confined: it cannot reach the network, read or write outside the environment directory, or load an extension.
 - A `duckdb` connection with `attachedDatabases` can read the local files of its environment directory and URLs of its attached storage, nothing else.
+- In the package sandbox, a file that is a symlink out of the package is refused, and so is a relative glob over the package's top level (`'*.csv'`); a glob in a subdirectory (`'data/*.csv'`), a named file, or an absolute path inside the package reads as before.
 - On Windows, where Malloy has no `sandboxed` policy, the package sandbox runs under `local` (no network, locked), without directory confinement.
 
 **Known residual:** confining a connection to its data path is not org isolation inside one shared bucket. Isolating orgs that share a bucket requires credentials the host scopes per org; see [security-posture.md](docs/security-posture.md#known-gaps), gap 6, which also lists the other limits.

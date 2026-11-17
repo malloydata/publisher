@@ -393,7 +393,9 @@ What it does not cover, so a multi-tenant deployment still has to:
   permission check, so the package's top-level names are allowed there too, unless the working
   directory already holds that name. A sandbox may therefore create, but never overwrite or read
   someone else's, a file of one of those names in the server's working directory; run Publisher
-  from a directory nothing else reads.
+  from a directory nothing else reads. A relative glob over the package's top level
+  (`'*.csv'`) is refused, because it lists the working directory; a glob in a subdirectory
+  (`'data/*.csv'`), a named file, or an absolute path reads.
 - **Windows** has no `sandboxed` policy: the package sandbox runs under Malloy's `local` policy (no
   network, no extension install, locked configuration), without directory confinement.
 - **Malloy's restricted mode** remains the control for caller-supplied Malloy on a shared worker:
