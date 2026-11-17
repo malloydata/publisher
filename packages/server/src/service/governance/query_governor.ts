@@ -222,6 +222,27 @@ export const REQUEST_CHAIN_MAX_NAMES = 64;
 /** The one sentence a gated model answers a hidden, hidden-and-locked or absent name with. */
 const GENERIC_NOT_QUERYABLE = "Query target is not queryable.";
 
+/** A run target's given-reading terms, its own and each join's, by text. */
+interface GivenTerms {
+   own: string[];
+   joins: ReadonlyMap<string, string[]>;
+}
+
+/**
+ * Whether a routed compile applies the live one's given-reading terms: its
+ * run target's exactly, and each join it declares exactly as live's join of
+ * that name (a join live does not have differs).
+ */
+function sameGivenTerms(live: GivenTerms, routed: GivenTerms): boolean {
+   const same = (a: readonly string[], b: readonly string[] | undefined) =>
+      b !== undefined && a.join("\u0000") === b.join("\u0000");
+   if (!same(live.own, routed.own)) return false;
+   for (const [name, codes] of routed.joins) {
+      if (!same(codes, live.joins.get(name))) return false;
+   }
+   return true;
+}
+
 /**
  * One request to {@link QueryGovernor.govern}: who is asking (givens and
  * privileges), and what the caller wrote.
@@ -717,20 +738,14 @@ export class QueryGovernor {
             );
          }
       }
-      if (request.reprovesGivenTerms && !request.bypassAuthorize) {
+      // Model semantics, not authorization: checked under the bypass too.
+      if (request.reprovesGivenTerms) {
          const [expected, written] = await Promise.all([
             live ? this.runTargetGivenTerms(live) : undefined,
             this.runTargetGivenTerms(compiled.runnable),
          ]);
-         if (
-            !expected ||
-            !written ||
-            expected.join("\u0000") !== written.join("\u0000")
-         ) {
-            await this.denyRoutedPastGate(
-               compiled.runnable,
-               "given_terms_differ",
-            );
+         if (!expected || !written || !sameGivenTerms(expected, written)) {
+            await this.denyGivenTermsDiffer(compiled.runnable);
          }
       }
       // The compile that runs: live, or the served copy when it answers.
@@ -768,11 +783,7 @@ export class QueryGovernor {
     */
    private async denyRoutedPastGate(
       routed: QueryMaterializer,
-      why:
-         | "no_graft_scope"
-         | "no_gate_found"
-         | "gate_set_differs"
-         | "given_terms_differ",
+      why: "no_graft_scope" | "no_gate_found" | "gate_set_differs",
    ): Promise<never> {
       const source = await this.resolveAuthorizeSourceFromRunnable(routed);
       recordRowLevelGateDecision("denied_by_gate", "entry_point");
@@ -783,16 +794,50 @@ export class QueryGovernor {
       throw AccessDeniedError.forSource(source ?? "unknown");
    }
 
-   /** The run target's given-reading `where:` terms, by text; undefined fails closed. */
+   /**
+    * The run target's given-reading `where:` terms, by text, and each of its
+    * joins' (a join re-pointed at a stored table must carry its source's);
+    * undefined fails closed.
+    */
    private async runTargetGivenTerms(
       runnable: QueryMaterializer,
-   ): Promise<string[] | undefined> {
+   ): Promise<GivenTerms | undefined> {
       try {
          const { struct } = await this.resolveRunTargetStruct(runnable);
-         return struct ? givenWhereCodes(struct) : undefined;
+         const own = struct ? givenWhereCodes(struct) : undefined;
+         if (!own) return undefined;
+         const joins = new Map<string, string[]>();
+         for (const f of (struct?.fields ?? []) as {
+            join?: unknown;
+            name?: string;
+            as?: string;
+         }[]) {
+            if (f.join === undefined) continue;
+            const codes = givenWhereCodes(f);
+            if (!codes) return undefined;
+            joins.set(f.as ?? f.name ?? "", codes);
+         }
+         return { own, joins };
       } catch {
          return undefined;
       }
+   }
+
+   /**
+    * Deny a routed answer whose given-reading `where:` terms differ from
+    * live's ({@link GovernRequest.reprovesGivenTerms}); opaque to the caller.
+    * Not a gate decision, so no gate metric counts it: its error-level log
+    * line is the signal.
+    */
+   private async denyGivenTermsDiffer(
+      routed: QueryMaterializer,
+   ): Promise<never> {
+      const source = await this.resolveAuthorizeSourceFromRunnable(routed);
+      logger.error(
+         "A routed answer's given-reading where: terms differ from the live query's on its own compile; denying",
+         { modelPath: this.modelPath, source },
+      );
+      throw AccessDeniedError.forSource(source ?? "unknown");
    }
 
    /**

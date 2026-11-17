@@ -193,10 +193,10 @@ Nothing about a rollup appears in model discovery. Your model is never edited, s
 
 ## Where the rollup's table is created
 
-You do not name a rollup's table — Publisher derives it from the base, the grain and a
-digest, so the resolver and the content address can rely on it. You *do* choose the
-schema or dataset it is created in, with the same `name=` every other table is placed
-with, and on some warehouses you must.
+A rollup's table is Publisher's to identify — its address and the hash ending its name
+derive from the base, the grain and a digest, so the resolver and the content address can
+rely on it. With the same `name=` every other table takes, you choose the schema or
+dataset it is created in, which on some warehouses you must, and how its name starts.
 
 ```malloy
 source: orders is bigquery.table('project.raw.orders') extend {
@@ -205,18 +205,27 @@ source: orders is bigquery.table('project.raw.orders') extend {
 }
 ```
 
-That builds `analytics.<package>__<file>__orders_by_category__p<hash>`, the rollup's
-[readable name](materialization.md#readable-table-names) in `analytics`. A rollup's
-`name=` places its table: everything before the last dot is the container, and the leaf
-is not used, since Publisher names a rollup's table itself. A `name=` with no container
-(`name="orders_rollup"`) would place nothing, so it fails the publish and the load
-(`preaggregate-invalid`). `#@ preaggregate grain="category" name="analytics.orders_rollup"`
+That builds `analytics.orders_rollup__p<hash>`. Everything before the last dot is the
+container, and the leaf takes the place of the
+[readable name](materialization.md#readable-table-names)'s prefix
+(`<package>__<file>__orders_by_category`), as a `name=` does under `scope: "version"`; the
+`__p<hash>` that keeps the name unique is always Publisher's, so the table is never at the
+`name=` itself. A `name=` with no dot (`name="orders_rollup"`) sets only the prefix, in the
+connection's default schema. Without `name=`, the table takes the readable name. The leaf
+is written into the name as it reads, lowercased (`OrdersRollup` names `ordersrollup__p<hash>`):
+a leaf the name would otherwise rewrite (a space, punctuation, a leading digit, `__`), an
+empty one, a container needing quotes, or a leaf ending as Publisher's own names do
+(`__p<8 hex>`) fails the publish and the load (`preaggregate-invalid`), and so do measures at
+one grain naming different leaves. Two rollups that compile alike but name different leaves
+are two tables. Changing the leaf renames the table, which is rebuilt once under the new
+name, and the old table is dropped once that run commits and is served. `#@ preaggregate grain="category" name="analytics.orders_rollup"`
 places a v1 rollup the same way.
 
-**`namespace=` is deprecated.** `namespace="analytics"` is the older spelling of the same
-container. It is read for one more release, places the table exactly where
-`name="analytics.<table>"` does (the table does not move when you switch), and warns
-`deprecated-preaggregate-namespace` naming the rewrite. Writing both `name=` and
+**`namespace=` is deprecated.** `namespace="analytics"` is the older spelling of the
+container alone. It is read for one more release, places the table in `analytics` under
+its readable name, and warns `deprecated-preaggregate-namespace` naming the rewrite,
+`name="analytics.<table>"`; switching keeps the table's container and address, and
+renames it under the leaf you choose. Writing both `name=` and
 `namespace=` on one line fails the publish and the load (`preaggregate-invalid`).
 
 **BigQuery requires it.** An unqualified `CREATE` is rejected outright there
@@ -254,7 +263,7 @@ on `#(preaggregate)` and `#@ preaggregate` alike, so the two spellings land in o
 schema. A rollup's own `name=` overrides that, and is the only option when the base is
 not materialized at all, which is common: the annotation goes on a measure, and the
 source it belongs to need not be materialized. A rollup's table is never its base's,
-whatever the two `name=`s say: the rollup's leaf is always its own readable name.
+whatever the two `name=`s say: the rollup's name always ends in its own `__p<hash>`.
 
 A base that also carries `storage=` lends nothing — not its container, and not its
 destination. See [Rollups in the managed store](#rollups-in-the-managed-store) below.
