@@ -21,10 +21,10 @@ import {
 } from "../annotation_reader";
 import { isRollupOrigin, originOf, originOfTable } from "./domain/table_plans";
 
-const API_DOC = fs.readFileSync(
-   path.join(__dirname, "../../../../../api-doc.yaml"),
-   "utf8",
-);
+// A Windows checkout ends lines with \r\n; the lookups below match \n.
+const API_DOC = fs
+   .readFileSync(path.join(__dirname, "../../../../../api-doc.yaml"), "utf8")
+   .replace(/\r\n/g, "\n");
 
 /** The `enum:` line of `property` inside `schema`, read off api-doc.yaml. */
 function enumOf(schema: string, property: string): string[] {
