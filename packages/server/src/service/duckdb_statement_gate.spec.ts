@@ -93,36 +93,90 @@ describe("concurrent statements on one DuckDB connection", () => {
       expect(await drain(connection, sql)).toBe(1);
    });
 
-   it("rejects a stream whose signal fires while it waits at the gate", async () => {
-      const slow = drain(connection, "SELECT * FROM t", async (n) => {
-         if (n % 100 === 0) await sleep(2);
+   /** A stream that holds the gate until `release()`, so waiters' timing is not a guess. */
+   async function holdGate(): Promise<{
+      release: () => void;
+      done: Promise<number>;
+   }> {
+      let release!: () => void;
+      const parked = new Promise<void>((r) => (release = r));
+      let started!: () => void;
+      const first = new Promise<void>((r) => (started = r));
+      const done = drain(connection, "SELECT * FROM t", async (n) => {
+         if (n === 1) {
+            started();
+            await parked;
+         }
       });
-      await sleep(5);
-      await expect(
-         streamSqlWithBudget(
-            connection,
-            "SELECT * FROM t",
-            { ...ALL, abortSignal: AbortSignal.timeout(30) },
-            { maxRows: 0, maxBytes: 0 },
-         ),
-      ).rejects.toThrow();
-      expect(await slow).toBe(ROWS);
+      await first;
+      return { release, done };
+   }
+
+   it("rejects a stream whose signal fires while it waits at the gate, before the holder finishes", async () => {
+      const holder = await holdGate();
+      try {
+         // The holder is parked until the finally below, so any settle before
+         // then came from the waiter's own signal, not from the gate freeing.
+         const outcome = await Promise.race([
+            streamSqlWithBudget(
+               connection,
+               "SELECT * FROM t",
+               { ...ALL, abortSignal: AbortSignal.timeout(30) },
+               { maxRows: 0, maxBytes: 0 },
+            ).then(
+               () => "resolved",
+               () => "rejected",
+            ),
+            sleep(1500).then(() => "still waiting"),
+         ]);
+         expect(outcome).toBe("rejected");
+      } finally {
+         holder.release();
+      }
+      expect(await holder.done).toBe(ROWS);
+      // The abandoned waiter handed its turn on rather than keeping the gate.
+      expect(await drain(connection, "SELECT * FROM t")).toBe(ROWS);
    });
 
-   it("does not run a statement whose signal fired before it got the gate", async () => {
-      const slow = drain(connection, "SELECT * FROM t", async (n) => {
-         if (n % 100 === 0) await sleep(2);
-      });
-      await sleep(5);
-      let rows = 0;
-      for await (const _row of connection.runSQLStream("SELECT * FROM t", {
+   it("does not run a statement whose signal fired while it waited for the gate", async () => {
+      const holder = await holdGate();
+      const ac = new AbortController();
+      const sql =
+         "CREATE TEMP TABLE side AS SELECT 1 AS v\n-- hack: split on this\nSELECT 1";
+      const waiter = (async () => {
+         for await (const _row of connection.runSQLStream(sql, {
+            ...ALL,
+            abortSignal: ac.signal,
+         })) {
+            // drained
+         }
+      })();
+      await sleep(20);
+      ac.abort();
+      await waiter;
+      holder.release();
+      await holder.done;
+      const { rows } = await connection.runSQL(
+         "SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'side'",
+         ALL,
+      );
+      expect(Number(rows[0].n)).toBe(0);
+   });
+
+   it("does not run a statement whose signal fired before it was called", async () => {
+      const sql =
+         "CREATE TEMP TABLE side_pre AS SELECT 1 AS v\n-- hack: split on this\nSELECT 1";
+      for await (const _row of connection.runSQLStream(sql, {
          ...ALL,
-         abortSignal: AbortSignal.timeout(30),
+         abortSignal: AbortSignal.abort(),
       })) {
-         rows++;
+         // drained
       }
-      expect(rows).toBe(0);
-      expect(await slow).toBe(ROWS);
+      const { rows } = await connection.runSQL(
+         "SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'side_pre'",
+         ALL,
+      );
+      expect(Number(rows[0].n)).toBe(0);
    });
 
    it("releases the gate when a stream throws", async () => {

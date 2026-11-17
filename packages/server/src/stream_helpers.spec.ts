@@ -280,4 +280,31 @@ describe("streamSqlWithBudget", () => {
          ),
       ).rejects.toThrow("connection reset");
    });
+
+   it("rejects when the stream ends quietly because the caller's signal aborted", async () => {
+      const callerAc = new AbortController();
+      const conn = {
+         canStream(): true {
+            return true;
+         },
+         // Like db-postgres and db-duckdb: an abort ends the stream with no error.
+         async *runSQLStream(
+            _sql: string,
+            options?: RunSQLOptions,
+         ): AsyncIterableIterator<QueryRecord> {
+            yield { a: 1 };
+            callerAc.abort();
+            if (options?.abortSignal?.aborted) return;
+            yield { a: 2 };
+         },
+      } as unknown as StreamingConnection;
+      await expect(
+         streamSqlWithBudget(
+            conn,
+            "SELECT 1",
+            { abortSignal: callerAc.signal },
+            { maxRows: 10, maxBytes: 1_000 },
+         ),
+      ).rejects.toThrow();
+   });
 });

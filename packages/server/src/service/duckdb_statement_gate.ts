@@ -16,11 +16,11 @@
  * Wraps the same two entry points as duckdb_hard_close.ts, and is installed
  * first so the hard close counts a queued statement as in flight too.
  *
- * Holds to know: a stream nobody finishes or returns holds the gate, and so does
+ * Known holds: a stream nobody finishes or returns holds the gate, and so does
  * a consumer that runs another statement on the same connection inside its
  * `for await` (its only consumer, stream_helpers.ts, drains with `for await`).
- * Calling `idle()` between a stream's `setup()` and its `acquire()` would
- * deadlock; Publisher only calls `shutdown("close")`.
+ * `idle()` deadlocks only if another caller starts setup outside the gate after
+ * `isSetup` was reset; Publisher only calls `shutdown("close")`.
  *
  * Upstream fix: `@malloydata/db-duckdb` (malloydata/malloy) should serialize
  * statements per native connection, or hold the connection for a stream's life,
@@ -48,6 +48,33 @@ const gates = new WeakMap<object, Mutex>();
  */
 const holding = new AsyncLocalStorage<{ connection: object; held: boolean }>();
 let installed = false;
+
+/**
+ * Takes the gate, or gives up when `signal` aborts first (undefined), so a
+ * timed-out waiter fails at its timer instead of when the holder finishes.
+ * `async-mutex` cannot cancel one waiter, so an abandoned acquire stays queued
+ * and hands its turn straight on when it arrives.
+ */
+async function acquireUnlessAborted(
+   gate: Mutex,
+   signal: AbortSignal | undefined,
+): Promise<(() => void) | undefined> {
+   if (signal?.aborted) return undefined;
+   const acquired = gate.acquire();
+   if (!signal) return acquired;
+   let onAbort!: () => void;
+   const aborted = new Promise<undefined>((resolve) => {
+      onAbort = () => resolve(undefined);
+      signal.addEventListener("abort", onAbort, { once: true });
+   });
+   try {
+      const release = await Promise.race([acquired, aborted]);
+      if (!release) void acquired.then((handOn) => handOn());
+      return release;
+   } finally {
+      signal.removeEventListener("abort", onAbort);
+   }
+}
 
 function gateOf(connection: object): Mutex {
    let gate = gates.get(connection);
@@ -87,15 +114,15 @@ export function installDuckDBStatementGate(): void {
       // Before the gate: the first statements run the connection's setup, which
       // would queue behind a stream that is waiting for it.
       await this.setup();
-      const release = await gateOf(this).acquire();
+      const signal = (options as { abortSignal?: AbortSignal } | undefined)
+         ?.abortSignal;
+      const release = await acquireUnlessAborted(gateOf(this), signal);
+      // A signal that fired while waiting: end without running the statement.
+      if (!release) return;
       const hold = { connection: this, held: true };
       try {
-         // A signal that fired while waiting: end without running the statement.
-         if (
-            (options as { abortSignal?: AbortSignal } | undefined)?.abortSignal
-               ?.aborted
-         )
-            return;
+         // The abort can win the same tick as the gate.
+         if (signal?.aborted) return;
          const inner = runSQLStream.call(this, sql, options);
          try {
             for (;;) {
