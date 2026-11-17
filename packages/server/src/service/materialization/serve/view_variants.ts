@@ -993,10 +993,15 @@ async function viewShape(
 export function alteredColumnsRefusal(
    table: Pick<ResolvedTable, "leftOut">,
 ): string | undefined {
-   const [first, ...rest] = table.leftOut ?? [];
-   if (first === undefined) return undefined;
-   const names = [first, ...rest].map((c) => `\`${c}\``).join(", ");
-   return `its table was altered outside a build, and no cast reads ${names} as declared`;
+   return table.leftOut?.length
+      ? alteredColumnsDetail(table.leftOut)
+      : undefined;
+}
+
+/** Why a stored table's columns the bind left out cannot be read, for a decline. */
+export function alteredColumnsDetail(leftOut: readonly string[]): string {
+   const detail = `its table was altered outside a build, and no cast reads ${leftOut.map((c) => `\`${c}\``).join(", ")} as declared`;
+   return detail;
 }
 
 /**

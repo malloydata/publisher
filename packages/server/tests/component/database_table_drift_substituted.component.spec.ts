@@ -454,17 +454,21 @@ for (const tier of tiers) {
             (w) => w.code === "storage-column-type-mismatch",
          );
          const cast = warnings.filter((w) =>
-            w.message.includes("read through a cast"),
+            (w.message ?? "").includes("read through a cast"),
          );
          const lost = warnings.filter((w) =>
-            w.message.includes("answered live until the table is rebuilt"),
+            (w.message ?? "").includes(
+               "answered live until the table is rebuilt",
+            ),
          );
          // The view and query of one text share a table: it and the rollup
          // each cast `flag`.
          expect(cast.length).toBe(2);
          // No warning answers the whole table live any more.
          expect(
-            warnings.filter((w) => w.message.includes("every query on it")),
+            warnings.filter((w) =>
+               (w.message ?? "").includes("every query on it"),
+            ),
          ).toEqual([]);
          // Each left-out drift, on the shared view-and-query table and on
          // the rollup's.

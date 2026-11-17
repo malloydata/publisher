@@ -176,6 +176,7 @@ import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
+import { alteredColumnsDetail } from "./view_variants";
 import {
    canonicalStoredSchema,
    nativeTypeLookup,
@@ -1675,7 +1676,7 @@ export class RollupVariantServe {
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
    ): string | undefined {
       if (table.leftOut?.length) {
-         return `its table was altered outside a build, and no cast reads ${table.leftOut.map((c) => `\`${c}\``).join(", ")} as declared`;
+         return alteredColumnsDetail(table.leftOut);
       }
       if (!table.binding) return undefined;
       return storedRollupReads(
