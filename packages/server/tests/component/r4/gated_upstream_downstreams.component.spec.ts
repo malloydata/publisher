@@ -320,13 +320,13 @@ for (const gated of [false, true]) {
          }
          // A rollup over a query on it: its given (ORG_ID) has no default, so
          // the build cannot be planned with a value and the eligibility gate
-         // refuses it under the rollup's own reason, the one path that still
-         // produces it.
+         // refuses it, under the reason every mechanism gives a build that
+         // reads a given.
          for (const r of ["pre1_q", "pre2_q", "pre2s_q"]) {
             const hit = refused.find((x) => x.startsWith(`gv_${r}__rollup__`));
             expect([r, hit?.split(":").pop()]).toEqual([
                r,
-               "preaggregate_over_dynamic_source",
+               "given_in_persisted_query",
             ]);
          }
       });

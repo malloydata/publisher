@@ -10767,13 +10767,7 @@ components:
             `#(materialize)` a field that is not a stored dimension);
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns);
-            `preaggregate_over_dynamic_source` (a rollup whose base reads a
-            given that has no default, so its build cannot be planned with a
-            value; a rollup over a caller-scoped base otherwise takes the
-            reasons above, as every mechanism does: `given_in_persisted_query`,
-            `given_where_over_unstored_field` or `inherited_where_with_given`.
-            In 0.14.0 every rollup over a caller-scoped base reported
-            `preaggregate_over_dynamic_source`); `read_only_dialect` (a colocated build on a dialect that
+            `read_only_dialect` (a colocated build on a dialect that
             cannot create tables; SQL Server today, whose connection reports
             `canPersist: false`); `needs_qualified_name` (a colocated table on
             BigQuery, where a table needs a dataset, whose `name=` names none:
@@ -10837,7 +10831,11 @@ components:
             given reasons above), `reads_given` (a persisted view or query
             whose result reads a given, and a rollup's given-reading refusals,
             now `given_in_persisted_query`, `inherited_where_with_given` or
-            `given_where_over_unstored_field`; never in a release), `not_duckdb_portable` (a `storage=` table no
+            `given_where_over_unstored_field`; never in a release),
+            `preaggregate_over_dynamic_source` (shipped in 0.14.0: a rollup
+            over a caller-scoped source, now `given_in_persisted_query`,
+            `given_where_over_unstored_field` or `inherited_where_with_given`,
+            as every mechanism names the same case), `not_duckdb_portable` (a `storage=` table no
             column of which Malloy can type is now built, and its source is
             answered live), the three `partition_*` reasons (`partition=` is a
             retired key, which fails the publish and the load as
