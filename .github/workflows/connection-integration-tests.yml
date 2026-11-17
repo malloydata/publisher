@@ -14,6 +14,7 @@ on:
       # The harnesses and fixtures every spec below is built on.
       - "packages/server/src/test_helpers/**"
       - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
+      - "packages/server/tests/component/storage_build_bigquery_cancel.component.spec.ts"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"
@@ -51,6 +52,7 @@ on:
       # The harnesses and fixtures every spec below is built on.
       - "packages/server/src/test_helpers/**"
       - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
+      - "packages/server/tests/component/storage_build_bigquery_cancel.component.spec.ts"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"
@@ -293,3 +295,12 @@ jobs:
           cd packages/server
           bun test --timeout 100000 ./tests/component/storage_build_bigquery.component.spec.ts
 
+
+      # A cancelled storage= build over BigQuery cancels its BigQuery job, not
+      # only DuckDB's wait for it (F-22). Uses the BQ_PRESTO_TRINO_KEY service
+      # account set up above (GOOGLE_APPLICATION_CREDENTIALS and
+      # BIGQUERY_TEST_PROJECT_ID); the read is compute-only, so 0 bytes billed.
+      - name: Run storage= build BigQuery cancel test
+        run: |
+          cd packages/server
+          bun test --timeout 200000 ./tests/component/storage_build_bigquery_cancel.component.spec.ts
