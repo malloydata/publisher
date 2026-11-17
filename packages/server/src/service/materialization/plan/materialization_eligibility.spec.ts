@@ -527,11 +527,9 @@ source: mixed is raw -> { select: * } extend {
       ]);
    });
 
-   it("refuses a rollup over a caller-scoped source on its own named grounds", async () => {
-      // The outcome does not change — such a rollup already refused, as a
-      // `given_in_persisted_query`. Two things do. The reason names the rollup
-      // case, so it survives a change to the one it used to ride on; and the
-      // advice is followable. The old message told the author to move the given
+   it("refuses a rollup over a caller-scoped source with followable advice", async () => {
+      // Under the one reason every mechanism gives a build that reads a given,
+      // with a rollup's own advice. The old message told the author to move the given
       // into the source's extend block, where for a rollup it ALREADY is: it is
       // the rollup READING the source that applies that `where:` and bakes the
       // value.
@@ -556,7 +554,9 @@ source: scoped__preagg__category is scoped -> {
       } catch (caught) {
          err = caught as MaterializationEligibilityError;
       }
-      expect(err?.reason).toBe("preaggregate_over_dynamic_source");
+      // The one reason every mechanism gives a build that reads a given;
+      // `preaggregate_over_dynamic_source` is retained, no longer produced.
+      expect(err?.reason).toBe("given_in_persisted_query");
       // Not the advice that leads nowhere.
       expect(err?.message).not.toContain("extend block");
       expect(err?.message).toContain("no read-time re-application");
