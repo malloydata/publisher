@@ -1,23 +1,6 @@
 {
   "internal": {
-    "annotationFindings": [
-      {
-        "code": "preaggregate-access-filter",
-        "message": "#(preaggregate) on measure \"total\" of source \"by_column\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
-        "model": "m.malloy",
-        "route": "preaggregate",
-        "subject": "by_column.total",
-        "tier": "unservable"
-      },
-      {
-        "code": "preaggregate-access-filter",
-        "message": "#(preaggregate) on measure \"total\" of source \"by_lock\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
-        "model": "m.malloy",
-        "route": "preaggregate",
-        "subject": "by_lock.total",
-        "tier": "unservable"
-      }
-    ],
+    "annotationFindings": [],
     "builds": [
       {
         "connectionName": "duckdb",
@@ -29,9 +12,26 @@
           "gated_mat@<pkg>/m.malloy",
           "locked_mat@<pkg>/m.malloy"
         ]
+      },
+      {
+        "connectionName": "duckdb",
+        "dependsOn": {
+          "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": [],
+          "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": []
+        },
+        "order": [
+          "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy",
+          "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy"
+        ]
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "gated_mat@<pkg>/m.malloy": "materialize",
+      "locked_mat@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "gated_mat@<pkg>/m.malloy": {
         "buildSourceName": "gated_mat__mat",
@@ -226,8 +226,127 @@
         "zoneFreeRows": true
       }
     },
-    "rollupPlans": {},
+    "rollupPlans": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "by_column",
+        "baseGateOwn": true,
+        "baseGated": true,
+        "baseSourceID": "by_column@<pkg>/m.malloy",
+        "baseSourceName": "by_column",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "region",
+          "status"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "by_column__rollup__region_status__5f704d70",
+        "variant": true
+      },
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
+        "baseDeclaredName": "by_lock",
+        "baseGateOwn": true,
+        "baseGated": true,
+        "baseSourceID": "by_lock@<pkg>/m.malloy",
+        "baseSourceName": "by_lock",
+        "fanOutDimensions": [],
+        "grainDimensions": [
+          "status"
+        ],
+        "internalGrain": [],
+        "measures": [
+          {
+            "name": "total",
+            "partialName": "total__partial",
+            "reaggregate": "sum"
+          }
+        ],
+        "rollupMeasures": [
+          {
+            "fanOutDimensions": [],
+            "merged": {
+              "column": "total__partial",
+              "kind": "partial",
+              "reaggregate": "sum"
+            },
+            "name": "total",
+            "partials": [
+              {
+                "column": "total__partial",
+                "leaf": {
+                  "aggregate": "sum",
+                  "expr": {
+                    "args": [],
+                    "fn": "sum",
+                    "kind": "method",
+                    "path": [
+                      "amount"
+                    ]
+                  },
+                  "joinPath": [],
+                  "reads": [
+                    [
+                      "amount"
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "rollupSourceName": "by_lock__rollup__status__eb4380b4",
+        "variant": true
+      }
+    },
     "sourceGateOutcomes": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "rejected",
+        "inheritedRowFilter": true
+      },
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
+        "attributed": true,
+        "classification": "rejected"
+      },
       "gated_mat@<pkg>/m.malloy": {
         "attributed": true,
         "classification": "row_level"
@@ -238,40 +357,13 @@
       }
     },
     "sourceModelPaths": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": "m.malloy",
       "gated_mat@<pkg>/m.malloy": "m.malloy",
       "locked_mat@<pkg>/m.malloy": "m.malloy"
     }
   },
-  "loadWarnings": [
-    {
-      "code": "preaggregate-access-filter",
-      "message": "#(preaggregate) on measure \"total\" of source \"by_column\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "by_column.total"
-    },
-    {
-      "code": "preaggregate-access-filter",
-      "message": "#(preaggregate) on measure \"total\" of source \"by_lock\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "by_lock.total"
-    },
-    {
-      "code": "persist-source-refused",
-      "message": "Source 'gated_mat' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "gated_mat"
-    },
-    {
-      "code": "persist-source-refused",
-      "message": "Source 'locked_mat' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-      "model": "m.malloy",
-      "severity": "warn",
-      "subject": "locked_mat"
-    }
-  ],
+  "loadWarnings": [],
   "wirePlan": {
     "graphs": [
       {
@@ -288,28 +380,210 @@
             }
           ]
         ]
+      },
+      {
+        "connectionName": "duckdb",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy"
+            }
+          ]
+        ]
       }
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {
+    "refusedSources": {},
+    "sources": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "by_column__rollup__region_status__5f704d70",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "by_column",
+          "grainDimensions": [
+            "region",
+            "status"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60",
+        "sourceID": "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:ae685f4462c80fbb"
+      },
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
+        "annotationFields": {},
+        "columns": [
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "total__partial",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "by_lock__rollup__status__eb4380b4",
+        "origin": "preaggregate",
+        "preaggregate": {
+          "baseSourceName": "by_lock",
+          "grainDimensions": [
+            "status"
+          ],
+          "measures": [
+            "total"
+          ]
+        },
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20",
+        "sourceID": "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy",
+        "sql": "sha256:7409a02ee325a1aa"
+      },
       "gated_mat@<pkg>/m.malloy": {
-        "message": "Source 'gated_mat' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+        "annotationFields": {
+          "name": "gated_mat",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
         "modelPath": "m.malloy",
         "name": "gated_mat",
-        "reason": "authorize",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
         "sourceID": "gated_mat@<pkg>/m.malloy",
-        "tier": "storage"
+        "sql": "sha256:d7205aaa5763e7e3"
       },
       "locked_mat@<pkg>/m.malloy": {
-        "message": "Source 'locked_mat' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
+        "annotationFields": {
+          "name": "locked_mat",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "customer_id",
+            "type": "number"
+          },
+          {
+            "name": "region",
+            "type": "string"
+          },
+          {
+            "name": "status",
+            "type": "string"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "discount",
+            "type": "number"
+          },
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "created_at",
+            "type": "timestamp"
+          },
+          {
+            "name": "order",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
         "modelPath": "m.malloy",
         "name": "locked_mat",
-        "reason": "authorize",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
         "sourceID": "locked_mat@<pkg>/m.malloy",
-        "tier": "storage"
+        "sql": "sha256:d7205aaa5763e7e3"
       }
-    },
-    "sources": {}
+    }
   }
 }

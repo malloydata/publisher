@@ -19,13 +19,16 @@
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    freshLoadPool,
    loadFixture,
    type Outcome,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import {
    buildScenario,
    disposeScenarios,
@@ -33,6 +36,7 @@ import {
    type R4Fixture,
    type R4Scenario,
    type Row,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
@@ -90,6 +94,12 @@ interface Case {
    live?: true;
    /** The DuckDB tiers only (HUGEINT columns). */
    duckdbOnly?: true;
+   /**
+    * Answered live from a `storage=` table (P4-01): a storage destination is
+    * DuckLake, whose Parquet files hold a 128-bit integer as a DOUBLE, so the
+    * column has no exact read there. Served from a colocated DuckDB table.
+    */
+   liveOnStorage?: true;
 }
 
 const DUCKDB_CASES: Case[] = [
@@ -132,6 +142,7 @@ const DUCKDB_CASES: Case[] = [
          "run: s -> { group_by: g; aggregate: th is h.sum(), top is hmax.max(); order_by: g }",
       expect: { column: "top", values: [`${HUGE_MAX}`, "-5"] },
       duckdbOnly: true,
+      liveOnStorage: true,
    },
 ];
 
@@ -201,6 +212,8 @@ interface Tier {
    cases: Case[];
    /** Postgres: live rounds past 2^53, and served must equal that. */
    rounds?: true;
+   /** A `storage=` (DuckLake in production) tier. */
+   storage?: true;
    scenario: () => Promise<R4Scenario & { cleanup?: () => Promise<void> }>;
 }
 
@@ -209,6 +222,7 @@ const duckdbCases = [...DUCKDB_CASES, ...AUTHOR_FIELD_CASES];
 const tiers: Tier[] = [
    {
       label: "#@ persist storage=, served copy",
+      storage: true,
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       cases: duckdbCases,
       scenario: async () => ({
@@ -218,6 +232,7 @@ const tiers: Tier[] = [
    },
    {
       label: "#(materialize) storage=",
+      storage: true,
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       cases: [...duckdbCases, ...JOIN_CASES],
       scenario: async () => ({
@@ -302,9 +317,7 @@ for (const tier of tiers) {
          await cleanup?.();
       });
 
-      it("compiles the served copy with no problem", async () => {
-         expect(await fixture.servedCopyProblems()).toEqual([]);
-      });
+      itLeavesNoServedCopyProblem(() => fixture);
 
       for (const c of tier.cases) {
          it(c.name, async () => {
@@ -334,7 +347,7 @@ for (const tier of tiers) {
             expect(bigintFields(run.servedFields)).toEqual(
                bigintFields(run.liveFields),
             );
-            if (c.live) {
+            if (c.live || (c.liveOnStorage && tier.storage)) {
                expect(run.servedVia).toBeUndefined();
                return;
             }
@@ -353,15 +366,9 @@ for (const tier of tiers) {
  */
 {
    describe("R4: a big-integer column no cast reads exactly is left out per query (served copy)", () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
-            },
-         }).restore;
          fixture = await buildScenario({
             files: {
                "m.malloy": `##! experimental { persistence }
@@ -386,7 +393,6 @@ source: s is base -> { select: * } extend {
          }
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 

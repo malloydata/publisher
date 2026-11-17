@@ -9,7 +9,7 @@ import {
    MaterializationUpdate,
 } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
-import { newId, Row, rowTimestamps, updateRow } from "./rows";
+import { newId, Row, rowTimestamps, updateRow, updateRowSql } from "./rows";
 import { OWED_RECLAIM_RUN, RUNNING_VERSION_RUN } from "./VersionRepository";
 
 const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
@@ -210,34 +210,11 @@ export class MaterializationRepository {
       id: string,
       updates: MaterializationUpdate,
    ): Promise<Materialization> {
-      // Clear active_key on any transition to a terminal state; keep it on a
-      // transition between non-terminal states, so a run keeps the slot it
-      // was created holding (its package's or its version's). A terminal
-      // state has no way out, so a key is never set again; the fallback only
-      // covers a row written without one. The unique index guarantees no two
-      // active rows ever hold one slot.
-      const activeKey =
-         updates.status === undefined
-            ? []
-            : TERMINAL_STATUSES.has(updates.status)
-              ? ["active_key = NULL"]
-              : [
-                   "active_key = COALESCE(active_key, environment_id || '|' || package_name)",
-                ];
-
       await updateRow(
          this.db,
          "materializations",
          id,
-         {
-            status: updates.status,
-            started_at: updates.startedAt?.toISOString(),
-            completed_at: updates.completedAt?.toISOString(),
-            error: updates.error,
-            metadata: jsonOrNull(updates.metadata),
-            manifest: jsonOrNull(updates.manifest),
-         },
-         activeKey,
+         ...updateColumns(updates),
       );
 
       const updated = await this.getById(id);
@@ -245,6 +222,31 @@ export class MaterializationRepository {
          throw new Error(`Materialization ${id} not found after update`);
       }
       return updated;
+   }
+
+   /**
+    * {@link update}, only while the run's status is one of `fromStatuses`:
+    * one statement, so no writer can change the status between the check and
+    * the write. Null when the status is another (or the run is gone), and
+    * nothing is written.
+    */
+   async updateFrom(
+      id: string,
+      updates: MaterializationUpdate,
+      fromStatuses: readonly MaterializationStatus[],
+   ): Promise<Materialization | null> {
+      if (fromStatuses.length === 0) return null;
+      const { sql, params } = updateRowSql(
+         "materializations",
+         id,
+         ...updateColumns(updates),
+         {
+            condition: `status IN (${fromStatuses.map(() => "?").join(", ")})`,
+            params: [...fromStatuses],
+         },
+      );
+      const rows = await this.db.all<Row>(`${sql} RETURNING *`, params);
+      return rows.length > 0 ? mapRow(rows[0]) : null;
    }
 
    /**
@@ -274,7 +276,7 @@ export class MaterializationRepository {
    }
 
    // Cascade deletes remove records only and issue no DDL: dropping physical
-   // tables is opt-in (deleteMaterialization({ dropTables })), and a DROP here
+   // tables is the caller's, through the connection, and a DROP here
    // could fire against a connection the delete path already tore down.
    //
    // Limitation: standalone, with no control plane owning physical GC, nothing
@@ -303,6 +305,38 @@ export class MaterializationRepository {
          [environmentId, packageName],
       );
    }
+}
+
+/**
+ * The columns an update writes. Clears active_key on any transition to a
+ * terminal state; keeps it on a transition between non-terminal states, so a
+ * run keeps the slot it was created holding (its package's or its version's).
+ * A terminal state has no way out, so a key is never set again; the fallback
+ * only covers a row written without one. The unique index guarantees no two
+ * active rows ever hold one slot.
+ */
+function updateColumns(
+   updates: MaterializationUpdate,
+): [values: Record<string, unknown>, rawAssignments: string[]] {
+   const activeKey =
+      updates.status === undefined
+         ? []
+         : TERMINAL_STATUSES.has(updates.status)
+           ? ["active_key = NULL"]
+           : [
+                "active_key = COALESCE(active_key, environment_id || '|' || package_name)",
+             ];
+   return [
+      {
+         status: updates.status,
+         started_at: updates.startedAt?.toISOString(),
+         completed_at: updates.completedAt?.toISOString(),
+         error: updates.error,
+         metadata: jsonOrNull(updates.metadata),
+         manifest: jsonOrNull(updates.manifest),
+      },
+      activeKey,
+   ];
 }
 
 function mapRow(row: Row): Materialization {

@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "east_west@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "east_west@<pkg>/m.malloy": {
         "buildSourceName": "east_west__mat",

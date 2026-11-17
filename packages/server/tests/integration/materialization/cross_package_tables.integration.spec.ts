@@ -234,22 +234,21 @@ describe.skipIf(!url)("tables of packages that share a schema", () => {
       );
       // Four default-named tables, one per package, and one name= table.
       expect(
-         marks.filter((r) => String(r.name).startsWith("summary__p")),
+         marks.filter((r) => /__summary__p[0-9a-f]{8}$/.test(String(r.name))),
       ).toHaveLength(4);
       expect(marks.find((r) => r.name === "named_t")?.comment).toBe(
          "malloy-publisher:table owner=e1%2Fpa",
       );
    });
 
-   it("deleting a refused package's runs with their tables leaves the other package's table", async () => {
+   it("deleting a refused package's runs leaves the other package's table", async () => {
       const list = (await (
          await fetch(`${api("e1", "pb")}/materializations`)
       ).json()) as { id: string; status: string }[];
       for (const m of list.filter((r) => r.status !== "PENDING")) {
-         await fetch(
-            `${api("e1", "pb")}/materializations/${m.id}?dropTables=true`,
-            { method: "DELETE" },
-         );
+         await fetch(`${api("e1", "pb")}/materializations/${m.id}`, {
+            method: "DELETE",
+         });
       }
       const tables = (
          await pgRows(

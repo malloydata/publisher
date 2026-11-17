@@ -73,6 +73,7 @@ import {
    answeredWith,
    type Answer,
    canDegradeToLive,
+   isStoredDecimalArithmeticError,
    liveFallbackAnswer,
    type Leg,
    runManifestOf,
@@ -187,9 +188,8 @@ export interface ModelQueryResults {
     */
    servedFrom: ServedFrom | null;
    /**
-    * The path report (materialization v2, D1): what answered the query and
-    * why. Undefined only when it could not be assembled; reporting never fails
-    * a query.
+    * The path report (D1): what answered the query and why. Undefined only
+    * when it could not be assembled; reporting never fails a query.
     */
    path?: ApiQueryPath;
    /**
@@ -227,7 +227,7 @@ export interface ModelServingHost {
    legs(pinned: Pinned, servedCopy: ServedCopyServe): readonly Leg[];
    /** What the path report reads of the model, around `servedCopy`. */
    servingHost(servedCopy: ServedCopyServe): QueryServingHost;
-   /** Whether the view leg is on (the path report then names the called view). */
+   /** Whether the view or query leg is on (the path report then names the called view or query). */
    persistedViewsEnabled(): boolean;
    /** `manifest` with the rollups' own entries removed. */
    withoutPreaggregateEntries(
@@ -619,12 +619,7 @@ export class ModelServing {
                authorRunnable: runnable,
             },
             pinned,
-            {
-               modelPath: this.host.modelPath,
-               // G3: a colocated table is read past a row-level gate (it
-               // never leaves the author's warehouse).
-               colocatedKeepsContracts: true,
-            },
+            { modelPath: this.host.modelPath },
          ),
          async () => {
             // Cheap short-circuit for gate-free models. Safe, unlike
@@ -691,18 +686,8 @@ export class ModelServing {
       const governor = this.host.governor;
       const compiledSource =
          await governor.resolveAuthorizeSourceFromRunnable(runnable);
-      const governRequest: GovernRequest = {
+      const governRequest = governRequestOf({
          givens,
-         bypassAuthorize,
-         boundary:
-            admitted.boundary === "deferred"
-               ? { compiledSource, query }
-               : undefined,
-         callerRegion: admitted.callerRegion,
-         recompile: (mm: ModelMaterializer) =>
-            mm.loadRestrictedQuery(queryString),
-         // The caller's OWN text, not the synthesized/injected `queryString`.
-         callerQueryText: query,
          ceiling: {
             audit: ctx.audit,
             source: () => compiledSource ?? sourceName,
@@ -720,11 +705,28 @@ export class ModelServing {
          // gate is re-proven there. Any other routed shape carries no
          // annotations and is never reached past a row-level gate (the
          // router's veto).
-         graftScope:
-            answer.leg === "live" ? undefined : answer.answer.graftScope,
-         routedPastEntryPointGate:
-            answer.leg !== "live" && answer.pastEntryPointGate,
-      };
+         graft: {
+            recompile: (mm: ModelMaterializer) =>
+               mm.loadRestrictedQuery(queryString),
+            graftScope:
+               answer.leg === "live" ? undefined : answer.answer.graftScope,
+         },
+         query: {
+            bypassAuthorize,
+            boundary:
+               admitted.boundary === "deferred"
+                  ? { compiledSource, query }
+                  : undefined,
+            callerRegion: admitted.callerRegion,
+            // The caller's OWN text, not the synthesized/injected `queryString`.
+            callerQueryText: query,
+            routedPastEntryPointGate:
+               answer.leg !== "live" && answer.pastEntryPointGate,
+            // A rollup's variant writes again the given-reading terms its
+            // build left out: re-proven on it.
+            reprovesGivenTerms: answer.leg === "rollup",
+         },
+      });
       const { runnable: governed, decision } = await governor.govern(
          governRequest,
          // The LIVE compile keeps the caller's joins; a routed one does not.
@@ -870,11 +872,10 @@ export class ModelServing {
             ),
       };
       try {
-         // Passed whether or not the query routes. The serve shape declares
-         // this model's given surface (`serveShapeGivens`), and the givens
-         // MUST be passed: a materialized source's re-emitted `where:` may
-         // read one, and dropping it would read the artifact unfiltered
-         // (every caller's rows).
+         // Passed whether or not the query routes. A served answer reads this
+         // model's given surface, and the givens MUST be passed: a stored
+         // source's re-emitted `where:` may read one, and dropping it would
+         // read the table unfiltered (every caller's rows).
          run = await prepareAndRun(
             governed.runnable,
             {
@@ -898,6 +899,8 @@ export class ModelServing {
          //  - only when the query actually routed to storage;
          //  - only per `bindingsAllowDegradeToLive` over the bindings that
          //    produced THIS shape (a sibling source must not decide);
+         //  - or for DECIMAL arithmetic past 38 digits, whatever the policy
+         //    (`isStoredDecimalArithmeticError`): the table is right;
          //  - never for a client error (bad given) or an abort;
          //  - the retry re-supplies the REAL givens, or the live source could
          //    serve unfiltered rows.
@@ -911,7 +914,9 @@ export class ModelServing {
             this.failQuery(ctx, governed, answer, error);
          }
          logger.warn(
-            "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
+            isStoredDecimalArithmeticError(error)
+               ? "Storage-served query's DECIMAL arithmetic exceeded 38 digits; falling back to live"
+               : "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
             {
                modelPath: this.host.modelPath,
                error: error instanceof Error ? error.message : String(error),
@@ -1019,34 +1024,20 @@ export class ModelServing {
          }),
       );
 
-      // Bad givens surface as Malloy `runtime-given-*` errors, mapped to
-      // a 400 (the prefix is a pinned coupling to Malloy's error codes;
-      // also in environment.ts). But a grafted gate's givens bind in the
-      // same prepare/run, and Malloy's message names the missing one,
-      // which `docs/authorize.md` promises a denied caller never sees. So
-      // when a gate applied and a name it reads went unsupplied, refuse
-      // with the opaque 403, ahead of the `MalloyError` rethrow.
-      const gateDenial = isGivenBindingFailure(err)
-         ? this.host.governor.unboundGateDenial(
-              governed.runnable,
-              givens,
-              governed.compiledSource ?? sourceName ?? "unknown",
-              this.host.governor.authorizeReferencedGivenNames,
-           )
-         : undefined;
-      if (gateDenial) {
-         logger.debug("Gate given unbound; denying opaquely", {
-            packageName: this.host.packageName,
-            modelPath: this.host.modelPath,
-            error: err instanceof Error ? err.message : String(err),
-         });
-         throw gateDenial;
-      }
+      // Ahead of the `MalloyError` rethrow; see unboundGateGivenDenial.
+      const gateDenial = this.unboundGateGivenDenial(
+         err,
+         governed.runnable,
+         givens,
+         governed.compiledSource ?? sourceName ?? "unknown",
+      );
+      if (gateDenial) throw gateDenial;
 
       return mapRunError(err, {
          packageName: this.host.packageName,
          modelPath: this.host.modelPath,
          failurePrefix: "Query execution failed",
+         subject: governed.compiledSource ?? sourceName ?? undefined,
          // A connection-classified failure (exhausted pool) keeps its own
          // status rather than reading as a bad query.
          passThrough: [ConnectionError],
@@ -1132,7 +1123,7 @@ export class ModelServing {
       // with no fields, and a thrown summary yields none.
       try {
          audit.summary = await summarizeQueryAccess({
-            // The storage serve shape carries no annotations; the live one does.
+            // The live runnable carries the author's annotations the summary reads.
             runnable: prepared.liveRunnable,
             modelDef: this.host.modelDef(),
             enforced: decision.enforced,
@@ -1231,6 +1222,40 @@ export class ModelServing {
             ? { "malloy.model.query.served_from": args.servedFrom }
             : {}),
       };
+   }
+
+   /**
+    * The opaque 403 for a run that failed binding its givens, when a gate
+    * grafted onto `runnable` reads a given the caller did not supply, else
+    * undefined. Bad givens surface as Malloy `runtime-given-*` errors, mapped
+    * to a 400 (the prefix is a pinned coupling to Malloy's error codes; also
+    * in environment.ts). But a grafted gate's givens bind in the same
+    * prepare, before any SQL runs, and Malloy's message names the missing
+    * one, which `docs/authorize.md` promises a denied caller never sees.
+    * Shared by the query path and a notebook cell.
+    */
+   private unboundGateGivenDenial(
+      err: unknown,
+      runnable: QueryMaterializer,
+      givens: Record<string, unknown> | undefined,
+      label: string,
+   ): AccessDeniedError | undefined {
+      if (!isGivenBindingFailure(err)) return undefined;
+      const governor = this.host.governor;
+      const denial = governor.unboundGateDenial(
+         runnable,
+         givens,
+         label,
+         governor.authorizeReferencedGivenNames,
+      );
+      if (denial) {
+         logger.debug("Gate given unbound; denying opaquely", {
+            packageName: this.host.packageName,
+            modelPath: this.host.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+      return denial;
    }
 
    // ---- A notebook cell -------------------------------------------------
@@ -1405,7 +1430,20 @@ export class ModelServing {
                );
             },
          },
-      );
+      ).catch(async (err: unknown) => {
+         // As on the query path: an unsupplied gate given fails the prepare,
+         // before any SQL runs, and answers the opaque 403.
+         if (!isGivenBindingFailure(err)) throw err;
+         const label =
+            (await governor
+               .resolveAuthorizeSourceFromRunnable(cellRunnable)
+               .catch(() => undefined)) ??
+            extractRunTargetSourceName(cell.text) ??
+            "unknown";
+         throw (
+            this.unboundGateGivenDenial(err, cellRunnable, givens, label) ?? err
+         );
+      });
       const query = (await runnableToExecute.getPreparedQuery())._query;
       const queryName = (query as NamedQueryDef).as || query.name;
       try {
@@ -1579,9 +1617,17 @@ export class ModelServing {
               )
             : undefined;
       const { runnable, decision } = await governor.govern(
-         {
+         governRequestOf({
             givens,
-            ...(cell.modelMaterializer
+            ceiling: {
+               audit,
+               source: async (governed) =>
+                  (await governor.resolveAuthorizeSourceFromRunnable(
+                     governed,
+                  )) ?? extractRunTargetSourceName(cell.text),
+            },
+            // No materializer to recompile against: a row-level gate denies.
+            graft: cell.modelMaterializer
                ? {
                     recompile: ownScopeBinder
                        ? ownScopeBinder.recompile
@@ -1590,17 +1636,8 @@ export class ModelServing {
                     proveGraft: ownScopeBinder?.prove,
                     graftScope,
                  }
-               : // No materializer to recompile against, so a
-                 // row-level gate denies.
-                 { bypassAuthorize: false }),
-            ceiling: {
-               audit,
-               source: async (governed) =>
-                  (await governor.resolveAuthorizeSourceFromRunnable(
-                     governed,
-                  )) ?? extractRunTargetSourceName(cell.text),
-            },
-         },
+               : undefined,
+         }),
          { runnable: runnableToExecute },
       );
       return { runnable, decision, readGivenNames: cellReadGivenNames };
@@ -1687,5 +1724,37 @@ function statementUsage(
       metered: input.meteredConnection,
       environment: input.environment,
       package: packageName,
+   };
+}
+
+/**
+ * The one request `govern()` judges, for a routed query and a notebook cell
+ * alike: the caller's givens, the ceiling over the audit, and how a graft
+ * recompiles on the scope it lands on. A subject with nothing to recompile
+ * gives up the bypass, so a row-level gate denies; a query adds its boundary,
+ * its caller's text and region, and whether it was routed past a gate.
+ */
+function governRequestOf(r: {
+   givens: GovernRequest["givens"];
+   ceiling: NonNullable<GovernRequest["ceiling"]>;
+   graft:
+      | Pick<GovernRequest, "recompile" | "proveGraft" | "graftScope">
+      | undefined;
+   query?: Pick<
+      GovernRequest,
+      | "bypassAuthorize"
+      | "boundary"
+      | "callerRegion"
+      | "callerQueryText"
+      | "routedPastEntryPointGate"
+      | "reprovesGivenTerms"
+   >;
+}): GovernRequest {
+   return {
+      givens: r.givens,
+      ...r.query,
+      // Last, so nothing a query passes can lift the fail-closed default.
+      ...(r.graft ?? { bypassAuthorize: false }),
+      ceiling: r.ceiling,
    };
 }

@@ -61,3 +61,18 @@ export async function startRestE2E(): Promise<
 
    return { httpServer, baseUrl, stop };
 }
+
+/**
+ * Delete an environment a spec is about to create, so a leftover from an
+ * earlier run that was killed before its cleanup (kept in the persistent
+ * `publisher.db` and `publisher_data`, a bound `manifestLocation` with it)
+ * cannot leak into this one. A missing environment is not an error.
+ */
+export async function deleteLeftoverEnvironment(
+   baseUrl: string,
+   name: string,
+): Promise<void> {
+   await fetch(`${baseUrl}/api/v0/environments/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+   }).catch(() => {});
+}

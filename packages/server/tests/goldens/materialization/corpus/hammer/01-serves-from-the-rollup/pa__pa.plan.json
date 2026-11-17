@@ -1,7 +1,16 @@
 {
   "droppedPersistSources": [],
   "internal": {
-    "annotationFindings": [],
+    "annotationFindings": [
+      {
+        "code": "deprecated-preaggregate-namespace",
+        "message": "Measure \"regional\" of source \"orders\" places its rollup with namespace=\"rollups\": namespace= is deprecated: write name=\"rollups.<table>\" instead (its schema or dataset places the table, and <table> starts the table's name).",
+        "model": "pa.malloy",
+        "route": "preaggregate",
+        "subject": "orders.regional",
+        "tier": "deprecated"
+      }
+    ],
     "builds": [
       {
         "connectionName": "orders_pg",
@@ -25,6 +34,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders@<hammer>/pa/pa.malloy": "persist",
+      "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy": "rollup",
+      "orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy": "rollup"
+    },
     "materializePlans": {},
     "rollupPlans": {
       "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy": {
@@ -165,7 +179,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {

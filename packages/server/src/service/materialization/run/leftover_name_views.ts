@@ -14,9 +14,9 @@
  * their mark names ({@link provenOwnView}: a view repointed in place keeps
  * its comment, so the mark alone never decides):
  *
- * - a drop of a table (a run deleted with its tables, a version's tables
- *   reclaimed) also drops each such view the package's runs recorded over
- *   it ({@link dropLeftoverNameViews}), so no view is left reading nothing
+ * - a reclaim's drop of a table (a version's tables reclaimed) also drops
+ *   each such view the package's runs recorded over it
+ *   ({@link dropLeftoverNameViews}), so no view is left reading nothing
  *   (and on Postgres, where a view binds to its table, the table's drop is
  *   not refused);
  * - a build at an author's `name=` (v1 `#@ persist` or `#(materialize)`)
@@ -34,18 +34,17 @@
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
 import type { ManifestEntry } from "../domain/types";
-import { quoteTablePath } from "../../quoting";
+import {
+   parseNameViewComment,
+   viewDefinitionReadsOnly,
+} from "./table_mark_sql";
 import {
    dropViewSql,
-   duckdbNameMatch,
-   parseNameViewComment,
-   postgresReadsOnlySql,
    relationProbeSql,
    relationProbeSupported,
-   sqlString,
-   viewDefinitionReadsOnly,
+   replaceViewStatements,
    viewReadsSql,
-} from "./table_mark_sql";
+} from "./warehouse_sql";
 import {
    atTableSite,
    type TableSite,
@@ -155,7 +154,12 @@ export async function provenOwnView(
    const definition =
       answer === undefined ? undefined : field(answer, "definition");
    return typeof definition === "string" &&
-      viewDefinitionReadsOnly(definition, target, field(answer!, "view_schema"))
+      viewDefinitionReadsOnly(
+         definition,
+         target,
+         field(answer!, "view_schema"),
+         site.dialect,
+      )
       ? { name, target, comment, definition }
       : undefined;
 }
@@ -197,54 +201,28 @@ export async function dropOwnNameView(
    return true;
 }
 
-/** The dialects whose DDL a build's swap runs as one transaction. */
-const TRANSACTIONAL_DDL: ReadonlySet<string> = new Set(["duckdb", "postgres"]);
-
-/** The dialects whose guard reads the view's dependencies, not its text. */
-const DEPENDENCY_GUARD: ReadonlySet<string> = new Set(["postgres"]);
-
 /**
  * The statements that drop `view` inside a build's own transaction, before
  * the table takes its name, on DuckDB and Postgres: a guard that fails the
  * transaction unless the name still holds the view the probe proved (on
  * Postgres after locking it, so a change in flight is waited for and seen),
  * then the drop. A failed build rolls both back and leaves the view.
- * Undefined on other dialects, which drop it just before the build.
+ * Undefined on other dialects, which drop it just before the build. The
+ * statements' text is warehouse_sql.ts's.
  */
 export function replaceOwnViewStatements(
    view: ProvenOwnView,
    site: Pick<TableSite, "dialect" | "segments">,
 ): string[] | undefined {
-   if (!TRANSACTIONAL_DDL.has(site.dialect)) return undefined;
-   const segments = site.segments(view.name);
-   const lit = (v: string) => sqlString(v, site.dialect);
-   const path = quoteTablePath(segments.join("."), site.dialect);
-   const drop = dropViewSql(segments, site.dialect);
-   if (DEPENDENCY_GUARD.has(site.dialect)) {
-      const viewPath = lit(path);
-      const targetPath = lit(
-         quoteTablePath(site.segments(view.target).join("."), site.dialect),
-      );
-      return [
-         `DO $guard$ BEGIN IF to_regclass(${viewPath}) IS NOT NULL THEN ` +
-            `EXECUTE 'LOCK TABLE ' || ${viewPath} || ' IN ACCESS EXCLUSIVE MODE'; END IF; ` +
-            `IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c ` +
-            `WHERE c.oid = to_regclass(${viewPath}) AND c.relkind = 'v' ` +
-            `AND obj_description(c.oid, 'pg_class') = ${lit(view.comment)} ` +
-            `AND ${postgresReadsOnlySql("c.oid", `to_regclass(${targetPath})`)}) ` +
-            `THEN RAISE EXCEPTION 'the name= view % changed while the build checked it', ${viewPath}; ` +
-            `END IF; END $guard$`,
-         drop,
-      ];
-   }
-   if (view.definition === undefined) return undefined;
-   return [
-      `SELECT error(${lit(`the name= view ${path} changed while the build checked it`)}) ` +
-         `FROM (SELECT 1 FROM duckdb_views() WHERE NOT internal ` +
-         `AND ${duckdbNameMatch(segments, "view_name")} ` +
-         `AND sql = ${lit(view.definition)} HAVING count(*) = 0) g`,
-      drop,
-   ];
+   return replaceViewStatements(
+      {
+         segments: site.segments(view.name),
+         targetSegments: site.segments(view.target),
+         comment: view.comment,
+         definition: view.definition,
+      },
+      site.dialect,
+   );
 }
 
 /**

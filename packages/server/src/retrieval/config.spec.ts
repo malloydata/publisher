@@ -103,19 +103,18 @@ describe("retrieval.llm validation", () => {
       ).toThrow(
          "Invalid retrieval.llm.concurrency: expected a positive integer, got 0. Fix:",
       );
-      expect(() =>
+      // apiKey is the settings registry's (retrieval.llm.apiKey), not this parser's.
+      expect(
          parseRetrievalConfig({
-            llm: { provider: "ollama", model: "m", apiKey: "sk-nope" },
-         }),
-      ).toThrow(
-         "Invalid retrieval.llm: unknown key 'apiKey'. Valid keys: provider, model, baseUrl",
-      );
+            llm: { provider: "ollama", model: "m", apiKey: "${LLM_KEY}" },
+         })?.llm,
+      ).not.toHaveProperty("apiKey");
       expect(() =>
          parseRetrievalConfig({
             llm: { provider: "ollama", model: "m", maxCalls: 5 },
          }),
       ).toThrow(
-         "Invalid retrieval.llm: unknown key 'maxCalls'. Valid keys: provider, model, baseUrl, projectId, location, timeoutMs, concurrency, maxCallsPerSync, maxCallsPerRequest",
+         "Invalid retrieval.llm: unknown key 'maxCalls'. Valid keys: provider, model, baseUrl, projectId, location, timeoutMs, concurrency, maxCallsPerSync, maxCallsPerRequest, apiKey",
       );
    });
 
@@ -289,44 +288,41 @@ describe("settings resolution and precedence", () => {
       );
    });
 
-   it("a file key wins over the matching variable, and a variable fills what the file omits", () => {
+   it("a variable wins over the matching file key, and the file fills what no variable gives", () => {
       const env = {
          EMBEDDING_API_KEY: "sk-e",
-         EMBEDDING_API_BASE: "https://env.example.com/v1",
-         EMBEDDING_MODEL: "env-model",
-         EMBEDDING_DIMENSIONS: "256",
+         PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: "https://env.example.com/v1",
+         PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "env-model",
       };
-      // Each block is the settings' config file too, as at startup.
-      const fullBlock = {
+      // The block is the settings' config file too, as at startup.
+      const block = {
          provider: "openai-compatible",
          baseUrl: "https://file.example.com/v1",
          model: "file-model",
          dimensions: 512,
       };
-      const file = parseRetrievalConfig({ embedding: fullBlock })!.embedding;
+      const file = parseRetrievalConfig({ embedding: block })!.embedding;
+      withSettings({ env, file: { retrieval: { embedding: block } } }, () => {
+         expect(getEmbeddingConfig(file)).toMatchObject({
+            baseUrl: "https://env.example.com/v1",
+            model: "env-model",
+            dimensions: 512,
+         });
+      });
+   });
+
+   it("fails an old variable that differs from the file, rather than either winning", () => {
+      const block = { model: "file-model" };
+      const file = parseRetrievalConfig({ embedding: block })!.embedding;
       withSettings(
-         { env, file: { retrieval: { embedding: fullBlock } } },
-         () => {
-            expect(getEmbeddingConfig(file)).toMatchObject({
-               baseUrl: "https://file.example.com/v1",
-               model: "file-model",
-               dimensions: 512,
-            });
+         {
+            env: { EMBEDDING_API_KEY: "sk-e", EMBEDDING_MODEL: "env-model" },
+            file: { retrieval: { embedding: block } },
          },
-      );
-      // Only the model in the file: the rest comes from the variables.
-      const partialBlock = { model: "file-model" };
-      const partial = parseRetrievalConfig({
-         embedding: partialBlock,
-      })!.embedding;
-      withSettings(
-         { env, file: { retrieval: { embedding: partialBlock } } },
          () => {
-            expect(getEmbeddingConfig(partial)).toMatchObject({
-               baseUrl: "https://env.example.com/v1",
-               model: "file-model",
-               dimensions: 256,
-            });
+            expect(() => getEmbeddingConfig(file)).toThrow(
+               "retrieval.embedding.model is given different values under its old and new names",
+            );
          },
       );
    });
@@ -358,27 +354,105 @@ describe("settings resolution and precedence", () => {
    });
 
    it("google needs EMBEDDING_API_KEY; vertex does not", () => {
+      // Each block is the settings' config file too, as at startup.
+      const googleBlock = { provider: "google", model: "e" };
       const google = parseRetrievalConfig({
-         embedding: { provider: "google", model: "e" },
+         embedding: googleBlock,
       })!.embedding;
-      expect(getEmbeddingSettings(google)).toBeNull();
-      withSettings({ env: { EMBEDDING_API_KEY: "gk" } }, () => {
-         expect(getEmbeddingSettings(google)?.apiKey).toBe("gk");
+      const file = (block: object) => ({ retrieval: { embedding: block } });
+      withSettings({ file: file(googleBlock) }, () => {
+         expect(getEmbeddingSettings(google)).toBeNull();
       });
+      withSettings(
+         { env: { EMBEDDING_API_KEY: "gk" }, file: file(googleBlock) },
+         () => {
+            expect(getEmbeddingSettings(google)?.apiKey).toBe("gk");
+         },
+      );
+      const vertexBlock = {
+         provider: "vertex",
+         model: "e",
+         projectId: "p",
+         location: "l",
+         dimensions: 512,
+      };
       const vertex = parseRetrievalConfig({
-         embedding: {
+         embedding: vertexBlock,
+      })!.embedding;
+      withSettings({ file: file(vertexBlock) }, () => {
+         expect(getEmbeddingSettings(vertex)).toMatchObject({
             provider: "vertex",
             model: "e",
-            projectId: "p",
-            location: "l",
             dimensions: 512,
-         },
-      })!.embedding;
-      expect(getEmbeddingSettings(vertex)).toMatchObject({
-         provider: "vertex",
-         dimensions: 512,
-         projectId: "p",
+            projectId: "p",
+         });
       });
+   });
+
+   it("google and vertex never read the OpenAI-compatible variables", () => {
+      // A deployment that moved from an OpenAI-compatible provider to Google
+      // in the file and kept its variables: the Google key and the text
+      // embedded must not go to the old endpoint.
+      const leftovers = {
+         EMBEDDING_API_KEY: "gk",
+         EMBEDDING_MODEL: "text-embedding-3-small",
+         EMBEDDING_API_BASE: "https://api.openai.com/v1",
+         EMBEDDING_DIMENSIONS: "512",
+      };
+      const withModel = { provider: "google", model: "gemini-embedding-001" };
+      // An old variable that disagrees with the file fails startup, as any
+      // old name does, rather than reaching a request.
+      withSettings(
+         { env: leftovers, file: { retrieval: { embedding: withModel } } },
+         () => {
+            expect(() =>
+               getEmbeddingSettings(
+                  parseRetrievalConfig({ embedding: withModel })!.embedding,
+               ),
+            ).toThrow(
+               'retrieval.embedding.model is given different values under its old and new names: EMBEDDING_MODEL ("text-embedding-3-small")',
+            );
+         },
+      );
+      withSettings(
+         {
+            env: {
+               EMBEDDING_API_KEY: leftovers.EMBEDDING_API_KEY,
+               EMBEDDING_API_BASE: leftovers.EMBEDDING_API_BASE,
+               EMBEDDING_DIMENSIONS: leftovers.EMBEDDING_DIMENSIONS,
+            },
+            file: { retrieval: { embedding: withModel } },
+         },
+         () => {
+            const settings = getEmbeddingSettings(
+               parseRetrievalConfig({ embedding: withModel })!.embedding,
+            );
+            expect(settings).toMatchObject({
+               provider: "google",
+               model: "gemini-embedding-001",
+               apiKey: "gk",
+            });
+            expect(settings?.baseUrl).toBeUndefined();
+            expect(settings?.dimensions).toBeUndefined();
+         },
+      );
+      // A current name is a deliberate override, and is read.
+      withSettings(
+         {
+            env: {
+               EMBEDDING_API_KEY: "gk",
+               PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: "https://proxy.test/v1",
+            },
+            file: { retrieval: { embedding: withModel } },
+         },
+         () => {
+            expect(
+               getEmbeddingSettings(
+                  parseRetrievalConfig({ embedding: withModel })!.embedding,
+               )?.baseUrl,
+            ).toBe("https://proxy.test/v1");
+         },
+      );
    });
 
    it("prefixes from the file reach the settings and the provider", () => {

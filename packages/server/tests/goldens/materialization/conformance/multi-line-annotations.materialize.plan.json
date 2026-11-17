@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "annotated@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "annotated@<pkg>/m.malloy": {
         "buildSourceName": "annotated__mat",

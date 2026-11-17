@@ -3,11 +3,13 @@
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
 import fs from "fs";
 import os from "os";
 import path, { join } from "path";
-import { tmpdir } from "os";
+import {
+   openTempDuckDB,
+   type TempDuckDB,
+} from "../../../test_helpers/temp_storage";
 import type { components } from "../../../api";
 import { BadRequestError, ConflictError } from "../../../errors";
 import {
@@ -230,20 +232,20 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
  * Postgres catalog.
  */
 describe("writeTableAs: the load's and the copy's write", () => {
-   let lake: { conn: DuckDBConnection; dir: string } | undefined;
+   let lake: TempDuckDB | undefined;
    afterEach(async () => {
       if (!lake) return;
-      await lake.conn.runSQL("DETACH lake");
-      await lake.conn.close();
-      rmSync(lake.dir, { recursive: true, force: true });
+      await lake.connection.runSQL("DETACH lake");
+      await lake.dispose();
       lake = undefined;
    });
 
    /** `inliningLimit`: a limit the catalog records itself, as a POST can set. */
    async function attached(inliningLimit?: number): Promise<DuckDBConnection> {
-      const dir = mkdtempSync(join(tmpdir(), "write-table-as-"));
-      const conn = new DuckDBConnection("write_as", join(dir, "host.duckdb"));
-      lake = { conn, dir };
+      lake = openTempDuckDB("write-table-as-", "write_as", {
+         file: "host.duckdb",
+      });
+      const { connection: conn, dir } = lake;
       await conn.runSQL("INSTALL ducklake");
       await conn.runSQL("LOAD ducklake");
       const limit =

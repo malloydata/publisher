@@ -1,0 +1,565 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * Builds in a `storage=` destination that read a stored table there rather
+ * than the warehouse:
+ *
+ *  - a `storage=` rollup over a base stored in the same destination groups
+ *    the base's table in the destination, storing the rows its planned
+ *    (warehouse) build stores, and answers as live; with no base table in
+ *    the run it builds from the warehouse, as planned;
+ *  - a `#(materialize) storage=` extension whose parent is declared in
+ *    another file builds over the parent's table, as a chain in one file
+ *    does.
+ *
+ * The destination is a DuckLake catalog in a local file, with the seams
+ * materialization_freshness_model.component.spec.ts fakes (the catalog
+ * attach, the warehouse passthrough, the serve connection) faked the same
+ * way. A statement that reads the warehouse's rows names RAW_MARK, so the
+ * statements naming it count the build's warehouse reads.
+ */
+
+import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
+import { MalloyConfig } from "@malloydata/malloy";
+import {
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   setDefaultTimeout,
+   spyOn,
+} from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
+import { unrecordedAudit } from "../../src/service/access_record";
+import * as connection from "../../src/service/connection";
+import { recordConnectionsAsForTests } from "../../src/service/connection_type";
+import { Environment } from "../../src/service/environment";
+import { parsePackageName } from "../../src/service/identity";
+import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
+import { StorageBuildStrategy } from "../../src/service/materialization/run/storage_build_strategy";
+import { QueryPrivileges } from "../../src/service/model_query_request";
+import type {
+   Materialization,
+   ResourceRepository,
+} from "../../src/storage/DatabaseInterface";
+import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
+import { __setPackageLoadPoolForTests } from "../../src/package_load/package_load_pool";
+import { installSettings } from "../../src/test_helpers/settings_env";
+import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { openTempStorage } from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
+
+const ENV = "e1";
+const ENV_ID = "env-1";
+const PKG = "pkg";
+const LAKE = "lake";
+
+setDefaultTimeout(120_000);
+
+/** Names every statement that reads the warehouse's rows. */
+const RAW_MARK = "raw_rows_mark";
+const RAW = `warehouse.sql("""
+  SELECT id, cat, sub, amt::DOUBLE AS amt, mark FROM (VALUES
+    (1, 'a', 'x', 1.5, '${RAW_MARK}'), (2, 'a', 'y', 2.0, '${RAW_MARK}'),
+    (3, 'b', 'x', 4.25, '${RAW_MARK}'), (4, 'b', 'x', NULL, '${RAW_MARK}'),
+    (5, 'c', 'z', -3.0, '${RAW_MARK}')
+  ) AS t(id, cat, sub, amt, mark)
+""")`;
+
+/** A `storage=` base and `storage=` rollups over it. */
+const ROLLUP_MODEL = `##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist storage="${LAKE}"
+source: daily is raw -> {
+  group_by: cat, sub
+  aggregate: total is amt.sum(), n is count(), lo is amt.min()
+} extend {
+  #@ preaggregate grain="cat" storage=${LAKE}
+  measure: grand is total.sum()
+  #@ preaggregate grain="cat" storage=${LAKE}
+  measure: rows is n.sum()
+  #@ preaggregate grain="cat" storage=${LAKE}
+  measure: least is lo.min()
+}
+`;
+const ROLLUP_QUERY =
+   "run: daily -> { group_by: cat; aggregate: grand, rows, least }";
+
+const CHAIN_FILES = {
+   "a.malloy": `source: raw is ${RAW}
+
+#(materialize) storage="${LAKE}"
+source: parent is raw extend {
+  dimension: big is amt > 2
+  measure: total is amt.sum()
+}
+`,
+   "b.malloy": `import "a.malloy"
+
+#(materialize) storage="${LAKE}"
+source: child is parent extend {
+  where: cat != 'c'
+  dimension: label is concat(cat, '-', sub)
+  measure: n is count()
+}
+`,
+};
+const CHAIN_QUERY =
+   "run: child -> { group_by: label, big; aggregate: total, n }";
+
+type Entry = {
+   sourceName: string;
+   sourceEntityId: string;
+   physicalTableName: string;
+   storageDestinationName?: string;
+   upstreamReuse?: string;
+};
+
+const plain = (rows: Record<string, unknown>[]) =>
+   rows
+      .map((r) =>
+         Object.fromEntries(
+            Object.entries(r).map(([k, v]) => [
+               k,
+               typeof v === "bigint" ? Number(v) : v,
+            ]),
+         ),
+      )
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+
+describe.skipIf(process.platform === "win32")(
+   // Skipped on Windows: the catalog file is opened by several in-process
+   // DuckDB instances at once, which Windows' mandatory file locks refuse.
+   "storage= builds over a stored table in their destination",
+   () => {
+      let root: string;
+      let envPath: string;
+      let lakeDir: string;
+      let db: DuckDBConnection;
+      let repo: ResourceRepository;
+      let env: Environment;
+      let service: MaterializationService;
+      let restore: () => void;
+      let serve: MalloyDuckDBConnection | undefined;
+      let opened = 0;
+      let statements: string[];
+      const spies: { mockRestore(): void }[] = [];
+      const catalogFile = () => path.join(lakeDir, "catalog.ducklake");
+
+      async function attachFileLake(
+         session: MalloyDuckDBConnection,
+         dbName: string,
+         readOnly: boolean,
+      ): Promise<void> {
+         await session.runSQL("INSTALL ducklake");
+         await session.runSQL("LOAD ducklake");
+         await session.runSQL(
+            `ATTACH 'ducklake:${catalogFile()}' AS ${dbName} ` +
+               `(DATA_PATH '${path.join(lakeDir, "data")}/'` +
+               `${readOnly ? ", READ_ONLY" : ""})`,
+         );
+      }
+
+      /** A fresh serve connection, so the catalog is read as it now is. */
+      async function reopenServe(): Promise<void> {
+         await serve?.close().catch(() => undefined);
+         serve = undefined;
+         const config = new MalloyConfig({ connections: {} });
+         config.wrapConnections(() => ({
+            lookupConnection: async (name?: string) => {
+               if (name !== undefined && name !== LAKE) {
+                  throw new Error(`no destination ${name}`);
+               }
+               if (!serve) {
+                  const c = new MalloyDuckDBConnection(
+                     LAKE,
+                     path.join(root, `serve_${++opened}.duckdb`),
+                  );
+                  await attachFileLake(c, LAKE, true);
+                  serve = c;
+               }
+               return serve;
+            },
+         }));
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         pkg.materialization().setServeDestinationConfig(() => config);
+      }
+
+      async function setUp(files: Record<string, string>): Promise<void> {
+         writePackageFiles(path.join(envPath, PKG), files, {
+            manifest: { name: PKG, description: "fixture" },
+         });
+         env = await Environment.create(
+            ENV,
+            envPath,
+            [
+               {
+                  name: "warehouse",
+                  type: "duckdb",
+                  duckdbConnection: { setupSQL: "SELECT 1" },
+               } as never,
+            ],
+            [
+               {
+                  name: LAKE,
+                  type: "ducklake",
+                  ducklakeConnection: {
+                     catalog: {
+                        postgresConnection: {
+                           host: "h",
+                           databaseName: "d",
+                           userName: "u",
+                        },
+                     },
+                     storage: { bucketUrl: lakeDir },
+                  },
+               } as never,
+            ],
+         );
+         const apiConnection = env.getApiConnection.bind(env);
+         spies.push(
+            spyOn(env, "getApiConnection").mockImplementation((name) =>
+               name === "warehouse"
+                  ? ({
+                       name: "warehouse",
+                       type: "postgres",
+                       postgresConnection: {
+                          host: "h",
+                          databaseName: "d",
+                          userName: "u",
+                       },
+                    } as never)
+                  : apiConnection(name),
+            ),
+         );
+         await env.addPackage(PKG);
+         await reopenServe();
+         service = serviceOverEnvironment(
+            () => repo,
+            () => env,
+         );
+      }
+
+      beforeEach(async () => {
+         restore = installSettings({
+            env: {
+               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+            },
+         }).restore;
+         await __setPackageLoadPoolForTests(null);
+         const storage = await openTempStorage("storage-stacking-", {
+            id: ENV_ID,
+            name: ENV,
+         });
+         ({ root, db, repo, envPath } = storage);
+         lakeDir = path.join(root, "lake");
+         fs.mkdirSync(path.join(lakeDir, "data"), { recursive: true });
+         statements = [];
+         const runSQL = MalloyDuckDBConnection.prototype.runSQL;
+         spies.push(
+            spyOn(
+               MalloyDuckDBConnection.prototype,
+               "runSQL",
+            ).mockImplementation(function (
+               this: MalloyDuckDBConnection,
+               sql: string,
+               ...rest: unknown[]
+            ) {
+               statements.push(sql);
+               return (runSQL as (...a: unknown[]) => unknown).call(
+                  this,
+                  sql,
+                  ...rest,
+               );
+            } as never),
+            spyOn(connection, "attachDuckLakeReadWrite").mockImplementation(
+               async (session, dbName) => {
+                  await attachFileLake(session as never, dbName, false);
+               },
+            ),
+            spyOn(connection, "attachDuckLakeReadOnly").mockImplementation(
+               async (session, dbName) => {
+                  await attachFileLake(session as never, dbName, true);
+               },
+            ),
+            spyOn(
+               connection,
+               "attachDuckLakeReadOnlyIfPresent",
+            ).mockImplementation(async (session, dbName) => {
+               if (!fs.existsSync(catalogFile())) return false;
+               await attachFileLake(session as never, dbName, true);
+               return true;
+            }),
+            spyOn(
+               connection,
+               "federateSourceForPassthrough",
+            ).mockImplementation(async (session, sourceType) => {
+               await session.runSQL(
+                  "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+               );
+               return { handle: "warehouse", sourceType };
+            }),
+            {
+               mockRestore: recordConnectionsAsForTests({
+                  warehouse: "postgres",
+               }),
+            },
+         );
+      });
+
+      afterEach(async () => {
+         for (const spy of spies.splice(0)) spy.mockRestore();
+         await serve?.close().catch(() => undefined);
+         serve = undefined;
+         await env?.closeAllConnections().catch(() => undefined);
+         await db?.close();
+         fs.rmSync(root, { recursive: true, force: true });
+         restore?.();
+         await __setPackageLoadPoolForTests(null);
+      });
+
+      async function build(
+         options: Record<string, unknown> = {},
+      ): Promise<Materialization> {
+         statements.length = 0;
+         const created = await service.createMaterialization(ENV, PKG, options);
+         const deadline = Date.now() + 120_000;
+         for (;;) {
+            const m = await repo.getMaterializationById(created.id);
+            if (
+               m &&
+               ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(m.status)
+            ) {
+               const running = (
+                  service as unknown as {
+                     runningAbortControllers: Map<string, unknown>;
+                  }
+               ).runningAbortControllers;
+               while (running.has(created.id)) {
+                  await new Promise((resolve) => setTimeout(resolve, 10));
+               }
+               const settled = (await repo.getMaterializationById(created.id))!;
+               await reopenServe();
+               return settled;
+            }
+            if (Date.now() > deadline) throw new Error("run never settled");
+            await new Promise((resolve) => setTimeout(resolve, 20));
+         }
+      }
+
+      const entriesOf = (m: Materialization) =>
+         Object.values(
+            (m.manifest as { entries: Record<string, Entry> }).entries,
+         );
+      const entryOf = (m: Materialization, name: string | RegExp) => {
+         const hit = entriesOf(m).find((e) =>
+            typeof name === "string"
+               ? e.sourceName === name
+               : name.test(e.sourceName),
+         );
+         if (!hit) throw new Error(`no entry for ${String(name)}`);
+         return hit;
+      };
+      /** The statements this run read the warehouse's rows with. */
+      const warehouseReads = () =>
+         statements.filter(
+            (s) => s.includes(RAW_MARK) && /\bCREATE\b/i.test(s),
+         );
+      /** The statement that created `table`. */
+      const createdBy = (table: string) => {
+         const hit = statements.find(
+            (s) => /\bCREATE\b/i.test(s) && s.includes(table),
+         );
+         if (!hit) throw new Error(`no CREATE of ${table}`);
+         return hit;
+      };
+
+      /** Rows of a stored table, read from the catalog. */
+      async function storedRows(table: string) {
+         const c = new MalloyDuckDBConnection(
+            "reader",
+            path.join(root, `reader_${++opened}.duckdb`),
+         );
+         try {
+            await attachFileLake(c, "rd", true);
+            const result = await c.runSQL(`SELECT * FROM rd."${table}"`);
+            return plain(result.rows as Record<string, unknown>[]);
+         } finally {
+            await c.close();
+         }
+      }
+
+      /** Rows of the planned (warehouse) build of the table `entry` names. */
+      async function plannedRows(entry: Entry) {
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const planned = Object.values(pkg.getBuildPlan()!.sources).find(
+            (s) => s.sourceEntityId === entry.sourceEntityId,
+         )!;
+         expect(planned.sql).toContain(RAW_MARK);
+         const c = new MalloyDuckDBConnection(
+            "planned",
+            path.join(root, `planned_${++opened}.duckdb`),
+         );
+         try {
+            const result = await c.runSQL(planned.sql);
+            return plain(result.rows as Record<string, unknown>[]);
+         } finally {
+            await c.close();
+         }
+      }
+
+      async function answer(model: string, query: string) {
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const result = await pkg
+            .getModel(model)!
+            .runQuery(
+               unrecordedAudit(),
+               { query } as never,
+               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+            );
+         return {
+            rows: plain(result.compactResult as Record<string, unknown>[]),
+            servedBy: result.path?.servedBy?.kind ?? "live",
+         };
+      }
+
+      it("builds a storage= rollup over its base's stored table, reading the warehouse once for both", async () => {
+         await setUp({ "m.malloy": ROLLUP_MODEL });
+         const live = await answer("m.malloy", ROLLUP_QUERY);
+         expect(live.servedBy).toBe("live");
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const base = entryOf(m, "daily");
+         const rollup = entryOf(m, /^daily__rollup__/);
+         expect(rollup.storageDestinationName).toBe(LAKE);
+         expect(rollup.upstreamReuse).toBe("reused");
+         // Only the base's build read the warehouse.
+         expect(warehouseReads()).toHaveLength(1);
+         expect(warehouseReads()[0]).toContain(base.physicalTableName);
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
+         // The warehouse build's rows, and live's answer.
+         expect(await storedRows(rollup.physicalTableName)).toEqual(
+            await plannedRows(rollup),
+         );
+         const served = await answer("m.malloy", ROLLUP_QUERY);
+         expect(served.servedBy).toBe("rollup");
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it("builds a storage= rollup from the warehouse when the run holds no table of its base", async () => {
+         await setUp({ "m.malloy": ROLLUP_MODEL });
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
+            (s) => s.origin === "preaggregate",
+         )!.name;
+         const m = await build({ sourceNames: [rollupName] });
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const rollup = entryOf(m, /^daily__rollup__/);
+         // It read the warehouse, and says nothing of a stored upstream.
+         expect(rollup.upstreamReuse).toBeUndefined();
+         expect(warehouseReads()).toHaveLength(1);
+         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(await storedRows(rollup.physicalTableName)).toEqual(
+            await plannedRows(rollup),
+         );
+      });
+
+      it("reads the base's table carried from an earlier run, and a windowed rollup never reads one of unknown age", async () => {
+         await setUp({ "m.malloy": ROLLUP_MODEL });
+         const first = await build();
+         expect(first.status).toBe("MANIFEST_FILE_READY");
+         const regrain = async (line: string) => {
+            fs.writeFileSync(
+               path.join(envPath, PKG, "m.malloy"),
+               ROLLUP_MODEL.replace(
+                  /#@ preaggregate grain="cat" storage=lake/g,
+                  line,
+               ),
+            );
+            await env.getPackage(parsePackageName(PKG), true);
+            await reopenServe();
+         };
+         // A new grain: only the rollup is rebuilt, over the carried base.
+         await regrain('#@ preaggregate grain="sub" storage=lake');
+         const second = await build();
+         expect([second.status, second.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const rollup = entryOf(second, /^daily__rollup__/);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(warehouseReads()).toHaveLength(0);
+         expect(await storedRows(rollup.physicalTableName)).toEqual(
+            await plannedRows(rollup),
+         );
+         // A windowed rollup over that base, whose table is of unknown age
+         // (it declares no window): built from the warehouse, as planned, so
+         // it is never fresher than the rows it holds.
+         await regrain(
+            '#@ preaggregate grain="sub" storage=lake freshness.window="1h"',
+         );
+         const third = await build();
+         expect([third.status, third.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const windowed = entryOf(third, /^daily__rollup__/);
+         expect(windowed.upstreamReuse).toBeUndefined();
+         expect(warehouseReads()).toHaveLength(1);
+         expect(createdBy(windowed.physicalTableName)).toContain(RAW_MARK);
+         expect(await storedRows(windowed.physicalTableName)).toEqual(
+            await plannedRows(windowed),
+         );
+      });
+
+      it("builds a storage= rollup from the warehouse, saying so, when its base's build fails in the same run", async () => {
+         await setUp({ "m.malloy": ROLLUP_MODEL });
+         const build_ = StorageBuildStrategy.prototype.build;
+         spies.push(
+            spyOn(StorageBuildStrategy.prototype, "build").mockImplementation(
+               async function (this: StorageBuildStrategy, params) {
+                  if (params.persistSource.name === "daily") {
+                     throw new Error("the base's build failed");
+                  }
+                  return build_.call(this, params);
+               },
+            ),
+         );
+         const m = await build();
+         const rollup = entryOf(m, /^daily__rollup__/);
+         expect(rollup.upstreamReuse).toBeUndefined();
+         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(await storedRows(rollup.physicalTableName)).toEqual(
+            await plannedRows(rollup),
+         );
+      });
+
+      it("builds a storage= extension over its parent's stored table in another file", async () => {
+         await setUp(CHAIN_FILES);
+         const live = await answer("b.malloy", CHAIN_QUERY);
+         expect(live.servedBy).toBe("live");
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const parent = entryOf(m, "parent");
+         const child = entryOf(m, "child");
+         expect(child.upstreamReuse).toBe("reused");
+         expect(warehouseReads()).toHaveLength(1);
+         expect(createdBy(child.physicalTableName)).not.toContain(RAW_MARK);
+         expect(createdBy(child.physicalTableName)).toContain(
+            parent.physicalTableName,
+         );
+         expect(await storedRows(child.physicalTableName)).toEqual(
+            await plannedRows(child),
+         );
+         const served = await answer("b.malloy", CHAIN_QUERY);
+         expect(served.servedBy).toBe("materialized");
+         expect(served.rows).toEqual(live.rows);
+      });
+   },
+);

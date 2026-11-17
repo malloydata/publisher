@@ -1,0 +1,1767 @@
+{
+  "relationProbeSupported": {
+    "duckdb": true,
+    "postgres": true,
+    "standardsql": true,
+    "snowflake": true,
+    "databricks": true,
+    "trino": true,
+    "presto": false,
+    "mysql": false,
+    "sqlserver": true,
+    "unknown_dialect": false
+  },
+  "sqlString": {
+    "duckdb": "'it''s \\ here'",
+    "postgres": "'it''s \\ here'",
+    "standardsql": "'it\\'s \\\\ here'",
+    "snowflake": "'it''s \\\\ here'",
+    "databricks": "'it\\'s \\\\ here'",
+    "trino": "'it''s \\ here'",
+    "presto": "'it''s \\ here'",
+    "mysql": "CONCAT('it''s ', CHAR(92 USING utf8mb4), ' here')",
+    "sqlserver": "N'it''s \\ here'",
+    "unknown_dialect": "'it''s \\ here'"
+  },
+  "sqlString.lineBreaks": {
+    "duckdb": "'a\nb\rc'",
+    "postgres": "'a\nb\rc'",
+    "standardsql": "'a\\nb\\rc'",
+    "snowflake": "'a\nb\rc'",
+    "databricks": "'a\nb\rc'",
+    "trino": "'a\nb\rc'",
+    "presto": "'a\nb\rc'",
+    "mysql": "'a\nb\rc'",
+    "sqlserver": "N'a\nb\rc'",
+    "unknown_dialect": "'a\nb\rc'"
+  },
+  "relationProbeSql.one": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('orders') AND database_name = current_database() AND schema_name = current_schema() UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('orders') AND database_name = current_database() AND schema_name = current_schema()",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"orders\"')) AS p",
+    "standardsql": {
+      "refused": "a BigQuery name needs a dataset-qualified name, not 'orders'"
+    },
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = CURRENT_SCHEMA() AND TABLE_NAME = 'orders'",
+    "databricks": "SELECT table_type AS kind, comment FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = lower('orders')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = current_schema AND t.table_name = lower('orders')",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": "SELECT CASE o.type WHEN 'V' THEN 'VIEW' ELSE 'TABLE' END AS kind, CAST(ep.value AS nvarchar(4000)) AS comment FROM sys.objects o LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description' WHERE o.object_id = OBJECT_ID(N'\"orders\"')",
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableProbeSql.one": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('orders') AND database_name = current_database() AND schema_name = current_schema() UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('orders') AND database_name = current_database() AND schema_name = current_schema()",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"orders\"')) AS p",
+    "standardsql": {
+      "refused": "a BigQuery name needs a dataset-qualified name, not 'orders'"
+    },
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = CURRENT_SCHEMA() AND TABLE_NAME = 'orders'",
+    "databricks": "SELECT table_type AS kind, comment FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = lower('orders')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = current_schema AND t.table_name = lower('orders')",
+    "presto": "SELECT table_type AS kind, CAST(NULL AS varchar) AS comment FROM information_schema.tables WHERE table_schema = current_schema AND table_name = lower('orders')",
+    "mysql": "SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'",
+    "sqlserver": "SELECT CASE o.type WHEN 'V' THEN 'VIEW' ELSE 'TABLE' END AS kind, CAST(ep.value AS nvarchar(4000)) AS comment FROM sys.objects o LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description' WHERE o.object_id = OBJECT_ID(N'\"orders\"')",
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableMarkSql.one": {
+    "duckdb": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "postgres": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "standardsql": "ALTER TABLE `orders` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s')",
+    "snowflake": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "databricks": "COMMENT ON TABLE `orders` IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "trino": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "presto": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "mysql": "ALTER TABLE `orders` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"orders\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders';",
+    "unknown_dialect": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'"
+  },
+  "viewReadsSql.one": {
+    "duckdb": {
+      "answer": "definition",
+      "sql": "SELECT sql AS definition, schema_name AS view_schema FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('orders') AND database_name = current_database() AND schema_name = current_schema()"
+    },
+    "postgres": {
+      "answer": "reads",
+      "sql": "SELECT row_to_json(p) AS \"row\" FROM (SELECT (EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"orders\"') AND d.refobjid = to_regclass('\"target\"')) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"orders\"') AND d.refobjid <> to_regclass('\"target\"') AND d.refobjid <> to_regclass('\"orders\"') AND EXISTS (SELECT 1 FROM pg_catalog.pg_class rc WHERE rc.oid = d.refobjid AND rc.relkind IN ('r', 'v', 'm', 'p', 'f')))) AS reads) AS p"
+    },
+    "standardsql": {
+      "refused": "a BigQuery name needs a dataset-qualified name, not 'orders'"
+    },
+    "snowflake": {
+      "answer": "definition",
+      "sql": "SELECT VIEW_DEFINITION AS \"definition\", TABLE_SCHEMA AS \"view_schema\" FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = CURRENT_SCHEMA() AND TABLE_NAME = 'orders'"
+    },
+    "databricks": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM information_schema.views WHERE table_schema = current_schema() AND table_name = lower('orders')"
+    },
+    "trino": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM information_schema.views WHERE table_schema = current_schema AND table_name = lower('orders')"
+    },
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "answer": "reads",
+      "sql": "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.sql_expression_dependencies d WHERE d.referencing_id = OBJECT_ID(N'\"orders\"') AND d.referenced_id = OBJECT_ID(N'\"target\"')) AND NOT EXISTS (SELECT 1 FROM sys.sql_expression_dependencies d WHERE d.referencing_id = OBJECT_ID(N'\"orders\"') AND (d.referenced_id IS NULL OR d.referenced_id <> OBJECT_ID(N'\"target\"'))) THEN 1 ELSE 0 END AS reads"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "dropViewSql.one": {
+    "duckdb": "DROP VIEW IF EXISTS \"orders\"",
+    "postgres": "DROP VIEW IF EXISTS \"orders\"",
+    "standardsql": "DROP VIEW IF EXISTS `orders`",
+    "snowflake": "DROP VIEW IF EXISTS \"orders\"",
+    "databricks": "DROP VIEW IF EXISTS `orders`",
+    "trino": "DROP VIEW IF EXISTS \"orders\"",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": "DROP VIEW IF EXISTS \"orders\"",
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "relationProbeSql.two": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('orders''x') AND ((lower(database_name) = lower('Sales Data') AND schema_name = 'main') OR (database_name = current_database() AND lower(schema_name) = lower('Sales Data'))) UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('orders''x') AND ((lower(database_name) = lower('Sales Data') AND schema_name = 'main') OR (database_name = current_database() AND lower(schema_name) = lower('Sales Data')))",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"Sales Data\".\"orders''x\"')) AS p",
+    "standardsql": "SELECT t.table_type AS kind, o.option_value AS comment FROM `Sales Data`.INFORMATION_SCHEMA.TABLES t LEFT JOIN `Sales Data`.INFORMATION_SCHEMA.TABLE_OPTIONS o ON o.table_name = t.table_name AND o.option_name = 'description' WHERE t.table_name = 'orders\\'x'",
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'Sales Data' AND TABLE_NAME = 'orders''x'",
+    "databricks": "SELECT table_type AS kind, comment FROM information_schema.tables WHERE table_schema = lower('Sales Data') AND table_name = lower('orders\\'x')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = lower('Sales Data') AND t.table_name = lower('orders''x')",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": "SELECT CASE o.type WHEN 'V' THEN 'VIEW' ELSE 'TABLE' END AS kind, CAST(ep.value AS nvarchar(4000)) AS comment FROM sys.objects o LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description' WHERE o.object_id = OBJECT_ID(N'\"Sales Data\".\"orders''x\"')",
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableProbeSql.two": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('orders''x') AND ((lower(database_name) = lower('Sales Data') AND schema_name = 'main') OR (database_name = current_database() AND lower(schema_name) = lower('Sales Data'))) UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('orders''x') AND ((lower(database_name) = lower('Sales Data') AND schema_name = 'main') OR (database_name = current_database() AND lower(schema_name) = lower('Sales Data')))",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"Sales Data\".\"orders''x\"')) AS p",
+    "standardsql": "SELECT t.table_type AS kind, o.option_value AS comment FROM `Sales Data`.INFORMATION_SCHEMA.TABLES t LEFT JOIN `Sales Data`.INFORMATION_SCHEMA.TABLE_OPTIONS o ON o.table_name = t.table_name AND o.option_name = 'description' WHERE t.table_name = 'orders\\'x'",
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'Sales Data' AND TABLE_NAME = 'orders''x'",
+    "databricks": "SELECT table_type AS kind, comment FROM information_schema.tables WHERE table_schema = lower('Sales Data') AND table_name = lower('orders\\'x')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = lower('Sales Data') AND t.table_name = lower('orders''x')",
+    "presto": "SELECT table_type AS kind, CAST(NULL AS varchar) AS comment FROM information_schema.tables WHERE table_schema = lower('Sales Data') AND table_name = lower('orders''x')",
+    "mysql": "SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'Sales Data' AND TABLE_NAME = 'orders''x'",
+    "sqlserver": "SELECT CASE o.type WHEN 'V' THEN 'VIEW' ELSE 'TABLE' END AS kind, CAST(ep.value AS nvarchar(4000)) AS comment FROM sys.objects o LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id AND ep.minor_id = 0 AND ep.name = N'MS_Description' WHERE o.object_id = OBJECT_ID(N'\"Sales Data\".\"orders''x\"')",
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableMarkSql.two": {
+    "duckdb": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "postgres": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "standardsql": "ALTER TABLE `Sales Data`.`orders'x` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s')",
+    "snowflake": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "databricks": "COMMENT ON TABLE `Sales Data`.`orders'x` IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "trino": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "presto": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "mysql": "ALTER TABLE `Sales Data`.`orders'x` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "sqlserver": "DECLARE @schema sysname = N'Sales Data';\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"Sales Data\".\"orders''x\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders''x';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders''x';",
+    "unknown_dialect": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'"
+  },
+  "viewReadsSql.two": {
+    "duckdb": {
+      "answer": "definition",
+      "sql": "SELECT sql AS definition, schema_name AS view_schema FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('orders''x') AND ((lower(database_name) = lower('Sales Data') AND schema_name = 'main') OR (database_name = current_database() AND lower(schema_name) = lower('Sales Data')))"
+    },
+    "postgres": {
+      "answer": "reads",
+      "sql": "SELECT row_to_json(p) AS \"row\" FROM (SELECT (EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"Sales Data\".\"orders''x\"') AND d.refobjid = to_regclass('\"Sales Data\".\"target\"')) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"Sales Data\".\"orders''x\"') AND d.refobjid <> to_regclass('\"Sales Data\".\"target\"') AND d.refobjid <> to_regclass('\"Sales Data\".\"orders''x\"') AND EXISTS (SELECT 1 FROM pg_catalog.pg_class rc WHERE rc.oid = d.refobjid AND rc.relkind IN ('r', 'v', 'm', 'p', 'f')))) AS reads) AS p"
+    },
+    "standardsql": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM `Sales Data`.INFORMATION_SCHEMA.VIEWS WHERE table_name = 'orders\\'x'"
+    },
+    "snowflake": {
+      "answer": "definition",
+      "sql": "SELECT VIEW_DEFINITION AS \"definition\", TABLE_SCHEMA AS \"view_schema\" FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = 'Sales Data' AND TABLE_NAME = 'orders''x'"
+    },
+    "databricks": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM information_schema.views WHERE table_schema = lower('Sales Data') AND table_name = lower('orders\\'x')"
+    },
+    "trino": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM information_schema.views WHERE table_schema = lower('Sales Data') AND table_name = lower('orders''x')"
+    },
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "answer": "reads",
+      "sql": "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.sql_expression_dependencies d WHERE d.referencing_id = OBJECT_ID(N'\"Sales Data\".\"orders''x\"') AND d.referenced_id = OBJECT_ID(N'\"Sales Data\".\"target\"')) AND NOT EXISTS (SELECT 1 FROM sys.sql_expression_dependencies d WHERE d.referencing_id = OBJECT_ID(N'\"Sales Data\".\"orders''x\"') AND (d.referenced_id IS NULL OR d.referenced_id <> OBJECT_ID(N'\"Sales Data\".\"target\"'))) THEN 1 ELSE 0 END AS reads"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "dropViewSql.two": {
+    "duckdb": "DROP VIEW IF EXISTS \"Sales Data\".\"orders'x\"",
+    "postgres": "DROP VIEW IF EXISTS \"Sales Data\".\"orders'x\"",
+    "standardsql": "DROP VIEW IF EXISTS `Sales Data`.`orders'x`",
+    "snowflake": "DROP VIEW IF EXISTS \"Sales Data\".\"orders'x\"",
+    "databricks": "DROP VIEW IF EXISTS `Sales Data`.`orders'x`",
+    "trino": "DROP VIEW IF EXISTS \"Sales Data\".\"orders'x\"",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": "DROP VIEW IF EXISTS \"Sales Data\".\"orders'x\"",
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "relationProbeSql.three": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('Orders') AND lower(database_name) = lower('cat') AND lower(schema_name) = lower('sch') UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('Orders') AND lower(database_name) = lower('cat') AND lower(schema_name) = lower('sch')",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"cat\".\"sch\".\"Orders\"')) AS p",
+    "standardsql": "SELECT t.table_type AS kind, o.option_value AS comment FROM `cat`.`sch`.INFORMATION_SCHEMA.TABLES t LEFT JOIN `cat`.`sch`.INFORMATION_SCHEMA.TABLE_OPTIONS o ON o.table_name = t.table_name AND o.option_name = 'description' WHERE t.table_name = 'Orders'",
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM \"cat\".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'sch' AND TABLE_NAME = 'Orders'",
+    "databricks": "SELECT table_type AS kind, comment FROM `cat`.information_schema.tables WHERE table_schema = lower('sch') AND table_name = lower('Orders')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM \"cat\".information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = lower('sch') AND t.table_name = lower('Orders')",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'cat.sch.Orders'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableProbeSql.three": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('Orders') AND lower(database_name) = lower('cat') AND lower(schema_name) = lower('sch') UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('Orders') AND lower(database_name) = lower('cat') AND lower(schema_name) = lower('sch')",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"cat\".\"sch\".\"Orders\"')) AS p",
+    "standardsql": "SELECT t.table_type AS kind, o.option_value AS comment FROM `cat`.`sch`.INFORMATION_SCHEMA.TABLES t LEFT JOIN `cat`.`sch`.INFORMATION_SCHEMA.TABLE_OPTIONS o ON o.table_name = t.table_name AND o.option_name = 'description' WHERE t.table_name = 'Orders'",
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM \"cat\".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'sch' AND TABLE_NAME = 'Orders'",
+    "databricks": "SELECT table_type AS kind, comment FROM `cat`.information_schema.tables WHERE table_schema = lower('sch') AND table_name = lower('Orders')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM \"cat\".information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = lower('sch') AND t.table_name = lower('Orders')",
+    "presto": "SELECT table_type AS kind, CAST(NULL AS varchar) AS comment FROM \"cat\".information_schema.tables WHERE table_schema = lower('sch') AND table_name = lower('Orders')",
+    "mysql": "SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'sch' AND TABLE_NAME = 'Orders'",
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'cat.sch.Orders'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableMarkSql.three": {
+    "duckdb": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "postgres": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "standardsql": "ALTER TABLE `cat`.`sch`.`Orders` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s')",
+    "snowflake": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "databricks": "COMMENT ON TABLE `cat`.`sch`.`Orders` IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "trino": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "presto": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "mysql": "ALTER TABLE `cat`.`sch`.`Orders` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"cat\".\"sch\".\"Orders\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'Orders';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'Orders';",
+    "unknown_dialect": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'"
+  },
+  "viewReadsSql.three": {
+    "duckdb": {
+      "answer": "definition",
+      "sql": "SELECT sql AS definition, schema_name AS view_schema FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('Orders') AND lower(database_name) = lower('cat') AND lower(schema_name) = lower('sch')"
+    },
+    "postgres": {
+      "answer": "reads",
+      "sql": "SELECT row_to_json(p) AS \"row\" FROM (SELECT (EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"cat\".\"sch\".\"Orders\"') AND d.refobjid = to_regclass('\"cat\".\"sch\".\"target\"')) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"cat\".\"sch\".\"Orders\"') AND d.refobjid <> to_regclass('\"cat\".\"sch\".\"target\"') AND d.refobjid <> to_regclass('\"cat\".\"sch\".\"Orders\"') AND EXISTS (SELECT 1 FROM pg_catalog.pg_class rc WHERE rc.oid = d.refobjid AND rc.relkind IN ('r', 'v', 'm', 'p', 'f')))) AS reads) AS p"
+    },
+    "standardsql": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM `cat`.`sch`.INFORMATION_SCHEMA.VIEWS WHERE table_name = 'Orders'"
+    },
+    "snowflake": {
+      "answer": "definition",
+      "sql": "SELECT VIEW_DEFINITION AS \"definition\", TABLE_SCHEMA AS \"view_schema\" FROM \"cat\".INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = 'sch' AND TABLE_NAME = 'Orders'"
+    },
+    "databricks": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM `cat`.information_schema.views WHERE table_schema = lower('sch') AND table_name = lower('Orders')"
+    },
+    "trino": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM \"cat\".information_schema.views WHERE table_schema = lower('sch') AND table_name = lower('Orders')"
+    },
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'cat.sch.Orders'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "dropViewSql.three": {
+    "duckdb": "DROP VIEW IF EXISTS \"cat\".\"sch\".\"Orders\"",
+    "postgres": "DROP VIEW IF EXISTS \"cat\".\"sch\".\"Orders\"",
+    "standardsql": "DROP VIEW IF EXISTS `cat`.`sch`.`Orders`",
+    "snowflake": "DROP VIEW IF EXISTS \"cat\".\"sch\".\"Orders\"",
+    "databricks": "DROP VIEW IF EXISTS `cat`.`sch`.`Orders`",
+    "trino": "DROP VIEW IF EXISTS \"cat\".\"sch\".\"Orders\"",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'cat.sch.Orders'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "relationProbeSql.hostile": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`') UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`')",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"')) AS p",
+    "standardsql": "SELECT t.table_type AS kind, o.option_value AS comment FROM `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.TABLES t LEFT JOIN `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.TABLE_OPTIONS o ON o.table_name = t.table_name AND o.option_name = 'description' WHERE t.table_name = 't`\\'x'",
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM \"p`j\\\".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'd\"s\\\\`' AND TABLE_NAME = 't`''x'",
+    "databricks": "SELECT table_type AS kind, comment FROM `p``j\\`.information_schema.tables WHERE table_schema = lower('d\"s\\\\`') AND table_name = lower('t`\\'x')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM \"p`j\\\".information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = lower('d\"s\\`') AND t.table_name = lower('t`''x')",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'p`j\\.d\"s\\`.t`'x'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableProbeSql.hostile": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`') UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`')",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"')) AS p",
+    "standardsql": "SELECT t.table_type AS kind, o.option_value AS comment FROM `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.TABLES t LEFT JOIN `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.TABLE_OPTIONS o ON o.table_name = t.table_name AND o.option_name = 'description' WHERE t.table_name = 't`\\'x'",
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM \"p`j\\\".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'd\"s\\\\`' AND TABLE_NAME = 't`''x'",
+    "databricks": "SELECT table_type AS kind, comment FROM `p``j\\`.information_schema.tables WHERE table_schema = lower('d\"s\\\\`') AND table_name = lower('t`\\'x')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM \"p`j\\\".information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = lower('d\"s\\`') AND t.table_name = lower('t`''x')",
+    "presto": "SELECT table_type AS kind, CAST(NULL AS varchar) AS comment FROM \"p`j\\\".information_schema.tables WHERE table_schema = lower('d\"s\\`') AND table_name = lower('t`''x')",
+    "mysql": "SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment FROM information_schema.TABLES WHERE TABLE_SCHEMA = CONCAT('d\"s', CHAR(92 USING utf8mb4), '`') AND TABLE_NAME = 't`''x'",
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'p`j\\.d\"s\\`.t`'x'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableMarkSql.hostile": {
+    "duckdb": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "postgres": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "standardsql": "ALTER TABLE `p\\`j\\\\`.`d\"s\\\\\\``.`t\\`'x` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s')",
+    "snowflake": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "databricks": "COMMENT ON TABLE `p``j\\`.`d\"s\\```.`t``'x` IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "trino": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "presto": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "mysql": "ALTER TABLE `p``j\\`.`d\"s\\```.`t``'x` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N't`''x';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N't`''x';",
+    "unknown_dialect": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'"
+  },
+  "viewReadsSql.hostile": {
+    "duckdb": {
+      "answer": "definition",
+      "sql": "SELECT sql AS definition, schema_name AS view_schema FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`')"
+    },
+    "postgres": {
+      "answer": "reads",
+      "sql": "SELECT row_to_json(p) AS \"row\" FROM (SELECT (EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND d.refobjid = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"target\"')) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND d.refobjid <> to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"target\"') AND d.refobjid <> to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND EXISTS (SELECT 1 FROM pg_catalog.pg_class rc WHERE rc.oid = d.refobjid AND rc.relkind IN ('r', 'v', 'm', 'p', 'f')))) AS reads) AS p"
+    },
+    "standardsql": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.VIEWS WHERE table_name = 't`\\'x'"
+    },
+    "snowflake": {
+      "answer": "definition",
+      "sql": "SELECT VIEW_DEFINITION AS \"definition\", TABLE_SCHEMA AS \"view_schema\" FROM \"p`j\\\".INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = 'd\"s\\\\`' AND TABLE_NAME = 't`''x'"
+    },
+    "databricks": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM `p``j\\`.information_schema.views WHERE table_schema = lower('d\"s\\\\`') AND table_name = lower('t`\\'x')"
+    },
+    "trino": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM \"p`j\\\".information_schema.views WHERE table_schema = lower('d\"s\\`') AND table_name = lower('t`''x')"
+    },
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'p`j\\.d\"s\\`.t`'x'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "dropViewSql.hostile": {
+    "duckdb": "DROP VIEW IF EXISTS \"p`j\\\".\"d\"\"s\\`\".\"t`'x\"",
+    "postgres": "DROP VIEW IF EXISTS \"p`j\\\".\"d\"\"s\\`\".\"t`'x\"",
+    "standardsql": "DROP VIEW IF EXISTS `p\\`j\\\\`.`d\"s\\\\\\``.`t\\`'x`",
+    "snowflake": "DROP VIEW IF EXISTS \"p`j\\\".\"d\"\"s\\`\".\"t`'x\"",
+    "databricks": "DROP VIEW IF EXISTS `p``j\\`.`d\"s\\```.`t``'x`",
+    "trino": "DROP VIEW IF EXISTS \"p`j\\\".\"d\"\"s\\`\".\"t`'x\"",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'p`j\\.d\"s\\`.t`'x'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "replaceOwnViewStatements": {
+    "duckdb": [
+      "SELECT error('the name= view \"sch\".\"v\" changed while the build checked it') FROM (SELECT 1 FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('v') AND ((lower(database_name) = lower('sch') AND schema_name = 'main') OR (database_name = current_database() AND lower(schema_name) = lower('sch'))) AND sql = 'CREATE VIEW v AS SELECT * FROM t__m1;' HAVING count(*) = 0) g",
+      "DROP VIEW IF EXISTS \"sch\".\"v\""
+    ],
+    "postgres": [
+      "DO $guard$ BEGIN IF to_regclass('\"sch\".\"v\"') IS NOT NULL THEN EXECUTE 'LOCK TABLE ' || '\"sch\".\"v\"' || ' IN ACCESS EXCLUSIVE MODE'; END IF; IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.oid = to_regclass('\"sch\".\"v\"') AND c.relkind = 'v' AND obj_description(c.oid, 'pg_class') = 'malloy-publisher:name-view owner=env%2Fpkg' AND (EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = c.oid AND d.refobjid = to_regclass('\"sch\".\"t__m1\"')) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = c.oid AND d.refobjid <> to_regclass('\"sch\".\"t__m1\"') AND d.refobjid <> c.oid AND EXISTS (SELECT 1 FROM pg_catalog.pg_class rc WHERE rc.oid = d.refobjid AND rc.relkind IN ('r', 'v', 'm', 'p', 'f'))))) THEN RAISE EXCEPTION 'the name= view % changed while the build checked it', '\"sch\".\"v\"'; END IF; END $guard$",
+      "DROP VIEW IF EXISTS \"sch\".\"v\""
+    ]
+  },
+  "incrementalDialects": {
+    "sourceRange": "postgres, snowflake, standardsql (BigQuery)",
+    "targetDml": "duckdb, postgres, snowflake, standardsql (BigQuery)",
+    "merge": "duckdb, postgres, snowflake, standardsql (BigQuery)"
+  },
+  "decodeTablePathSegments": {
+    "duckdb": {
+      "bare": [
+        "Cat",
+        "Sch",
+        "Orders"
+      ],
+      "quoted": [
+        "Cat",
+        "sch",
+        "Or ders"
+      ],
+      "backtick": [
+        "p-1",
+        "ds",
+        "t"
+      ],
+      "escapedBacktick": null
+    },
+    "postgres": {
+      "bare": [
+        "cat",
+        "sch",
+        "orders"
+      ],
+      "quoted": [
+        "Cat",
+        "sch",
+        "Or ders"
+      ],
+      "backtick": [
+        "p-1",
+        "ds",
+        "t"
+      ],
+      "escapedBacktick": null
+    },
+    "standardsql": {
+      "bare": [
+        "Cat",
+        "Sch",
+        "Orders"
+      ],
+      "quoted": [
+        "Cat",
+        "sch",
+        "Or ders"
+      ],
+      "backtick": [
+        "p-1",
+        "ds",
+        "t"
+      ],
+      "escapedBacktick": [
+        "p`1\\",
+        "ds",
+        "t"
+      ]
+    },
+    "snowflake": {
+      "bare": [
+        "CAT",
+        "SCH",
+        "ORDERS"
+      ],
+      "quoted": [
+        "Cat",
+        "sch",
+        "Or ders"
+      ],
+      "backtick": [
+        "p-1",
+        "DS",
+        "T"
+      ],
+      "escapedBacktick": null
+    },
+    "databricks": {
+      "bare": null,
+      "quoted": null,
+      "backtick": null,
+      "escapedBacktick": null
+    },
+    "trino": {
+      "bare": null,
+      "quoted": null,
+      "backtick": null,
+      "escapedBacktick": null
+    },
+    "presto": {
+      "bare": null,
+      "quoted": null,
+      "backtick": null,
+      "escapedBacktick": null
+    },
+    "mysql": {
+      "bare": null,
+      "quoted": null,
+      "backtick": null,
+      "escapedBacktick": null
+    },
+    "sqlserver": {
+      "bare": null,
+      "quoted": null,
+      "backtick": null,
+      "escapedBacktick": null
+    },
+    "unknown_dialect": {
+      "bare": null,
+      "quoted": null,
+      "backtick": null,
+      "escapedBacktick": null
+    }
+  },
+  "probeSelect": {
+    "duckdb": "SELECT 1 AS n",
+    "postgres": "SELECT row_to_json(__p) AS \"row\" FROM (SELECT 1 AS n) AS __p",
+    "standardsql": "SELECT 1 AS n",
+    "snowflake": "SELECT 1 AS n",
+    "databricks": "SELECT 1 AS n",
+    "trino": "SELECT 1 AS n",
+    "presto": "SELECT 1 AS n",
+    "mysql": "SELECT 1 AS n",
+    "sqlserver": "SELECT 1 AS n",
+    "unknown_dialect": "SELECT 1 AS n"
+  },
+  "probeTargetColumns": {
+    "duckdb": {
+      "statements": [
+        "SELECT column_name AS \"column_name\"\n              FROM duckdb_columns()\n              WHERE database_name = 'lake'\n                AND schema_name = 'sch'\n                AND table_name = 't__m1'\n              ORDER BY column_index"
+      ],
+      "error": null
+    },
+    "postgres": {
+      "statements": [
+        "SELECT row_to_json(__p) AS \"row\" FROM (SELECT column_name AS \"column_name\"\n           FROM information_schema.columns\n           WHERE table_schema = 'sch'\n             AND table_name = 't__m1'\n           ORDER BY ordinal_position) AS __p"
+      ],
+      "error": null
+    },
+    "standardsql": {
+      "statements": [
+        "SELECT column_name AS `column_name`\n              FROM `lake`.`sch`.INFORMATION_SCHEMA.COLUMNS\n              WHERE table_name = 't__m1'\n              ORDER BY ordinal_position"
+      ],
+      "error": null
+    },
+    "snowflake": {
+      "statements": [
+        "SELECT column_name AS \"column_name\"\n           FROM \"LAKE\".information_schema.columns\n           WHERE table_schema = 'SCH'\n             AND table_name = 'T__M1'\n           ORDER BY ordinal_position"
+      ],
+      "error": null
+    },
+    "databricks": {
+      "statements": [],
+      "error": "physical table name \"lake.sch.t__m1\" is not a decodable databricks table path"
+    },
+    "trino": {
+      "statements": [],
+      "error": "physical table name \"lake.sch.t__m1\" is not a decodable trino table path"
+    },
+    "presto": {
+      "statements": [],
+      "error": "physical table name \"lake.sch.t__m1\" is not a decodable presto table path"
+    },
+    "mysql": {
+      "statements": [],
+      "error": "physical table name \"lake.sch.t__m1\" is not a decodable mysql table path"
+    },
+    "sqlserver": {
+      "statements": [],
+      "error": "physical table name \"lake.sch.t__m1\" is not a decodable sqlserver table path"
+    },
+    "unknown_dialect": {
+      "statements": [],
+      "error": "physical table name \"lake.sch.t__m1\" is not a decodable unknown_dialect table path"
+    }
+  },
+  "probeMaxWatermark": {
+    "duckdb": [
+      "SELECT MAX(\"updated_at\") AS \"watermark_max\" FROM (SELECT * FROM src) AS __w"
+    ],
+    "postgres": [
+      "SELECT row_to_json(__p) AS \"row\" FROM (SELECT MAX(\"updated_at\") AS \"watermark_max\" FROM (SELECT * FROM src) AS __w) AS __p"
+    ],
+    "standardsql": [
+      "SELECT MAX(`updated_at`) AS `watermark_max` FROM (SELECT * FROM src) AS __w"
+    ],
+    "snowflake": [
+      "SELECT MAX(\"updated_at\") AS \"watermark_max\" FROM (SELECT * FROM src) AS __w"
+    ],
+    "databricks": [
+      "SELECT MAX(`updated_at`) AS `watermark_max` FROM (SELECT * FROM src) AS __w"
+    ],
+    "trino": [
+      "SELECT MAX(\"updated_at\") AS \"watermark_max\" FROM (SELECT * FROM src) AS __w"
+    ],
+    "presto": [
+      "SELECT MAX(\"updated_at\") AS \"watermark_max\" FROM (SELECT * FROM src) AS __w"
+    ],
+    "mysql": [
+      "SELECT MAX(`updated_at`) AS `watermark_max` FROM (SELECT * FROM src) AS __w"
+    ],
+    "sqlserver": [
+      "SELECT MAX(\"updated_at\") AS \"watermark_max\" FROM (SELECT * FROM src) AS __w"
+    ],
+    "unknown_dialect": [
+      "SELECT MAX(\"updated_at\") AS \"watermark_max\" FROM (SELECT * FROM src) AS __w"
+    ]
+  },
+  "probePostgresVersion": [
+    "SELECT row_to_json(__p) AS \"row\" FROM (SELECT current_setting('server_version_num') AS version_num) AS __p"
+  ],
+  "renderSqlBound": {
+    "duckdb": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it''s a \\ test'"
+    },
+    "postgres": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it''s a \\ test'"
+    },
+    "standardsql": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it\\'s a \\\\ test'"
+    },
+    "snowflake": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it''s a \\\\ test'"
+    },
+    "databricks": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it''s a \\ test'"
+    },
+    "trino": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it''s a \\ test'"
+    },
+    "presto": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it''s a \\ test'"
+    },
+    "mysql": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it''s a \\ test'"
+    },
+    "sqlserver": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it''s a \\ test'"
+    },
+    "unknown_dialect": {
+      "date": "DATE '2026-01-02'",
+      "timestamp": "TIMESTAMP '2026-01-01 00:00:00'",
+      "number": "42.5",
+      "string": "'it''s a \\ test'"
+    }
+  },
+  "deltaSelect": {
+    "duckdb": "SELECT * FROM (SELECT * FROM src) AS __d WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+    "postgres": "SELECT * FROM (SELECT * FROM src) AS __d WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+    "standardsql": "SELECT * FROM (SELECT * FROM src) AS __d WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00'",
+    "snowflake": "SELECT * FROM (SELECT * FROM src) AS __d WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+    "databricks": "SELECT * FROM (SELECT * FROM src) AS __d WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00'",
+    "trino": "SELECT * FROM (SELECT * FROM src) AS __d WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+    "presto": "SELECT * FROM (SELECT * FROM src) AS __d WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+    "mysql": "SELECT * FROM (SELECT * FROM src) AS __d WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00'",
+    "sqlserver": "SELECT * FROM (SELECT * FROM src) AS __d WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+    "unknown_dialect": "SELECT * FROM (SELECT * FROM src) AS __d WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'"
+  },
+  "deltaStatements.range": {
+    "duckdb": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "COMMIT"
+    ],
+    "postgres": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "COMMIT"
+    ],
+    "standardsql": [
+      "BEGIN TRANSACTION",
+      "DELETE FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (`id`, `amount`, `updated_at`) SELECT `id`, `amount`, `updated_at` FROM (SELECT * FROM src) AS __s",
+      "COMMIT TRANSACTION"
+    ],
+    "snowflake": [
+      "EXECUTE IMMEDIATE $$\nBEGIN\n  BEGIN TRANSACTION;\n  DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00';\n  INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s;\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND\n$$"
+    ],
+    "databricks": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (`id`, `amount`, `updated_at`) SELECT `id`, `amount`, `updated_at` FROM (SELECT * FROM src) AS __s",
+      "COMMIT"
+    ],
+    "trino": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "COMMIT"
+    ],
+    "presto": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "COMMIT"
+    ],
+    "mysql": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (`id`, `amount`, `updated_at`) SELECT `id`, `amount`, `updated_at` FROM (SELECT * FROM src) AS __s",
+      "COMMIT"
+    ],
+    "sqlserver": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "COMMIT"
+    ],
+    "unknown_dialect": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "COMMIT"
+    ]
+  },
+  "deltaStatements.rangeWithWindow": {
+    "duckdb": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "postgres": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "standardsql": [
+      "BEGIN TRANSACTION",
+      "DELETE FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (`id`, `amount`, `updated_at`) SELECT `id`, `amount`, `updated_at` FROM (SELECT * FROM src) AS __s",
+      "DELETE FROM tgt WHERE `updated_at` < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT TRANSACTION"
+    ],
+    "snowflake": [
+      "EXECUTE IMMEDIATE $$\nBEGIN\n  BEGIN TRANSACTION;\n  DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00';\n  INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s;\n  DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00';\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND\n$$"
+    ],
+    "databricks": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (`id`, `amount`, `updated_at`) SELECT `id`, `amount`, `updated_at` FROM (SELECT * FROM src) AS __s",
+      "DELETE FROM tgt WHERE `updated_at` < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "trino": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "presto": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "mysql": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (`id`, `amount`, `updated_at`) SELECT `id`, `amount`, `updated_at` FROM (SELECT * FROM src) AS __s",
+      "DELETE FROM tgt WHERE `updated_at` < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "sqlserver": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "unknown_dialect": [
+      "BEGIN",
+      "DELETE FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00'",
+      "INSERT INTO tgt (\"id\", \"amount\", \"updated_at\") SELECT \"id\", \"amount\", \"updated_at\" FROM (SELECT * FROM src) AS __s",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ]
+  },
+  "deltaStatements.merge": {
+    "duckdb": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+    ],
+    "postgres": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+    ],
+    "standardsql": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`org` = __s.`org` OR (__t.`org` IS NULL AND __s.`org` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)"
+    ],
+    "snowflake": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+    ],
+    "databricks": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`org` = __s.`org` OR (__t.`org` IS NULL AND __s.`org` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)"
+    ],
+    "trino": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+    ],
+    "presto": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+    ],
+    "mysql": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`org` = __s.`org` OR (__t.`org` IS NULL AND __s.`org` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)"
+    ],
+    "sqlserver": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+    ],
+    "unknown_dialect": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+    ]
+  },
+  "deltaStatements.mergeWithWindow": {
+    "duckdb": [
+      "BEGIN",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "postgres": [
+      "BEGIN",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "standardsql": [
+      "BEGIN TRANSACTION",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)",
+      "DELETE FROM tgt WHERE `updated_at` < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT TRANSACTION"
+    ],
+    "snowflake": [
+      "EXECUTE IMMEDIATE $$\nBEGIN\n  BEGIN TRANSACTION;\n  MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\");\n  DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00';\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND\n$$"
+    ],
+    "databricks": [
+      "BEGIN",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)",
+      "DELETE FROM tgt WHERE `updated_at` < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "trino": [
+      "BEGIN",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "presto": [
+      "BEGIN",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "mysql": [
+      "BEGIN",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)",
+      "DELETE FROM tgt WHERE `updated_at` < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "sqlserver": [
+      "BEGIN",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ],
+    "unknown_dialect": [
+      "BEGIN",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
+      "COMMIT"
+    ]
+  },
+  "deltaStatements.mergeAllKeys": {
+    "duckdb": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+    ],
+    "postgres": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+    ],
+    "standardsql": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN NOT MATCHED THEN INSERT (`id`) VALUES (__s.`id`)"
+    ],
+    "snowflake": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+    ],
+    "databricks": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN NOT MATCHED THEN INSERT (`id`) VALUES (__s.`id`)"
+    ],
+    "trino": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+    ],
+    "presto": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+    ],
+    "mysql": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN NOT MATCHED THEN INSERT (`id`) VALUES (__s.`id`)"
+    ],
+    "sqlserver": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+    ],
+    "unknown_dialect": [
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+    ]
+  },
+  "pairDeltaStatements": {
+    "duckdb": [
+      "CREATE OR REPLACE TEMP TABLE \"tgt__stage\" AS SELECT * FROM src",
+      "BEGIN",
+      "DELETE FROM tgt AS __t WHERE EXISTS (SELECT 1 FROM \"tgt__stage\" AS __s WHERE (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)))",
+      "INSERT INTO tgt (\"id\", \"child_id\", \"__parent_row\") SELECT \"id\", \"child_id\", \"__parent_row\" FROM \"tgt__stage\"",
+      "SELECT error('pair table parent-row check: a parent does not have exactly one parent-row flag') FROM (SELECT \"id\" FROM tgt WHERE \"__lane\" = 0 GROUP BY \"id\" HAVING count(*) FILTER (WHERE \"__parent_row\") <> 1) AS __g LIMIT 1",
+      "SELECT error('pair table parent-row check: a parent does not have exactly one parent-row flag') FROM (SELECT \"id\", \"child_id\" FROM tgt WHERE \"__lane\" = 1 GROUP BY \"id\", \"child_id\" HAVING count(*) FILTER (WHERE \"__level_1_row\") <> 1) AS __g LIMIT 1",
+      "SELECT error('pair table parent-row check: a parent does not have exactly one parent-row flag') FROM (SELECT \"id\" FROM tgt GROUP BY \"id\" HAVING count(DISTINCT \"__lane\") <> 2) AS __g LIMIT 1",
+      "COMMIT",
+      "DROP TABLE IF EXISTS \"tgt__stage\""
+    ],
+    "postgres": {
+      "refused": "a pair table's delta is applied in DuckDB only, not postgres"
+    },
+    "standardsql": {
+      "refused": "a pair table's delta is applied in DuckDB only, not standardsql"
+    },
+    "snowflake": {
+      "refused": "a pair table's delta is applied in DuckDB only, not snowflake"
+    },
+    "databricks": {
+      "refused": "a pair table's delta is applied in DuckDB only, not databricks"
+    },
+    "trino": {
+      "refused": "a pair table's delta is applied in DuckDB only, not trino"
+    },
+    "presto": {
+      "refused": "a pair table's delta is applied in DuckDB only, not presto"
+    },
+    "mysql": {
+      "refused": "a pair table's delta is applied in DuckDB only, not mysql"
+    },
+    "sqlserver": {
+      "refused": "a pair table's delta is applied in DuckDB only, not sqlserver"
+    },
+    "unknown_dialect": {
+      "refused": "a pair table's delta is applied in DuckDB only, not unknown_dialect"
+    }
+  },
+  "snowflakeScriptingBlock": "EXECUTE IMMEDIATE $$\nBEGIN\n  BEGIN TRANSACTION;\n  DELETE FROM t;\n  INSERT INTO t SELECT 1;\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND\n$$",
+  "deltaScript": "BEGIN;\nDELETE FROM t;\nCOMMIT;",
+  "swapIntoPlace": {
+    "duckdb": [
+      "BEGIN TRANSACTION;\nDROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";\nCOMMIT;"
+    ],
+    "postgres": [
+      "DROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";"
+    ],
+    "standardsql": [
+      "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+      "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+      "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+    ],
+    "snowflake": [
+      "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+      "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+    ],
+    "databricks": [
+      "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+      "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+      "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+    ],
+    "trino": [
+      "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+      "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+    ],
+    "presto": [
+      "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+      "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+    ],
+    "mysql": [
+      "ALTER TABLE `sch`.`orders__m1` RENAME TO `sch`.`orders__m1__backup`",
+      "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `sch`.`orders__m1`",
+      "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+    ],
+    "sqlserver": [
+      "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+      "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+    ],
+    "unknown_dialect": [
+      "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+      "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+    ]
+  },
+  "swapIntoPlaceReplacingAView": {
+    "duckdb": [
+      "BEGIN TRANSACTION;\nDROP VIEW IF EXISTS sch.orders;\nDROP TABLE IF EXISTS \"sch\".\"orders\";\nALTER TABLE \"sch\".\"orders__staging\" RENAME TO \"orders\";\nCOMMIT;"
+    ],
+    "postgres": [
+      "DROP VIEW IF EXISTS sch.orders;\nDROP TABLE IF EXISTS \"sch\".\"orders\";\nALTER TABLE \"sch\".\"orders__staging\" RENAME TO \"orders\";"
+    ],
+    "standardsql": [
+      "DROP VIEW IF EXISTS sch.orders",
+      "ALTER TABLE `sch`.`orders` RENAME TO `orders__backup`",
+      "ALTER TABLE `sch`.`orders__staging` RENAME TO `orders`",
+      "DROP TABLE IF EXISTS `sch`.`orders__backup`"
+    ],
+    "snowflake": [
+      "DROP VIEW IF EXISTS sch.orders",
+      "ALTER TABLE \"sch\".\"orders\" RENAME TO \"sch\".\"orders__backup\"",
+      "ALTER TABLE \"sch\".\"orders__staging\" RENAME TO \"sch\".\"orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__backup\""
+    ],
+    "databricks": [
+      "DROP VIEW IF EXISTS sch.orders",
+      "ALTER TABLE `sch`.`orders` RENAME TO `orders__backup`",
+      "ALTER TABLE `sch`.`orders__staging` RENAME TO `orders`",
+      "DROP TABLE IF EXISTS `sch`.`orders__backup`"
+    ],
+    "trino": [
+      "DROP VIEW IF EXISTS sch.orders",
+      "ALTER TABLE \"sch\".\"orders\" RENAME TO \"sch\".\"orders__backup\"",
+      "ALTER TABLE \"sch\".\"orders__staging\" RENAME TO \"sch\".\"orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__backup\""
+    ],
+    "presto": [
+      "DROP VIEW IF EXISTS sch.orders",
+      "ALTER TABLE \"sch\".\"orders\" RENAME TO \"orders__backup\"",
+      "ALTER TABLE \"sch\".\"orders__staging\" RENAME TO \"orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__backup\""
+    ],
+    "mysql": [
+      "DROP VIEW IF EXISTS sch.orders",
+      "ALTER TABLE `sch`.`orders` RENAME TO `sch`.`orders__backup`",
+      "ALTER TABLE `sch`.`orders__staging` RENAME TO `sch`.`orders`",
+      "DROP TABLE IF EXISTS `sch`.`orders__backup`"
+    ],
+    "sqlserver": [
+      "DROP VIEW IF EXISTS sch.orders",
+      "ALTER TABLE \"sch\".\"orders\" RENAME TO \"orders__backup\"",
+      "ALTER TABLE \"sch\".\"orders__staging\" RENAME TO \"orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__backup\""
+    ],
+    "unknown_dialect": [
+      "DROP VIEW IF EXISTS sch.orders",
+      "ALTER TABLE \"sch\".\"orders\" RENAME TO \"orders__backup\"",
+      "ALTER TABLE \"sch\".\"orders__staging\" RENAME TO \"orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"orders__backup\""
+    ]
+  },
+  "swapIntoPlace.failsFirst": {
+    "duckdb": {
+      "statements": [
+        "BEGIN TRANSACTION;\nDROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";\nCOMMIT;",
+        "ROLLBACK",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "postgres": {
+      "statements": [
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "standardsql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "SELECT 1 FROM `sch`.`orders__m1` WHERE 1 = 0",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "snowflake": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "databricks": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "SELECT 1 FROM `sch`.`orders__m1` WHERE 1 = 0",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "trino": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "presto": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "mysql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `sch`.`orders__m1__backup`",
+        "SELECT 1 FROM `sch`.`orders__m1` WHERE 1 = 0",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `sch`.`orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "sqlserver": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "unknown_dialect": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "SELECT 1 FROM \"sch\".\"orders__m1\" WHERE 1 = 0",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    }
+  },
+  "swapIntoPlace.failsSecond": {
+    "duckdb": {
+      "statements": [
+        "BEGIN TRANSACTION;\nDROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";\nCOMMIT;"
+      ],
+      "refused": null
+    },
+    "postgres": {
+      "statements": [
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";"
+      ],
+      "refused": null
+    },
+    "standardsql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "ALTER TABLE `sch`.`orders__m1__backup` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__staging`"
+      ],
+      "refused": "permission denied"
+    },
+    "snowflake": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "databricks": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "ALTER TABLE `sch`.`orders__m1__backup` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__staging`"
+      ],
+      "refused": "permission denied"
+    },
+    "trino": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "presto": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "mysql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `sch`.`orders__m1`",
+        "ALTER TABLE `sch`.`orders__m1__backup` RENAME TO `sch`.`orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__staging`"
+      ],
+      "refused": "permission denied"
+    },
+    "sqlserver": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    },
+    "unknown_dialect": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "ALTER TABLE \"sch\".\"orders__m1__backup\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "permission denied"
+    }
+  },
+  "swapIntoPlace.firstBuild": {
+    "duckdb": {
+      "statements": [
+        "BEGIN TRANSACTION;\nDROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";\nCOMMIT;",
+        "ROLLBACK",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "Table sch.orders__m1 does not exist"
+    },
+    "postgres": {
+      "statements": [
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__staging\""
+      ],
+      "refused": "Table sch.orders__m1 does not exist"
+    },
+    "standardsql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "snowflake": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "databricks": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "trino": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "presto": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "mysql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `sch`.`orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "sqlserver": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "unknown_dialect": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    }
+  },
+  "swapIntoPlace.failsThird": {
+    "duckdb": {
+      "statements": [
+        "BEGIN TRANSACTION;\nDROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";\nCOMMIT;"
+      ],
+      "refused": null
+    },
+    "postgres": {
+      "statements": [
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1\";\nALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\";"
+      ],
+      "refused": null
+    },
+    "standardsql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "snowflake": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "databricks": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "trino": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"sch\".\"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"sch\".\"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "presto": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "mysql": {
+      "statements": [
+        "ALTER TABLE `sch`.`orders__m1` RENAME TO `sch`.`orders__m1__backup`",
+        "ALTER TABLE `sch`.`orders__m1__staging` RENAME TO `sch`.`orders__m1`",
+        "DROP TABLE IF EXISTS `sch`.`orders__m1__backup`"
+      ],
+      "refused": null
+    },
+    "sqlserver": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    },
+    "unknown_dialect": {
+      "statements": [
+        "ALTER TABLE \"sch\".\"orders__m1\" RENAME TO \"orders__m1__backup\"",
+        "ALTER TABLE \"sch\".\"orders__m1__staging\" RENAME TO \"orders__m1\"",
+        "DROP TABLE IF EXISTS \"sch\".\"orders__m1__backup\""
+      ],
+      "refused": null
+    }
+  },
+  "ColocatedTier.drop": {
+    "duckdb": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "postgres": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "standardsql": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`"
+    ],
+    "snowflake": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "databricks": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`"
+    ],
+    "trino": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "presto": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "mysql": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`"
+    ],
+    "sqlserver": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ],
+    "unknown_dialect": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
+    ]
+  },
+  "ColocatedTier.drop.leftoversOf": {
+    "duckdb": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "postgres": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "standardsql": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_orders`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_oorders`"
+    ],
+    "snowflake": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "databricks": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_orders`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_oorders`"
+    ],
+    "trino": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "presto": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "mysql": [
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_orders`",
+      "DROP TABLE IF EXISTS `sch`.`Orders x__m1_oorders`"
+    ],
+    "sqlserver": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ],
+    "unknown_dialect": [
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
+      "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
+    ]
+  },
+  "ColocatedTier.drop.hostile": {
+    "duckdb": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "postgres": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "standardsql": [
+      "DROP TABLE IF EXISTS `s\\`c\\\\`.`Or\"d\\`ers__m1`"
+    ],
+    "snowflake": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "databricks": [
+      "DROP TABLE IF EXISTS `s``c\\`.`Or\"d``ers__m1`"
+    ],
+    "trino": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "presto": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "mysql": [
+      "DROP TABLE IF EXISTS `s``c\\`.`Or\"d``ers__m1`"
+    ],
+    "sqlserver": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "unknown_dialect": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ]
+  },
+  "capturedNativeSchema.one": {
+    "duckdb": [
+      "DESCRIBE \"orders\""
+    ],
+    "postgres": [
+      "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"orders\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum"
+    ],
+    "standardsql": [],
+    "snowflake": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders') ORDER BY ordinal_position"
+    ],
+    "databricks": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders') ORDER BY ordinal_position"
+    ],
+    "trino": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM information_schema.columns WHERE lower(table_name) = lower('orders') ORDER BY ordinal_position"
+    ],
+    "presto": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM information_schema.columns WHERE lower(table_name) = lower('orders') ORDER BY ordinal_position"
+    ],
+    "mysql": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders') AND table_schema = DATABASE() ORDER BY ordinal_position"
+    ],
+    "sqlserver": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower(N'orders') ORDER BY ordinal_position"
+    ],
+    "unknown_dialect": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders') ORDER BY ordinal_position"
+    ]
+  },
+  "capturedNativeSchema.two": {
+    "duckdb": [
+      "DESCRIBE \"Sales Data\".\"orders'x\""
+    ],
+    "postgres": [
+      "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"Sales Data\".\"orders''x\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum"
+    ],
+    "standardsql": [
+      "SELECT column_name, data_type FROM `Sales Data`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'orders\\'x' ORDER BY ordinal_position"
+    ],
+    "snowflake": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
+    ],
+    "databricks": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders\\'x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
+    ],
+    "trino": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
+    ],
+    "presto": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
+    ],
+    "mysql": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
+    ],
+    "sqlserver": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower(N'orders''x') AND lower(table_schema) = lower(N'Sales Data') ORDER BY ordinal_position"
+    ],
+    "unknown_dialect": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
+    ]
+  },
+  "capturedNativeSchema.three": {
+    "duckdb": [
+      "DESCRIBE \"cat\".\"sch\".\"Orders\""
+    ],
+    "postgres": [
+      "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"cat\".\"sch\".\"Orders\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum"
+    ],
+    "standardsql": [
+      "SELECT column_name, data_type FROM `cat`.`sch`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'Orders' ORDER BY ordinal_position"
+    ],
+    "snowflake": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"cat\".information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"
+    ],
+    "databricks": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM `cat`.information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"
+    ],
+    "trino": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM \"cat\".information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"
+    ],
+    "presto": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM \"cat\".information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"
+    ],
+    "mysql": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM `cat`.information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"
+    ],
+    "sqlserver": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"cat\".information_schema.columns WHERE lower(table_name) = lower(N'Orders') AND lower(table_schema) = lower(N'sch') ORDER BY ordinal_position"
+    ],
+    "unknown_dialect": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"cat\".information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"
+    ]
+  },
+  "capturedNativeSchema.hostile": {
+    "duckdb": [
+      "DESCRIBE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\""
+    ],
+    "postgres": [
+      "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum"
+    ],
+    "standardsql": [
+      "SELECT column_name, data_type FROM `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 't`\\'x' ORDER BY ordinal_position"
+    ],
+    "snowflake": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\\\`') ORDER BY ordinal_position"
+    ],
+    "databricks": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM `p``j\\`.information_schema.columns WHERE lower(table_name) = lower('t`\\'x') AND lower(table_schema) = lower('d\"s\\\\`') ORDER BY ordinal_position"
+    ],
+    "trino": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\`') ORDER BY ordinal_position"
+    ],
+    "presto": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\`') ORDER BY ordinal_position"
+    ],
+    "mysql": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM `p``j\\`.information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower(CONCAT('d\"s', CHAR(92 USING utf8mb4), '`')) ORDER BY ordinal_position"
+    ],
+    "sqlserver": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower(N't`''x') AND lower(table_schema) = lower(N'd\"s\\`') ORDER BY ordinal_position"
+    ],
+    "unknown_dialect": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\`') ORDER BY ordinal_position"
+    ]
+  },
+  "bigQueryCostColumns": "\n   total_slot_time_ms,\n   json_extract_string(statistics, '$.query.totalBytesProcessed') AS bytes_processed,\n   json_extract_string(statistics, '$.query.totalBytesBilled')    AS bytes_billed,\n   json_extract_string(statistics, '$.query.cacheHit')            AS cache_hit",
+  "snowflakeCostSQL": {
+    "database": "\n      SELECT QUERY_ID       AS \"job_id\",\n             QUERY_TEXT     AS \"query_text\",\n             BYTES_SCANNED  AS \"bytes_scanned\",\n             EXECUTION_TIME AS \"execution_time_ms\",\n             ROWS_PRODUCED  AS \"rows_produced\"\n      FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(\n                 RESULT_LIMIT => 10000))\n      WHERE QUERY_TAG = '{\"run\":\"r''1\"}'\n        AND EXECUTION_STATUS = 'SUCCESS'",
+    "noDatabase": "\n      SELECT QUERY_ID       AS \"job_id\",\n             QUERY_TEXT     AS \"query_text\",\n             BYTES_SCANNED  AS \"bytes_scanned\",\n             EXECUTION_TIME AS \"execution_time_ms\",\n             ROWS_PRODUCED  AS \"rows_produced\"\n      FROM TABLE(SNOWFLAKE.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(\n                 RESULT_LIMIT => 10000))\n      WHERE QUERY_TAG = '{\"run\":\"r''1\"}'\n        AND EXECUTION_STATUS = 'SUCCESS'"
+  },
+  "snowflakeSetQueryTagSQL": "SELECT * FROM snowflake_query('ALTER SESSION SET QUERY_TAG = ''{\"team\":\"a\\\\\\\\b''''s\",\"run\":\"r1\"}''', 'sec''ret')",
+  "snowflakeSessionParitySQL": [
+    "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'sec''ret')",
+    "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'sec''ret')",
+    "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'sec''ret')"
+  ],
+  "snowflakeSessionCheckSQL": [
+    {
+      "name": "TIMEZONE",
+      "value": "UTC",
+      "sql": "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'sec''ret')"
+    },
+    {
+      "name": "WEEK_START",
+      "value": "7",
+      "sql": "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''WEEK_START'' IN SESSION', 'sec''ret')"
+    }
+  ],
+  "bigQueryQueryLabelValue": "team:a_b_s,run:r1"
+}

@@ -55,10 +55,14 @@ export type SourceFailure = components["schemas"]["SourceFailure"];
  */
 export type RefusedSource = components["schemas"]["RefusedSource"];
 
+/** Why a valid declaration is not built (`RefusedSource.reason`). */
+export type RefusedReason = RefusedSource["reason"];
+
 /**
- * Whether a manifest entry records a FAILED source, in the deprecated shape.
+ * Whether a run manifest entry records a FAILED source, in the deprecated
+ * shape.
  *
- * Manifests at rest (in `publisher.db` and bound manifest files) may hold a
+ * Run manifests at rest (in `publisher.db` and bound manifest files) may hold a
  * failed source INTO `entries`, and this build still mirrors failures there.
  * Its `physicalTableName` names a table the build never created; with stable
  * auto-run names (`selfAssignTableName`) that is the PREVIOUS generation's real
@@ -104,7 +108,7 @@ export interface BuildManifest {
 export interface FreshnessAwareManifestEntry {
    tableName: string;
    /**
-    * The connection the physical table lives on, carried from the wire
+    * The connection the physical table lives on, carried from the run
     * manifest so the bind step can quote `tableName` for that connection's
     * dialect (see Package.quoteBoundTableNames). Absent on entries whose
     * producer didn't record it; those bind verbatim.
@@ -115,8 +119,8 @@ export interface FreshnessAwareManifestEntry {
    freshnessFallback?: "live" | "stale_ok" | "fail";
    /**
     * The colocated table's columns as its build captured them (the wire
-    * entry's `schema`), in DuckDB's spelling; absent for a table built
-    * before the v1 cutover captured one. The served copy binds a v1 colocated
+    * entry's `schema`), in DuckDB's spelling; absent for a table whose
+    * build captured none. The served copy binds a v1 colocated
     * table with it (colocated_bindings.ts).
     */
    schema?: { name: string; type: string }[];
@@ -143,11 +147,91 @@ export interface KeyUniqueness {
    /**
     * Each query source's primary key check the rollup's build ran, by the
     * source's sourceID: true when its key was held once per row and never
-    * NULL. The join-to-rollup leg reads a join read as a join_many only for a
+    * NULL. The join-to-rollup branch reads a join read as a join_many only for a
     * source known true here.
     */
    parentKeys?: Record<string, boolean>;
 }
 
+/**
+ * One bound colocated table's columns as the bind read them from its
+ * warehouse (DuckDB's spelling, as {@link FreshnessAwareManifestEntry.schema}),
+ * or why they could not be read, in which case the table answers live.
+ */
+export type ObservedColumns =
+   | {
+        /**
+         * Each column, `type` absent for one whose warehouse type Malloy
+         * reads as no basic type (a struct, an array): never a drift.
+         */
+        columns: {
+           name: string;
+           type?: string;
+           /** Its type as the warehouse's catalog names it (`numeric(10,2)`). */
+           nativeType?: string;
+           /**
+            * The catalog names a 128-bit integer, but the table is in DuckLake,
+            * whose Parquet files hold the column as a DOUBLE: `type` and
+            * `nativeType` say DOUBLE, what its values hold.
+            */
+           storedAsDouble?: true;
+        }[];
+        /** The connection's dialect the types were read on. */
+        dialect?: string;
+     }
+   | {
+        /** Why, as a fixed class: what a package warning may say. */
+        unread: UnreadReason;
+        /**
+         * The driver's own message, its connection's secrets redacted: for
+         * the log alone, never the API.
+         */
+        detail?: string;
+     };
+
+/** Why the bind could not read a database table's columns. */
+export type UnreadReason =
+   | "connection_failed"
+   | "timed_out"
+   | "catalog_query_failed"
+   | "not_found"
+   | "ambiguous"
+   | "unparseable"
+   | "not_read";
+
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */
 export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;
+
+/**
+ * How loading an auto-run's manifest into its package went
+ * (`Environment.loadRunManifest`): the step that failed, when one did.
+ */
+export type RunManifestLoad =
+   | { loaded: true }
+   | { loaded: false; step: "reload" | "bind"; error: string };
+
+/** Why a table a run replaced is kept rather than reclaimed, and listed. */
+export type KeptTableReason =
+   | "author_name"
+   | "destination_missing"
+   | "may_be_served";
+
+/**
+ * A table an auto-run replaced and Publisher keeps, listed on the run record
+ * (`metadata.keptTables`) and raised as a package warning
+ * (`table-kept-after-rename`) until the table is dropped or the name is
+ * reused: one at an author's exact `name=` (`author_name`), which Publisher
+ * never drops; one in a storage destination that is no longer configured
+ * (`destination_missing`), which it cannot reach; or one at the name the
+ * source is served under now, left in its old place by a `storage=` or tier
+ * move (`may_be_served`), which may be the very table served.
+ */
+export interface KeptTable {
+   sourceEntityId: string;
+   sourceName?: string;
+   /** The kept table. */
+   physicalTableName: string;
+   connectionName: string;
+   storageDestinationName?: string;
+   reason: KeptTableReason;
+}

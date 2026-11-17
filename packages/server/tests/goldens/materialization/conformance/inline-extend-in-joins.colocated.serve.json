@@ -75,13 +75,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored column computed through the inline join",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -145,13 +146,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a join's inline dimension on the extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -216,13 +218,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a join-level aggregate on the extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -286,13 +289,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored column computed through the inline join",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -356,13 +360,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a join's inline dimension on the extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -427,13 +432,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "6bc7af71a54db5d246910da579ced5edf7bf42b4a14071f11bdff2212cc0a973",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a join-level aggregate on the extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

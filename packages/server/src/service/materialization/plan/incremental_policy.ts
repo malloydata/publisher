@@ -1,25 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { components } from "../../../api";
-import {
-   describeDialects,
-   INCREMENTAL_SOURCE_RANGE_DIALECTS,
-   MERGE_CAPABLE_DIALECTS,
-} from "../run/incremental_apply";
-import type {
-   IncrementalDeclaration,
-   ResolvedName,
-} from "./incremental_declaration";
-
-type ApiPackage = components["schemas"]["Package"];
-type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
-
 /**
  * The gate for a source's INCREMENTAL declaration, plus advisory findings.
  *
- * STRICT everywhere a package is admitted: publish/PATCH answer a 400 with these
- * messages, and a package LOAD fails the same way (see Package.loadViaWorker).
+ * STRICT everywhere a package is admitted for an INVALID declaration:
+ * publish/PATCH answer a 400 with these messages, and a package LOAD fails
+ * the same way (see Package.loadViaWorker). A VALID declaration this
+ * deployment cannot honour (rules 6, 7 and 12) refuses that source alone
+ * instead ({@link incrementalUnbuildableReason}).
  * Unlike the persistence-policy gate, load is not lenient: a package can reach a
  * worker without the publish endpoint, and a rejection nobody sees means a
  * silent full rebuild forever. Advisories never block; they ride the package's
@@ -32,7 +21,28 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
  * Every rule reads the EFFECTIVE MERGED tag (see resolveIncrementalDeclaration),
  * which is why several messages offer `-watermark`: an inheriting child removes
  * a key by negating it.
+ *
+ * Surface: `incrementalPolicyRejections` (the gate) and
+ * `incrementalPolicyAdvisories` (the warnings), each over one
+ * {@link IncrementalPolicySource} per source, read by the facade; `package.ts`
+ * reads the advisory code `INCREMENTAL_NO_MERGE_KEY_CODE`. Pure: it reads
+ * resolved declarations (`incremental_declaration.ts`) and the dialect
+ * capability table, and runs nothing.
  */
+
+import { components } from "../../../api";
+import {
+   capabilitiesOf,
+   describeDialects,
+   dialectsWith,
+} from "../domain/dialect";
+import type {
+   IncrementalDeclaration,
+   ResolvedName,
+} from "../domain/incremental";
+
+type ApiPackage = components["schemas"]["Package"];
+type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 
 /** One source's inputs to the gate. */
 export interface IncrementalPolicySource {
@@ -55,6 +65,8 @@ export interface IncrementalPolicySource {
     */
    sourceEntityId?: string;
    declaration: IncrementalDeclaration;
+   /** The code an invalid declaration fails the load under, by its route. */
+   invalidCode?: string;
 }
 
 const MODE = `refresh="incremental"`;
@@ -143,15 +155,40 @@ export function incrementalPolicyRejections(
 ): string[] {
    const rejections: string[] = [];
    for (const source of sources) {
-      rejections.push(...rejectionsForSource(source));
+      rejections.push(...judgeSource(source).invalid);
    }
    return rejections;
 }
 
-function rejectionsForSource(source: IncrementalPolicySource): string[] {
+/**
+ * Why a VALID incremental declaration cannot be built incrementally here
+ * (rules 6, 7 and 12: the dialect cannot bound or merge a delta, or a window
+ * field would be recomputed wrongly), or undefined when it can, or when the
+ * declaration is invalid (an invalid one fails the load instead). Such a
+ * source is refused alone: not built, answered live, and the package loads.
+ */
+export function incrementalUnbuildableReason(
+   source: IncrementalPolicySource,
+): string | undefined {
+   const { invalid, unbuildable } = judgeSource(source);
+   return invalid.length === 0 && unbuildable.length > 0
+      ? unbuildable.join("; ")
+      : undefined;
+}
+
+/**
+ * A source's incremental rules, split by outcome: `invalid` (the
+ * declaration says something wrong; it fails the load) and `unbuildable`
+ * (valid, but this deployment cannot honour it; the source is refused alone).
+ */
+function judgeSource(source: IncrementalPolicySource): {
+   invalid: string[];
+   unbuildable: string[];
+} {
    const { declaration: d } = source;
    const where = declaredOn(source);
    const out: string[] = [];
+   const unbuildable: string[] = [];
 
    // Rule 4: the mode itself must be one of the two known values. Checked first
    // because a misspelled mode is why the coherence rules below see no mode.
@@ -217,31 +254,32 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
 
    // The remaining rules are about machinery; on a non-incremental source rule 1
    // has already named the real problem.
-   if (!d.incremental) return out;
+   if (!d.incremental) return { invalid: out, unbuildable };
 
    // Rule 6: a SOURCE dialect the publisher can derive a bounded range for (a
    // literal for every watermark type plus a frontier probe). An allowlist, not
    // a capability probe: a delta writes into a serving table, so an unproven
    // engine must read as no. The source's dialect, not the table's — the
    // warehouse expresses the range; where the DML lands is checked separately
-   // (see INCREMENTAL_TARGET_DML_DIALECTS).
+   // (see the `incrementalTargetDml` capability).
    const dialect = source.dialect ?? "";
-   if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(dialect)) {
-      out.push(
-         `${where} declares ${MODE}, which is not supported on dialect ` +
+   if (!capabilitiesOf(dialect).incrementalSourceRange) {
+      unbuildable.push(
+         `it declares ${MODE}, which is not supported on dialect ` +
             `"${dialect || "unknown"}". Incremental refresh reads a bounded ` +
             `watermark range out of the source and applies it transactionally, ` +
             `so it is enabled only where the publisher has proven both: ` +
-            `${describeDialects(INCREMENTAL_SOURCE_RANGE_DIALECTS)}. Use ` +
-            `refresh="full" here; the supported set widens in a later release.`,
+            `${describeDialects(dialectsWith("incrementalSourceRange"))}. Use ` +
+            `refresh="full" to build it; the supported set widens in a later ` +
+            `release`,
       );
-   } else if (d.declaredMergeKey && !MERGE_CAPABLE_DIALECTS.has(dialect)) {
+   } else if (d.declaredMergeKey && !capabilitiesOf(dialect).merge) {
       // Rule 7: distinct from rule 6 though currently subsumed by it, so the
       // two can widen independently.
-      out.push(
-         `${where} declares merge_key=, which needs a MERGE statement that ` +
+      unbuildable.push(
+         `it declares merge_key=, which needs a MERGE statement that ` +
             `dialect "${dialect}" does not have. Remove merge_key= to replace ` +
-            `the watermark range instead of merging by row identity.`,
+            `the watermark range instead of merging by row identity`,
       );
    }
 
@@ -303,8 +341,8 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
    // Rule 12: any window field. Conservative on purpose; the message states the
    // eventual criterion.
    if (d.calculateFields.length > 0) {
-      out.push(
-         `${where} declares ${MODE} but computes ` +
+      unbuildable.push(
+         `it declares ${MODE} but computes ` +
             `${quoteList([...new Set(d.calculateFields)])} with calculate:. A ` +
             `window function is not supported on an incremental source yet: a ` +
             `delta recomputes only rows inside its range, so a frame that reaches ` +
@@ -313,13 +351,13 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
             `rewrites them. Frames strictly BACKWARD along the watermark ordering ` +
             `are stable and will become legal; every other frame will not. Use ` +
             `refresh="full", or move the window computation into the query that ` +
-            `reads this source. (Plain non-additive aggregates like ` +
-            `count_distinct are fine — a delta recomputes whole output rows from ` +
-            `full input and never merges partial aggregates.)`,
+            `reads this source (plain non-additive aggregates like ` +
+            `count_distinct are fine: a delta recomputes whole output rows from ` +
+            `full input and never merges partial aggregates)`,
       );
    }
 
-   return out;
+   return { invalid: out, unbuildable };
 }
 
 /**
@@ -342,12 +380,13 @@ function recordedLineage(d: IncrementalDeclaration): string {
  * Sources that resolve to ONE content address, when at least one declares
  * incremental refresh.
  *
- * The address hashes the connection and canonical SQL only (not names or
- * declarations), so a copy-paste shares it, and downstream there is one manifest
- * entry and one covered_through row. For incremental sources this fails
- * silently: DIFFERING declarations re-seed each other forever; AGREEING ones
- * collapse so one `name=` table is never built. The build path is safe either
- * way, but neither is visible from the model text.
+ * The address hashes the connection and canonical SQL (not declarations, and
+ * a `name=` only where it names a table of its own: foldDistinctTableNames),
+ * so a copy-paste with no `name=`, or the same one, shares it, and downstream
+ * there is one manifest entry and one covered_through row. For incremental
+ * sources this fails silently: DIFFERING declarations re-seed each other
+ * forever; AGREEING ones collapse onto one table. The build path is safe
+ * either way, but neither is visible from the model text.
  */
 function sharedAddressAdvisories(
    sources: IncrementalPolicySource[],
@@ -385,8 +424,8 @@ function sharedAddressAdvisories(
                     `other's lineage recorded and rebuilds in full instead of ` +
                     `advancing, indefinitely. Give them different definitions ` +
                     `or keep only one.`
-                  : `Only one is materialized; the other's name= table is never ` +
-                    `built. Keep one, unless the duplication is intentional.`),
+                  : `Only one table is materialized, and both are read from ` +
+                    `it. Keep one, unless the duplication is intentional.`),
          });
       }
    }

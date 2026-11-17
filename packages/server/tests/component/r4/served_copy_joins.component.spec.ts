@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -71,12 +71,9 @@ source: flights_wide is duckdb.table('flights') extend {
 `;
 
 describe("R4: joins through the served copy answer equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -84,7 +81,6 @@ describe("R4: joins through the served copy answer equal to live", () => {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -165,19 +161,15 @@ source: fl is duckdb.table('flights') -> { select: * } extend {
 `;
 
 describe("R4: a reference join across connections in the path report", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": persistModel },
          seedSql,
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -220,14 +212,8 @@ const crossOrigin = {
 // whenever it compiles, so the retry's read refuses nothing new; this pins
 // that it refuses nothing clean either.
 describe("R4: a served-copy answer retried live", () => {
-   let restore: () => void;
-   beforeAll(() => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
-   });
+   useMaterializationOn();
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -282,5 +268,81 @@ source: capped is accounts extend {
       await expect(
          fixture.runAsIs("run: capped -> { group_by: account_name }"),
       ).rejects.toThrow(/carries \[none\]; this query reads account_name/);
+   });
+});
+
+// A curating index that exports a source whose join the served copy leaves
+// out. Before the join is left out, the importer cannot export what its
+// import failed to define (`export-name-not-defined`); that follows from the
+// refusal, so the join is left out and the export compiles.
+const exportedFiles = {
+   "index.malloy": `##! experimental { persistence }
+import "a.malloy"
+export { fl, carriers_copy }
+`,
+   "a.malloy": `##! experimental { persistence }
+source: segments is duckdb.table('segments') extend {
+  primary_key: seg_id
+  measure: seg_miles is miles.sum()
+}
+
+#@ persist name="fl" storage="lake"
+source: fl is duckdb.table('flights') -> { select: * } extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  measure: flight_count is count()
+}
+
+#@ persist name="carriers_copy" storage="lake"
+source: carriers_copy is duckdb.table('carriers') -> { select: * } extend {
+  measure: carrier_count is count()
+}
+`,
+};
+
+describe("R4: an index that exports a source whose join is left out", () => {
+   let fixture: R4Fixture;
+   useMaterializationOn();
+   beforeAll(async () => {
+      fixture = await buildScenario({ files: exportedFiles, seedSql });
+   });
+   afterAll(async () => {
+      await disposeScenarios();
+   });
+
+   it("serves the other exported source from its table", async () => {
+      const run = await fixture.run({
+         name: "other",
+         malloy:
+            "run: carriers_copy -> { group_by: region; aggregate: carrier_count }",
+      });
+      expect(run.servedVia).toBe("served_copy");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("serves the exported source from its table for a query off the join", async () => {
+      const run = await fixture.run({
+         name: "not through",
+         malloy: "run: fl -> { group_by: carrier; aggregate: flight_count }",
+      });
+      expect(run.servedVia).toBe("served_copy");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("answers a query through the left-out join live, equal to live", async () => {
+      const run = await fixture.run({
+         name: "through",
+         malloy:
+            "run: fl -> { group_by: carrier; aggregate: flight_count, segments.seg_miles }",
+      });
+      expect(run.servedVia).toBeUndefined();
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+
+   it("names the left-out join, and the copy compiles", async () => {
+      const problems = await fixture.servedCopyProblems();
+      expect(problems.map((p) => [p.sourceName, p.reason, p.join])).toEqual([
+         ["fl", "cross_connection_join", "segments"],
+      ]);
    });
 });

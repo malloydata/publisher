@@ -25,6 +25,12 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/cmx/cmx.malloy": "persist",
+      "daily_regional@<hammer>/cmx/cmx.malloy": "persist",
+      "regional@<hammer>/cmx/cmx.malloy": "persist",
+      "summary@<hammer>/cmx/cmx.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -53,7 +59,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {

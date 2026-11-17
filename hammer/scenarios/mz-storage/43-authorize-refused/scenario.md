@@ -11,16 +11,17 @@ SPDX-License-Identifier: MIT
 # Eligibility: a #(access_filter)-gated source is refused
 
 A `#(access_filter)` expression is a per-request *who-can-query* gate, evaluated at
-query time against the caller's givens. A `storage=` materialization is built
-once and served frozen — the served virtual shape carries **no gate to
-evaluate** — so materializing an authorize-gated source would serve it to
-everyone, bypassing authorization. Like the given refusal (`givens-refused`),
-this is a hard security refusal at build time: the source must be served live.
+query time against the caller's givens. This source's gate is the bare sentinel
+`true`, which the gate grammar refuses on `#(access_filter)` at load
+(`sentinel_in_access_filter`: "write `#(authorize) true`"), so the package never
+loads and no build runs: the build is refused, citing the gate.
 
-(This refusal was a follow-up gated on the transitive-`#(access_filter)` enforcement
-in #906; #906 is merged, so it's now enforced. The gate is fail-closed and also
-catches an authorize expression reached through a join — see the eligibility
-unit tests.)
+(A `storage=` source whose own gate is a proven row filter or lock is no longer
+refused: it is built and served with the gate re-applied at read, as a colocated
+one is (G3). What stays refused on this tier is a gate the source inherits as a
+row filter, one reached through a join, and one whose build would substitute a
+given — see the eligibility unit tests and
+`g3_gates.component.spec.ts`.)
 
 ## Publisher
 

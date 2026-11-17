@@ -3,7 +3,7 @@
 
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import fsp from "fs/promises";
 import os from "os";
 import path from "path";
@@ -11,7 +11,11 @@ import { fileURLToPath } from "url";
 import { MaterializationScheduler } from "../../../src/service/materialization/run/materialization_scheduler";
 import { MaterializationService } from "../../../src/service/materialization/run/materialization_service";
 import { bootMainServer } from "../../harness/main_server";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 
 // The one main server this process boots (tests/harness/main_server.ts).
@@ -42,6 +46,7 @@ describe("MaterializationScheduler (E2E, real build)", () => {
          __dirname,
          "../../fixtures/persist-schedule-test",
       );
+      await deleteLeftoverEnvironment(baseUrl, PROJECT_NAME);
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -83,6 +88,17 @@ describe("MaterializationScheduler (E2E, real build)", () => {
       }
       await env?.stop();
       env = null;
+   });
+
+   // A test that fails before its own reset must not leave its manifest bound
+   // for the next one: unbind after every test, without assertions of its own.
+   afterEach(async () => {
+      if (!baseUrl) return;
+      await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ name: PACKAGE_NAME, manifestLocation: null }),
+      }).catch(() => {});
    });
 
    async function listMaterializations(): Promise<
@@ -141,9 +157,9 @@ describe("MaterializationScheduler (E2E, real build)", () => {
          // indistinguishable from a manual one.
          expect(triggerOf(built)).toBe("SCHEDULER");
 
-         // Cleanup: drop the table + record so the negative case starts clean.
+         // Cleanup: delete the record so the negative case starts clean.
          const del = await fetch(
-            `${baseUrl}${API}/materializations/${scheduled[0].id}?dropTables=true`,
+            `${baseUrl}${API}/materializations/${scheduled[0].id}`,
             { method: "DELETE" },
          );
          expect(del.status).toBe(204);

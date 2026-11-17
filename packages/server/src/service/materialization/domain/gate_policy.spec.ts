@@ -29,16 +29,19 @@ const table = (t: Partial<GatedTable>): GatedTable => ({
 });
 
 describe("the gate policy's rows", () => {
-   it("keeps a materialized or pair table's own row-level gate, with both switches", () => {
+   it("keeps a materialized or pair table's own row-level gate on either tier, with v2's switch and with or without the gated-sources one (G3)", () => {
       for (const kind of ["materialize", "pair"] as const) {
          for (const tier of ["colocated", "storage"] as const) {
             expect(tableKeepsGates(table({ kind, tier }), ON)).toBe(true);
+            expect(
+               tableKeepsGates(table({ kind, tier }), {
+                  ...ON,
+                  gatedSources: false,
+               }),
+            ).toBe(true);
          }
          expect(
             tableKeepsGates(table({ kind }), { ...ON, materialize: false }),
-         ).toBe(false);
-         expect(
-            tableKeepsGates(table({ kind }), { ...ON, gatedSources: false }),
          ).toBe(false);
          for (const gate of [
             { ...OWN_GATE, rowLevel: false },
@@ -83,10 +86,68 @@ describe("the gate policy's rows", () => {
       );
    });
 
-   it("keeps no persist or view table's gates, and fails closed on a kind with no row", () => {
-      expect(tableKeepsGates(table({ kind: "persist", v1: true }), ON)).toBe(
-         false,
-      );
+   it("keeps a colocated rollup's own proven base gate with the switch off (G3), and no other", () => {
+      const OFF_ALL: GateSwitches = {
+         materialize: false,
+         gatedSources: false,
+         gatedStorageRollupsReviewed: false,
+      };
+      const own = {
+         rowLevel: true,
+         attributed: true,
+         inheritedRowFilter: false,
+      };
+      const rollup = (t: Partial<GatedTable>) =>
+         table({ kind: "rollup", gate: own, baseGateProven: true, ...t });
+      for (const sw of [OFF_ALL, { ...OFF_ALL, materialize: true }]) {
+         expect(tableKeepsGates(rollup({ tier: "colocated" }), sw)).toBe(true);
+         // In a storage destination: awaits its review.
+         expect(tableKeepsGates(rollup({ tier: "storage" }), sw)).toBe(false);
+         // An inherited gate, or one not proven on the grain.
+         expect(
+            tableKeepsGates(
+               rollup({
+                  tier: "colocated",
+                  gate: { ...own, attributed: false, inheritedRowFilter: true },
+               }),
+               sw,
+            ),
+         ).toBe(false);
+         expect(
+            tableKeepsGates(
+               rollup({ tier: "colocated", baseGateProven: false }),
+               sw,
+            ),
+         ).toBe(false);
+         expect(
+            tableKeepsGates(rollup({ tier: "colocated", v1: true }), sw),
+         ).toBe(false);
+      }
+   });
+
+   it("keeps a v1 table's own row-level gate under G3 on either tier, whatever the switches, and nothing else of v1", () => {
+      const persist = (t: Partial<GatedTable>) =>
+         table({ kind: "persist", v1: true, ...t });
+      const NONE: GateSwitches = {
+         materialize: false,
+         gatedSources: false,
+         gatedStorageRollupsReviewed: false,
+      };
+      for (const s of [ON, NONE]) {
+         expect(tableKeepsGates(persist({ tier: "storage" }), s)).toBe(true);
+         expect(tableKeepsGates(persist({ tier: "colocated" }), s)).toBe(true);
+         for (const gate of [
+            { ...OWN_GATE, rowLevel: false },
+            { ...OWN_GATE, attributed: false },
+            { ...OWN_GATE, inheritedRowFilter: true },
+            undefined,
+         ]) {
+            expect(tableKeepsGates(persist({ gate }), s)).toBe(false);
+         }
+      }
+   });
+
+   it("keeps no view table's gates, and fails closed on a kind with no row", () => {
       expect(tableKeepsGates(table({ kind: "view" }), ON)).toBe(false);
       expect(
          tableKeepsGates(
@@ -112,21 +173,105 @@ describe("the gate policy at the router", () => {
       }
    });
 
-   it("lets only the served copy past without it, for an answer reading only colocated tables (G3)", () => {
+   it("lets the served copy and the rollup leg past without it, for an answer reading only colocated tables (G3)", () => {
       expect(legMayPassGate("view", OFF, G3)).toBe(false);
-      expect(legMayPassGate("rollup", OFF, G3)).toBe(false);
+      expect(legMayPassGate("rollup", OFF, G3)).toBe(true);
       expect(legMayPassGate("served", OFF, G3)).toBe(true);
       expect(answerKeepsGates("served", colocated, OFF, G3)).toBe(true);
       expect(answerKeepsGates("served", mixed, OFF, G3)).toBe(false);
       expect(answerKeepsGates("served", [], OFF, G3)).toBe(false);
-      expect(answerKeepsGates("rollup", colocated, OFF, G3)).toBe(false);
+      expect(answerKeepsGates("rollup", colocated, OFF, G3)).toBe(true);
+      expect(answerKeepsGates("rollup", mixed, OFF, G3)).toBe(false);
+      expect(answerKeepsGates("rollup", [], OFF, G3)).toBe(false);
+      expect(legMayPassGate("rollup", OFF, NO_G3)).toBe(false);
       expect(legMayPassGate("served", OFF, NO_G3)).toBe(false);
       expect(answerKeepsGates("served", colocated, OFF, NO_G3)).toBe(false);
+   });
+
+   it("counts a storage= table admitted past its own gate as a G3 table, and no other storage= table", () => {
+      const own = { tier: "storage" as const, ownGateKept: true };
+      const other = { tier: "storage" as const };
+      expect(answerKeepsGates("served", [own], OFF, G3)).toBe(true);
+      expect(answerKeepsGates("served", [own, ...colocated], OFF, G3)).toBe(
+         true,
+      );
+      // A mixed answer, an own-gate table beside one plan did not admit.
+      expect(answerKeepsGates("served", [own, other], OFF, G3)).toBe(false);
+      expect(answerKeepsGates("served", [other], OFF, G3)).toBe(false);
+      expect(answerKeepsGates("served", [own], OFF, NO_G3)).toBe(false);
+      expect(answerKeepsGates("view", [own], OFF, G3)).toBe(false);
+      expect(answerKeepsGates("rollup", [own], OFF, G3)).toBe(false);
    });
 
    it("fails closed on a leg with no row", () => {
       const leg = "storage" as unknown as "served";
       expect(legMayPassGate(leg, ON, G3)).toBe(false);
       expect(answerKeepsGates(leg, colocated, ON, G3)).toBe(false);
+   });
+});
+
+describe("the gate policy's rows at their edges", () => {
+   it("fails closed on a rollup whose base gate was never proven", () => {
+      expect(
+         tableKeepsGates(
+            table({ kind: "rollup", tier: "colocated", gate: undefined }),
+            ON,
+         ),
+      ).toBe(false);
+   });
+
+   it("keeps a materialized table's gate in storage without the rollup review", () => {
+      for (const reviewed of [true, false]) {
+         expect(
+            tableKeepsGates(table({ kind: "materialize", tier: "storage" }), {
+               ...ON,
+               gatedStorageRollupsReviewed: reviewed,
+            }),
+         ).toBe(true);
+      }
+   });
+
+   it("keeps a persist table's gate on either tier, and only its own row-level gate (G3), under every switch", () => {
+      const all: GateSwitches = {
+         materialize: true,
+         gatedSources: true,
+         gatedStorageRollupsReviewed: true,
+      };
+      for (const v1 of [true, false]) {
+         expect(
+            tableKeepsGates(
+               table({ kind: "persist", v1, tier: "colocated" }),
+               all,
+            ),
+         ).toBe(true);
+         expect(
+            tableKeepsGates(
+               table({ kind: "persist", v1, tier: "storage" }),
+               all,
+            ),
+         ).toBe(true);
+         for (const gate of [
+            { ...OWN_GATE, rowLevel: false },
+            { ...OWN_GATE, attributed: false },
+            { ...OWN_GATE, inheritedRowFilter: true },
+         ]) {
+            expect(
+               tableKeepsGates(
+                  table({ kind: "persist", v1, tier: "storage", gate }),
+                  all,
+               ),
+            ).toBe(false);
+         }
+      }
+      expect(tableKeepsGates(table({ kind: "view" }), all)).toBe(false);
+   });
+
+   it("keeps no gate for a served answer that read only storage tables under G3 alone", () => {
+      const OFF = { ...ON, gatedSources: false };
+      expect(
+         answerKeepsGates("served", [{ tier: "storage" }], OFF, {
+            colocatedReadsKeepGates: true,
+         }),
+      ).toBe(false);
    });
 });

@@ -18,6 +18,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders_all@<hammer>/qts/qts.malloy": "persist",
+      "vis_all@<hammer>/qts/qts.malloy": "persist",
+      "visible_orders@<hammer>/qts/qts.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -41,7 +46,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {

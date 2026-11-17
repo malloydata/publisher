@@ -8,7 +8,10 @@
       }
     ],
     "verdicts": [
-      "own:serves"
+      "own:serves",
+      "both:live:refused",
+      "by_base_dimension:live:refused",
+      "inherited:live:refused"
     ],
     "warnings": [
       {
@@ -96,6 +99,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -177,6 +181,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -482,6 +487,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -563,6 +569,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

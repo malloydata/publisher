@@ -1,0 +1,21 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "customers_hidden",
+        "tier": "storage"
+      },
+      {
+        "name": "west_spend",
+        "tier": "storage"
+      }
+    ],
+    "verdicts": [
+      "customers_hidden:serves",
+      "west_spend:serves"
+    ],
+    "warnings": []
+  },
+  "queries": []
+}

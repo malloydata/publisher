@@ -24,7 +24,7 @@ import "raw.malloy"
 // Its own given-reading where:.
 #(materialize) storage="lake"
 source: own is __served_copy_alias_of_lake.virtual('a8734965f12f8dbc5ae5774d10e6be2534b32640f161be6d1f2435f15f7cc21e')::own__served extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order

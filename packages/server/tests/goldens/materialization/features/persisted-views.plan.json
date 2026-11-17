@@ -5,6 +5,12 @@
         "code": "persist-view-not-built",
         "message": "#@ persist on view \"recent\" of source \"orders\" is not built, so the view is served live: its result reads the current time, so it differs per read.",
         "model": "m.malloy",
+        "refused": {
+          "name": "orders__recent__view",
+          "reason": "current_time",
+          "sourceID": "orders__recent__view@<pkg>/m.malloy.persist-view.malloy",
+          "tier": "storage"
+        },
         "route": "@",
         "subject": "orders -> recent",
         "tier": "unservable"
@@ -26,6 +32,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders__by_region__view@<pkg>/m.malloy.persist-view.malloy": "view",
+      "orders__by_status__view@<pkg>/m.malloy.persist-view.malloy": "view",
+      "orders__two_stage__view@<pkg>/m.malloy.persist-view.malloy": "view"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -81,7 +92,16 @@
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {},
+    "refusedSources": {
+      "orders__recent__view@<pkg>/m.malloy.persist-view.malloy": {
+        "message": "#@ persist on view \"recent\" of source \"orders\" is not built, so the view is served live: its result reads the current time, so it differs per read.",
+        "modelPath": "m.malloy",
+        "name": "orders__recent__view",
+        "reason": "current_time",
+        "sourceID": "orders__recent__view@<pkg>/m.malloy.persist-view.malloy",
+        "tier": "storage"
+      }
+    },
     "sources": {
       "orders__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
         "annotationFields": {

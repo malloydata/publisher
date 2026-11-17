@@ -16,6 +16,12 @@
  * joins a stale source is not implemented.
  *
  * Pure: the caller passes the instant.
+ *
+ * One model for every mechanism and mode: a `#@ persist`, `#(materialize)` or
+ * rollup table, colocated or `storage=`, built by a standalone run or a host,
+ * carries the same three facts on its manifest entry, and they mean the same
+ * thing. A host stamps them on the manifest it distributes; a standalone run
+ * stamps them from the declarations ({@link declaredFreshnessFacts}).
  */
 
 /**
@@ -46,4 +52,94 @@ export function freshnessOf(facts: FreshnessFacts, at: Date): Freshness {
    const ageSeconds = (at.getTime() - dataAsOfMs) / 1000;
    if (ageSeconds <= facts.freshnessWindowSeconds) return "fresh";
    return facts.freshnessFallback === "stale_ok" ? "stale_ok" : "stale";
+}
+
+/** The `fallback` values a declaration may give. */
+export const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
+type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
+
+/** Whether `value` is a `fallback` a declaration may give. */
+export function isFreshnessFallback(
+   value: unknown,
+): value is FreshnessFallback {
+   return (
+      typeof value === "string" &&
+      (FRESHNESS_FALLBACKS as readonly string[]).includes(value)
+   );
+}
+
+/** Seconds per unit of a window: `s`, `m`, `h`, `d`, `w`. */
+const WINDOW_UNITS: Readonly<Record<string, number>> = {
+   s: 1,
+   m: 60,
+   h: 3600,
+   d: 86_400,
+   w: 604_800,
+};
+
+/**
+ * A declared `freshness.window` in seconds: a positive whole number and one
+ * unit (`90s`, `30m`, `24h`, `7d`, `2w`). Undefined for any other text, which
+ * a standalone run cannot age a table by.
+ */
+export function freshnessWindowSeconds(window: string): number | undefined {
+   const match = /^\s*(\d+)\s*([smhdw])\s*$/.exec(window);
+   if (!match) return undefined;
+   const count = Number(match[1]);
+   if (!Number.isSafeInteger(count) || count <= 0) return undefined;
+   return count * WINDOW_UNITS[match[2]];
+}
+
+/** A declared freshness policy, as a plan source carries it. */
+export interface DeclaredFreshness {
+   window?: string;
+   fallback?: FreshnessFallback;
+}
+
+/** The manifest fields a declaration stamps (no anchor: the run supplies it). */
+export interface DeclaredFreshnessFacts {
+   freshnessWindowSeconds?: number;
+   freshnessFallback?: FreshnessFallback;
+}
+
+/**
+ * The manifest facts the declarations of one table's sources stamp, or
+ * undefined when none declares a window or a fallback. Several sources can
+ * share one table (one content address): the narrowest window wins, so no
+ * source's table is served past its own window, and `stale_ok` holds only
+ * when every source that declares a fallback says so (`live` before `fail`
+ * otherwise). A window that does not read as a duration stamps none.
+ */
+export function declaredFreshnessFacts(
+   declarations: readonly (DeclaredFreshness | null | undefined)[],
+): DeclaredFreshnessFacts | undefined {
+   let window: number | undefined;
+   const fallbacks = new Set<FreshnessFallback>();
+   let declared = false;
+   for (const d of declarations) {
+      if (!d) continue;
+      if (d.window !== undefined) {
+         declared = true;
+         const seconds = freshnessWindowSeconds(d.window);
+         if (seconds !== undefined) {
+            window = window === undefined ? seconds : Math.min(window, seconds);
+         }
+      }
+      if (d.fallback !== undefined) {
+         declared = true;
+         fallbacks.add(d.fallback);
+      }
+   }
+   if (!declared) return undefined;
+   const fallback: FreshnessFallback | undefined = fallbacks.has("live")
+      ? "live"
+      : fallbacks.has("fail")
+        ? "fail"
+        : fallbacks.has("stale_ok")
+          ? "stale_ok"
+          : undefined;
+   return {
+      ...(window !== undefined ? { freshnessWindowSeconds: window } : {}),
+      ...(fallback !== undefined ? { freshnessFallback: fallback } : {}),
+   };
 }

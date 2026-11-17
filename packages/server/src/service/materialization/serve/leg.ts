@@ -5,19 +5,21 @@
  * A serving leg, and the answer one query gets from the legs.
  *
  * A leg answers a routed query from stored tables or declines: the view leg
- * (a persisted view called exactly), the rollup leg, and the served copy (the
- * author's source re-rooted on its stored table, gates and all). Each is
+ * (a persisted view called exactly), the query leg (a persisted named query
+ * called exactly), the rollup leg, and the served copy (the author's source
+ * re-rooted on its stored table, gates and all). Each is
  * `{ kind, applies, attempt }` and nothing more: `applies` is pure and
  * compiles nothing; `attempt` resolves with a {@link LegAnswer} or throws a
  * `LegDecline` (domain/leg_decline.ts). A leg does not know the gate policy or
- * the router: the query pipeline (`service/model_serving.ts`) asks the policy
- * before an attempt, by leg kind, and after it, over the bindings the answer
- * read, and it reads the decline's code itself.
+ * the router: the query pipeline (`variantsOf` in `service/query_serving.ts`)
+ * asks the policy before an attempt, by leg kind, and after it, over the
+ * bindings the answer read, and it reads the decline's code itself.
  *
  * {@link makeLegs} makes the legs for one pinned snapshot, in the router's
- * order (R1: the view by exact call, then the coarsest rollup, then the
- * served copy). A leg is listed only when it exists for the model and the
- * snapshot, so the gate check runs exactly when one could route.
+ * order (R1: the view or named query by exact call, then the coarsest
+ * rollup, then the served copy). A leg is listed only when it exists for
+ * the model and the snapshot, so the gate check runs exactly when one could
+ * route.
  *
  * {@link Answer} is the one record of how a query was served: built once from
  * the router's decision, replaced (never mutated) when a stored run fails and
@@ -39,12 +41,17 @@ import type { GraftScope } from "../../gate_classification";
 import type { ConsideredVariant } from "../../query_router";
 import { type Binding, isColocated, type Pinned } from "../domain/binding";
 import type { BuildManifest } from "../domain/types";
+import type { TableRead } from "../domain/gate_policy";
 import type { RollupVariantServe } from "./rollup_variants";
 import type { ServedCopyServe } from "./served_copy_serve";
 import type { PersistedViewServe, ViewTable } from "./view_variants";
+import type { PersistedQueryServe } from "./query_variants";
+
+/** The query leg's serve, for the model that makes one (beside the legs it makes). */
+export { PersistedQueryServe } from "./query_variants";
 
 /** The legs, in their usual order. */
-export type LegKind = "view" | "rollup" | "served";
+export type LegKind = "view" | "query" | "rollup" | "served";
 
 /** What a leg reads of one query. */
 export interface QueryFacts {
@@ -75,6 +82,13 @@ export interface LegAnswer {
     */
    readonly tablesRead: readonly Binding[] | undefined;
    /**
+    * The tables the answer is judged to read when the router decides whether
+    * it keeps an entry point's gate, which fails closed: for the served copy,
+    * every re-rooted `storage=` table not proven unread; for a rollup, its
+    * own. Undefined means {@link tablesRead}.
+    */
+   readonly gateTablesRead?: readonly TableRead[];
+   /**
     * The bindings the runnable's shape was built from: a store failure is
     * retried live only when every one allows it. Empty when the answer reads
     * nothing through a virtual map.
@@ -86,8 +100,8 @@ export interface LegAnswer {
    readonly graftScope: GraftScope | undefined;
    /** For a rollup answer: the rollup that answered. */
    readonly rollupMember?: string;
-   /** For a view answer: the persisted view's table. */
-   readonly viewTable?: ViewTable;
+   /** For a view or query answer: the persisted view's or named query's table. */
+   readonly viewTable?: ViewTable & { readonly kind?: "query" };
 }
 
 /** How one query was served. */
@@ -131,6 +145,8 @@ export interface LegContext {
    readonly rollupVariants?: RollupVariantServe;
    /** The view leg, when the model has a persisted view and the leg is on. */
    readonly persistedViews?: PersistedViewServe;
+   /** The query leg, when the model has a persisted named query and the leg is on. */
+   readonly persistedQueries?: PersistedQueryServe;
 }
 
 /**
@@ -139,8 +155,21 @@ export interface LegContext {
  */
 export function makeLegs(p: Pinned, ctx: LegContext): readonly Leg[] {
    const legs: Leg[] = [];
-   const { persistedViews, rollupVariants, servedCopy } = ctx;
-   if (persistedViews) legs.push(viewLeg(persistedViews));
+   const { persistedViews, persistedQueries, rollupVariants, servedCopy } = ctx;
+   if (persistedViews) {
+      legs.push(
+         persistedResultLeg("view", persistedViews, (text) =>
+            persistedViews.calledView(text),
+         ),
+      );
+   }
+   if (persistedQueries) {
+      legs.push(
+         persistedResultLeg("query", persistedQueries, (text) =>
+            persistedQueries.calledQuery(text),
+         ),
+      );
+   }
    if (rollupVariants) legs.push(rollupLeg(rollupVariants));
    if (servedCopy?.hasBindings(p.snapshot)) legs.push(servedLeg(servedCopy));
    return legs;
@@ -152,15 +181,22 @@ function pinnedManifest(p: Pinned): BuildManifest | undefined {
 }
 
 /**
- * A persisted view first (R1): applicable only when the text calls one, so a
- * look-alike or a nest never costs a compile.
+ * A persisted view (R1), then a persisted named query by exact call (`run:
+ * q`, `run: q -> { … }`): each applicable only when the text calls one, so a
+ * look-alike or a nest never costs a compile. The gate policy has no row for
+ * the query leg, so it is never tried past an entry-point gate: a persisted
+ * query is never built over a gated source.
  */
-function viewLeg(views: PersistedViewServe): Leg {
+function persistedResultLeg(
+   kind: "view" | "query",
+   serve: Pick<PersistedViewServe | PersistedQueryServe, "attempt">,
+   called: (text: string) => unknown,
+): Leg {
    return {
-      kind: "view",
-      applies: (q) => !!views.calledView(q.queryString),
+      kind,
+      applies: (q) => !!called(q.queryString),
       attempt: async (q, p) => {
-         const answer = await views.attempt({
+         const answer = await serve.attempt({
             queryString: q.queryString,
             givens: q.givens,
             authorRunnable: q.authorRunnable,
@@ -173,7 +209,8 @@ function viewLeg(views: PersistedViewServe): Leg {
             shapeBindings: answer.binding ? [answer.binding] : [],
             virtualMap: answer.virtualMap,
             graftScope: answer.graftScope,
-            viewTable: answer.table,
+            viewTable:
+               kind === "query" ? { ...answer.table, kind } : answer.table,
          };
       },
    };
@@ -199,10 +236,16 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
          return {
             runnable: answer.runnable,
             tablesRead: undefined,
+            // The rollup it read, for the gate policy (G3 for rollups): a
+            // `storage=` one by its binding, a colocated one through the
+            // build manifest.
+            gateTablesRead: answer.binding
+               ? [answer.binding]
+               : [{ tier: answer.virtualMap ? "storage" : "colocated" }],
             // Every stored table the answer reads, when that is more than the
-            // rollup's (a join leg answered in a storage destination reads the
-            // query source's table there too): together they decide whether a
-            // failed run may be retried live.
+            // rollup's (a join branch answered in a storage destination reads
+            // the query source's table there too): together they decide
+            // whether a failed run may be retried live.
             shapeBindings: answer.virtualMap
                ? (answer.bindings ?? (answer.binding ? [answer.binding] : []))
                : [],
@@ -233,6 +276,7 @@ function servedLeg(servedCopy: ServedCopyServe): Leg {
          return {
             runnable: served.runnable,
             tablesRead: served.tablesRead,
+            gateTablesRead: served.gateTablesRead,
             shapeBindings: served.bindings,
             virtualMap: served.virtualMap,
             graftScope: served.graftScope,
@@ -255,40 +299,32 @@ export function answeredWith(
 }
 
 /**
- * How a query's answer was ultimately produced, once it reached a stored
- * table at all. `storage` = served from a stored table through `virtual()`.
- * `live_fallback` = it routed, then a run-time store failure degraded it to
- * the live warehouse (a success the caller cannot distinguish from a storage
- * hit, which is exactly why it is reported separately; on the error metric,
- * the live retry failed too). Absent means no stored table answered.
+ * Which tier answered a query, when a stored table did: `storage`, a table in
+ * a `storage=` destination read through `virtual()`; `database`, a table in
+ * the source's own database (Malloy's substitution, the served copy over a
+ * colocated table, a colocated rollup or persisted view); `live_fallback`, a
+ * routed answer whose stored run failed and degraded to live (a success that
+ * must NOT count as a storage hit). Absent means no stored table answered.
  */
-export type ServedFrom = "storage" | "live_fallback";
+export type ServedFrom = "storage" | "database" | "live_fallback";
 
-/**
- * `servedFrom` for the answer: a storage hit, a storage run that fell back
- * live (`live_fallback`, a success that must NOT count as a storage hit), or
- * undefined for everything else.
- */
+/** `servedFrom` for the answer, the same tier the path report's `servedBy` names. */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
-   if (answer.leg === "live") return undefined;
+   if (answer.leg === "live") {
+      return answer.colocatedRead.size > 0 ? "database" : undefined;
+   }
    if (answer.runFailed) return "live_fallback";
    const { tablesRead, virtualMap } = answer.answer;
-   // A served-copy answer that read only colocated `#(materialize)` tables
-   // read the source's own warehouse, as a colocated `#@ persist` answer
-   // does, which reports no storage hit; its path report names the table.
-   if (
-      answer.leg === "served" &&
-      tablesRead !== undefined &&
-      tablesRead.length > 0 &&
-      tablesRead.every(isColocated)
-   ) {
-      return undefined;
+   if (answer.leg === "served") {
+      return tablesRead !== undefined &&
+         tablesRead.length > 0 &&
+         tablesRead.every(isColocated)
+         ? "database"
+         : "storage";
    }
-   // A `storage=` persisted view or `#(preaggregate)` rollup reads the
-   // storage tier too, through `virtual()`.
-   return answer.leg === "served" || virtualMap !== undefined
-      ? "storage"
-      : undefined;
+   // A `storage=` persisted view or rollup reads through `virtual()`; a
+   // colocated one through the build manifest.
+   return virtualMap !== undefined ? "storage" : "database";
 }
 
 /**
@@ -316,8 +352,9 @@ function bindingsAllowDegradeToLive(bindings: readonly Binding[]): boolean {
  * `freshnessFallback=live` marks the tier as an optimisation, not a
  * dependency. Deliberately narrow: only an answer read through a virtual map,
  * only per {@link bindingsAllowDegradeToLive} over the bindings that produced
- * THIS shape (a sibling source must not decide), never for a client error (a
- * bad given) or an abort.
+ * THIS shape (a sibling source must not decide), or for DECIMAL arithmetic the
+ * destination cannot hold ({@link isStoredDecimalArithmeticError}), never for
+ * a client error (a bad given) or an abort.
  */
 export function canDegradeToLive(
    answer: Answer,
@@ -332,7 +369,24 @@ export function canDegradeToLive(
       !String((error as { code?: string })?.code ?? "").startsWith(
          "runtime-given-",
       ) &&
-      bindingsAllowDegradeToLive(answer.answer.shapeBindings)
+      (bindingsAllowDegradeToLive(answer.answer.shapeBindings) ||
+         isStoredDecimalArithmeticError(error))
+   );
+}
+
+/**
+ * Whether `error` is DuckDB refusing DECIMAL arithmetic past its 38 digits: a
+ * product whose scale exceeds 38 (`DECIMAL(38,20) * DECIMAL(38,20)`), or a
+ * product, sum or addition that overflows. A Postgres `numeric` is stored as
+ * the exact DECIMAL(38, s) that holds it (`run/postgres_numeric_precision.ts`),
+ * where live's arbitrary precision has room the destination's arithmetic does
+ * not. The table is right and only the arithmetic ran out, so such an answer
+ * degrades to live whatever the bindings' `freshnessFallback` says.
+ */
+export function isStoredDecimalArithmeticError(error: unknown): boolean {
+   const message = error instanceof Error ? error.message : String(error);
+   return /Out of Range Error: (Needed scale .*DECIMAL|Overflow in [^\n]*DECIMAL|Overflow in HUGEINT)/.test(
+      message,
    );
 }
 
@@ -350,6 +404,8 @@ export function runManifestOf<M>(
    if (answer.runFailed) return manifests.live;
    if (answer.answer.virtualMap) return undefined;
    if (answer.leg === "rollup") return manifests.pinned;
-   if (answer.leg === "view") return manifests.withoutRollups;
+   if (answer.leg === "view" || answer.leg === "query") {
+      return manifests.withoutRollups;
+   }
    return manifests.live;
 }

@@ -7,7 +7,7 @@
 
 // Harness pattern from tests/component/authorize/import_hop.spec.ts.
 import { unrecordedAudit } from "../../src/service/access_record";
-import { MalloyError } from "@malloydata/malloy";
+import { type GivenValue, MalloyError } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../src/errors";
 import {
@@ -117,7 +117,7 @@ run: gated -> { aggregate: c }
       }
    });
 
-   it("(2) a typo'd given 400s on both the pre-import and the post-import cell", async () => {
+   it("(2) a typo'd given 400s on both the pre-import and the post-import cell, and a gated cell missing its gate's given 403s first, as a query does", async () => {
       const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
@@ -134,17 +134,28 @@ run: gated -> { aggregate: c }
          "nb.malloynb",
       );
       try {
-         for (const cellIndex of [0, 1]) {
+         const typos: [number, Record<string, GivenValue>][] = [
+            [0, { NOtaGiven: 1 }],
+            [1, { NOtaGiven: 1, GROUPS: [1] }],
+         ];
+         for (const [cellIndex, givens] of typos) {
             const rejection = model.executeNotebookCell(
                unrecordedAudit(),
                cellIndex,
                undefined,
                false,
-               { NOtaGiven: 1 },
+               givens,
             );
             await expect(rejection).rejects.toBeInstanceOf(MalloyError);
             await expect(rejection).rejects.toThrow(/NOtaGiven/);
          }
+         // The gate reads GROUPS, unsupplied: the opaque denial, before the
+         // typo is reported.
+         await expect(
+            model.executeNotebookCell(unrecordedAudit(), 1, undefined, false, {
+               NOtaGiven: 1,
+            }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await cleanup();
       }

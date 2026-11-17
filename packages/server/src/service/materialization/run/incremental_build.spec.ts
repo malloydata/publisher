@@ -7,8 +7,15 @@
 // buildOneSource, and the two must never disagree — so it is pinned here rather
 // than only through the callers.
 import { describe, expect, it } from "bun:test";
-import { incrementalLineage } from "./incremental_build";
-import type { IncrementalDeclaration } from "../plan/incremental_declaration";
+import { makeDigest } from "@malloydata/malloy";
+import {
+   incrementalLineage,
+   indexCallerLedger,
+   planSourceRefresh,
+   type IncrementalRunContext,
+} from "./incremental_build";
+import type { DeltaTarget } from "./incremental_apply";
+import type { IncrementalDeclaration } from "../domain/incremental";
 
 const DIMENSION = { kind: "dimension" as const, malloyType: "date" };
 
@@ -193,5 +200,102 @@ describe("incrementalLineage", () => {
             }),
          }),
       ).toBeUndefined();
+   });
+});
+
+// The premise behind not restoring the bounded delta for a table an earlier
+// `partition=` build laid out: the ledger is keyed by table, and its entry
+// records the address the boundary was measured under. That address folded the
+// layout in (`-- partitioned by: …`), which no source has any more, so the
+// entry can never match: standalone the source seeds, and a caller-supplied
+// entry fails the run until it is reseeded.
+describe("planSourceRefresh: a boundary measured under a partition= address", () => {
+   const SQL = "SELECT d, n FROM orders";
+   const lineage = {
+      physicalTableName: "daily",
+      connectionName: "wh",
+      storageDestinationName: "lake",
+      sourceEntityId: makeDigest("conn-digest", SQL),
+      watermarkName: "d",
+      watermarkType: "date",
+      mergeKeys: [] as string[],
+      scopeColumns: [] as string[],
+      strategy: "range_replace" as const,
+   };
+   const measured = {
+      sourceEntityId: makeDigest("conn-digest", `${SQL}\n-- partitioned by: d`),
+      coveredThroughValue: "2026-02-01",
+      coveredThroughType: "date",
+      watermarkDimension: "d",
+      mergeKeyDimensions: [] as string[],
+      derivedStrategy: "range_replace" as const,
+      physicalTableName: "daily",
+      connectionName: "wh",
+      storageDestinationName: "lake",
+   };
+   const context = (overrides: Partial<IncrementalRunContext> = {}) =>
+      ({
+         environmentId: "env",
+         packageName: "pkg",
+         materializationId: "run",
+         forceRefresh: false,
+         now: new Date("2026-03-01T00:00:00Z"),
+         declarations: {},
+         ledger: {
+            getIncrementalLedgerEntry: async () => measured,
+         },
+         ...overrides,
+      }) as unknown as IncrementalRunContext;
+   const target = {
+      dialect: "duckdb",
+      quotedTablePath: '"lake"."daily"',
+      logicalTablePath: "lake.daily",
+   } as unknown as DeltaTarget;
+
+   it("seeds a standalone run, as a changed definition", async () => {
+      const step = await planSourceRefresh({
+         context: context(),
+         lineage,
+         target,
+         columns: ["d", "n"],
+      });
+      expect(step).toMatchObject({
+         mode: "seed",
+         reasonCode: "lineage_changed",
+      });
+   });
+
+   it("fails a run whose caller supplied that entry, until it is reseeded", async () => {
+      const callerLedger = indexCallerLedger([
+         {
+            sourceEntityId: measured.sourceEntityId,
+            coveredThrough: measured.coveredThroughValue,
+            coveredThroughType: measured.coveredThroughType,
+            watermark: measured.watermarkDimension,
+            mergeKeys: [],
+            strategy: measured.derivedStrategy,
+            physicalTableName: measured.physicalTableName,
+            connectionName: measured.connectionName,
+            storageDestinationName: measured.storageDestinationName,
+         } as never,
+      ]);
+      await expect(
+         planSourceRefresh({
+            context: context({ callerLedger }),
+            lineage,
+            target,
+            columns: ["d", "n"],
+         }),
+      ).rejects.toThrow(/measured under a different definition/);
+      // Reseeded, it builds.
+      expect(
+         await planSourceRefresh({
+            context: context({ callerLedger }),
+            lineage,
+            target,
+            columns: ["d", "n"],
+            reseed: true,
+         }),
+      ).toMatchObject({ mode: "seed", reasonCode: "forced" });
    });
 });

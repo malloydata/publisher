@@ -63,7 +63,7 @@ async function addresses(
             ? "unbuildable"
             : JSON.stringify([
                  computeSourceEntityId(s, digests),
-                 compilerBuildId(s, digests),
+                 compilerBuildId(s),
                  addressSQL(s),
               ]),
       );

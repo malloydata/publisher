@@ -3,7 +3,14 @@
 
 import { Annotations } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import { persistAnnotationFields, placementOf, readNotes } from "./declaration";
+import type { PersistSource } from "@malloydata/malloy";
+import {
+   notesDeclarePersist,
+   persistAnnotationFields,
+   placementOf,
+   readNotes,
+} from "./declaration";
+import { declaresOwnPersist } from "./addressing";
 
 function notes(line: string) {
    return [
@@ -84,5 +91,80 @@ describe("placementOf: the one placement rule", () => {
       expect(placed("#@ persist storage=5")).toEqual({
          placement: { tier: "storage", destination: "5" },
       });
+   });
+});
+
+const at = {
+   url: "file:///m.malloy",
+   range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+};
+
+describe("notesDeclarePersist: a source's own `#@ persist`", () => {
+   const notes = (...texts: string[]) => texts.map((text) => ({ text, at }));
+
+   it("reads `#@ persist`, flat or with a block", () => {
+      expect(notesDeclarePersist(notes("#@ persist"))).toBe(true);
+      expect(notesDeclarePersist(notes('#@ persist name="t"'))).toBe(true);
+      expect(notesDeclarePersist(notes("#@ persist { storage=lake }"))).toBe(
+         true,
+      );
+   });
+
+   it("does not read a `#@` line that writes another key as a declaration", () => {
+      expect(notesDeclarePersist(notes("#@ preaggregate"))).toBe(false);
+      expect(notesDeclarePersist(notes("#@ preaggregate", "# label=x"))).toBe(
+         false,
+      );
+   });
+
+   it("reads no other route", () => {
+      expect(notesDeclarePersist([])).toBe(false);
+      expect(notesDeclarePersist(notes("# persist"))).toBe(false);
+      expect(notesDeclarePersist(notes("#(materialize)"))).toBe(false);
+   });
+});
+
+describe("declaresOwnPersist: the fold's reading of one compiled source", () => {
+   const sourceWith = (annotation: () => unknown) =>
+      ({
+         get annotation() {
+            return annotation();
+         },
+      }) as unknown as PersistSource;
+
+   it("counts an unreadable or missing annotation as declaring", () => {
+      expect(
+         declaresOwnPersist(
+            sourceWith(() => {
+               throw new Error("unreadable");
+            }),
+         ),
+      ).toBe(true);
+      expect(declaresOwnPersist(sourceWith(() => undefined))).toBe(true);
+      // A note the reader cannot place throws inside it: declaring.
+      expect(
+         declaresOwnPersist(
+            sourceWith(() => ({ notes: [{ text: "#@ preaggregate" }] })),
+         ),
+      ).toBe(true);
+   });
+
+   it("reads its own notes and block notes with the declaration reader", () => {
+      expect(
+         declaresOwnPersist(
+            sourceWith(() => ({ notes: [{ text: "#@ persist", at }] })),
+         ),
+      ).toBe(true);
+      expect(
+         declaresOwnPersist(
+            sourceWith(() => ({ blockNotes: [{ text: "#@ persist", at }] })),
+         ),
+      ).toBe(true);
+      expect(
+         declaresOwnPersist(
+            sourceWith(() => ({ notes: [{ text: "#@ preaggregate", at }] })),
+         ),
+      ).toBe(false);
+      expect(declaresOwnPersist(sourceWith(() => ({ notes: [] })))).toBe(false);
    });
 });

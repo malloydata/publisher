@@ -54,7 +54,7 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
       it(`auto-run refuses that source alone and instructs its sibling when ${label}`, () => {
          const { service } = createMocks();
          const { instructions, refused } = (
-            service as unknown as {
+            service.collaborators as unknown as {
                deriveSelfInstructions: (
                   c: unknown,
                   n: string[] | undefined,
@@ -72,17 +72,23 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
          expect(Object.values(refused).map((r) => [r.name, r.reason])).toEqual([
             ["a", "empty_storage"],
          ]);
-         expect(instructions.map((i) => i.sourceEntityId)).toEqual([ADDRESS]);
+         // Each `name=` its own address (foldDistinctTableNames): b's table.
+         expect(instructions.map((i) => i.physicalTableName)).toEqual([
+            "b_tbl",
+         ]);
          expect(instructions[0].destination).toBeUndefined();
       });
 
       it(`a host's colocated instruction builds the sibling, not the refused source, when ${label}`, async () => {
          const built: string[] = [];
          const buildOneSource = sinon.fake(
-            async (
-               source: { name: string },
-               instruction: BuildInstruction,
-            ): Promise<ManifestEntry> => {
+            async ({
+               persistSource: source,
+               instruction,
+            }: {
+               persistSource: { name: string };
+               instruction: BuildInstruction;
+            }): Promise<ManifestEntry> => {
                built.push(source.name);
                return {
                   sourceEntityId: ADDRESS,
@@ -96,18 +102,20 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
          );
          const build = new InstructedBuild({
             buildOneSource: buildOneSource as never,
+            tableNotOwned: async () => undefined,
             reclaimStorageTablesFromFailedRun: async () => {},
          });
          const environment = {
             getApiConnection: () => {
                throw new Error("unused");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          } as unknown as BuildEnvironment;
-         const result = await build.run(
-            compiled(order.map((o) => [...o])),
+         const result = await build.run({
+            compiled: compiled(order.map((o) => [...o])),
             environment,
-            [
+            instructions: [
                {
                   sourceEntityId: ADDRESS,
                   materializedTableId: "mt-shared",
@@ -115,9 +123,9 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
                   realization: "COPY",
                },
             ],
-            {},
-            new AbortController().signal,
-         );
+            seedEntries: {},
+            signal: new AbortController().signal,
+         });
          expect(built).toEqual(["b"]);
          expect(result.entries[ADDRESS]).toMatchObject({
             sourceName: "b",

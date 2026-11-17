@@ -85,10 +85,10 @@ export class StorageDestinationController {
             environmentPath: environment.getEnvironmentPath(),
          });
       } catch (error) {
-         recordDropTables("failure", "storage");
+         recordDropTables("failure", "storage", "delete");
          throw error;
       }
-      recordDropTables("success", "storage");
+      recordDropTables("success", "storage", "delete");
       logger.info("Dropped a storage destination table", {
          environmentName,
          destinationName,

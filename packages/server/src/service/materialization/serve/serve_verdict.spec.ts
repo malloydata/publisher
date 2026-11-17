@@ -39,14 +39,61 @@ function facts(
       storageMode: "on",
       reachable: () => true,
       gated: () => false,
+      keepsGate: () => false,
       boundEntityIds: new Set(),
       boundStorageNames: new Set(),
       servedStorageNames: new Set(),
+      // The bind keeps every source, none is a #(materialize) source or a
+      // persisted result, and every deployment fact is unknown.
+      refusedAtBind: () => undefined,
+      materialize: () => undefined,
+      persistedViewOf: () => undefined,
+      destinationConfigured: () => undefined,
+      connectionCanHoldTable: () => undefined,
       ...overrides,
    };
 }
 
 describe("computeServeVerdicts", () => {
+   it("names each verdict's origin by the mechanism that declared it", () => {
+      const view = `ops__by_carrier__view@file:///pkg/m.malloy.persist-view.malloy`;
+      const query = `top__query@file:///pkg/m.malloy.persist-view.malloy`;
+      const sources: [string, PersistSourcePlan][] = [
+         plan("orders"),
+         plan("mat"),
+         [view, { ...plan("ops__by_carrier__view")[1], sourceID: view }],
+         [query, { ...plan("top__query")[1], sourceID: query }],
+         plan("roll", { origin: "preaggregate" }),
+      ];
+      const verdicts = computeServeVerdicts({
+         ...facts(sources, {
+            materialize: (id) => (id.startsWith("mat@") ? "serves" : undefined),
+            declaredMaterialize: (id) => id.startsWith("refused_mat@"),
+         }),
+         plan: {
+            graphs: [],
+            sources: Object.fromEntries(sources),
+            refusedSources: {
+               "refused_mat@file:///pkg/m.malloy": {
+                  name: "refused_mat",
+                  sourceID: "refused_mat@file:///pkg/m.malloy",
+                  tier: "colocated",
+                  reason: "access_filter",
+                  message: "gated",
+               },
+            },
+         } as never,
+      });
+      expect(verdicts.map((v) => [v.sourceName, v.origin])).toEqual([
+         ["orders", "persist"],
+         ["mat", "materialize"],
+         ["ops__by_carrier__view", "view"],
+         ["top__query", "query"],
+         ["roll", "preaggregate"],
+         ["refused_mat", "materialize"],
+      ]);
+   });
+
    it("says a colocated source serves once bound, and will serve before", () => {
       const [unbound] = computeServeVerdicts(facts([plan("orders")]));
       expect(unbound).toMatchObject({
@@ -119,7 +166,11 @@ describe("computeServeVerdicts", () => {
    });
 
    it("sends a gated stored source live, and keeps a gated colocated one", () => {
-      const gated = { gated: () => true };
+      // G3 with gated sources off: the policy keeps a colocated table's gate.
+      const gated = {
+         gated: () => true,
+         keepsGate: (_id: string, tier: string) => tier === "colocated",
+      };
       const [stored] = computeServeVerdicts(
          facts([plan("orders", STORAGE)], gated),
       );
@@ -131,10 +182,29 @@ describe("computeServeVerdicts", () => {
       expect(colocated.verdict).toBe("not_built");
    });
 
+   it("serves a gated stored source plan admitted past its own gate (G3) as a colocated one, and no other stored source", () => {
+      const bound = {
+         gated: () => true,
+         boundStorageNames: new Set(["orders", "other"]),
+         servedStorageNames: new Set(["orders", "other"]),
+         keepsGate: (id: string, tier: string) =>
+            tier === "colocated" || id.startsWith("orders@"),
+      };
+      const verdicts = computeServeVerdicts(
+         facts([plan("orders", STORAGE), plan("other", STORAGE)], bound),
+      );
+      expect(verdicts.map((v) => [v.sourceName, v.verdict, v.reason])).toEqual([
+         ["orders", "serves", undefined],
+         ["other", "live", "row_level_gate"],
+      ]);
+   });
+
    it("serves a gated stored source when the served copy keeps its gates (R3), never a gated rollup", () => {
+      // Gated sources on: the served copy keeps every table's gate, and no
+      // rollup here was proven at plan.
       const keeps = {
          gated: () => true,
-         servedCopyKeepsGates: true,
+         keepsGate: (id: string) => !id.startsWith("orders_rollup"),
          boundStorageNames: new Set(["orders"]),
          servedStorageNames: new Set(["orders"]),
       };
@@ -170,8 +240,7 @@ describe("computeServeVerdicts", () => {
          computeServeVerdicts(
             facts([rollup], {
                gated: () => true,
-               servedCopyKeepsGates: true,
-               rollupKeepsGates: () => keeps,
+               keepsGate: () => keeps,
             }),
          )[0];
       expect(keeping(true)?.reason).not.toBe("row_level_gate");
@@ -215,7 +284,7 @@ describe("computeServeVerdicts", () => {
       expect(verdict.message).toContain("rollup of `orders` at (region)");
    });
 
-   it("reports refused sources and rollups left out of the plan", () => {
+   it("reports refused sources", () => {
       const verdicts = computeServeVerdicts({
          ...facts([plan("orders")]),
          plan: {
@@ -240,14 +309,46 @@ describe("computeServeVerdicts", () => {
                },
             },
          } as unknown as components["schemas"]["BuildPlan"],
-         rollupsOverStoredBase: [{ baseName: "events", modelPath: "m.malloy" }],
       });
       expect(verdicts.map((v) => [v.sourceName, v.verdict, v.reason])).toEqual([
          ["orders", "not_built", undefined],
          ["gated", "live", "refused"],
-         ["events", "live", "rollup_over_stored_base"],
       ]);
       expect(verdicts[1].message).toContain("gated by #(authorize)");
+   });
+
+   it("gives a rollup over a storage= base its own verdict, beside its base's", () => {
+      // A `#@ preaggregate` line is planned as the `#(preaggregate)` it reads
+      // as, over the author's rows, so a stored base no longer leaves its
+      // rollups out: each is a planned source, bound and served on its own.
+      const base = plan("daily", STORAGE);
+      const rollup = plan("daily__rollup__category__1a2b3c4d", {
+         ...STORAGE,
+         origin: "preaggregate",
+         preaggregate: {
+            baseSourceName: "daily",
+            grainDimensions: ["category"],
+            measures: ["total"],
+         } as unknown as PersistSourcePlan["preaggregate"],
+      });
+      const names = new Set(["daily", "daily__rollup__category__1a2b3c4d"]);
+      const verdicts = computeServeVerdicts(
+         facts([base, rollup], {
+            boundStorageNames: names,
+            servedStorageNames: names,
+         }),
+      );
+      expect(
+         verdicts.map((v) => [v.sourceName, v.origin, v.verdict, v.reason]),
+      ).toEqual([
+         ["daily", "persist", "serves", undefined],
+         [
+            "daily__rollup__category__1a2b3c4d",
+            "preaggregate",
+            "serves",
+            undefined,
+         ],
+      ]);
    });
 
    it("carries a stored source's view verdicts", () => {

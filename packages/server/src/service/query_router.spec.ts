@@ -246,6 +246,26 @@ describe("routeQuery metrics", () => {
    const count = (labels: Record<string, string>) =>
       harness.collectCounter("publisher_query_route_total", labels);
 
+   it("times the choice by the leg that answered, and only when a leg applied", async () => {
+      const duration = (leg: string) =>
+         harness.collectHistogram("publisher_query_route_duration_ms", { leg });
+      await routeQuery(
+         [variant("served", "misses", []), variant("rollup", "answers", [])],
+         async () => false,
+      );
+      await routeQuery([variant("view", "misses", [])], async () => false);
+      await routeQuery(
+         [variant("view", "inapplicable", [])],
+         async () => false,
+      );
+      expect((await duration("rollup")).count).toBe(1);
+      expect((await duration("live")).count).toBe(1);
+      expect(
+         (await harness.collectHistogram("publisher_query_route_duration_ms"))
+            .count,
+      ).toBe(2);
+   });
+
    it("counts each candidate by leg, outcome and public reason", async () => {
       await routeQuery(
          [variant("served", "misses", []), variant("rollup", "answers", [])],

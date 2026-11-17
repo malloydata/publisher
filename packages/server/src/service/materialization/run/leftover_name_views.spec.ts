@@ -11,17 +11,12 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { VersionRef } from "../../identity";
-import {
-   storageBindingResolverFor,
-   versionTableSuffix,
-} from "../../versions/materialization_scope";
+import { storageBindingResolverFor } from "../../versions/materialization_scope";
+import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { DuckDBConnection as WarehouseConnection } from "@malloydata/db-duckdb";
 import { MaterializationService } from "./materialization_service";
 import {
@@ -41,6 +36,11 @@ import {
    storageTableSite,
    type TableSiteContext,
 } from "./table_site";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * The `name=` views earlier releases left (leftover_name_views.ts). Publisher
@@ -71,7 +71,10 @@ const WAREHOUSE = {
 
 /** The table a `scope: version` version builds `summary` into. */
 const versionTable = (version: string) =>
-   `summary${versionTableSuffix({ environmentName: ENV, packageName: PKG, version })}`;
+   autoRunTableName(ENV, PKG, "summary", {
+      modelPath: "model.malloy",
+      version,
+   });
 
 function materializeModel(answer: number): string {
    return [
@@ -167,19 +170,17 @@ describe("leftover name= views through real builds", () => {
    }
 
    function newService(environment: Environment): MaterializationService {
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => environment,
-         getLoadedEnvironments: () => [environment],
-      } as unknown as EnvironmentStore;
-      const created = new MaterializationService(store);
+      const created = serviceOverEnvironment(
+         () => repo,
+         () => environment,
+      );
       environment.setVersionArchivedHook((packageName, versionId) => {
          reclaims.push(
-            created.reclaimVersionTables(ENV, packageName, versionId),
+            created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),
          );
       });
       environment.setOwedReclaimHook((packageName, versionId) =>
-         created.reclaimOwedNow(environment, packageName, versionId),
+         created.reclaimer.reclaimOwedNow(environment, packageName, versionId),
       );
       return created;
    }
@@ -248,20 +249,14 @@ describe("leftover name= views through real builds", () => {
       // A load worker reads its settings when it spawns: a fresh pool, so
       // the package's build plan sees PUBLISHER_MATERIALIZE.
       await __setPackageLoadPoolForTests(null);
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "leftover-name-view-")),
-      );
-      envPath = path.join(root, "env");
+      ({ root, envPath, db, repo } = await openTempStorage(
+         "leftover-name-view-",
+         {
+            id: ENV_ID,
+            name: ENV,
+         },
+      ));
       sourcesPath = path.join(root, "sources");
-      fs.mkdirSync(envPath);
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       reclaims = [];
       env = await newEnvironment();
       service = newService(env);
@@ -269,8 +264,7 @@ describe("leftover name= views through real builds", () => {
 
    afterEach(async () => {
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
       // Nor does a later spec's worker inherit them.
       await __setPackageLoadPoolForTests(null);
@@ -339,11 +333,14 @@ describe("leftover name= views through real builds", () => {
       await publish("2.0.0", 2, "version", named);
       const versioned = await build({ versionId: VersionRef.parse("2.0.0") });
       expect(versioned.status).toBe("MANIFEST_FILE_READY");
-      // The version's own table: name='s leaf with the version's suffix.
-      expect(await tables()).toEqual([
-         "summary_t",
-         `summary_t${versionTableSuffix({ environmentName: ENV, packageName: PKG, version: "2.0.0" })}`,
-      ]);
+      // The version's own table: name= is its prefix, then the version's tail.
+      const versionedTable = autoRunTableName(ENV, PKG, "summary", {
+         modelPath: "model.malloy",
+         version: "2.0.0",
+         prefix: "summary_t",
+      });
+      expect(versionedTable).toMatch(/^summary_t__v2_0_0__p[0-9a-f]{8}$/);
+      expect(await tables()).toEqual(["summary_t", versionedTable].sort());
       expect(await views()).toEqual([]);
       expect(nameViewsIn(versioned.metadata)).toEqual([]);
    });
@@ -374,14 +371,14 @@ describe("leftover name= views through real builds", () => {
       expect(await views()).toEqual(["moved", "theirs", "unmarked"]);
    });
 
-   it("deleting a run with its tables drops this package's own leftover view first, found on another run's record", async () => {
-      await publish("1.0.0", 1, "package");
+   it("a version's reclaim drops this package's own leftover view first, found on another run's record", async () => {
+      await publish("1.0.0", 1, "version");
       const first = await build({ versionId: VersionRef.parse("1.0.0") });
       expect(first.status).toBe("MANIFEST_FILE_READY");
-      const [table] = await tables();
+      const table = versionTable("1.0.0");
       await leaveView("summary", table, OWNER);
       // The view was recorded by an earlier run that made it; the run
-      // deleted here is the one that names the table, and records none.
+      // reclaimed here is the one that names the table, and records none.
       const earlier = await repo.createMaterialization(
          ENV_ID,
          PKG,
@@ -392,10 +389,8 @@ describe("leftover name= views through real builds", () => {
       await recordViews(earlier, [
          { viewName: "summary", owner: OWNER, target: table },
       ]);
-      await service.deleteMaterialization(ENV, PKG, first.id, {
-         dropTables: true,
-         versionId: VersionRef.parse("1.0.0"),
-      });
+      await publish("2.0.0", 2, "version");
+      await archive("1.0.0");
       expect(await tables()).toEqual([]);
       expect(await views()).toEqual([]);
    });

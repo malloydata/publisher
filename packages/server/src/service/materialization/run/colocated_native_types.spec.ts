@@ -85,6 +85,119 @@ describe("capturedNativeSchema: a colocated table's warehouse column types", () 
          { name: "G", type: "TEXT" },
       ]);
    });
+
+   // One catalog row per dialect, as that dialect's read answers it, and the
+   // column each reads it as: pins every row reader, which the statements'
+   // golden (dialect_statements.golden.json) does not reach.
+   const CATALOG_ROWS: Record<
+      string,
+      { row: Record<string, unknown>; type: string }
+   > = {
+      duckdb: {
+         row: { column_name: "n", column_type: "HUGEINT" },
+         type: "HUGEINT",
+      },
+      postgres: {
+         row: { name: "n", type: "numeric(20,0)" },
+         type: "numeric(20,0)",
+      },
+      standardsql: {
+         row: { column_name: "n", data_type: "INT64" },
+         type: "INT64",
+      },
+      snowflake: {
+         row: {
+            TABLE_CATALOG: "DB",
+            TABLE_SCHEMA: "sch",
+            TABLE_NAME: "orders",
+            COLUMN_NAME: "n",
+            DATA_TYPE: "NUMBER",
+            NUMERIC_PRECISION: 38,
+            NUMERIC_SCALE: 0,
+         },
+         type: "NUMBER(38,0)",
+      },
+      databricks: {
+         row: {
+            table_catalog: "c",
+            table_schema: "sch",
+            table_name: "orders",
+            column_name: "n",
+            data_type: "DECIMAL",
+            numeric_precision: 20,
+            numeric_scale: 0,
+         },
+         type: "DECIMAL(20,0)",
+      },
+      trino: {
+         row: {
+            table_catalog: "c",
+            table_schema: "sch",
+            table_name: "orders",
+            column_name: "n",
+            data_type: "decimal(38,0)",
+         },
+         type: "decimal(38,0)",
+      },
+      presto: {
+         row: {
+            table_catalog: "c",
+            table_schema: "sch",
+            table_name: "orders",
+            column_name: "n",
+            data_type: "bigint",
+         },
+         type: "bigint",
+      },
+      mysql: {
+         row: {
+            TABLE_CATALOG: "def",
+            TABLE_SCHEMA: "sch",
+            TABLE_NAME: "orders",
+            COLUMN_NAME: "n",
+            DATA_TYPE: "decimal",
+            NUMERIC_PRECISION: 20,
+            NUMERIC_SCALE: 0,
+         },
+         type: "decimal(20,0)",
+      },
+      sqlserver: {
+         row: {
+            table_catalog: "db",
+            table_schema: "sch",
+            table_name: "orders",
+            column_name: "n",
+            data_type: "decimal",
+            numeric_precision: 38,
+            numeric_scale: 0,
+         },
+         type: "decimal(38,0)",
+      },
+      unknown_dialect: {
+         row: {
+            table_catalog: "c",
+            table_schema: "sch",
+            table_name: "orders",
+            column_name: "n",
+            data_type: "numeric",
+            numeric_precision: 10,
+            numeric_scale: 2,
+         },
+         type: "numeric(10,2)",
+      },
+   };
+   for (const [dialect, { row, type }] of Object.entries(CATALOG_ROWS)) {
+      it(`reads ${dialect}'s catalog row`, async () => {
+         expect(
+            await capturedNativeSchema({
+               run: async () => ({ rows: [row] }),
+               physicalTableName: "sch.orders",
+               dialect,
+               sourceName: "orders",
+            }),
+         ).toEqual([{ name: "n", type }]);
+      });
+   }
 });
 
 describe("capturedNativeSchema: reading the right table's catalog", () => {

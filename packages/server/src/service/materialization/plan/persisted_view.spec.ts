@@ -7,10 +7,9 @@
  * holds, warns about and leaves alone with PUBLISHER_MATERIALIZE on and off.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { installSettings } from "../../../test_helpers/settings_env";
-import { compilePackageBuildPlan } from "./build_plan_compile";
+import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
+import { describe, expect, it } from "bun:test";
+import { planPackages } from "../../../test_helpers/materialization_fixture";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
@@ -28,38 +27,24 @@ const TABLE = `duckdb.sql("""
   ) as t(id, carrier, tenant, d, ts)
 """)`;
 
-const packages = tempBuildPlanPackages();
-let restore: (() => void) | undefined;
-
-function enable(on: boolean, gated = false) {
-   restore?.();
-   restore = installSettings({
-      env: {
-         PUBLISHER_MATERIALIZE: on ? "true" : "false",
-         PUBLISHER_MATERIALIZE_GATED_SOURCES: gated ? "true" : "false",
-      },
-   }).restore;
-}
-
-beforeEach(() => enable(true));
-afterEach(async () => {
-   restore?.();
-   restore = undefined;
-   await packages.cleanup();
+const packages = planPackages({
+   PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
 });
 
-async function compiled(text: string) {
-   const pkg = await packages.create({ "m.malloy": text });
-   return compilePackageBuildPlan(pkg);
+function enable(on: boolean, gated = false) {
+   packages.settings({
+      PUBLISHER_MATERIALIZE: on ? "true" : "false",
+      PUBLISHER_MATERIALIZE_GATED_SOURCES: gated ? "true" : "false",
+   });
 }
 
-async function compiledFiles(files: Record<string, string>) {
-   const pkg = await packages.create(files);
-   return compilePackageBuildPlan(pkg);
-}
+const compiled = async (text: string) =>
+   (await packages.plan({ "m.malloy": text })).c;
+const compiledFiles = async (files: Record<string, string>) =>
+   (await packages.plan(files)).c;
 
 function viewSources(c: Awaited<ReturnType<typeof compiled>>): string[] {
-   return Object.values(c.sources)
+   return Object.values(sourcesIn(c))
       .map((s) => s.name)
       .filter((n) => n.endsWith("__view"))
       .sort();
@@ -69,6 +54,15 @@ function viewFindings(c: Awaited<ReturnType<typeof compiled>>): string[] {
    return (c.annotationFindings ?? [])
       .filter((f) => f.code === PERSIST_VIEW_NOT_BUILT)
       .map((f) => f.message);
+}
+
+/** The findings that fail the load, as `[code, message]`. */
+function invalidFindings(
+   c: Awaited<ReturnType<typeof compiled>>,
+): [string, string][] {
+   return (c.annotationFindings ?? [])
+      .filter((f) => f.tier === "malformed")
+      .map((f) => [f.code, f.message]);
 }
 
 describe("generatePersistedViewFile", () => {
@@ -136,10 +130,37 @@ source: ops_ext is ops extend { where: carrier = 'aa' }
       expect(viewFindings(c)).toEqual([]);
    });
 
-   it("plans nothing with PUBLISHER_MATERIALIZE off", async () => {
+   it("plans nothing with PUBLISHER_MATERIALIZE off, and warns that the view is not built", async () => {
       enable(false);
       const c = await compiled(model);
       expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c)).toEqual([
+         '#@ persist on view "by_carrier" of source "ops" is not built, so the view is served live: persisted views are built only with PUBLISHER_MATERIALIZE on.',
+      ]);
+      const [finding] = (c.annotationFindings ?? []).filter(
+         (f) => f.code === PERSIST_VIEW_NOT_BUILT,
+      );
+      expect(finding?.refused?.reason).toBe("materialization_off");
+      expect(invalidFindings(c)).toEqual([]);
+   });
+
+   it("with PUBLISHER_MATERIALIZE off, an invalid line still fails the load", async () => {
+      enable(false);
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="by_carrier" watermark=dep
+  view: by_carrier is { group_by: carrier; aggregate: n }
+  #@ persist nmae="typo"
+  view: by_two is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(
+         invalidFindings(c)
+            .map(([code]) => code)
+            .sort(),
+      ).toEqual(["persist-unknown-key", "persist-view-invalid"]);
+      expect(viewFindings(c)).toEqual([]);
    });
 
    it("warns about and leaves out a caller-dependent view", async () => {
@@ -159,7 +180,53 @@ source: ops is ${TABLE} extend {
       expect(findings.some((m) => m.includes("current time"))).toBe(true);
    });
 
-   it("refuses an incremental key and an @env. reference", async () => {
+   it("leaves out a view whose select: * reads a current-time dimension, and keeps its twin", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  dimension: past is ts < now
+  #@ persist name="star"
+  view: star is { select: * }
+}
+source: ops2 is ${TABLE} extend {
+  dimension: plain is carrier
+  #@ persist name="star2"
+  view: star2 is { select: * }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops2__star2__view"]);
+      expect(viewFindings(c).some((m) => m.includes("current time"))).toBe(
+         true,
+      );
+   });
+
+   it("plans a view whose later stage names a field like a current-time dimension", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  dimension: past is ts < now
+  #@ persist name="later"
+  view: later is { group_by: carrier, past is ts > @2000-01-01 } -> { select: carrier, past }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops__later__view"]);
+      expect(viewFindings(c)).toEqual([]);
+   });
+
+   it("leaves out a view on a query-shaped source whose query reads now", async () => {
+      const c = await compiled(`##! experimental.persistence
+source: qb is ${TABLE} -> { where: ts < now; select: * }
+source: ops is qb extend {
+  measure: n is count()
+  #@ persist name="by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(viewFindings(c).some((m) => m.includes("current time"))).toBe(
+         true,
+      );
+   });
+
+   it("finds an incremental key and an @env. reference invalid", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {
   measure: n is count()
@@ -170,12 +237,17 @@ source: ops is ${TABLE} extend {
 }
 `);
       expect(viewSources(c)).toEqual([]);
-      const findings = viewFindings(c);
-      expect(findings.some((m) => m.includes("incremental"))).toBe(true);
-      expect(findings.some((m) => m.includes("@env."))).toBe(true);
+      expect(viewFindings(c)).toEqual([]);
+      const findings = invalidFindings(c);
+      expect(findings.map(([code]) => code)).toEqual([
+         "persist-view-invalid",
+         "persist-view-invalid",
+      ]);
+      expect(findings.some(([, m]) => m.includes("incremental"))).toBe(true);
+      expect(findings.some(([, m]) => m.includes("@env."))).toBe(true);
    });
 
-   it("refuses the retired partition=, saying to remove it", async () => {
+   it("finds the retired partition= invalid, saying to remove it", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {
   measure: n is count()
@@ -184,12 +256,35 @@ source: ops is ${TABLE} extend {
 }
 `);
       expect(viewSources(c)).toEqual([]);
-      expect(viewFindings(c)).toEqual([
-         expect.stringContaining("`partition=` is not supported; remove it"),
+      expect(invalidFindings(c)).toEqual([
+         [
+            "persist-retired-key",
+            expect.stringContaining("partition= is not supported"),
+         ],
       ]);
    });
 
-   it("refuses a nested view stored with storage=, and builds it colocated", async () => {
+   it.each([
+      ["an unknown key", '#@ persist nmae="x"', "persist-unknown-key"],
+      ["an empty storage=", '#@ persist storage=""', "persist-view-invalid"],
+      [
+         "a line that does not parse",
+         '#@ persist name="x',
+         "persist-view-unparseable",
+      ],
+   ])("finds %s invalid", async (_case, line, code) => {
+      const c = await compiled(`##! experimental.persistence
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  ${line}
+  view: v is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual([]);
+      expect(invalidFindings(c).map(([c]) => c)).toEqual([code]);
+   });
+
+   it("refuses a nested view on either tier: no read could use its table", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {
   measure: n is count()
@@ -199,8 +294,18 @@ source: ops is ${TABLE} extend {
   view: colocated is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
 }
 `);
-      expect(viewSources(c)).toEqual(["ops__colocated__view"]);
-      expect(viewFindings(c).some((m) => m.includes("nests"))).toBe(true);
+      expect(viewSources(c)).toEqual([]);
+      const nested = (c.annotationFindings ?? []).filter(
+         (f) => f.code === PERSIST_VIEW_NOT_BUILT,
+      );
+      expect(nested.map((f) => f.subject).sort()).toEqual([
+         "ops -> colocated",
+         "ops -> stored",
+      ]);
+      for (const f of nested) {
+         expect(f.refused?.reason).toBe("nested_result");
+         expect(f.message).toContain("nests");
+      }
    });
 
    describe("a gated source (question 3)", () => {

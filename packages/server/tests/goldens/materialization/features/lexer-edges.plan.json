@@ -24,6 +24,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "café@<pkg>/m.malloy": "persist",
+      "via_sql@<pkg>/m.malloy": "persist",
+      "注文@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "注文@<pkg>/m.malloy": {
         "buildSourceName": "注文__mat",

@@ -13,8 +13,8 @@
  * | ----------------- | -------- | ----------- | ------------------------------------------------------------------------------------------------------------------------ |
  * | `inline_join_one` | ignored  | fail build  | a NULL never joins, so it cannot inflate the join_one an inlined join stands in for; a repeat would, in every row        |
  * | `pair_level`      | fails    | fail build  | a level's row flag marks one row per distinct key, where live counts each row: a NULL key breaks the flag as a repeat does |
- * | `rollup_key`      | ignored  | record      | a NULL never joins the rollup; a repeat only stops a join reading it as a join_one, which the leg declines                |
- * | `parent_key`      | fails    | record      | the join-to-rollup leg counts a parent once per key, which a NULL or repeated key would get wrong; it declines instead     |
+ * | `rollup_key`      | ignored  | record      | a NULL never joins the rollup; a repeat only stops a join reading it as a join_one, which the branch declines             |
+ * | `parent_key`      | fails    | record      | the join-to-rollup branch counts a parent once per key, which a NULL or repeated key would get wrong; it declines instead  |
  * | `stored_key`      | fails    | record      | the same parent check, over the source's stored table in a destination                                                   |
  *
  * A check is plain data (it crosses the load worker); the run compiles and

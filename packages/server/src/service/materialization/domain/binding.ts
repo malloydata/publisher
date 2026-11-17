@@ -30,7 +30,12 @@ import { storageTablePath } from "./storage_table_path";
 import type { BuildManifest, FreshnessManifest, ManifestEntry } from "./types";
 
 /** What a stored table holds, from the plan: never read off a name. */
-export type BindingKind = "persist" | "materialize" | "rollup" | "view";
+export type BindingKind =
+   | "persist"
+   | "materialize"
+   | "rollup"
+   | "view"
+   | "query";
 
 /** Where a stored table lives: the source's own warehouse, or a storage destination. */
 type BindingTier = "colocated" | "storage";
@@ -63,6 +68,20 @@ export interface Binding {
     */
    primaryKeys?: Record<string, boolean>;
    /**
+    * A stored rollup's own key check (known limitation 29), as the run that
+    * wrote or carried the table found it: whether its base held the grain's
+    * one dimension once per row. Internal, as {@link primaryKeys} is.
+    */
+   rollupKey?: { keyColumn: string; unique: boolean };
+   /**
+    * A `storage=` table plan admitted past a stored source's own row-level
+    * gate under G3 (`SourceEligibility.gateKept`), marked under every name
+    * it is bound by: the router lets a served answer reading it past an
+    * entry-point gate, as it does a colocated table's. Set by the bind;
+    * absent reads as not kept (fail closed).
+    */
+   ownGateKept?: boolean;
+   /**
     * The storage destination the table lives in; for a colocated table, the
     * source's own connection.
     */
@@ -94,9 +113,9 @@ export function isColocated(b: Pick<Binding, "tier">): boolean {
 }
 
 /**
- * Every table a package serves, fixed. `entries` are the colocated manifest
- * entries, freshness facts and key checks included, that Malloy's build
- * manifest substitutes; `bindings` are the tables the served copy and the
+ * Every table a package serves, fixed. `entries` are the colocated run
+ * manifest entries, freshness facts and key checks included, that Malloy's
+ * compiler manifest substitutes; `bindings` are the tables the served copy and the
  * `storage=` legs read.
  */
 export interface Snapshot {
@@ -149,6 +168,31 @@ export interface Pinned {
    serves(binding: Binding): boolean;
    /** The binding of `kind` storing `sourceID`, at {@link asOf}. */
    tableFor(sourceID: string, kind: BindingKind): TableLookup;
+}
+
+/**
+ * The `storage=` table a rollup, persisted view or persisted query is read
+ * from, or undefined when its tier is colocated. The binding decides the tier,
+ * not the annotation: a host may instruct a source with no `storage=` into a
+ * storage destination (a database origin whose destination the control plane
+ * chose), and the run's manifest then binds it as a storage table, which is
+ * read exactly as a `storage=` annotation's is. With no storage binding, a
+ * source annotated `storage=` is still a storage table, not built yet.
+ */
+export function storageLookupOf(
+   pinned: Pinned,
+   sourceID: string | undefined,
+   kind: BindingKind,
+   annotatedStorage: boolean,
+): TableLookup | undefined {
+   const lookup =
+      sourceID === undefined
+         ? ({ state: "not_built" } as const)
+         : pinned.tableFor(sourceID, kind);
+   if (lookup.state !== "not_built" && lookup.binding.tier === "storage") {
+      return lookup;
+   }
+   return annotatedStorage ? lookup : undefined;
 }
 
 /** The freshness facts of a binding, as the rule reads them. */
@@ -254,6 +298,16 @@ export function primaryKeysOf(entry: {
    return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** A rollup's own key check a local run recorded on a stored entry, as {@link primaryKeysOf}. */
+function rollupKeyOf(entry: {
+   keyUniqueness?: { keyColumn?: unknown; unique?: unknown };
+}): Binding["rollupKey"] {
+   const k = entry.keyUniqueness;
+   return typeof k?.keyColumn === "string" && typeof k.unique === "boolean"
+      ? { keyColumn: k.keyColumn, unique: k.unique }
+      : undefined;
+}
+
 /**
  * The `storage=` bindings a run's manifest entries make: one per name that
  * reads each table (its builder, then its aliases), each with the plan's
@@ -299,6 +353,10 @@ export function deriveServeBindings(
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
       const primaryKeys = primaryKeysOf(entry as never);
+      const rollupKey =
+         entry.origin === "preaggregate"
+            ? rollupKeyOf(entry as never)
+            : undefined;
       for (const sourceName of names) {
          // Set whenever there is a plan to read, even empty: an empty list
          // names no source, so the binding serves nothing (planSourceIds).
@@ -322,6 +380,7 @@ export function deriveServeBindings(
             freshnessWindowSeconds: entry.freshnessWindowSeconds,
             freshnessFallback: entry.freshnessFallback,
             ...(primaryKeys ? { primaryKeys } : {}),
+            ...(rollupKey ? { rollupKey } : {}),
          });
       }
    }

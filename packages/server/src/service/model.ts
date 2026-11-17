@@ -20,16 +20,15 @@ import {
    recordStoredColumnTypeMismatch,
 } from "../materialization_metrics";
 import type { QueryServingHost } from "./query_serving";
-import { makeLegs } from "./materialization/serve/leg";
+import { makeLegs, PersistedQueryServe } from "./materialization/serve/leg";
 import {
    ModelServing,
    type ModelQueryResults,
    type ModelServingHost,
 } from "./model_serving";
-import * as fs from "fs/promises";
 import { createRequire } from "module";
 import * as path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { components } from "../api";
 import { getQueryMetadataMode } from "../config";
 import {
@@ -46,9 +45,14 @@ import {
    OffSurfaceError,
 } from "../errors";
 import { getMaterializeEnabled, getPersistStorageMode } from "../config";
+import {
+   renderTagFindingsCache,
+   renderTagFindingsKey,
+} from "./render_tag_findings_cache";
 import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { logger } from "../logger";
+import { readPackageURL } from "../utils";
 import { type QueryAudit } from "./access_record";
 import {
    type Binding,
@@ -59,7 +63,11 @@ import {
    type Snapshot,
 } from "./materialization/domain/binding";
 import { servedCopyOutcomes } from "./materialization/domain/source_decline";
-import { deserializeError } from "../package_load/package_load_pool";
+import {
+   currentPackageLoadPool,
+   deserializeError,
+} from "../package_load/package_load_pool";
+import { compileServedCopyOnWorker } from "../package_load/served_copy_compile";
 import type { SerializedModel } from "../package_load/protocol";
 import { decodeSerializedModel } from "../package_load/protocol_decode";
 import { BuildManifest } from "./materialization/domain/types";
@@ -166,13 +174,16 @@ import {
    type SourceTypeMismatches,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
 } from "./materialization/serve/storage_bindings";
-import type { MaterializePlan } from "./materialization/plan/build_file_generator";
+import type { MaterializePlan } from "./materialization/domain/table_plans";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import {
    planSourceRollups,
    rollupGateEnforcedAtRead,
 } from "./materialization/plan/rollup_plan";
-import { planModelPersistedViews } from "./materialization/plan/persisted_view";
+import {
+   planModelPersistedQueries,
+   planModelPersistedViews,
+} from "./materialization/plan/persisted_view";
 import {
    chainBuildText,
    resultShapeOf,
@@ -186,7 +197,10 @@ import type {
 
 import { PersistedViewServe } from "./materialization/serve/view_variants";
 import { sourceChain } from "./materialization/text/source_map";
-import type { ViewServeVerdict } from "./materialization/serve/serve_verdict";
+import type {
+   PersistedResultOf,
+   ViewServeVerdict,
+} from "./materialization/serve/serve_verdict";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
 export type { ModelQueryResults } from "./model_serving";
@@ -328,9 +342,9 @@ export class Model {
    /** Sources already reported as served live for a name clash. */
    private readonly shadowedSourcesLogged = new Set<string>();
    /**
-    * The `#@ persist` view leg (materialization v2, phase 4, P14): a router
-    * candidate only when `materialize.enabled` is on and a source this model
-    * sees persists a view.
+    * The `#@ persist` view leg: a router candidate only when
+    * `materialize.enabled` is on and a source this model sees persists a
+    * view.
     */
    private persistedViews = new PersistedViewServe({
       modelPath: () => this.modelPath,
@@ -339,7 +353,23 @@ export class Model {
       serveDestinationConfig: () => this.serveDestinationConfig,
       catalog: () => this.policy.materializedTables(),
       planModelPersistedViews,
+      planModelPersistedQueries,
    });
+   /**
+    * The `#@ persist` named-query leg: a router candidate only when
+    * `materialize.enabled` is on and this model sees a persisted query.
+    */
+   private persistedQueries = new PersistedQueryServe(
+      {
+         modelPath: () => this.modelPath,
+         modelDef: () => this.modelDef,
+         modelMaterializer: () => this.modelMaterializer,
+         serveDestinationConfig: () => this.serveDestinationConfig,
+         planModelPersistedViews,
+         planModelPersistedQueries,
+      },
+      this.persistedViews,
+   );
    /**
     * The served copy on `virtual`: the author's own files with each stored
     * source re-rooted on its table.
@@ -350,9 +380,9 @@ export class Model {
       | Parameters<ServedCopyServe["setContext"]>
       | undefined;
    /**
-    * The `#(preaggregate)` rollup leg (materialization v2, phase 4): a router
-    * candidate only when `materialize.enabled` is on and a source this model
-    * sees declares a rollup.
+    * The rollup leg: a router candidate when this model sees a rollup; a
+    * `#(preaggregate)` one is read only with `materialize.enabled` on, a v1
+    * `#@ preaggregate` one either way.
     */
    private rollupVariants = new RollupVariantServe({
       modelPath: () => this.modelPath,
@@ -957,7 +987,11 @@ export class Model {
          });
       }
 
-      const runtime = makeHydrationRuntime(malloyConfig, options.buildManifest);
+      const runtime = makeHydrationRuntime(
+         packagePath,
+         malloyConfig,
+         options.buildManifest,
+      );
       const modelMaterializer = runtime._loadModelFromModelDef(modelDef);
       const runnableNotebookCells =
          data.modelType === "notebook"
@@ -993,6 +1027,7 @@ export class Model {
       model.preparedRenderTagResults = data.renderTagResults as
          | { label: string; result?: Malloy.Result }[]
          | undefined;
+      model.preparedRenderTagResultsDigest = data.renderTagResultsDigest;
       return model;
    }
 
@@ -2205,18 +2240,28 @@ export class Model {
       if (!mm) {
          return [];
       }
+      // The worker prepares targets in order up to its soft deadline; the rest
+      // are prepared here. Taken once.
+      const fromWorker = this.preparedRenderTagResults ?? [];
+      this.preparedRenderTagResults = undefined;
+      const digest = this.preparedRenderTagResultsDigest;
+      this.preparedRenderTagResultsDigest = undefined;
+      const targets = renderTagTargets(this.queries, this.sources);
+      // Only a digest of every target's result says what the findings are.
+      const cacheKey =
+         digest !== undefined && fromWorker.length === targets.length
+            ? renderTagFindingsKey(digest)
+            : undefined;
+      if (cacheKey !== undefined) {
+         const cached = renderTagFindingsCache.get(cacheKey);
+         if (cached !== undefined) return cached;
+      }
       // Dynamic import: the validator is heavy, so load it only when needed.
       const { validateRenderTags } = await import(
          "@malloydata/render-validator"
       );
 
-      // The worker prepares targets in order up to its soft deadline; the rest
-      // are prepared here. Taken once.
-      const fromWorker = this.preparedRenderTagResults ?? [];
-      this.preparedRenderTagResults = undefined;
-      const remaining = renderTagTargets(this.queries, this.sources).slice(
-         fromWorker.length,
-      );
+      const remaining = targets.slice(fromWorker.length);
       const prepared = [
          ...fromWorker.filter(
             (entry): entry is { label: string; result: Malloy.Result } =>
@@ -2255,6 +2300,9 @@ export class Model {
             });
          }
       }
+      if (cacheKey !== undefined) {
+         renderTagFindingsCache.set(cacheKey, findings);
+      }
       return findings;
    }
 
@@ -2265,6 +2313,9 @@ export class Model {
    private preparedRenderTagResults:
       | { label: string; result?: Malloy.Result }[]
       | undefined;
+
+   /** SerializedModel.renderTagResultsDigest, taken with the results. */
+   private preparedRenderTagResultsDigest: string | undefined;
 
    /**
     * Prepare render-tag targets compile-only: the ones the worker did not
@@ -2544,6 +2595,9 @@ export class Model {
                ? this.serveDestinationConfig
                : undefined,
          pinned: () => this.pinNow(),
+         // Off this thread when a load worker is free; inline otherwise.
+         compileElsewhere: (args) =>
+            compileServedCopyOnWorker(currentPackageLoadPool(), args),
       });
    }
 
@@ -2570,10 +2624,17 @@ export class Model {
 
    /** Set the storage destinations, pushed by the owning package. */
    public setServeDestinationConfig(provider: () => MalloyConfig): void {
+      // The same provider again changes nothing: it is read live, and a
+      // destination list swap invalidates explicitly (invalidateCompiledLegs).
+      if (provider === this.serveDestinationConfig) return;
+      // Replaced, not first set (a reload's new model): what failed over the
+      // old destinations may compile over these.
+      if (this.serveDestinationConfig) this.servedCopy.forgetFailures();
       this.serveDestinationConfig = provider;
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
+      this.persistedQueries.invalidate();
    }
 
    /**
@@ -2586,14 +2647,26 @@ export class Model {
       materializePlans: Readonly<Record<string, MaterializePlan>> = {},
       declarationOf?: (sourceID: string) => unknown,
    ): void {
+      // The same context again (a rebind, a republish) keeps the served
+      // copy: its compile is keyed on its bindings, and this model's own text
+      // never changes. The other legs are reset as before, since their caches
+      // are not keyed on the colocated entries a bind can change alone.
+      const current = this.servedCopyContext;
+      const unchanged =
+         !!current &&
+         current[0] === packagePath &&
+         current[1] === malloyConfig &&
+         current[2] === materializePlans &&
+         current[3] === declarationOf;
       this.servedCopyContext = [
          packagePath,
          malloyConfig,
          materializePlans,
          declarationOf,
       ];
-      this.servedCopy.setContext(...this.servedCopyContext);
+      if (!unchanged) this.servedCopy.setContext(...this.servedCopyContext);
       this.persistedViews.setContext(packagePath, malloyConfig);
+      this.persistedQueries.setContext(packagePath, malloyConfig);
       this.rollupVariants.setContext(packagePath, malloyConfig);
    }
 
@@ -2611,23 +2684,42 @@ export class Model {
    }
 
    /**
+    * Whether the router may try the persisted-query leg: as for views, with
+    * a persisted named query this model sees.
+    */
+   private persistedQueriesEnabled(): boolean {
+      return (
+         this.modelType === "model" &&
+         !this.isNotebook() &&
+         getMaterializeEnabled() &&
+         this.persistedQueries.hasQueries()
+      );
+   }
+
+   /**
     * The persisted views' generated build sources this model can see, by
-    * `sourceID`, with the source and view each stores: the package's serve
+    * `sourceID`, with the source and view each stores, and the persisted
+    * named queries' with the query (and its run target): the package's serve
     * verdict reads a view's reach through its source.
     */
-   public persistedViewBuilds(): {
+   public persistedViewBuilds(): (PersistedResultOf & {
       buildSourceID: string;
-      sourceID: string;
-      sourceName: string;
-      viewName: string;
-   }[] {
+   })[] {
       if (!getMaterializeEnabled()) return [];
-      return this.persistedViews.plans().map((p) => ({
-         buildSourceID: p.buildSourceID,
-         sourceID: p.sourceID,
-         sourceName: p.sourceName,
-         viewName: p.viewName,
-      }));
+      return [
+         ...this.persistedViews.plans().map((p) => ({
+            buildSourceID: p.buildSourceID,
+            sourceID: p.sourceID,
+            sourceName: p.sourceName,
+            viewName: p.viewName,
+         })),
+         ...this.persistedQueries.plans().map((p) => ({
+            buildSourceID: p.buildSourceID,
+            queryName: p.queryName,
+            ...(p.sourceID !== undefined ? { sourceID: p.sourceID } : {}),
+            ...(p.sourceName !== undefined ? { sourceName: p.sourceName } : {}),
+         })),
+      ];
    }
 
    /**
@@ -2650,7 +2742,7 @@ export class Model {
       return (
          this.modelType === "model" &&
          !this.isNotebook() &&
-         // v1 `#@ preaggregate` rollups are read here too (G4).
+         // v1 `#@ preaggregate` rollups are read here too.
          this.rollupVariants.hasRollups()
       );
    }
@@ -2694,9 +2786,11 @@ export class Model {
 
    /** Drop every compiled leg (the destinations or the model changed). */
    public invalidateCompiledLegs(): void {
+      this.servedCopy.forgetFailures();
       this.servedCopy.invalidate();
       this.rollupVariants.invalidate();
       this.persistedViews.invalidate();
+      this.persistedQueries.invalidate();
    }
 
    /**
@@ -2727,7 +2821,11 @@ export class Model {
       ) {
          return memo.tables;
       }
-      const tables = modelStorageTables(snapshot.bindings, this.modelDef);
+      const tables = modelStorageTables(
+         snapshot.bindings,
+         this.modelDef,
+         this.servedCopyContext?.[0],
+      );
       this.storageTablesMemo = {
          bindings: snapshot.bindings,
          modelDef: this.modelDef,
@@ -2784,6 +2882,7 @@ export class Model {
       return [
          ...this.storageTables(pinned.snapshot).kept,
          ...this.persistedViews.viewBindings(pinned, "bound"),
+         ...this.persistedQueries.queryBindings(pinned, "bound"),
       ].map((b) => b.sourceName);
    }
 
@@ -2880,6 +2979,7 @@ export class Model {
       const stored = ownBindings(
          bindings.filter((b) => b.kind !== "rollup"),
          this.modelDef,
+         this.servedCopyContext[0],
       ).kept;
       if (stored.length === 0) return out;
       const pinned = pin(makeSnapshot(stored), new Date(0));
@@ -3022,9 +3122,13 @@ export class Model {
                ...(this.persistedViewsEnabled()
                   ? { persistedViews: this.persistedViews }
                   : {}),
+               ...(this.persistedQueriesEnabled()
+                  ? { persistedQueries: this.persistedQueries }
+                  : {}),
             }),
          servingHost: (servedCopy) => this.servingHost(servedCopy),
-         persistedViewsEnabled: () => this.persistedViewsEnabled(),
+         persistedViewsEnabled: () =>
+            this.persistedViewsEnabled() || this.persistedQueriesEnabled(),
          withoutPreaggregateEntries: (manifest) =>
             this.withoutPreaggregateEntries(manifest),
          ensureSharedQueryModel: (materializer) =>
@@ -3094,6 +3198,7 @@ export class Model {
          servedCopy,
          rollupVariants: this.rollupVariants,
          persistedViews: this.persistedViews,
+         persistedQueries: this.persistedQueries,
          modelDef: () => this.modelDef,
          materializedTables: () => this.policy.materializedTables(),
          publishedNames: () => this.publishedNames(),
@@ -3662,7 +3767,7 @@ export class Model {
    public async getFileText(packagePath: string): Promise<string> {
       const fullPath = path.join(packagePath, this.modelPath);
       try {
-         return await fs.readFile(fullPath, "utf8");
+         return await readPackageURL(packagePath, pathToFileURL(fullPath));
       } catch {
          throw new ModelNotFoundError(
             `Model file not found: ${this.modelPath}`,

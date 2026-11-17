@@ -74,13 +74,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "1e5484a3823a4e65fdf5c864a38250e45a7f191789529e2d3f1fd9032fb84b00",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored measure by region",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -144,13 +145,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "1e5484a3823a4e65fdf5c864a38250e45a7f191789529e2d3f1fd9032fb84b00",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored measure by region",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

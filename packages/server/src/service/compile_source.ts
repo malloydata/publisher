@@ -40,13 +40,17 @@ import {
    packageRelativeText,
    withPackageRelativeErrors,
 } from "../package_relative_text";
-import { URL_READER } from "../utils";
+import { packageURLReader, readPackageURL } from "../utils";
 import {
    ANNOTATION_GATE_NEAR_MISS_CODE,
    ANNOTATION_NEAR_MISS_CODE,
    annotationNearMisses,
    authoredNotes,
 } from "./annotation_near_miss";
+import {
+   findingSeverity,
+   MATERIALIZATION_NEAR_MISS_CODE,
+} from "./annotation_reader";
 import { assertNoCallerAuthorizeAnnotation, gateNearMissOf } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
 import { compileDocument, type CompiledDocument } from "./compile_document";
@@ -64,6 +68,7 @@ import { VersionRef } from "./identity";
 import { Model } from "./model";
 import { ModelPolicy } from "./model_policy";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
+import type { PackageMaterialization } from "./materialization";
 import { Package } from "./package";
 import {
    carriesArtifactTag,
@@ -221,7 +226,9 @@ interface CompileContext extends CompileRequest {
    pkg: Package;
    gateModel: Model | undefined;
    hasExactGateModel: boolean;
-   boundManifestEntries: ReturnType<Package["getBuildManifestEntries"]>;
+   boundManifestEntries: ReturnType<
+      PackageMaterialization["getBuildManifestEntries"]
+   >;
    runtime: Runtime;
    /** Append-scope text that may be a document, gated cell by cell. */
    documentCandidate: boolean;
@@ -433,7 +440,7 @@ async function openCompileContext(
 
    const { fullSource, callerRegion } =
       scope === "append"
-         ? await appendToSavedModel(modelPath, source, virtualUri)
+         ? await appendToSavedModel(packagePath, modelPath, source, virtualUri)
          : { fullSource: source ?? "", callerRegion: undefined };
 
    // Serve the source for the virtual file, then the request's overlay, and
@@ -441,12 +448,13 @@ async function openCompileContext(
    // file is not substituted.
    const substitute = scope !== "package" || source !== undefined;
    const overlaid = overlayByUrl(packagePath, overlay);
+   const diskReader = packageURLReader(packagePath);
    const interceptingReader = {
       readURL: async (url: URL) => {
          if (substitute && url.toString() === virtualUri) {
             return fullSource;
          }
-         return overlaid.get(overlayKey(url)) ?? URL_READER.readURL(url);
+         return overlaid.get(overlayKey(url)) ?? diskReader.readURL(url);
       },
    };
 
@@ -503,8 +511,8 @@ async function openCompileContext(
    // would show base-table SQL that diverges from what runs, or name a table
    // past its window that execution no longer reads. The package dry-run
    // keeps the bound entries, as the reload it mirrors does.
-   const boundManifestEntries = pkg.getBuildManifestEntries();
-   const freshManifestEntries = pkg.getFreshBuildManifest();
+   const boundManifestEntries = pkg.materialization().getBuildManifestEntries();
+   const freshManifestEntries = pkg.materialization().getFreshBuildManifest();
    const runtime = new Runtime({
       urlReader: interceptingReader,
       config: pkg.getMalloyConfig(),
@@ -561,13 +569,18 @@ async function openCompileContext(
  * after it, and where that text starts.
  */
 async function appendToSavedModel(
+   packagePath: string,
    modelPath: string,
    source: string | undefined,
    virtualUri: string,
 ): Promise<{ fullSource: string; callerRegion: CallerRegion }> {
    let modelContent = "";
    try {
-      modelContent = await fs.promises.readFile(modelPath, "utf8");
+      // Confined: a saved model that links out of the package is not read.
+      modelContent = await readPackageURL(
+         packagePath,
+         pathToFileURL(modelPath),
+      );
    } catch {
       // Empty content; a missing model is refused by `loadAppendBase`.
    }
@@ -621,7 +634,7 @@ async function resolveGateModel(
             modelName,
             pkg.getMalloyConfig(),
             {
-               buildManifest: pkg.getBuildManifestEntries(),
+               buildManifest: pkg.materialization().getBuildManifestEntries(),
                overlay: withTarget,
                // Built outside the Package to decide the text's gates; it
                // runs no query, and carries no Package curation.
@@ -652,7 +665,9 @@ async function resolveGateModel(
                modelName,
                pkg.getMalloyConfig(),
                {
-                  buildManifest: pkg.getBuildManifestEntries(),
+                  buildManifest: pkg
+                     .materialization()
+                     .getBuildManifestEntries(),
                   // Gates only, as for the overlay model above.
                   policy: ModelPolicy.standalone(),
                },
@@ -1148,9 +1163,10 @@ async function compilePackageDryRun(
            (compiled.modelPath === modelName && source !== undefined
               ? source
               : (overlaidText(ctx.overlay, compiled.modelPath) ??
-                (await fs.promises
-                   .readFile(path.join(packagePath, compiled.modelPath), "utf8")
-                   .catch(() => undefined)))));
+                (await readPackageURL(
+                   packagePath,
+                   pathToFileURL(path.join(packagePath, compiled.modelPath)),
+                ).catch(() => undefined)))));
       if (lintText !== undefined) {
          collect(
             notebookLintProblems(
@@ -1354,11 +1370,17 @@ export function nearMissLogMessages(modelDef: ModelDef): LogMessage[] {
               } as LogMessage,
            ];
    });
+   // A near miss of a materialization route fails the load, so the editor
+   // sees it as the error it is; any other near miss is a warning.
    const warnings = annotationNearMisses(notes)
-      .filter((finding) => finding.code === ANNOTATION_NEAR_MISS_CODE)
+      .filter(
+         (finding) =>
+            finding.code === ANNOTATION_NEAR_MISS_CODE ||
+            finding.code === MATERIALIZATION_NEAR_MISS_CODE,
+      )
       .map((finding) => ({
          message: `${finding.message}; ${finding.rewrite}`,
-         severity: "warn" as const,
+         severity: findingSeverity(finding),
          code: finding.code,
          ...(finding.at ? { at: finding.at } : {}),
       }));

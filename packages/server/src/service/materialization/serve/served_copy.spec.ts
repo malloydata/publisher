@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { storedTypeText } from "../stored_column_types";
 import { describe, expect, it } from "bun:test";
 import {
    buildServedCopy,
@@ -19,7 +18,10 @@ import {
    type Reroot,
    replacePairJoin,
 } from "./served_copy";
-import { inverseRenameBlocks } from "../text/declaration_text";
+import {
+   hiddenIncludeNames,
+   inverseRenameBlocks,
+} from "../text/declaration_text";
 
 /** The zero-based range of `needle`'s declaration (after `source: `) in `text`. */
 function rangeOf(text: string, name: string): Reroot["range"] {
@@ -249,28 +251,44 @@ describe("typeDeclaration", () => {
          "type: daily__served is {\n   r::string,\n   `date`::date,\n   total::number\n}",
       );
    });
+
+   it("leaves out a column no Malloy type declares, rather than writing json", () => {
+      // `::json` does not compile (json is a reserved word, and no type a
+      // `type:` takes): a rollup over a BLOB or INTERVAL grain wrote it.
+      expect(
+         typeDeclaration({
+            typeName: "r__served",
+            columns: [
+               { name: "b", type: "BLOB" },
+               { name: "iv", type: "INTERVAL" },
+               { name: "m", type: "MAP(VARCHAR, INTEGER)" },
+               { name: "total", type: "DOUBLE" },
+            ],
+         }),
+      ).toBe("type: r__served is {\n   total::number\n}");
+   });
 });
 
-describe("storedTypeText", () => {
+describe("storedMalloyType", () => {
    it("writes a persisted nest's list of structs as Malloy's record array", () => {
-      expect(storedTypeText("STRUCT(status VARCHAR, n BIGINT)[]")).toBe(
+      expect(storedMalloyType("STRUCT(status VARCHAR, n BIGINT)[]")).toBe(
          "{ status::string, n::number }[]",
       );
       expect(
-         storedTypeText('STRUCT("line total" DOUBLE, "select" VARCHAR)[]'),
+         storedMalloyType('STRUCT("line total" DOUBLE, "select" VARCHAR)[]'),
       ).toBe("{ `line total`::number, `select`::string }[]");
-      expect(storedTypeText("STRUCT(a STRUCT(b INTEGER)[])[]")).toBe(
+      expect(storedMalloyType("STRUCT(a STRUCT(b INTEGER)[])[]")).toBe(
          "{ a::{ b::number }[] }[]",
       );
-      expect(storedTypeText("STRUCT(d DECIMAL(10,2))")).toBe("{ d::number }");
-      expect(storedTypeText("VARCHAR[]")).toBe("string[]");
+      expect(storedMalloyType("STRUCT(d DECIMAL(10,2))")).toBe("{ d::number }");
+      expect(storedMalloyType("VARCHAR[]")).toBe("string[]");
    });
 
-   it("keeps the serve shape's scalar mapping, and its fallback for what it cannot read", () => {
-      expect(storedTypeText("DECIMAL(18,2)")).toBe("number");
-      expect(storedTypeText("TIMESTAMP WITH TIME ZONE")).toBe("timestamp");
-      expect(storedTypeText("MAP(VARCHAR, INTEGER)")).toBe("json");
-      expect(storedTypeText("STRUCT(a VARCHAR")).toBe("json");
+   it("keeps the serve shape's scalar mapping, and declares nothing it cannot read", () => {
+      expect(storedMalloyType("DECIMAL(18,2)")).toBe("number");
+      expect(storedMalloyType("TIMESTAMP WITH TIME ZONE")).toBe("timestamp");
+      expect(storedMalloyType("MAP(VARCHAR, INTEGER)")).toBeUndefined();
+      expect(storedMalloyType("STRUCT(a VARCHAR")).toBeUndefined();
    });
 
    it("storedMalloyType: undefined for what the type: could only call json", () => {
@@ -408,6 +426,90 @@ source: raw is duckdb.sql("""SELECT region, amount FROM t""") extend {
          declarationSpans("t is duckdb.virtual('t')::x extend { }")
             ?.connectionRooted,
       ).toBe(false);
+   });
+
+   it("re-roots a connection's SQL curated by an include ahead of its extend, keeping both", () => {
+      const raw = `#@ persist name="raw" storage="lake"
+source: raw is duckdb.sql("""SELECT region, amount FROM t""") include {
+  public: region, amount
+} extend {
+  measure: total is amount.sum()
+}
+`;
+      const copy = buildServedCopy(
+         [reroot(raw, "raw", { keepsIncludes: true })],
+         () => raw,
+      );
+      expect(copy.refused).toEqual([]);
+      expect(copy.files.get("file:///m.malloy")).toContain(
+         "source: raw is __publisher_storage_t_0.virtual('h1')::raw__served include {\n  public: region, amount\n} extend {",
+      );
+      // A re-root that keeps no include cannot place it: refused, and warned
+      // of, unlike a refinement left as written by design.
+      expect(buildServedCopy([reroot(raw, "raw")], () => raw).refused).toEqual([
+         {
+            sourceName: "raw",
+            url: "file:///m.malloy",
+            reason: "definition_not_parsed",
+         },
+      ]);
+      expect(
+         declarationSpans(`t is duckdb.sql("x") include { } extend { }`),
+      ).toMatchObject({ connectionRooted: false, connectionBased: true });
+      expect(
+         declarationSpans(`t is duckdb.sql("x") include { } extend { }`, {
+            throughIncludes: true,
+         }),
+      ).toMatchObject({ connectionRooted: true, connectionBased: true });
+   });
+
+   it("refuses a kept include that hides a column the table does not store, naming it", () => {
+      const raw = `#@ persist name="raw" storage="lake"
+source: raw is duckdb.sql("""SELECT r, total, id FROM t""") include {
+  public: r, total
+  #(doc) "kept out of the table"
+  private: id
+  internal: \`r\`
+}
+`;
+      expect(
+         buildServedCopy(
+            [reroot(raw, "raw", { keepsIncludes: true })],
+            () => raw,
+         ).refused,
+      ).toEqual([
+         {
+            sourceName: "raw",
+            url: "file:///m.malloy",
+            reason: "definition_not_parsed",
+            hiddenUnstored: ["id"],
+         },
+      ]);
+   });
+
+   it("counts a hidden name as stored-or-defined only where the run defines it", () => {
+      const run = (extend: string) =>
+         `include {\n  public: r\n  private: s\n} extend {\n  ${extend}\n}`;
+      // A use is not a definition.
+      expect(hiddenIncludeNames(run("dimension: s_len is length(s)"))).toEqual([
+         "s",
+      ]);
+      expect(hiddenIncludeNames(run("where: s is not null"))).toEqual(["s"]);
+      expect(
+         hiddenIncludeNames(
+            run("dimension: f is pick 1 when s is null else 0"),
+         ),
+      ).toEqual(["s"]);
+      // A rename target or a field the run defines is.
+      expect(
+         hiddenIncludeNames(
+            "extend { rename: s is r } include { internal: s; public: * }",
+         ),
+      ).toEqual([]);
+      expect(hiddenIncludeNames(run("dimension: s is upper(r)"))).toEqual([]);
+      expect(
+         hiddenIncludeNames(run("dimension:\n    a is 1\n    s is 2")),
+      ).toEqual([]);
    });
 
    it("refuses every re-root of a file it cannot read", () => {
@@ -645,7 +747,7 @@ describe("a stored timeframe truncation (decision 3)", () => {
             },
          ),
       ).toBe(
-         "daily is x.virtual('h')::daily__served extend {\n  internal rename:\n    m__stored is m\n  dimension:\n    m is m__stored.month\n}",
+         "daily is x.virtual('h')::daily__served extend {\n  private rename:\n    m__stored is m\n  dimension:\n    m is m__stored.month\n}",
       );
    });
 
@@ -758,9 +860,10 @@ describe("hidden stored columns (P3)", () => {
 
    it("restores a hidden timeframe column under the author's modifier, its stored column renamed as hidden (row 8)", () => {
       // Inherited, so the re-root defines the field under its own modifier.
-      // A hidden field's stored column is `private` (an `internal` one a
-      // caller's own `extend` could read), hidden by a labelled rename in the
-      // first block: no include, so an author's `rename:` still compiles.
+      // Every redefined field's stored column is `private` (an `internal` one
+      // a caller's own `extend` or `include` could read), hidden by a labelled
+      // rename in the first block: no include, so an author's `rename:` still
+      // compiles.
       const out = rerootDeclaration(
          "orders is base extend {\n  measure: n is count()\n}",
          {
@@ -789,11 +892,10 @@ describe("hidden stored columns (P3)", () => {
       );
       expect(out).toBe(
          "orders is x.virtual('h')::orders__served extend {\n" +
-            "  internal rename:\n" +
-            "    order_day__stored is order_day\n" +
             "  private rename:\n" +
             "    order_month__stored is order_month\n" +
             "    order_week__stored is order_week\n" +
+            "    order_day__stored is order_day\n" +
             "  dimension:\n" +
             "    order_day is order_day__stored.day\n" +
             "  internal dimension:\n" +
@@ -831,7 +933,7 @@ describe("hidden stored columns (P3)", () => {
             "  rename:\n" +
             "    order_month__stored is order_month\n" +
             "    order_day__stored is order_day\n" +
-            "} include { public: *; private: order_month__stored; internal: org_id, order_day__stored } extend {\n" +
+            "} include { public: *; private: order_month__stored, order_day__stored; internal: org_id } extend {\n" +
             "  dimension:\n" +
             "    order_day is order_day__stored.day\n" +
             "  private dimension:\n" +

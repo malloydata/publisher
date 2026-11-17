@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import {
@@ -24,7 +25,12 @@ import {
 import {
    createMocks,
    setPackage,
+   serviceWith,
 } from "../../../test_helpers/materialization_service_harness";
+import {
+   type RunBuildOptions,
+   type RunCollaborators,
+} from "./materialization_service";
 import { logger } from "../../../logger";
 import { reportSourceBuilt } from "./run_telemetry";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
@@ -214,13 +220,14 @@ describe("MaterializationService", () => {
             makeMaterialization({ status: "PENDING" }),
          );
          const runBuild = sinon.stub().resolves();
-         (ctx.service as unknown as { runBuild: sinon.SinonStub }).runBuild =
-            runBuild;
+         const service = serviceWith(ctx, {
+            runBuild,
+         });
 
          // An EMPTY ledger is meaningful — "I own the ledger and nothing is
          // recorded" — and must survive to the run rather than degrade to
          // "use the local store".
-         await ctx.service.createMaterialization("my-env", "pkg", {
+         await service.createMaterialization("my-env", "pkg", {
             buildInstructions: [makeInstruction()],
             ledger: [],
          });
@@ -229,7 +236,7 @@ describe("MaterializationService", () => {
          // An auto-run has no caller to take a ledger from, so it is clamped
          // rather than trusted: taking one would replace the local store the
          // auto-run depends on.
-         await ctx.service.createMaterialization("my-env", "pkg", {
+         await service.createMaterialization("my-env", "pkg", {
             ledger: [],
          });
          expect(runBuild.secondCall.args[3].ledger).toBeUndefined();
@@ -320,9 +327,9 @@ describe("MaterializationService", () => {
                makeMaterialization({ status: "PENDING" }),
             );
             const runBuild = sinon.stub().resolves();
-            (ctx.service as unknown as { runBuild: sinon.SinonStub }).runBuild =
-               runBuild;
-            return ctx.service.createMaterialization("my-env", "pkg", {
+            return serviceWith(ctx, {
+               runBuild,
+            }).createMaterialization("my-env", "pkg", {
                buildInstructions: [options.instruction ?? makeInstruction()],
                ledger: options.ledger,
                ...(options.reseed === undefined
@@ -515,7 +522,9 @@ describe("runBuild (branch behavior)", () => {
       ) => Promise<void>;
    };
 
-   function stubEngine(): RunBuildInternals {
+   function stubEngine(
+      extra: Partial<RunCollaborators> = {},
+   ): RunBuildInternals {
       const entries = {
          "build-orders": {
             sourceEntityId: "build-orders",
@@ -523,13 +532,28 @@ describe("runBuild (branch behavior)", () => {
             connectionName: "duckdb",
          },
       };
-      const svc = ctx.service as unknown as RunBuildInternals;
-      svc.executeInstructedBuild = sinon
-         .stub()
-         .resolves({ entries, failures: {}, sourcesRefused: 0 });
-      svc.commitManifest = sinon.stub().resolves();
-      svc.autoLoadManifest = sinon.stub().resolves();
-      return svc;
+      const stubs = {
+         executeInstructedBuild: sinon
+            .stub()
+            .resolves({ entries, failures: {}, sourcesRefused: 0 }),
+         commitManifest: sinon.stub().resolves(),
+         autoLoadManifest: sinon.stub().resolves(),
+      };
+      const service = serviceWith(ctx, {
+         ...stubs,
+         ...extra,
+      });
+      return {
+         ...stubs,
+         runBuild: (id, env, pkg, opts, signal) =>
+            service.collaborators.runBuild(
+               id,
+               env,
+               pkg,
+               opts as RunBuildOptions,
+               signal,
+            ),
+      };
    }
 
    it("orchestrated: builds caller instructions and does not auto-load", async () => {
@@ -551,10 +575,12 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.executeInstructedBuild.calledOnce).toBe(true);
       // Caller instructions pass straight through; nothing is carried/reused.
       // (arg[1] is the environment; instructions are arg[2], seed entries arg[3].)
-      expect(svc.executeInstructedBuild.firstCall.args[2]).toEqual(
+      expect(svc.executeInstructedBuild.firstCall.args[0].instructions).toEqual(
          instructions,
       );
-      expect(svc.executeInstructedBuild.firstCall.args[3]).toEqual({});
+      expect(svc.executeInstructedBuild.firstCall.args[0].seedEntries).toEqual(
+         {},
+      );
       // The manifest is committed with both collections: entries (arg 1) and
       // failures (arg 2), metadata last. Pinned positionally because these are
       // sinon args -- asserting the metadata alone would keep passing if a later
@@ -601,7 +627,7 @@ describe("runBuild (branch behavior)", () => {
       // arg[1] is environment (the storage build session), so the seed
       // (carried) entries are arg[3]. connectionName is carried through so the
       // seed can be quoted for the upstream's dialect (see quoteSeedTablePath).
-      expect(svc.executeInstructedBuild.firstCall.args[3]).toEqual({
+      expect(svc.executeInstructedBuild.firstCall.args[0].seedEntries).toEqual({
          "up-1": {
             sourceEntityId: "up-1",
             physicalTableName: "upstream_tbl",
@@ -609,13 +635,15 @@ describe("runBuild (branch behavior)", () => {
          },
       });
       // strictUpstreams flows through as the strict flag (6th arg).
-      expect(svc.executeInstructedBuild.firstCall.args[5]).toBe(true);
+      expect(svc.executeInstructedBuild.firstCall.args[0].strict).toBe(true);
       // Reused upstreams are counted as carried, not built.
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "orchestrated",
          sourcesBuilt: 1,
          sourcesReused: 1,
       });
+      // The host distributes an orchestrated manifest: nothing is loaded.
+      expect(svc.commitManifest.firstCall.args[4]).toBeUndefined();
    });
 
    // ms2data/service#6756: the host's warehouseReach reaches the run, last.
@@ -634,11 +662,11 @@ describe("runBuild (branch behavior)", () => {
          },
          new AbortController().signal,
       );
-      const args = svc.executeInstructedBuild.firstCall.args;
-      expect(args[5]).toBe(true);
-      expect(args[12]).toBe("refuse");
+      const [options] = svc.executeInstructedBuild.firstCall.args;
+      expect(options.strict).toBe(true);
+      expect(options.warehouseReach).toBe("refuse");
       // A host's build relies on no earlier uniqueness check.
-      expect(args[13]).toBeUndefined();
+      expect(options.uniqueness).toBeUndefined();
    });
 
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
@@ -659,14 +687,54 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "auto",
       });
-      // Auto-run owns distribution: it loads the fresh manifest into the models.
+      // Auto-run owns distribution: it loads the fresh manifest into the
+      // models, inside the commit, before the run reports MANIFEST_FILE_READY.
+      expect(svc.autoLoadManifest.called).toBe(false);
+      const serve = svc.commitManifest.firstCall.args[4] as (
+         finish: () => Promise<void>,
+      ) => unknown;
+      expect(typeof serve).toBe("function");
+      await serve(async () => {});
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
+   });
+
+   it("auto-run: a stop that lands while the manifest loads does not cut it short, and the run says so", async () => {
+      const svc = stubEngine();
+      svc.autoLoadManifest.callsFake(async (...args: unknown[]) => {
+         const finish = args[5] as (s: {
+            metadata: Record<string, unknown>;
+         }) => Promise<void>;
+         await finish({ metadata: { autoLoad: "loaded" } });
+      });
+      const controller = new AbortController();
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: true,
+            buildInstructions: undefined,
+         },
+         controller.signal,
+      );
+      const serve = svc.commitManifest.firstCall.args[4] as (
+         finish: (s: { metadata: Record<string, unknown> }) => Promise<void>,
+      ) => Promise<void>;
+      // The stop lands during the load.
+      controller.abort();
+      const finished: { metadata: Record<string, unknown> }[] = [];
+      await serve(async (served) => {
+         finished.push(served);
+      });
+      expect(finished).toEqual([
+         { metadata: { autoLoad: "loaded", stopIgnored: true } },
+      ]);
    });
 
    it("records auto-run's refused sources in the run metadata, not on the manifest", async () => {
       // A refused source binds no table, and the manifest is what a
       // strict-schema caller parses, so the list rides the free-form metadata.
-      const svc = stubEngine();
       const refused = {
          gated: {
             name: "gated",
@@ -676,12 +744,12 @@ describe("runBuild (branch behavior)", () => {
             message: "Source 'gated' cannot be materialized",
          },
       };
-      (
-         svc as unknown as { deriveSelfInstructions: sinon.SinonStub }
-      ).deriveSelfInstructions = sinon.stub().returns({
-         instructions: [makeInstruction()],
-         carried: {},
-         refused,
+      const svc = stubEngine({
+         deriveSelfInstructions: sinon.stub().returns({
+            instructions: [makeInstruction()],
+            carried: {},
+            refused,
+         }),
       });
 
       await svc.runBuild(
@@ -702,9 +770,9 @@ describe("runBuild (branch behavior)", () => {
          refusedSources: refused,
       });
       // Named in the error of a run whose every instructed source failed.
-      expect(svc.executeInstructedBuild.firstCall.args[9]).toEqual([
-         refused.gated,
-      ]);
+      expect(
+         svc.executeInstructedBuild.firstCall.args[0].priorRefusals,
+      ).toEqual([refused.gated]);
    });
 
    it("counts auto-run's refusals and carried sources once each, between run.started and run.finished", async () => {
@@ -712,28 +780,27 @@ describe("runBuild (branch behavior)", () => {
       resetMaterializationTelemetryForTesting();
       const info = sinon.stub(logger, "info");
       try {
-         const svc = stubEngine();
-         (
-            svc as unknown as { deriveSelfInstructions: sinon.SinonStub }
-         ).deriveSelfInstructions = sinon.stub().returns({
-            instructions: [makeInstruction()],
-            carried: {
-               "carried-1": {
-                  sourceEntityId: "carried-1",
-                  physicalTableName: "carried_t",
-                  connectionName: "duckdb",
-                  storageDestinationName: "lake",
+         const svc = stubEngine({
+            deriveSelfInstructions: sinon.stub().returns({
+               instructions: [makeInstruction()],
+               carried: {
+                  "carried-1": {
+                     sourceEntityId: "carried-1",
+                     physicalTableName: "carried_t",
+                     connectionName: "duckdb",
+                     storageDestinationName: "lake",
+                  },
                },
-            },
-            refused: {
-               gated: {
-                  name: "gated",
-                  sourceID: "gated",
-                  tier: "storage",
-                  reason: "given",
-                  message: "Source 'gated' cannot be materialized",
+               refused: {
+                  gated: {
+                     name: "gated",
+                     sourceID: "gated",
+                     tier: "storage",
+                     reason: "given",
+                     message: "Source 'gated' cannot be materialized",
+                  },
                },
-            },
+            }),
          });
 
          await svc.runBuild(
@@ -1083,11 +1150,8 @@ describe("runBuild (branch behavior)", () => {
          ledger: unknown[];
       }>,
    ): Promise<{ forceRefresh: boolean; ledger?: unknown[] }> {
-      const svc = stubEngine();
       const contextSpy = sinon.stub().returns(undefined);
-      (
-         ctx.service as unknown as { incrementalRunContext: sinon.SinonStub }
-      ).incrementalRunContext = contextSpy;
+      const svc = stubEngine({ incrementalRunContext: contextSpy });
 
       await svc.runBuild(
          "mat-1",
@@ -1233,7 +1297,7 @@ describe("runInBackground (terminal recording)", () => {
       const bg = background();
       bg.runInBackground("bg-own", async () => {
          bg.runningAbortControllers.get("bg-own")!.abort();
-         throw new Error("Build cancelled");
+         throw new BuildCancelledError();
       });
       await flush();
 
@@ -1261,10 +1325,10 @@ describe("runInBackground (terminal recording)", () => {
          expect(errorStub.calledOnce).toBe(true);
          const [message, meta] = errorStub.firstCall.args as unknown as [
             string,
-            { materializationId: string; code: string; stack?: string },
+            { runId: string; code: string; stack?: string },
          ];
          expect(message).toBe("Materialization run failed");
-         expect(meta.materializationId).toBe("bg-4");
+         expect(meta.runId).toBe("bg-4");
          expect(meta.code).toBe("XX000");
          // The stack's frames locate the throw; its message line, which can
          // quote SQL, is left off (it is on the run's record).
@@ -1303,6 +1367,93 @@ describe("runInBackground (terminal recording)", () => {
       }
    });
 
+   describe("a run whose record is already terminal when it throws", () => {
+      /** The logger's error, warn and info, stubbed for one test. */
+      function stubLogs() {
+         const stubs = {
+            error: sinon.stub(logger, "error"),
+            warn: sinon.stub(logger, "warn"),
+            info: sinon.stub(logger, "info"),
+         };
+         return {
+            ...stubs,
+            restore: () => Object.values(stubs).forEach((s) => s.restore()),
+         };
+      }
+
+      const terminal: MaterializationStatus[] = [
+         "MANIFEST_FILE_READY",
+         "CANCELLED",
+         "FAILED",
+      ];
+      for (const status of terminal) {
+         it(`keeps ${status} when the run throws after it was recorded`, async () => {
+            ctx.repository.getMaterializationById.resolves(
+               makeMaterialization({ status: "PENDING" }),
+            );
+            const logs = stubLogs();
+            try {
+               background().runInBackground("bg-late", async () => {
+                  // The terminal write lands (this process's commit, or
+                  // another process's stop) before the run's own late throw.
+                  ctx.repository.getMaterializationById.resolves(
+                     makeMaterialization({ status }),
+                  );
+                  throw new Error("late failure");
+               });
+               await flush();
+            } finally {
+               logs.restore();
+            }
+
+            expect(ctx.repository.updateMaterialization.called).toBe(false);
+            // Reported as a late throw the record kept, never as the run's
+            // failure.
+            expect(logs.error.called).toBe(false);
+            expect((logs.warn.firstCall.args as unknown as [string])[0]).toBe(
+               "Materialization run threw after its status was recorded; keeping it",
+            );
+         });
+      }
+
+      it("keeps a CANCELLED another process recorded when this one is aborted too", async () => {
+         ctx.repository.getMaterializationById.resolves(
+            makeMaterialization({ status: "CANCELLED", error: "Cancelled" }),
+         );
+         const bg = background();
+         const logs = stubLogs();
+         try {
+            bg.runInBackground("bg-both", async () => {
+               bg.runningAbortControllers.get("bg-both")!.abort();
+               throw new Error("deadlock detected");
+            });
+            await flush();
+         } finally {
+            logs.restore();
+         }
+
+         expect(ctx.repository.updateMaterialization.called).toBe(false);
+         expect(logs.error.called).toBe(false);
+      });
+
+      it("still records FAILED when the record cannot be read", async () => {
+         ctx.repository.getMaterializationById.rejects(new Error("db down"));
+         const warnStub = sinon.stub(logger, "warn");
+         try {
+            background().runInBackground("bg-unread", async () => {
+               throw new Error("boom");
+            });
+            await flush();
+         } finally {
+            warnStub.restore();
+         }
+
+         expect(
+            ctx.repository.updateMaterialization.firstCall.args[1],
+         ).toMatchObject({ status: "FAILED", error: "boom" });
+      });
+   });
+
    it("keeps a DSN out of the run-level log and redacts it from the record", async () => {
       // A whole-run throw has no connection to redact against, but a connect
       // failure while resolving the package's connections echoes the DSN.
@@ -1332,6 +1483,34 @@ describe("runInBackground (terminal recording)", () => {
    });
 });
 
+describe("P6-21: a run's record names no storage path", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   it("redacts a storage URL from a whole-run failure's recorded error", async () => {
+      const errorStub = sinon.stub(logger, "error");
+      try {
+         const service = ctx.service as unknown as {
+            runInBackground: (id: string, run: () => Promise<void>) => void;
+         };
+         service.runInBackground("bg-storage", async () => {
+            throw new Error(
+               "HTTP GET error on 'https://storage.googleapis.com/bkt/org_1/db_2/t.parquet' (HTTP 500)",
+            );
+         });
+         for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+         const recorded = ctx.repository.updateMaterialization.firstCall
+            .args[1] as { error?: string };
+         expect(recorded.error).toContain("<storage path>");
+         expect(recorded.error).not.toMatch(/googleapis|bkt|org_1/);
+      } finally {
+         errorStub.restore();
+      }
+   });
+});
+
 describe("transition (state machine)", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
@@ -1342,18 +1521,19 @@ describe("transition (state machine)", () => {
       id: string,
       next: MaterializationStatus,
    ) => Promise<unknown> {
-      return (
-         ctx.service as unknown as {
+      const { lifecycle } = ctx.service as unknown as {
+         lifecycle: {
             transition: (
                id: string,
                next: MaterializationStatus,
             ) => Promise<unknown>;
-         }
-      ).transition.bind(ctx.service);
+         };
+      };
+      return lifecycle.transition.bind(lifecycle);
    }
 
    it("throws MaterializationNotFoundError when the record is gone", async () => {
-      ctx.repository.getMaterializationById.resolves(undefined);
+      ctx.repository.getMaterializationById.resolves(null);
       await expect(
          transition()("mat-1", "MANIFEST_ROWS_READY"),
       ).rejects.toThrow(MaterializationNotFoundError);

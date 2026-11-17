@@ -5,6 +5,7 @@
 // plan lists each rollup once however many models import its base (review bug
 // 8), a malformed declaration is refused at publish, a rollup over a stored
 // base is planned (#6293), and with the switch off nothing of it runs.
+import { rollupPlansIn } from "../test_helpers/materialization_test_fixtures";
 import {
    afterAll,
    afterEach,
@@ -19,26 +20,34 @@ import * as os from "os";
 import * as path from "path";
 
 import { formatPublishRejections } from "./publish_checks";
+import { BadRequestError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
 import { parsePackageName } from "./identity";
 import { writePackageFiles } from "../test_helpers/temp_package";
-import { installSettings } from "../test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../test_helpers/settings_env";
 import { tempBuildPlanPackages } from "../test_helpers/incremental_test_harness";
 import { usePackageLoadPool } from "../test_helpers/temp_package";
 import { compilePackageBuildPlan } from "./materialization/plan/build_plan_compile";
+import { recordConnectionsAsForTests } from "./connection_type";
+
+// The package sandbox stands in for a warehouse in these fixtures: a
+// `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
+// source on it (storage_source_unsupported).
+let restoreConnectionTypes: () => void;
+beforeAll(() => {
+   restoreConnectionTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+});
+afterAll(() => restoreConnectionTypes());
 
 const buildPlanPackages = tempBuildPlanPackages();
 
 // The switch is on for the whole file, set before this file's load worker
 // starts: a worker keeps the settings it started with.
-let fileSettings: (() => void) | undefined;
-beforeAll(() => {
-   fileSettings = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
-   }).restore;
-});
-afterAll(() => fileSettings?.());
+useMaterializationOn();
 
 let rootDir: string;
 let envPath: string;
@@ -144,23 +153,27 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category") -> {
    );
 
    it(
-      "refuses a malformed declaration at publish, and warns at load",
+      "fails the load for an invalid declaration, with its code",
       async () => {
          switchOn(true);
-         const pkg = await loadPackage({
-            "m.malloy": `source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category") extend {
+         let error: unknown;
+         try {
+            await loadPackage({
+               "m.malloy": `source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category") extend {
   #(preaggregate) grain=["category"]
   measure: average is amount.avg()
 }
 `,
-         });
-         expect(rollups(pkg)).toEqual([]);
-         const warning = pkg
-            .annotationFindingWarnings()
-            .find((w) => w.code === "preaggregate-not-mergeable");
-         expect(warning?.severity).toBe("error");
-         expect(formatPublishRejections(pkg)).toContain(
+            });
+         } catch (e) {
+            error = e;
+         }
+         expect(error).toBeInstanceOf(BadRequestError);
+         expect((error as Error).message).toContain(
             "its partials cannot be merged",
+         );
+         expect((error as Error).message).toContain(
+            "[preaggregate-not-mergeable]",
          );
       },
       { timeout: 60000 },
@@ -182,8 +195,13 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
          expect(rollups(pkg)).toEqual([]);
          const warning = pkg
             .annotationFindingWarnings()
-            .find((w) => w.code === "preaggregate-join-level");
+            .find((w) => w.code === "preaggregate-not-built");
          expect(warning?.severity).toBe("warn");
+         expect(
+            Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
+               (r) => r.reason,
+            ),
+         ).toEqual(["join_level"]);
          expect(formatPublishRejections(pkg)).toBeUndefined();
       },
       { timeout: 60000 },
@@ -198,7 +216,7 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
          const plan = await compilePackageBuildPlan(
             await buildPlanPackages.create({ "orders.malloy": ORDERS }),
          );
-         expect(Object.keys(plan.preaggregatePlans ?? {})).toEqual([]);
+         expect(Object.keys(rollupPlansIn(plan) ?? {})).toEqual([]);
          const pkg = await loadPackage({ "orders.malloy": ORDERS });
          expect(pkg.annotationFindingWarnings().map((w) => w.code)).toContain(
             "annotation-near-miss",

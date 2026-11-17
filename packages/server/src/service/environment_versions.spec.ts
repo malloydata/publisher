@@ -4,18 +4,19 @@
 import { unrecordedAudit } from "./access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { internalErrorToHttpError, PackageVersionError } from "../errors";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
-import { initializeSchema } from "../storage/duckdb/schema";
 import { withSettings } from "../test_helpers/settings_env";
 import { Environment } from "./environment";
 import { Package } from "./package";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parsePackageName, VersionRef } from "./identity";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../test_helpers/temp_storage";
 
 // Loading published versions through a real Environment: real packages
 // compiled from real folders, a real registry, and real queries, so what each
@@ -119,25 +120,18 @@ async function refusal(promise: Promise<unknown>) {
 }
 
 beforeEach(async () => {
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "environment-versions-")),
-   );
-   envPath = path.join(root, "env");
+   ({ root, envPath, db, repo } = await openTempStorage(
+      "environment-versions-",
+      {
+         id: ENV_ID,
+         name: "testEnv",
+      },
+   ));
    sourcesPath = path.join(root, "sources");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, 'testEnv', ?, now(), now())",
-      [ENV_ID, envPath],
-   );
-   repo = createDuckDBRepository(db);
 });
 
 afterEach(async () => {
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
 });
 
 describe("Environment loading of published versions", () => {
@@ -423,16 +417,22 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       // Hold the publish's compile, with the package lock held.
       let release!: () => void;
       const gate = new Promise<void>((resolve) => (release = resolve));
+      // Resolved once the publish is inside its compile: waiting for it,
+      // rather than a fixed sleep, keeps a slow machine from starting the read
+      // before the publish has taken the package lock.
+      let reachedGate!: () => void;
+      const atGate = new Promise<void>((resolve) => (reachedGate = resolve));
       const create = Package.create.bind(Package);
       const spy = spyOn(Package, "create").mockImplementationOnce(
          async (...args: Parameters<typeof Package.create>) => {
+            reachedGate();
             await gate;
             return create(...args);
          },
       );
       try {
          const publishing = publish(env, source("1.0.0", 1));
-         await new Promise((resolve) => setTimeout(resolve, 20));
+         await atGate;
          // The package has no version yet, and no folder of its own to load.
          const reading = env.getPackage(parsePackageName(PKG));
          await new Promise((resolve) => setTimeout(resolve, 20));

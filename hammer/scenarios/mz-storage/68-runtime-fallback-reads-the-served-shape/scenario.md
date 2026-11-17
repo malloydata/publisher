@@ -135,12 +135,12 @@ Expect:
 ## Note (since=2026-07-27)
 
 > Open question, deliberately not asserted here: the decision is scoped to the
-> bindings that produced the SERVE SHAPE, which is per package, not per query. So
-> two sources both serving from their tables, one `live` and one `fail`, are
+> bindings re-rooted in the model's SERVED COPY, which is per model, not per query.
+> So two sources both serving from their tables, one `live` and one `fail`, are
 > fail-closed together — a query touching only the `live` one still errors. That is
 > the safe direction and it matches the stated intent ("one fail-closed source is not
 > degraded by a permissive neighbour"), but it is coarser than per-source: narrowing
-> further means knowing which sources a query actually references, which the serve
-> path does not currently derive. Worth deciding whether per-query narrowing is
-> wanted before any host starts mixing `fail` with `live` on sources that serve
-> together.
+> further means deciding over the tables a query actually reads, which the served
+> leg reports (`tablesRead`) but the decision to degrade does not consult. Worth
+> deciding whether per-query narrowing is wanted before any host starts mixing
+> `fail` with `live` on sources that serve together.

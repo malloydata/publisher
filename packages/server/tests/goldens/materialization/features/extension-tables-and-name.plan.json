@@ -31,6 +31,14 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "by_given@<pkg>/m.malloy": "materialize",
+      "colocated_ext@<pkg>/m.malloy": "materialize",
+      "east@<pkg>/m.malloy": "materialize",
+      "east_big@<pkg>/m.malloy": "materialize",
+      "renamed@<pkg>/m.malloy": "materialize",
+      "stored@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "by_given@<pkg>/m.malloy": {
         "buildSourceName": "by_given__mat",

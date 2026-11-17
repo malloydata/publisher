@@ -14,6 +14,8 @@
  * Types only.
  */
 
+import type { DeclaredFreshness } from "./freshness";
+
 /** The aggregates whose partials merge. */
 export type MergeableAggregate = "sum" | "count" | "min" | "max";
 
@@ -103,12 +105,19 @@ export interface RollupPlan {
     */
    namespace?: string;
    /**
+    * The leaf of this grain's own `name=`: the readable prefix of the name
+    * Publisher gives its table (`<prefix>__p<hash>`), as a `name=` sets it
+    * under `scope: "version"`. Undefined: the readable name's own
+    * `<pkg>__<file>__<base>_by_<grain>`.
+    */
+   prefix?: string;
+   /**
     * The storage destination this rollup is built into and served from — this
     * grain's own `#@ preaggregate storage=`, and only ever that. Undefined for a
     * colocated rollup built into the base's own warehouse.
     *
     * NOT inherited from the base's `#@ persist storage=`; see
-    * {@link basePersistNamespace} for why a destination cannot usefully be.
+    * {@link basePersistNamespace} for why a destination is not inherited.
     *
     * Mutually exclusive with {@link namespace} (refused at publish as
     * `namespace_with_storage`).
@@ -122,7 +131,16 @@ export interface RollupPlan {
     * The base's Malloy `sourceID`, `<declared name>@<declaring file URL>`. A
     * model that only imports the base (an `index.malloy` re-export) cannot
     * rename-import it from itself, so the companion imports it from the file
-    * that declares it (#6646). Absent when the compiler gave none.
+    * that declares it (preaggregation_seams.spec.ts pins it). Absent when the
+    * compiler gave none.
     */
    baseSourceID?: string;
+   /**
+    * The rollup's source-level freshness: what its declarations say
+    * (`freshness.window=`, `freshness.fallback=` on `#(preaggregate)` or
+    * `#@ preaggregate`), per field over what its base's own declaration says.
+    * The model-file and package layers resolve under it as for any source
+    * (plan_layers.ts). Absent: neither declares any.
+    */
+   freshness?: DeclaredFreshness;
 }

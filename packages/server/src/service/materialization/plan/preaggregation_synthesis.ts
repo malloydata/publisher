@@ -3,12 +3,8 @@
 
 /**
  * The v1 `#@ preaggregate` planner: turn validated declarations into rollup
- * plans, one per distinct grain, which the v1 cutover reads into the rollup
- * leg as `#(preaggregate)` plans (G4) and the build plan builds.
- *
- * The composite text it once emitted (an aliased import of the base, the
- * rollup members and a `compose()` re-exposing the base's name) retired with
- * the cutover (6g).
+ * plans, one per distinct grain, which the rollup leg reads as
+ * `#(preaggregate)` plans and the build plan builds.
  *
  * ## Determinism is a correctness property
  *
@@ -28,9 +24,12 @@ import {
 } from "./preaggregation_annotation";
 import { classifyMeasureAdditivity } from "./preaggregation_classifier";
 import type { RollupMeasure, RollupPlan } from "../domain/rollup_measures";
-import { isSpliceableNamespace } from "./preaggregation_namespace";
+import { nameContainer } from "./preaggregation_namespace";
 import { fieldNotes } from "../text/field_notes";
-import type { ValidatableSource } from "./preaggregation_validation";
+import {
+   hasFanoutJoin,
+   type ValidatableSource,
+} from "./preaggregation_validation";
 
 /** Suffix on the stored partial-aggregate column for a measure. */
 const PARTIAL_SUFFIX = "__partial";
@@ -56,15 +55,16 @@ const NAME_SLUG_LIMIT = 40;
 
 /**
  * The rollup's source name: readable enough to recognize in a build plan, a
- * manifest and a log line, and unique by digest.
+ * run manifest and a log line, and unique by digest.
  */
 export function rollupSourceName(
    baseSourceName: string,
    grainDimensions: string[],
 ): string {
-   // Dots are folded out so the name, which IS the rollup's self-assigned
-   // physical table name, stays one unqualified identifier; a consumer reading
-   // a dotted name as schema-qualified would address the wrong thing. Dotted
+   // Dots are folded out so the name, which the rollup's build source and
+   // manifest entry carry (its table takes a readable name of its own,
+   // domain/table_name.ts), stays one unqualified identifier; a consumer
+   // reading a dotted name as schema-qualified would address the wrong thing. Dotted
    // grains are refused at publish anyway; this makes it a property of the
    // name. The digest is over the RAW dimensions, so `a.b` and `a_b` differ.
    const slug = grainDimensions
@@ -75,48 +75,20 @@ export function rollupSourceName(
 }
 
 /**
- * The namespace half of a `#@ persist name=` — everything before the LAST dot.
- *
- * `analytics.orders` yields `analytics`; `proj.analytics.orders` yields
- * `proj.analytics`; a bare `orders` yields undefined. Split on the last dot
- * rather than the first because BigQuery names can carry a project as well as a
- * dataset, and the rollup belongs beside the base in whichever of those it names.
- *
- * **A quoted name yields nothing, deliberately.** `"My.Schema"` is one
- * identifier the last-dot rule would tear apart, and even `"A"."B"` would join a
- * quoted prefix to an unquoted segment, which the two sides of the bind quote
- * differently (`quoteManifestTablePath` passes quoted paths through; the CREATE
- * side quotes every segment). Such an author names the namespace explicitly.
- *
- * A trailing dot yields nothing either: the base's own table segment is empty, so
- * the name is malformed and inventing a namespace from it would hide that.
- */
-export function persistNamespace(
-   persistName: string | undefined,
-): string | undefined {
-   if (!persistName) return undefined;
-   const lastDot = persistName.lastIndexOf(".");
-   if (lastDot <= 0) return undefined;
-   if (persistName.slice(lastDot + 1).trim() === "") return undefined;
-   const candidate = persistName.slice(0, lastDot);
-   return isSpliceableNamespace(candidate) ? candidate : undefined;
-}
-
-/**
  * Order two rollups on one base so the COARSER is offered first.
  *
- * The composite resolver takes the first member that covers a query, so member
- * order decides which covering rollup answers it. Fewer grain dimensions win
+ * The rollup leg offers rollups in this order and uses the first that
+ * answers, so the order decides which covering rollup answers a query. Fewer grain dimensions win
  * (which subsumes a strict-subset rule, and also orders incomparable grains).
  *
- * A dimension count is only a proxy for size. Ordering on the manifest's
- * `rowCount` is deliberately NOT used: member order would then depend on the
- * bound manifest, and the build and serve legs would synthesize different text
+ * A dimension count is only a proxy for size. Ordering on the run manifest's
+ * `rowCount` is deliberately NOT used: the order would then depend on the
+ * bound run manifest, and the build and serve legs would synthesize different text
  * (see this module's header).
  *
  * The generated name is the final tie-break, so the order is total.
  */
-export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
+function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
    return (
       a.grainDimensions.length - b.grainDimensions.length ||
       a.rollupSourceName.localeCompare(b.rollupSourceName)
@@ -124,48 +96,52 @@ export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
 }
 
 /**
- * The namespace a rollup inherits from its base's `#@ persist name=`, or undefined
- * when there is none to inherit.
+ * The container a rollup inherits from its base's colocated `name=`: its
+ * `#@ persist name=`, else (with `materialize`, the switch that reads it) its
+ * `#(materialize) name=`, everything before the last dot; undefined when there
+ * is none to inherit. A rollup of a table belongs beside it, `#(preaggregate)`
+ * and `#@ preaggregate` alike.
  *
  * Read from annotations because synthesis runs before a build plan exists.
  * Unreadable annotations are treated as absent, as in
  * {@link readPreaggregateAnnotation}.
  *
- * **A `storage=` base lends nothing — not its destination, and not a namespace.**
+ * **A `storage=` base lends nothing — not its destination, and not a container.**
  *
- * Not the DESTINATION, because inheritance requires `#@ persist` on the base and
- * both cases fail:
- *  - **Query-shaped base**: it builds its own stored table, whose binding claims
- *    the author name the rollups need, so they are dropped from the serve shape
- *    — built, refreshed, and unreadable.
- *  - **Table extended with measures** (the usual case): the annotation parses,
- *    but the build refuses the whole run because the `#@ persist` source was
- *    dropped from the plan (`relevantDropped` in materialization_service.ts).
- * The destination is therefore written on the `#@ preaggregate` line. (The
- * colocated tier composes members synthesis names, with the base under an
- * import alias, so nothing keys on the author's name; that is why a `name=`
- * namespace inherits usefully.)
+ * Not the DESTINATION: a rollup's placement is its own line's and part of its
+ * identity (the rollup's name digests it), so adding or removing `storage=` on
+ * a base never moves its rollups' tables. A rollup over a stored base builds
+ * from the author's rows, not the base's table, wherever its own line puts it.
  *
- * Not the NAMESPACE, because the base's `name=` is a name in the destination's
+ * Not the CONTAINER, because the base's `name=` is a name in the destination's
  * catalog and means nothing in the source warehouse where the rollup is built.
  */
 export function basePersistNamespace(
    source: ValidatableSource,
+   options: { materialize?: boolean } = {},
 ): string | undefined {
    if (!source.annotations) return undefined;
    try {
-      const tag = readRouteIfAny(
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         new Annotations(source.annotations as any),
-         "@",
-      );
-      if (!tag?.has("persist")) return undefined;
-      const read = placementOf(tag, "persist");
-      // A base built in a destination, or refused, lends no namespace.
-      if (!("placement" in read) || read.placement.tier !== "colocated") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const annotations = new Annotations(source.annotations as any);
+      const persist = readRouteIfAny(annotations, "@");
+      const declared = persist?.has("persist")
+         ? placementOf(persist, "persist")
+         : options.materialize
+           ? (() => {
+                const tag = readRouteIfAny(annotations, "materialize");
+                return tag ? placementOf(tag) : undefined;
+             })()
+           : undefined;
+      // A base built in a destination, or refused, lends no container.
+      if (
+         !declared ||
+         !("placement" in declared) ||
+         declared.placement.tier !== "colocated"
+      ) {
          return undefined;
       }
-      return persistNamespace(read.placement.name);
+      return nameContainer(declared.placement.name);
    } catch {
       return undefined;
    }
@@ -194,6 +170,8 @@ export function planSourcePreaggregation(
    baseSourceName: string,
    source: ValidatableSource,
 ): RollupPlan[] {
+   // Refused alone, as the validator reports it: no rollup over a fan-out join.
+   if (hasFanoutJoin(source)) return [];
    const inheritedNamespace = basePersistNamespace(source);
    /** Resolve a grain dimension back to the field it names, if it names one. */
    const fieldNamed = (name: string) =>

@@ -22,6 +22,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "counts@<hammer>/dcr/dcr.malloy": "persist",
+      "daily@<hammer>/dcr/dcr.malloy": "persist",
+      "rollup@<hammer>/dcr/dcr.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -45,7 +50,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {

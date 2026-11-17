@@ -10,38 +10,16 @@
  * gated by `#(access_filter)` or `#(authorize)` but carrying no `where:` must
  * keep the source as written.
  */
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   FixedConnectionMap,
-   InMemoryURLReader,
-   type ModelDef,
-   Runtime,
-} from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
+import { materializationFixture } from "../../../test_helpers/materialization_fixture";
 import { SourceMap } from "../text/source_map";
 import { refinesUnfilteredBase } from "./served_copy_serve";
 
-let duckdb: DuckDBConnection;
-beforeAll(() => {
-   duckdb = new DuckDBConnection("duckdb", ":memory:");
-});
-afterAll(async () => {
-   await duckdb.close();
-});
-
+const mz = materializationFixture();
 const URL_OF = "file:///guard/m.malloy";
 
 async function guardFor(text: string, source = "child"): Promise<boolean> {
-   const runtime = new Runtime({
-      urlReader: new InMemoryURLReader(new Map([[URL_OF, text]])),
-      connections: new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      ),
-   });
-   const model = await runtime.loadModel(new URL(URL_OF)).getModel();
-   const modelDef = (model as unknown as { _modelDef: ModelDef })._modelDef;
-   const map = SourceMap.of(modelDef);
+   const map = SourceMap.of(await mz.compile(text, { root: "file:///guard/" }));
    return refinesUnfilteredBase(map.node(`${source}@${URL_OF}`), map);
 }
 

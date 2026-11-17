@@ -1,0 +1,6 @@
+import { items } from "../diamond/base.malloy"
+
+source: picked is items
+
+#(doc) Expect row_count 6, v_total 210.
+query: check_selective is picked -> { aggregate: row_count, v_total }

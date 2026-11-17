@@ -5,6 +5,12 @@
         "code": "materialize-not-built",
         "message": "#(materialize) on source \"both\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
         "model": "m.malloy",
+        "refused": {
+          "name": "both",
+          "reason": "inherited_where_with_given",
+          "sourceID": "both@<pkg>/m.malloy",
+          "tier": "storage"
+        },
         "route": "materialize",
         "subject": "both",
         "tier": "unservable"
@@ -13,6 +19,12 @@
         "code": "materialize-not-built",
         "message": "#(materialize) on source \"by_base_dimension\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
         "model": "m.malloy",
+        "refused": {
+          "name": "by_base_dimension",
+          "reason": "inherited_where_with_given",
+          "sourceID": "by_base_dimension@<pkg>/m.malloy",
+          "tier": "storage"
+        },
         "route": "materialize",
         "subject": "by_base_dimension",
         "tier": "unservable"
@@ -21,6 +33,12 @@
         "code": "materialize-not-built",
         "message": "#(materialize) on source \"inherited\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
         "model": "m.malloy",
+        "refused": {
+          "name": "inherited",
+          "reason": "inherited_where_with_given",
+          "sourceID": "inherited@<pkg>/m.malloy",
+          "tier": "storage"
+        },
         "route": "materialize",
         "subject": "inherited",
         "tier": "unservable"
@@ -38,6 +56,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "own@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "own@<pkg>/m.malloy": {
         "buildSourceName": "own__mat",
@@ -245,7 +266,32 @@
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {},
+    "refusedSources": {
+      "both@<pkg>/m.malloy": {
+        "message": "#(materialize) on source \"both\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
+        "modelPath": "m.malloy",
+        "name": "both",
+        "reason": "inherited_where_with_given",
+        "sourceID": "both@<pkg>/m.malloy",
+        "tier": "storage"
+      },
+      "by_base_dimension@<pkg>/m.malloy": {
+        "message": "#(materialize) on source \"by_base_dimension\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
+        "modelPath": "m.malloy",
+        "name": "by_base_dimension",
+        "reason": "inherited_where_with_given",
+        "sourceID": "by_base_dimension@<pkg>/m.malloy",
+        "tier": "storage"
+      },
+      "inherited@<pkg>/m.malloy": {
+        "message": "#(materialize) on source \"inherited\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
+        "modelPath": "m.malloy",
+        "name": "inherited",
+        "reason": "inherited_where_with_given",
+        "sourceID": "inherited@<pkg>/m.malloy",
+        "tier": "storage"
+      }
+    },
     "sources": {
       "own@<pkg>/m.malloy": {
         "annotationFields": {

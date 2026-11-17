@@ -361,8 +361,10 @@ export async function generatePackage(opts: {
    name?: string;
    /** Reuse Parquet already written here instead of generating it. */
    dataFrom?: string;
+   /** A shape of its own, overriding the preset's (the preset still names it). */
+   shape?: PackageShape;
 }): Promise<GeneratedPackage> {
-   const shape = PRESETS[opts.preset];
+   const shape = opts.shape ?? PRESETS[opts.preset];
    if (!shape) {
       throw new Error(
          `unknown preset "${opts.preset}" (expected ${Object.keys(PRESETS).join(", ")})`,

@@ -336,14 +336,12 @@ export class PublisherClient {
     environmentName: string,
     packageName: string,
     materializationId: string,
-    dropTables?: boolean,
   ): Promise<void> {
     try {
       await this.materializationsApi.deleteMaterialization(
         environmentName,
         packageName,
         materializationId,
-        dropTables,
       );
     } catch (error) {
       throw this.handleError(error as AxiosError);
@@ -435,9 +433,11 @@ export class PublisherClient {
   private handleError(error: AxiosError): Error {
     logAxiosError(error);
     if (error.response) {
-      const message =
-        (error.response.data as any)?.message || error.response.statusText;
-      return new Error(
+      const data = error.response.data as any;
+      const message = data?.message || error.response.statusText;
+      return new PublisherApiError(
+        error.response.status,
+        typeof data?.reason === "string" ? data.reason : undefined,
         `Publisher API Error (${error.response.status}): ${message}`,
       );
     } else if (error.request) {
@@ -447,5 +447,21 @@ export class PublisherClient {
     } else {
       return new Error(`Request error: ${error.message}`);
     }
+  }
+}
+
+/**
+ * An error the server answered, with its HTTP status and, when the body
+ * carries one, its machine-readable `reason` (e.g. `PACKAGE_IS_VERSIONED`), so
+ * a command can add advice to a refusal without matching on its message.
+ */
+export class PublisherApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly reason: string | undefined,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PublisherApiError";
   }
 }

@@ -4,7 +4,6 @@
 import { Mutex } from "async-mutex";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import type { VersionPromotionMode } from "../../config";
 import {
@@ -13,12 +12,14 @@ import {
    type PackageVersionErrorReason,
 } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../../storage/DatabaseInterface";
-import { initializeSchema } from "../../storage/duckdb/schema";
 import { VersionHost, VersionService } from "./version_service";
 import { VersionStore } from "./version_store";
 import { writePackageFiles } from "../../test_helpers/temp_package";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../test_helpers/temp_storage";
 
 const ENV_ID = "env-1";
 const PKG = "sales";
@@ -175,20 +176,11 @@ const versionDirs = () =>
       : [];
 
 beforeEach(async () => {
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "version-publish-")),
-   );
-   envPath = path.join(root, "env");
+   ({ root, envPath, db, repo } = await openTempStorage("version-publish-", {
+      id: ENV_ID,
+      name: "env",
+   }));
    sourcesPath = path.join(root, "sources");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, 'env', ?, now(), now())",
-      [ENV_ID, envPath],
-   );
-   repo = createDuckDBRepository(db);
    store = new VersionStore(envPath);
    log = [];
    failLoadFor = new Set();
@@ -200,8 +192,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
 });
 
 describe("VersionService.publish", () => {

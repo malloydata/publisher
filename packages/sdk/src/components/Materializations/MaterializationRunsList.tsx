@@ -30,8 +30,8 @@ import {
    isTerminalStatus,
    parseMetadata,
    sourcesSummary,
-   statusColor,
-   statusLabel,
+   runColor,
+   runLabel,
 } from "./utils";
 
 type MaterializationRunsListProps = {
@@ -39,7 +39,7 @@ type MaterializationRunsListProps = {
    mutable: boolean;
    isMutating: boolean;
    onStop: (materialization: Materialization) => void;
-   onDelete: (materialization: Materialization, dropTables: boolean) => void;
+   onDelete: (materialization: Materialization) => void;
    onViewDetails: (materialization: Materialization) => void;
 };
 
@@ -115,7 +115,7 @@ function MaterializationRow({
    mutable: boolean;
    isMutating: boolean;
    onStop: (materialization: Materialization) => void;
-   onDelete: (materialization: Materialization, dropTables: boolean) => void;
+   onDelete: (materialization: Materialization) => void;
    onViewDetails: (materialization: Materialization) => void;
 }) {
    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
@@ -164,12 +164,12 @@ function MaterializationRow({
                   sx={{
                      fontWeight: 500,
                      color:
-                        statusColor(materialization.status) === "default"
+                        runColor(materialization) === "default"
                            ? "text.primary"
-                           : `${statusColor(materialization.status)}.main`,
+                           : `${runColor(materialization)}.main`,
                   }}
                >
-                  {statusLabel(materialization.status)}
+                  {runLabel(materialization)}
                </Typography>
                {error && (
                   <Tooltip title={error}>
@@ -230,9 +230,7 @@ function MaterializationRow({
                            materialization={materialization}
                            isMutating={isMutating}
                            onCloseDialog={handleMenuClose}
-                           onDelete={(dropTables) =>
-                              onDelete(materialization, dropTables)
-                           }
+                           onDelete={() => onDelete(materialization)}
                         />
                      )}
                   </Menu>

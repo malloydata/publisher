@@ -13,7 +13,10 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -55,13 +58,10 @@ function legOf(fixture: R4Fixture, name: string): Record<string, unknown> {
 }
 
 describe("C1b: a rebind between pin and run does not split a served-copy query", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    let undo: (() => void) | undefined;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `#(materialize) storage="lake"
@@ -80,7 +80,6 @@ source: orders is duckdb.table('orders_raw') extend {
       fixture.setBindings(fixture.bindings);
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

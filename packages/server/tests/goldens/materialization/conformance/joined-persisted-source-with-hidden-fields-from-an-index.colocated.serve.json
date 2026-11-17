@@ -85,13 +85,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure over the joined source's internal column, from the index",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -155,13 +156,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the joined source's measure, in its own file",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -231,13 +233,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure over the joined source's internal column, from the index",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -301,13 +304,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the joined source's measure, in its own file",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

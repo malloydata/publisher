@@ -153,6 +153,8 @@ export function createDuckDBRepository(
          ),
       updateMaterialization: (id, updates) =>
          materializations.update(id, updates),
+      updateMaterializationFrom: (id, updates, fromStatuses) =>
+         materializations.updateFrom(id, updates, fromStatuses),
       deleteMaterialization: (id) => materializations.deleteById(id),
 
       getIncrementalLedgerEntry: (environmentId, table) =>
