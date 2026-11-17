@@ -130,7 +130,8 @@ source: acct_db_mz_bigint is accounts_bigint -> { where: id > -7; select: * }
 #(access_filter) acct = $ACCT
 #@ persist name="acct_db_v1_bigint"
 source: acct_db_v1_bigint is accounts_bigint -> { where: id > -8; select: id, acct, region, amount }
-// The control: an ungated database table altered the same way, still served.
+// An ungated database table altered the same way: the served copy declines
+// any database table whose columns moved, gated or not.
 #(materialize) name="acct_db_open"
 source: acct_db_open is accounts -> { where: id > -10; select: * }
 `;
@@ -147,15 +148,11 @@ const DB_ALTERED = [
 ];
 
 /**
- * An altered database table whose gate column the served copy still reads (a
- * DECIMAL): the gate policy's exactness rule is what sends it live, so the
- * path report names the served copy skipped for its gate (`CONTRACT`), not
- * the copy's own decline (`WARNED`) that a BIGINT one, left out of the copy
- * as a float, gets with or without that rule. (The `#@ persist` table's path
- * report names no served-copy skip; that it answers live is what this spec
- * holds it to.)
+ * Every database table altered after its build, gated or not: the served copy
+ * declines a database table whose columns moved (`WARNED`), so each answers
+ * live. The gate policy's own rule over a moved column is held by unit specs.
  */
-const DB_ALTERED_DECIMAL = ["acct_db_mz"];
+const DB_DRIFTED = [...DB_ALTERED, "acct_db_open"];
 
 /** Entry points that read an inexact table's gate column under another shape. */
 const OVER_INEXACT = [
@@ -276,7 +273,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
       const warehouse = (await loader.pkg.getMalloyConnection(
          "duckdb",
       )) as unknown as { runSQL(sql: string): Promise<unknown> };
-      for (const name of [...DB_ALTERED, "acct_db_open"]) {
+      for (const name of DB_DRIFTED) {
          await warehouse.runSQL(
             `ALTER TABLE "${name}" ALTER COLUMN acct TYPE DOUBLE`,
          );
@@ -369,21 +366,19 @@ describe("L2: a gate over a column stored inexactly is never read from the table
             const goesLive =
                INEXACT.includes(q.source) ||
                OVER_INEXACT.includes(q.source) ||
-               DB_ALTERED.includes(q.source);
+               DB_DRIFTED.includes(q.source);
             it(`${q.malloy}: is answered from ${goesLive ? "live" : "the table"}`, () => {
                const got = served.get(key(q.malloy, "the ...992 caller"))![0];
                expect("answer" in got).toBe(true);
                if (!("answer" in got)) return;
                if (goesLive) {
                   expect(got.answer.servedBy).toBe("live");
-                  if (DB_ALTERED_DECIMAL.includes(q.source)) {
-                     expect(got.answer.servedSkip?.reason).toBe("CONTRACT");
+                  if (q.source === "acct_db_open") {
+                     expect(got.answer.servedSkip?.reason).toBe("WARNED");
                   }
                } else {
                   expect(got.answer.via).toBe("served_copy");
-                  expect(got.answer.servedFrom).toBe(
-                     q.source === "acct_db_open" ? "database" : "storage",
-                  );
+                  expect(got.answer.servedFrom).toBe("storage");
                }
             });
          }

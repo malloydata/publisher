@@ -328,7 +328,8 @@ export class ServeVerdicts {
             const reads =
                exprs === undefined
                   ? undefined
-                  : gateReads(def, exprs, modelDef);
+                  : // Its own `where:` terms were applied by the build.
+                    gateReads(def, exprs, modelDef, new Set([sourceID]));
             const types = gateColumnTypesOf(
                reads,
                bound.map((b) => b.schema),
