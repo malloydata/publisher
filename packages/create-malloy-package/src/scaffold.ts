@@ -1602,6 +1602,7 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--frame-ancestors",
    "--caller-header",
    "--version-promotion",
+   "--refusal-reason-compat",
    "--root",
    "--server_root",
    "--config",
