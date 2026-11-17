@@ -5960,8 +5960,9 @@ components:
                   `-join-level` and `-name-clash`, now each
                   `preaggregate-not-built` with the reasons `hidden_field`,
                   `access_filter` (or `authorize`), `time_zone`,
-                  `current_time`, `given_in_persisted_query` or
-                  `inherited_where_with_given`, `unreadable_measure`,
+                  `current_time`, `given_in_persisted_query`,
+                  `inherited_where_with_given` or
+                  `given_where_over_unstored_field`, `unreadable_measure`,
                   `join_level` and `name_clash`.
                   `materialization-storage-mode`: a `storage=` source the
                   deployment's `PERSIST_STORAGE_MODE` (`off` or `write-only`)
@@ -10735,6 +10736,7 @@ components:
               unreadable_measure,
               join_level,
               name_clash,
+              given_where_over_unstored_field,
             ]
           description: >-
             The bounded refusal reason; `message` says the specifics.
@@ -10746,17 +10748,23 @@ components:
             refused it) and `authorize` for a lock (`#(authorize)`); the four that
             name where a given the build could not strip sits
             (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
-            `dynamic_joined_where`); `inherited_where_with_given` (a
+            `dynamic_joined_where`), where `given_in_persisted_query` is the
+            one reason every mechanism gives for a build that would read a
+            given, so its table would hold one caller's rows (a given in a
+            `#@ persist` source's persisted query, a persisted view or query
+            whose result reads one, a rollup whose build reads one); the other
+            three are raised by a `storage=` `#@ persist` alone, naming the
+            position more finely; `inherited_where_with_given` (a
             given-reading `where:` or dimension the declaration inherits from
             a source it is built from, in its own file or another, rather than
             writing it in its own declaration: only the declaration's own
             terms are re-applied over the stored table at read; move the
             `where:` onto the persisted source to serve it from a table);
-            `reads_given` (the build Malloy generates reads a given wherever it
-            is written, so its table would hold one caller's rows: a persisted
-            view or query whose result reads one; a rollup takes the reasons
-            `#(materialize)` gives the same case, `given_in_persisted_query`
-            or `inherited_where_with_given`);
+            `given_where_over_unstored_field` (a given-reading `where:` of the
+            declaration's own over a field its table does not store, so it
+            cannot be re-applied over the table at read: a field the rollup's
+            grain drops, which adding it to the grain fixes, or on
+            `#(materialize)` a field that is not a stored dimension);
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns);
             `preaggregate_over_dynamic_source` (a rollup whose base is scoped
@@ -10795,8 +10803,8 @@ components:
             `nested_result` (a result that nests, which its table cannot
             answer yet), `access_filter` or `authorize` (it reaches a
             row-level gate its stored result cannot keep, named by the gate's
-            kind), `current_time` (its result reads
-            `now`), `no_stored_columns` (it has no stage to store) and
+            kind), `given_in_persisted_query` (its result reads a given),
+            `current_time` (its result reads `now`), `no_stored_columns` (it has no stage to store) and
             `generated_build_failed` (its build does not compile on its own).
 
 
@@ -10822,7 +10830,10 @@ components:
 
 
             Retained, no longer produced: `given` (replaced by the positional
-            given reasons above), `not_duckdb_portable` (a `storage=` table no
+            given reasons above), `reads_given` (a persisted view or query
+            whose result reads a given, and a rollup's given-reading refusals,
+            now `given_in_persisted_query`, `inherited_where_with_given` or
+            `given_where_over_unstored_field`; never in a release), `not_duckdb_portable` (a `storage=` table no
             column of which Malloy can type is now built, and its source is
             answered live), the three `partition_*` reasons (`partition=` is a
             retired key, which fails the publish and the load as

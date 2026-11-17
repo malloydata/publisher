@@ -148,6 +148,55 @@ describe("the load worker and compilePackageBuildPlan plan alike", () => {
       ).toEqual([]);
    });
 
+   it("refuses a name= the readable name would rewrite in a version of a scope: version package, on both paths", async () => {
+      const model = `${RAW}#@ persist name="analytics.My-Table"
+source: a is raw -> { group_by: c }
+#(materialize) name="2024_t"
+source: b is raw extend { where: id > 0 }
+#@ persist name="Plain_T"
+source: c is raw -> { group_by: id }
+source: d is raw extend {
+  #@ persist name="by__c"
+  view: by_c is { group_by: c }
+}
+`;
+      const published = { versionId: "1.0.0", scope: "version" };
+      const manifest = { materialization: { scope: "version" } };
+      const { main, worker } = await bothPaths(
+         packages,
+         model,
+         manifest,
+         published,
+      );
+      expect(worker?.ok).toBe(true);
+      if (!worker?.ok) return;
+      expect(judged(worker.outcome)).toEqual(judged(main));
+      // Each fails the load under its route's code; a name= lowercasing
+      // alone changes (`Plain_T`) is planned.
+      expect(
+         main.annotationFindings
+            .filter((f) => f.tier === "malformed")
+            .map((f) => [f.code, f.subject])
+            .sort(),
+      ).toEqual([
+         ["materialize-invalid", "b"],
+         ["persist-invalid", "a"],
+         ["persist-view-invalid", "d -> by_c"],
+      ]);
+      const [a] = main.annotationFindings.filter((f) => f.subject === "a");
+      expect(a.message).toContain('would write "My-Table" as "my_table"');
+      expect(
+         Object.values(main.plan?.sources ?? {}).map((s) => s.name),
+      ).toEqual(["c"]);
+      // Outside a version, a name= is the table's exact name: not refused.
+      const unversioned = await bothPaths(packages, model, manifest);
+      expect(
+         unversioned.main.annotationFindings.filter(
+            (f) => f.tier === "malformed",
+         ),
+      ).toEqual([]);
+   });
+
    it("judges a collision before an unbuildable incremental declaration", async () => {
       const pkg = await packages.create(SHAPES[0][1]);
       const main = await computePackageBuildPlan(pkg);

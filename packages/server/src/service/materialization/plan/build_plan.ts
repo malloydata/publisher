@@ -163,6 +163,7 @@ import {
    EligibilityCheckFailed,
    planVerdicts,
    refuseCollidingMaterialize,
+   refuseRewrittenNames,
    sharedTables,
    withoutSources,
    type ColocatedSourceEligibility,
@@ -1031,7 +1032,7 @@ async function collectGeneratedPersistedViews(
                   {
                      ...plan,
                      reason: readsAGiven,
-                     outcome: { refused: "reads_given" },
+                     outcome: { refused: "given_in_persisted_query" },
                   },
                   args.modelPath,
                ),
@@ -1045,7 +1046,7 @@ async function collectGeneratedPersistedViews(
                   {
                      queryName: query.queryName,
                      reason: readsAGiven,
-                     refusal: "reads_given",
+                     refusal: "given_in_persisted_query",
                      declaringURL: query.declaringURL,
                      ...(query.storage !== undefined
                         ? { storage: query.storage }
@@ -1949,7 +1950,8 @@ export interface RefusedRollup {
  * both plan paths (compilePackageBuildPlan on the main thread, and the load
  * worker): each author `name=` its own table, decided over every source
  * before any is refused, and every address once, then the sources refused
- * alone, in one order: an author collision first
+ * alone, in one order: a `name=` the readable name would rewrite
+ * ({@link refuseRewrittenNames}, invalid), an author collision
  * ({@link refuseCollidingMaterialize}, invalid whatever else is wrong with
  * the source), then a valid incremental declaration this deployment cannot
  * honour.
@@ -1982,11 +1984,13 @@ export function finishBuildPlan(
    };
    // Each `storage=` source's stored columns read as its build writes them.
    const tableFolds = foldDistinctTableNames(plan, storedColumnNames);
-   const refused = refuseCollidingMaterialize({
-      ...plan,
-      tableFolds,
-      addresses: planAddresses({ ...plan, tableFolds }),
-   });
+   const refused = refuseCollidingMaterialize(
+      refuseRewrittenNames({
+         ...plan,
+         tableFolds,
+         addresses: planAddresses({ ...plan, tableFolds }),
+      }),
+   );
    return ctx.keepIncrementalUnbuildable
       ? refused
       : refuseIncrementalUnbuildable(refused);

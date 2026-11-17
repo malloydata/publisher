@@ -222,6 +222,8 @@ source: orders is raw extend { where: s != 'zz' }
    });
 
    describe("P2: what is refused rather than left out", () => {
+      /** The refusal record's reason of the last {@link refusal}. */
+      let lastReason: string | undefined;
       async function refusal(text: string): Promise<string> {
          const { c } = await packages.plan(text);
          // Nothing is planned for it, and so nothing is built.
@@ -242,6 +244,8 @@ source: orders is raw extend { where: s != 'zz' }
          );
          expect(plans).toEqual([]);
          expect(refused).toHaveLength(1);
+         const { outcome } = refused[0];
+         lastReason = "refused" in outcome ? outcome.refused.reason : undefined;
          return refused[0].reason;
       }
 
@@ -287,6 +291,8 @@ source: orders is raw extend {
 }
 `),
             ).toContain("does not store");
+            // The term, not the build, is the fix: its own reason.
+            expect(lastReason).toBe("given_where_over_unstored_field");
          },
          { timeout: 30000 },
       );

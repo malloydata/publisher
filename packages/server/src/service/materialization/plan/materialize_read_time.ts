@@ -89,7 +89,10 @@ export function readTimeTermsOf(
    | {
         ok: false;
         reason: string;
-        refusal: "inherited_where_with_given" | "given_in_persisted_query";
+        refusal:
+           | "inherited_where_with_given"
+           | "given_in_persisted_query"
+           | "given_where_over_unstored_field";
      } {
    const located = classified.flatMap(({ dependsOn }) =>
       dependsOn.kind === "given"
@@ -137,7 +140,7 @@ export function readTimeTermsOf(
                `${shown} reads a given and a field the table does not store ` +
                `(only dimensions of this source are stored), so it ` +
                `could not be re-applied over the table at read`,
-            refusal: "given_in_persisted_query",
+            refusal: "given_where_over_unstored_field",
          };
       }
       // The generated `where:` reads each given by the name the author wrote,
