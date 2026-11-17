@@ -162,16 +162,14 @@ async function expectCommonVectorsRefused(
          "locked down",
       );
    }
-   // One statement per call, and nothing Malloy's own separator could put in
-   // front of a query but a macro: author text spliced into a query cannot
-   // end it and start a write.
-   for (const statement of [
-      "SELECT 1; SELECT 2",
-      `SELECT 1 AS a; COPY (SELECT 1) TO '${root}/pkg/overwritten.csv'`,
-      `COPY (SELECT 1) TO '${root}/pkg/x.csv'\n-- hack: split on this\nSELECT 1`,
-   ]) {
-      expect(await refused(connection, statement)).toContain("locked down");
-   }
+   // Nothing Malloy's own separator could put in front of a query but a
+   // macro: author text that spells it cannot slip a write ahead of the query.
+   expect(
+      await refused(
+         connection,
+         `COPY (SELECT 1) TO '${root}/pkg/x.csv'\n-- hack: split on this\nSELECT 1`,
+      ),
+   ).toContain("locked down");
    // A .sql() source is one SELECT, decided by DuckDB's parser.
    const sqlSource = (selectStr: string) =>
       (
@@ -465,6 +463,38 @@ describe.skipIf(process.platform !== "win32")(
       });
    },
 );
+
+describe("author SQL in a model on a DuckDB connection reads as one SELECT", () => {
+   const load = async (model: string) => {
+      const dir = fs.mkdtempSync(path.join(root, "authorsql-"));
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name: "authorsql" }),
+      );
+      fs.writeFileSync(
+         path.join(dir, "m.malloy"),
+         `##! experimental.sql_functions\n${model}`,
+      );
+      return Package.create("env", "authorsql", dir, new Map());
+   };
+
+   it("refuses a .sql() source or a raw SQL expression that ends the query", async () => {
+      for (const model of [
+         `source: s is duckdb.sql("""SELECT 1 AS a); COPY (SELECT 1) TO 'x.csv'; SELECT (1""")`,
+         `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_number("1); COPY (SELECT 1) TO 'x.csv'; SELECT (1") }`,
+      ]) {
+         await expect(load(model)).rejects.toThrow(/(one|single) SELECT/);
+      }
+   });
+
+   it("loads one SELECT, CTEs included, and a plain raw expression", async () => {
+      const pkg = await load(
+         `source: s is duckdb.sql("WITH x AS (SELECT 1 AS a) SELECT a FROM x") extend { dimension: d is sql_number("a + 1") }`,
+      );
+      expect(pkg.getModel("m.malloy")).toBeDefined();
+      await pkg.getMalloyConfig().releaseConnections();
+   });
+});
 
 describe("environment duckdb with setupSQL: allowlist, then lock, as options", () => {
    let restore: () => void;

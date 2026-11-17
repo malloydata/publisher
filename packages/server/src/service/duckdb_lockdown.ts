@@ -64,7 +64,7 @@ import {
 import { logger } from "../logger";
 import {
    assertSingleSelect,
-   countStatements,
+   classifySelect,
    serializeSQL,
 } from "./single_select";
 
@@ -1025,7 +1025,10 @@ async function assertMalloyParts(
  * statements {@link refusedOnLockedInstance} or DuckDB's own parser
  * ({@link refusedByParser}) names are refused before they reach DuckDB. An
  * instance not locked (still in its own setup, or a server-owned build
- * session) runs only Publisher's SQL and is not gated.
+ * session) runs only Publisher's SQL and is not gated. Author SQL inside a
+ * model is held to one SELECT when the package loads
+ * ({@link authorSqlRefusals}), and a caller's raw SQL at its route, so a
+ * statement here may be several (Publisher's own build scripts are).
  */
 export async function assertStatementAllowed(
    connection: unknown,
@@ -1035,19 +1038,64 @@ export async function assertStatementAllowed(
    const internal = internalStatement.getStore() === sql;
    const reason = refusedOnLockedInstance(sql) ?? (await refusedByParser(sql));
    if (reason && !internal) throw new DuckDBStatementRefusedError(reason);
-   // One statement per call outside the connection's own setup: author text
-   // spliced into a query (a sql_* expression, a .sql() source) cannot end
-   // it and start another.
-   if (!internal && !operatorSetup.getStore()) {
-      const count = await countStatements(sql);
-      if (count !== 1) {
-         throw new DuckDBStatementRefusedError(
-            count === undefined
-               ? "SQL DuckDB's parser rejects"
-               : `${count} statements in one call`,
+}
+
+/**
+ * Why author SQL in a compiled model would not run read-only on a DuckDB
+ * connection, one line per refusal: a `.sql()` source that is not one SELECT,
+ * or a raw SQL expression (`sql_number()` and its siblings) that is not one
+ * expression of one SELECT, so it cannot end the query Malloy builds around
+ * it and start another statement. Decided by DuckDB's parser, for sources of
+ * the DuckDB dialect only; a built-in function's own template (its
+ * `overload`) is the compiler's SQL and is not read.
+ */
+export async function authorSqlRefusals(
+   modelPath: string,
+   modelDef: unknown,
+): Promise<string[]> {
+   const checks = new Map<string, string>();
+   const seen = new Set<object>();
+   const walk = (node: unknown, dialect: string | undefined, depth: number) => {
+      if (depth > 400 || node === null || typeof node !== "object") return;
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (Array.isArray(node)) {
+         for (const child of node) walk(child, dialect, depth + 1);
+         return;
+      }
+      const record = node as Record<string, unknown>;
+      const here =
+         typeof record.dialect === "string" ? record.dialect : dialect;
+      if (here === "duckdb") {
+         if (
+            record.type === "sql_select" &&
+            typeof record.selectStr === "string"
+         ) {
+            checks.set(record.selectStr, `a .sql() source`);
+         }
+         if (record.node === "genericSQLExpr" && Array.isArray(record.src)) {
+            const text = (record.src as unknown[]).map(String).join(" NULL ");
+            checks.set(`SELECT ${text}`, `a raw SQL expression`);
+         }
+      }
+      for (const [key, child] of Object.entries(record)) {
+         if (record.node === "function_call" && key === "overload") continue;
+         walk(child, here, depth + 1);
+      }
+   };
+   walk(modelDef, undefined, 0);
+   const refusals: string[] = [];
+   for (const [sql, what] of checks) {
+      const verdict = await classifySelect(sql);
+      if (!("selects" in verdict) || verdict.selects !== 1) {
+         refusals.push(
+            `${modelPath}: ${what} on a DuckDB connection must read as one SELECT ` +
+               `(raw SQL on a locked-down DuckDB connection runs only as a single ` +
+               `SELECT), and this one does not.`,
          );
       }
    }
+   return refusals;
 }
 
 let statementGateInstalled = false;
@@ -1082,7 +1130,10 @@ export function installDuckDBStatementLockdown(): void {
          "@malloydata/db-duckdb's internals changed shape: the DuckDB statement lockdown cannot be installed",
       );
    }
-   const withMore = proto as unknown as {
+   // runSQL and fetchSelectSchema are DuckDBCommon's (the prototype's own
+   // prototype): replaced there, so DuckDBConnection's own members stay as
+   // duckdb_hard_close.ts audits them.
+   const withMore = Object.getPrototypeOf(proto) as {
       runSQL(sql: string, options?: unknown): Promise<unknown>;
       fetchSelectSchema(sqlRef: { selectStr: string }): Promise<unknown>;
    };

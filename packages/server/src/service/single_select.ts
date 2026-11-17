@@ -69,23 +69,6 @@ export async function serializeSQL(sql: string): Promise<{
    }
 }
 
-/**
- * How many statements DuckDB's own parser reads in `sql` (of any kind), or
- * undefined when it does not parse.
- */
-export async function countStatements(
-   sql: string,
-): Promise<number | undefined> {
-   const connection = await (await parserInstance()).connect();
-   try {
-      return (await connection.extractStatements(sql)).count;
-   } catch {
-      return undefined;
-   } finally {
-      connection.closeSync();
-   }
-}
-
 /** How many SELECT statements `sql` holds, or why it is not only SELECTs. */
 export async function classifySelect(
    sql: string,

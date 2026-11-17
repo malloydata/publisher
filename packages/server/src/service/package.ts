@@ -62,7 +62,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
-import { sandboxedDuckDBOptions } from "./duckdb_lockdown";
+import { authorSqlRefusals, sandboxedDuckDBOptions } from "./duckdb_lockdown";
 import { closeMalloyConfig, ownDuckDBConnection } from "./duckdb_hard_close";
 import { formatDuration, logger } from "../logger";
 import {
@@ -2350,6 +2350,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          if (refusal) messages.push(refusal);
       }
       return messages.join("\n");
+   }
+
+   /**
+    * Author SQL in this package's models that would not run read-only on a
+    * DuckDB connection, one line per refusal (duckdb_lockdown.ts).
+    */
+   public async formatAuthorSqlRefusals(): Promise<string> {
+      const lines: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         lines.push(
+            ...(await authorSqlRefusals(modelPath, model.getModelDef())),
+         );
+      }
+      return lines.join("\n");
    }
 
    /** The async input of {@link formatCarriesCeilingLeaks}, prepared before a listing is judged. */
