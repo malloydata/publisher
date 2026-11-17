@@ -317,3 +317,198 @@ export async function postgresCollation(
       ? "binary"
       : "deterministic";
 }
+
+/** A table an answer read, as the stored-side check reads it. */
+interface StoredTable {
+   readonly tier: "colocated" | "storage";
+   readonly virtualHandle?: string;
+   readonly tablePath?: string;
+   readonly destinationName?: string;
+}
+
+/**
+ * Why a stored table an answer read past a gate, or under a scope, does not
+ * compare a string column as its source does, or undefined: the stored
+ * column's own collation, which an `ALTER … SET DATA TYPE … COLLATE` after
+ * the build, or a destination's `default_collation`, can change. Every table
+ * read is checked, however it was admitted (colocated, a `storage=` table
+ * past its own gate, or one holding only ungated rows), so a new admission
+ * mark needs nothing here.
+ *
+ * - a `storage=` table, and a colocated one in a DuckDB-dialect warehouse:
+ *   byte-exact only when the instance sets no `default_collation` and the
+ *   table's definition names no `COLLATE`;
+ * - a colocated table in Postgres: each collatable column's collation, as
+ *   the source side reads it (binary under `C`/`POSIX`, deterministic under
+ *   any other deterministic one);
+ * - anything else, or a table this cannot find: unknown.
+ *
+ * `equalityOnly` admits a deterministic collation; otherwise only binary.
+ */
+export async function storedTableCollationRefusal(args: {
+   tables: readonly StoredTable[];
+   answerRunnable: QueryMaterializer;
+   virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
+   /** The author's compile: a colocated table shares its source's dialect. */
+   authorRunnable: QueryMaterializer;
+   reads: GateReads | undefined;
+}): Promise<string | undefined> {
+   if (args.tables.length === 0) return undefined;
+   const sourceDialect = await entryDialectOf(args.authorRunnable);
+   const equalityOnly = args.reads?.equalityOnly === true;
+   const runtime = (
+      args.answerRunnable as unknown as { runtime?: ProbeRuntime }
+   ).runtime;
+   if (!runtime) return "no runtime";
+   const need: Collation[] = equalityOnly
+      ? ["binary", "deterministic"]
+      : ["binary"];
+   for (const t of args.tables) {
+      let collation: Collation;
+      try {
+         collation = await storedSide(t, args, runtime, sourceDialect);
+      } catch {
+         collation = "unknown";
+      }
+      if (!need.includes(collation)) {
+         return `a stored table compares strings under a ${collation} collation`;
+      }
+   }
+   return undefined;
+}
+
+/** The last name of a table path, its quotes off. */
+function tableNameOf(path: string): string {
+   const parts = path.match(/"(?:[^"]|"")*"|`[^`]*`|[^.]+/g) ?? [path];
+   const last = parts[parts.length - 1].trim();
+   return /^["`]/.test(last) ? last.slice(1, -1).replace(/""/g, '"') : last;
+}
+
+/**
+ * A DuckDB or DuckLake table compares bytes unless the instance sets a
+ * `default_collation` or the table's definition names a `COLLATE`; a table
+ * the catalog does not list is unknown.
+ */
+export async function duckdbTableCollation(
+   connection: Connection,
+   tablePath: string,
+): Promise<Collation> {
+   const [setting] = await rows(
+      connection,
+      "SELECT current_setting('default_collation') AS c",
+   );
+   if (String(setting?.c ?? "").trim() !== "") return "unknown";
+   const name = tableNameOf(tablePath).replace(/'/g, "''");
+   const defs = await rows(
+      connection,
+      `SELECT sql FROM duckdb_tables() WHERE table_name = '${name}'`,
+   );
+   if (defs.length === 0) return "unknown";
+   return defs.every(
+      (d) => typeof d.sql === "string" && !/\bcollate\b/i.test(d.sql),
+   )
+      ? "binary"
+      : "unknown";
+}
+
+/**
+ * A Postgres table's collatable columns, together: binary when every one is
+ * `C`/`POSIX`, deterministic when every one is deterministic, else unknown.
+ */
+export async function postgresTableCollation(
+   connection: Connection,
+   tablePath: string,
+): Promise<Collation> {
+   const path = tablePath.replace(/'/g, "''");
+   const [row] = await pgRows(
+      connection,
+      `SELECT bool_and(c.collisdeterministic) AS det, bool_and(c.collname IN ('C', 'POSIX') OR (c.collname = 'default' AND (SELECT datcollate FROM pg_database WHERE datname = current_database()) IN ('C', 'POSIX'))) AS bin, count(*) AS n FROM pg_attribute a JOIN pg_collation c ON c.oid = a.attcollation WHERE a.attrelid = '${path}'::regclass AND a.attnum > 0 AND NOT a.attisdropped`,
+   );
+   if (!row) return "unknown";
+   if (Number(row.n ?? 0) === 0) return "binary";
+   if (row.det !== true) return "unknown";
+   return row.bin === true ? "binary" : "deterministic";
+}
+
+/** The dialect of the source a compiled query runs on, or "" when unread. */
+async function entryDialectOf(runnable: QueryMaterializer): Promise<string> {
+   try {
+      const prepared = await readPreparedQuery(runnable);
+      const struct = resolveStructRefSource(
+         prepared.structRef as never,
+         prepared.modelDef as never,
+      ) as { dialect?: unknown } | undefined;
+      const named = struct?.dialect;
+      return typeof named === "string" ? named : "";
+   } catch {
+      return "";
+   }
+}
+
+/**
+ * One table's stored-side collation. A `storage=` table is found through the
+ * answer's virtual map, in its DuckLake destination; one it cannot find is
+ * unknown. A colocated table is in its source's own warehouse, built from
+ * the source with its collations: a DuckDB-dialect one is checked by its
+ * definition (or, when the answer names no path, the instance's every
+ * table), a Postgres one by its columns; in any other warehouse it compares
+ * as its source does, which the source side judges.
+ */
+async function storedSide(
+   t: StoredTable,
+   args: {
+      virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
+      authorRunnable: QueryMaterializer;
+   },
+   runtime: ProbeRuntime,
+   sourceDialect: string,
+): Promise<Collation> {
+   if (t.tier === "storage") {
+      const name = [...(args.virtualMap ?? new Map())].find(
+         ([, inner]) =>
+            t.virtualHandle !== undefined && inner.has(t.virtualHandle),
+      )?.[0];
+      // The answer's virtual map names the connection the table is read
+      // through (a destination's alias on the served copy); else its own
+      // destination's name, which a runtime without that alias does not
+      // resolve (unknown).
+      const connectionName = name ?? t.destinationName;
+      if (connectionName === undefined || t.tablePath === undefined) {
+         return "unknown";
+      }
+      return duckdbTableCollation(
+         await runtime.connections.lookupConnection(connectionName),
+         t.tablePath,
+      );
+   }
+   const read = capabilitiesOf(sourceDialect).stringCollation;
+   if (read !== "instance" && read !== "column") return "binary";
+   const connectionName =
+      t.destinationName ?? (await entryConnectionOf(args.authorRunnable));
+   const connection =
+      await runtime.connections.lookupConnection(connectionName);
+   if (t.tablePath === undefined) {
+      return read === "instance" ? duckdbCollation(connection, "") : "binary";
+   }
+   return read === "instance"
+      ? duckdbTableCollation(connection, t.tablePath)
+      : postgresTableCollation(connection, t.tablePath);
+}
+
+/** The connection of the source a compiled query runs on. */
+async function entryConnectionOf(
+   runnable: QueryMaterializer,
+): Promise<string | undefined> {
+   try {
+      const prepared = await readPreparedQuery(runnable);
+      const struct = resolveStructRefSource(
+         prepared.structRef as never,
+         prepared.modelDef as never,
+      ) as { connection?: unknown } | undefined;
+      return typeof struct?.connection === "string"
+         ? struct.connection
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}

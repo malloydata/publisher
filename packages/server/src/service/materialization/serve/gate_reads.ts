@@ -29,6 +29,7 @@ import { malloyIdentifiers } from "../../query_text";
 // The comparison rule beside the column rules, read by the router through
 // this module.
 export {
+   storedTableCollationRefusal,
    storedTypeIsString,
    stringGateCollationRefusal,
 } from "./gate_collation";

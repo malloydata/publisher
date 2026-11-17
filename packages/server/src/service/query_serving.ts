@@ -33,6 +33,7 @@ import {
    type GateReads,
    gateColumnTypesOf,
    gateReadsOfQuery,
+   storedTableCollationRefusal,
    storedTypeIsString,
    stringGateCollationRefusal,
 } from "./materialization/serve/gate_reads";
@@ -149,6 +150,7 @@ export function variantsOf(
             );
             if (
                (await storedComparisonRefusal(
+                  answer,
                   tables,
                   facts.authorRunnable,
                   gateReadsOnce,
@@ -276,6 +278,7 @@ async function assertRowScopeExact(
    }
    if (
       (await storedComparisonRefusal(
+         answer,
          judged,
          authorRunnable,
          gateReadsOnce,
@@ -304,22 +307,38 @@ const ZONED_STORED_TYPE = /\b(TIMESTAMP\s+WITH\s+TIME\s+ZONE|TIMESTAMPTZ)\b/i;
  * A database table is compared by its own warehouse and is not judged here.
  */
 async function storedComparisonRefusal(
+   answer: LegAnswer,
    tables: readonly TableRead[],
    authorRunnable: QueryMaterializer,
    gateReadsOnce: () => Promise<GateReads | undefined>,
    givens: Record<string, unknown> | undefined,
 ): Promise<string | undefined> {
    const stored = tables.filter((t) => t.tier === "storage");
-   if (stored.length === 0) return undefined;
    const types = stored.flatMap((t) => t.gateColumnTypes ?? []);
    if (types.some((type) => ZONED_STORED_TYPE.test(type))) {
       return "a gate column stored with a zone";
    }
-   return stringGateCollationRefusal({
+   const reads = await gateReadsOnce();
+   if (stored.length > 0) {
+      const source = await stringGateCollationRefusal({
+         authorRunnable,
+         reads,
+         stringStored: types.some(storedTypeIsString),
+         ...(givens ? { givens } : {}),
+      });
+      if (source !== undefined) return source;
+   }
+   // The stored side: every table read, however it was admitted.
+   return storedTableCollationRefusal({
+      tables: tables as readonly (TableRead & {
+         virtualHandle?: string;
+         tablePath?: string;
+         destinationName?: string;
+      })[],
+      answerRunnable: answer.runnable,
+      virtualMap: answer.virtualMap,
       authorRunnable,
-      reads: await gateReadsOnce(),
-      stringStored: types.some(storedTypeIsString),
-      ...(givens ? { givens } : {}),
+      reads,
    });
 }
 

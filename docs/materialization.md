@@ -236,6 +236,11 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
     Databricks whose gate or scope compares a string column answers live. A gate column stored
     as `TIMESTAMP WITH TIME ZONE` answers live too: the destination compares it in its own
     session's zone.
+  - The stored side is read too, on every table read past a gate: a `storage=` table whose
+    definition names a `COLLATE` (a column altered after its build) or whose destination sets a
+    `default_collation` answers live, as does a colocated DuckDB table altered the same way or a
+    colocated Postgres table with a nondeterministic column. A `storage=` table the destination's
+    catalog does not list answers live.
 
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to

@@ -290,3 +290,104 @@ for (const gatedSources of [false, true]) {
       }
    });
 }
+
+/**
+ * The stored side: a `storage=` table's gate column made case-insensitive
+ * after the build (`ALTER … SET DATA TYPE VARCHAR COLLATE NOCASE` in the
+ * destination), or a destination instance with a `default_collation`,
+ * compares other rows than the byte-exact source. Read past its own gate
+ * (G3), such a table answers live; untouched, it is served.
+ */
+const STORED_MODEL = `##! experimental { givens persistence access_modifiers }
+given: REGION :: string
+
+#(access_filter) region = $REGION
+#(materialize) name="dest_altered" storage="${LAKE}"
+source: dest_altered is ${BIN} extend { primary_key: id }
+
+#(access_filter) region = $REGION
+#(materialize) name="dest_kept" storage="${LAKE}"
+source: dest_kept is ${BIN} extend { primary_key: id }
+`;
+
+for (const gatedSources of [false, true]) {
+   describe(`a stored table whose gate column the destination compares case-insensitively answers live (gated sources ${gatedSources ? "on" : "off"})`, () => {
+      let restore: () => void;
+      let loader: Awaited<ReturnType<typeof loadFixture>>;
+      let fixture: LoadedFixture;
+      const query = (s: string) =>
+         `run: ${s} -> { group_by: region; aggregate: n is count(); order_by: region }`;
+      const callers = [
+         { REGION: "east" },
+         { REGION: "EAST" },
+         { REGION: "West" },
+      ];
+      const live = new Map<string, Outcome>();
+
+      beforeAll(async () => {
+         restore = installSettings({
+            env: {
+               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+            },
+         }).restore;
+         await freshLoadPool();
+         loader = await loadFixture({ "m.malloy": STORED_MODEL });
+         for (const s of ["dest_altered", "dest_kept"]) {
+            for (const [i, g] of callers.entries()) {
+               live.set(`${s}${i}`, await loader.run("m.malloy", query(s), g));
+            }
+         }
+         fixture = await loader.bind();
+         for (const entry of Object.values(fixture.stored)) {
+            if (entry.sourceName !== "dest_altered") continue;
+            const table = `"${String(entry.physicalTableName).replace(/"/g, '""')}"`;
+            await loader.lake.runSQL(
+               `ALTER TABLE ${table} ALTER COLUMN region SET DATA TYPE VARCHAR COLLATE NOCASE`,
+            );
+         }
+         await fixture.rebind();
+      }, 900_000);
+
+      afterAll(async () => {
+         await fixture?.dispose();
+         await loader?.dispose().catch(() => {});
+         restore?.();
+         await freshLoadPool();
+      });
+
+      it("answers every caller of the altered table as live does, from live", async () => {
+         for (const [i, g] of callers.entries()) {
+            const got = await fixture.run("m.malloy", query("dest_altered"), g);
+            expect(
+               difference(live.get(`dest_altered${i}`)!, got),
+            ).toBeUndefined();
+            expect("answer" in got && got.answer.servedBy).toBe("live");
+         }
+      });
+
+      it("still serves the untouched table from the copy", async () => {
+         for (const [i, g] of callers.entries()) {
+            const got = await fixture.run("m.malloy", query("dest_kept"), g);
+            expect(difference(live.get(`dest_kept${i}`)!, got)).toBeUndefined();
+            expect("answer" in got && got.answer.via).toBe("served_copy");
+         }
+      });
+
+      it("answers live under a destination default_collation", async () => {
+         await loader.lake.runSQL("SET default_collation = 'nocase'");
+         try {
+            for (const [i, g] of callers.entries()) {
+               const got = await fixture.run("m.malloy", query("dest_kept"), g);
+               expect(
+                  difference(live.get(`dest_kept${i}`)!, got),
+               ).toBeUndefined();
+               expect("answer" in got && got.answer.servedBy).toBe("live");
+            }
+         } finally {
+            await loader.lake.runSQL("SET default_collation = ''");
+         }
+      });
+   });
+}

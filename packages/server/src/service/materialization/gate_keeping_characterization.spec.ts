@@ -30,6 +30,7 @@
  * tier, under an entry-point veto.
  */
 
+import { binaryCollationRuntime } from "../../test_helpers/binary_collation_runtime";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -741,6 +742,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tier: "colocated" | "storage";
       sourceName: string;
       tablePath: string;
+      destinationName: string;
       schema: { name: string; type: string }[];
       ownGateKept?: boolean;
    } => ({
@@ -748,6 +750,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tier,
       sourceName: `t_${tier}`,
       tablePath: `t_${tier}`,
+      destinationName: "lake",
       schema: [{ name: "id", type: "BIGINT" }],
    });
    const reads: Record<string, ReturnType<typeof table>[]> = {
@@ -765,7 +768,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       ],
       "no table": [],
    };
-   const runnable = {} as never;
+   const runnable = { runtime: binaryCollationRuntime() } as never;
    // The author's compile the router lists the gate's columns from: a source
    // whose stored columns the gate reads none of, so every table's gate
    // columns are exact and the rows below are the policy's by tier alone.
