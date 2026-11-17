@@ -57,13 +57,8 @@ const seedSql = [
     ) AS t(flight_id, size, base)`,
 ];
 
-/**
- * The query sources, stored or not, by placement. The computed-dimension
- * gate is a model of its own: with all four gated sources in one model, live
- * itself denies `flights` (a row-level graft that does not land), which is
- * not what these specs pin.
- */
-function model(storage: boolean, computed = false): string {
+/** The query sources, stored or not, by placement. */
+function model(storage: boolean): string {
    const S = storage ? ` storage="${DESTINATION}"` : "";
    // In a destination the query source is read from its own table there;
    // on the database tier, live from its warehouse.
@@ -110,17 +105,13 @@ ${stored}source: by_crew_base is duckdb.sql("SELECT id, carrier FROM flights_raw
   measure: flight_count is count()
 }
 
-${
-   computed
-      ? `// A gate over a computed dimension: never answered from the rollup.
+// A gate over a computed dimension: never answered from the rollup.
 #(access_filter) lower_carrier = $CARRIER
 ${stored}source: computed_flights is duckdb.sql("SELECT id, carrier, distance FROM flights_raw") extend {
   primary_key: id
   join_many: segments on segments.flight_id = id
   dimension: lower_carrier is lower(carrier)
   measure: flight_count is count()
-}`
-      : ""
 }
 `;
 }
@@ -137,8 +128,6 @@ interface Case {
    malloy: string;
    /** Answered from the rollup (default), or live. */
    rollup: boolean;
-   /** Run against the computed-dimension model. */
-   computed?: true;
    callers: Givens[];
 }
 
@@ -192,7 +181,6 @@ const CASES: Case[] = [
       malloy:
          "run: computed_flights -> { group_by: carrier; aggregate: segments.seg_miles }",
       rollup: false,
-      computed: true,
       callers: [{ CARRIER: "aa" }, { CARRIER: "bb" }],
    },
 ];
@@ -208,50 +196,55 @@ for (const storage of [false, true]) {
    describe(`g-mixed for rollups (${tier}): a gated query source reads an ungated joined source's rollup`, () => {
       let restore: () => void;
       let fixture: R4Fixture;
-      let main: R4Fixture;
-      let computed: R4Fixture;
 
-      /** Live, then served; a denial is compared as its message. */
+      /**
+       * One query live (no bindings, so no stored table), then served (every
+       * binding): each run on its own, so a denial is reported on the leg
+       * that gave it.
+       */
       const both = async (malloy: string, givens: Givens) => {
-         try {
-            const run = await fixture.run({ name: malloy, malloy, givens });
-            return { run };
-         } catch (error) {
-            const live = error instanceof Error ? error.message : String(error);
-            let served: string;
+         const attempt = async (served: boolean) => {
+            fixture.setBindings(served ? fixture.bindings : []);
             try {
-               fixture.setBindings(fixture.bindings);
-               await fixture.runAsIs(malloy, givens);
-               served = "answered";
-            } catch (e) {
-               served = e instanceof Error ? e.message : String(e);
+               return { answer: await fixture.runAsIs(malloy, givens) };
+            } catch (error) {
+               return {
+                  error: error instanceof Error ? error.message : String(error),
+               };
             }
-            return { live, served };
+         };
+         const live = await attempt(false);
+         const served = await attempt(true);
+         if ("error" in live || "error" in served) {
+            return {
+               live: "error" in live ? live.error : "answered",
+               served: "error" in served ? served.error : "answered",
+            };
          }
+         return {
+            run: {
+               live: live.answer.rows,
+               served: served.answer.rows,
+               servedBy: served.answer.path?.servedBy,
+            },
+         };
       };
 
       beforeAll(async () => {
          restore = installSettings({ env: G3_ONLY }).restore;
-         const build = async (withComputed: boolean) => {
-            const built = await buildScenario({
-               files: { "m.malloy": model(storage, withComputed) },
-               seedSql,
-               preaggregate: true,
-               rollupKeyChecks: true,
-               ...(storage ? { materialize: true } : {}),
-            });
-            // As the bind marks them: a query source's `#(materialize)`
-            // table under its own row-level gate is admitted past it (G3),
-            // and a rollup over an ungated base holds only ungated rows.
-            for (const b of built.bindings) {
-               if (b.kind === "rollup") b.holdsOnlyUngatedRows = true;
-               else if (b.tier === "storage") b.ownGateKept = true;
-            }
-            return built;
-         };
-         main = await build(false);
-         computed = await build(true);
-         fixture = main;
+         fixture = await buildScenario({
+            files: { "m.malloy": model(storage) },
+            seedSql,
+            preaggregate: true,
+            rollupKeyChecks: true,
+            ...(storage ? { materialize: true } : {}),
+         });
+         // As the bind marks it: a query source's `#(materialize)` table
+         // under its own row-level gate is admitted past it (G3).
+         for (const b of fixture.bindings) {
+            if (b.kind !== "rollup" && b.tier === "storage")
+               b.ownGateKept = true;
+         }
       }, 240_000);
       afterAll(async () => {
          restore();
@@ -260,11 +253,12 @@ for (const storage of [false, true]) {
 
       for (const kase of CASES) {
          it(`${kase.name}: every caller gets live's answer${kase.rollup && !storage ? ", from the rollup" : ", live"}`, async () => {
-            fixture = kase.computed ? computed : main;
             for (const givens of [...kase.callers, ...kase.callers]) {
                const out = await both(kase.malloy, givens);
                // Every caller here is admitted: a denial is a defect.
-               if (!("run" in out)) throw new Error(out.live);
+               if (!("run" in out)) {
+                  throw new Error(`live: ${out.live}; served: ${out.served}`);
+               }
                const { run } = out;
                expect(rowDifference(run.live, run.served)).toBeUndefined();
                const fromRollup = kase.rollup && !storage;
@@ -280,7 +274,6 @@ for (const storage of [false, true]) {
       }
 
       it("denies a caller with no givens, and one a lock refuses, exactly as live", async () => {
-         fixture = main;
          for (const [malloy, givens] of [
             ["run: flights -> { aggregate: segments.seg_miles }", NOBODY],
             ["run: locked_flights -> { aggregate: segments.seg_miles }", BB],
@@ -292,12 +285,13 @@ for (const storage of [false, true]) {
       });
 
       it("a caller's all() over the joined measure is the caller's total, never the global one", async () => {
-         fixture = main;
          const malloy =
             "run: flights -> { group_by: carrier; aggregate: segments.seg_miles, t is all(segments.seg_miles) }";
          for (const givens of [AA, BB]) {
             const out = await both(malloy, givens);
-            if (!("run" in out)) throw new Error(out.live);
+            if (!("run" in out)) {
+               throw new Error(`live: ${out.live}; served: ${out.served}`);
+            }
             expect(rowDifference(out.run.live, out.run.served)).toBeUndefined();
          }
          const aa = await both(malloy, AA);
@@ -307,12 +301,13 @@ for (const storage of [false, true]) {
       });
 
       it("each answer holds only the caller's parents", async () => {
-         fixture = main;
          const out = await both(
             "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }",
             BB,
          );
-         if (!("run" in out)) throw new Error(out.live);
+         if (!("run" in out)) {
+            throw new Error(`live: ${out.live}; served: ${out.served}`);
+         }
          expect(out.run.servedBy?.kind === "rollup").toBe(!storage);
          expect(out.run.served.map((r) => r.carrier)).toEqual(["BB"]);
       });

@@ -17,6 +17,7 @@ import { identifier, stringLiteral } from "../../malloy_text";
 import type { Binding } from "../domain/binding";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias } from "./served_copy_config";
+import { canonicalStoredSchema } from "../stored_column_types";
 
 /** How a stored column is read: through a faithful cast, or a big integer's native type. */
 export type ColumnCast =
@@ -54,6 +55,13 @@ export function storedTypedSource(args: {
    stored: string;
 }): { typeText: string; timeframes: string } {
    const { columns, casts, binding, typeName, stored } = args;
+   // Each stored column under the name the result declares where it matches
+   // only by a unique case fold (a warehouse that folded the build's quoted
+   // aliases, P3-06..09): DuckDB reads it under either spelling.
+   const schema = canonicalStoredSchema(
+      binding.schema,
+      columns.map((c) => c.name),
+   );
    const columnNotes = new Map(
       columns.map((c) => [
          c.name,
@@ -65,7 +73,7 @@ export function storedTypedSource(args: {
    const zoned = new Set(
       columns.filter((c) => c.timestamptz).map((c) => c.name),
    );
-   const typed = binding.schema.map((c) => {
+   const typed = schema.map((c) => {
       const notes = columnNotes.get(c.name);
       return {
          name: c.name,
@@ -82,7 +90,7 @@ export function storedTypedSource(args: {
          const notes = c.kind === "measure" ? [] : c.notes;
          return { ...c, notes, ...cast };
       }),
-      binding.schema.map((c) => c.name),
+      schema.map((c) => c.name),
    );
    // malloy-text: the type emitter and names through identifier
    const typeText = `${typeDeclaration({ typeName, columns: typed })}

@@ -226,6 +226,41 @@ export interface TableRead {
     * closed.
     */
    readonly holdsOnlyUngatedRows?: boolean;
+   /**
+    * The stored types of the table's columns that the entry point's row-level
+    * gates read, and every column those are computed from
+    * (`serve/gate_reads.ts`). Absent when they could not be listed: a
+    * `storage=` table then keeps no gate. A database table is built by the
+    * source's own warehouse in the source's own types, so its columns compare
+    * as live's do; absent there reads as exact.
+    */
+   readonly gateColumnTypes?: readonly string[];
+}
+
+/**
+ * Stored types under which a gate's equality is not live's: a binary float
+ * (an exact `numeric` or `bigint` stored as one rounds past 2^53, so two
+ * tenants' ids compare equal), and a 128-bit integer, which a DuckLake
+ * destination keeps at rest as a float. Matched anywhere in the type, so a
+ * record or list holding one counts too.
+ */
+const INEXACT_GATE_TYPE =
+   /\b(DOUBLE|FLOAT[0-9]*|REAL|HUGEINT|UHUGEINT|U?INT128)\b/i;
+
+/** Whether a gate compares a column stored as `type` as live compares it. */
+export function gateColumnTypeExact(type: string): boolean {
+   return !INEXACT_GATE_TYPE.test(type);
+}
+
+/**
+ * Whether every column the entry point's gates read is stored exactly for
+ * its type, so the gate admits on the stored table exactly the rows it
+ * admits live. Fail closed: a `storage=` table whose gate columns could not
+ * be listed is not.
+ */
+function gateColumnsExact(t: TableRead): boolean {
+   if (t.gateColumnTypes === undefined) return t.tier === "colocated";
+   return t.gateColumnTypes.every(gateColumnTypeExact);
 }
 
 /**
@@ -268,10 +303,12 @@ export function legMayPassGate(
 
 /**
  * Whether an answer a leg produced past an entry-point gate keeps the gates,
- * given the tables it read: always under the gated-sources switch; under G3
- * alone, only when it read at least one table and every one is a G3 table:
- * for the served copy, colocated, `storage=` admitted past its own gate, or
- * `storage=` holding only ungated rows; for the rollup leg, colocated (a
+ * given the tables it read. Never when a column the gates read is stored
+ * inexactly ({@link gateColumnsExact}), under any switch. Otherwise always
+ * under the gated-sources switch; under G3 alone, only when it read at least
+ * one table and every one is a G3 table: for the served copy, colocated,
+ * `storage=` admitted past its own gate, or `storage=` holding only ungated
+ * rows; for the rollup leg, colocated (a
  * `storage=` rollup awaits its review).
  */
 export function answerKeepsGates(
@@ -281,6 +318,7 @@ export function answerKeepsGates(
    ctx: LegGateContext,
 ): boolean {
    if (!legMayPassGate(leg, s, ctx)) return false;
+   if (!tablesRead.every(gateColumnsExact)) return false;
    if (s.gatedSources) return true;
    if (!ctx.colocatedReadsKeepGates || tablesRead.length === 0) return false;
    if (leg === "served") return tablesRead.every(g3Table);

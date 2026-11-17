@@ -3,7 +3,10 @@
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { BuildRunFailedError } from "./build_failure_class";
+import {
+   BuildRunFailedError,
+   failedRunManifestOf,
+} from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
@@ -2286,6 +2289,151 @@ describe("executeInstructedBuild", () => {
             ),
          ).rejects.toThrow(MaterializationEligibilityError);
          expect(runSQL.called).toBe(false);
+      });
+   });
+
+   // F-17: a run that built nothing settles FAILED with a manifest whose
+   // `failures` names each source's own reason, so a host attributes the
+   // failure per source rather than copying the run's error onto each.
+   describe("F-17: a run that built nothing carries each source's own failure", () => {
+      const row = (id: string, table: string): BuildInstruction => ({
+         sourceEntityId: id,
+         materializedTableId: `mt-${table}`,
+         physicalTableName: table,
+         realization: "COPY",
+      });
+
+      async function rejection(
+         compiled: unknown,
+         instructions: BuildInstruction[],
+      ): Promise<unknown> {
+         return callExecute(
+            compiled,
+            instructions,
+            {},
+            undefined,
+            false,
+            true,
+         ).then(
+            () => {
+               throw new Error("the run built something");
+            },
+            (err: unknown) => err,
+         );
+      }
+
+      it("P5-03: every instructed build fails: each source keeps its own reason and retryable, and no entry", async () => {
+         const runSQL = sinon.stub().callsFake(async (sql: string) => {
+            if (String(sql).includes("a_v1")) {
+               throw new Error('Parser Error: syntax error at or near "FORM"');
+            }
+            throw new Error("connect ECONNREFUSED 10.0.0.1:5432");
+         });
+         const a = fakeSource({
+            name: "a",
+            sourceEntityId: "baaaaaaaaaaaaaaa",
+         });
+         const b = fakeSource({
+            name: "b",
+            sourceEntityId: "bbbbbbbbbbbbbbbb",
+         });
+         const err = await rejection(
+            compiledWith(
+               { a, b },
+               [["a"], ["b"]],
+               new Map([["duckdb", { runSQL } as unknown as MalloyConnection]]),
+            ),
+            [row("baaaaaaaaaaaaaaa", "a_v1"), row("bbbbbbbbbbbbbbbb", "b_v1")],
+         );
+         // The whole run's answer stays as it was.
+         expect(err).toBeInstanceOf(BuildRunFailedError);
+         expect((err as BuildRunFailedError).retryable).toBe(true);
+         const failed = failedRunManifestOf(err);
+         expect(Object.keys(failed?.failures ?? {}).sort()).toEqual([
+            "baaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbb",
+         ]);
+         expect(failed?.failures["baaaaaaaaaaaaaaa"]).toMatchObject({
+            sourceName: "a",
+            materializedTableId: "mt-a_v1",
+            retryable: false,
+         });
+         expect(failed?.failures["baaaaaaaaaaaaaaa"].reason).toContain("FORM");
+         expect(failed?.failures["bbbbbbbbbbbbbbbb"]).toMatchObject({
+            sourceName: "b",
+            materializedTableId: "mt-b_v1",
+            retryable: true,
+         });
+         expect(failed?.failures["bbbbbbbbbbbbbbbb"].reason).toContain(
+            "ECONNREFUSED",
+         );
+         // A manifest of failures alone: the failed run names no table.
+         expect(failed).not.toHaveProperty("entries");
+      });
+
+      it("P6-07: every instructed source is refused by its own gate: each refusal is its own failure", async () => {
+         const runSQL = sinon.stub().resolves();
+         const gated = (name: string, sourceEntityId: string) =>
+            fakeSource({
+               name,
+               sourceEntityId,
+               sourceDef: { blockNotes: ["#(authorize) true"] },
+            });
+         const one = gated("one", "b1111111111111111");
+         const two = gated("two", "b2222222222222222");
+         const err = await rejection(
+            compiledWith(
+               { one, two },
+               [["one"], ["two"]],
+               new Map([["duckdb", { runSQL } as unknown as MalloyConnection]]),
+            ),
+            [
+               row("b1111111111111111", "one_v1"),
+               row("b2222222222222222", "two_v1"),
+            ],
+         );
+         expect(err).toBeInstanceOf(MaterializationEligibilityError);
+         expect(runSQL.called).toBe(false);
+         const failures = failedRunManifestOf(err)?.failures ?? {};
+         expect(Object.keys(failures).sort()).toEqual([
+            "b1111111111111111",
+            "b2222222222222222",
+         ]);
+         for (const [id, name] of [
+            ["b1111111111111111", "one"],
+            ["b2222222222222222", "two"],
+         ]) {
+            expect(failures[id]).toMatchObject({
+               sourceName: name,
+               refused: true,
+               retryable: false,
+            });
+         }
+      });
+
+      it("a run that built something carries no failed-run manifest", async () => {
+         const runSQL = sinon.stub().callsFake(async (sql: string) => {
+            if (String(sql).includes("b_v1")) throw new Error("boom");
+         });
+         const a = fakeSource({
+            name: "a",
+            sourceEntityId: "baaaaaaaaaaaaaaa",
+         });
+         const b = fakeSource({
+            name: "b",
+            sourceEntityId: "bbbbbbbbbbbbbbbb",
+         });
+         const result = await callExecute(
+            compiledWith(
+               { a, b },
+               [["a"], ["b"]],
+               new Map([["duckdb", { runSQL } as unknown as MalloyConnection]]),
+            ),
+            [row("baaaaaaaaaaaaaaa", "a_v1"), row("bbbbbbbbbbbbbbbb", "b_v1")],
+            {},
+         );
+         expect(Object.keys(result.failures)).toEqual(["bbbbbbbbbbbbbbbb"]);
+         expect(failedRunManifestOf(result)).toBeUndefined();
       });
    });
 });

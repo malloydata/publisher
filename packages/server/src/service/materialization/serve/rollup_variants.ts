@@ -139,6 +139,7 @@ import {
    type QueryLevelFacts,
 } from "../../governance/ir/prepared_query";
 import { packageFiles } from "../text/package_files";
+import { fieldPathsIn, gateIdentifiers } from "./gate_reads";
 import {
    emitMeasureExpr,
    generateRollupBuildFile,
@@ -176,12 +177,13 @@ import { fieldNotes, noteSource } from "../text/field_notes";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import {
+   canonicalStoredSchema,
    storedColumnReadPlan,
    storedTypeServesAs,
 } from "../stored_column_types";
 import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
-import { type Binding, type Pinned } from "../domain/binding";
+import { type Binding, type Pinned, storageLookupOf } from "../domain/binding";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
 import { isDeclineOf, LegDecline } from "../domain/leg_decline";
 import type { MaterializedTableCatalog } from "./query_path";
@@ -734,15 +736,10 @@ export class RollupVariantServe {
       // query source the served copy reads from that destination too; Malloy
       // joins only within one connection.
       // The destination is the rollup's table's, when it has a fresh one.
+      const stored = this.storedIn(plan, q.args.pinned);
       const inDestination =
-         plan.storage !== undefined
-            ? await this.destinationOf(
-                 this.tableOf(plan, q.args.pinned)?.binding?.destinationName ??
-                    plan.storage,
-                 q.struct,
-                 name,
-                 q.args.pinned,
-              )
+         stored !== undefined
+            ? await this.destinationOf(stored, q.struct, name, q.args.pinned)
             : undefined;
       // The build truncated and filtered times in the joined source's time
       // zone; live reads the joined rows in the query source's.
@@ -941,7 +938,7 @@ export class RollupVariantServe {
          branch,
          read,
          primaryKeyOf(childDef),
-         plan.storage !== undefined
+         this.storedIn(plan, q.args.pinned) !== undefined
             ? verdictOf(
                  this.tableOf(plan, q.args.pinned)?.binding?.primaryKeys?.[
                     plan.baseSourceID
@@ -1304,7 +1301,12 @@ export class RollupVariantServe {
       const missing = coverageDecline(shape, measures);
       if (missing) throw missing;
       if (query.zoned) {
-         const zone = zoneDecline(plan, query.struct, query.zoned.usage);
+         const zone = zoneDecline(
+            plan,
+            query.struct,
+            query.zoned.usage,
+            query.gates,
+         );
          if (zone) throw zone;
       }
       // A rollup's re-applied `where:` is written on its base's own variant,
@@ -1551,6 +1553,29 @@ export class RollupVariantServe {
          : new LegDecline("rollup_not_built", "the rollup has no fresh table");
    }
 
+   /**
+    * The storage destination the rollup's table is in, or undefined when it
+    * is colocated: its binding's, else the annotation's (storageLookupOf).
+    */
+   private storedIn(
+      plan: RollupVariantPlan,
+      pinned: Pinned,
+   ): string | undefined {
+      const lookup = storageLookupOf(
+         pinned,
+         rollupSourceID(plan),
+         "rollup",
+         plan.storage !== undefined,
+      );
+      if (!lookup) return undefined;
+      return (
+         this.tableOf(plan, pinned)?.binding?.destinationName ??
+         (lookup.state !== "not_built"
+            ? lookup.binding.destinationName
+            : plan.storage)
+      );
+   }
+
    /** The rollup's table at the pin: a fresh storage binding, or a planned colocated one. */
    private tableOf(
       plan: RollupVariantPlan,
@@ -1564,12 +1589,15 @@ export class RollupVariantServe {
         }
       | undefined {
       const sourceID = rollupSourceID(plan);
-      if (plan.storage !== undefined) {
-         // Keyed by the rollup's own `sourceID`, never by its name.
-         const lookup =
-            sourceID === undefined
-               ? undefined
-               : pinned.tableFor(sourceID, "rollup");
+      // Keyed by the rollup's own `sourceID`, never by its name; the
+      // binding decides the tier (storageLookupOf).
+      const lookup = storageLookupOf(
+         pinned,
+         sourceID,
+         "rollup",
+         plan.storage !== undefined,
+      );
+      if (lookup) {
          const binding =
             lookup?.state === "fresh" || lookup?.state === "stale_ok"
                ? lookup.binding
@@ -2431,7 +2459,15 @@ function storedRollupReads(
    const fields = new Map(
       (base?.fields ?? []).map((f) => [String(f.as ?? f.name), f]),
    );
-   const stored = new Map(binding.schema.map((c) => [c.name, c]));
+   // Matched as the served copy matches, by a unique case fold too: a
+   // warehouse that folded the build's quoted aliases (P3-06..09).
+   const grain = grainColumns(plan, modelDef);
+   const stored = new Map(
+      canonicalStoredSchema(binding.schema, [
+         ...grain.map((g) => g.name),
+         ...plan.rollupMeasures.flatMap((m) => m.partials.map((p) => p.column)),
+      ]).map((c) => [c.name, c]),
+   );
    const columns: StoredRollupReads["columns"] = [];
    const casts = new Map<string, ColumnCast>();
    const read = (
@@ -2446,7 +2482,12 @@ function storedRollupReads(
          const plan = storedColumnReadPlan(
             [storedColumn],
             [{ name: column.name, type: liveType, field }],
-            { dialect: base?.dialect, queryTimezone: queryTimezoneOf(base) },
+            {
+               dialect: base?.dialect,
+               queryTimezone: queryTimezoneOf(base),
+               // A storage destination is DuckLake.
+               ducklake: true,
+            },
          );
          // A column whose stored type drifted from live's, with no faithful
          // cast to read it back: never read as its stored type.
@@ -2479,7 +2520,7 @@ function storedRollupReads(
       columns.push(column);
       return undefined;
    };
-   for (const g of grainColumns(plan, modelDef)) {
+   for (const g of grain) {
       const refusal = read(
          { ...g, kind: "dimension" },
          g.name,
@@ -3223,38 +3264,23 @@ function zonedQueryDecline(): LegDecline {
 /** The temporal types, the only ones a query's `timezone:` reads differently. */
 const ZONED_TYPES = new Set(["date", "timestamp", "timestamptz"]);
 
-/** Every field path an expression reads (`node: "field"`), at any depth. */
-function fieldPathsIn(e: unknown, out: string[][] = [], depth = 0): string[][] {
-   if (depth > 64 || e === null || typeof e !== "object") return out;
-   if (Array.isArray(e)) {
-      for (const x of e) fieldPathsIn(x, out, depth + 1);
-      return out;
-   }
-   const n = e as { node?: unknown; path?: unknown };
-   if (
-      n.node === "field" &&
-      Array.isArray(n.path) &&
-      n.path.every((p) => typeof p === "string")
-   ) {
-      out.push(n.path as string[]);
-   }
-   for (const v of Object.values(e)) fieldPathsIn(v, out, depth + 1);
-   return out;
-}
-
 /**
  * Why a query that sets its own `timezone:` is not read from `plan`, or
  * undefined (A5). The build truncated and compared times in the model's
  * zone, so the rollup answers a zoned query only when nothing it reads
  * depends on a zone: no field path the query reads (expanded through its
- * dimensions and measures), no stored partial and no `where:` of the base
- * reads a temporal field, directly or through a computed dimension, nor
- * anything through a join. Fails closed on usage that could not be read.
+ * dimensions and measures), no stored partial, no `where:` of the base and no
+ * field the entry point's gates read reads a temporal field, directly or
+ * through a computed dimension, nor anything through a join. The gates are
+ * grafted on the variant after this check, in the query's zone, so a gate
+ * over a stored day truncated in the model's zone would admit another day's
+ * groups. Fails closed on usage that could not be read.
  */
 function zoneDecline(
    plan: RollupVariantPlan,
    struct: object,
    usage: readonly (readonly string[])[] | undefined,
+   gates: EnforcedGates | undefined,
 ): LegDecline | undefined {
    if (usage === undefined) return zonedQueryDecline();
    const def = struct as { fields?: unknown[]; filterList?: unknown[] };
@@ -3283,7 +3309,10 @@ function zoneDecline(
       m.partials.flatMap((p) => [p.leaf.joinPath, ...p.leaf.reads]),
    );
    const where = fieldPathsIn(def.filterList);
-   return [...usage, ...where].some(readsTime) ||
+   const gated = gateIdentifiers(
+      gates ? [...gates.authorize, ...gates.accessFilter] : [],
+   ).map((id) => [id]);
+   return [...usage, ...where, ...gated].some(readsTime) ||
       stored.some((p) => p.length > 0 && readsTime(p))
       ? zonedQueryDecline()
       : undefined;

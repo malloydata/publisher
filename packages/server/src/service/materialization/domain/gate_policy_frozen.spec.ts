@@ -64,7 +64,7 @@ const SWITCH_KEYS: Exactly<keyof GateSwitches, keyof typeof GATE_SWITCH_KEYS> =
 // below enumerate it.
 const READ_FIELDS: Exactly<
    keyof TableRead,
-   "tier" | "ownGateKept" | "holdsOnlyUngatedRows"
+   "tier" | "ownGateKept" | "holdsOnlyUngatedRows" | "gateColumnTypes"
 > = true;
 void [
    TABLE_FIELDS,
@@ -139,37 +139,66 @@ function tableRows(): string[] {
 /** Every leg, switch setting and tables read the router lets past a gate. */
 function legRows(): string[] {
    const out: string[] = [];
+   // A `storage=` read carries the stored types of its gate columns, as the
+   // router lists them; exact unless the row's name says otherwise.
+   const exact = { gateColumnTypes: ["BIGINT", "VARCHAR"] };
    const reads = {
       none: [],
       colocated: [{ tier: "colocated" as const }],
-      storage: [{ tier: "storage" as const }],
-      mixed: [{ tier: "colocated" as const }, { tier: "storage" as const }],
+      storage: [{ tier: "storage" as const, ...exact }],
+      mixed: [
+         { tier: "colocated" as const },
+         { tier: "storage" as const, ...exact },
+      ],
       // A `storage=` table plan admitted past its own gate (G3), alone,
       // beside a colocated one, and beside one it did not admit.
-      own: [{ tier: "storage" as const, ownGateKept: true }],
+      own: [{ tier: "storage" as const, ownGateKept: true, ...exact }],
       own_colocated: [
          { tier: "colocated" as const },
-         { tier: "storage" as const, ownGateKept: true },
+         { tier: "storage" as const, ownGateKept: true, ...exact },
       ],
       own_storage: [
-         { tier: "storage" as const, ownGateKept: true },
-         { tier: "storage" as const },
+         { tier: "storage" as const, ownGateKept: true, ...exact },
+         { tier: "storage" as const, ...exact },
+      ],
+      // Question 14 (L2): a gate column stored as a float or a 128-bit
+      // integer, or one whose type was not listed, keeps no answer under any
+      // switch, on either tier.
+      own_inexact: [
+         {
+            tier: "storage" as const,
+            ownGateKept: true,
+            gateColumnTypes: ["DOUBLE"],
+         },
+      ],
+      own_hugeint: [
+         {
+            tier: "storage" as const,
+            ownGateKept: true,
+            gateColumnTypes: ["HUGEINT"],
+         },
+      ],
+      own_unlisted: [{ tier: "storage" as const, ownGateKept: true }],
+      colocated_inexact: [
+         { tier: "colocated" as const, gateColumnTypes: ["DOUBLE"] },
       ],
       // A `storage=` table proven to hold only ungated rows (g-mixed),
       // alone, beside a colocated one, beside one admitted past its own
       // gate, and beside one proven neither way.
-      ungated: [{ tier: "storage" as const, holdsOnlyUngatedRows: true }],
+      ungated: [
+         { tier: "storage" as const, holdsOnlyUngatedRows: true, ...exact },
+      ],
       ungated_colocated: [
          { tier: "colocated" as const },
-         { tier: "storage" as const, holdsOnlyUngatedRows: true },
+         { tier: "storage" as const, holdsOnlyUngatedRows: true, ...exact },
       ],
       ungated_own: [
-         { tier: "storage" as const, ownGateKept: true },
-         { tier: "storage" as const, holdsOnlyUngatedRows: true },
+         { tier: "storage" as const, ownGateKept: true, ...exact },
+         { tier: "storage" as const, holdsOnlyUngatedRows: true, ...exact },
       ],
       ungated_storage: [
-         { tier: "storage" as const, holdsOnlyUngatedRows: true },
-         { tier: "storage" as const },
+         { tier: "storage" as const, holdsOnlyUngatedRows: true, ...exact },
+         { tier: "storage" as const, ...exact },
       ],
    };
    for (const leg of LEGS)
@@ -216,6 +245,32 @@ describe("the gate policy, frozen until the security review (plan question 14)",
    it("lets exactly these legs past a gate, and keeps it for exactly these answers", () => {
       if (DUMP) dumpAndFail(`${DUMP}.legs.json`, legRows());
       expectFrozen(legRows(), FROZEN_LEG_ROWS);
+   });
+
+   // F-14 (P4-03): a rollup with no `storage=` that a host instructed into a
+   // destination is read from its storage binding (storageLookupOf), and the
+   // rollup leg reports that binding as the table it read, so the answer is
+   // judged as a `storage=` rollup's: under G3 alone it keeps no gate, and
+   // the gated query is answered live. Not a row of its own: the
+   // binding's tier puts it in the `read=storage` rows above.
+   it("F-14: refuses, under G3, a rollup with no storage= read from a host's storage binding", () => {
+      const hostChosen = { tier: "storage" as const };
+      const g3Only: GateSwitches = {
+         materialize: true,
+         gatedSources: false,
+         gatedStorageRollupsReviewed: false,
+      };
+      expect(
+         answerKeepsGates("rollup", [hostChosen], g3Only, {
+            colocatedReadsKeepGates: true,
+         }),
+      ).toBe(false);
+      // The same rollup read colocated keeps its gates under G3.
+      expect(
+         answerKeepsGates("rollup", [{ tier: "colocated" }], g3Only, {
+            colocatedReadsKeepGates: true,
+         }),
+      ).toBe(true);
    });
 });
 
