@@ -11,6 +11,7 @@ import {
 import {
    bigIntegerReads,
    ducklakeStoresAsDouble,
+   holdsDucklakeDouble,
    storedColumnReadPlan,
    castToDeclaredTypes,
    liveKeepsBigIntegers,
@@ -574,6 +575,13 @@ describe("bigIntegerReads (known limitation 12)", () => {
       for (const t of ["BIGINT", "DECIMAL(38,0)", "UBIGINT", "DOUBLE"]) {
          expect(ducklakeStoresAsDouble(t)).toBe(false);
       }
+   });
+
+   it("P4-01: finds a 128-bit leaf inside a list or struct", () => {
+      expect(holdsDucklakeDouble("STRUCT(a HUGEINT)")).toBe(true);
+      expect(holdsDucklakeDouble("UHUGEINT[]")).toBe(true);
+      expect(holdsDucklakeDouble("STRUCT(hugeint_name BIGINT)")).toBe(false);
+      expect(holdsDucklakeDouble("BIGINT[]")).toBe(false);
    });
 
    it("P4-01: a DuckLake table's 128-bit column is left out whatever its field's type or its dialect", () => {

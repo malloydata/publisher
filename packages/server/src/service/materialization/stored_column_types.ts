@@ -921,6 +921,15 @@ export function ducklakeStoresAsDouble(storedType: string): boolean {
 }
 
 /**
+ * Whether a stored column of this type holds a 128-bit integer anywhere,
+ * a list's element or a struct's field included: each such leaf DuckLake
+ * holds as a DOUBLE too.
+ */
+export function holdsDucklakeDouble(storedType: string): boolean {
+   return /\b(HUGEINT|INT128|UHUGEINT)\b/i.test(storedType);
+}
+
+/**
  * The Malloy basic type a DuckDB column type (as reported by `DESCRIBE`) maps
  * onto, or `undefined` for a type with no faithful mapping: a collection
  * (`array`) or anything unrecognized (nested, struct, enum, blob). Pure; see

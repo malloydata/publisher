@@ -680,6 +680,10 @@ cannot tell which it has. A plain DuckDB table keeps every digit. So:
   `storage-column-type-mismatch`, handled live.
 - A chained build never stacks on a table holding such a column: the downstream recomputes from
   its raw source, so the rounded values are never stored again as exact.
+- A 128-bit integer inside a list or struct is not cast, so DuckLake stores that leaf rounded too.
+  Such a column is left out at serve (a list or struct holding a big integer has no stored
+  declaration, above), and a chained build never stacks on its table, so the rounding is never
+  served; only the stored table holds it.
 - A table built before this change keeps the 128-bit column, answered live, until its next full
   build; nothing forces that rebuild. (An incremental source is always a passthrough read, whose
   columns arrive in the warehouse's own types, so it never stores such a column.)
