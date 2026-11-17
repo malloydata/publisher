@@ -85,7 +85,9 @@ import {
    type PreparedQueryView,
    readPreparedQuery,
    resolveStructRefSource,
+   setsTimezone,
 } from "../../governance/ir/prepared_query";
+import { gateColumnsOf, judgeGateColumns } from "./gate_columns";
 import { joinedDefinitionOf } from "../../governance/ir/source_graph";
 import {
    flatPairQueryVerdict,
@@ -612,7 +614,8 @@ function rerootFailureKey(
  * What a served copy's compile reads of a binding: everything but how fresh
  * the table is (`freshAsOf`, its window and fallback, which decide only
  * whether the pin reads it) and what the router reads of it beside the copy
- * (`ownGateKept`, a rollup's key check). A field added to `Binding` is read
+ * (`ownGateKept`, `holdsOnlyUngatedRows`, a rollup's key check). A field
+ * added to `Binding` is read
  * here until it is listed, so a new input recompiles rather than reuses.
  * Memoized per binding, which is replaced, never edited.
  */
@@ -625,6 +628,7 @@ export function compileInputOf(b: Binding): string {
          freshnessWindowSeconds: _window,
          freshnessFallback: _fallback,
          ownGateKept: _gateKept,
+         holdsOnlyUngatedRows: _ungated,
          rollupKey: _rollupKey,
          ...read
       } = b;
@@ -1047,7 +1051,10 @@ export class ServedCopyServe {
          virtualMap,
          bindings: compiled.rerooted,
          tablesRead,
-         gateTablesRead: tablesReadForGates(sql, compiled.rerooted, tablesRead),
+         gateTablesRead: await this.judgedGateTables(
+            attempt,
+            tablesReadForGates(sql, compiled.rerooted, tablesRead),
+         ),
          graftScope: {
             modelDef: compiled.modelDef as ModelDef,
             materializer: attempt.materializer,
@@ -1086,6 +1093,60 @@ export class ServedCopyServe {
             );
          }
       }
+   }
+
+   /**
+    * The tables the gate judgement reads, each `storage=` G3 table held to
+    * the exactness of the columns the queried source's gates read
+    * (`judgeGateColumns`, question 14 F1 and F2): one that does not hold
+    * them exactly is judged not G3, so the router answers live. Fail closed:
+    * a query source the copy cannot resolve is held to every column.
+    */
+   private async judgedGateTables(
+      attempt: AnswerAttempt,
+      tables: readonly Binding[],
+   ): Promise<Binding[]> {
+      const { compiled, compiling, prepared } = attempt;
+      if (!this.mayHaveRowLevelGates(compiled)) return [...tables];
+      const { structRef, query } = await compiling(prepared);
+      const struct = resolveStructRefSource<{ as?: string; name?: string }>(
+         structRef,
+         compiled.modelDef as never,
+      );
+      // The author's source: the copy's may lack a column it left out.
+      const authorModel = this.host.modelDef() as ModelDef | undefined;
+      const name = struct?.as ?? struct?.name;
+      const authorStruct =
+         name !== undefined ? authorModel?.contents[name] : undefined;
+      const authorFields = new Map(
+         (
+            ((authorStruct as { fields?: unknown[] } | undefined)?.fields ??
+               []) as { name?: unknown; as?: unknown }[]
+         ).map((f) => [String(f.as ?? f.name), f] as const),
+      );
+      const author = SourceMap.of(authorModel);
+      return judgeGateColumns({
+         tables,
+         gateColumns: authorStruct
+            ? gateColumnsOf(authorStruct, authorModel)
+            : "all",
+         zoned: setsTimezone(query),
+         leftOut: (t) =>
+            (t.sourceIDs ?? []).flatMap(
+               (id) => compiled.leftOutColumns?.get(id) ?? [],
+            ),
+         liveField: (t, column) => {
+            for (const id of t.sourceIDs ?? []) {
+               const fields = ((
+                  author.node(id)?.def as { fields?: unknown[] } | undefined
+               )?.fields ?? []) as { name?: unknown; as?: unknown }[];
+               const f = fields.find((x) => String(x.as ?? x.name) === column);
+               if (f) return f;
+            }
+            // The queried source's own column, as the author declares it.
+            return authorFields.get(column);
+         },
+      });
    }
 
    /**

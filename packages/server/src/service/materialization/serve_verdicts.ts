@@ -29,6 +29,7 @@ import type { PlanLifecycle } from "./plan_lifecycle";
 import {
    deriveColocatedServeBindings,
    keptTableAddresses,
+   ungatedTableAddresses,
    v1StoredColumnsOf,
 } from "./serve/bind";
 import {
@@ -304,6 +305,27 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
+      // A `storage=` table that holds only ungated rows (g-mixed), read the
+      // same way: off the bound bindings, or, not bound yet, by the bind's
+      // own rule.
+      const ungatedTables = ungatedTableAddresses(
+         plan.sourceEligibility?.ungated,
+         buildPlan?.sources ?? {},
+      );
+      const holdsOnlyUngatedRows = (sourceID: string): boolean => {
+         const bound = storageBindings.filter((b) =>
+            b.sourceIDs?.includes(sourceID),
+         );
+         if (bound.length > 0) {
+            return bound.every((b) => b.holdsOnlyUngatedRows === true);
+         }
+         return (
+            (plan.sourceEligibility?.ungated ?? []).includes(sourceID) &&
+            ungatedTables.has(
+               buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+            )
+         );
+      };
       const switches = gateSwitches();
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(host.snapshot(), new Date());
@@ -343,6 +365,8 @@ export class ServeVerdicts {
                   {
                      tier,
                      ownGateKept: tier === "storage" && ownGateKept(sourceID),
+                     holdsOnlyUngatedRows:
+                        tier === "storage" && holdsOnlyUngatedRows(sourceID),
                   },
                ],
                switches,

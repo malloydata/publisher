@@ -910,6 +910,19 @@ export function storageKeepsOwnGate(
 }
 
 /**
+ * Whether a source's table holds only ungated rows: no `#(authorize)` or
+ * `#(access_filter)` gate anywhere beneath its compiled definition, its own,
+ * one it inherits or derives from, or one on a source it joins
+ * ({@link referencesAuthorize}'s walk, the one that refuses a gated build).
+ * A walk that fails reads as gated (fail closed). A gated entry point over
+ * such a table is served from it on every tier: its gate is grafted and
+ * proven on the answer, as on a database table (g-mixed).
+ */
+export function holdsOnlyUngatedRows(source: PersistSource): boolean {
+   return !referencesAuthorize(source);
+}
+
+/**
  * The refusal of a source whose row-level gate it inherits (see
  * PersistSourceGateOutcome.inheritedRowFilter): built, the table would hold
  * every caller's rows and answer none of them.
