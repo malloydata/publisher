@@ -1536,6 +1536,14 @@ export class MaterializationService {
               new Date(startedAt),
               built.readFrom,
            );
+      // A host built this version: it owns it from now on, as a bind would
+      // make it (Environment.isHostOwned), so a clear, reload or restart
+      // never binds what this server's store holds for it. Marked before
+      // the commit, so no load or settle in between binds this run's own
+      // tables from the store.
+      if (orchestrated && versionId !== undefined) {
+         await environment.markVersionHostOwned(packageName, versionId);
+      }
       const served = await this.collaborators.commitManifest(
          id,
          committedEntries,
@@ -1632,15 +1640,9 @@ export class MaterializationService {
          mode,
          startedAt,
       } = run;
-      const { versionId, pkg, reader, compiled, environment } = target;
+      const { versionId, pkg, reader, compiled } = target;
       const { carried, renamed } = derived;
       const { served, failures, sourcesFailed, durationMs } = committed;
-      // A host built this version: it owns it from now on, as a bind would
-      // make it (Environment.isHostOwned), so a clear, reload or restart
-      // never binds what this server's store holds for it.
-      if (orchestrated && versionId !== undefined) {
-         await environment.markVersionHostOwned(packageName, versionId);
-      }
       // Whether every loaded copy of the package now reads this run: its
       // own load, then the other versions' rebinds below.
       let bound = !orchestrated && served?.autoLoad === "loaded";

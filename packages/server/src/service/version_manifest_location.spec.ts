@@ -730,6 +730,33 @@ describe("a local run of a host-bound package or version", () => {
       expect(refused).toBeInstanceOf(MaterializationConflictError);
    });
 
+   it("takes a loaded version serving its local store live when a host's instructed run of it commits", async () => {
+      const id = await publishLive("1.0.0");
+      localStore = { [id]: entryFor(id, "summary_local") };
+      const pkg = await loadAfresh("1.0.0");
+      await storeTables(pkg);
+      expect(tableOf(pkg, id)).toBe('"summary_local"');
+      expect(await total(pkg)).toBe(7);
+
+      const run = await instructedRun("1.0.0", id, "summary_built");
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      // The same loaded copy: live, and reported so.
+      expect(await loadedVersion("1.0.0")).toBe(pkg);
+      expect(env.isHostOwned(pkg)).toBe(true);
+      expect(tableOf(pkg, id)).toBeUndefined();
+      expect(await total(pkg)).toBe(1);
+      expect(pkg.getOperationalFields()).toMatchObject({
+         manifestBindingStatus: "unbound",
+         boundManifestUri: null,
+      });
+      expect((await versions().getVersion(PKG, "1.0.0")).hostOwned).toBe(true);
+      // A rebind from the store, which now holds the run's table, leaves it.
+      localStore = { [id]: entryFor(id, "summary_built") };
+      await env.rebindVersionFromStore(PKG, "1.0.0", async () => localStore);
+      expect(tableOf(pkg, id)).toBeUndefined();
+      expect(await total(pkg)).toBe(1);
+   });
+
    it("does not make a version host-owned when its manifest never binds", async () => {
       const id = await publishLive("1.0.0");
       localStore = { [id]: entryFor(id, "summary_local") };

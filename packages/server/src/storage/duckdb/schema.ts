@@ -140,9 +140,10 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    // bound) or built it (its instructed run committed): from then on its
    // binding is the host's, so a clear serves live and a load with no
    // manifest serves live, never this server's own run store. Set by that
-   // bind or run, never by recording a manifest alone, and never cleared. Declared last and
-   // nullable, so `reconcileDeclaredColumns` adds it to a store that predates
-   // it; `backfillVersionHostOwned` fills the rows it was added under.
+   // bind or run, never by recording a manifest alone, and never cleared.
+   // Declared last and nullable, so `reconcileDeclaredColumns` adds it to a
+   // store that predates it; `backfillVersionHostOwned` fills the rows it
+   // was added under.
    //
    // Keyed on the package's NAME, like `materializations`, and deleted with the
    // package by hand (DuckDBRepository), since nothing here cascades.

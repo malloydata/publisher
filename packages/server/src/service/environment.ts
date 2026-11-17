@@ -568,6 +568,9 @@ export class Environment {
    // or built by a host's instructed run (their registry row's `hostOwned`).
    // See isHostOwned.
    private readonly hostOwnedVersions = new WeakSet<Package>();
+   // The same, by `package@version`, for every version marked in this
+   // process: a copy whose load read its row before the mark still counts.
+   private readonly hostOwnedVersionKeys = new Set<string>();
    // Called when a version is archived, to reclaim the tables it alone owns.
    // Set by EnvironmentStore (see setVersionArchivedHook).
    private versionArchivedHook:
@@ -2975,12 +2978,20 @@ export class Environment {
                this.versionBuilds.has(`${packageName}@${versionId}`),
             onVersionArchived: (packageName, versionId) =>
                this.versionArchivedHook?.(packageName, versionId),
-            onVersionDeleted: (packageName, versionId) =>
-               this.versionDeletedHook?.(packageName, versionId),
+            onVersionDeleted: (packageName, versionId) => {
+               // A version published again under this id starts unmarked.
+               this.hostOwnedVersionKeys.delete(`${packageName}@${versionId}`);
+               this.versionDeletedHook?.(packageName, versionId);
+            },
             reclaimOwedBy: async (packageName, versionId) => {
                await this.owedReclaimHook?.(packageName, versionId);
             },
             packageRemoved: (packageName) => {
+               for (const key of this.hostOwnedVersionKeys) {
+                  if (key.startsWith(`${packageName}@`)) {
+                     this.hostOwnedVersionKeys.delete(key);
+                  }
+               }
                this.clearPackageLoadFailure(packageName);
                this.transition(packageName, { type: "unregister" });
                hooks.packageRemoved?.(packageName);
@@ -3332,15 +3343,6 @@ export class Environment {
    }
 
    /**
-    * Whether a host owns the binding of this package: it is bound to a host
-    * manifest now, or it is a version a host has bound (a manifest it named
-    * bound) or built (its instructed run committed) at least once: its
-    * registry row's `hostOwned`, which survives a restart. A host-owned
-    * package never binds this server's own run store: with no manifest it
-    * serves live until the host binds it again. A version a host never bound
-    * or built (standalone, or orchestrated by this server) is not.
-    */
-   /**
     * Mark a loaded version host-owned, in memory and on its registry row
     * (which a version being published does not have yet: its publish's
     * commit records the mark, see VersionHost.hostMarked). A row that cannot
@@ -3350,6 +3352,7 @@ export class Environment {
       const versionId = pkg.getVersionId();
       if (versionId === undefined || this.hostOwnedVersions.has(pkg)) return;
       this.hostOwnedVersions.add(pkg);
+      this.hostOwnedVersionKeys.add(`${pkg.getPackageName()}@${versionId}`);
       await this.versionService
          ?.markHostOwned(pkg.getPackageName(), versionId)
          .catch((error) =>
@@ -3362,32 +3365,70 @@ export class Environment {
    }
 
    /**
-    * A host's instructed run of a version committed: the host owns the
-    * version from now on, as a bind would make it (see isHostOwned).
+    * A host's instructed run of a version is about to commit: the host owns
+    * the version from now on, as a bind would make it (see isHostOwned).
+    * Under the version's lock, so no load, settle or rebind interleaves: a
+    * loaded copy bound to no manifest that serves what this server's store
+    * holds goes live now, as a clear would leave it.
     */
    public async markVersionHostOwned(
       packageName: string,
       versionId: string,
    ): Promise<void> {
-      const loaded = this.versionService?.cache.peek(packageName, versionId);
-      if (loaded) {
-         await this.markHostOwned(loaded);
-         return;
-      }
-      await this.versionService
-         ?.markHostOwned(packageName, versionId)
-         .catch((error) =>
-            logger.warn("Could not record that a host owns a version", {
-               packageName,
-               versionId,
-               error: errMessage(error),
-            }),
-         );
+      const versions = this.versionService;
+      if (!versions) return;
+      await this.trackPackageLoad(packageName, () =>
+         versions.withVersionLock(packageName, versionId, async () => {
+            this.hostOwnedVersionKeys.add(`${packageName}@${versionId}`);
+            const loaded = versions.cache.peek(packageName, versionId);
+            if (!loaded) {
+               await versions
+                  .markHostOwned(packageName, versionId)
+                  .catch((error) =>
+                     logger.warn(
+                        "Could not record that a host owns a version",
+                        {
+                           packageName,
+                           versionId,
+                           error: errMessage(error),
+                        },
+                     ),
+                  );
+               return;
+            }
+            await this.markHostOwned(loaded);
+            if (loaded.getManifestLocation()) return;
+            const mz = loaded.materialization();
+            if (
+               mz.hasBoundTableNameManifest() ||
+               mz.hasStorageServeBindings()
+            ) {
+               await loaded.reloadAllModels({});
+               mz.bind({ storage: {} });
+            }
+            mz.markServingLive();
+         }),
+      );
    }
 
+   /**
+    * Whether a host owns the binding of this package: it is bound to a host
+    * manifest now, or it is a version a host has bound (a manifest it named
+    * bound) or built (its instructed run committed) at least once: its
+    * registry row's `hostOwned`, which survives a restart. A host-owned
+    * package never binds this server's own run store: with no manifest it
+    * serves live until the host binds it again. A version a host never bound
+    * or built (standalone, or orchestrated by this server) is not.
+    */
    public isHostOwned(pkg: Package): boolean {
+      const versionId = pkg.getVersionId();
       return (
-         Boolean(pkg.getManifestLocation()) || this.hostOwnedVersions.has(pkg)
+         Boolean(pkg.getManifestLocation()) ||
+         this.hostOwnedVersions.has(pkg) ||
+         (versionId !== undefined &&
+            this.hostOwnedVersionKeys.has(
+               `${pkg.getPackageName()}@${versionId}`,
+            ))
       );
    }
 
