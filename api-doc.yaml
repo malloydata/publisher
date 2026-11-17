@@ -3947,7 +3947,20 @@ paths:
               schema:
                 $ref: "#/components/schemas/Materialization"
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: >-
+            The request is malformed. Among other checks, every
+            `physicalTableName` a host supplies (a build instruction, a
+            `referenceManifest` entry or a `ledger` entry) must be a usable
+            table path: no empty part, no backslash or control character, and
+            quotes only around whole parts. One that is not is refused,
+            naming the field (for example `Build instruction
+            'physicalTableName' must be a table path ...`), before any run
+            starts; the bind declines such a name in a stored manifest the
+            same way (`unquotable_name`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -4093,7 +4106,10 @@ paths:
           description: |
             When true, also drop the physical tables recorded in the
             materialization's manifest before deleting the record. Defaults to
-            false (record-only delete; the caller owns table GC).
+            false (record-only delete; the caller owns table GC). A table
+            whose table segment another committed run of the package names,
+            in any place or container, is kept: it may be that run's table
+            reached under another name (two names for one DuckLake).
 
             Only `true` and `false` are accepted. Any other value is refused
             with 400 rather than read as `false`, which would delete the record,
@@ -5993,12 +6009,18 @@ components:
                   `table-kept-after-rename`: a table an auto-run replaced
                   when its source's table was renamed or moved, which
                   Publisher keeps rather than drops: one at an author's exact
-                  `name=` (never dropped), or one in a storage destination
+                  `name=` (never dropped), one in a storage destination
                   that is no longer configured (which, when the destination
                   was renamed rather than removed, may be the table served
-                  under the new name). Listed on the newest run's
-                  `metadata.keptTables` until the table is dropped (a run
-                  notices one dropped by hand) or its name is used again
+                  under the new name), or one a `storage=` or tier move left
+                  under the name the source is served under now (which may
+                  be the very table served, so it is never dropped).
+                  Listed on the newest run's
+                  `metadata.keptTables` until no committed run names it in
+                  its place (its runs deleted, with or without `dropTables`),
+                  a run finds it dropped by hand (never on Snowflake or
+                  MySQL, whose catalogs hide tables), or its name is used
+                  again in its own place
                   (one per table, `model` the model
                   declaring the source, `subject` the source or a rollup's
                   base, the message naming the table and where it is;
@@ -10518,6 +10540,52 @@ components:
             `errorAtCancel` (string) is set on a CANCELLED run whose last
             error was not the cancellation itself: the message of the failure
             the cancel raced, which `error` reports only as "Cancelled".
+            `keptTables` (array) is set on an auto-run that lists the tables
+            a rename or move left and Publisher keeps rather than drops (see
+            the `table-kept-after-rename` warning).
+          additionalProperties: true
+          properties:
+            keptTables:
+              type: array
+              description: >-
+                Tables an auto-run replaced and Publisher keeps, carried
+                forward by later runs until no committed run names the table
+                in its place, the name is built again in its own place, or a
+                run finds the table gone. An older server leaves out an entry
+                whose `reason` it does not know.
+              items:
+                type: object
+                required:
+                  [sourceEntityId, physicalTableName, connectionName, reason]
+                properties:
+                  sourceEntityId:
+                    type: string
+                    description: The source the table was built for.
+                  sourceName:
+                    type: string
+                    description: The source's name, when the run recorded it.
+                  physicalTableName:
+                    type: string
+                    description: The kept table, as the run that built it wrote it.
+                  connectionName:
+                    type: string
+                    description: The source's connection.
+                  storageDestinationName:
+                    type: string
+                    description: >-
+                      The storage destination holding the table; absent for a
+                      table in the connection's own database.
+                  reason:
+                    type: string
+                    enum: [author_name, destination_missing, may_be_served]
+                    description: >-
+                      `author_name`: at an author's exact `name=`, which
+                      Publisher never drops. `destination_missing`: in a
+                      storage destination no longer configured, which
+                      Publisher cannot reach. `may_be_served`: under the
+                      table segment the source is served under now, in
+                      another place or container, so it may be the very
+                      table served, and is never dropped.
         createdAt:
           type: string
           format: date-time
