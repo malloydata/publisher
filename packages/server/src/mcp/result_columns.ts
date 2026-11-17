@@ -23,7 +23,9 @@ export interface ResultColumn {
    /**
     * `string`, `number`, `boolean`, `date`, `timestamp`, `timestamptz`,
     * `json`, `sql_native`, `array` or `record`. A nest is an `array` of
-    * records, with `fields`.
+    * records, with `fields`. A column that fails to read keeps its bare
+    * schema kind (`number`), with nothing else; `unknown` only when that
+    * kind is itself unreadable.
     */
    type: string;
    /** Numbers: `integer`, `decimal` or `bigint`. A bigint past 2^53 is a string in `rows`. */

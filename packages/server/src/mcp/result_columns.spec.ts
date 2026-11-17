@@ -326,13 +326,13 @@ describe("resultColumns", () => {
       expect(columns).toEqual([{ name: "odd", type: "unknown" }]);
    });
 
-   it("is on every execute_query envelope, ahead of _meta", () => {
+   it("is on the execute_query envelope, ahead of _meta", () => {
       const envelope = buildQueryEnvelope(
          [{ category: "Outerwear" }],
          1000,
          storefront,
       );
-      expect(envelope._columns.map((c) => c.name)).toEqual([
+      expect(envelope._columns?.map((c) => c.name)).toEqual([
          "created_at",
          "category",
          "total_sales",
@@ -344,5 +344,25 @@ describe("resultColumns", () => {
          "_columns",
          "_meta",
       ]);
+   });
+
+   it("is left out when the schema alone is over the result budget", () => {
+      const schemaChars = JSON.stringify(storefront.schema, null, 2).length;
+      const over = buildQueryEnvelope(
+         [{ category: "Outerwear" }],
+         1000,
+         storefront,
+         [],
+         schemaChars - 1,
+      );
+      expect("_columns" in over).toBe(false);
+      const fits = buildQueryEnvelope(
+         [{ category: "Outerwear" }],
+         1000,
+         storefront,
+         [],
+         schemaChars,
+      );
+      expect(fits._columns).toHaveLength(5);
    });
 });

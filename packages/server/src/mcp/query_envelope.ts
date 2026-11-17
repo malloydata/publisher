@@ -31,9 +31,10 @@ interface QueryEnvelope {
     * grain, label, whether it is an aggregate, its declared display format,
     * and the zone a timestamp reads in. Publisher only, for now: Credible's
     * envelope carries the same facts only inside `_meta.schema`, so shared
-    * skills must not rely on this field.
+    * skills must not rely on this field. It counts against the result budget,
+    * and is left out when `_meta.schema` alone is over it.
     */
-   _columns: ResultColumn[];
+   _columns?: ResultColumn[];
    /** Malloy metadata the flat rows drop: field types, render tags, timezone. */
    _meta: {
       schema: Malloy.Schema;
@@ -138,9 +139,14 @@ export function buildQueryEnvelope(
       rowLimit > 0 &&
       rowCount === rowLimit;
 
+   // `_columns` restates the schema; when the schema alone is over the
+   // budget it would only inflate a payload that cannot fit anyway.
+   const schemaFits =
+      JSON.stringify(result.schema ?? null, bigIntReplacer, 2).length <= limit;
+
    const envelope: QueryEnvelope = {
       rows,
-      _columns: resultColumns(result),
+      ...(schemaFits && { _columns: resultColumns(result) }),
       _meta: {
          schema: result.schema,
          annotations: result.annotations ?? [],
