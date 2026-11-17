@@ -52,7 +52,7 @@ import {
    pin,
    type Snapshot,
 } from "./domain/binding";
-import { observedColocatedColumns } from "./run/colocated_build_strategy";
+import { observedColocatedColumns } from "./run/colocated_column_read";
 import {
    applyObservedColumns,
    bindColocatedEntries,
@@ -97,6 +97,12 @@ export function toTableNameManifest(
    }
    return out;
 }
+
+/** Tries to read a table a bind left unread, before polls alone retry it. */
+const UNREAD_RETRY_ATTEMPTS = 10;
+/** The first retry's delay; each next one doubles, up to {@link UNREAD_RETRY_MAX_MS}. */
+const UNREAD_RETRY_BASE_MS = 1_000;
+const UNREAD_RETRY_MAX_MS = 60_000;
 
 /** What a {@link PackageMaterialization} reads of the package that holds it. */
 export interface PackageMaterializationOwner {
@@ -161,6 +167,10 @@ export class PackageMaterialization {
     */
    private observedColumns: ReadonlyMap<string, ObservedColumns> | undefined;
    /** What the last snapshot found of the observation: drift, and tables not read. */
+   /** The pending re-read of the tables the last read left unread. */
+   private unreadRetry:
+      | { timer: ReturnType<typeof setTimeout>; attempt: number }
+      | undefined;
    private observedOutcome: {
       drifted: ObservedDrift[];
       unread: { sourceEntityId: string; reason: string }[];
@@ -474,12 +484,79 @@ export class PackageMaterialization {
                : this.admitColocated(update.colocated),
          );
          this.observedColumns = update.observed;
+         this.cancelUnreadRetry();
       }
       if (update.storage) {
          this.storageBindings = this.admitStorage(update.storage);
       }
       this.publish(update.models);
-      if (update.colocated && update.observed) this.logObservedOutcome();
+      if (update.colocated && update.observed) {
+         this.logObservedOutcome();
+         this.scheduleUnreadRetry(1);
+      }
+   }
+
+   /**
+    * Whether the bound colocated tables include one the bind could not read
+    * (it answers live): a poll that finds the manifest unchanged binds again
+    * rather than skip, so the table is read once it can be.
+    */
+   hasUnreadColocatedTables(): boolean {
+      this.snapshot();
+      return this.observedOutcome.unread.length > 0;
+   }
+
+   private cancelUnreadRetry(): void {
+      if (this.unreadRetry) clearTimeout(this.unreadRetry.timer);
+      this.unreadRetry = undefined;
+   }
+
+   /**
+    * Read again, with backoff, the tables this bind left unread (a read that
+    * failed or timed out), so a transient failure does not keep a table live
+    * until something else binds. Stops when every table is read, when a bind
+    * replaces these entries, or after {@link UNREAD_RETRY_ATTEMPTS} tries.
+    */
+   private scheduleUnreadRetry(attempt: number): void {
+      this.cancelUnreadRetry();
+      const observed = this.observedColumns;
+      const entries = this.colocatedEntries;
+      if (!observed || !entries || attempt > UNREAD_RETRY_ATTEMPTS) return;
+      const unread = [...observed]
+         .filter(([id, o]) => "unread" in o && Object.hasOwn(entries, id))
+         .map(([id]) => id);
+      if (unread.length === 0) return;
+      const delay = Math.min(
+         UNREAD_RETRY_BASE_MS * 2 ** (attempt - 1),
+         UNREAD_RETRY_MAX_MS,
+      );
+      const timer = setTimeout(() => {
+         void this.retryUnread(entries, observed, unread, attempt);
+      }, delay);
+      (timer as { unref?: () => void }).unref?.();
+      this.unreadRetry = { timer, attempt };
+   }
+
+   private async retryUnread(
+      entries: FreshnessManifest,
+      observed: ReadonlyMap<string, ObservedColumns>,
+      unread: string[],
+      attempt: number,
+   ): Promise<void> {
+      const current = () =>
+         this.colocatedEntries === entries && this.observedColumns === observed;
+      if (!current()) return;
+      const reread = await this.readColocatedColumns(
+         Object.fromEntries(unread.map((id) => [id, entries[id]])),
+      );
+      // A bind while the read ran replaced what it was reading for.
+      if (!current()) return;
+      const next = new Map(observed);
+      for (const [id, o] of reread) next.set(id, o);
+      this.observedColumns = next;
+      this.publish();
+      this.logObservedOutcome();
+      this.scheduleUnreadRetry(attempt + 1);
    }
 
    /**

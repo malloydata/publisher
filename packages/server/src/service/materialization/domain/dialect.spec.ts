@@ -61,6 +61,7 @@ const DECIDED: Record<Flag, DialectName[]> = {
    ],
    onlyBigIntegerType: ["standardsql"],
    foldsTableNameCase: ["databricks", "duckdb", "presto", "sqlserver", "trino"],
+   utcSessions: ["duckdb"],
 };
 
 /** Each dialect's leaf budget, as decided (`domain/table_name.ts`). */

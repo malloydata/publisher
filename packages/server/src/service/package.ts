@@ -2754,7 +2754,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const compiledFor = Package.compileKeyOf(entries);
       if (options.ifChanged && this.isCompiledFor(compiledFor)) {
          const last = this.reloadedFor!;
-         if (last.bound === requested) {
+         // Unchanged, but a table the last bind could not read answers live
+         // until one reads it: bind again, which reads it again.
+         if (last.bound === requested && !this.mz.hasUnreadColocatedTables()) {
             logger.debug(
                "Skipped reloading models: the manifest is unchanged",
                {

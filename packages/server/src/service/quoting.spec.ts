@@ -9,6 +9,7 @@ import {
    quoteManifestTablePath,
    quoteRenameTarget,
    quoteTablePath,
+   tablePathParts,
 } from "./quoting";
 
 describe("bareTableName", () => {
@@ -179,5 +180,45 @@ describe("quoteRenameTarget", () => {
    it("is a no-op on an already-unqualified name", () => {
       expect(quoteRenameTarget("orders_v3", "snowflake")).toBe('"orders_v3"');
       expect(quoteRenameTarget("orders_v3", "postgres")).toBe('"orders_v3"');
+   });
+});
+
+describe("tablePathParts: the one parser of a bound table name", () => {
+   const cases: [string, string, string[] | undefined][] = [
+      ["an unquoted path", "s.t", ["s", "t"]],
+      ["a quoted path", '"s"."t"', ["s", "t"]],
+      ["a quoted part holding a dot", '"my.schema"."t"', ["my.schema", "t"]],
+      ["a doubled quote inside a part", '"s"."t""q"', ["s", 't"q']],
+      ["a mix of quoted and unquoted parts", 's."T x"', ["s", "T x"]],
+      ["backtick parts", "`p`.`d`.`t`", ["p", "d", "t"]],
+      ["a doubled backtick", "`a``b`", ["a`b"]],
+      ["an unclosed quote", '"s.t', undefined],
+      ["text after a closing quote", '"s"x.t', undefined],
+      ["an empty part", "s..t", undefined],
+   ];
+   for (const [label, path, parts] of cases) {
+      it(label, () => {
+         expect(tablePathParts(path, "postgres")).toEqual(parts);
+      });
+   }
+
+   it("reads a BigQuery path in one pair of backticks as its parts", () => {
+      expect(tablePathParts("`proj.ds.t`", "standardsql")).toEqual([
+         "proj",
+         "ds",
+         "t",
+      ]);
+      // Elsewhere a backticked dot is part of the name.
+      expect(tablePathParts("`a.b`", "mysql")).toEqual(["a.b"]);
+   });
+
+   it("is the inverse of quoteTablePath", () => {
+      for (const dialect of ["postgres", "standardsql", "snowflake"]) {
+         for (const path of ["s.t", "proj-1.ds.T x", 'a.b"c']) {
+            expect(
+               tablePathParts(quoteTablePath(path, dialect), dialect),
+            ).toEqual(path.split("."));
+         }
+      }
    });
 });

@@ -56,10 +56,8 @@ import {
    v1StoredColumnsOf,
 } from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
-import {
-   capturedColocatedSchema,
-   observedColocatedColumns,
-} from "../../../src/service/materialization/run/colocated_build_strategy";
+import { capturedColocatedSchema } from "../../../src/service/materialization/run/colocated_build_strategy";
+import { observedColocatedColumns } from "../../../src/service/materialization/run/colocated_column_read";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";

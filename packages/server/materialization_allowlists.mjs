@@ -150,7 +150,7 @@ export const RATCHET_DIALECT_LITERALS = {
    // DialectName, CURRENT_SCHEMA_SQL's two keys and type, DuckDB's own
    // literal in duckdbNameMatch, and Snowflake's in its query-tag and cost
    // statements.
-   "service/materialization/run/warehouse_sql.ts": { count: 25, step: "table" },
+   "service/materialization/run/warehouse_sql.ts": { count: 22, step: "table" },
    // READ_ONLY_DIALECTS: a capability kept as a deny-list, so an unknown
    // dialect is not refused.
    "service/materialization/plan/materialization_eligibility.ts": {

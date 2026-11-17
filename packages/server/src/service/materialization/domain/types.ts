@@ -164,7 +164,14 @@ export type ObservedColumns =
          * Each column, `type` absent for one whose warehouse type Malloy
          * reads as no basic type (a struct, an array): never a drift.
          */
-        columns: { name: string; type?: string }[];
+        columns: {
+           name: string;
+           type?: string;
+           /** Its type as the warehouse's catalog names it (`numeric(10,2)`). */
+           nativeType?: string;
+        }[];
+        /** The connection's dialect the types were read on. */
+        dialect?: string;
      }
    | { unread: string };
 
