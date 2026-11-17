@@ -315,7 +315,7 @@ outside Malloy that needs one stable name reads it from an unversioned or `scope
 package. Dropping `name=` instead moves the source to its readable name: it is rebuilt there, and
 the old table stays in place: deleting the runs that built it removes their records only, so drop
 the table yourself through its connection once no remaining run, of any version, names a table with
-that name ([Dropping a run's tables](materialization.md#dropping-a-runs-tables)).
+that name in any place ([Dropping a run's tables](materialization.md#dropping-a-runs-tables)).
 
 ### A query-shaped source
 
