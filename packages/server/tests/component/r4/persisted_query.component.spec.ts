@@ -833,3 +833,54 @@ describe("R4: a persisted named query with PUBLISHER_MATERIALIZE off", () => {
       expect(byName.compactResult as unknown).toEqual(outcome.rows);
    });
 });
+
+describe("R4: a persisted view with PUBLISHER_MATERIALIZE off", () => {
+   /** One valid persisted view, and a model whose view's line is invalid. */
+   const VIEWS = `##! experimental.persistence
+source: fl is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="fl_by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`;
+   const INVALID = VIEWS.replace(
+      '#@ persist name="fl_by_carrier"',
+      '#@ persist name="fl_by_carrier" watermark=ts',
+   );
+   let restore: () => void;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "false" },
+      }).restore;
+      await freshLoadPool();
+   });
+   afterAll(() => restore());
+
+   it("a valid line loads, warns persist-view-not-built (materialization_off), and the view answers live", async () => {
+      const loaded = await loadFixture({ "m.malloy": VIEWS });
+      try {
+         const fixture = await loaded.bind();
+         const warned = fixture.warnings.filter(
+            (w) => w.code === "persist-view-not-built",
+         );
+         expect(warned.map((w) => w.subject)).toEqual(["fl -> by_carrier"]);
+         expect(warned[0]?.message).toContain("PUBLISHER_MATERIALIZE");
+         expect(fixture.built.filter((b) => b.name.endsWith("__view"))).toEqual(
+            [],
+         );
+         const outcome = answerOf(
+            await fixture.run("m.malloy", "run: fl -> by_carrier"),
+         );
+         expect(outcome.servedBy).toBe("live");
+         expect(outcome.rows.length).toBe(3);
+      } finally {
+         await loaded.dispose();
+      }
+   });
+
+   it("an invalid line fails the load, as with the switch on", async () => {
+      await expect(loadFixture({ "m.malloy": INVALID })).rejects.toThrow(
+         /persist-view-invalid|incremental key/,
+      );
+   });
+});

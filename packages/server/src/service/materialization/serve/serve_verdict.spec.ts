@@ -55,6 +55,45 @@ function facts(
 }
 
 describe("computeServeVerdicts", () => {
+   it("names each verdict's origin by the mechanism that declared it", () => {
+      const view = `ops__by_carrier__view@file:///pkg/m.malloy.persist-view.malloy`;
+      const query = `top__query@file:///pkg/m.malloy.persist-view.malloy`;
+      const sources: [string, PersistSourcePlan][] = [
+         plan("orders"),
+         plan("mat"),
+         [view, { ...plan("ops__by_carrier__view")[1], sourceID: view }],
+         [query, { ...plan("top__query")[1], sourceID: query }],
+         plan("roll", { origin: "preaggregate" }),
+      ];
+      const verdicts = computeServeVerdicts({
+         ...facts(sources, {
+            materialize: (id) => (id.startsWith("mat@") ? "serves" : undefined),
+            declaredMaterialize: (id) => id.startsWith("refused_mat@"),
+         }),
+         plan: {
+            graphs: [],
+            sources: Object.fromEntries(sources),
+            refusedSources: {
+               "refused_mat@file:///pkg/m.malloy": {
+                  name: "refused_mat",
+                  sourceID: "refused_mat@file:///pkg/m.malloy",
+                  tier: "colocated",
+                  reason: "access_filter",
+                  message: "gated",
+               },
+            },
+         } as never,
+      });
+      expect(verdicts.map((v) => [v.sourceName, v.origin])).toEqual([
+         ["orders", "persist"],
+         ["mat", "materialize"],
+         ["ops__by_carrier__view", "view"],
+         ["top__query", "query"],
+         ["roll", "preaggregate"],
+         ["refused_mat", "materialize"],
+      ]);
+   });
+
    it("says a colocated source serves once bound, and will serve before", () => {
       const [unbound] = computeServeVerdicts(facts([plan("orders")]));
       expect(unbound).toMatchObject({

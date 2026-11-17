@@ -4,19 +4,30 @@
 /**
  * The colocated tier: a table built in its source's own warehouse, by a
  * delta or by a staging table swapped onto the served name
- * ({@link ColocatedTier}, {@link swapIntoPlace}); its schema capture, its
+ * ({@link ColocatedTier}, {@link swapIntoPlace}); its schema capture after a
+ * build and its column read at a bind ({@link observedColocatedColumns}), its
  * drop and its key check on the source's connection. The swap's transaction
  * text, which differs by dialect, is warehouse_sql.ts's.
  */
 
-import type { Connection as MalloyConnection } from "@malloydata/malloy";
+import {
+   type Connection as MalloyConnection,
+   getDialect,
+} from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "./error_code";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
-import { capturedNativeSchema } from "./colocated_native_types";
-import { ManifestEntry } from "../domain/types";
+import {
+   capturedNativeSchema,
+   NATIVE_SCHEMA_ROW_LIMIT,
+} from "./colocated_native_types";
+import type {
+   FreshnessManifest,
+   ManifestEntry,
+   ObservedColumns,
+} from "../domain/types";
 import { capabilitiesOf } from "../domain/dialect";
 import type {
    ColocatedBuildRequest,
@@ -35,7 +46,7 @@ import {
    resetLedger,
 } from "./incremental_build";
 import { backupSuffix, stagingSuffix } from "./materialization_run_support";
-import { transactionalSwapSql } from "./warehouse_sql";
+import { nativeTypeCatalogRead, transactionalSwapSql } from "./warehouse_sql";
 
 /**
  * A full rebuild of a colocated table in the source's own warehouse: COPY into
@@ -293,6 +304,85 @@ export async function capturedColocatedSchema(args: {
       );
       return undefined;
    }
+}
+
+/**
+ * The columns of each bound colocated table as its warehouse holds them now,
+ * read at a bind: one catalog query per table (DuckDB's `DESCRIBE`,
+ * Postgres's `format_type`, `information_schema.columns` elsewhere; the read
+ * `colocated_native_types.ts` makes after a build), each type then spelled as
+ * the build's capture spells it ({@link capturedColocatedSchema}: what Malloy
+ * reads it as, in DuckDB's spelling), so the two compare column for column. A
+ * type Malloy reads as no basic type (a struct, an array) has no spelling and
+ * is reported without one: never a drift.
+ *
+ * A table whose read fails, finds nothing, finds the name in more than one
+ * schema, or whose connection is unknown, is `unread`: the bind leaves it out
+ * and its sources answer live (fail safe). Never throws.
+ */
+export async function observedColocatedColumns(args: {
+   entries: FreshnessManifest;
+   /** The connection each entry's table lives on, by sourceEntityId. */
+   connectionNameOf: (sourceEntityId: string) => string | undefined;
+   connection: (
+      connectionName: string,
+   ) => Promise<Pick<MalloyConnection, "runSQL" | "dialectName">>;
+}): Promise<Map<string, ObservedColumns>> {
+   const out = new Map<string, ObservedColumns>();
+   for (const [id, entry] of Object.entries(args.entries)) {
+      const name = args.connectionNameOf(id);
+      if (!name) {
+         out.set(id, { unread: "the table's connection is not known" });
+         continue;
+      }
+      try {
+         const connection = await args.connection(name);
+         out.set(id, await observedColumnsOf(connection, entry.tableName));
+      } catch (err) {
+         out.set(id, { unread: errMessage(err) });
+      }
+   }
+   return out;
+}
+
+/** One table's {@link observedColocatedColumns}: one catalog query. */
+async function observedColumnsOf(
+   connection: Pick<MalloyConnection, "runSQL" | "dialectName">,
+   tableName: string,
+): Promise<ObservedColumns> {
+   const dialect = connection.dialectName;
+   // A manifest's name may be quoted already; the catalog read quotes it.
+   const read = nativeTypeCatalogRead(unquotedTablePath(tableName), dialect);
+   if (!read) return { unread: "the table's name gives no catalog to read" };
+   const result = await connection.runSQL(read.sql, {
+      rowLimit: NATIVE_SCHEMA_ROW_LIMIT,
+   });
+   const rows = result.rows as Record<string, unknown>[];
+   if (read.tableOf && new Set(rows.map(read.tableOf)).size > 1) {
+      return { unread: "the table's name matched more than one table" };
+   }
+   const malloy = getDialect(dialect);
+   const columns = rows
+      .map(read.read)
+      .filter((c) => c.name !== "" && c.type !== "")
+      .map((c) => {
+         const [spelled] = storedColumnsOfOutput(
+            [{ name: c.name, ...malloy.sqlTypeToMalloyType(c.type) }],
+            { nested: false, bigint: true, timestamptz: true },
+         );
+         return spelled ?? { name: c.name };
+      });
+   return columns.length > 0
+      ? { columns }
+      : { unread: "the table's columns read empty" };
+}
+
+/** A table path with each part's identifier quotes removed. */
+function unquotedTablePath(path: string): string {
+   return path
+      .split(".")
+      .map((part) => part.replace(/^["`[](.*)["`\]]$/, "$1"))
+      .join(".");
 }
 
 /**

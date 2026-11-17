@@ -45,6 +45,17 @@ import {
 } from "./serve/serve_verdict";
 import { previewNativeSchema } from "./stored_column_types";
 import { reachableSourceIDs } from "./text/source_map";
+import { ownLevelNotes, type AnnotationsDef } from "../annotations";
+import { routeOfNote } from "../annotation_reader";
+
+/** Whether a compiled source's own statement carries `#(materialize)`. */
+function declaresMaterialize(def: unknown): boolean {
+   const annotations = (def as { annotations?: AnnotationsDef } | undefined)
+      ?.annotations;
+   return ownLevelNotes(annotations).some(
+      (n) => routeOfNote(n.text) === "materialize",
+   );
+}
 
 /**
  * What the environment answers about where a package's tables can be written
@@ -105,6 +116,14 @@ const PREVIEW_STORED_TYPES: Readonly<Record<string, string>> = {
 };
 
 export class ServeVerdicts {
+   /**
+    * Whether a refused source is declared with `#(materialize)`, by sourceID,
+    * read once per plan (the plan is replaced wholesale, and with it the
+    * models it was planned from).
+    */
+   private declaredMaterializeMemo:
+      | { plan: unknown; models: unknown; ids: Map<string, boolean> }
+      | undefined;
    private tableCatalogCache:
       | {
            plan: unknown;
@@ -349,11 +368,29 @@ export class ServeVerdicts {
                : "not_served";
          },
          persistedViewOf: (sourceID) => persistedViews.get(sourceID),
+         declaredMaterialize: (sourceID) =>
+            this.declaredMaterialize(buildPlan, sourceID),
          views,
          destinationConfigured: (name) => this.destinationConfigured(name),
          connectionCanHoldTable: (name) =>
             host.deploymentFacts()?.connectionCanHoldTable(name),
       });
+   }
+
+   /** {@link declaredMaterializeMemo}'s read. */
+   private declaredMaterialize(plan: unknown, sourceID: string): boolean {
+      const models = this.host.models();
+      let memo = this.declaredMaterializeMemo;
+      if (!memo || memo.plan !== plan || memo.models !== models) {
+         memo = { plan, models, ids: new Map() };
+         this.declaredMaterializeMemo = memo;
+      }
+      let declared = memo.ids.get(sourceID);
+      if (declared === undefined) {
+         declared = declaresMaterialize(this.host.declarationOf(sourceID));
+         memo.ids.set(sourceID, declared);
+      }
+      return declared;
    }
 
    /**

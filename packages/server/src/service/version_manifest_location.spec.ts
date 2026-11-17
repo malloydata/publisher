@@ -150,7 +150,7 @@ async function total(pkg: Package): Promise<number> {
    return Number((res.compactResult as unknown as { t: number }[])[0].t);
 }
 
-/** `host` (42) and `local` (7) in the version's own DuckDB. */
+/** `host` (42) and `local` (7) in the version's own DuckDB, bound again once they exist. */
 async function storeTables(pkg: Package): Promise<void> {
    const duckdb = await pkg
       .getMalloyConfig()
@@ -161,6 +161,18 @@ async function storeTables(pkg: Package): Promise<void> {
    await duckdb.runSQL(
       `CREATE OR REPLACE TABLE summary_local AS SELECT 1 AS a, 7::BIGINT AS n`,
    );
+   // The tables exist only now, after the version bound them: a bind reads
+   // each table's columns and answers one it cannot read live, so bind again,
+   // as the next run or rebind would.
+   const mz = pkg.materialization();
+   const entries = mz.boundColocatedEntries();
+   if (entries) {
+      mz.bind({
+         colocated: entries,
+         colocatedAsGiven: true,
+         observed: await mz.readColocatedColumns(entries),
+      });
+   }
 }
 
 const entryFor = (

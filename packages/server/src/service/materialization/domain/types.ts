@@ -153,6 +153,21 @@ export interface KeyUniqueness {
    parentKeys?: Record<string, boolean>;
 }
 
+/**
+ * One bound colocated table's columns as the bind read them from its
+ * warehouse (DuckDB's spelling, as {@link FreshnessAwareManifestEntry.schema}),
+ * or why they could not be read, in which case the table answers live.
+ */
+export type ObservedColumns =
+   | {
+        /**
+         * Each column, `type` absent for one whose warehouse type Malloy
+         * reads as no basic type (a struct, an array): never a drift.
+         */
+        columns: { name: string; type?: string }[];
+     }
+   | { unread: string };
+
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */
 export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;
 

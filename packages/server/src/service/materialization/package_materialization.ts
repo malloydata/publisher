@@ -17,7 +17,7 @@
  * Effects: logs, and the bind metrics.
  */
 
-import type { MalloyConfig } from "@malloydata/malloy";
+import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import {
@@ -52,10 +52,13 @@ import {
    pin,
    type Snapshot,
 } from "./domain/binding";
+import { observedColocatedColumns } from "./run/colocated_build_strategy";
 import {
+   applyObservedColumns,
    bindColocatedEntries,
    bindStorageEntries,
    deriveColocatedServeBindings,
+   type ObservedDrift,
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./serve/bind";
@@ -75,6 +78,7 @@ import type {
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
+   ObservedColumns,
 } from "./domain/types";
 
 type ApiPackage = components["schemas"]["Package"];
@@ -105,6 +109,8 @@ export interface PackageMaterializationOwner {
    modelPolicy(): PackageModelPolicy;
    packagePath(): string;
    malloyConfig(): MalloyConfig;
+   /** One of the package's connections, by name, for the bind's column read. */
+   connection(connectionName: string): Promise<Connection>;
    /** The package, for a main-thread build-plan compute. */
    buildPlanPackage: BuildPlanPackage;
    /**
@@ -147,6 +153,18 @@ export class PackageMaterialization {
     * a worker bound it.
     */
    private buildManifestEntries: BuildManifest["entries"] | undefined;
+   /**
+    * What the bind read of each colocated table's columns from its warehouse
+    * ({@link readColocatedColumns}), for the entries bound with it: one read
+    * per table per bind, never per query. Undefined for a bind that read
+    * none (a hand-made bind), whose tables are read as their build wrote them.
+    */
+   private observedColumns: ReadonlyMap<string, ObservedColumns> | undefined;
+   /** What the last snapshot found of the observation: drift, and tables not read. */
+   private observedOutcome: {
+      drifted: ObservedDrift[];
+      unread: { sourceEntityId: string; reason: string }[];
+   } = { drifted: [], unread: [] };
    /** The `storage=` bindings a host's or a run's manifest made. */
    private storageBindings: readonly Binding[] = [];
    /** {@link snapshot}, keyed on every fact it is made from. */
@@ -316,6 +334,7 @@ export class PackageMaterialization {
       const key = [
          this.storageBindings,
          this.colocatedEntries,
+         this.observedColumns,
          plan.buildPlan,
          plan.servingPlan(),
          plan.materializePlans,
@@ -328,19 +347,31 @@ export class PackageMaterialization {
          return memo.snapshot;
       }
       const kindOf = this.bindingKinds();
+      // Each colocated table held to the columns its warehouse holds now.
+      const observed = applyObservedColumns({
+         entries: this.colocatedEntries ?? {},
+         bindings: this.colocatedServeBindings(),
+         observed: this.observedColumns,
+      });
+      this.observedOutcome = {
+         drifted: observed.drifted,
+         unread: observed.unread,
+      };
       const bindings = [
          ...this.storageBindings.map((b) => {
             const kind = kindOf(b);
             return kind === b.kind ? b : { ...b, kind };
          }),
-         ...this.colocatedServeBindings(),
+         ...observed.bindings,
       ];
       const signature = JSON.stringify(bindings);
       const snapshot = makeSnapshot(
          memo && memo.signature === signature
             ? memo.snapshot.bindings
             : Object.freeze(bindings),
-         this.colocatedEntries ?? {},
+         this.observedColumns
+            ? observed.entries
+            : (this.colocatedEntries ?? {}),
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;
@@ -426,6 +457,12 @@ export class PackageMaterialization {
    bind(update: {
       colocated?: FreshnessManifest;
       colocatedAsGiven?: boolean;
+      /**
+       * What {@link readColocatedColumns} read of `colocated`'s tables: each
+       * table is then read as its warehouse holds it now. Every server bind
+       * passes it; absent, the tables are read as their builds wrote them.
+       */
+      observed?: ReadonlyMap<string, ObservedColumns>;
       storage?: Record<string, ManifestEntry>;
       /** Models a reload just installed: publish to them even when the bindings did not move. */
       models?: "installed";
@@ -436,11 +473,61 @@ export class PackageMaterialization {
                ? update.colocated
                : this.admitColocated(update.colocated),
          );
+         this.observedColumns = update.observed;
       }
       if (update.storage) {
          this.storageBindings = this.admitStorage(update.storage);
       }
       this.publish(update.models);
+      if (update.colocated && update.observed) this.logObservedOutcome();
+   }
+
+   /**
+    * Read each colocated table's columns from its warehouse, for a bind of
+    * `entries` ({@link bind}'s `observed`): one schema read per table, on
+    * the connection its entry names (else its plan source's). A table whose
+    * read fails is answered live at that bind, with a warning.
+    */
+   async readColocatedColumns(
+      entries: FreshnessManifest,
+   ): Promise<ReadonlyMap<string, ObservedColumns>> {
+      const planConnections = new Map<string, string>();
+      for (const source of Object.values(this.plan.buildPlan?.sources ?? {})) {
+         if (source.sourceEntityId && source.connectionName) {
+            planConnections.set(source.sourceEntityId, source.connectionName);
+         }
+      }
+      return observedColocatedColumns({
+         entries,
+         connectionNameOf: (id) =>
+            entries[id]?.connectionName ?? planConnections.get(id),
+         connection: (name) => this.owner.connection(name),
+      });
+   }
+
+   /** Log what the bind's column read found: drifted tables, and tables it could not read. */
+   private logObservedOutcome(): void {
+      for (const drift of this.observedOutcome.drifted) {
+         logger.warn(
+            "A colocated table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               packageName: this.owner.packageName(),
+               sourceEntityId: drift.sourceEntityId,
+               columns: drift.columns,
+            },
+         );
+      }
+      for (const miss of this.observedOutcome.unread) {
+         logger.warn(
+            "Could not read a colocated table's column types at bind; its sources answer live",
+            {
+               packageName: this.owner.packageName(),
+               sourceEntityId: miss.sourceEntityId,
+               error: miss.reason,
+            },
+         );
+      }
    }
 
    /** The colocated entries bound now, by identity: a bind replaces them wholesale. */
@@ -828,7 +915,10 @@ export class PackageMaterialization {
    }
 
    servedCopyWarnings(): ApiPackageWarning[] {
-      return warnings.servedCopyWarnings(this.owner.models());
+      const materialized = this.plan.materializePlans;
+      return warnings.servedCopyWarnings(this.owner.models(), (sourceID) =>
+         Object.hasOwn(materialized, sourceID),
+      );
    }
 
    storedColumnTypeWarnings(): ApiPackageWarning[] {
