@@ -7,7 +7,8 @@
  * not this model's), for the path report and the package's served-source
  * list; and the stored columns whose type does not serve as declared
  * (`storage-column-type-mismatch`), each read through a cast or answered
- * live.
+ * live. The same warning's colocated findings: a table altered outside a
+ * build, whose drift the bind read ({@link colocatedDriftFindings}).
  *
  * Called by `Model` once per snapshot, which logs and counts what this
  * finds. Reads the author's model files for the lift; no other I/O.
@@ -29,7 +30,10 @@ import {
    storedColumnReadPlan,
    storedColumnTypeMismatches,
    type StoredColumnTypeMismatch,
+   storedMalloyType,
+   storedTypeServesAs,
 } from "../stored_column_types";
+import type { ObservedDrift } from "./bind";
 import type { BuildPlan } from "../domain/types";
 import type { MaterializePlan } from "../domain/table_plans";
 
@@ -132,6 +136,93 @@ export function boundTableTypeFindings(
       });
    }
    return findings;
+}
+
+/**
+ * One bound colocated table whose warehouse columns moved since its build,
+ * as the bind read them ({@link ObservedDrift}), for the same warning a
+ * `storage=` table's mismatch raises.
+ */
+export interface ColocatedDriftFinding {
+   sourceID: string;
+   modelPath?: string;
+   /** The name the author wrote: the source, view or query, or a rollup's base. */
+   subject: string;
+   /**
+    * Each moved column against the type its source declares: `storedType` is
+    * absent for a column that is gone. `table` when the table is answered
+    * live as a whole (a rollup, persisted view or query, which no cast
+    * reaches).
+    */
+   mismatches: (Omit<StoredColumnTypeMismatch, "storedType"> & {
+      storedType?: string;
+      handling: MismatchHandling | "table";
+   })[];
+}
+
+/**
+ * The warning findings of the colocated tables whose columns moved outside a
+ * build ({@link ObservedDrift}), against the columns the plan's build source
+ * declares, handled as the bind handles them: a served-copy table
+ * (`#(materialize)`, `#@ persist`) reads each moved column through a
+ * faithful cast or leaves it out, and skips one whose new type still serves
+ * as declared; any other table is answered live whole.
+ */
+export function colocatedDriftFindings(
+   drifted: readonly ObservedDrift[],
+   plan: BuildPlan | null,
+   readers: {
+      /** Whether the table is read through the served copy, which casts per column. */
+      servedCopy: (sourceEntityId: string) => boolean;
+      /** As {@link boundTableTypeFindings}'s. */
+      queryTimezone?: (
+         sourceID: string,
+         source: NonNullable<BuildPlan["sources"]>[string],
+      ) => string | undefined;
+   },
+): ColocatedDriftFinding[] {
+   const sources = Object.entries(plan?.sources ?? {});
+   return drifted.flatMap((drift): ColocatedDriftFinding[] => {
+      const [sourceID, source] =
+         sources.find(([, s]) => s.sourceEntityId === drift.sourceEntityId) ??
+         [];
+      if (!sourceID || !source) return [];
+      const declaredOf = (column: string, builtType: string) =>
+         source.columns?.find((c) => c.name === column)?.type ??
+         storedMalloyType(builtType) ??
+         builtType;
+      const servedCopy = readers.servedCopy(drift.sourceEntityId);
+      const queryTimezone = readers.queryTimezone?.(sourceID, source);
+      const mismatches = drift.columns.flatMap(
+         (c): ColocatedDriftFinding["mismatches"] => {
+            const declaredType = declaredOf(c.column, c.builtType);
+            const moved = {
+               column: c.column,
+               declaredType,
+               ...(c.observedType ? { storedType: c.observedType } : {}),
+            };
+            if (!servedCopy) return [{ ...moved, handling: "table" }];
+            if (!c.observedType) return [{ ...moved, handling: "live" }];
+            if (storedTypeServesAs(c.observedType, declaredType) !== false) {
+               return [];
+            }
+            const { casts } = serveTypePlan(
+               [{ ...moved, storedType: c.observedType }],
+               { queryTimezone },
+            );
+            return [{ ...moved, handling: casts.length > 0 ? "cast" : "live" }];
+         },
+      );
+      if (mismatches.length === 0) return [];
+      return [
+         {
+            sourceID,
+            ...(source.modelPath ? { modelPath: source.modelPath } : {}),
+            subject: source.preaggregate?.baseSourceName ?? source.name,
+            mismatches,
+         },
+      ];
+   });
 }
 
 /**

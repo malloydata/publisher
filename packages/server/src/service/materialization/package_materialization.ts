@@ -66,6 +66,8 @@ import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
+   type ColocatedDriftFinding,
+   colocatedDriftFindings,
 } from "./serve/storage_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import * as warnings from "./package_warnings";
@@ -505,8 +507,17 @@ export class PackageMaterialization {
       });
    }
 
-   /** Log what the bind's column read found: drifted tables, and tables it could not read. */
+   /**
+    * Log and count what the bind's column read found: drifted tables, each
+    * column of them the package warning reports counted as a `storage=`
+    * table's is, and tables it could not read.
+    */
    private logObservedOutcome(): void {
+      for (const finding of this.colocatedDriftFindings()) {
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+      }
       for (const drift of this.observedOutcome.drifted) {
          logger.warn(
             "A colocated table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
@@ -925,7 +936,30 @@ export class PackageMaterialization {
       return warnings.storedColumnTypeWarnings(
          this.owner.models(),
          this.boundTypeFindings,
+         this.colocatedDriftFindings(),
       );
+   }
+
+   /**
+    * The colocated tables whose columns the last bind found moved outside a
+    * build, as the `storage-column-type-mismatch` warning reports them.
+    */
+   private colocatedDriftFindings(): ColocatedDriftFinding[] {
+      const { bindings } = this.snapshot();
+      const { drifted } = this.observedOutcome;
+      if (drifted.length === 0) return [];
+      return colocatedDriftFindings(drifted, this.plan.buildPlan, {
+         servedCopy: (id) =>
+            bindings.some(
+               (b) => b.tier === "colocated" && b.virtualHandle === id,
+            ),
+         queryTimezone: (sourceID, source) =>
+            queryTimezoneOf(
+               source.preaggregate
+                  ? this.baseDeclaration(source)
+                  : this.declarationLookup(sourceID),
+            ),
+      });
    }
 
    nativeSchemaWarnings(): ApiPackageWarning[] {

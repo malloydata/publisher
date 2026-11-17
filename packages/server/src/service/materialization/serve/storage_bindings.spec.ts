@@ -12,6 +12,7 @@ import type { BuildPlan } from "../domain/types";
 import type { MaterializePlan } from "../domain/table_plans";
 import {
    boundTableTypeFindings,
+   colocatedDriftFindings,
    modelStorageTables,
    ownBindings,
 } from "./storage_bindings";
@@ -330,5 +331,110 @@ describe("boundTableTypeFindings", () => {
             plan,
          ),
       ).toEqual([]);
+   });
+});
+
+describe("colocatedDriftFindings", () => {
+   const plan = {
+      sources: {
+         "orders@m": {
+            name: "orders",
+            sourceEntityId: "vh",
+            modelPath: "m.malloy",
+            columns: [
+               { name: "id", type: "number" },
+               { name: "flag", type: "boolean" },
+               { name: "amt", type: "number" },
+               { name: "day", type: "date" },
+            ],
+         },
+         "r@m": {
+            name: "orders__rollup",
+            sourceEntityId: "vr",
+            modelPath: "m.malloy",
+            preaggregate: { baseSourceName: "orders", grainDimensions: ["k"] },
+            columns: [{ name: "k", type: "number" }],
+         },
+      },
+   } as unknown as BuildPlan;
+
+   it("handles each moved column as the bind does: cast, left out, or the whole table live", () => {
+      const findings = colocatedDriftFindings(
+         [
+            {
+               sourceEntityId: "vh",
+               columns: [
+                  // A faithful cast reads it.
+                  {
+                     column: "flag",
+                     builtType: "BOOLEAN",
+                     observedType: "INTEGER",
+                  },
+                  // None does: left out.
+                  {
+                     column: "amt",
+                     builtType: "DOUBLE",
+                     observedType: "VARCHAR",
+                  },
+                  // Gone: left out.
+                  { column: "day", builtType: "DATE" },
+                  // Still a number: served as is, so not reported.
+                  {
+                     column: "id",
+                     builtType: "VARCHAR",
+                     observedType: "BIGINT",
+                  },
+               ],
+            },
+            {
+               sourceEntityId: "vr",
+               columns: [
+                  { column: "k", builtType: "BIGINT", observedType: "VARCHAR" },
+               ],
+            },
+            // Not in the plan: nothing to name it by.
+            {
+               sourceEntityId: "other",
+               columns: [{ column: "x", builtType: "BIGINT" }],
+            },
+         ],
+         plan,
+         { servedCopy: (id) => id === "vh" },
+      );
+      expect(findings).toEqual([
+         {
+            sourceID: "orders@m",
+            modelPath: "m.malloy",
+            subject: "orders",
+            mismatches: [
+               {
+                  column: "flag",
+                  declaredType: "boolean",
+                  storedType: "INTEGER",
+                  handling: "cast",
+               },
+               {
+                  column: "amt",
+                  declaredType: "number",
+                  storedType: "VARCHAR",
+                  handling: "live",
+               },
+               { column: "day", declaredType: "date", handling: "live" },
+            ],
+         },
+         {
+            sourceID: "r@m",
+            modelPath: "m.malloy",
+            subject: "orders",
+            mismatches: [
+               {
+                  column: "k",
+                  declaredType: "number",
+                  storedType: "VARCHAR",
+                  handling: "table",
+               },
+            ],
+         },
+      ]);
    });
 });
