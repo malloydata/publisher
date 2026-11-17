@@ -2,10 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { hostname } from "node:os";
 import { logger } from "../logger";
+import { installSettings } from "../test_helpers/settings_env";
 import { prepareAndRun } from "./query_execution";
 import { buildQueryMetadataInput } from "./query_metadata";
-import { emitStatementUsage, withStatementUsage } from "./statement_usage";
+import {
+   emitStatementUsage,
+   usageCatalog,
+   withStatementUsage,
+} from "./statement_usage";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function captureUsage() {
    const spy = spyOn(logger, "info");
@@ -21,29 +29,86 @@ describe("statement usage records", () => {
    afterEach(() => restore?.());
 
    it("emits the stable shape a collector maps", () => {
+      const settings = installSettings({
+         env: { PUBLISHER_DUCKDB_THREADS: "3" },
+      });
       const { spy, records } = captureUsage();
-      restore = () => spy.mockRestore();
+      restore = () => {
+         spy.mockRestore();
+         settings.restore();
+      };
       emitStatementUsage({
          environment: "acme___prod",
          connection: "sales",
+         catalog: "sales_catalog",
          surface: "serve",
          package: "orders",
          durationMs: 12.6,
          rows: 3,
          status: "ok",
       });
+      // The key names are the contract: a collector reads them by name.
       expect(records()).toEqual([
          {
             event: "statement_usage",
+            statement_id: expect.stringMatching(UUID),
             environment: "acme___prod",
             connection: "sales",
+            catalog: "sales_catalog",
             surface: "serve",
             package: "orders",
             duration_ms: 13,
             rows: 3,
             status: "ok",
+            threads: 3,
+            worker: hostname(),
          },
       ]);
+   });
+
+   it("leaves out what a statement does not have", () => {
+      const settings = installSettings({
+         env: { PUBLISHER_DUCKDB_THREADS: "off" },
+      });
+      const { spy, records } = captureUsage();
+      restore = () => {
+         spy.mockRestore();
+         settings.restore();
+      };
+      emitStatementUsage({
+         environment: "",
+         connection: "warehouse",
+         surface: "sql",
+         durationMs: 1,
+         status: "error",
+      });
+      expect(Object.keys(records()[0]).sort()).toEqual([
+         "connection",
+         "duration_ms",
+         "environment",
+         "event",
+         "statement_id",
+         "status",
+         "surface",
+         "worker",
+      ]);
+   });
+
+   it("gives every record a statement_id of its own", () => {
+      const { spy, records } = captureUsage();
+      restore = () => spy.mockRestore();
+      const usage = {
+         environment: "e",
+         connection: "c",
+         surface: "serve",
+         durationMs: 1,
+         status: "ok",
+      } as const;
+      emitStatementUsage(usage);
+      emitStatementUsage(usage);
+      const ids = records().map((r) => r.statement_id);
+      expect(ids).toHaveLength(2);
+      expect(ids[0]).not.toBe(ids[1]);
    });
 
    it("records a failure and rethrows it unchanged", async () => {
@@ -78,6 +143,22 @@ describe("statement usage records", () => {
    });
 });
 
+describe("usageCatalog", () => {
+   it("is a DuckLake connection's metadata schema, and nothing for any other", () => {
+      expect(
+         usageCatalog({
+            ducklakeConnection: { catalog: { metadataSchema: "db_1a2b" } },
+         }),
+      ).toBe("db_1a2b");
+      expect(usageCatalog({ ducklakeConnection: { catalog: {} } })).toBe(
+         undefined,
+      );
+      expect(usageCatalog({ ducklakeConnection: {} })).toBe(undefined);
+      expect(usageCatalog({})).toBe(undefined);
+      expect(usageCatalog(undefined)).toBe(undefined);
+   });
+});
+
 describe("which connections are metered", () => {
    const input = (envImpl: object) =>
       buildQueryMetadataInput({
@@ -103,6 +184,29 @@ describe("which connections are metered", () => {
       expect(metered("lake")).toBe(true);
       expect(metered("warehouse")).toBe(false);
       expect(metered("unknown")).toBe(false);
+   });
+
+   it("names the catalog of a managed connection and of a storage destination", () => {
+      const ducklake = (metadataSchema: string) => ({
+         ducklakeConnection: { catalog: { metadataSchema } },
+      });
+      const catalog = input({
+         getApiConnection: (name: string) => {
+            if (name === "sales") return { managed: true, ...ducklake("db_a") };
+            // A customer's own DuckLake connection is not metered, so its
+            // catalog is not the record's.
+            if (name === "warehouse") return ducklake("db_w");
+            throw new Error("not a connection");
+         },
+         getStorageDestination: (name: string) => {
+            if (name !== "lake") throw new Error("not a destination");
+            return ducklake("db_b");
+         },
+      }).meteredCatalog!;
+      expect(catalog("sales")).toBe("db_a");
+      expect(catalog("lake")).toBe("db_b");
+      expect(catalog("warehouse")).toBe(undefined);
+      expect(catalog("unknown")).toBe(undefined);
    });
 });
 
@@ -132,6 +236,7 @@ describe("prepareAndRun emits usage only for a metered connection", () => {
                   queryMetadata: () => undefined,
                   usage: {
                      metered: (n) => n === "sales",
+                     catalog: (n) => `db_${n}`,
                      environment: "e",
                      package: "p",
                   },
@@ -141,6 +246,7 @@ describe("prepareAndRun emits usage only for a metered connection", () => {
             if (expected) {
                expect(records()[0]).toMatchObject({
                   connection: "sales",
+                  catalog: "db_sales",
                   surface: "serve",
                   rows: 2,
                });
@@ -168,5 +274,31 @@ describe("prepareAndRun emits usage only for a metered connection", () => {
          },
       );
       expect(result.result).toEqual({ data: { rowCount: 2 } } as never);
+   });
+
+   it("a catalog lookup that throws still records the statement", async () => {
+      const { spy, records } = captureUsage();
+      try {
+         await prepareAndRun(
+            runnable("sales"),
+            {},
+            {
+               abortSignal: undefined,
+               maxRows: 10,
+               queryMetadata: () => undefined,
+               usage: {
+                  metered: () => true,
+                  catalog: () => {
+                     throw new Error("lookup failed");
+                  },
+                  environment: "e",
+               },
+            },
+         );
+         expect(records()).toHaveLength(1);
+         expect(records()[0].catalog).toBeUndefined();
+      } finally {
+         spy.mockRestore();
+      }
    });
 });

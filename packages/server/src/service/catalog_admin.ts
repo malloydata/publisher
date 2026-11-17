@@ -478,6 +478,8 @@ export class CatalogAdmin {
             {
                environment: "",
                connection: name,
+               // The admin API addresses a catalog by its own name.
+               catalog: name,
                surface: source.kind === "table" ? "copy" : "load",
             },
             () =>

@@ -41,7 +41,7 @@ import {
 import { errMessage } from "../../../utils";
 import type { ApiConnection } from "../../model";
 import type { QueryMetadata } from "../../query_metadata";
-import { withStatementUsage } from "../../statement_usage";
+import { usageCatalog, withStatementUsage } from "../../statement_usage";
 import {
    bindingServesModelSource,
    deriveServeBindings,
@@ -262,6 +262,7 @@ async function recomputeIntoStorage(
                  connection: destinationName,
                  surface: "build",
                  package: params.packageName ?? params.incremental?.packageName,
+                 catalog: usageCatalog(destinationConnection),
               },
               build,
            )
@@ -916,6 +917,7 @@ export class StorageBuildStrategy
                connection: destinationName,
                surface: "build",
                package: params.packageName ?? params.incremental?.packageName,
+               catalog: usageCatalog(destinationConnection),
             },
             () =>
                extension

@@ -2090,3 +2090,157 @@ describe("raw SQL on a managed database", () => {
       expect(runSQL.called).toBe(false);
    });
 });
+
+describe("ConnectionController.getConnectionQueryData statement usage", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   /** A managed DuckLake connection (a catalog an orchestrator provisions). */
+   const managedConnection = () => ({
+      name: "sales",
+      type: "ducklake",
+      managed: true,
+      ducklakeConnection: { catalog: { metadataSchema: "db_1a2b" } },
+   });
+
+   function controllerOver(
+      connection: Connection,
+      apiConnection: () => object,
+   ): ConnectionController {
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+            getApiConnection: apiConnection,
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(connection);
+      return controller;
+   }
+
+   /** The usage records logged while `run` ran. */
+   async function usageRecords(
+      run: () => Promise<unknown>,
+   ): Promise<{ records: Record<string, unknown>[]; outcome: unknown }> {
+      const info = sinon.stub(logger, "info");
+      const outcome = await run().catch((e: unknown) => e);
+      const records = info
+         .getCalls()
+         .map((c) => c.args as unknown as [unknown, Record<string, unknown>])
+         .filter(([message]) => message === "statement_usage")
+         .map(([, record]) => record);
+      return { records, outcome };
+   }
+
+   const query = (controller: ConnectionController, sql: string) => () =>
+      controller.getConnectionQueryData(
+         "acme___prod",
+         "sales",
+         sql,
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+
+   const buffered = (runSQL: sinon.SinonStub) =>
+      ({ runSQL }) as unknown as Connection;
+
+   it("records one sql statement, with its rows and catalog, on a managed connection", async () => {
+      const runSQL = sinon
+         .stub()
+         .resolves({ rows: [{ a: 1 }, { a: 2 }], totalRows: 2 });
+      const controller = controllerOver(buffered(runSQL), managedConnection);
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(outcome).not.toBeInstanceOf(Error);
+      expect(runSQL.calledOnce).toBe(true);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+         event: "statement_usage",
+         environment: "acme___prod",
+         connection: "sales",
+         catalog: "db_1a2b",
+         surface: "sql",
+         rows: 2,
+         status: "ok",
+      });
+   });
+
+   it("records a streamed statement the same way", async () => {
+      const streaming = {
+         canStream(): true {
+            return true;
+         },
+         async *runSQLStream(): AsyncIterableIterator<QueryRecord> {
+            yield { a: 1 };
+            yield { a: 2 };
+            yield { a: 3 };
+         },
+      } as unknown as Connection;
+      const controller = controllerOver(streaming, managedConnection);
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(outcome).not.toBeInstanceOf(Error);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+         surface: "sql",
+         rows: 3,
+         status: "ok",
+      });
+   });
+
+   it("records nothing on a connection that is not managed", async () => {
+      const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
+      const controller = controllerOver(buffered(runSQL), unmanagedConnection);
+
+      const { records } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(runSQL.calledOnce).toBe(true);
+      expect(records).toEqual([]);
+   });
+
+   it("records nothing for a statement refused before it runs", async () => {
+      const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+      const controller = controllerOver(buffered(runSQL), managedConnection);
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "CREATE TABLE t AS SELECT 1"),
+      );
+
+      expect(outcome).toBeInstanceOf(BadRequestError);
+      expect(runSQL.called).toBe(false);
+      expect(records).toEqual([]);
+   });
+
+   it("records a statement that fails, once, as an error", async () => {
+      const runSQL = sinon.stub().rejects(new Error("catalog unreachable"));
+      const controller = controllerOver(buffered(runSQL), managedConnection);
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(outcome).toBeInstanceOf(Error);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ surface: "sql", status: "error" });
+      expect(records[0].rows).toBeUndefined();
+   });
+});
