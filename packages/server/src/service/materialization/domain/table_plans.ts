@@ -83,8 +83,8 @@ export function isPersistedResultSourceID(sourceID: string): boolean {
 
 /**
  * Whether `sourceID` is a persisted named query's generated build source
- * (`<query>__query`), not a persisted view's. Its table keeps the name it
- * always had; only how it is reported changes.
+ * (`<query>__query`), not a persisted view's: how it is reported, and its
+ * table's readable name, which reads as the query (`sourceLabel`).
  */
 export function isPersistedQuerySourceID(sourceID: string): boolean {
    return (
