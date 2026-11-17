@@ -55,6 +55,9 @@ export const COMPANION_SUFFIXES: readonly string[] = [
 /** The suffix a persisted view's generated build source carries. */
 const VIEW_BUILD_SUFFIX = "__view";
 
+/** The suffix a persisted named query's generated build source carries. */
+const QUERY_BUILD_SUFFIX = "__query";
+
 /**
  * The leaf budget of a table built with `dialect` (its `leafBudget`
  * capability, matched whatever its case), or in a storage destination (120,
@@ -199,14 +202,21 @@ export function fitReadable(
  * The source a table's name reads: a rollup is `<base>_by_<grain dims>` (the
  * hash tells grains apart, so no digest), a persisted view's build source
  * (`<source>__<view>__view`) is `<source>__<view>`, which reads as
- * `<source>_<view>` once sanitized, and anything else its own name.
+ * `<source>_<view>` once sanitized, a persisted named query's
+ * (`<query>__query`, `persistedQuery`) is `<query>`, and anything else its
+ * own name. The hash is over the build source's full name, so a query and a
+ * source or view whose names read alike still name two tables.
  */
 export function sourceLabel(
    name: string,
    rollup?: { baseSourceName: string; grainDimensions: readonly string[] },
+   options: { persistedQuery?: boolean } = {},
 ): string {
    if (rollup) {
       return `${rollup.baseSourceName}_by_${rollup.grainDimensions.join("_")}`;
+   }
+   if (options.persistedQuery && name.endsWith(QUERY_BUILD_SUFFIX)) {
+      return name.slice(0, name.length - QUERY_BUILD_SUFFIX.length);
    }
    return name.endsWith(VIEW_BUILD_SUFFIX)
       ? name.slice(0, name.length - VIEW_BUILD_SUFFIX.length)

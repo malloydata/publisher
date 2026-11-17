@@ -61,10 +61,12 @@
  *     #@ persist                               // the author's line, verbatim
  *     source: top_carriers__query is top_carriers
  *
- * The `__query` segment is the query marker in the build source's name, and
- * so in its default table name
- * (`<package>__<file>__<query>_query__p<8 hex>`), so no existing
- * table name moves and a source of the query's name never shares its table.
+ * The `__query` segment is the query marker in the build source's name, so a
+ * source of the query's name never shares its table: the table name's hash is
+ * over the full name. Its readable part drops the marker, as a view's drops
+ * `__view` (`<package>__<file>__<query>__p<8 hex>`, `sourceLabel`); a table
+ * built under the earlier `…__<query>_query__p<8 hex>` is renamed and rebuilt
+ * once (`keepsReadableName`).
  *
  * Invalid, failing the publish and the load (`persist-query-invalid`, or
  * `persist-query-unparseable` for a line that does not parse): an `@env.`

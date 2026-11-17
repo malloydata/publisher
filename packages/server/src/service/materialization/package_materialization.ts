@@ -55,6 +55,7 @@ import {
 import { observedDatabaseColumns } from "./run/database_column_read";
 import {
    applyObservedColumns,
+   type DriftDeclaration,
    bindColocatedEntries,
    bindStorageEntries,
    deriveColocatedServeBindings,
@@ -380,6 +381,7 @@ export class PackageMaterialization {
          entries: this.colocatedEntries ?? {},
          bindings: this.colocatedServeBindings(),
          observed: this.observedColumns,
+         declared: (id) => this.driftDeclaration(id),
       });
       this.observedOutcome = {
          drifted: observed.drifted,
@@ -1105,21 +1107,45 @@ export class PackageMaterialization {
     * build, as the `storage-column-type-mismatch` warning reports them.
     */
    private databaseDriftFindings(): DatabaseDriftFinding[] {
-      const { bindings } = this.snapshot();
+      this.snapshot();
       const { drifted } = this.observedOutcome;
       if (drifted.length === 0) return [];
       return databaseDriftFindings(drifted, this.plan.buildPlan, {
-         servedCopy: (id) =>
-            bindings.some(
-               (b) => b.tier === "colocated" && b.virtualHandle === id,
-            ),
-         queryTimezone: (sourceID, source) =>
-            queryTimezoneOf(
-               source.preaggregate
-                  ? this.baseDeclaration(source)
-                  : this.declarationLookup(sourceID),
-            ),
+         queryTimezone: this.driftQueryTimezone,
       });
+   }
+
+   /** The time zone a moved column of `source`'s table is read in. */
+   private readonly driftQueryTimezone = (
+      sourceID: string,
+      source: NonNullable<NonNullable<BuildPlan>["sources"]>[string],
+   ): string | undefined =>
+      queryTimezoneOf(
+         source.preaggregate
+            ? this.baseDeclaration(source)
+            : this.declarationLookup(sourceID),
+      );
+
+   /**
+    * What a substituted database table's moved columns must read as, by its
+    * content address: its build source's declared columns and reader's time
+    * zone, the inputs {@link databaseDriftFindings} reads, so the bind and
+    * the warning decide each column alike.
+    */
+   private driftDeclaration(
+      sourceEntityId: string,
+   ): DriftDeclaration | undefined {
+      const found = Object.entries(this.plan.buildPlan?.sources ?? {}).find(
+         ([, s]) => s.sourceEntityId === sourceEntityId,
+      );
+      if (!found) return undefined;
+      const [sourceID, source] = found;
+      const queryTimezone = this.driftQueryTimezone(sourceID, source);
+      return {
+         columns: source.columns ?? [],
+         connectionName: source.connectionName,
+         ...(queryTimezone ? { queryTimezone } : {}),
+      };
    }
 
    /**

@@ -25,14 +25,14 @@ import {
 } from "../text/author_model";
 import {
    declaredColumnsOf,
+   driftDeclaredType,
+   driftedColumnRead,
    ducklakeStoresAsDouble,
    type ReadCast,
    serveTypePlan,
    storedColumnReadPlan,
    storedColumnTypeMismatches,
    type StoredColumnTypeMismatch,
-   storedMalloyType,
-   storedTypeServesAs,
 } from "../stored_column_types";
 import type { ObservedDrift } from "./bind";
 import type { BuildPlan } from "../domain/types";
@@ -169,34 +169,31 @@ export interface DatabaseDriftFinding {
    subject: string;
    /**
     * Each moved column against the type its source declares: `storedType` is
-    * absent for a column that is gone. `table` when the table is answered
-    * live as a whole (a rollup, persisted view or query, which no cast
-    * reaches).
+    * absent for a column that is gone.
     */
    mismatches: (Omit<StoredColumnTypeMismatch, "storedType"> & {
       /** Absent when Malloy reads the type it holds now as no basic type. */
       storedType?: string;
       /** The table no longer has the column. */
       gone?: true;
-      handling: MismatchHandling | "table";
+      handling: MismatchHandling;
    })[];
 }
 
 /**
  * The warning findings of the database tables whose columns moved outside a
  * build ({@link ObservedDrift}), against the columns the plan's build source
- * declares, handled as the bind decided ({@link ObservedDrift}): any table
- * but a served copy's is answered live whole; a served copy leaves out a
- * column the bind left out, and reads any other with the type it holds now
- * through a faithful cast, as is when that serves as declared (not
- * reported), or not at all.
+ * declares, each handled as every reader of the table takes it
+ * ({@link driftedColumnRead}): left out where the bind left it out or no cast
+ * reads it as declared (`live`), through a faithful cast (`cast`), or as is
+ * when it still serves as declared (not reported). The served copy of a
+ * `#(materialize)` or `#@ persist` table and the projection a rollup,
+ * persisted view or query is substituted through apply the same rule.
  */
 export function databaseDriftFindings(
    drifted: readonly ObservedDrift[],
    plan: BuildPlan | null,
    readers: {
-      /** Whether the table is read through the served copy, which casts per column. */
-      servedCopy: (sourceEntityId: string) => boolean;
       /** As {@link boundTableTypeFindings}'s. */
       queryTimezone?: (
          sourceID: string,
@@ -210,39 +207,25 @@ export function databaseDriftFindings(
          sources.find(([, s]) => s.sourceEntityId === drift.sourceEntityId) ??
          [];
       if (!sourceID || !source) return [];
-      const declaredOf = (column: string, builtType: string) =>
-         source.columns?.find((c) => c.name === column)?.type ??
-         storedMalloyType(builtType) ??
-         builtType;
-      const servedCopy = readers.servedCopy(drift.sourceEntityId);
       const queryTimezone = readers.queryTimezone?.(sourceID, source);
       const mismatches = drift.columns.flatMap(
          (c): DatabaseDriftFinding["mismatches"] => {
-            const declaredType = declaredOf(c.column, c.builtType);
+            const declaredType = driftDeclaredType(
+               source.columns,
+               c.column,
+               c.builtType,
+            );
             const moved = {
                column: c.column,
                declaredType,
                ...(c.observedType ? { storedType: c.observedType } : {}),
                ...(c.gone ? { gone: true as const } : {}),
             };
-            // The bind's own decision: a table no cast reaches answers live
-            // whole, and a column it leaves out answers live.
-            if (!servedCopy) return [{ ...moved, handling: "table" }];
-            if (c.leftOut || !c.observedType) {
-               return [{ ...moved, handling: "live" }];
-            }
-            // Read with the type it holds now, through the one stored-column
-            // read plan: a faithful cast, as is when it serves as declared,
-            // else left out.
-            const { casts } = serveTypePlan(
-               [{ ...moved, storedType: c.observedType }],
-               { queryTimezone },
-            );
-            if (casts.length > 0) return [{ ...moved, handling: "cast" }];
-            if (storedTypeServesAs(c.observedType, declaredType) !== false) {
-               return [];
-            }
-            return [{ ...moved, handling: "live" }];
+            const how = driftedColumnRead(c, declaredType, { queryTimezone });
+            if (how.read === "as_is") return [];
+            return [
+               { ...moved, handling: how.read === "cast" ? "cast" : "live" },
+            ];
          },
       );
       if (mismatches.length === 0) return [];
@@ -262,9 +245,10 @@ export function databaseDriftFindings(
  * How each reader treats a mismatch, the one rule every `storage=` reader
  * applies ({@link serveTypePlan}): read through a faithful cast where one
  * gives live's values, else not read, so a query reading it answers live. A
- * persisted result (`storedColumnCasts`) and a rollup (`storedRollupReads`)
- * decline the table for such a column; a `#(materialize)` table's served copy
- * leaves the column out (`materializedColumnsOf`).
+ * persisted result (`storedColumnCasts`), every column of which its queries
+ * read, declines the table for such a column; a rollup (`storedRollupReads`)
+ * and a `#(materialize)` table's served copy (`materializedColumnsOf`) leave
+ * the column out.
  */
 function handlingOf(
    mismatches: readonly StoredColumnTypeMismatch[],

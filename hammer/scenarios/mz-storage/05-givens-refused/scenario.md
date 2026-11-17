@@ -70,4 +70,4 @@ Expect:
 
 | source        | tier    | reason                   |
 | ------------- | ------- | ------------------------ |
-| scoped_rollup | storage | given_in_persisted_query |
+| scoped_rollup | storage | reads_given |

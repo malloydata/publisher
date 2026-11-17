@@ -556,7 +556,7 @@ source: scoped__preagg__category is scoped -> {
       }
       // The one reason every mechanism gives a build that reads a given;
       // `preaggregate_over_dynamic_source` is retained, no longer produced.
-      expect(err?.reason).toBe("given_in_persisted_query");
+      expect(err?.reason).toBe("reads_given");
       // Not the advice that leads nowhere.
       expect(err?.message).not.toContain("extend block");
       expect(err?.message).toContain("no read-time re-application");
