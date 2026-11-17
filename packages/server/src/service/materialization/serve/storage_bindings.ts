@@ -7,8 +7,8 @@
  * not this model's), for the path report and the package's served-source
  * list; and the stored columns whose type does not serve as declared
  * (`storage-column-type-mismatch`), each read through a cast or answered
- * live. The same warning's colocated findings: a table altered outside a
- * build, whose drift the bind read ({@link colocatedDriftFindings}).
+ * live. The same warning's database-table findings: a table altered outside a
+ * build, whose drift the bind read ({@link databaseDriftFindings}).
  *
  * Called by `Model` once per snapshot, which logs and counts what this
  * finds. Reads the author's model files for the lift; no other I/O.
@@ -139,11 +139,11 @@ export function boundTableTypeFindings(
 }
 
 /**
- * One bound colocated table whose warehouse columns moved since its build,
+ * One bound database table whose warehouse columns moved since its build,
  * as the bind read them ({@link ObservedDrift}), for the same warning a
  * `storage=` table's mismatch raises.
  */
-export interface ColocatedDriftFinding {
+export interface DatabaseDriftFinding {
    sourceID: string;
    /** The table's content address, as the bind read it. */
    sourceEntityId: string;
@@ -166,7 +166,7 @@ export interface ColocatedDriftFinding {
 }
 
 /**
- * The warning findings of the colocated tables whose columns moved outside a
+ * The warning findings of the database tables whose columns moved outside a
  * build ({@link ObservedDrift}), against the columns the plan's build source
  * declares, handled as the bind decided ({@link ObservedDrift}): any table
  * but a served copy's is answered live whole; a served copy leaves out a
@@ -174,7 +174,7 @@ export interface ColocatedDriftFinding {
  * through a faithful cast, as is when that serves as declared (not
  * reported), or not at all.
  */
-export function colocatedDriftFindings(
+export function databaseDriftFindings(
    drifted: readonly ObservedDrift[],
    plan: BuildPlan | null,
    readers: {
@@ -186,9 +186,9 @@ export function colocatedDriftFindings(
          source: NonNullable<BuildPlan["sources"]>[string],
       ) => string | undefined;
    },
-): ColocatedDriftFinding[] {
+): DatabaseDriftFinding[] {
    const sources = Object.entries(plan?.sources ?? {});
-   return drifted.flatMap((drift): ColocatedDriftFinding[] => {
+   return drifted.flatMap((drift): DatabaseDriftFinding[] => {
       const [sourceID, source] =
          sources.find(([, s]) => s.sourceEntityId === drift.sourceEntityId) ??
          [];
@@ -200,7 +200,7 @@ export function colocatedDriftFindings(
       const servedCopy = readers.servedCopy(drift.sourceEntityId);
       const queryTimezone = readers.queryTimezone?.(sourceID, source);
       const mismatches = drift.columns.flatMap(
-         (c): ColocatedDriftFinding["mismatches"] => {
+         (c): DatabaseDriftFinding["mismatches"] => {
             const declaredType = declaredOf(c.column, c.builtType);
             const moved = {
                column: c.column,

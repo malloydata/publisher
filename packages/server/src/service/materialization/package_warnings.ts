@@ -50,7 +50,7 @@ import {
 } from "./stored_column_types";
 import type {
    BoundTableTypeFinding,
-   ColocatedDriftFinding,
+   DatabaseDriftFinding,
    MismatchHandling,
 } from "./serve/storage_bindings";
 
@@ -69,11 +69,11 @@ const MISMATCH_HANDLING_TEXT: Record<
 };
 
 /**
- * What a colocated drift warning says of how the column is read: the table
+ * What a database-table drift warning says of how the column is read: the table
  * was altered outside a build, so rebuilding it is the fix.
  */
 const DRIFT_HANDLING_TEXT: Record<
-   ColocatedDriftFinding["mismatches"][number]["handling"],
+   DatabaseDriftFinding["mismatches"][number]["handling"],
    (declaredType: string) => string
 > = {
    cast: (declaredType) =>
@@ -343,14 +343,14 @@ export function servedCopyWarnings(
  * Warnings for stored columns whose type does not serve as the type Malloy
  * declares, one per source and column, read from the bindings bound now:
  * each model's `#@ persist` sources', then every other `storage=` table's
- * (`bound`), then each colocated table's whose columns moved outside a build
- * (`colocated`). Keyed by the source's sourceID, so two models' same-named
+ * (`bound`), then each database table's whose columns moved outside a build
+ * (`database`). Keyed by the source's sourceID, so two models' same-named
  * sources both report and a source several models import reports once.
  */
 export function storedColumnTypeWarnings(
    models: Models,
    bound: readonly BoundTableTypeFinding[],
-   colocated: readonly ColocatedDriftFinding[] = [],
+   database: readonly DatabaseDriftFinding[] = [],
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const seen = new Set<string>();
@@ -388,7 +388,7 @@ export function storedColumnTypeWarnings(
          add(finding.modelPath ?? "", finding.subject, finding.sourceID, m);
       }
    }
-   for (const finding of colocated) {
+   for (const finding of database) {
       for (const m of finding.mismatches) {
          const key = `${finding.sourceID}\u0000${m.column}`;
          if (seen.has(key)) continue;

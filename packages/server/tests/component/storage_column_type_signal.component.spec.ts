@@ -19,6 +19,7 @@ import { resetMaterializationTelemetryForTesting } from "../../src/materializati
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
+import type { ObservedColumns } from "../../src/service/materialization/domain/types";
 import type { Package } from "../../src/service/package";
 import {
    startMetricsHarness,
@@ -300,10 +301,7 @@ describe("a colocated table read again after a transient failure", () => {
       // One table drifted, one unread by a transient failure, one as built.
       const entries: Record<string, Record<string, unknown>> = {};
       const asBuilt = new Map<string, { name: string; type: string }[]>();
-      const observed = new Map<
-         string,
-         { columns: { name: string; type: string }[] } | { unread: string }
-      >();
+      const observed = new Map<string, ObservedColumns>();
       let drifted = 0;
       for (const source of Object.values(pkg.getBuildPlan()?.sources ?? {})) {
          const id = source.sourceEntityId;
@@ -328,7 +326,7 @@ describe("a colocated table read again after a transient failure", () => {
             });
             drifted++;
          } else if (source.name === "daily") {
-            observed.set(id, { unread: "a transient failure" });
+            observed.set(id, { unread: "timed_out" });
          } else {
             observed.set(id, { columns: schema });
          }

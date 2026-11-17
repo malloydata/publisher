@@ -67,8 +67,8 @@ import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
-   type ColocatedDriftFinding,
-   colocatedDriftFindings,
+   type DatabaseDriftFinding,
+   databaseDriftFindings,
 } from "./serve/storage_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import { tablePathParts } from "../quoting";
@@ -627,7 +627,7 @@ export class PackageMaterialization {
     */
    private logObservedOutcome(only?: ReadonlySet<string>): void {
       const read = (id: string) => only === undefined || only.has(id);
-      for (const finding of this.colocatedDriftFindings()) {
+      for (const finding of this.databaseDriftFindings()) {
          if (!read(finding.sourceEntityId)) continue;
          for (const m of finding.mismatches) {
             recordStoredColumnTypeMismatch("serve", m.declaredType);
@@ -1054,7 +1054,7 @@ export class PackageMaterialization {
       return warnings.storedColumnTypeWarnings(
          this.owner.models(),
          this.boundTypeFindings,
-         this.colocatedDriftFindings(),
+         this.databaseDriftFindings(),
       );
    }
 
@@ -1062,11 +1062,11 @@ export class PackageMaterialization {
     * The colocated tables whose columns the last bind found moved outside a
     * build, as the `storage-column-type-mismatch` warning reports them.
     */
-   private colocatedDriftFindings(): ColocatedDriftFinding[] {
+   private databaseDriftFindings(): DatabaseDriftFinding[] {
       const { bindings } = this.snapshot();
       const { drifted } = this.observedOutcome;
       if (drifted.length === 0) return [];
-      return colocatedDriftFindings(drifted, this.plan.buildPlan, {
+      return databaseDriftFindings(drifted, this.plan.buildPlan, {
          servedCopy: (id) =>
             bindings.some(
                (b) => b.tier === "colocated" && b.virtualHandle === id,

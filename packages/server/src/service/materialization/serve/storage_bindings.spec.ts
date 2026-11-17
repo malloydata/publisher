@@ -12,7 +12,7 @@ import type { BuildPlan } from "../domain/types";
 import type { MaterializePlan } from "../domain/table_plans";
 import {
    boundTableTypeFindings,
-   colocatedDriftFindings,
+   databaseDriftFindings,
    modelStorageTables,
    ownBindings,
 } from "./storage_bindings";
@@ -334,7 +334,7 @@ describe("boundTableTypeFindings", () => {
    });
 });
 
-describe("colocatedDriftFindings", () => {
+describe("databaseDriftFindings", () => {
    const plan = {
       sources: {
          "orders@m": {
@@ -359,7 +359,7 @@ describe("colocatedDriftFindings", () => {
    } as unknown as BuildPlan;
 
    it("handles each moved column as the bind does: cast, left out, or the whole table live", () => {
-      const findings = colocatedDriftFindings(
+      const findings = databaseDriftFindings(
          [
             {
                sourceEntityId: "vh",
