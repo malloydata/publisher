@@ -303,7 +303,8 @@ same origin as the REST API. The consequences follow from that and are all inten
     `hello`, and posts only to that origin (never `*`). The host accepts only messages from the
     iframe it created, at the page's origin.
   - **A nonce against navigated frames.** The host puts a random value in the iframe URL
-    fragment; the page echoes it in every message and the host drops any without it. The host
+    fragment; the page reads it once, removes it from its URL (restoring it only before its own
+    reload) and echoes it in every message, and the host drops any without it. The host
     never sends it, so a document that navigated into the frame cannot learn it. Without this,
     origin and source checks alone would accept a different document in the same window at the
     same origin.
@@ -314,15 +315,18 @@ same origin as the REST API. The consequences follow from that and are all inten
     bus message rather than `?embed_token=` in the iframe URL, which keeps it out of history,
     `Referer` and server logs. The runtime still holds it in page JavaScript, so any script the
     page loads can read it. The `token` option is deprecated, not removed.
-  - **`isolate` trade-offs.** It drops `allow-same-origin` from the sandbox, so the page gets an
-    opaque origin: it cannot touch the host's storage or cookies, and it loses its own as well,
-    so cookie authentication, `localStorage` and IndexedDB stop working and a fetch to Publisher
-    becomes cross-origin (CORS applies, no cookies; use `getToken`). The host cannot name an
-    opaque origin, so it posts to `*`; it sends only the empty `hello` until the frame has
-    proved the nonce. A token or reply is never posted across a reload: the host checks the
-    load generation after every await. The remaining window is a navigation that starts after
-    a post was sent. Use it for a page you want contained, with
-    short-lived tokens.
+  - **Every host post names an exact origin.** The host never posts to `*`, so the bus does not
+    serve a frame with an opaque origin (sandboxed without `allow-same-origin`), whose origin cannot
+    be named and whose requests a stock Publisher rejects anyway (CORS refuses `Origin: null`). The
+    embed's sandbox is `allow-scripts allow-same-origin allow-forms`. Containing a page's own
+    JavaScript is the per-package-origin design in Known gaps 8.
+  - **A reload can still race a token.** The host checks the frame's load generation after every
+    `await` before it posts a token or a reply to a page request, and a document without the nonce
+    cannot ask for either. But `load` fires only after a navigated document has finished loading,
+    so a token that resolves while the frame is navigating can still reach the new document if it
+    is at the same origin. Per-package origins close that (a navigated document would not share
+    the page's origin), as would posting through a `MessageChannel` port the page proves the nonce
+    to, a possible follow-up. Until then keep tokens short-lived and scoped to the embed.
 - **`trustPageContextHeader` needs a gateway that strips the header.** With the setting on
   (default off), the request header `x-publisher-page-context` overrides a page's environment,
   package, API base and `hostOrigins`. Publisher validates the values and ignores a bad header
@@ -426,6 +430,18 @@ request that names an older version with `versionId` is answered under that vers
 until it is archived, and moving `latest` back rolls the rules back too. The MCP tools serve
 `latest` only. Archive a version whose rules must no longer apply
 ([package-versions.md](package-versions.md#limits-worth-knowing)).
+
+**8. A data app's JavaScript shares the origin of everything else Publisher serves, and the
+host bus cannot change that.** Sandboxing the frame without `allow-same-origin` is not a fix:
+the page then has an opaque origin that a stock Publisher refuses (CORS rejects
+`Origin: null`) and that a host cannot name in a `postMessage`. The way to give a page its own
+boundary is **per-package origins**: serve each package's `public/` from an origin of its own, so a
+page's script cannot read the Console's or another package's cookies and storage, a navigated
+document is not at the page's origin (which also closes the token race noted under the host bus
+above and in [html-data-apps.md](html-data-apps.md#security-model)), and CORS and
+`frame-ancestors` become per-package controls. That is a deployment and routing change, not a
+runtime option, and it is not built; "If isolation gets built" below describes the other half of
+the idea.
 
 ## If isolation gets built
 

@@ -302,6 +302,11 @@ version's assets too, not `latest`'s. The rules:
 A page can be opened at a versioned URL directly. The Console's data-app listing
 links the short form, and the redirect covers it.
 
+Relative links that stay inside `public/` work the same at both URLs. One that
+climbs out of `public/` (`../..` above the package root) lands somewhere else under
+`/versions/<v>/public/`, which sits two segments deeper than the short URL, so keep
+a page's links inside `public/`.
+
 ### Page context
 
 Every HTML file Publisher serves from `public/` (`.html` and `.htm`, including a
@@ -317,7 +322,7 @@ it is instead of guessing from the URL:
 | Field | Meaning |
 |---|---|
 | `v` | Context format, `1` |
-| `environment`, `package` | The names the page was served under; `Publisher.context` and every default query target come from here |
+| `environment`, `package` | The names the page was served under. The runtime uses them only when its URL has none of the shapes it knows (below): a gateway may have renamed the path, and a name parsed from the URL is the one the API behind that gateway answers to |
 | `versionId` | The version the page was served from, or `null` for a package with no version records. When set, every query to the page's own package is pinned to it, the `?versionId=` probe is skipped, and [live reload](#live-reload) is off: a version never changes |
 | `apiBase` | The path the runtime calls the API under, `/api/v0` by default. Only a path on the page's own origin is honored; anything else is ignored |
 | `hostOrigins` | Who may embed the page and talk to it over the [bus](#talking-to-the-host): the usable sources of `frameAncestors` (below) |
@@ -328,7 +333,9 @@ reads it as the page's own origin. An exact origin (`https://app.example.com`)
 and a wildcard host (`https://*.example.com`: that scheme, that port, any host
 ending in `.example.com`) are kept. `*`, a scheme alone (`https:`), a wildcard
 anywhere but the leading label and a source with a path are dropped, because
-none can name a window to post to. If nothing usable is left the bus is off and
+none can name a window to post to. So is a source with no scheme
+(`app.example.com`), which is valid CSP but names no origin to post to: write
+`https://app.example.com`. If nothing usable is left the bus is off and
 the page keeps only the legacy size message.
 
 The block is ASCII only (`<`, `>`, `&`, U+2028/9 and every non-ASCII character
@@ -362,12 +369,21 @@ the names, API base and embedding hosts of the page they are sent, which is a
 gateway's decision and not a client's. Leave the setting off unless a trusted
 tier sits in front of Publisher; with it off the header is never read.
 
-When a page has no context (a copy cached before the server injected it, or one
-served through something that rewrites it away), `Publisher.context` falls back
-to the URL. Two shapes are recognized: the in-app viewer's
+**The URL's names win.** Two shapes are recognized: the in-app viewer's
 `/environments/<env>/packages/<pkg>/...` (also at `/versions/<v>/public/`), and
 `/apps/<env>/<pkg>/...`, which a host that embeds the app on a third-party site
-may serve it from. Under either, `query` and `queryFull` use the context
+may serve it from. When the page's URL has one of them, `Publisher.context` and
+every default query target take the names from the URL, not from the injected
+block: behind a gateway that renames paths (a worker that sees
+`org___env`) the URL holds the names the client addressed, and the block holds
+the internal ones. The block still supplies `versionId`, `apiBase` and
+`hostOrigins`, and its names are used when the URL matches neither shape.
+
+A page with no block at all (one over 2 MiB or in UTF-16, which the server sends
+unchanged, a copy cached before the server injected it, or one served through
+something that rewrites it away) uses the URL alone. Served from
+`/versions/<v>/public/`, it still pins `<v>` for every query to its own package
+and never live-reloads. Under either shape `query` and `queryFull` use the names
 automatically, so a page served from inside its package does not need to name
 its environment or package anywhere. If you serve the page from somewhere else
 (for example a host page on another path that calls the API directly), pass
@@ -382,8 +398,11 @@ to a logged-in user authenticates as that user with no extra code.
 To authenticate with a bearer token instead, a host hands the page one over the
 [bus](#talking-to-the-host): `Publisher.embed(..., { getToken })` sends
 `auth.token` once the page is ready and again whenever the page asks. When a
-query gets a `401` and the host is bound, the runtime emits `auth.token.request`,
-waits up to 10 seconds for an `auth.token`, and retries the query once; several
+query gets a `401` and the host is bound, the runtime sends the request
+`auth.token.request`. A host with `getToken` answers it with `{ token }`; a host
+with none answers `unhandled`, and the query fails with its `401` at once rather
+than after a wait. The runtime also accepts an `auth.token` event as the answer,
+waits at most 10 seconds for either, and retries the query once; several
 queries that fail together share one request, and a retry is never retried. A
 page with no host to ask (cookie auth, nothing embedding it) fails at once.
 `Publisher.setToken(token)` still works for a page that has a token from
@@ -431,15 +450,15 @@ Options:
 |---|---|---|
 | `src` | string (required) | URL of the page to embed |
 | `getToken` | `() => string \| Promise<string>` | The page's bearer token, sent over the bus after the page is ready and again when it asks. Preferred over `token` |
-| `isolate` | boolean | Sandbox the frame without `allow-same-origin`: its origin is opaque (see [Security model](#security-model) for what that breaks) |
 | `token` | string | **Deprecated.** Appended to `src` as an `embed_token` query parameter for the embedded page to read |
 | `height` | number or string | Fixed height (`number` is treated as pixels). Omit it to auto-size. |
 | `allow` | string | Value for the iframe's `allow` attribute (permissions policy) |
 
-The iframe is sandboxed with `allow-scripts allow-same-origin allow-forms` (with
-`isolate`, `allow-scripts allow-forms`). Every embed also adds a random
-`#publisher-nonce=<n>` fragment to `src`, which the bus uses to tell the page you
-embedded from anything that navigates into the frame later. When
+The iframe is sandboxed with `allow-scripts allow-same-origin allow-forms`.
+Every embed also adds a random `#publisher-nonce=<n>` fragment to `src`, which
+the bus uses to tell the page you embedded from anything that navigates into the
+frame later. `src` must have an http(s) origin: every post the host makes names
+that exact origin. When
 you omit `height`, the embedded page measures its own content and posts its
 height to the host, which resizes the iframe to match; the host only accepts
 those messages from the iframe it created. You do not write any of that wiring,
@@ -496,8 +515,10 @@ what an older runtime that never replies looks like.
 
 **The nonce.** The host puts a random `#publisher-nonce=<n>` in the iframe's
 URL fragment (a fragment, so it never reaches a log or a `Referer`; `embed` does it
-for you; with `createDataAppBridge` you load the frame from `srcWithNonce(src)`). The page reads it once at load and echoes
-it as `nonce` in every message it sends. The host drops any message without the
+for you; with `createDataAppBridge` you load the frame from `srcWithNonce(src)`). The page reads it once at load, removes it
+from its own URL with `history.replaceState` (any other fragment content, such as a hash router's route, is left exactly as it was), keeps it in memory, and echoes
+it as `nonce` in every message it sends. Before the runtime's own live-reload `location.reload()` it puts the nonce back in the URL, so the reloaded page can
+prove itself again; a reload the runtime did not start (the browser's own, from inside the frame) loses it, so reload a frame by setting its `src` again. The host drops any message without the
 right one, along with any whose `source` is not the iframe's window or whose
 origin is not the page's. **The host never sends the nonce**, so a document that
 navigates into the frame after the page loaded cannot learn it by listening and
@@ -510,8 +531,8 @@ cannot speak for the page.
 | `hello` | host → page | none | Request; the reply is `{ handles: string[], runtime: string }` |
 | `ready` | page → host | `{ handles, runtime }` | Sent unsolicited, and again whenever the set of handlers changes (once per task however many change) |
 | `auth.token` | host → page | `{ token: string }` | Built in; the page uses it as its bearer token. Reply `{ applied: true }` |
-| `auth.token.request` | page → host | none | A query got `401`; the host should answer with `auth.token`. The runtime waits 10 seconds |
-| `givens.set` | host → page | `{ givens: { name: value } }` | Merges into the givens store and notifies `onGivensChange` listeners. Reply `{ applied: true, givens }` (the whole store) |
+| `auth.token.request` | page → host | none | Request: a query got `401`. A host with `getToken` replies `{ token }`; one without replies `unhandled`, which fails the query at once. The runtime waits up to 10 seconds, and also accepts an `auth.token` event |
+| `givens.set` | host → page | `{ givens: { name: value } }` | Merges into the givens store and notifies `onGivensChange` listeners; a `null` value removes that key. Reply `{ applied: true, givens }` (the whole store) |
 | `givens.changed` | page → host | `{ givens }` | The whole store, after every `setGivens` |
 | `query.ran` | page → host | `{ model, sourceName?, queryName?, query?, givens, versionId, rowCount, ms }` | After every successful query. `query` is the first 2000 characters of the Malloy text; `rowCount` is `null` when the result shape is unknown; `versionId` is `null` when unpinned |
 | `version.unavailable` | page → host | `{ versionId, reason }` | Once, when a query at the page's own version answers `VERSION_NOT_FOUND` or `VERSION_ARCHIVED`. The query still rejects as usual |
@@ -545,15 +566,26 @@ await app.send("givens.set", { givens: { region: "EMEA" } });
 app.on("query.ran", (ran) => console.log(ran.model, ran.rowCount, ran.ms));
 ```
 
+`setGivens({ region: null })` removes the key `region` from the store (a `null` value
+is how a filter is cleared); the store is a JSON copy, so an `undefined` value is
+dropped and removes nothing.
+
 `embed`'s `on(type, fn)` handles the page's events and requests and returns an
 unsubscribe; `send(type, payload)` resolves with the reply's payload and rejects
-with an `Error` (carrying `.code`) for an error reply or a timeout.
+with an `Error` (carrying `.code`) for an error reply or a timeout. A `send` made
+before the frame's first `load` is queued and posts once the page has answered
+`hello`.
 
 **React hosts.** `createDataAppBridge` in `@malloy-publisher/sdk` is the same
 host side for an `<iframe>` you render yourself:
-`createDataAppBridge(iframe, { src, getToken, isolate? })` (`origin` may replace
+`createDataAppBridge(iframe, { src, getToken, nonce? })` (`origin` may replace
 `src`) returns `{ nonce, srcWithNonce(src), send, on, ready, handles(),
-destroy() }`; load the iframe from `srcWithNonce(src)`. It also exports the types of the envelope and of each event
+destroy() }`. The page proves the nonce that is in the URL it loaded, so make the
+nonce first (`createDataAppNonce()`), build the iframe's `src` with
+`withDataAppNonce(src, nonce)`, and pass the same `nonce` to the bridge; see
+[embedded-data-apps.md](embedded-data-apps.md#hosting-an-html-data-app-from-react)
+for the effect. A bridge created after the iframe already has its `src` greets the
+frame at once, since no `load` is coming. It also exports the types of the envelope and of each event
 payload above (`PublisherEnvelope`, `PublisherPayloads`, `PublisherQueryRan`).
 It and `Publisher.embed` implement one protocol and are tested against one
 shared fixture of envelopes.
@@ -683,17 +715,24 @@ the manifest field reference is [packages.md](packages.md).
   of the URL keeps it from history, `Referer` and logs, but the runtime holds it
   in JavaScript and every script the page loads can read it. Keep tokens
   short-lived and scoped to the embed, and load only first-party code.
-- **`isolate` trades compatibility for containment.** Without
-  `allow-same-origin` the frame's origin is opaque: it cannot read the host's
-  cookies or storage (good), and it has none of its own, so cookie
-  authentication, `localStorage`, `sessionStorage` and IndexedDB do not work, and
-  a fetch to Publisher is cross-origin (no cookies; CORS applies), so an isolated
-  page authenticates with `getToken`. Posts from the host go to `*` because an
-  opaque origin cannot be named; the host sends
-  nothing but the empty `hello` until the frame has answered it with the nonce, and a token
-  or reply is never posted across a reload (the host checks the load generation after every
-  await). The remaining window is a navigation that starts after a post was sent. Prefer it for a
-  page you want contained, not for one written against the same-origin contract.
+- **Every host post names an exact origin.** The host never posts to `*`, so the
+  bus does not work with a frame whose origin is opaque (sandboxed without
+  `allow-same-origin`): its origin cannot be named, and a stock Publisher rejects
+  its requests anyway (CORS refuses `Origin: null`). The embed's sandbox is
+  `allow-scripts allow-same-origin allow-forms`. Containing a page's own
+  JavaScript from the rest of its origin is the per-package-origin design in
+  [security-posture.md](security-posture.md#known-gaps), not an option of the bus.
+- **A reload can still race a token.** Before posting a token, or a reply to a
+  page's request, the host checks that the frame has not loaded again since the
+  work began, after every `await`, and the nonce means a document without it
+  cannot ask. But `load` fires only after a navigated document has finished
+  loading, so a token that resolves while the frame is navigating, before that
+  `load`, can still reach the new document if it is at the same origin. The nonce
+  protects the *page's* messages to the host, not the host's posts to the
+  frame. Per-package origins (so a navigated document cannot be at the page's
+  origin) close the window, as would posting through a `MessageChannel` port the
+  page proves the nonce to, which is a possible follow-up. Until then keep tokens
+  short-lived and scoped to the embed.
 - **`x-publisher-page-context` is a trust boundary.** With
   `trustPageContextHeader` on, the header decides a page's names, API base and
   embedding hosts. Turn it on only behind a gateway that strips it from client

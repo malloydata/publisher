@@ -33,20 +33,61 @@ A React host that renders an [HTML data app](html-data-apps.md) in its own `<ifr
 through `Publisher.embed`) uses `createDataAppBridge` from the SDK, the host side of the
 [data-app event bus](html-data-apps.md#talking-to-the-host):
 
+The page proves the nonce that is in the URL it loaded, so the nonce has to exist before the
+iframe's `src` does, and the bridge has to be given that same nonce. In React, make it once per
+mount, put it in `src`, and create the bridge in an effect once the element is there:
+
 ```tsx
-const bridge = createDataAppBridge(iframeRef.current, { src, getToken: () => mintToken() });
-// <iframe ref={iframeRef} src={bridge.srcWithNonce(src)} sandbox="allow-scripts allow-same-origin allow-forms" />
-await bridge.send("givens.set", { givens: { region: "EMEA" } });
-const off = bridge.on("query.ran", (ran) => log(ran.model, ran.rowCount));
+import {
+   createDataAppBridge,
+   createDataAppNonce,
+   withDataAppNonce,
+   type DataAppBridge,
+} from "@malloy-publisher/sdk";
+
+function DataApp({ src, mintToken }: { src: string; mintToken: () => Promise<string> }) {
+   const iframeRef = useRef<HTMLIFrameElement>(null);
+   const [bridge, setBridge] = useState<DataAppBridge>();
+   // One nonce per mounted frame. A new src gets a new frame (the key below), so a new nonce.
+   const nonce = useMemo(() => createDataAppNonce(), [src]);
+   const frameSrc = useMemo(() => withDataAppNonce(src, nonce), [src, nonce]);
+
+   useEffect(() => {
+      const b = createDataAppBridge(iframeRef.current!, {
+         src,
+         nonce, // the one frameSrc carries; a fresh random nonce would never match the page
+         getToken: mintToken,
+      });
+      setBridge(b);
+      return () => b.destroy();
+   }, [src, nonce, mintToken]);
+
+   return (
+      <iframe
+         key={frameSrc}
+         ref={iframeRef}
+         src={frameSrc}
+         sandbox="allow-scripts allow-same-origin allow-forms"
+      />
+   );
+}
+// elsewhere: await bridge.send("givens.set", { givens: { region: "EMEA" } });
+//            const off = bridge.on("query.ran", (ran) => log(ran.model, ran.rowCount));
 ```
 
-Options are `src` (or `origin`), `getToken` (the bearer token, sent once the page is ready and
-whenever it asks, in place of an `embed_token` in the URL), `isolate` (set it when the iframe's
-sandbox omits `allow-same-origin`) and an optional `nonce`. Load the iframe from
-`srcWithNonce(src)`: the bridge accepts only messages that carry that nonce, from that iframe's
-window, at that origin. It returns `{ nonce, srcWithNonce, send, on, ready, handles, destroy }` and
-the SDK exports the envelope and payload types (`PublisherEnvelope`, `PublisherPayloads`,
-`PublisherQueryRan`). Call `destroy()` when the iframe unmounts.
+Options are `src` (or `origin`; it must have an http(s) origin, since every post names that exact
+origin), `getToken` (the bearer token: pushed once the page is ready and returned in the reply to
+the page's `auth.token.request`, in place of an `embed_token` in the URL; without it that request
+is answered `unhandled` and the page's 401 fails at once) and `nonce`. The bridge accepts only
+messages that carry the nonce, from that iframe's window, at that origin. Pass `nonce` whenever
+the bridge is created again for an iframe that has already loaded (an effect that re-runs on a
+changed `mintToken`): the page reads its nonce once at load, so a bridge with a new random one
+could never match it. A bridge created after the iframe has its `src` greets the frame at once,
+because no `load` event is coming. It returns `{ nonce, srcWithNonce, send, on, ready, handles,
+destroy }` (`srcWithNonce(src)` is `withDataAppNonce(src, nonce)`) and the SDK exports the
+envelope and payload types (`PublisherEnvelope`, `PublisherPayloads`, `PublisherQueryRan`). Call
+`destroy()` when the iframe unmounts. A `send` made before the frame's first `load` is queued and
+posts once the page has answered.
 
 ## Advanced reference: `examples/data-app`
 
