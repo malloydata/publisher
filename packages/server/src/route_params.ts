@@ -57,6 +57,22 @@ export function assertNoCollectionReload(
 }
 
 /**
+ * Refuse `dropTables` (any value) on a materialization delete. A delete is
+ * record-only: it never drops a table, and the caller drops the tables it
+ * wants gone through the connection. Ignoring the param would answer 204 to a
+ * caller who believes its tables went with the record.
+ */
+export function assertNoDropTables(req: Pick<Request, "query">): void {
+   if (req.query.dropTables === undefined) return;
+   throw new BadRequestError(
+      "dropTables is no longer supported: deleting a materialization is " +
+         "record-only and never drops a table. Delete without dropTables, and " +
+         "drop any table you want gone yourself through its connection, after " +
+         "checking that no run still serves it.",
+   );
+}
+
+/**
  * The version a package route names in its query string (`?versionId=`),
  * parsed once here; absent means `latest`. Never throws: a malformed value is
  * refused only where versions are consulted (see {@link VersionRef}).

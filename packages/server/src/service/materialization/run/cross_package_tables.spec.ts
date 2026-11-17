@@ -218,7 +218,7 @@ describe("two packages on one warehouse connection", () => {
       expect(await who("pa", "named")).toBe("pa-stored-named");
    });
 
-   it("deleting a run never drops a table another package has built at that name since", async () => {
+   it("deleting a run leaves a table another package has built at that name since", async () => {
       // pb builds `named_t` first; then the table is dropped outside
       // Publisher, and pa builds it.
       const b = await build("pb");
@@ -235,11 +235,8 @@ describe("two packages on one warehouse connection", () => {
       expect(failureReasons(b2).join(" ")).toContain(TABLE_OWNED_ELSEWHERE);
       expect(await who("pb", "named")).toBe("pb");
 
-      // Deleting pb's first run with its tables drops pb's own table and
-      // leaves pa's.
-      await service.deleteMaterialization(ENV, "pb", b.id, {
-         dropTables: true,
-      });
+      // Deleting pb's first run is record-only: pa's table stays.
+      await service.deleteMaterialization(ENV, "pb", b.id);
       expect(await tables()).toContain("named_t");
       expect(await who("pa", "named")).toBe("pa-stored-named");
    });

@@ -4079,28 +4079,15 @@ paths:
       summary: Delete a materialization
       description: |
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
-        materialization record. By default this removes the publisher's record
-        only; the caller owns table GC. Set dropTables=true to also drop
-        the physical tables this run produced (from the materialization's
-        manifest) as a best-effort cleanup.
+        materialization record. A delete is record-only: it never drops a
+        table, and the caller owns table GC. To drop a table this run produced,
+        check that no remaining run still serves it, then drop it through its
+        connection. A request that sends the removed `dropTables` parameter, in
+        any spelling, is refused with 400 and deletes nothing.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - $ref: "#/components/parameters/materializationId"
-        - name: dropTables
-          in: query
-          required: false
-          description: |
-            When true, also drop the physical tables recorded in the
-            materialization's manifest before deleting the record. Defaults to
-            false (record-only delete; the caller owns table GC).
-
-            Only `true` and `false` are accepted. Any other value is refused
-            with 400 rather than read as `false`, which would delete the record,
-            leave the tables on disk, and still answer 204.
-          schema:
-            type: boolean
-            default: false
         - $ref: "#/components/parameters/versionId"
       responses:
         "204":

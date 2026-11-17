@@ -176,7 +176,8 @@ const KEPT_REASON_TEXT: Record<KeptTable["reason"], string> = {
    author_name:
       "It is at a name= the author chose, which Publisher never drops, since " +
       "a reader outside Malloy may rely on it. Drop it yourself once nothing " +
-      "reads it, or delete the runs that built it with dropTables=true.",
+      "reads it: check that no run still serves it, then drop it through its " +
+      "connection.",
    destination_missing:
       "Its storage destination is no longer configured under that name, so " +
       "Publisher cannot reach it to drop it. If the destination was renamed " +

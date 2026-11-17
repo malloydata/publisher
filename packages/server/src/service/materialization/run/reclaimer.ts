@@ -814,7 +814,7 @@ export class Reclaimer {
     *   validation time.
     * - Only entries this run CREATED (never a carried-forward one).
     * - Only names no other MANIFEST_FILE_READY run references, the same
-    *   destination-and-name check {@link dropMaterializedTables} applies.
+    *   destination-and-name check a version's reclaim applies.
     *
     * Colocated failures are left alone: stable names in the customer's own
     * warehouse are overwritten by the next build, and a DROP there is a far
@@ -858,52 +858,6 @@ export class Reclaimer {
             error: errMessage(err),
          });
       }
-   }
-
-   /**
-    * Best-effort drop of every physical table (and leftover staging table) in
-    * this run's manifest. Failures are logged and swallowed so cleanup never
-    * blocks deleting the record.
-    *
-    * A name is dropped only when NO other MANIFEST_FILE_READY run references
-    * it: generations of a source share one physical name, so dropping a
-    * superseded record's table would take out the one still serving.
-    */
-   async dropMaterializedTables(
-      environmentName: string,
-      packageName: string,
-      m: Materialization,
-   ): Promise<void> {
-      const entries = m.manifest?.entries;
-      if (!entries || Object.keys(entries).length === 0) {
-         return;
-      }
-
-      const environment = await this.deps.host.getEnvironment(
-         parseEnvironmentName(environmentName),
-         false,
-      );
-
-      // Names another MANIFEST_FILE_READY run still references, whichever
-      // version built it. `m` is still in the repo (deleted after this sweep),
-      // so it is excluded by id.
-      const environmentId = await this.resolveEnvironmentId(environmentName);
-      const listed =
-         (await this.repository.listMaterializations(
-            environmentId,
-            packageName,
-         )) ?? [];
-      await this.deps.dropManifestEntries(
-         environment,
-         environmentName,
-         packageName,
-         m.id,
-         "delete",
-         Object.values(entries),
-         tablesStillReferenced(listed, (other) => other.id !== m.id),
-         await this.connectionResolverFor(environment, packageName, m.version),
-         recordedNameViews(listed, [m]),
-      );
    }
 
    /**
