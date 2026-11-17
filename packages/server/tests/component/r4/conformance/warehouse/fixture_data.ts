@@ -297,7 +297,7 @@ export function tableStatements(
    scratch: Scratch,
    table: FixtureTable,
 ): string[] {
-   const path = qualifiedTable(dialect, scratch, table.name);
+   const path = sqlTable(dialect, scratch, table.name);
    const cols = table.columns.map((c) => quoteColumn(dialect, c.name));
    const statements = [
       `CREATE TABLE ${path} (${table.columns
@@ -322,8 +322,8 @@ export function tableStatements(
    return statements;
 }
 
-/** A fixture table's path in DDL: created unquoted on Snowflake, so upper case. */
-function qualifiedTable(
+/** A fixture table's path in SQL: created unquoted on Snowflake, so upper case. */
+export function sqlTable(
    dialect: Dialect,
    scratch: Scratch,
    table: string,
@@ -357,11 +357,16 @@ export async function createFixtureTables(
  */
 export function warehouseRawModel(scratch: Scratch): string {
    const t = (name: string) => `wh.table('${scratch.tablePath(name)}')`;
-   return `source: orders_raw is ${t("orders")} extend { primary_key: id }
+   // The store's tables through SQL, as the DuckDB fixture reads its CSVs
+   // (duckdb.sql(...)): v1 #@ persist builds an extension of a SQL source
+   // but refuses one of a bare table (persist-not-materializable).
+   const q = (name: string) =>
+      `wh.sql("""\n  SELECT * FROM ${sqlTable(scratch.dialect, scratch, name)}\n""")`;
+   return `source: orders_raw is ${q("orders")} extend { primary_key: id }
 
-source: customers_raw is ${t("customers")} extend { primary_key: id }
+source: customers_raw is ${q("customers")} extend { primary_key: id }
 
-source: lines_raw is ${t("lines")} extend { primary_key: line_id }
+source: lines_raw is ${q("lines")} extend { primary_key: line_id }
 
 source: typed_raw is ${t("typed")} extend { primary_key: id }
 

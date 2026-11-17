@@ -35,7 +35,7 @@ import {
    type Variant,
    VARIANTS,
 } from "../shapes";
-import { warehouseRawModel } from "./fixture_data";
+import { sqlTable, warehouseRawModel } from "./fixture_data";
 import type { Dialect, Scratch } from "./targets";
 
 const HEADER = "##! experimental { persistence }";
@@ -350,7 +350,7 @@ export function renderWarehouseFiles(
    for (const [file, text] of Object.entries(shape.files)) {
       out[file] = text
          .replace(/@TABLE\(([^)]*)\)/g, (_m, table: string) =>
-            sqlTablePath(scratch, table),
+            sqlTable(scratch.dialect, scratch, table),
          )
          // A fixture column, quoted: Snowflake's are lower-case, created quoted.
          .replace(/@COL\(([^)]*)\)/g, (_m, column: string) =>
@@ -394,22 +394,6 @@ export function renderWarehouseFiles(
          });
    }
    return out;
-}
-
-/** A fixture table as the warehouse's own SQL names it, quoted where its dialect needs it. */
-function sqlTablePath(scratch: Scratch, table: string): string {
-   const path = scratch.tablePath(table);
-   switch (scratch.dialect) {
-      case "bigquery":
-         return `\`${path}\``;
-      case "postgres":
-         return path
-            .split(".")
-            .map((p) => `"${p}"`)
-            .join(".");
-      case "snowflake":
-         return path;
-   }
 }
 
 /** The tier a served query must report, as the DuckDB fixture expects it. */

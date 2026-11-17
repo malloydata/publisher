@@ -24,9 +24,11 @@
 #    malloytest, the schema Malloy's CI reads, so a role without CREATE SCHEMA
 #    fails setup with that grant named.
 #
-# The Snowflake secrets reach only the two steps that use them, and the key
-# in every derived form (decoded, re-wrapped) is masked; the artifact is
-# scrubbed of key material before upload.
+# The Snowflake key reaches only the step that prepares it: decoded,
+# re-wrapped and masked there, and handed to the test as a file. The account
+# reaches only the test and cleanup steps. The test's output goes to the job
+# log alone; the artifact is the spec's JSON report and summary, scrubbed,
+# and checked for key-shaped text before upload.
 #
 # Cost: a few hundred rows in all. Every native BigQuery job carries
 # maximumBytesBilled (1 GiB); the warehouse is shared with Malloy's CI, so the
@@ -183,25 +185,112 @@ jobs:
           fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
+      # The key is decoded, re-wrapped and converted here, in a step of its
+      # own, and every line of every form it takes is masked before any later
+      # step runs: a mask command printed by the test process would land in
+      # whatever keeps that output. The test reads the key from a file.
+      - name: Prepare Snowflake key
+        if: steps.snowflake.outputs.ready == 'true'
+        env:
+          SNOW_CI_KEY: ${{ secrets.SNOW_CI_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          dir="$RUNNER_TEMP/snowflake"
+          mkdir -p "$dir"
+          raw="$dir/raw"
+          printf '%s\n' "$SNOW_CI_KEY" > "$raw"
+          mask_lines() {
+            while IFS= read -r line; do
+              line="${line//[[:space:]]/}"
+              case "$line" in ""|-----*) ;; *) echo "::add-mask::$line" ;; esac
+            done < "$1"
+          }
+          mask_lines "$raw"
+          # A PEM as stored, a PEM base64-encoded whole, or a bare PKCS#8 body.
+          if grep -q -- '-----BEGIN' "$raw"; then
+            pem="$raw"
+          elif base64 -d < "$raw" > "$dir/decoded" 2>/dev/null && grep -q -- '-----BEGIN' "$dir/decoded"; then
+            pem="$dir/decoded"
+          else
+            pem=""
+          fi
+          if [ -n "$pem" ]; then
+            mask_lines "$pem"
+            kind=$(grep -o -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$pem" | head -1 | sed -E 's/-----BEGIN (.*)-----/\1/')
+            sed -E -e 's/-----(BEGIN|END) [A-Z ]*PRIVATE KEY-----//g' "$pem" | tr -d ' \t\r\n' > "$dir/body"
+          else
+            kind="PRIVATE KEY"
+            tr -d ' \t\r\n' < "$raw" > "$dir/body"
+          fi
+          { echo "-----BEGIN $kind-----"; fold -w 64 "$dir/body"; echo; echo "-----END $kind-----"; } \
+            | sed '/^$/d' > "$dir/key.pem"
+          # PKCS#1 is converted to the PKCS#8 the driver takes, here rather
+          # than in the server, so the converted form is masked too.
+          if [ "$kind" = "RSA PRIVATE KEY" ]; then
+            openssl pkcs8 -topk8 -nocrypt -in "$dir/key.pem" -out "$dir/key8.pem"
+            mv "$dir/key8.pem" "$dir/key.pem"
+          fi
+          mask_lines "$dir/key.pem"
+          rm -f "$raw" "$dir/decoded" "$dir/body"
+          echo "SNOWFLAKE_PRIVATE_KEY_PATH=$dir/key.pem" >> "$GITHUB_ENV"
+
+      # The storage= tier reads Snowflake through DuckDB's snowflake extension,
+      # which needs the ADBC driver beside it; INSTALL does not bring it, and
+      # without it every snowflake_query() fails. Installed as the Dockerfile
+      # installs it (its adbc-driver stage and the copy beside each extension):
+      # the same release, digests and shim.
+      - name: Install the ADBC Snowflake driver
+        if: steps.snowflake.outputs.ready == 'true'
+        env:
+          ADBC_SNOWFLAKE_VERSION: 1.12.0
+          ADBC_SNOWFLAKE_SHA256_AMD64: 9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
+          ADBC_HEADER_SHA256: b6ce3eb8394d4877af1693654d34bc11648a2dfb1f0eacc0c47d062ca69feb71
+        run: |
+          set -euo pipefail
+          (cd packages/server && bun scripts/bake-duckdb-extensions.js)
+          work="$RUNNER_TEMP/adbc"
+          mkdir -p "$work/out" "$work/stub"
+          curl -fsSL --retry 8 --retry-delay 3 --retry-max-time 180 --retry-all-errors \
+            -o "$work/adbc-snowflake.tar.gz" \
+            "https://github.com/adbc-drivers/snowflake/releases/download/go/v${ADBC_SNOWFLAKE_VERSION}/snowflake_linux_amd64_v${ADBC_SNOWFLAKE_VERSION}.tar.gz"
+          echo "${ADBC_SNOWFLAKE_SHA256_AMD64}  $work/adbc-snowflake.tar.gz" | sha256sum -c -
+          tar -xzf "$work/adbc-snowflake.tar.gz" -C "$work" libadbc_driver_snowflake.so
+          mv "$work/libadbc_driver_snowflake.so" "$work/out/libadbc_driver_snowflake.real.so"
+          shim=packages/server/adbc-shim
+          echo "${ADBC_HEADER_SHA256}  $shim/adbc.h" | sha256sum -c -
+          gcc -O2 -Wall -Wextra -shared -fPIC -o "$work/out/libadbc_driver_snowflake.so" "$shim/shim.c" -ldl
+          gcc -O2 -Wall -Wextra -o "$work/selftest" "$shim/selftest.c" -ldl
+          (cd "$work/out" && "$work/selftest" "$work/out/libadbc_driver_snowflake.so")
+          gcc -O2 -Wall -Wextra -I"$shim" -shared -fPIC -o "$work/stub/libadbc_driver_snowflake.real.so" "$shim/stub_driver.c"
+          ADBC_REAL_DRIVER="$work/stub/libadbc_driver_snowflake.real.so" "$work/selftest" "$work/out/libadbc_driver_snowflake.so"
+          # Beside every snowflake extension, and one pair per extension.
+          find "$HOME/.duckdb/extensions" -name snowflake.duckdb_extension -printf '%h\n' \
+            | while read -r d; do cp "$work/out/libadbc_driver_snowflake.so" "$work/out/libadbc_driver_snowflake.real.so" "$d/"; done
+          ext=$(find "$HOME/.duckdb/extensions" -name snowflake.duckdb_extension | wc -l)
+          shims=$(find "$HOME/.duckdb/extensions" -name libadbc_driver_snowflake.so | wc -l)
+          real=$(find "$HOME/.duckdb/extensions" -name libadbc_driver_snowflake.real.so | wc -l)
+          echo "snowflake extensions: $ext, shims: $shims, drivers: $real"
+          test "$ext" -gt 0 && test "$shims" -eq "$ext" && test "$real" -eq "$ext"
+
       - name: Skip without credentials
         if: steps.bigquery.outputs.ready != 'true' && steps.snowflake.outputs.ready != 'true'
         run: |
           echo "### Warehouse conformance: ${{ matrix.dialect }}" >> "$GITHUB_STEP_SUMMARY"
           echo "Skipped: this run has no ${{ matrix.dialect }} credentials." >> "$GITHUB_STEP_SUMMARY"
 
+      # Its output goes to the job log only, where the runner applies the
+      # masks; it is never copied into the artifact.
       - name: Run warehouse conformance
         id: run
         if: steps.bigquery.outputs.ready == 'true' || steps.snowflake.outputs.ready == 'true'
         timeout-minutes: 120
         env:
           SNOWFLAKE_ACCOUNT: ${{ matrix.dialect == 'snowflake' && secrets.SNOW_CI_ACCOUNT || '' }}
-          SNOWFLAKE_PRIVATE_KEY_RAW: ${{ matrix.dialect == 'snowflake' && secrets.SNOW_CI_KEY || '' }}
         run: |
           mkdir -p "$WAREHOUSE_CONFORMANCE_OUT"
           cd packages/server
-          set -o pipefail
-          bun test --timeout 1200000 ./tests/component/r4/warehouse_conformance.component.spec.ts \
-            2>&1 | tee "$WAREHOUSE_CONFORMANCE_OUT/${{ matrix.dialect }}.log"
+          bun test --timeout 1200000 ./tests/component/r4/warehouse_conformance.component.spec.ts
 
       # Whatever the test step did (failed, timed out, cancelled), drop this
       # run's scratch area.
@@ -210,10 +299,45 @@ jobs:
         timeout-minutes: 10
         env:
           SNOWFLAKE_ACCOUNT: ${{ matrix.dialect == 'snowflake' && secrets.SNOW_CI_ACCOUNT || '' }}
-          SNOWFLAKE_PRIVATE_KEY_RAW: ${{ matrix.dialect == 'snowflake' && secrets.SNOW_CI_KEY || '' }}
         run: |
           cd packages/server
           bun ./tests/component/r4/conformance/warehouse/sweep.ts --run-id "$WAREHOUSE_CONFORMANCE_RUN_ID"
+
+      - name: Remove the Snowflake key file
+        if: always() && steps.snowflake.outputs.ready == 'true'
+        run: rm -rf "$RUNNER_TEMP/snowflake"
+
+      # Only the spec's report and summary are kept, both scrubbed by the spec;
+      # scrubbed again here (mask commands, PEM markers, long base64 runs, key
+      # fields), then checked: a file that still holds any of it fails the job
+      # and is not uploaded.
+      - name: Scrub and check the results
+        id: scrub
+        if: always() && steps.run.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p "$WAREHOUSE_CONFORMANCE_OUT"
+          find "$WAREHOUSE_CONFORMANCE_OUT" -type f ! -name '*.json' ! -name '*.md' -delete
+          files=("$WAREHOUSE_CONFORMANCE_OUT"/*.json "$WAREHOUSE_CONFORMANCE_OUT"/*.md)
+          for f in "${files[@]}"; do
+            sed -i -E \
+              -e '/::add-mask::/d' \
+              -e 's/-----(BEGIN|END) [A-Z ]*PRIVATE KEY-----/[redacted pem marker]/g' \
+              -e 's#[A-Za-z0-9+/]{40,}={0,2}#[redacted base64]#g' \
+              -e 's/private_key(_id)?/[key field]/Ig' \
+              "$f"
+          done
+          leaked=0
+          for f in "${files[@]}"; do
+            if grep -n -E -e '::add-mask::|PRIVATE KEY|private_key' -e '^[[:space:]]*[A-Za-z0-9+/]{64}[[:space:]]*$' "$f" > /dev/null; then
+              echo "::error::$(basename "$f") still holds key-shaped text; it is not uploaded"
+              rm -f "$f"
+              leaked=1
+            fi
+          done
+          if [ "$leaked" -ne 0 ]; then exit 1; fi
+          echo "clean=true" >> "$GITHUB_OUTPUT"
 
       - name: Job summary
         if: always() && steps.run.outcome != 'skipped'
@@ -223,28 +347,16 @@ jobs:
             cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Warehouse conformance: ${{ matrix.dialect }}" >> "$GITHUB_STEP_SUMMARY"
-            echo "No summary was written; see the log artifact." >> "$GITHUB_STEP_SUMMARY"
+            echo "No summary was written; see the job log." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # The spec scrubs its JSON and summary; the log is everything the run
-      # printed, so it is scrubbed here too: any PEM block, and any line
-      # naming a private key.
-      - name: Scrub key material from the results
-        if: always() && steps.run.outcome != 'skipped'
-        run: |
-          shopt -s nullglob
-          for f in "$WAREHOUSE_CONFORMANCE_OUT"/*; do
-            sed -i -E \
-              -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\[redacted private key]' \
-              -e '/private_key|PRIVATE KEY/Ic\[redacted line naming a private key]' \
-              "$f"
-          done
-
       - name: Upload results
-        if: always() && steps.run.outcome != 'skipped'
+        if: always() && steps.scrub.outputs.clean == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: warehouse-conformance-${{ matrix.dialect }}
-          path: warehouse-conformance/
+          path: |
+            warehouse-conformance/*.json
+            warehouse-conformance/*.md
           if-no-files-found: warn
           retention-days: 30

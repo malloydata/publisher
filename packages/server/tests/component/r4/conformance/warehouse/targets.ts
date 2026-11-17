@@ -13,9 +13,10 @@
  *   (default `US`) and `WAREHOUSE_CONFORMANCE_BQ_DATASET`, an existing dataset
  *   to fall back to, with run-prefixed tables, when the key cannot create one.
  * - Snowflake: `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_WAREHOUSE`,
- *   `SNOWFLAKE_DATABASE`, and `SNOWFLAKE_PRIVATE_KEY` (or
- *   `SNOWFLAKE_PRIVATE_KEY_RAW`, as Malloy's CI names it) or
- *   `SNOWFLAKE_PASSWORD`; optional `SNOWFLAKE_ROLE` and
+ *   `SNOWFLAKE_DATABASE`, and a key or a password: `SNOWFLAKE_PRIVATE_KEY_PATH`
+ *   (a PEM file: what the workflow prepares, so the key never passes through
+ *   this process's output), `SNOWFLAKE_PRIVATE_KEY` (a PEM, or a PEM or bare
+ *   PKCS#8 body base64-encoded), or `SNOWFLAKE_PASSWORD`; optional `SNOWFLAKE_ROLE` and
  *   `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`. The role must be able to create a
  *   schema: there is no fallback, so a run never writes into a schema other
  *   CI reads.
@@ -54,8 +55,13 @@ export const BIGQUERY_MAXIMUM_BYTES_BILLED = String(1024 ** 3);
 /** One warehouse, configured from the environment. */
 export interface WarehouseTarget {
    dialect: Dialect;
-   /** The environment connection, as a publisher.config.json names it. */
-   connection(): ApiConnection;
+   /**
+    * The environment connection, as a publisher.config.json names it; with a
+    * scratch schema, that schema as its default (Snowflake), so an
+    * unqualified name a build writes lands in the run's own schema rather
+    * than the user's default.
+    */
+   connection(scratchSchema?: string): ApiConnection;
 }
 
 /** Why each warehouse was not configured, for the skip message. */
@@ -72,37 +78,30 @@ function missing(names: string[]): string[] {
 }
 
 /**
- * A Snowflake private key as the secret holds it: a PEM (multi-line or
- * single-line), a PEM base64-encoded whole, or the bare base64 body of a
- * PKCS#8 key. Returned as a PEM; Publisher normalizes it further.
+ * A Snowflake private key as `SNOWFLAKE_PRIVATE_KEY` may hold it: a PEM
+ * (multi-line or single-line), a PEM base64-encoded whole, or the bare
+ * base64 body of a PKCS#8 key. Returned as a PEM; Publisher normalizes it
+ * further. Nothing here prints: in CI the workflow decodes and masks the key
+ * in a step of its own and hands this process a file
+ * (`SNOWFLAKE_PRIVATE_KEY_PATH`), since anything a test process writes to
+ * its output may be kept somewhere a mask does not reach.
  */
 export function snowflakePrivateKeyPem(raw: string): string {
    const text = raw.trim();
-   if (text.includes("-----BEGIN")) return masked(text);
+   if (text.includes("-----BEGIN")) return text;
    const decoded = Buffer.from(text, "base64").toString("utf8");
-   if (decoded.includes("-----BEGIN")) return masked(decoded.trim());
+   if (decoded.includes("-----BEGIN")) return decoded.trim();
    const body = text.replace(/\s+/g, "");
    const lines = body.match(/.{1,64}/g) ?? [];
-   return masked(
-      `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`,
-   );
+   return `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`;
 }
 
-/**
- * A secret in a form GitHub never saw (re-wrapped or decoded), masked line by
- * line in an Actions log: Actions masks a secret only as the secret was
- * stored. Returns the value.
- */
-export function masked(secret: string): string {
-   if (process.env.GITHUB_ACTIONS === "true") {
-      for (const line of secret.split("\n")) {
-         const value = line.trim();
-         if (value.length >= 8 && !value.startsWith("-----")) {
-            process.stdout.write(`::add-mask::${value}\n`);
-         }
-      }
-   }
-   return secret;
+/** The Snowflake key, from its file or its variable; undefined when neither is set. */
+function snowflakeKey(): string | undefined {
+   const file = process.env.SNOWFLAKE_PRIVATE_KEY_PATH;
+   if (file) return fs.readFileSync(file, "utf8");
+   const raw = process.env.SNOWFLAKE_PRIVATE_KEY;
+   return raw ? snowflakePrivateKeyPem(raw) : undefined;
 }
 
 /** The warehouses whose credentials are present, and why the others are not. */
@@ -138,9 +137,10 @@ export function discoverTargets(): TargetDiscovery {
       });
    }
 
-   const key =
-      process.env.SNOWFLAKE_PRIVATE_KEY ??
-      process.env.SNOWFLAKE_PRIVATE_KEY_RAW;
+   const hasKey = !!(
+      process.env.SNOWFLAKE_PRIVATE_KEY_PATH ||
+      process.env.SNOWFLAKE_PRIVATE_KEY
+   );
    const sfMissing = [
       ...missing([
          "SNOWFLAKE_ACCOUNT",
@@ -148,39 +148,46 @@ export function discoverTargets(): TargetDiscovery {
          "SNOWFLAKE_WAREHOUSE",
          "SNOWFLAKE_DATABASE",
       ]),
-      ...(key || process.env.SNOWFLAKE_PASSWORD
+      ...(hasKey || process.env.SNOWFLAKE_PASSWORD
          ? []
-         : ["SNOWFLAKE_PRIVATE_KEY or SNOWFLAKE_PASSWORD"]),
+         : [
+              "SNOWFLAKE_PRIVATE_KEY_PATH, SNOWFLAKE_PRIVATE_KEY or SNOWFLAKE_PASSWORD",
+           ]),
    ];
    if (sfMissing.length === 0) {
       targets.push({
          dialect: "snowflake",
-         connection: () => ({
-            name: WAREHOUSE_CONNECTION,
-            type: "snowflake",
-            snowflakeConnection: {
-               account: process.env.SNOWFLAKE_ACCOUNT!,
-               username: process.env.SNOWFLAKE_USER!,
-               ...(key
-                  ? {
-                       privateKey: snowflakePrivateKeyPem(key),
-                       ...(process.env.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE
-                          ? {
-                               privateKeyPass:
-                                  process.env.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
-                            }
-                          : {}),
-                    }
-                  : { password: process.env.SNOWFLAKE_PASSWORD! }),
-               warehouse: process.env.SNOWFLAKE_WAREHOUSE!,
-               database: process.env.SNOWFLAKE_DATABASE!,
-               ...(process.env.SNOWFLAKE_ROLE
-                  ? { role: process.env.SNOWFLAKE_ROLE }
-                  : {}),
-               // A runaway statement on the shared warehouse fails instead.
-               responseTimeoutMilliseconds: 300_000,
-            },
-         }),
+         connection: (scratchSchema) => {
+            const key = snowflakeKey();
+            return {
+               name: WAREHOUSE_CONNECTION,
+               type: "snowflake",
+               snowflakeConnection: {
+                  account: process.env.SNOWFLAKE_ACCOUNT!,
+                  username: process.env.SNOWFLAKE_USER!,
+                  ...(key
+                     ? {
+                          privateKey: key,
+                          ...(process.env.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE
+                             ? {
+                                  privateKeyPass:
+                                     process.env
+                                        .SNOWFLAKE_PRIVATE_KEY_PASSPHRASE,
+                               }
+                             : {}),
+                       }
+                     : { password: process.env.SNOWFLAKE_PASSWORD! }),
+                  warehouse: process.env.SNOWFLAKE_WAREHOUSE!,
+                  database: process.env.SNOWFLAKE_DATABASE!,
+                  ...(process.env.SNOWFLAKE_ROLE
+                     ? { role: process.env.SNOWFLAKE_ROLE }
+                     : {}),
+                  ...(scratchSchema ? { schema: scratchSchema } : {}),
+                  // A runaway statement on the shared warehouse fails instead.
+                  responseTimeoutMilliseconds: 300_000,
+               },
+            };
+         },
       });
    } else {
       skipped.push({

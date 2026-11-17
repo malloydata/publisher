@@ -162,7 +162,12 @@ for (const target of targets) {
                   : `scratch: tables prefixed ${scratch.prefix} in ${scratch.container} (no grant to create a schema or dataset)`,
             );
             await createFixtureTables(connection, scratch);
-            harness = new WarehouseHarness(target, name, CATALOG_URL);
+            harness = new WarehouseHarness(
+               target,
+               name,
+               CATALOG_URL,
+               scratch.ownsContainer ? scratch.container : undefined,
+            );
             await harness.open();
          } catch (error) {
             setupError = error instanceof Error ? error.message : String(error);
@@ -305,6 +310,10 @@ for (const target of targets) {
 function scrubSecrets(text: string): string {
    return (
       text
+         .replace(/^.*::add-mask::.*$/gm, "[redacted mask command]")
+         // A key body without its PEM lines: no hash or id this suite
+         // writes runs this long.
+         .replace(/[A-Za-z0-9+/]{200,}={0,2}/g, "[redacted base64]")
          .replace(
             /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
             "[redacted private key]",

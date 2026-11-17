@@ -614,6 +614,14 @@ source: nested is orders_raw -> {
             name: "the top level",
             malloy:
                "run: nested -> { group_by: region; aggregate: t is total.sum() }",
+            gaps: {
+               // The warehouse conformance variant (warehouse/warehouse_shapes.ts).
+               "snowflake:materialize_colocated": {
+                  kind: "live",
+                  reason:
+                     "Snowflake stores the colocated nest as ARRAY/VARIANT, so the served copy declines the source and it answers live",
+               },
+            },
          },
          {
             name: "through the nested rows",

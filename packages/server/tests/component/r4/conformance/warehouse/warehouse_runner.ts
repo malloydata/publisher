@@ -116,6 +116,8 @@ export class WarehouseHarness {
       private readonly runName: string,
       /** A postgres:// URL for the DuckLake catalogs; without one there is no `storage=` tier. */
       private readonly catalogUrl: string | undefined,
+      /** The run's own schema, every case connection's default (Snowflake). */
+      private readonly scratchSchema?: string,
    ) {}
 
    /** Whether `storage=` cases can run: a DuckLake needs its Postgres catalog. */
@@ -190,7 +192,7 @@ export class WarehouseHarness {
          env = await Environment.create(
             envName,
             envPath,
-            [this.target.connection()],
+            [this.target.connection(this.scratchSchema)],
             destinations as never,
          );
          // The run service reads the environment through this.
