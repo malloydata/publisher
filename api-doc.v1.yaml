@@ -6905,6 +6905,8 @@ components:
       enum:
         - FREE_PARAMETER
         - READS_GIVEN
+        - INHERITED_WHERE_WITH_GIVEN
+        - GIVEN_WHERE_OVER_UNSTORED_FIELD
         - MERGE_KEY_SCOPE_UNRESOLVED
         - AUTHORIZE
         - READ_ONLY_DIALECT
@@ -6938,11 +6940,14 @@ components:
         reason:
           $ref: "#/components/schemas/RefusalReason"
           description: "Why the source is refused, decided at compile time: `FREE_PARAMETER`; `AUTHORIZE`; `READS_GIVEN` (the stored
-            result would read a given the build cannot strip, wherever it sits: in the query, a projection, a join, a
-            joined `where:`, or the base a rollup is built over, so the table would hold one caller's slice; a given the
-            source's extend block reads is generally applied per caller at read and admitted, but a declaration's own
-            given-reading `where:` over a field the table does not store is refused, which v0 reports as
-            `given_where_over_unstored_field`); `MERGE_KEY_SCOPE_UNRESOLVED` (a
+            result would read a given the build cannot strip, in the query, a projection, a join, a joined `where:` or
+            the base a rollup is built over, so the table would hold one caller's slice; a given-reading `where:` of the
+            declaration's own over a stored field is applied per caller at read and admitted);
+            `INHERITED_WHERE_WITH_GIVEN` (a given-reading `where:` or dimension the declaration inherits from a source
+            it is built from rather than writing it itself: only its own terms are re-applied over the table at read, so
+            move the `where:` onto the persisted source); `GIVEN_WHERE_OVER_UNSTORED_FIELD` (a given-reading `where:`
+            of the declaration's own over a field its table does not store, such as one a rollup's grain drops, so it
+            cannot be re-applied at read); `MERGE_KEY_SCOPE_UNRESOLVED` (a
             `merge_key=` whose caller scope cannot be expressed over the stored table's own columns); and
             `READ_ONLY_DIALECT` (a `database` build on a dialect that cannot create tables). The build-time refusals are on the run's
             `SourceFailure.reason`."
@@ -7207,8 +7212,12 @@ components:
         status:
           $ref: "#/components/schemas/RunStatus"
           default: pending
-          description: "`committed` is the only success: the manifest is visible and the bindings moved. Ignored on create; a
-            `PATCH` may set only `cancelled`."
+          description: "`committed` is the only success: the run built and its manifest is recorded. Whether the version now
+            serves the run's tables is `bind`, a separate outcome. Ignored on create; a `PATCH` may set only `cancelled`."
+        bind:
+          $ref: "#/components/schemas/RunBind"
+          readOnly: true
+          description: What binding the committed manifest to the version did. Present exactly when `status` is `committed`.
         trigger:
           type: string
           enum:
@@ -7364,8 +7373,19 @@ components:
         - committed
         - failed
         - cancelled
-      description: Where a run is. `pending` and `running` are unsettled; `committed` is the only success, `failed` and
-        `cancelled` the other settled states.
+      description: "Where a run is. `pending` and `running` are unsettled; `committed` is the only success, meaning the run
+        built and its manifest is recorded, and `failed` and `cancelled` are the other settled states. Whether a committed
+        run's tables are served is `Run.bind`, never the status."
+
+    RunBind:
+      type: string
+      enum:
+        - bound
+        - not_bound
+        - bind_failed
+      description: "What a committed run's bind did: `bound`, the version now serves the run's tables; `not_bound`, the
+        manifest is recorded and nothing was bound, as for an orchestrated run, whose host binds, or a version a host has
+        bound; `bind_failed`, binding was attempted and failed, and the version keeps the bindings it had."
 
     S3Connection:
       type: object
