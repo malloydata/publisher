@@ -95,6 +95,14 @@ source: typed is duckdb.sql("""
             malloy:
                "run: typed -> { group_by: g; aggregate: big_sum; order_by: g }",
             expect: "rollup",
+            gaps: {
+               "colocated@parquet": {
+                  kind: "wrong",
+                  reason:
+                     "F-13: DuckLake writes the sum's HUGEINT column to Parquet as a DOUBLE while its catalog says HUGEINT, so the rollup answers -9007199254740992 for -9007199254740993; fixed by the DECIMAL(38,0) build cast and the 128-bit read guard in #1846",
+                  issue: "#1846",
+               },
+            },
          },
          {
             name: "a DECIMAL sum",

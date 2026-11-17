@@ -78,6 +78,31 @@ function withoutReferenceIds(value: unknown): unknown {
 /** The storage destination every `storage=` source in the fixture names. */
 export const LAKE = "lake";
 
+/**
+ * Where the fixture's tables are written:
+ *
+ * - `duckdb` (the default): plain DuckDB tables, the destination a plain
+ *   `duckdb` file and the origin warehouse;
+ * - `parquet`: a DuckLake catalog with row inlining off, as a real build
+ *   session writes one (`ducklake_default_data_inlining_row_limit=0`,
+ *   materialization_build_session.ts), so every stored row is read back from
+ *   Parquet: the `storage=` destination, and the origin's own database (a
+ *   `duckdb` connection that attached and USEd a DuckLake) for a database
+ *   table. Parquet does not keep every type a DuckDB table keeps (F-13: a
+ *   `HUGEINT` is written as a `DOUBLE`), which only this mode can show.
+ */
+export type LakeFormat = "duckdb" | "parquet";
+
+/** The SQL that points a session at a DuckLake catalog under `dir`, every row in Parquet. */
+function parquetLakeSQL(dir: string, alias: string): string {
+   const q = (p: string) => p.replace(/'/g, "''");
+   return [
+      "SET ducklake_default_data_inlining_row_limit = 0",
+      `ATTACH IF NOT EXISTS 'ducklake:${q(path.join(dir, `${alias}.ducklake`))}' AS ${alias} (DATA_PATH '${q(path.join(dir, `${alias}_data`))}/')`,
+      `USE ${alias}`,
+   ].join(";\n");
+}
+
 /** A served field as the wire carries it: name, kind, type (timeframe included) and annotations. */
 export interface WireField {
    name: string;
@@ -231,6 +256,8 @@ export async function loadFixture(
     * packages), or a directory to copy (a real package snapshot).
     */
    files: Record<string, string> | { packageDir: string },
+   /** Where the tables are written (default `duckdb`). */
+   options: { lake?: LakeFormat } = {},
 ): Promise<{
    run: LoadedFixture["run"];
    bind(options?: BindOptions): Promise<LoadedFixture>;
@@ -256,7 +283,17 @@ export async function loadFixture(
          { manifest: { name: "pkg", description: "conformance fixture" } },
       );
    }
-   const lake = new DuckDBConnection(LAKE, path.join(root, `${LAKE}.duckdb`));
+   const format = options.lake ?? "duckdb";
+   const lake =
+      format === "parquet"
+         ? // The catalog is attached under the destination's name, which a
+           // served read qualifies its table with.
+           new DuckDBConnection({
+              name: LAKE,
+              databasePath: ":memory:",
+              setupSQL: parquetLakeSQL(root, LAKE),
+           })
+         : new DuckDBConnection(LAKE, path.join(root, `${LAKE}.duckdb`));
    let env: Environment | undefined;
    let releaseSandbox = (): void => {};
    const dispose = async () => {
@@ -347,6 +384,7 @@ export async function loadFixture(
             pkg,
             lake,
             options,
+            format === "parquet" ? root : undefined,
          );
          // The served copy compiles at bind, asynchronously; settle it so its
          // warnings and its first answer are not a race.
@@ -516,6 +554,12 @@ async function buildAll(
    pkg: Package,
    lake: DuckDBConnection,
    options: BindOptions = {},
+   /**
+    * Under `parquet`, the directory the origin's own DuckLake catalog is
+    * created in: the origin attaches and USEs it before a database table is
+    * built, so the table is written to Parquet and read from it at serve.
+    */
+   parquetOriginDir?: string,
 ): Promise<{
    built: LoadedFixture["built"];
    buildErrors: Record<string, string>;
@@ -524,10 +568,25 @@ async function buildAll(
 }> {
    // Each source is built on its own connection, a DuckDB one: the
    // fixture's, or a real package's snapshot (v1_cutover_runner.ts).
+   const parquetOrigins = new Set<DuckDBConnection>();
    const warehouseFor = async (connectionName: string | undefined) =>
       (await pkg.getMalloyConnection(
          connectionName ?? "duckdb",
       )) as DuckDBConnection;
+   /** The origin, pointed at its DuckLake under `parquet`, for a database table. */
+   const databaseFor = async (connectionName: string | undefined) => {
+      const warehouse = await warehouseFor(connectionName);
+      if (parquetOriginDir && !parquetOrigins.has(warehouse)) {
+         for (const statement of parquetLakeSQL(
+            parquetOriginDir,
+            "origin_parquet",
+         ).split(";\n")) {
+            await warehouse.runSQL(statement);
+         }
+         parquetOrigins.add(warehouse);
+      }
+      return warehouse;
+   };
    const colocated: Record<string, Record<string, unknown>> = {};
    const stored: Record<string, Record<string, unknown>> = {};
    const built: LoadedFixture["built"] = [];
@@ -669,7 +728,8 @@ async function buildAll(
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
-               await warehouse.runSQL(
+               const database = await databaseFor(entry.connectionName);
+               await database.runSQL(
                   `CREATE OR REPLACE TABLE ${quoted} AS ${entry.sql}`,
                );
                // The warehouse's own column types, captured as a colocated

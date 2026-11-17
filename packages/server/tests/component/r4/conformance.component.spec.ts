@@ -21,13 +21,22 @@
  *  - CONFORMANCE_GAPS=run asserts the gaps and tolerances too, to see which
  *    have closed;
  *  - CONFORMANCE_REPORT=1 prints every case's outcome as a table.
+ *
+ * Every variant runs twice, once per table format (LAKES): plain DuckDB
+ * tables, and Parquet under a DuckLake catalog with row inlining off, as a
+ * real build writes them (package_runner.ts, `LakeFormat`). The second is
+ * the one that sees what Parquet does not keep (F-13: a `HUGEINT` stored as
+ * a `DOUBLE`). A gap only one format has is keyed `<key>@parquet`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
 import { DATA_FILES } from "./conformance/data";
 import {
    type Answer,
    freshLoadPool,
+   type LakeFormat,
    type LoadedFixture,
    loadFixture,
    type Outcome,
@@ -57,6 +66,8 @@ const REPORT = process.env.CONFORMANCE_REPORT === "1";
 // Only the cutover column: `off` and `on` pinned the retired serve shape and
 // composite; the shipped default is conformance_default_settings's.
 const SWITCHES: Switch[] = ["cutover"];
+/** The table formats every variant runs in. */
+const LAKES: LakeFormat[] = ["duckdb", "parquet"];
 
 /**
  * Metadata differences every stored read has on main, tolerated per case so
@@ -205,9 +216,15 @@ function gapFor(
    query: { gaps?: GapMap },
    variant: Variant,
    on: Switch,
+   lake: LakeFormat,
 ): Gap | undefined {
    for (const map of [query.gaps, shape.gaps]) {
       const gap =
+         (lake === "parquet"
+            ? (map?.[`${variant}/${on}@parquet`] ??
+              map?.[`${variant}@parquet`] ??
+              map?.["*@parquet"])
+            : undefined) ??
          map?.[`${variant}/${on}`] ??
          // The v1 cutover changes nothing for `#(materialize)`: its gaps
          // with the switch on are its gaps after the cutover.
@@ -242,205 +259,248 @@ afterAll(async () => {
    );
 });
 
-for (const shape of SHAPES) {
-   for (const variant of shape.variants ?? VARIANTS) {
-      describe(`conformance: ${shape.name} [${variant}]`, () => {
-         let restore: () => void = () => {};
-         let fixture: LoadedFixture | undefined;
-         let cutover: LoadedFixture | undefined;
-         let loadError: string | undefined;
-         const live = new Map<string, Outcome>();
-         const served = new Map<string, Outcome>();
-         const key = (q: ConformanceQuery, on?: Switch | "live-cutover") =>
-            on ? `${q.name}/${on}` : q.name;
-         const runIn = (
-            target: { run: LoadedFixture["run"] },
-            q: ConformanceQuery,
-         ) =>
-            target.run(q.model ?? entryOf(shape), q.malloy, q.givens as never);
+for (const lake of LAKES) {
+   for (const shape of SHAPES) {
+      for (const variant of shape.variants ?? VARIANTS) {
+         const label = lake === "parquet" ? `${variant}, parquet` : variant;
+         describe(`conformance: ${shape.name} [${label}]`, () => {
+            let restore: () => void = () => {};
+            let fixture: LoadedFixture | undefined;
+            let cutover: LoadedFixture | undefined;
+            let loadError: string | undefined;
+            const live = new Map<string, Outcome>();
+            const served = new Map<string, Outcome>();
+            const key = (q: ConformanceQuery, on?: Switch | "live-cutover") =>
+               on ? `${q.name}/${on}` : q.name;
+            const runIn = (
+               target: { run: LoadedFixture["run"] },
+               q: ConformanceQuery,
+            ) =>
+               target.run(
+                  q.model ?? entryOf(shape),
+                  q.malloy,
+                  q.givens as never,
+               );
 
-         beforeAll(async () => {
-            // Loaded with the switch on, so `#(materialize)` is planned; the
-            // router reads the switch per query, so both are queried here.
-            // The v1 cutover is read at load (it plans v1 rollups as the
-            // rollup leg's, under their v2 names) and at bind, so it gets a
-            // package of its own, loaded, built and bound under it, by a
-            // load pool spawned with it.
-            restore = withSwitch("on", shape.env);
-            try {
-               await freshLoadPool();
-               const loader = await loadFixture({
-                  ...DATA_FILES,
-                  ...renderFiles(shape, variant),
-               });
-               for (const q of shape.queries) {
-                  live.set(key(q), await runIn(loader, q));
-               }
-               fixture = await loader.bind({ includeRollups: true });
-               for (const on of SWITCHES.filter((s) => s !== "cutover")) {
-                  restore();
-                  restore = withSwitch(on, shape.env);
+            beforeAll(async () => {
+               // Loaded with the switch on, so `#(materialize)` is planned; the
+               // router reads the switch per query, so both are queried here.
+               // The v1 cutover is read at load (it plans v1 rollups as the
+               // rollup leg's, under their v2 names) and at bind, so it gets a
+               // package of its own, loaded, built and bound under it, by a
+               // load pool spawned with it.
+               restore = withSwitch("on", shape.env);
+               try {
+                  await freshLoadPool();
+                  const loader = await loadFixture(
+                     { ...DATA_FILES, ...renderFiles(shape, variant) },
+                     { lake },
+                  );
                   for (const q of shape.queries) {
-                     served.set(key(q, on), await runIn(fixture, q));
+                     live.set(key(q), await runIn(loader, q));
                   }
-               }
-               restore();
-               restore = withSwitch("cutover", shape.env);
-               await freshLoadPool();
-               const cutoverLoader = await loadFixture({
-                  ...DATA_FILES,
-                  ...renderFiles(shape, variant),
-               });
-               // Live as the cutover package answers before any table is
-               // bound: no composite exists to answer it (with today's
-               // switches, a v1 rollup's composite answers even unbuilt, as
-               // its base, without the measures' annotations).
-               for (const q of shape.queries) {
-                  live.set(
-                     key(q, "live-cutover"),
-                     await runIn(cutoverLoader, q),
+                  fixture = await loader.bind({ includeRollups: true });
+                  for (const on of SWITCHES.filter((s) => s !== "cutover")) {
+                     restore();
+                     restore = withSwitch(on, shape.env);
+                     for (const q of shape.queries) {
+                        served.set(key(q, on), await runIn(fixture, q));
+                     }
+                  }
+                  restore();
+                  restore = withSwitch("cutover", shape.env);
+                  await freshLoadPool();
+                  const cutoverLoader = await loadFixture(
+                     { ...DATA_FILES, ...renderFiles(shape, variant) },
+                     { lake },
                   );
-               }
-               cutover = await cutoverLoader.bind({ includeRollups: true });
-               for (const q of shape.queries) {
-                  served.set(key(q, "cutover"), await runIn(cutover, q));
-               }
-            } catch (error) {
-               loadError =
-                  error instanceof Error ? error.message : String(error);
-            }
-            if (REPORT) report();
-         });
-
-         function report() {
-            const row = (on: string, query: string, outcome: string) =>
-               reportRows.push(
-                  `| ${shape.name} | ${variant} | ${on} | ${query} | ${outcome
-                     .replace(/\\/g, "\\\\")
-                     .replace(/\|/g, "\\|")
-                     .replace(/\n/g, " ")} |`,
-               );
-            if (loadError) {
-               row("-", "(load)", `load error: ${loadError}`);
-               return;
-            }
-            for (const on of SWITCHES) {
-               for (const q of shape.queries) {
-                  row(
-                     on,
-                     q.name,
-                     describeOutcome(
-                        live.get(
-                           key(
-                              q,
-                              on === "cutover" ? "live-cutover" : undefined,
-                           ),
-                        )!,
-                        served.get(key(q, on))!,
-                     ),
-                  );
-               }
-            }
-            for (const [label, f] of [
-               ["-", fixture],
-               ["cutover", cutover],
-            ] as const) {
-               if (!f) continue;
-               const errors = Object.entries(f.buildErrors);
-               row(
-                  label,
-                  "(package)",
-                  [
-                     `verdicts ${f.verdicts.join(", ")}`,
-                     `built ${f.built.map((b) => `${b.name}/${b.tier}`).join(", ")}`,
-                     ...(errors.length
-                        ? [`build errors ${JSON.stringify(errors)}`]
-                        : []),
-                     `warnings ${f.warnings.map((w) => `${w.code}:${w.subject}: ${(w.message ?? "").slice(0, 200)}`).join(" ;; ")}`,
-                  ].join("; "),
-               );
-            }
-         }
-
-         afterAll(async () => {
-            restore();
-            await fixture?.dispose();
-            await cutover?.dispose();
-         });
-
-         for (const on of SWITCHES) {
-            for (const q of shape.queries) {
-               const want = expectedTier(q, variant, on);
-               const gap = gapFor(shape, q, variant, on);
-               const title = `${q.name}, switch ${on}: ${want === "colocated" ? "served" : want}, equal to live`;
-               const test = () => {
-                  expect(loadError).toBeUndefined();
-                  const l =
-                     on === "cutover"
-                        ? live.get(key(q, "live-cutover"))!
-                        : live.get(key(q))!;
-                  const s = served.get(key(q, on))!;
-                  if ("error" in l) throw new Error(`live failed: ${l.error}`);
-                  if ("error" in s) {
-                     throw new Error(`served failed: ${s.error}`);
-                  }
-                  expect(
-                     rowDifference(l.answer.rows, s.answer.rows),
-                  ).toBeUndefined();
-                  // After the cutover, by the strict comparison too
-                  // (`answer_difference.ts`: strings as strings, integers
-                  // and bigints exact).
-                  if (on === "cutover") {
-                     expect(
-                        strictRowDifference(l.answer.rows, s.answer.rows),
-                     ).toBeUndefined();
-                  }
-                  const needed = tolerancesNeeded(l.answer, s.answer);
-                  expect(
-                     fieldDifference(l.answer, s.answer, needed),
-                  ).toBeUndefined();
-                  for (const t of needed) {
-                     tolerated[t].push(
-                        `${shape.name} [${variant}] ${q.name}, switch ${on}`,
+                  // Live as the cutover package answers before any table is
+                  // bound: no composite exists to answer it (with today's
+                  // switches, a v1 rollup's composite answers even unbuilt, as
+                  // its base, without the measures' annotations).
+                  for (const q of shape.queries) {
+                     live.set(
+                        key(q, "live-cutover"),
+                        await runIn(cutoverLoader, q),
                      );
                   }
-                  if (want === "live") {
-                     expect(s.answer.servedBy).toBe("live");
-                     return;
+                  cutover = await cutoverLoader.bind({ includeRollups: true });
+                  for (const q of shape.queries) {
+                     served.set(key(q, "cutover"), await runIn(cutover, q));
                   }
-                  if (want === "rollup" || want === "view") {
-                     expect(s.answer.servedBy).toBe(want);
-                     return;
-                  }
-                  expect(s.answer.servedBy).toBe("materialized");
-                  if (isColocated(variant) || want === "colocated") {
-                     expect(s.answer.servedFrom).toBe("database");
-                     // After the cutover a colocated table is read by the
-                     // served copy, never Malloy's build manifest.
-                     if (on === "cutover") {
-                        expect(s.answer.via).toBe("served_copy");
-                     }
-                     return;
-                  }
-                  expect(s.answer.servedFrom).toBe("storage");
-                  // The switch decides which storage path answers.
-                  expect(s.answer.via).toBe(
-                     on === "off" ? undefined : "served_copy",
+               } catch (error) {
+                  loadError =
+                     error instanceof Error ? error.message : String(error);
+               }
+               if (REPORT) report();
+            });
+
+            function report() {
+               const row = (on: string, query: string, outcome: string) =>
+                  reportRows.push(
+                     `| ${shape.name} | ${label} | ${on} | ${query} | ${outcome
+                        .replace(/\\/g, "\\\\")
+                        .replace(/\|/g, "\\|")
+                        .replace(/\n/g, " ")} |`,
                   );
-               };
-               if (gap && !RUN_GAPS) {
-                  it.skip(
-                     `${title} [gap ${gap.kind}${gap.issue ? ` ${gap.issue}` : ""}: ${gap.reason}]`,
-                     test,
+               if (loadError) {
+                  row("-", "(load)", `load error: ${loadError}`);
+                  return;
+               }
+               for (const on of SWITCHES) {
+                  for (const q of shape.queries) {
+                     row(
+                        on,
+                        q.name,
+                        describeOutcome(
+                           live.get(
+                              key(
+                                 q,
+                                 on === "cutover" ? "live-cutover" : undefined,
+                              ),
+                           )!,
+                           served.get(key(q, on))!,
+                        ),
+                     );
+                  }
+               }
+               for (const [label, f] of [
+                  ["-", fixture],
+                  ["cutover", cutover],
+               ] as const) {
+                  if (!f) continue;
+                  const errors = Object.entries(f.buildErrors);
+                  row(
+                     label,
+                     "(package)",
+                     [
+                        `verdicts ${f.verdicts.join(", ")}`,
+                        `built ${f.built.map((b) => `${b.name}/${b.tier}`).join(", ")}`,
+                        ...(errors.length
+                           ? [`build errors ${JSON.stringify(errors)}`]
+                           : []),
+                        `warnings ${f.warnings.map((w) => `${w.code}:${w.subject}: ${(w.message ?? "").slice(0, 200)}`).join(" ;; ")}`,
+                     ].join("; "),
                   );
-               } else {
-                  it(title, test);
                }
             }
-         }
-      });
+
+            afterAll(async () => {
+               restore();
+               await fixture?.dispose();
+               await cutover?.dispose();
+            });
+
+            for (const on of SWITCHES) {
+               for (const q of shape.queries) {
+                  const want = expectedTier(q, variant, on);
+                  const gap = gapFor(shape, q, variant, on, lake);
+                  const title = `${q.name}, switch ${on}: ${want === "colocated" ? "served" : want}, equal to live`;
+                  const test = () => {
+                     expect(loadError).toBeUndefined();
+                     const l =
+                        on === "cutover"
+                           ? live.get(key(q, "live-cutover"))!
+                           : live.get(key(q))!;
+                     const s = served.get(key(q, on))!;
+                     if ("error" in l)
+                        throw new Error(`live failed: ${l.error}`);
+                     if ("error" in s) {
+                        throw new Error(`served failed: ${s.error}`);
+                     }
+                     expect(
+                        rowDifference(l.answer.rows, s.answer.rows),
+                     ).toBeUndefined();
+                     // After the cutover, by the strict comparison too
+                     // (`answer_difference.ts`: strings as strings, integers
+                     // and bigints exact).
+                     if (on === "cutover") {
+                        expect(
+                           strictRowDifference(l.answer.rows, s.answer.rows),
+                        ).toBeUndefined();
+                     }
+                     const needed = tolerancesNeeded(l.answer, s.answer);
+                     expect(
+                        fieldDifference(l.answer, s.answer, needed),
+                     ).toBeUndefined();
+                     for (const t of needed) {
+                        tolerated[t].push(
+                           `${shape.name} [${label}] ${q.name}, switch ${on}`,
+                        );
+                     }
+                     if (want === "live") {
+                        expect(s.answer.servedBy).toBe("live");
+                        return;
+                     }
+                     if (want === "rollup" || want === "view") {
+                        expect(s.answer.servedBy).toBe(want);
+                        return;
+                     }
+                     expect(s.answer.servedBy).toBe("materialized");
+                     if (isColocated(variant) || want === "colocated") {
+                        expect(s.answer.servedFrom).toBe("database");
+                        // After the cutover a colocated table is read by the
+                        // served copy, never Malloy's build manifest.
+                        if (on === "cutover") {
+                           expect(s.answer.via).toBe("served_copy");
+                        }
+                        return;
+                     }
+                     expect(s.answer.servedFrom).toBe("storage");
+                     // The switch decides which storage path answers.
+                     expect(s.answer.via).toBe(
+                        on === "off" ? undefined : "served_copy",
+                     );
+                  };
+                  if (gap && !RUN_GAPS) {
+                     it.skip(
+                        `${title} [gap ${gap.kind}${gap.issue ? ` ${gap.issue}` : ""}: ${gap.reason}]`,
+                        test,
+                     );
+                  } else {
+                     it(title, test);
+                  }
+               }
+            }
+         });
+      }
    }
 }
+
+describe("conformance: the parquet run reads Parquet", () => {
+   // The Parquet run proves nothing if the rows stay inline in the catalog
+   // (DuckLake's default inlining limit), where every type is kept.
+   it("stores a storage= table and a database table as Parquet files", async () => {
+      const files = (dir: string): string[] =>
+         fs.existsSync(dir)
+            ? fs
+                 .readdirSync(dir, { recursive: true })
+                 .map(String)
+                 .filter((f) => f.endsWith(".parquet"))
+            : [];
+      for (const variant of ["storage", "colocated"] as const) {
+         const restore = withSwitch("cutover");
+         await freshLoadPool();
+         const loader = await loadFixture(
+            { ...DATA_FILES, ...renderFiles(SHAPES[0], variant) },
+            { lake: "parquet" },
+         );
+         try {
+            const bound = await loader.bind();
+            expect(bound.buildErrors).toEqual({});
+            const dir =
+               variant === "storage" ? "lake_data" : "origin_parquet_data";
+            expect(files(path.join(loader.root, dir)).length).toBeGreaterThan(
+               0,
+            );
+         } finally {
+            await loader.dispose();
+            restore();
+         }
+      }
+      await freshLoadPool();
+   });
+});
 
 describe("conformance: metadata tolerated on every stored read", () => {
    for (const [t, { reason }] of Object.entries(TOLERANCES) as [

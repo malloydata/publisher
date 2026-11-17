@@ -100,7 +100,9 @@ export interface Gap {
 
 /**
  * Gaps keyed by `variant/switch` (`storage/off`), `variant` (both switches),
- * or `*`; a query's own `gaps` are read first.
+ * or `*`; a query's own `gaps` are read first. A gap only the Parquet run
+ * has (conformance.component.spec.ts, `LAKES`) adds `@parquet` to its key
+ * (`storage@parquet`, `*@parquet`), and is read before the others there.
  */
 export type GapMap = Partial<Record<string, Gap>>;
 
