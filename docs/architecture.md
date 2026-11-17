@@ -139,7 +139,7 @@ table (`TablePlan`, in `domain/table_plans.ts`), its **kind** (`persist`, `mater
 declaration that is not planned is a refusal or an omission. `deriveBuildPlan` projects the table plans
 into the wire `BuildPlan` the REST API and a control plane read. A **run** (`run/`) takes its
 instructions from that plan or from a host, builds each table in build order on its **tier**
-(colocated, in the source's own warehouse, or `storage=`, loaded into a DuckDB or DuckLake
+(database, in the source's own warehouse, or `storage=`, loaded into a DuckDB or DuckLake
 destination) by its **method** (a full build or a delta), checks its keys, and commits one manifest.
 The facade then **binds** the manifest into a new snapshot, swapped by reference, and computes each
 source's serve verdict and the package's warnings.
@@ -151,7 +151,7 @@ flowchart TB
   PLAN -->|"wire projection"| WIRE["BuildPlan<br/>REST, the control plane"]
   PLAN --> RUN["Run: its own instructions, or a host's"]
   RUN --> TIER{"Tier"}
-  TIER --> COL["Colocated"]
+  TIER --> COL["Database"]
   TIER --> STO["storage="]
   COL --> ENTRY["Manifest entry"]
   STO --> ENTRY

@@ -23,7 +23,7 @@
  *
  * {@link Answer} is the one record of how a query was served: built once from
  * the router's decision, replaced (never mutated) when a stored run fails and
- * falls back live, and finished with the colocated entries the answering run
+ * falls back live, and finished with the database entries the answering run
  * read. `servedFrom`, the run's map and manifest, whether a failed run may
  * retry live, the access record's path and the path report all read it, so no
  * two of them can disagree.
@@ -39,7 +39,7 @@ import type {
 } from "@malloydata/malloy";
 import type { GraftScope } from "../../gate_classification";
 import type { ConsideredVariant } from "../../query_router";
-import { type Binding, isColocated, type Pinned } from "../domain/binding";
+import { type Binding, isDatabase, type Pinned } from "../domain/binding";
 import type { BuildManifest } from "../domain/types";
 import type { TableRead } from "../domain/gate_policy";
 import type { RollupVariantServe } from "./rollup_variants";
@@ -78,7 +78,7 @@ export interface LegAnswer {
    /**
     * The stored tables the answer reads, as the path report names them:
     * the served copy's tables, or a `storage=` view's binding. Undefined
-    * when the leg reports none of its own (a rollup, a colocated view).
+    * when the leg reports none of its own (a rollup, a database view).
     */
    readonly tablesRead: readonly Binding[] | undefined;
    /**
@@ -110,8 +110,8 @@ export type Answer =
         readonly leg: "live";
         /** Each candidate the router considered, and what it decided. */
         readonly considered: readonly ConsideredVariant[];
-        /** The colocated manifest entries the answering run read. */
-        readonly colocatedRead: ReadonlySet<string>;
+        /** The database manifest entries the answering run read. */
+        readonly databaseRead: ReadonlySet<string>;
      }
    | {
         readonly leg: LegKind;
@@ -124,7 +124,7 @@ export type Answer =
         readonly pastEntryPointGate: boolean;
         /** The stored run failed and the query was answered live. */
         readonly runFailed: boolean;
-        readonly colocatedRead: ReadonlySet<string>;
+        readonly databaseRead: ReadonlySet<string>;
      };
 
 /** A routed answer. */
@@ -134,7 +134,7 @@ export type RoutedAnswer = Exclude<Answer, { leg: "live" }>;
 export const LIVE_ANSWER: Answer = Object.freeze({
    leg: "live",
    considered: [],
-   colocatedRead: new Set<string>(),
+   databaseRead: new Set<string>(),
 });
 
 /** The legs that exist for a model, each present only when it is on. */
@@ -175,7 +175,7 @@ export function makeLegs(p: Pinned, ctx: LegContext): readonly Leg[] {
    return legs;
 }
 
-/** The pinned build manifest, or undefined when nothing colocated is bound. */
+/** The pinned build manifest, or undefined when nothing database is bound. */
 function pinnedManifest(p: Pinned): BuildManifest | undefined {
    return p.hasEntries ? p.compilerManifest : undefined;
 }
@@ -237,7 +237,7 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
             runnable: answer.runnable,
             tablesRead: undefined,
             // The rollup it read, for the gate policy (G3 for rollups): a
-            // `storage=` one by its binding, a colocated one through the
+            // `storage=` one by its binding, a database one through the
             // build manifest.
             gateTablesRead: answer.binding
                ? [answer.binding]
@@ -293,16 +293,16 @@ export function liveFallbackAnswer(answer: RoutedAnswer): Answer {
 /** The answer with the manifest entries its answering run read. */
 export function answeredWith(
    answer: Answer,
-   colocatedRead: ReadonlySet<string>,
+   databaseRead: ReadonlySet<string>,
 ): Answer {
-   return Object.freeze({ ...answer, colocatedRead });
+   return Object.freeze({ ...answer, databaseRead });
 }
 
 /**
  * Which tier answered a query, when a stored table did: `storage`, a table in
  * a `storage=` destination read through `virtual()`; `database`, a table in
  * the source's own database (Malloy's substitution, the served copy over a
- * colocated table, a colocated rollup or persisted view); `live_fallback`, a
+ * database table, a database rollup or persisted view); `live_fallback`, a
  * routed answer whose stored run failed and degraded to live (a success that
  * must NOT count as a storage hit). Absent means no stored table answered.
  */
@@ -311,19 +311,19 @@ export type ServedFrom = "storage" | "database" | "live_fallback";
 /** `servedFrom` for the answer, the same tier the path report's `servedBy` names. */
 export function servedFromOf(answer: Answer): ServedFrom | undefined {
    if (answer.leg === "live") {
-      return answer.colocatedRead.size > 0 ? "database" : undefined;
+      return answer.databaseRead.size > 0 ? "database" : undefined;
    }
    if (answer.runFailed) return "live_fallback";
    const { tablesRead, virtualMap } = answer.answer;
    if (answer.leg === "served") {
       return tablesRead !== undefined &&
          tablesRead.length > 0 &&
-         tablesRead.every(isColocated)
+         tablesRead.every(isDatabase)
          ? "database"
          : "storage";
    }
    // A `storage=` persisted view or rollup reads through `virtual()`; a
-   // colocated one through the build manifest.
+   // database one through the build manifest.
    return virtualMap !== undefined ? "storage" : "database";
 }
 
@@ -392,8 +392,8 @@ export function isStoredDecimalArithmeticError(error: unknown): boolean {
 
 /**
  * The build manifest the answering run takes. A run on a virtual map (the
- * served copy, a `storage=` view or rollup) takes none; a colocated rollup
- * reads the full pinned manifest (its entries), a colocated persisted view
+ * served copy, a `storage=` view or rollup) takes none; a database rollup
+ * reads the full pinned manifest (its entries), a database persisted view
  * the one without rollups, and the live compile an empty one.
  */
 export function runManifestOf<M>(

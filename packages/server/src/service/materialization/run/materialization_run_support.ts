@@ -195,7 +195,7 @@ export function manifestForCompiler(
  *
  * - `inManifestOnly`: upstreams held only by a `storage=` destination, which
  *   `manifestExcludingStorage` drops. Parents to stack on for a `storage=`
- *   build; recomputed for a colocated one.
+ *   build; recomputed for a database one.
  * - `missing`: upstreams the SQL reads that no manifest holds, from the
  *   compiler (`compilerMissing`, {@link compilerMissingUpstream}) rather than
  *   the walk, which both over-reaches (joins the query never reads) and
@@ -437,7 +437,7 @@ export function chainedPlanFacts(
                try {
                   tier = declaredStorage(source) ?? null;
                } catch {
-                  // Unreadable annotations: the colocated reading, as the build does.
+                  // Unreadable annotations: the database reading, as the build does.
                }
             }
             tier = normalizedTier(tier, source.connectionName);
@@ -464,7 +464,7 @@ export function chainedPlanFacts(
  * `storageDestinationName`, or null for a warehouse table. A source moved to
  * or from `storage=` keeps its content address, so a carried or referenced
  * entry can be the table from before the move: a warehouse table for a source
- * now stored, or a stored table for a source now colocated or in another
+ * now stored, or a stored table for a source now database or in another
  * destination. Such an entry is stale and is never used as an upstream: not
  * rendered into warehouse SQL, and not stacked on. An address the plan does
  * not know, or a run with no plan, keeps every entry.
@@ -782,7 +782,7 @@ export function selfAssignTableName(persistSource: PersistSource): string {
  * The build manifest for a `storage=` build, with storage-held entries removed.
  * The build runs in the source warehouse, so dropping them makes the compiler
  * INLINE the upstream (or strictly miss) instead of emitting a cross-engine
- * reference. Colocated entries keep their dialect-quoted table path so the
+ * reference. Database entries keep their dialect-quoted table path so the
  * downstream FROM resolves a case-preserved table on a case-folding engine.
  * Preserves `strict`.
  */
@@ -832,12 +832,12 @@ export { declaredStorage };
 
 /**
  * The EFFECTIVE `storage=` destination name for a build, or undefined for the
- * colocated path. Managed-tier aliases are resolved by the host and arrive on
+ * database path. Managed-tier aliases are resolved by the host and arrive on
  * the wire instruction's `destination`, never here.
  *
  * `PERSIST_STORAGE_MODE=off` returns undefined regardless, a kill switch that
  * never fails a package (the ignored `storage=` is a package warning).
- * Undefined does NOT mean "build colocated" for a source that declared
+ * Undefined does NOT mean "build in the database tier" for a source that declared
  * `storage=`: `deriveSelfInstructions` skips it so it serves live; see
  * {@link declaredStorage}.
  */

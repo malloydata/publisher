@@ -21,7 +21,7 @@ import {
    withSwitch,
 } from "../../../src/test_helpers/conformance/package_runner";
 import { installSettings } from "../../../src/test_helpers/settings_env";
-import { G3_COLOCATED_MODEL, G3_STORAGE_MODEL } from "./g3_models";
+import { G3_DATABASE_MODEL, G3_STORAGE_MODEL } from "./g3_models";
 import { renderFiles, SHAPES, VARIANTS } from "./conformance/shapes";
 import { PackageLoadPool } from "../../../src/package_load/package_load_pool";
 import { GeneratedFiles } from "../../../src/service/materialization/text/generated_files";
@@ -228,7 +228,7 @@ for (const shape of SHAPES) {
 
 /**
  * The G3 models (a source's own row filter, its own lock, both, and the
- * inherited and joined gates G3 refuses), colocated and `storage=`, each
+ * inherited and joined gates G3 refuses), database and `storage=`, each
  * query asked by callers whose givens differ, run end to end: the gate is
  * grafted on the copy the worker compiled exactly as on the inline one.
  */
@@ -245,7 +245,7 @@ const G3_CASES: {
 }[] = [
    {
       name: "database",
-      model: G3_COLOCATED_MODEL,
+      model: G3_DATABASE_MODEL,
       sources: [
          "gated",
          "gated_ext",

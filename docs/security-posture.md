@@ -51,7 +51,7 @@ stands in front of Publisher and does all of the following:
      `"frozenConfig": true` so the server refuses them.
    - the materialization routes (`…/packages/{packageName}/materializations` and everything under
      them). A run's record carries its build manifest, and each entry names the physical table a
-     source was built into. A colocated entry also lists `nativeSchema`: every column of the table,
+     source was built into. A database entry also lists `nativeSchema`: every column of the table,
      including ones the model marks private or internal, with its warehouse type. No row value is
      returned, but the names and types describe your warehouse, so restrict these routes to
      operators.
@@ -250,10 +250,10 @@ a source that should not answer schema questions to outsiders wants a lock as we
   because the row-level change is what made it reachable — a whole-source gate denied on the source
   name before compiling anything.
 - **A stored table holds every caller's rows, with no gate.** A materialized source under its own
-  row-level gate (an `#(access_filter)`, an `#(authorize)` lock, or both) is built, colocated or in
+  row-level gate (an `#(access_filter)`, an `#(authorize)` lock, or both) is built, database or in
   a `storage=` destination, with every row, and the gate is re-applied each time Publisher reads
   the table. Only reads through Publisher are gated. Anyone who reads the table directly reads
-  every row: in the author's own warehouse for a colocated table, in the destination for a
+  every row: in the author's own warehouse for a database table, in the destination for a
   `storage=` one ([materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
   Tables are named predictably, by package and source. So **never configure a storage
   destination's catalog, schema, data path or DuckDB file as an environment connection that models

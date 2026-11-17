@@ -114,7 +114,7 @@ export interface RollupPlan {
    /**
     * The storage destination this rollup is built into and served from — this
     * grain's own `#@ preaggregate storage=`, and only ever that. Undefined for a
-    * colocated rollup built into the base's own warehouse.
+    * database rollup built into the base's own warehouse.
     *
     * NOT inherited from the base's `#@ persist storage=`; see
     * {@link basePersistNamespace} for why a destination is not inherited.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * What a colocated rollup saves by building from its base's stored table: a
+ * What a database rollup saves by building from its base's stored table: a
  * standalone run of a base and its rollup over a synthetic DuckDB table of
  * ROWS rows, counting the run's statements that scan the raw rows and timing
  * the rollup's build, then timing the same rollup built from the warehouse

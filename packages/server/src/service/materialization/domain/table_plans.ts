@@ -339,7 +339,7 @@ export interface MaterializePlan {
    /**
     * The build source's compiled output, each column in DuckDB's type
     * spelling (`storedColumnsOfOutput`), read off the compiled companion.
-    * A colocated table's schema is not captured at build, so its serve
+    * A database table's schema is not captured at build, so its serve
     * binding declares these. Absent before the companion compiles.
     */
    storedColumns?: StoredColumn[];
@@ -426,7 +426,7 @@ export interface MaterializeParent {
     * For a `storage=` pair, set with the build copy: the text the extension's
     * build compiles in its destination over the parent's stored table
     * ({@link extensionOverStoredModel}). Absent until the build copy is
-    * written; absent for a colocated pair, whose build reads the parent's
+    * written; absent for a database pair, whose build reads the parent's
     * build source in its own warehouse.
     */
    overStored?: StoredChain;
@@ -527,7 +527,7 @@ export interface RollupVariantPlan extends RollupPlan {
    /**
     * Every gate of the base is its own (none inherited from a source it
     * extends, none through a join or a derivation): what the gate policy
-    * keeps under G3 for a colocated rollup with the gated-sources switch off.
+    * keeps under G3 for a database rollup with the gated-sources switch off.
     */
    baseGateOwn?: true;
    /**
@@ -554,7 +554,7 @@ export interface RollupVariantPlan extends RollupPlan {
    /**
     * The uniqueness check of the grain's one dimension (known limitation 29):
     * set when the grain is one dimension of the base and the companion
-    * compiled the check, for a colocated and a `storage=` rollup alike. A run builds it only
+    * compiled the check, for a database and a `storage=` rollup alike. A run builds it only
     * when a join_one in the package is keyed on that dimension (see
     * {@link joinOneKeysOf}); the join-to-rollup branch (A7) reads its outcome.
     */
@@ -721,7 +721,7 @@ export type TablePlan = TablePlanFacts &
            materialize?: undefined;
            /**
             * The rollup as compiled over its base's stored table: set for a
-            * colocated rollup over a colocated `#@ persist` or
+            * database rollup over a database `#@ persist` or
             * `#(materialize)` base, and compiled on the first call
             * (rollup_compile.ts). A run builds from it only when its build
             * manifest holds the base's table (instructed_build.ts).

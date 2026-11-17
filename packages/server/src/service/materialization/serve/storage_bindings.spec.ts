@@ -317,7 +317,7 @@ describe("boundTableTypeFindings", () => {
       ]);
    });
 
-   it("leaves a `#@ persist` table to its model's check, and a colocated one alone", () => {
+   it("leaves a `#@ persist` table to its model's check, and a database one alone", () => {
       expect(
          boundTableTypeFindings(
             [

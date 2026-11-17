@@ -54,7 +54,7 @@ describe("the gate policy's rows", () => {
       }
    });
 
-   it("keeps a v2 rollup's proven base gate colocated, and in storage only once reviewed", () => {
+   it("keeps a v2 rollup's proven base gate database, and in storage only once reviewed", () => {
       const rollup = (t: Partial<GatedTable>) =>
          table({ kind: "rollup", gate: undefined, baseGateProven: true, ...t });
       expect(tableKeepsGates(rollup({ tier: "database" }), ON)).toBe(true);
@@ -86,7 +86,7 @@ describe("the gate policy's rows", () => {
       );
    });
 
-   it("keeps a colocated rollup's own proven base gate with the switch off (G3), and no other", () => {
+   it("keeps a database rollup's own proven base gate with the switch off (G3), and no other", () => {
       const OFF_ALL: GateSwitches = {
          materialize: false,
          gatedSources: false,
@@ -159,10 +159,10 @@ describe("the gate policy's rows", () => {
 });
 
 describe("the gate policy at the router", () => {
-   const G3 = { colocatedReadsKeepGates: true };
-   const NO_G3 = { colocatedReadsKeepGates: false };
+   const G3 = { databaseReadsKeepGates: true };
+   const NO_G3 = { databaseReadsKeepGates: false };
    const OFF = { ...ON, gatedSources: false };
-   const colocated = [{ tier: "database" as const }];
+   const database = [{ tier: "database" as const }];
    const mixed = [{ tier: "database" as const }, { tier: "storage" as const }];
 
    it("lets every leg past a gate under the gated-sources switch", () => {
@@ -173,26 +173,26 @@ describe("the gate policy at the router", () => {
       }
    });
 
-   it("lets the served copy and the rollup leg past without it, for an answer reading only colocated tables (G3)", () => {
+   it("lets the served copy and the rollup leg past without it, for an answer reading only database tables (G3)", () => {
       expect(legMayPassGate("view", OFF, G3)).toBe(false);
       expect(legMayPassGate("rollup", OFF, G3)).toBe(true);
       expect(legMayPassGate("served", OFF, G3)).toBe(true);
-      expect(answerKeepsGates("served", colocated, OFF, G3)).toBe(true);
+      expect(answerKeepsGates("served", database, OFF, G3)).toBe(true);
       expect(answerKeepsGates("served", mixed, OFF, G3)).toBe(false);
       expect(answerKeepsGates("served", [], OFF, G3)).toBe(false);
-      expect(answerKeepsGates("rollup", colocated, OFF, G3)).toBe(true);
+      expect(answerKeepsGates("rollup", database, OFF, G3)).toBe(true);
       expect(answerKeepsGates("rollup", mixed, OFF, G3)).toBe(false);
       expect(answerKeepsGates("rollup", [], OFF, G3)).toBe(false);
       expect(legMayPassGate("rollup", OFF, NO_G3)).toBe(false);
       expect(legMayPassGate("served", OFF, NO_G3)).toBe(false);
-      expect(answerKeepsGates("served", colocated, OFF, NO_G3)).toBe(false);
+      expect(answerKeepsGates("served", database, OFF, NO_G3)).toBe(false);
    });
 
    it("counts a storage= table admitted past its own gate as a G3 table, and no other storage= table", () => {
       const own = { tier: "storage" as const, ownGateKept: true };
       const other = { tier: "storage" as const };
       expect(answerKeepsGates("served", [own], OFF, G3)).toBe(true);
-      expect(answerKeepsGates("served", [own, ...colocated], OFF, G3)).toBe(
+      expect(answerKeepsGates("served", [own, ...database], OFF, G3)).toBe(
          true,
       );
       // A mixed answer, an own-gate table beside one plan did not admit.
@@ -206,7 +206,7 @@ describe("the gate policy at the router", () => {
    it("fails closed on a leg with no row", () => {
       const leg = "storage" as unknown as "served";
       expect(legMayPassGate(leg, ON, G3)).toBe(false);
-      expect(answerKeepsGates(leg, colocated, ON, G3)).toBe(false);
+      expect(answerKeepsGates(leg, database, ON, G3)).toBe(false);
    });
 });
 
@@ -270,7 +270,7 @@ describe("the gate policy's rows at their edges", () => {
       const OFF = { ...ON, gatedSources: false };
       expect(
          answerKeepsGates("served", [{ tier: "storage" }], OFF, {
-            colocatedReadsKeepGates: true,
+            databaseReadsKeepGates: true,
          }),
       ).toBe(false);
    });

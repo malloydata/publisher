@@ -353,7 +353,7 @@ export class MaterializationController {
             ? { realization: instruction.realization }
             : {}),
          // The `storage=` destination. Must be carried through, or an
-         // orchestrated build silently falls back to a colocated build.
+         // orchestrated build silently falls back to a database build.
          ...(typeof instruction.destination === "string"
             ? { destination: instruction.destination }
             : {}),
@@ -427,7 +427,7 @@ export class MaterializationController {
          ...(Array.isArray(entry.mergeKeys)
             ? { mergeKeys: entry.mergeKeys as string[] }
             : {}),
-         // Absent means colocated. Part of the table identity: an entry indexed
+         // Absent means database. Part of the table identity: an entry indexed
          // without its destination is never found by its source, which then
          // rebuilds in full on every refresh instead of advancing.
          ...(typeof entry.storageDestinationName === "string"

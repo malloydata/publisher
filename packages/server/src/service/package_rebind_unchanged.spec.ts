@@ -46,7 +46,7 @@ describe("a rebind of the same manifest", () => {
       offThread.mock.results.filter(
          (r: { value: unknown }) => r.value !== undefined,
       ).length;
-   /** The colocated entry for `summary`, on `table`. */
+   /** The database entry for `summary`, on `table`. */
    let manifest: (table: string) => FreshnessManifest;
 
    beforeEach(async () => {
@@ -213,8 +213,8 @@ describe("a rebind of the same manifest", () => {
       await pkg.reloadAllModels({});
       seen = reloads.mock.calls.length;
       expect(await recompiled(manifest("summary_b"))).toBe(true);
-      // A colocated bind with no reload moves what is bound.
-      pkg.materialization().bind({ colocated: manifest("summary_a") });
+      // A database bind with no reload moves what is bound.
+      pkg.materialization().bind({ database: manifest("summary_a") });
       expect(await recompiled(manifest("summary_b"))).toBe(true);
    });
 

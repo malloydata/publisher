@@ -90,7 +90,7 @@ interface PreaggregateGrain {
    /**
     * The storage destination this rollup's table is built into and served from,
     * when the author named one (`#@ preaggregate grain="category"
-    * storage=lake`). Undefined means colocated: built into the base's own
+    * storage=lake`). Undefined means database: built into the base's own
     * warehouse.
     *
     * Unlike `namespace`, NOTHING supplies it when unspecified: a destination is

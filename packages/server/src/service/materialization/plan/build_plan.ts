@@ -172,8 +172,8 @@ import {
    type SourceBuild,
 } from "../domain/compiled_build_plan";
 import {
-   colocatedRefusalsByAddress,
-   collectColocatedSourceEligibility,
+   databaseRefusalsByAddress,
+   collectDatabaseSourceEligibility,
    collectSourceEligibility,
    EligibilityCheckFailed,
    planVerdicts,
@@ -181,7 +181,7 @@ import {
    refuseRewrittenNames,
    sharedTables,
    withoutSources,
-   type ColocatedSourceEligibility,
+   type DatabaseSourceEligibility,
    type SourceEligibility,
    type TableVerdict,
 } from "./eligibility_collect";
@@ -218,7 +218,7 @@ export type { TableFolds } from "./addressing";
 export {
    sharedTables,
    tierGateInputs,
-   type ColocatedSourceEligibility,
+   type DatabaseSourceEligibility,
    type SourceEligibility,
 } from "./eligibility_collect";
 export {
@@ -1731,8 +1731,8 @@ export function deriveBuildPlan(
    for (const [sourceID, table] of Object.entries(tables)) {
       const { source } = table;
       // One unreadable source must not cost the package its plan: addressing
-      // throws for a colocated source referencing a given with no default, and
-      // an escaping throw would drop EVERY colocated binding for the package.
+      // throws for a database source referencing a given with no default, and
+      // an escaping throw would drop EVERY database binding for the package.
       try {
          const decided = verdicts.get(sourceID)!.wire;
          if ("failed" in decided) throw decided.failed;
@@ -1764,7 +1764,7 @@ export function deriveBuildPlan(
       }
    }
 
-   refuseColocatedTablesSharedWithARefusal(
+   refuseDatabaseTablesSharedWithARefusal(
       compiled,
       verdicts,
       wireSources,
@@ -1825,15 +1825,15 @@ function wireSourceOf(
 }
 
 /**
- * Move to `refusedSources` each planned v1 colocated source whose table another
- * source the colocated gate refuses shares (one content address: identical
- * SQL, different gates). A colocated table is served by its address, and the
+ * Move to `refusedSources` each planned v1 database source whose table another
+ * source the database gate refuses shares (one content address: identical
+ * SQL, different gates). A database table is served by its address, and the
  * bind refuses an address any source on it is refused for
- * (collectColocatedSourceEligibility), as the build does
- * (instructed_build.ts, colocatedRefusalOn): such a table would be built for
+ * (collectDatabaseSourceEligibility), as the build does
+ * (instructed_build.ts, databaseRefusalOn): such a table would be built for
  * nothing. The plan says so, with the sibling's reason, in sourceID order.
  */
-function refuseColocatedTablesSharedWithARefusal(
+function refuseDatabaseTablesSharedWithARefusal(
    compiled: Pick<
       CompiledBuildPlan,
       "tables" | "connectionDigests" | "tableFolds"
@@ -1847,17 +1847,17 @@ function refuseColocatedTablesSharedWithARefusal(
    // addressed by its generated build (the plan's `targets`), which this
    // projection does not see, and the bind keys it the same way.
    const v1 = (id: string) => !tables[id]?.materialize;
-   const colocated = Object.entries(wireSources).filter(
+   const database = Object.entries(wireSources).filter(
       ([id, s]) =>
          s.origin !== "preaggregate" && !s.annotationFields?.storage && v1(id),
    );
-   if (colocated.length === 0) return;
-   const refusals = colocatedRefusalsByAddress(
+   if (database.length === 0) return;
+   const refusals = databaseRefusalsByAddress(
       compiled,
       verdicts,
       (id) => !tables[id].rollup && v1(id),
    );
-   for (const [sourceID, planned] of colocated) {
+   for (const [sourceID, planned] of database) {
       const sibling = refusals
          .get(planned.sourceEntityId)
          ?.find((r) => r.sourceID !== sourceID);
@@ -1872,7 +1872,7 @@ function refuseColocatedTablesSharedWithARefusal(
          message:
             `'${planned.name}' is not built: it shares its table with ` +
             `'${sibling.name}', which the eligibility gate refuses for a ` +
-            `colocated build, and a colocated table is served to every ` +
+            `database build, and a database table is served to every ` +
             `source on it. ${sibling.message}`,
       };
    }
@@ -1886,7 +1886,7 @@ export interface BuildPlanOutcome {
    /** See {@link BuildPlanParts.modelGateLines}. */
    modelGateLines: { preaggregate: string[]; nearMiss: string[] };
    sourceEligibility: SourceEligibility;
-   colocatedSourceEligibility: ColocatedSourceEligibility;
+   databaseSourceEligibility: DatabaseSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
    /**
     * Every connection a persist source builds on, including sources the plan
@@ -2097,7 +2097,7 @@ export function deriveBuildPlanOutcome(
       refusalNotices,
       modelGateLines: compiled.modelGateLines,
       sourceEligibility: collectSourceEligibility(compiled, verdicts),
-      colocatedSourceEligibility: collectColocatedSourceEligibility(
+      databaseSourceEligibility: collectDatabaseSourceEligibility(
          compiled,
          verdicts,
       ),

@@ -113,7 +113,7 @@ source: orders is duckdb.table('orders_raw') extend {
    });
 });
 
-describe("C1b: a colocated rollup and its query read the same manifest", () => {
+describe("C1b: a database rollup and its query read the same manifest", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    let undo: (() => void) | undefined;

@@ -24,7 +24,7 @@ import { pollFor, TERMINAL_STATUSES } from "./polling";
 /**
  * Two environments, two packages each, all on ONE Postgres schema and ONE
  * DuckLake storage destination, every package declaring the same four
- * sources with its own rows: a colocated `#@ persist` named after its
+ * sources with its own rows: a database `#@ persist` named after its
  * source, a `#@ persist name=`, a `#(materialize) storage=` named after its
  * source, and a `#(materialize) storage= name=`. Built and queried through a
  * real server: every package must answer every source with its own rows,

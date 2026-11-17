@@ -73,8 +73,8 @@ source: sb_rolled is sb_orders extend {
   measure: total is amount.sum()
 }
 
-#@ persist name="sb_colocated"
-source: sb_colocated is sb_orders -> { group_by: g; aggregate: total is amount.sum() }
+#@ persist name="sb_database"
+source: sb_database is sb_orders -> { group_by: g; aggregate: total is amount.sum() }
 `;
 
 interface Warning {
@@ -292,11 +292,11 @@ describe.skipIf(!url)(
             expect(warning?.message).toContain("connection 'duckdb'");
             expect(warning?.message).toContain("Drop 'storage='");
          }
-         // The Postgres sibling and the colocated sandbox source are not refused.
+         // The Postgres sibling and the database sandbox source are not refused.
          expect(
             warnings.filter(
                (w) =>
-                  /pg_stored|sb_colocated/.test(w.subject ?? "") &&
+                  /pg_stored|sb_database/.test(w.subject ?? "") &&
                   w.code?.endsWith("-not-built"),
             ),
          ).toEqual([]);
@@ -321,7 +321,7 @@ describe.skipIf(!url)(
          expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
       });
 
-      it("builds the Postgres sibling and the colocated source, and fails nothing", () => {
+      it("builds the Postgres sibling and the database source, and fails nothing", () => {
          expect(run.status).toBe("MANIFEST_FILE_READY");
          expect(run.error ?? null).toBeNull();
          expect(run.manifest?.failures ?? {}).toEqual({});
@@ -329,7 +329,7 @@ describe.skipIf(!url)(
             (e) => e.sourceName,
          );
          expect(built).toContain("pg_stored");
-         expect(built).toContain("sb_colocated");
+         expect(built).toContain("sb_database");
          expect(built.some((name) => name?.startsWith("sb_stored"))).toBe(
             false,
          );

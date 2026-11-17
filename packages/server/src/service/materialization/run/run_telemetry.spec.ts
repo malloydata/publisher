@@ -192,7 +192,7 @@ describe("run telemetry through the build loop", () => {
    });
 
    /**
-    * Two colocated `#@ persist` sources, built by `buildOneSource`; the first
+    * Two database `#@ persist` sources, built by `buildOneSource`; the first
     * gated by `#(authorize)` when `gateFirst`, so the eligibility gate
     * refuses it.
     */

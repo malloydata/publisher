@@ -180,16 +180,16 @@ export interface InstructedRun
    priorRefusedIDs: ReadonlySet<string>;
    /**
     * The planned sources on each content address, computed on first use (see
-    * colocatedRefusalOn). A source whose address cannot be computed is absent.
+    * databaseRefusalOn). A source whose address cannot be computed is absent.
     */
    sourceIDsByAddress?: Map<string, string[]>;
    /**
-    * Per content address, the sources on it the colocated gate refuses, in
-    * sourceID order; decided on first use (see colocatedRefusalOn).
+    * Per content address, the sources on it the database gate refuses, in
+    * sourceID order; decided on first use (see databaseRefusalOn).
     */
-   colocatedRefusalsByAddress?: Map<string, ColocatedRefusal[]>;
+   databaseRefusalsByAddress?: Map<string, DatabaseRefusal[]>;
    /**
-    * Set when a source its own gate admits was not built because a colocated
+    * Set when a source its own gate admits was not built because a database
     * sibling on its table is refused; such a run is not failed as one whose
     * every source was refused.
     */
@@ -216,8 +216,8 @@ export interface InstructedRun
    readFrom?: Map<string, string[]>;
 }
 
-/** One source the colocated gate refuses, as colocatedRefusalOn reports it. */
-export interface ColocatedRefusal {
+/** One source the database gate refuses, as databaseRefusalOn reports it. */
+export interface DatabaseRefusal {
    sourceID: string;
    name: string;
    reason: EligibilityRefusalReason | undefined;
@@ -240,7 +240,7 @@ export interface PendingRefusal {
    sourceID: string;
    /**
     * True when the source's own gate refused it; false when it is refused only
-    * because a sibling on its colocated address is. An address's recorded
+    * because a sibling on its database address is. An address's recorded
     * failure prefers an own refusal, so it names the gated source whatever the
     * run order.
     */
@@ -504,7 +504,7 @@ export function assertInstructedDestinationWritable(
    // reading of `storage=` makes the source warehouse right.
    //
    // Thrown per source, not per run, because these causes hit some sources
-   // and not others; failing the run would take down unrelated colocated
+   // and not others; failing the run would take down unrelated database
    // sources too.
    const declared = declaredStorage(persistSource);
    if (declared && !instruction.destination) {
@@ -614,7 +614,7 @@ export function recordInstructedBuildFailure(
       // Omitted when the error is not recognized, so the consumer keeps its
       // own judgment, as for a Publisher that predates the field.
       ...(retryable !== undefined ? { retryable } : {}),
-      // Lets a consumer tell a colocated failure from a `storage=` one; it
+      // Lets a consumer tell a database failure from a `storage=` one; it
       // keys by `storageDestinationName ?? connectionName`, like a
       // successful ManifestEntry.
       connectionName: persistSource.connectionName,

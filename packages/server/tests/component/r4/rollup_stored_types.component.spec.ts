@@ -4,7 +4,7 @@
 /**
  * R4 for the types a `storage=` rollup reads its stored table with (v1
  * `#@ preaggregate` and v2 `#(preaggregate)`), against live, beside the same
- * rollup colocated:
+ * rollup database:
  *
  *  - a BIGINT sum past 2^53, stored as a HUGEINT partial: read through its
  *    native type, so every digit comes back;

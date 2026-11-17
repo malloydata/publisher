@@ -265,7 +265,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
          gatedSources: false,
          gatedStorageRollupsReviewed: false,
       };
-      const g3 = { colocatedReadsKeepGates: true };
+      const g3 = { databaseReadsKeepGates: true };
       const kept: Binding = { ...BINDING, ownGateKept: true };
       model.setServeBindings([kept]);
       await model.prepareServedCopy();

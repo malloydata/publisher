@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A colocated table on BigQuery needs a dataset, which only a dotted `name=`
+ * A database table on BigQuery needs a dataset, which only a dotted `name=`
  * gives it: a rollup's own or its base's container, or a source's
  * dataset-qualified name. A valid declaration with none is refused at plan,
  * alone, on every mechanism (`#@ persist`, a persisted view, `#(materialize)`,
@@ -53,7 +53,7 @@ const rows = (conn: string, extra = "") =>
 
 const MODEL = (conn: string) => `##! experimental { persistence }
 
-// Colocated #@ persist: a bare name places nothing, a dotted one a dataset.
+// Database #@ persist: a bare name places nothing, a dotted one a dataset.
 #@ persist name="bare_t"
 source: bare is ${rows(conn)} -> { group_by: k; aggregate: total is n.sum() }
 #@ persist name="scratch.placed_t"
@@ -82,7 +82,7 @@ source: based is ${rows(conn, ", 3 AS three")} -> { select: * } extend {
   measure: inherits is n.sum()
 }
 
-// A persisted view, colocated, with no name.
+// A persisted view, database, with no name.
 source: viewed is ${rows(conn, ", 4 AS four")} extend {
   #@ persist
   view: by_k is { group_by: k; aggregate: vt is n.sum() }
@@ -129,7 +129,7 @@ async function load(conn: string, connections: Map<string, Connection>) {
    };
 }
 
-describe("a colocated BigQuery table with no dataset is refused at plan", () => {
+describe("a database BigQuery table with no dataset is refused at plan", () => {
    it("refuses each mechanism alone, with one record and reason, and plans the rest", async () => {
       const ran: string[] = [];
       const { planned, refused, warnings, messages } = await load(

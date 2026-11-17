@@ -45,7 +45,7 @@ const seedSql = [
     ) AS t(flight_id, size, duty_hours)`,
 ];
 
-/** The joined sources' rollups, colocated or in the scenario's destination. */
+/** The joined sources' rollups, database or in the scenario's destination. */
 function model(placement: string): string {
    return `source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
@@ -273,7 +273,7 @@ const COUNTS = [
    ],
 ] as const;
 
-describe("R4: join-to-rollup (A7), a joined source's colocated rollup, equal to live", () => {
+describe("R4: join-to-rollup (A7), a joined source's database rollup, equal to live", () => {
    let fixture: R4Fixture;
    useMaterializationOn();
    beforeAll(async () => {

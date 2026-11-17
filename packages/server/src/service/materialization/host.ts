@@ -139,11 +139,11 @@ export interface MaterializationEnvironment {
    loadRunManifest(params: {
       packageName: string;
       versionId?: string;
-      colocated: FreshnessManifest;
+      database: FreshnessManifest;
       storage: Record<string, ManifestEntry>;
       commit: (outcome: RunManifestLoad) => Promise<void>;
    }): Promise<RunManifestLoad>;
-   /** Bind a freshly built colocated manifest into a slot's models. */
+   /** Bind a freshly built database manifest into a slot's models. */
    reloadAllModelsForPackage(
       packageName: string,
       manifest: FreshnessManifest,
@@ -157,7 +157,7 @@ export interface MaterializationEnvironment {
    rebindPackageFromStore(
       packageName: string,
       read: () => Promise<{
-         colocated: FreshnessManifest;
+         database: FreshnessManifest;
          storage?: Record<string, ManifestEntry>;
       }>,
    ): Promise<void>;

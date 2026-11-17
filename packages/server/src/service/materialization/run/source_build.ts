@@ -5,7 +5,7 @@
  * One source's build, whatever its tier ({@link SourceBuilder}): render its
  * build SQL over the run's manifest, decide once how its stored upstreams are
  * read, resolve the query metadata every statement carries, then hand it to
- * the colocated or `storage=` tier's adapter (tier.ts). Called by the
+ * the database or `storage=` tier's adapter (tier.ts). Called by the
  * instructed build, and replaceable as one of the service's run collaborators.
  *
  * Refuses an upstream a host supplied at the wrong tier and names a strict
@@ -31,8 +31,8 @@ import {
 import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
-import type { ColocatedBuildRequest } from "./tier";
-import { ColocatedTier } from "./colocated_build_strategy";
+import type { DatabaseBuildRequest } from "./tier";
+import { DatabaseTier } from "./database_build_strategy";
 import {
    sourceIncrementalRefresh,
    type IncrementalRunContext,
@@ -84,7 +84,7 @@ function renderBuildSQL(
    // only the recompute fallback (stacking on the parent uses a separate
    // DuckDB recompile); rendering strictly would refuse a chained source
    // before parent reuse could run. Strict is enforced below, where a
-   // recompute would really happen. A colocated build keeps strict: its
+   // recompute would really happen. A database build keeps strict: its
    // buildSQL IS what runs.
    const reducedManifest = manifestExcludingStorage(
       manifest,
@@ -126,7 +126,7 @@ function renderBuildSQL(
          })),
       );
    };
-   // A host-instructed colocated build refuses, strict or not, an upstream
+   // A host-instructed database build refuses, strict or not, an upstream
    // the host supplied at the wrong tier, when this source reads it. A
    // source reads an upstream exactly when adding that upstream's entry back
    // changes its permissive render (the table replaces the inlined SQL);
@@ -193,7 +193,7 @@ function renderBuildSQL(
    try {
       buildSQL = buildSQLOf(persistSource, buildManifest);
    } catch (err) {
-      // A strict colocated render misses an upstream whose entry was
+      // A strict database render misses an upstream whose entry was
       // supplied, at the wrong tier: say that, not Malloy's generic miss.
       const stale = staleMisses(err);
       if (!isStorageBuild && planFacts.hostInstructed && stale.length > 0) {
@@ -245,7 +245,7 @@ function renderBuildSQL(
 /**
  * Classify the stored upstreams a source reads, once for both tiers: the
  * entry's `upstreamReuse` fields, what the substituted manifest is missing,
- * and whether the build SQL inlined a stored table. A colocated build that
+ * and whether the build SQL inlined a stored table. A database build that
  * recomputes a wrong-tier upstream notes it; a host-instructed one refuses.
  */
 function classifyStoredUpstreams(
@@ -277,10 +277,10 @@ function classifyStoredUpstreams(
    // table was inlined. Strictly: the one possible miss is a persist source
    // the SQL reads that nothing supplied.
    //
-   // These renders only classify. A colocated build logs a failed render and
+   // These renders only classify. A database build logs a failed render and
    // omits `upstreamReuse`; a storage build fails, because stacking on parents
    // needs the answer. Neither runs when nothing was excluded, and the strict
-   // render is skipped for a strict colocated build (already strict above).
+   // render is skipped for a strict database build (already strict above).
    const fullForCompiler = manifestForCompiler(
       manifest.buildManifest,
       planFacts,
@@ -313,7 +313,7 @@ function classifyStoredUpstreams(
       if (isStorageBuild) throw err;
       classified = false;
       logger.warn(
-         "Could not classify a colocated build's stored upstreams; the entry carries no upstreamReuse",
+         "Could not classify a database build's stored upstreams; the entry carries no upstreamReuse",
          {
             sourceName: persistSource.name,
             error: err instanceof Error ? err.message : String(err),
@@ -334,7 +334,7 @@ function classifyStoredUpstreams(
            rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
         })
       : { fields: {}, inManifestOnly: [], missing: [] };
-   // A colocated build that recomputes an upstream because its entry is at
+   // A database build that recomputes an upstream because its entry is at
    // the wrong tier reads the warehouse for it: logged and counted once per
    // run per upstream, since the entry fields alone hide the cost.
    // A host-instructed build refuses instead (HostSuppliedWrongTierError):
@@ -367,8 +367,8 @@ function classifyStoredUpstreams(
    return { reuse, sqlInlinesStored, lift };
 }
 
-/** The colocated tier's adapter: a delta, else a full rebuild. */
-const COLOCATED = new ColocatedTier();
+/** The database tier's adapter: a delta, else a full rebuild. */
+const DATABASE = new DatabaseTier();
 
 /** One source's build: what {@link buildSource} reads. */
 export interface SourceBuildOptions {
@@ -417,9 +417,9 @@ export interface SourceBuildOptions {
  * One source's build, whatever its tier: render its SQL over the run's
  * manifest, decide once how its stored upstreams are read, resolve the query
  * metadata every statement carries, then hand it to its tier's adapter (see
- * tier.ts): the colocated tier here, the `storage=` tier through `storage`
+ * tier.ts): the database tier here, the `storage=` tier through `storage`
  * (StorageBuildStrategy, through the service's collaborators). Records and
- * returns the manifest entry. A colocated COPY uses a staging table and an
+ * returns the manifest entry. A database COPY uses a staging table and an
  * atomic rename for crash-safety; the staging name derives from the
  * sourceEntityId.
  */
@@ -530,7 +530,7 @@ export async function buildSource(
    // watermark advances by a bounded delta; anything else gets `undefined`
    // and falls through to the CTAS. One narrowing, so the incremental
    // touchpoints never disagree.
-   const request: ColocatedBuildRequest = {
+   const request: DatabaseBuildRequest = {
       persistSource,
       instruction,
       connection,
@@ -544,7 +544,7 @@ export async function buildSource(
       }),
       ...(replacesView ? { replacesView } : {}),
    };
-   return COLOCATED.build(request);
+   return DATABASE.build(request);
 }
 
 /**

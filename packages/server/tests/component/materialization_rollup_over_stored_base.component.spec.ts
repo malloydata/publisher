@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A colocated rollup over a colocated `#@ persist` base builds from the
+ * A database rollup over a database `#@ persist` base builds from the
  * base's stored table when the run holds it, rather than from the warehouse,
  * and stores the same rows. End to end through a real Environment and
  * MaterializationService on DuckDB:
@@ -98,7 +98,7 @@ type Entry = {
    origin?: string;
 };
 
-describe("a colocated rollup over a colocated #@ persist base", () => {
+describe("a database rollup over a database #@ persist base", () => {
    let root: string;
    let envPath: string;
    let db: DuckDBConnection;

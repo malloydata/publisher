@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // The path report (materialization v2, D1) over a real compiled package with
-// a real bound colocated manifest: which table answered, which could not and
+// a real bound database manifest: which table answered, which could not and
 // why, and the nearby tables the query could not use. The `storage=` tier is
 // covered over the R4 harness in r4/path_report.component.spec.ts.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -99,7 +99,7 @@ async function buildAndBind(
          ...extra,
       };
    }
-   pkg.materialization().bind({ colocated: bound as never });
+   pkg.materialization().bind({ database: bound as never });
 }
 
 async function pathOf(
@@ -163,7 +163,7 @@ describe("the access record's copy of the path report", () => {
          pkg,
          "run: daily -> { group_by: region; aggregate: t is total.sum() }",
       );
-      // The served copy answers a v1 colocated table (the v1 cutover).
+      // The served copy answers a v1 database table (the v1 cutover).
       expect(audit.path).toEqual({
          servedBy: {
             kind: "materialized",
@@ -196,7 +196,7 @@ source: orders is duckdb.sql("SELECT 1 AS id, 'east' AS region") extend {
    });
 });
 
-describe("the path report over colocated #@ persist", () => {
+describe("the path report over database #@ persist", () => {
    it("reports an unbuilt table as NOT_BUILT and answers live", async () => {
       const pkg = await loadPackage();
       const report = await pathOf(
@@ -423,7 +423,7 @@ describe("the path report reading the serve verdicts", () => {
    });
 });
 
-describe("the path report over a colocated rollup", () => {
+describe("the path report over a database rollup", () => {
    async function builtRollup(): Promise<{ pkg: Package; rollupId: string }> {
       const pkg = await loadPackage(ROLLUP_MODEL);
       const [rollupId] = [...pkg.materialization().getPreaggregateEntityIds()];
@@ -438,7 +438,7 @@ describe("the path report over a colocated rollup", () => {
          `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
       );
       pkg.materialization().bind({
-         colocated: {
+         database: {
             [rollupId]: { tableName: "built_rollup", connectionName: "duckdb" },
          } as never,
       });
@@ -512,7 +512,7 @@ describe("the path report over a colocated rollup", () => {
 // `reloadAllModels`, which leaves the whole unfiltered manifest on each
 // model's Runtime. Malloy reads a run handed no `buildManifest` as "use the
 // Runtime's", so a run that passes none substitutes a table its freshness
-// window should have dropped. `bindColocatedServeManifest` stores nothing on
+// window should have dropped. `bindDatabaseServeManifest` stores nothing on
 // the Runtime, which is why the STALE test above cannot see this.
 describe("a table past its freshness window, bound by a host's reload", () => {
    let restore: () => void = () => {};

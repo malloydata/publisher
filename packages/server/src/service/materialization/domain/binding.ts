@@ -6,9 +6,9 @@
  *
  * A {@link Binding} is one stored table as serving reads it, under one source
  * name: its kind and tier, carried from the plan, never inferred from a name.
- * A {@link Snapshot} is every binding a package serves, with the colocated
+ * A {@link Snapshot} is every binding a package serves, with the database
  * manifest entries Malloy's own build-manifest substitution reads (the
- * colocated rollup and view legs). It is immutable and replaced by one
+ * database rollup and view legs). It is immutable and replaced by one
  * reference swap; a cache keyed by a snapshot's `bindings` array is
  * invalidated exactly when the bindings change.
  *
@@ -44,7 +44,7 @@ type BindingTier = "database" | "storage";
  * One stored table as serving reads it, under one source name.
  *
  * A `storage` table is read through `virtual()`, by its destination's alias
- * and {@link virtualHandle}; a `colocated` one (a `#(materialize)` or v1
+ * and {@link virtualHandle}; a `database` one (a `#(materialize)` or v1
  * `#@ persist` table in the source's own warehouse) is named in the served
  * copy's text on the connection {@link destinationName} names.
  */
@@ -77,12 +77,12 @@ export interface Binding {
     * A `storage=` table plan admitted past a stored source's own row-level
     * gate under G3 (`SourceEligibility.gateKept`), marked under every name
     * it is bound by: the router lets a served answer reading it past an
-    * entry-point gate, as it does a colocated table's. Set by the bind;
+    * entry-point gate, as it does a database table's. Set by the bind;
     * absent reads as not kept (fail closed).
     */
    ownGateKept?: boolean;
    /**
-    * The storage destination the table lives in; for a colocated table, the
+    * The storage destination the table lives in; for a database table, the
     * source's own connection.
     */
    destinationName: string;
@@ -90,13 +90,13 @@ export interface Binding {
    virtualHandle: string;
    /**
     * The table's path: unquoted for a storage table (quoted for DuckDB when
-    * read); canonical for its connection's dialect for a colocated one.
+    * read); canonical for its connection's dialect for a database one.
     */
    tablePath: string;
    /** The stored columns as the build captured them. */
    schema: { name: string; type: string }[];
    /**
-    * A colocated table's columns with the warehouse's own types
+    * A database table's columns with the warehouse's own types
     * (`ManifestEntry.nativeSchema`): a big-integer column is cast to exactly
     * its type. Absent for a storage table, whose schema is native.
     */
@@ -107,13 +107,13 @@ export interface Binding {
    freshnessFallback?: "live" | "stale_ok" | "fail";
 }
 
-/** Whether a binding is a colocated table. */
-export function isColocated(b: Pick<Binding, "tier">): boolean {
+/** Whether a binding is a database table. */
+export function isDatabase(b: Pick<Binding, "tier">): boolean {
    return b.tier === "database";
 }
 
 /**
- * Every table a package serves, fixed. `entries` are the colocated run
+ * Every table a package serves, fixed. `entries` are the database run
  * manifest entries, freshness facts and key checks included, that Malloy's
  * compiler manifest substitutes; `bindings` are the tables the served copy and the
  * `storage=` legs read.
@@ -158,11 +158,11 @@ export interface Pinned {
    /** The bindings a query may read at {@link asOf}: fresh, or stale and allowed. */
    readonly fresh: readonly Binding[];
    /**
-    * The colocated entries a query may read at {@link asOf}, as Malloy's
+    * The database entries a query may read at {@link asOf}, as Malloy's
     * build manifest: never undefined, empty when nothing is bound.
     */
    readonly compilerManifest: BuildManifest;
-   /** Whether any colocated entry is bound at all, fresh or not. */
+   /** Whether any database entry is bound at all, fresh or not. */
    readonly hasEntries: boolean;
    /** Whether `binding` may be read at {@link asOf}. */
    serves(binding: Binding): boolean;

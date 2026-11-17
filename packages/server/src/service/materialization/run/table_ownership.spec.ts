@@ -18,7 +18,7 @@ import {
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import { dropOwnNameView, ownNameViewTarget } from "./leftover_name_views";
 import {
-   colocatedTableSite,
+   databaseTableSite,
    storageTableSite,
    type TableSiteContext,
 } from "./table_site";
@@ -332,7 +332,7 @@ describe("on a DuckDB connection", () => {
    const target = { physicalTableName: "named_t", connectionName: "wh" };
    const check = (owner: string, ownRecords = false) =>
       assertTableOwnable(
-         colocatedTableSite(connection),
+         databaseTableSite(connection),
          target,
          owner,
          "named",
@@ -342,10 +342,10 @@ describe("on a DuckDB connection", () => {
    it("a free name is built, and marked once built", async () => {
       await check(A);
       await run("CREATE TABLE named_t AS SELECT 1 AS x");
-      await markOwnedTable(colocatedTableSite(connection), "named_t", A);
+      await markOwnedTable(databaseTableSite(connection), "named_t", A);
       expect(await comment("named_t")).toBe(ownedTableComment(A));
       expect(
-         await probeTableHolder(colocatedTableSite(connection), "named_t", A),
+         await probeTableHolder(databaseTableSite(connection), "named_t", A),
       ).toEqual({ state: "ours" });
       // Its own package builds it again; another is refused, coded.
       await check(A);
@@ -372,7 +372,7 @@ describe("on a DuckDB connection", () => {
       await run(
          `COMMENT ON VIEW named_t IS '${nameViewComment({ target: "g1", owner: A })}'`,
       );
-      const site = colocatedTableSite(connection);
+      const site = databaseTableSite(connection);
       expect(await check(A)).toEqual({ ownView: true });
       // Another package never treats it as its own, nor drops it.
       expect((await check(B).catch((e) => e)).code).toBe(TABLE_OWNED_ELSEWHERE);
@@ -402,7 +402,7 @@ describe("on a DuckDB connection", () => {
 
    it("a name whose holder cannot be read is refused", async () => {
       const failing = {
-         ...colocatedTableSite(connection),
+         ...databaseTableSite(connection),
          run: async () => {
             throw new Error("permission denied for information schema");
          },
@@ -430,7 +430,7 @@ describe("on a DuckDB connection", () => {
       expect(
          (
             await assertTableOwnable(
-               { ...colocatedTableSite(connection), dialect: "oracle" },
+               { ...databaseTableSite(connection), dialect: "oracle" },
                target,
                A,
                "named",
@@ -441,7 +441,7 @@ describe("on a DuckDB connection", () => {
    });
 
    it("a drop sees a table another package marked", async () => {
-      const site = colocatedTableSite(connection);
+      const site = databaseTableSite(connection);
       await run("CREATE TABLE named_t AS SELECT 1 AS x");
       expect(await ownedElsewhere(site, "named_t", A)).toBeUndefined();
       await markOwnedTable(site, "named_t", B);
@@ -471,9 +471,9 @@ describe("on a DuckDB connection", () => {
             realization: "COPY",
          }) as BuildInstruction;
       await run("CREATE TABLE mine AS SELECT 1 AS x");
-      await markOwnedTable(colocatedTableSite(connection), "mine", A);
+      await markOwnedTable(databaseTableSite(connection), "mine", A);
       await run("CREATE TABLE theirs AS SELECT 1 AS x");
-      await markOwnedTable(colocatedTableSite(connection), "theirs", B);
+      await markOwnedTable(databaseTableSite(connection), "theirs", B);
       await run("CREATE TABLE legacy AS SELECT 1 AS x");
       const names = ["mine", "theirs", "legacy", "gone"];
       const carried = Object.fromEntries(names.map((n) => [n, entry(n)]));

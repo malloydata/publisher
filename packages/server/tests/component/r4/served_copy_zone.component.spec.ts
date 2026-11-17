@@ -24,7 +24,7 @@
  *   the alias): declined.
  *
  * Every answer, served or declined, equals live, and every decline is the
- * served copy's time-zone decline. Each runs on colocated tables, where the
+ * served copy's time-zone decline. Each runs on database tables, where the
  * join reads them on its own connection, and the core cases on `storage=`
  * tables in one destination with the joining source materialized too.
  */
@@ -67,9 +67,9 @@ source: ev_ny is duckdb.table('ev') extend {
 type Tier = "database" | "storage";
 
 /**
- * The model for one tier: colocated tables (`name=`), or `storage=` tables in
+ * The model for one tier: database tables (`name=`), or `storage=` tables in
  * one destination, where `jb` is materialized too, so its join to `mzny` is
- * read from storage. The colocated model adds the join shapes.
+ * read from storage. The database model adds the join shapes.
  */
 function modelFor(tier: Tier): string {
    const at = (name: string) =>
@@ -137,7 +137,7 @@ interface Case {
    tiers?: Tier[];
 }
 
-const COLOCATED: Tier[] = ["database"];
+const DATABASE: Tier[] = ["database"];
 
 const CASES: Case[] = [
    // A table built in New York, read through a join.
@@ -157,18 +157,18 @@ const CASES: Case[] = [
       name: "a New York hour through a join, under the query's own New York zone",
       malloy:
          "run: jb -> { timezone: 'America/New_York'; group_by: mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    {
       name: "a New York day through a join, under the query's own New York zone",
       malloy:
          "run: jb -> { timezone: 'America/New_York'; group_by: mzny.ts_day; aggregate: n is count(); order_by: ts_day }",
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    {
       name: "a zone-free measure through a join",
       malloy: "run: jb -> { aggregate: t is mzny.total }",
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    {
       name: "a materialized joining source that reads no zoned value",
@@ -180,62 +180,62 @@ const CASES: Case[] = [
       malloy:
          "run: jla -> { group_by: mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
       declines: true,
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    {
       name: "a New York hour two joins deep",
       malloy:
          "run: jj -> { group_by: jb.mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
       declines: true,
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    {
       name: "a New York hour through a join from an inline extension",
       malloy:
          "run: jb extend { dimension: z is 1 } -> { group_by: mzny.ts_hr; aggregate: n is count(); order_by: ts_hr }",
       declines: true,
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    {
       name: "a UTC hour through a join, under the query's New York zone",
       malloy:
          "run: jb -> { timezone: 'America/New_York'; group_by: mz.ts_hr; aggregate: n is count(); order_by: ts_hr }",
       declines: true,
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    // Two stored tables in different zones.
    {
       name: "a New York root's own hour, joining a UTC table",
       malloy:
          "run: mzj -> { group_by: ts_hr; aggregate: n is count(); order_by: ts_hr }",
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    {
       name: "a New York root's own hour, with a zone-free measure of the joined UTC table",
       malloy:
          "run: mzj -> { group_by: ts_hr; aggregate: t is mz.total; order_by: ts_hr }",
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    {
       name: "a UTC table's hour, joined from a New York root",
       malloy:
          "run: mzj -> { group_by: ts_hr2 is mz.ts_hr; aggregate: n is count(); order_by: ts_hr2 }",
       declines: true,
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    // An extension that inherits its zone from its base.
    {
       name: "an inherited New York hour, read directly",
       malloy:
          "run: inh -> { group_by: ts_hr; aggregate: n is count(); order_by: ts_hr }",
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    {
       name: "an inherited New York hour through a join, no zone set",
       malloy:
          "run: jb -> { group_by: inh.ts_hr; aggregate: n is count(); order_by: ts_hr }",
       declines: true,
-      tiers: COLOCATED,
+      tiers: DATABASE,
    },
    // Direct reads.
    {

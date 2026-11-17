@@ -322,7 +322,7 @@ export function getStaticConnectionAttributes(
          };
       case "sqlserver":
          // The connector is read-only: it creates no tables and has no
-         // PersistSQLResults, so a colocated `#@ persist` on a SQL Server
+         // PersistSQLResults, so a database `#@ persist` on a SQL Server
          // source is refused at load (READ_ONLY_DIALECTS in
          // materialization_eligibility.ts) rather than failing mid-build.
          return {

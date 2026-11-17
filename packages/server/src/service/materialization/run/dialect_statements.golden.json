@@ -1498,7 +1498,7 @@
       "refused": null
     }
   },
-  "ColocatedTier.drop": {
+  "DatabaseTier.drop": {
     "duckdb": [
       "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
     ],
@@ -1530,7 +1530,7 @@
       "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\""
     ]
   },
-  "ColocatedTier.drop.leftoversOf": {
+  "DatabaseTier.drop.leftoversOf": {
     "duckdb": [
       "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1\"",
       "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_orders\"",
@@ -1582,7 +1582,7 @@
       "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
     ]
   },
-  "ColocatedTier.drop.hostile": {
+  "DatabaseTier.drop.hostile": {
     "duckdb": [
       "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
     ],

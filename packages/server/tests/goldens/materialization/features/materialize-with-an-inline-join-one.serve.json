@@ -432,7 +432,7 @@
         },
         "warnings": []
       },
-      "query": "a joined dimension, colocated",
+      "query": "a joined dimension, database",
       "servedBy": "materialized",
       "servedFrom": "database",
       "switch": "off"
@@ -851,7 +851,7 @@
         },
         "warnings": []
       },
-      "query": "a joined dimension, colocated",
+      "query": "a joined dimension, database",
       "servedBy": "materialized",
       "servedFrom": "database",
       "switch": "on"

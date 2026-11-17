@@ -22,7 +22,7 @@
  *
  * The table is read where it was built: a `storage=` rollup through
  * `virtual()` on the destination (as the served copy reads a stored source),
- * a colocated one by importing its build source from the rollup companion and
+ * a database one by importing its build source from the rollup companion and
  * letting Malloy's build manifest substitute its table.
  *
  * A rollup answers only a query it reproduces exactly (R2, skip never bend):
@@ -66,7 +66,7 @@
  * redeclares the run target over the rollup IN AN OVERLAY OF ITS OWN
  * DECLARING FILE (`declaring_file_variant.ts`), so it keeps the author's
  * `sourceID` and carries the run target's entry-point gates as note lines.
- * With `materialize.gatedSources` on, or under G3 with it off for a colocated
+ * With `materialize.gatedSources` on, or under G3 with it off for a database
  * rollup (the gate policy, `domain/gate_policy.ts`), the router lets the leg
  * past a gated entry point; a rollup then answers only when it was built for
  * its gate
@@ -79,7 +79,7 @@
  * join branch (A7) carries no gate, so it declines past one.
  *
  * Rollups are offered in the plan's order, cheapest read first (coarsest,
- * then colocated before `storage=`); the first that answers is used. A
+ * then database before `storage=`); the first that answers is used. A
  * `#(preaggregate)` rollup is read only with `materialize.enabled` on; a v1
  * `#@ preaggregate` one is read either way.
  */
@@ -786,7 +786,7 @@ export class RollupVariantServe {
       if (inDestination) {
          return this.answerJoinInDestination(branch, q, table, inDestination);
       }
-      return this.answerJoinColocated(branch, q, table);
+      return this.answerJoinDatabase(branch, q, table);
    }
 
    /**
@@ -933,11 +933,11 @@ export class RollupVariantServe {
    }
 
    /**
-    * Answer a join branch over a colocated rollup: the query compiled against
+    * Answer a join branch over a database rollup: the query compiled against
     * the variant, read through the build manifest, whose SQL must read the
     * rollup's table; else a {@link LegDecline}.
     */
-   private async answerJoinColocated(
+   private async answerJoinDatabase(
       branch: JoinRollupBranch,
       q: Parameters<RollupVariantServe["attemptJoin"]>[2],
       table: NonNullable<ReturnType<RollupVariantServe["tableOf"]>>,
@@ -968,12 +968,12 @@ export class RollupVariantServe {
       const runnable = variant.materializer.loadRestrictedQuery(
          q.args.queryString,
       );
-      const colocatedTable =
+      const databaseTable =
          table.sourceEntityId !== undefined
             ? q.args.pinned.compilerManifest.entries[table.sourceEntityId]
                  ?.tableName
             : undefined;
-      if (!colocatedTable) {
+      if (!databaseTable) {
          throw this.noFreshTable(plan, q.args.pinned, table.sourceEntityId);
       }
       let result;
@@ -988,7 +988,7 @@ export class RollupVariantServe {
             "the query does not compile against the rollup",
          );
       }
-      if (!result.sql.includes(colocatedTable)) {
+      if (!result.sql.includes(databaseTable)) {
          throw new LegDecline(
             "rollup_not_built",
             "the rollup has no fresh table",
@@ -1270,14 +1270,14 @@ export class RollupVariantServe {
       const runnable = variant.materializer.loadRestrictedQuery(
          args.queryString,
       );
-      // A colocated rollup is read through the build manifest: built and
+      // A database rollup is read through the build manifest: built and
       // fresh only when the manifest holds its entry.
-      const colocatedTable =
+      const databaseTable =
          table.sourceEntityId !== undefined
             ? args.pinned.compilerManifest.entries[table.sourceEntityId]
                  ?.tableName
             : undefined;
-      if (!table.virtualMap && !colocatedTable) {
+      if (!table.virtualMap && !databaseTable) {
          throw this.noFreshTable(plan, args.pinned, table.sourceEntityId);
       }
       let result;
@@ -1306,7 +1306,7 @@ export class RollupVariantServe {
       proveGivenTerms(query, routed, variant.modelDef);
       // The compiled SQL must read the table, never recompute the rollup.
       const readsTable = result.sql.includes(
-         (table.virtualMap ? table.quotedPath : colocatedTable) ?? "\u0000",
+         (table.virtualMap ? table.quotedPath : databaseTable) ?? "\u0000",
       );
       if (!readsTable) {
          throw new LegDecline(
@@ -1440,7 +1440,7 @@ export class RollupVariantServe {
 
    /**
     * The rollup has no table to read at the pin: `rollup_stale` when it has
-    * one past its freshness window (a stale storage binding, or a colocated
+    * one past its freshness window (a stale storage binding, or a database
     * entry bound but left out of the pinned manifest), else
     * `rollup_not_built`.
     */
@@ -1454,11 +1454,11 @@ export class RollupVariantServe {
          sourceID === undefined
             ? undefined
             : pinned.tableFor(sourceID, "rollup");
-      const staleColocated =
+      const staleDatabase =
          sourceEntityId !== undefined &&
          Object.hasOwn(pinned.snapshot.entries, sourceEntityId) &&
          !Object.hasOwn(pinned.compilerManifest.entries, sourceEntityId);
-      return lookup?.state === "stale" || staleColocated
+      return lookup?.state === "stale" || staleDatabase
          ? new LegDecline(
               "rollup_stale",
               "the rollup's table is past its freshness window",
@@ -1466,7 +1466,7 @@ export class RollupVariantServe {
          : new LegDecline("rollup_not_built", "the rollup has no fresh table");
    }
 
-   /** The rollup's table at the pin: a fresh storage binding, or a planned colocated one. */
+   /** The rollup's table at the pin: a fresh storage binding, or a planned database one. */
    private tableOf(
       plan: RollupVariantPlan,
       pinned: Pinned,
@@ -1635,7 +1635,7 @@ export class RollupVariantServe {
       // The rollup with its merged measures, then the author's source with
       // the join re-pointed at it (A7).
       const servedName = `${plan.rollupSourceName}__served`;
-      // Colocated: import the build source from the declaring model's
+      // Database: import the build source from the declaring model's
       // companion, so the build manifest substitutes its table.
       const declared = splitSourceID(plan.baseSourceID);
       const companion = declared
@@ -1685,7 +1685,7 @@ export class RollupVariantServe {
             made.copy,
          );
       }
-      const declaration = `${colocatedRollupSource(plan, this.host.modelDef(), servedName, relativeImport(queryModelURL, companion.href))}
+      const declaration = `${databaseRollupSource(plan, this.host.modelDef(), servedName, relativeImport(queryModelURL, companion.href))}
 ${sourceOverRollup(plan, use, servedName, "")}`;
       const modelText = queryModelText(
          this.host.modelDef(),
@@ -1763,7 +1763,7 @@ ${declaration}
     * (`declaring_file_variant.ts`), so it keeps the author's `sourceID` and
     * carries the run target's gates as note lines, which `govern()` grafts
     * and proves on the variant (R3) when the router lets it past an
-    * entry-point gate. A colocated rollup's build source is imported from
+    * entry-point gate. A database rollup's build source is imported from
     * the companion beside its base's declaring file, generated over the copy
     * of that file when it is the overlaid one, so its build SQL (and so its
     * address) is the build plan's.
@@ -1833,7 +1833,7 @@ ${declaration}
                return `${stored}
 ${gates}${over}`;
             }
-            // Colocated: the build source from the base's companion, so the
+            // Database: the build source from the base's companion, so the
             // build manifest substitutes its table.
             let baseFile: string | undefined;
             try {
@@ -1867,7 +1867,7 @@ ${gates}${over}`;
                   made.copy,
                );
             }
-            return `${colocatedRollupSource(plan, modelDef, servedName, relativeImport(declaringURL, companion.href))}
+            return `${databaseRollupSource(plan, modelDef, servedName, relativeImport(declaringURL, companion.href))}
 ${gates}${over}`;
          },
       });
@@ -2146,11 +2146,11 @@ async function variantAdditions(
 }
 
 /**
- * A colocated rollup's served source: its build source imported from the
+ * A database rollup's served source: its build source imported from the
  * rollup companion (`from`, relative to the importing file), so the build
  * manifest substitutes its table, extended with the rollup's merged measures.
  */
-function colocatedRollupSource(
+function databaseRollupSource(
    plan: RollupVariantPlan,
    modelDef: unknown,
    servedName: string,

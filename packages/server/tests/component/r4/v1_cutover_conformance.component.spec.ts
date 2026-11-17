@@ -60,14 +60,14 @@ describe("the dry run's verdicts", () => {
    describe("v1 cutover: the dry run's serve path", () => {
       afterEach(freshLoadPool);
 
-      it("names the served copy for v1 storage= and colocated sources", async () => {
+      it("names the served copy for v1 storage= and database sources", async () => {
          for (const variant of ["storage", "database"] as const) {
             const paths = await preview("baseline", variant, "cutover");
             expect(paths.daily).toEqual(["served_copy", undefined]);
          }
       }, 120_000);
 
-      it("names the served copy for a source with hidden columns, colocated or storage= (G2)", async () => {
+      it("names the served copy for a source with hidden columns, database or storage= (G2)", async () => {
          for (const variant of ["database", "storage"] as const) {
             const paths = await preview(
                "joined persisted source with hidden fields, from an index",
@@ -129,7 +129,7 @@ source: inherited is rows_base -> { select: id, region, amount }
 
 /**
  * The v1 cutover's dry run (6e) against what actually serves under the
- * cutover. For every fixture shape (storage and colocated v1 variants), a
+ * cutover. For every fixture shape (storage and database v1 variants), a
  * source reported `live` must never be answered by the served copy. The
  * preview bindings for v1 storage= sources must equal the bindings the bind
  * derives from the built table. And the dry run names the rollup leg for

@@ -50,13 +50,13 @@ import { storageTablePath } from "../../../src/service/materialization/domain/st
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import {
    applyObservedColumns,
-   deriveColocatedServeBindings,
+   deriveDatabaseServeBindings,
    kindFromPlan,
    type ObservedDrift,
    v1StoredColumnsOf,
 } from "../../../src/service/materialization/serve/bind";
-import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
-import { capturedColocatedSchema } from "../../../src/service/materialization/run/colocated_build_strategy";
+import { capturedNativeSchema } from "../../../src/service/materialization/run/database_native_types";
+import { capturedDatabaseSchema } from "../../../src/service/materialization/run/database_build_strategy";
 import { observedDatabaseColumns } from "../../../src/service/materialization/run/database_column_read";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
@@ -185,7 +185,7 @@ export interface R4Scenario {
    /**
     * Also build the generated `#(preaggregate)` rollups (the rollup companion
     * beside the entry model): a `storage=` rollup into the destination, a
-    * colocated one into the scenario's own database under the build
+    * database one into the scenario's own database under the build
     * manifest, as a package with PUBLISHER_MATERIALIZE on does.
     */
    preaggregate?: boolean;
@@ -212,7 +212,7 @@ export interface R4Scenario {
     */
    persistedViews?: boolean;
    /**
-    * Planned sources, by name, built colocated: each table is built in the
+    * Planned sources, by name, built in the database tier: each table is built in the
     * scenario's database and put in the build manifest, not a storage
     * binding. A `#@ persist` source's table is bound on the served copy with
     * the columns its build captured, as the package binds it, so its served
@@ -220,13 +220,13 @@ export interface R4Scenario {
     * holds the two together). A persisted view's companion source is read
     * through the view path.
     */
-   colocated?: string[];
+   database?: string[];
    /**
     * A warehouse other than DuckDB (a real Postgres) under `name`, the
     * scenario's default connection: the seed SQL runs on it, and each
-    * colocated `#(materialize)` table is built in it, in `schema`, and read
+    * database `#(materialize)` table is built in it, in `schema`, and read
     * by the served copy there. The scenario's DuckDB stays as the storage
-    * destination. Colocated `#(materialize)` scenarios only.
+    * destination. Database `#(materialize)` scenarios only.
     */
    warehouse?: {
       name: string;
@@ -288,7 +288,7 @@ export interface R4Fixture {
    /** The scenario's database: its source tables and its stored ones. */
    duckdb: DuckDBConnection;
    /**
-    * With {@link R4Scenario.preaggregate}: each colocated `#(preaggregate)`
+    * With {@link R4Scenario.preaggregate}: each database `#(preaggregate)`
     * rollup built, by its generated source name, to the table it was built
     * into in the scenario's database.
     */
@@ -334,7 +334,7 @@ export interface R4Fixture {
    /** For a `#(materialize)` scenario: each source's plan, by its name. */
    materializePlans: Record<string, MaterializePlan>;
    /**
-    * Read every colocated table's columns from the scenario's database, as a
+    * Read every database table's columns from the scenario's database, as a
     * package's bind reads them, and hold the bindings and the build manifest
     * to them (`applyObservedColumns`): for a test that alters a table after
     * its build. Returns what the read found.
@@ -414,12 +414,12 @@ export async function disposeScenarios(): Promise<void> {
 }
 
 /**
- * The scenario's files with every `#(materialize)` made colocated: its
- * `storage=` removed, and a `name=` added where it has none (a colocated one
+ * The scenario's files with every `#(materialize)` made database: its
+ * `storage=` removed, and a `name=` added where it has none (a database one
  * needs one), so the same scenario runs against tables in the source's own
  * warehouse (phase 3 pull request 6).
  */
-export function colocatedFiles(
+export function databaseFiles(
    files: Record<string, string>,
 ): Record<string, string> {
    let n = 0;
@@ -439,17 +439,17 @@ export function colocatedFiles(
 
 /**
  * Build every persist source of `scenario` and return a fixture that runs
- * queries live and served. With `R4_MATERIALIZE_TIER=colocated` in the
- * environment, a `#(materialize)` scenario runs colocated instead
- * ({@link colocatedFiles}): an exploratory switch for running the whole R4
- * suite against colocated tables; the checked-in colocated parity lives in
- * served_copy_colocated.component.spec.ts.
+ * queries live and served. With `R4_MATERIALIZE_TIER=database` in the
+ * environment, a `#(materialize)` scenario runs database instead
+ * ({@link databaseFiles}): an exploratory switch for running the whole R4
+ * suite against database tables; the checked-in database parity lives in
+ * served_copy_database.component.spec.ts.
  */
 export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
-   const exploringColocated =
+   const exploringDatabase =
       process.env.R4_MATERIALIZE_TIER === "database" && !!scenario.materialize;
-   if (exploringColocated) {
-      scenario = { ...scenario, files: colocatedFiles(scenario.files) };
+   if (exploringDatabase) {
+      scenario = { ...scenario, files: databaseFiles(scenario.files) };
    }
    const dir = scratchDir();
    let duckdb: DuckDBConnection;
@@ -594,9 +594,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const rollupPlanByName = new Map(
       (rollups?.generated?.plans ?? []).map((p) => [p.rollupSourceName, p]),
    );
-   // A colocated rollup: built into the scenario's database, read through the
+   // A database rollup: built into the scenario's database, read through the
    // build manifest keyed by its build id.
-   const colocatedEntries: Record<
+   const databaseEntries: Record<
       string,
       {
          tableName: string;
@@ -635,18 +635,18 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const source = target.sources[0];
          const plan = source && rollupPlanByName.get(source.name);
          if (!source || !plan || plan.storage !== undefined) continue;
-         const table = `r4_rollup_${Object.keys(colocatedEntries).length}`;
+         const table = `r4_rollup_${Object.keys(databaseEntries).length}`;
          await duckdb.runSQL(
             `CREATE TABLE ${table} AS ${target.buildSQL({ entries: {} })}`,
          );
-         // Its columns, captured as a colocated build captures them.
-         const rollupSchema = await capturedColocatedSchema({
+         // Its columns, captured as a database build captures them.
+         const rollupSchema = await capturedDatabaseSchema({
             connection: duckdb,
             physicalTableName: table,
             dialect: duckdb.dialectName,
             sourceName: source.name,
          });
-         colocatedEntries[target.buildId] = {
+         databaseEntries[target.buildId] = {
             tableName: table,
             ...(rollupSchema ? { schema: rollupSchema } : {}),
          };
@@ -662,7 +662,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                   ? { keyColumn: check.keyColumn, unique: true }
                   : await runRollupKeyCheck(check, duckdb, table);
             if (record) {
-               colocatedEntries[target.buildId].keyUniqueness = {
+               databaseEntries[target.buildId].keyUniqueness = {
                   keyColumn: record.keyColumn,
                   unique: record.unique,
                };
@@ -677,8 +677,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                      : await runRollupKeyCheck(parent, duckdb, table);
                if (record) parentKeys[parent.sourceID] = record.unique;
             }
-            colocatedEntries[target.buildId].keyUniqueness = {
-               ...colocatedEntries[target.buildId].keyUniqueness,
+            databaseEntries[target.buildId].keyUniqueness = {
+               ...databaseEntries[target.buildId].keyUniqueness,
                parentKeys,
             };
          }
@@ -776,16 +776,16 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    for (const plan of companion?.plans ?? []) {
       materializePlans[plan.sourceID] = plan;
    }
-   // A colocated `#(materialize)` source (no `storage=`): built into the
+   // A database `#(materialize)` source (no `storage=`): built into the
    // scenario's own database, the source's connection, and read by the
    // served copy there (phase 3 pull request 6).
-   const colocatedMaterialize = (source: (typeof sources)[number]) => {
+   const databaseMaterialize = (source: (typeof sources)[number]) => {
       const p = materializePlans[source.sourceID];
       return p !== undefined && p.persist.storage === undefined;
    };
-   // A colocated table is looked up by the compiler under its own build id.
+   // A database table is looked up by the compiler under its own build id.
    const entityIdOf = (source: (typeof sources)[number], i: number) =>
-      scenario.colocated?.includes(source.name) || colocatedMaterialize(source)
+      scenario.database?.includes(source.name) || databaseMaterialize(source)
          ? compilerBuildId(source)
          : `h${i}`;
    sources.forEach((source, i) => {
@@ -798,9 +798,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // its parent's stored table.
    const entryBySourceID = new Map<string, ManifestEntry>();
    const storedBuildSQL: Record<string, string> = {};
-   // The colocated tables the served copy binds: each `#(materialize)` one
+   // The database tables the served copy binds: each `#(materialize)` one
    // and each `#@ persist` one, as the package binds them.
-   const colocatedServeEntries: Record<
+   const databaseServeEntries: Record<
       string,
       {
          tableName: string;
@@ -856,9 +856,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             continue;
          }
       }
-      if (colocatedMaterialize(source)) {
-         // As a colocated build builds it: its own SQL, in its warehouse,
-         // reading a colocated parent's table through the build manifest.
+      if (databaseMaterialize(source)) {
+         // As a database build builds it: its own SQL, in its warehouse,
+         // reading a database parent's table through the build manifest.
          const table =
             warehouse && source.connectionName === warehouse.name
                ? `${warehouse.schema}.r4_${source.name}_${i}`
@@ -866,28 +866,28 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const builder = connections.get(source.connectionName) ?? duckdb;
          await builder.runSQL(
             `CREATE TABLE ${table} AS ${buildSQLOf(source, {
-               entries: { ...colocatedEntries },
+               entries: { ...databaseEntries },
             })}`,
          );
-         colocatedEntries[entityIdOf(source, i)] = { tableName: table };
-         // The warehouse's own column types, captured as a colocated build
-         // captures them (colocated_native_types.ts).
+         databaseEntries[entityIdOf(source, i)] = { tableName: table };
+         // The warehouse's own column types, captured as a database build
+         // captures them (database_native_types.ts).
          const nativeSchema = await capturedNativeSchema({
             run: (sql) => builder.runSQL(sql, { rowLimit: 100_000 }),
             physicalTableName: table,
             dialect: builder.dialectName,
             sourceName: source.name,
          });
-         // And its columns, read back as a colocated build reads them
-         // (colocated_build_strategy.ts), which its binding declares.
-         const schema = await capturedColocatedSchema({
+         // And its columns, read back as a database build reads them
+         // (database_build_strategy.ts), which its binding declares.
+         const schema = await capturedDatabaseSchema({
             connection: builder,
             physicalTableName: table,
             dialect: builder.dialectName,
             sourceName: source.name,
          });
          const leafKeys = await pairLeafKeys(source);
-         colocatedServeEntries[entityIdOf(source, i)] = {
+         databaseServeEntries[entityIdOf(source, i)] = {
             tableName: table,
             connectionName: source.connectionName,
             ...(schema ? { schema } : {}),
@@ -896,16 +896,16 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          };
          continue;
       }
-      if (scenario.colocated?.includes(source.name)) {
+      if (scenario.database?.includes(source.name)) {
          const table = `r4_${source.name}_${i}`;
          await duckdb.runSQL(
             `CREATE TABLE ${table} AS ${buildSQLOf(source, { entries: {} })}`,
          );
-         colocatedEntries[entityIdOf(source, i)] = { tableName: table };
-         // Its columns and their warehouse types, captured as a colocated
-         // build captures them (colocated_build_strategy.ts), which the
+         databaseEntries[entityIdOf(source, i)] = { tableName: table };
+         // Its columns and their warehouse types, captured as a database
+         // build captures them (database_build_strategy.ts), which the
          // served copy's binding of a `#@ persist` table declares.
-         const schema = await capturedColocatedSchema({
+         const schema = await capturedDatabaseSchema({
             connection: duckdb,
             physicalTableName: table,
             dialect: duckdb.dialectName,
@@ -917,7 +917,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             dialect: duckdb.dialectName,
             sourceName: source.name,
          });
-         colocatedServeEntries[entityIdOf(source, i)] = {
+         databaseServeEntries[entityIdOf(source, i)] = {
             tableName: table,
             // The connection the build wrote it on, as a build's entry
             // records it, so the bind's connection check runs.
@@ -1093,7 +1093,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          };
       }
       // A storage rollup's own key check (known limitation 29), run on its
-      // base's connection over the rows its build reads, as a colocated
+      // base's connection over the rows its build reads, as a database
       // one's is, when a join_one is keyed on its grain.
       const rollupKey = rollupOrigin.has(source.sourceID)
          ? rollupPlanByName.get(source.name)?.keyCheck
@@ -1134,13 +1134,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       materializeSourceIDs: new Set(Object.keys(materializePlans)),
       viewBuildSourceIDs,
    };
-   // The colocated tier's eligibility, decided by the package's own build
-   // plan compile over the scenario's files (collectColocatedSourceEligibility:
+   // The database tier's eligibility, decided by the package's own build
+   // plan compile over the scenario's files (collectDatabaseSourceEligibility:
    // the authorize gate, `@env.`, a table shared across gates), so a
-   // colocated table binds only where a package would bind it. Compiled only
-   // when a colocated table was built.
-   const colocatedEligible = await colocatedEligibilityOf(
-      Object.keys(colocatedServeEntries).length > 0,
+   // database table binds only where a package would bind it. Compiled only
+   // when a database table was built.
+   const databaseEligible = await databaseEligibilityOf(
+      Object.keys(databaseServeEntries).length > 0,
       { dir, files: Object.keys(scenario.files), connections },
    );
    const bindings = [
@@ -1150,11 +1150,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          undefined,
          planSourceIds(plan),
       ).map((b) => ({ ...b, kind: kindFromPlan(b, kinds) })),
-      // The colocated `#(materialize)` and `#@ persist` tables, through the
+      // The database `#(materialize)` and `#@ persist` tables, through the
       // package's own derivation: a `#@ persist` one is read by the served
       // copy re-rooted on it, as a real run reads it.
-      ...deriveColocatedServeBindings({
-         entries: colocatedServeEntries,
+      ...deriveDatabaseServeBindings({
+         entries: databaseServeEntries,
          planSources: Object.fromEntries(
             sources.map((source) => [
                source.sourceID,
@@ -1167,7 +1167,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ]),
          ),
          materializePlans,
-         eligible: colocatedEligible,
+         eligible: databaseEligible,
          // A fallback only: each table's build captured its schema above.
          v1Schema: (sourceID) =>
             v1StoredColumnsOf(authorMap.node(sourceID)?.def),
@@ -1181,7 +1181,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // The manifest is passed only on a served run, so a live run reads live.
    let manifestOn = false;
    const policy = ModelPolicy.fixed({
-      snapshot: () => makeSnapshot([], manifestOn ? colocatedEntries : {}),
+      snapshot: () => makeSnapshot([], manifestOn ? databaseEntries : {}),
       materializedTables: {
          planned: new Map<string, PlannedTable>([
             ...sources.map(
@@ -1211,7 +1211,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ),
             ...rollupPlanned,
          ]),
-         bound: colocatedEntries,
+         bound: databaseEntries,
       },
       preaggregateEntityIds: new Set(
          rollupPlanned.map(([, p]) => p.sourceEntityId),
@@ -1328,9 +1328,9 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          // Each entry with what its build captured and its connection, as a
          // run's manifest entry carries them.
          const all = Object.fromEntries(
-            Object.entries(colocatedEntries).map(([id, e]) => [
+            Object.entries(databaseEntries).map(([id, e]) => [
                id,
-               { ...e, ...colocatedServeEntries[id] },
+               { ...e, ...databaseServeEntries[id] },
             ]),
          );
          const observed = await observedDatabaseColumns({
@@ -1344,8 +1344,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             observed,
          });
          bindings.splice(0, bindings.length, ...applied.bindings);
-         for (const id of Object.keys(colocatedEntries)) {
-            if (!(id in applied.entries)) delete colocatedEntries[id];
+         for (const id of Object.keys(databaseEntries)) {
+            if (!(id in applied.entries)) delete databaseEntries[id];
          }
          return { drifted: applied.drifted, unread: applied.unread };
       },
@@ -1364,7 +1364,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       rollupTables: Object.fromEntries(
          rollupPlanned.map(([, p]) => [
             p.name,
-            colocatedEntries[p.sourceEntityId]?.tableName ?? "",
+            databaseEntries[p.sourceEntityId]?.tableName ?? "",
          ]),
       ),
       runAsIs: runOnce,
@@ -1431,11 +1431,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             served: served.rows,
             liveFields: live.fields,
             servedFields: served.fields,
-            // Under the exploratory colocated switch a served-copy answer
-            // from a colocated table reports no storage hit; read it as the
+            // Under the exploratory database switch a served-copy answer
+            // from a database table reports no storage hit; read it as the
             // `storage=` scenario's would, so the run shows what else differs.
             servedFrom:
-               exploringColocated &&
+               exploringDatabase &&
                served.servedFrom === null &&
                served.path?.servedBy?.via === "served_copy"
                   ? "storage"
@@ -1451,13 +1451,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
 }
 
 /**
- * Which planned sources the colocated tier admits, by sourceID, from the
+ * Which planned sources the database tier admits, by sourceID, from the
  * package's own build plan over the scenario's model files: a source is
- * eligible when the plan's colocated eligibility lists its content address.
+ * eligible when the plan's database eligibility lists its content address.
  * A plan that does not compile throws, so a scenario never binds on a
  * guess.
  */
-async function colocatedEligibilityOf(
+async function databaseEligibilityOf(
    needed: boolean,
    scenario: {
       dir: string;
@@ -1484,7 +1484,7 @@ async function colocatedEligibilityOf(
          return c;
       },
    });
-   const eligible = outcome.colocatedSourceEligibility.eligibleEntityIds;
+   const eligible = outcome.databaseSourceEligibility.eligibleEntityIds;
    const sources = outcome.plan?.sources ?? {};
    return (sourceID) => eligible.has(sources[sourceID]?.sourceEntityId ?? "");
 }

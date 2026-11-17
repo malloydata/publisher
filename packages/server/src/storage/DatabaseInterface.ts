@@ -439,7 +439,7 @@ export interface IncrementalLedgerEntry {
 export interface LedgerTableIdentity {
    /** The connection whose SQL computes the table's rows. */
    connectionName: string;
-   /** The storage destination holding it, absent when colocated. */
+   /** The storage destination holding it, absent when database. */
    storageDestinationName?: string;
    /** The table's logical (unquoted) name, as the manifest reports it. */
    physicalTableName: string;

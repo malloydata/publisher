@@ -548,7 +548,7 @@ describe("accessPathOf", () => {
          origin: "preaggregate",
          tier: "storage",
       });
-      expect(of("free text", "colocated")).toEqual({
+      expect(of("free text", "elsewhere")).toEqual({
          kind: "materialized",
          tableId: "abc",
       });

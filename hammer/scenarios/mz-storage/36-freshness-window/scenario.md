@@ -11,14 +11,14 @@ SPDX-License-Identifier: MIT
 # Freshness gate on the storage tier — enforced, uniform with in-warehouse
 
 `storage=` is a placement choice, orthogonal to freshness: the DuckLake serve path
-honors `{window, fallback}` the SAME way the colocated serve does (see
+honors `{window, fallback}` the SAME way the database serve does (see
 `freshness-window-in-warehouse`). When a bound entry is stale past its window, the
 query's pin decides per `fallback`: `stale_ok` keeps reading the table, and `live`
 leaves it out, so the served copy keeps the source as written and the query is
-answered live — the same pin that leaves a stale colocated entry out of the build
+answered live — the same pin that leaves a stale database entry out of the build
 manifest. This scenario drives
 both outcomes on the storage tier: `stale_ok` keeps serving the (stale) lake table;
-`live` recomputes from the source warehouse. Drop `storage=` (a colocated build)
+`live` recomputes from the source warehouse. Drop `storage=` (a database build)
 and the freshness behavior is identical — placement is orthogonal to freshness.
 
 ## Publisher

@@ -11,8 +11,8 @@
  * verdict (`planVerdicts`).
  *
  * Surface: `assertTierEligible`, the gate for the tier a source builds into
- * (the storage gate `assertMaterializationEligible`, or the colocated gate
- * `assertColocatedPersistNotAuthorizeGated`), and `assertPlacementNamed`
+ * (the storage gate `assertMaterializationEligible`, or the database gate
+ * `assertDatabasePersistNotAuthorizeGated`), and `assertPlacementNamed`
  * beside it, read by the build plan, eligibility collection, the run's
  * instructions and the instructed build; `gateEnforcedAtRead`, the one
  * question the build, the serve bind and the host-instructed build ask of a
@@ -87,7 +87,7 @@ import {
  *     {@link gateEnforcedAtRead}): a source's own row-level gate, kept by the
  *     served copy, which re-roots the author's text, gates included, and has
  *     them grafted and re-proven on every query (R3, and G3 for a `storage=`
- *     table as for a colocated one). Every other check here still applies.
+ *     table as for a database one). Every other check here still applies.
  *
  *     Join reach is PARTIAL: the deep walk finds a gate on a plainly-joined
  *     source and under `annotations.inherits`, but NOT through an ANNOTATED
@@ -256,7 +256,7 @@ function assertMergeKeyScopeResolvable(
 }
 
 /**
- * Dialects whose connection cannot create a table, so a colocated CTAS has
+ * Dialects whose connection cannot create a table, so a database CTAS has
  * nowhere to write. Must agree with `canPersist: false` in
  * `getStaticConnectionAttributes` (connection_config.ts), which clients read
  * to decide whether to offer persistence. Refused at load so the author sees a
@@ -269,7 +269,7 @@ function assertMergeKeyScopeResolvable(
 export const READ_ONLY_DIALECTS: ReadonlySet<string> = new Set(["sqlserver"]);
 
 /**
- * A colocated `#@ persist` whose given-reading `where:` is inherited from a
+ * A database `#@ persist` whose given-reading `where:` is inherited from a
  * base is refused: only the declaration carrying its `#@ persist` is
  * re-applied over its table at read, so the source answers live, under the
  * term (as on storage=, through `admitGivenPositions`).
@@ -283,19 +283,19 @@ function assertNoInheritedGivenWhere(
    throw new MaterializationEligibilityError({
       reason: "inherited_where_with_given",
       message:
-         `Source '${sourceName}' cannot be materialized (colocated ` +
+         `Source '${sourceName}' cannot be materialized (database ` +
          `'#@ persist'): ${inherited}.`,
    });
 }
 
 /**
- * Compile-time eligibility gate for the COLOCATED persist path (`#@ persist`
+ * Compile-time eligibility gate for the DATABASE persist path (`#@ persist`
  * with no `storage=`, a CTAS into the source's own warehouse). Deliberately
  * narrower than {@link assertMaterializationEligible}: the storage tier's
  * free-parameter and positional-given rules are its own, and applying them
  * here would refuse many packages that build and serve correctly.
  *
- * A colocated artifact is not served frozen with respect to the gate: the
+ * A database artifact is not served frozen with respect to the gate: the
  * entry point's `#(authorize)` is grafted onto every query
  * (`Model.buildGraftedMaterializer` / `resolveGraftTarget`) whether it reads
  * live or the materialized table. So a `gateOutcome` of
@@ -307,7 +307,7 @@ function assertNoInheritedGivenWhere(
  * matches what a live query enforces.
  *
  * This gate is also the ONLY authorize check on pre-aggregation: rollups are
- * synthesized as colocated `#@ persist` sources and no `preaggregation_*`
+ * synthesized as database `#@ persist` sources and no `preaggregation_*`
  * module is authorize-aware. A rollup groups across the gated column, so the
  * relaxation never applies to `origin === "preaggregate"` (pinned by the
  * rollup-shaped test in this module's spec). Do not narrow this gate without
@@ -322,7 +322,7 @@ function assertNoInheritedGivenWhere(
  *   annotation to remove, and the alternative of moving the gate to a source
  *   that is not materialized.
  */
-export function assertColocatedPersistNotAuthorizeGated(
+export function assertDatabasePersistNotAuthorizeGated(
    persistSource: PersistSource,
    sourceName: string = persistSource.name,
    origin: "persist" | "preaggregate" = "persist",
@@ -348,7 +348,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       throw new MaterializationEligibilityError({
          reason: "read_only_dialect",
          message:
-            `${what} cannot be materialized (colocated '#@ persist'): its ` +
+            `${what} cannot be materialized (database '#@ persist'): its ` +
             `connection '${persistSource.connectionName}' is on the ` +
             `'${persistSource.dialectName}' dialect, whose connection is ` +
             `read-only and creates no tables, so there is nowhere in the ` +
@@ -358,7 +358,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       });
    }
 
-   assertColocatedTablePlaceable(
+   assertDatabaseTablePlaceable(
       persistSource,
       sourceName,
       origin,
@@ -398,7 +398,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       throw new MaterializationEligibilityError({
          reason: "given_in_persisted_query",
          message:
-            `${what} cannot be materialized (colocated '#@ persist'): its ` +
+            `${what} cannot be materialized (database '#@ persist'): its ` +
             `persisted query references a given. A given the persisted query ` +
             `is built with is substituted at BUILD time, so the table would ` +
             `hold the default's rows and serve them to every caller, ignoring ` +
@@ -414,7 +414,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       assertNoInheritedGivenWhere(persistSource, sourceName);
    }
 
-   // The colocated artifact also omits extend-block `where:` terms, so the
+   // The database artifact also omits extend-block `where:` terms, so the
    // same merge hazard applies (some warehouses, e.g. Postgres, refuse the
    // ambiguous MERGE themselves; DuckDB does not). Terms come from
    // `readTimeDynamicTerms`, not the classification, which returns none for
@@ -439,7 +439,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       });
    }
    // G3, the gate policy's: the entry point's own gate compiles to a row
-   // filter and nothing else is reachable beneath it, so colocated serving
+   // filter and nothing else is reachable beneath it, so database serving
    // grafts exactly what a live query would.
    if (
       origin === "persist" &&
@@ -489,7 +489,7 @@ export function assertColocatedPersistNotAuthorizeGated(
    const what =
       origin === "preaggregate"
          ? `Pre-aggregation rollup '${sourceName}' cannot be built`
-         : `Source '${sourceName}' cannot be materialized (colocated ` +
+         : `Source '${sourceName}' cannot be materialized (database ` +
            `'#@ persist')`;
    // Only true of a rollup: it GROUPS, so the gated column is not even
    // present to filter on afterwards.
@@ -513,12 +513,12 @@ export function assertColocatedPersistNotAuthorizeGated(
 
 /**
  * A BigQuery table needs a dataset, and only a dotted `name=` gives a
- * colocated one its container (a rollup's own, or its base's): without one the
+ * database one its container (a rollup's own, or its base's): without one the
  * build fails on BigQuery's own error, so it is refused here, before any
  * warehouse work, as a `#(materialize)` source is at its plan
  * (`needs_qualified_name`), on every mechanism.
  */
-function assertColocatedTablePlaceable(
+function assertDatabaseTablePlaceable(
    persistSource: PersistSource,
    sourceName: string,
    origin: "persist" | "preaggregate",
@@ -543,7 +543,7 @@ function assertColocatedTablePlaceable(
               `name= whose container is a dataset ` +
               `(name="analytics.orders_rollup"), or build it into a ` +
               `storage destination with storage=.`
-            : `Source '${sourceName}' cannot be materialized (colocated): ` +
+            : `Source '${sourceName}' cannot be materialized (database): ` +
               `its connection '${persistSource.connectionName}' is ` +
               `BigQuery, where a table needs a dataset, and its name= ` +
               `names none. The source serves live. Give it a ` +
@@ -727,7 +727,7 @@ function walkForGateRoutes(
  * Whether every `#(authorize)` note beneath the compiled source (crossing
  * joins) is also reachable WITHOUT crossing a join. `false` means some gate is
  * reachable only through a join, which a row-level classification of the entry
- * point's gate says nothing about, so relaxing the colocated refusal requires
+ * point's gate says nothing about, so relaxing the database refusal requires
  * `true` as well as `row_level`.
  *
  * The no-joins walk is believed to cover what `collectEntryPointGates`
@@ -822,9 +822,9 @@ function walkForAuthorizeNotes(
  * when all hold:
  *
  * - the source is a `#(materialize)` source (a `materialize` table) with
- *   `materialize.enabled` on, colocated or `storage=`, or a v1 `#@ persist`
- *   source asked about as `storage=` (a colocated one is decided by
- *   {@link assertColocatedPersistNotAuthorizeGated}); never a persisted
+ *   `materialize.enabled` on, database or `storage=`, or a v1 `#@ persist`
+ *   source asked about as `storage=` (a database one is decided by
+ *   {@link assertDatabasePersistNotAuthorizeGated}); never a persisted
  *   view's or query's build, whose leg passes a gate only with
  *   `materialize.gatedSources`. Its table is read past a gate only through
  *   the served copy, which keeps the author's gates; the router keeps every
@@ -832,7 +832,7 @@ function walkForAuthorizeNotes(
  * - its gate is the entry point's own and classifies `row_level` against the
  *   author's model (the table's `gate`), an attributed row filter or lock
  *   with no row filter inherited from a source it extends: the bar the
- *   colocated tier sets. Under G3 this holds on both tiers with
+ *   database tier sets. Under G3 this holds on both tiers with
  *   `materialize.gatedSources` off, by maintainer decision ahead of the
  *   question-14 review; the managed tier then holds the gated source's
  *   columns, every caller's rows.
@@ -880,8 +880,8 @@ export function gateEnforcedAtRead(
    return tableKeepsGates(
       {
          kind: "materialize",
-         // Colocated only when neither the caller nor the plan says storage:
-         // G3 admits a colocated table alone, so a doubt reads as storage.
+         // Database only when neither the caller nor the plan says storage:
+         // G3 admits a database table alone, so a doubt reads as storage.
          tier:
             !storage && materialized.persist?.storage === undefined
                ? "database"
@@ -897,7 +897,7 @@ export function gateEnforcedAtRead(
  * Whether a source's `storage=` table is read past its own row-level gate
  * under G3: it is gated, and {@link gateEnforcedAtRead} admits it as stored.
  * Its bindings carry `ownGateKept`, so a served answer reading it may pass
- * that gate as one reading a colocated table may.
+ * that gate as one reading a database table may.
  */
 export function storageKeepsOwnGate(
    source: PersistSource,
@@ -953,7 +953,7 @@ export interface TierGateInputs {
  * refused, never built in the source's own warehouse instead.
  *
  * Not part of {@link assertTierEligible}, on purpose. That gate is also read
- * for every OTHER source on a colocated table's address (the plan's, the
+ * for every OTHER source on a database table's address (the plan's, the
  * build's and the bind's sibling rule), so that a gated source's rows are
  * never served past its gate through a table it shares. A blank `storage=` is
  * one source's own mistake, not a gate: it refuses that source alone, and a
@@ -973,9 +973,9 @@ export function assertPlacementNamed(source: PersistSource): void {
 /**
  * The eligibility gate for the tier a source builds into: the storage-destination
  * gate ({@link assertMaterializationEligible}) when it is written to a storage
- * destination, else the colocated authorize gate
- * ({@link assertColocatedPersistNotAuthorizeGated}), naming `#@ preaggregate`
- * for a rollup. Running the storage gate on a colocated source would misreport
+ * destination, else the database authorize gate
+ * ({@link assertDatabasePersistNotAuthorizeGated}), naming `#@ preaggregate`
+ * for a rollup. Running the storage gate on a database source would misreport
  * a buildable one as refused.
  *
  * @throws {MaterializationEligibilityError} when the source is refused.
@@ -1038,7 +1038,7 @@ export function assertTierEligible(
    }
    const table = plan?.tables?.[source.sourceID];
    const rollup = table?.rollup;
-   assertColocatedPersistNotAuthorizeGated(
+   assertDatabasePersistNotAuthorizeGated(
       source,
       source.name,
       rollup ? "preaggregate" : "persist",
@@ -1046,9 +1046,9 @@ export function assertTierEligible(
       annotationFields,
       { gateEnforcedAtRead: !!rollup && rollupGateEnforcedAtRead(rollup) },
    );
-   // A colocated `#(materialize)` table is read only through the served copy
+   // A database `#(materialize)` table is read only through the served copy
    // (never Malloy's compiler manifest), which keeps the entry point's own
-   // row-level gate under G3 as v1 colocated does: the gate policy admits it
+   // row-level gate under G3 as v1 database does: the gate policy admits it
    // with `materialize.enabled`, and the gated-sources switch is not needed.
    // Every other gate is refused above (a joined, inherited or not row-level
    // one), so this refuses a gated one only when the policy does not keep it,
@@ -1061,12 +1061,12 @@ export function assertTierEligible(
       throw new MaterializationEligibilityError({
          reason: gateReasonOf(source),
          message:
-            `Source '${source.name}' cannot be materialized (colocated ` +
+            `Source '${source.name}' cannot be materialized (database ` +
             `'#(materialize)'): it is protected by an #(authorize) or ` +
             `#(access_filter) gate, and its table is read only through the ` +
             `served copy, which keeps only the entry point's own row-level ` +
             `gate, and only with PUBLISHER_MATERIALIZE on. The source serves ` +
-            `live. Turn that setting on, or use '#@ persist', whose colocated ` +
+            `live. Turn that setting on, or use '#@ persist', whose database ` +
             `table the served copy reads past the source's own row-level ` +
             `gate under the same rule (G3) with that setting off.`,
       });
@@ -1084,7 +1084,7 @@ export function assertTierEligible(
       throw new MaterializationEligibilityError({
          reason: gateReasonOf(source),
          message:
-            `'${source.name}' cannot be materialized (colocated): the ` +
+            `'${source.name}' cannot be materialized (database): the ` +
             `source it reads is protected by an #(authorize) or ` +
             `#(access_filter) gate, and a persisted view's or query's table ` +
             `is read past a gate only with ` +

@@ -4,7 +4,7 @@
 /**
  * The tier port a build runs through ({@link TierAdapter}): building a table,
  * dropping one, and running a key check over one, where the table lives.
- * Also what a colocated build of one source starts from, and where each
+ * Also what a database build of one source starts from, and where each
  * tier's tables are reached. Read by the source build, the instructed
  * build's key checks, the reclaimer and the two adapters.
  *
@@ -35,7 +35,7 @@ type IncrementalRefreshTarget = NonNullable<
  * method the run can take (a delta, else in full) and returns its manifest
  * entry:
  *
- * - {@link ColocatedTier} (colocated_build_strategy.ts), in the source's own
+ * - {@link DatabaseTier} (database_build_strategy.ts), in the source's own
  *   warehouse: a bounded delta for an incremental table
  *   (incremental_delta_strategy.ts), else a staging CTAS and a swap onto the
  *   served name (one transaction where DDL is transactional);
@@ -47,7 +47,7 @@ type IncrementalRefreshTarget = NonNullable<
  *
  * The same adapter drops a table it holds (the reclaimer's drops) and runs a
  * key check over one (the instructed build's checks after a build), at the
- * tier's {@link ColocatedSite} or {@link StorageSite}.
+ * tier's {@link DatabaseSite} or {@link StorageSite}.
  */
 export interface TierAdapter<Request, Site> {
    readonly tier: BuildTier;
@@ -95,8 +95,8 @@ export interface KeyCheck {
 /** What a key check found over one table. */
 export type KeyCheckRecord = Omit<RollupKeyRecord, "checkedInRun">;
 
-/** Where a colocated table is reached: its warehouse connection. */
-export interface ColocatedSite {
+/** Where a database table is reached: its warehouse connection. */
+export interface DatabaseSite {
    connection: MalloyConnection;
    /** Every statement run there carries these (a drop's attribution). */
    runOptions?: { queryMetadata?: QueryMetadata };
@@ -109,8 +109,8 @@ export interface StorageSite {
    environmentPath: string;
 }
 
-/** What a colocated build of one source starts from. */
-export interface ColocatedBuildRequest {
+/** What a database build of one source starts from. */
+export interface DatabaseBuildRequest {
    persistSource: PersistSource;
    instruction: BuildInstruction;
    connection: MalloyConnection;

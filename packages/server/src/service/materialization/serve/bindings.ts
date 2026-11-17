@@ -9,7 +9,7 @@
  * (`#@ -persist`).
  *
  * Read by the served copy, the rollup and view legs, storage bindings and
- * colocated bindings.
+ * database bindings.
  *
  * Pure.
  */
@@ -38,7 +38,7 @@ export function optsOutOfPersist(def: DerivedSourceDef): boolean {
 
 /**
  * A binding's table path as the SQL reads it: a storage table's quoted for
- * DuckDB (the destination), a colocated table's as bound, already canonical
+ * DuckDB (the destination), a database table's as bound, already canonical
  * for its own connection's dialect.
  */
 export function boundTablePath(b: Binding): string {
@@ -50,7 +50,7 @@ export function boundTablePath(b: Binding): string {
 /**
  * Whether `sql` reads the table at `tablePath` (as {@link boundTablePath}
  * spells it): the path right after a `FROM` or `JOIN`, and not followed by
- * more of a name. A bare substring test is not enough: a colocated table's
+ * more of a name. A bare substring test is not enough: a database table's
  * path is often one quoted name (`"orders"`), which a result column of the
  * same name (`AS "orders"`) also spells.
  */
@@ -74,7 +74,7 @@ export function sqlTableReads(sql: string, tablePath: string): number {
  * and every re-rooted `storage=` table it was not proven NOT to read. Fail
  * closed: {@link sqlReadsTable} matches one spelling, so a storage table
  * spelled another way (other quoting or case) would drop out and the answer
- * would read as colocated only. A storage table counts as absent only when
+ * would read as database only. A storage table counts as absent only when
  * its path, quotes and case aside, appears nowhere in `sql`.
  */
 export function tablesReadForGates(

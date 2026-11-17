@@ -261,7 +261,7 @@ describe("the query pipeline over a fake leg list", () => {
          answer: routed,
          pastEntryPointGate: true,
          runFailed: false,
-         colocatedRead: new Set(),
+         databaseRead: new Set(),
       };
       const governed = await s.govern(
          ctxOf({ query: undefined, sourceName: "orders", queryName: "v" }),
@@ -314,7 +314,7 @@ describe("the query pipeline over a fake leg list", () => {
          }),
          pastEntryPointGate: false,
          runFailed: false,
-         colocatedRead: new Set(),
+         databaseRead: new Set(),
       };
       const ran = await s.execute(ctxOf(), {
          pinned: s.pin(),
@@ -355,7 +355,7 @@ describe("the query pipeline over a fake leg list", () => {
          answer: answer(extra),
          pastEntryPointGate: false,
          runFailed: false,
-         colocatedRead: new Set(),
+         databaseRead: new Set(),
       });
       expect(runManifestOf(LIVE_ANSWER, manifests)).toBe("empty");
       expect(runManifestOf(routed("rollup"), manifests)).toBe("pinned");
@@ -381,19 +381,19 @@ describe("the query pipeline over a fake leg list", () => {
          answer: answer(extra),
          pastEntryPointGate: false,
          runFailed: false,
-         colocatedRead: new Set(),
+         databaseRead: new Set(),
       });
-      const colocated = binding("orders", { tier: "database" });
+      const database = binding("orders", { tier: "database" });
       expect(servedFromOf(LIVE_ANSWER)).toBeUndefined();
       expect(
          servedFromOf(routed("served", { tablesRead: [binding("orders")] })),
       ).toBe("storage");
-      expect(servedFromOf(routed("served", { tablesRead: [colocated] }))).toBe(
+      expect(servedFromOf(routed("served", { tablesRead: [database] }))).toBe(
          "database",
       );
       expect(servedFromOf(routed("rollup", {}))).toBe("database");
       expect(
-         servedFromOf({ ...LIVE_ANSWER, colocatedRead: new Set(["a"]) }),
+         servedFromOf({ ...LIVE_ANSWER, databaseRead: new Set(["a"]) }),
       ).toBe("database");
       expect(servedFromOf(routed("view", { virtualMap }))).toBe("storage");
    });

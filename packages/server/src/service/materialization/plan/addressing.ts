@@ -326,8 +326,8 @@ export function compilerBuildId(
  * destination it declares with `storage=`, when
  * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` is on and
  * `PERSIST_STORAGE_MODE` is not `off` (off, `storage=` is inert and the source
- * builds colocated). Undefined for every colocated source, so turning the
- * switch on moves no colocated address (P12).
+ * builds in the database tier). Undefined for every database source, so turning the
+ * switch on moves no database address (P12).
  */
 export function addressDestination(source: PersistSource): string | undefined {
    if (!getPersistAddressIncludesDestination()) return undefined;
@@ -335,7 +335,7 @@ export function addressDestination(source: PersistSource): string | undefined {
    try {
       return declaredStorage(source);
    } catch {
-      // An unreadable annotation addresses as colocated.
+      // An unreadable annotation addresses as database.
       return undefined;
    }
 }
@@ -347,7 +347,7 @@ export function addressDestination(source: PersistSource): string | undefined {
  * of the same build names (or stores) another table
  * ({@link foldDistinctTableNames}). The target's `sql` carries no annotation
  * bytes, so without this a source moved to `storage=` would keep its
- * colocated address, and two `name=`s on one build would get one
+ * database address, and two `name=`s on one build would get one
  * table.
  *
  * The destination is derived here rather than passed in so every caller
@@ -406,7 +406,7 @@ export function declaresOwnPersist(source: PersistSource): boolean {
 
 /**
  * The columns a `storage=` build of `source` stores (as
- * projectToStoredColumns writes them), sorted; "" for a colocated source,
+ * projectToStoredColumns writes them), sorted; "" for a database source,
  * whose build writes its whole query, or one whose columns cannot be read
  * (its storage build refuses on its own).
  */
@@ -600,7 +600,7 @@ export function foldDistinctTableNames(
       );
       const nameOf = (m: (typeof group)[number]) =>
          m.defaulted ? "" : tables.get(m.name)!;
-      // A colocated build stores its whole query, so only `storage=`
+      // A database build stores its whole query, so only `storage=`
       // sources are told apart by what they store, and only one declaration
       // from another: an extension that inherits its base's `#@ persist` is
       // its base's table, whatever it renames or adds.

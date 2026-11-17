@@ -17,15 +17,15 @@
  * rollup has none). The content address is unchanged by the blanking: Malloy
  * keys a target on its fully inlined SQL.
  *
- * **Built over a colocated base's stored table when a run holds it.** A
- * colocated rollup over a colocated `#@ persist` base has a second compile,
+ * **Built over a database base's stored table when a run holds it.** A
+ * database rollup over a database `#@ persist` base has a second compile,
  * made only when a run asks ({@link GeneratedRollups.overStoredBases}), with
  * the base's own `#@ persist` kept: the run builds the rollup from that
  * source, at the same address, only when its build manifest holds the base's
  * table (instructed_build.ts), so the build reads the table, not the
  * warehouse. The rows are the base's rows either way.
  *
- * A colocated rollup over a colocated `#(materialize)` base is offered the
+ * A database rollup over a database `#(materialize)` base is offered the
  * same, in the same second compile: Malloy sees no `#@ persist` on the base,
  * so the companion imports the base from a copy of its file that re-roots it
  * on its generated build source (as an extension's build copy re-roots its
@@ -207,8 +207,8 @@ function storedBaseBuildsOf(
 
 /**
  * The rollups that may read their base's stored table, and what their second
- * compile needs: a colocated rollup over a base whose own notes declare a
- * colocated `#@ persist` (its notes kept, `keep`), or a colocated
+ * compile needs: a database rollup over a base whose own notes declare a
+ * database `#@ persist` (its notes kept, `keep`), or a database
  * `#(materialize)` that `materialized` planned as a plain table (its copy,
  * `stored`, by the base's declared name). A rollup in a `storage=`
  * destination, or over a base built into one, reads the author's rows as
@@ -266,7 +266,7 @@ function overStoredBaseNotes(
 
 /**
  * The base `baseSourceID` as a `#(materialize)` base whose stored table a
- * rollup may build from, or undefined: its own notes declare a colocated
+ * rollup may build from, or undefined: its own notes declare a database
  * `#(materialize)` (read by declaration.ts), and the companion planned it as
  * a plain table in its own warehouse, declared in this model. A pair table
  * holds a row per pair, not the base's rows, and a table with read-time
@@ -769,10 +769,10 @@ export function parentKeyCheckCompiler(materializer: {
 }
 
 /**
- * Attach to each colocated rollup in `plans` the primary key checks of the
+ * Attach to each database rollup in `plans` the primary key checks of the
  * query sources that read it through a join read as a join_many
  * (`readsAsJoinMany`), each compiled once by its `compile` (the author's
- * model that names the source). To each rollup, colocated or in a storage
+ * model that names the source). To each rollup, database or in a storage
  * destination, also attach the check of its base's own primary key when a
  * join reaches the base on another column (`joinedKeys`, see
  * {@link JoinedKeyNeed}): the join-to-rollup branch serves a count, sum or
@@ -821,7 +821,7 @@ export async function compileParentKeyChecks(
       const checks: ParentKeyCheck[] = [];
       const seen = new Set<string>();
       // A query source's key is checked over its rows where the rollup is
-      // colocated; in a destination, over its stored table there
+      // database; in a destination, over its stored table there
       // (`storedKeyChecksOf`).
       for (const { need, compile } of plan.storage === undefined ? needs : []) {
          if (seen.has(need.sourceID) || !readsAsJoinMany(plan, need)) continue;

@@ -613,8 +613,8 @@ export function isPairGuardFailure(err: unknown): boolean {
  * left in the table has exactly one flagged row. A failed check rolls back
  * and the source is rebuilt in full (see applyIncrementalStep).
  *
- * DuckDB only: the target of every `storage=` table, and a colocated pair
- * table's own warehouse when that is DuckDB (a colocated one elsewhere has no
+ * DuckDB only: the target of every `storage=` table, and a database pair
+ * table's own warehouse when that is DuckDB (a database one elsewhere has no
  * pair lineage, see incrementalLineage, and is rebuilt in full). Its `error()`
  * raises the check; the staging table is a session temporary created before
  * the transaction, so the transaction writes one database. Another target
@@ -953,7 +953,7 @@ async function resolveDeltaEnd(
 
 /**
  * Where a delta's DML lands, and how its rows are produced: the only facts that
- * differ between a colocated table and a `storage=` one (rows computed by the
+ * differ between a database table and a `storage=` one (rows computed by the
  * SOURCE warehouse, DML issued in the DESTINATION engine).
  *
  * The decision order and reason codes stay in {@link planIncrementalStep} alone,
@@ -997,7 +997,7 @@ export interface DeltaTarget {
 }
 
 /**
- * The delta target for a COLOCATED source: one connection and dialect answer
+ * The delta target for a DATABASE source: one connection and dialect answer
  * everything, and the delta's rows are the seed's SQL with a range predicate.
  */
 export function warehouseDeltaTarget(params: {

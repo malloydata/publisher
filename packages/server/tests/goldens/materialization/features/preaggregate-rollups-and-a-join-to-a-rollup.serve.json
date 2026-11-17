@@ -80,7 +80,7 @@
         },
         "warnings": []
       },
-      "query": "a colocated rollup",
+      "query": "a database rollup",
       "servedBy": "live",
       "servedFrom": null,
       "switch": "off"
@@ -470,7 +470,7 @@
         },
         "warnings": []
       },
-      "query": "a colocated rollup",
+      "query": "a database rollup",
       "servedBy": "rollup",
       "servedFrom": "database",
       "switch": "on"

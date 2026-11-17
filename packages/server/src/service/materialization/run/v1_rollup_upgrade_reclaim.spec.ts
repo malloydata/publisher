@@ -197,7 +197,7 @@ describe("a v1 rollup table from a release that ran the cutover off, after the u
       // Its manifest bound, as a restart or a host binds it: not this
       // release's table, so live.
       await env.rebindPackageFromStore("pa", async () => ({
-         colocated: splitManifestEntries(
+         database: splitManifestEntries(
             before.manifest!.entries as never,
             "the earlier release's run",
          ).tableNameManifest,

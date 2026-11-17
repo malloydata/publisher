@@ -171,7 +171,7 @@ const SUMMARY_QUERY =
    "run: summary -> { group_by: region; aggregate: t is total.sum() }";
 
 describe("the path report names exactly the tables the SQL read", () => {
-   it("a colocated #(materialize) source is built, served by the served copy from its own warehouse, and reported", async () => {
+   it("a database #(materialize) source is built, served by the served copy from its own warehouse, and reported", async () => {
       const { fixture, live } = await loadBuilt(
          {
             "m.malloy": `import "raw.malloy"
@@ -201,7 +201,7 @@ source: summary is orders_raw -> {
       }
    });
 
-   it("a colocated #@ -persist reader recomputes live and is reported live; its sibling reads the table and is reported", async () => {
+   it("a database #@ -persist reader recomputes live and is reported live; its sibling reads the table and is reported", async () => {
       const queries = {
          reader: {
             model: "m.malloy",
@@ -263,7 +263,7 @@ source: summary_kept is summary extend {
    });
 });
 
-describe("a model without the persistence flag beside a bound colocated table", () => {
+describe("a model without the persistence flag beside a bound database table", () => {
    it("still answers, live", async () => {
       const queries = {
          a: { model: "a.malloy", query: SUMMARY_QUERY },
@@ -301,7 +301,7 @@ source: plain is orders_raw extend { measure: c is count() }
    });
 });
 
-describe("a colocated table named by a reserved word", () => {
+describe("a database table named by a reserved word", () => {
    it('is read quoted (name="order") and answers equal to live', async () => {
       const query =
          "run: `order` -> { group_by: `select`, `order`; aggregate: c is `count`.sum(), `group` }";
@@ -677,8 +677,8 @@ source: summary is orders_raw -> {
   aggregate: total is amount.sum()
 }
 
-#(materialize) name="colocated_tbl"
-source: colocated is orders_raw -> {
+#(materialize) name="database_tbl"
+source: database is orders_raw -> {
   group_by: region
   aggregate: total is amount.sum()
 }
@@ -688,23 +688,23 @@ source: colocated is orders_raw -> {
       );
       try {
          // Before: "summary:live:shadowed" although the served copy answers it.
-         // A colocated one is served by the served copy too, from its own
+         // A database one is served by the served copy too, from its own
          // warehouse (phase 3 pull request 6).
          expect(fixture.verdicts.sort()).toEqual([
-            "colocated:serves",
+            "database:serves",
             "summary:serves",
          ]);
          expect(codes(fixture, "materialize-not-built")).toEqual([]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
          expect(ran.servedBy).toBe("materialized");
-         const colocated = await run(
+         const database = await run(
             fixture,
             "m.malloy",
-            "run: colocated -> { group_by: region; aggregate: t is total.sum() }",
+            "run: database -> { group_by: region; aggregate: t is total.sum() }",
          );
-         expect(colocated.servedBy).toBe("materialized");
-         expect(reads(colocated.sql, "colocated_tbl")).toBe(true);
-         expectReportMatchesSQL(fixture, colocated);
+         expect(database.servedBy).toBe("materialized");
+         expect(reads(database.sql, "database_tbl")).toBe(true);
+         expectReportMatchesSQL(fixture, database);
       } finally {
          await fixture.dispose();
       }

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The colocated tables bound with no captured warehouse type for a column
+ * The database tables bound with no captured warehouse type for a column
  * whose read depends on one (`stored-native-schema-missing`): a column whose
  * field Malloy types as a big integer is read through a cast to the type the
  * build recorded on its manifest entry (`nativeSchema`), and an entry written
@@ -16,7 +16,7 @@
  * manifest rather than the query. Pure.
  */
 
-import { type Binding, isColocated } from "../domain/binding";
+import { type Binding, isDatabase } from "../domain/binding";
 import type { MaterializePlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { bigIntegerReads, nativeTypeLookup } from "../stored_column_types";
@@ -36,7 +36,7 @@ export interface NativeSchemaNotice {
 }
 
 /**
- * Each colocated binding of a source `modelDef` declares whose big-integer
+ * Each database binding of a source `modelDef` declares whose big-integer
  * columns have no captured warehouse type. A `#(materialize)` binding is the
  * generated build source's; its plan names the author's source.
  */
@@ -48,7 +48,7 @@ export function nativeSchemaNotices(
    const map = SourceMap.of(modelDef);
    const out: NativeSchemaNotice[] = [];
    for (const binding of bindings) {
-      if (!isColocated(binding)) continue;
+      if (!isDatabase(binding)) continue;
       const plan = binding.sourceIDs
          ?.map((id) => materializePlans[id])
          .find((p) => p !== undefined);
@@ -66,7 +66,7 @@ export function nativeSchemaNotices(
       const captured = nativeTypeLookup(binding.nativeSchema);
       const uncaptured = bigIntegerReads(binding.schema, def.fields, {
          dialect: def.dialect,
-         colocated: true,
+         database: true,
          nativeTypeOf: captured,
       }).filter((r) => captured(r.column) === undefined);
       if (uncaptured.length === 0) continue;

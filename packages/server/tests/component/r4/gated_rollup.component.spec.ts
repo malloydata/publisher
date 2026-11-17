@@ -16,10 +16,10 @@
  * denied. Negatives answer live (a gate field outside the grain, a gate
  * through a join, a caller join, a caller `count()`, an extension whose own
  * gate the rollup cannot prove), and a caller `except:` or `rename:` of the
- * gate field is denied, as live is. Colocated and `storage=` (the latter
+ * gate field is denied, as live is. Database and `storage=` (the latter
  * behind its review seam, as question 14 leaves it off in production).
  *
- * G3 for colocated rollups: with the gated-sources switch off, a colocated
+ * G3 for database rollups: with the gated-sources switch off, a database
  * rollup over a base whose gates are all its own (a row filter, a lock, or
  * both, each field a grain dimension) is built and read past the gate the
  * same way, each caller getting exactly live's rows; one over an inherited

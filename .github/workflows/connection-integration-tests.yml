@@ -24,7 +24,7 @@ on:
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
       # Materialization: the manifest's read-cost value, each dialect's
-      # catalog read of a colocated table's column types, and the specs that
+      # catalog read of a database table's column types, and the specs that
       # need a real Postgres (a DuckLake catalog, a Postgres warehouse, the run
       # store's Postgres semantics), with everything they exercise. The
       # environment holds the lock a version's rebind races a refresh under.
@@ -61,7 +61,7 @@ on:
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
       # Materialization: the manifest's read-cost value, each dialect's
-      # catalog read of a colocated table's column types, and the specs that
+      # catalog read of a database table's column types, and the specs that
       # need a real Postgres (a DuckLake catalog, a Postgres warehouse, the run
       # store's Postgres semantics), with everything they exercise. The
       # environment holds the lock a version's rebind races a refresh under.
@@ -253,30 +253,30 @@ jobs:
           cd packages/server
           bun test --timeout 120000 ./tests/integration/admin_catalogs
 
-      # Each dialect's catalog read of a colocated table's column types, and the
+      # Each dialect's catalog read of a database table's column types, and the
       # big-integer cast it feeds, served against live on real Postgres, MySQL
       # and Trino (a memory catalog). Skipped where these variables are unset.
-      - name: Run colocated native-type integration tests
+      - name: Run database native-type integration tests
         env:
           PUBLISHER_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/malloy_test
           PUBLISHER_TEST_MYSQL_URL: mysql://root:mysql@127.0.0.1:3306
           PUBLISHER_TEST_TRINO_URL: http://localhost:8080
         run: |
           cd packages/server
-          bun test --timeout 100000 ./src/service/materialization/run/colocated_native_types.spec.ts
+          bun test --timeout 100000 ./src/service/materialization/run/database_native_types.spec.ts
 
       # The materialization specs that skip unless a Postgres is reachable:
       # DuckLake destinations on a Postgres catalog, a Postgres warehouse's
       # native column types, cross-package tables, the v1 cutover and its
       # leftover views, the rebind and stale-chain races, and the Postgres
-      # tiers of the colocated served-copy specs (a colocated table altered
+      # tiers of the database served-copy specs (a database table altered
       # after its build among them).
       - name: Run Postgres-gated materialization tests
         env:
           PUBLISHER_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/malloy_test
         run: |
           cd packages/server
-          bun test --timeout 200000 --max-workers=1 ./src/service/materialization/run/v1_cutover_postgres.spec.ts ./src/service/materialization/run/leftover_name_views_postgres.spec.ts ./tests/component/materialization_key_check_rebind.component.spec.ts ./tests/component/materialization_stale_chain.component.spec.ts ./tests/integration/materialization/cross_package_tables.integration.spec.ts ./tests/integration/materialization/storage_postgres_native_types.integration.spec.ts ./tests/integration/materialization/storage_postgres_decimal_precision.integration.spec.ts ./tests/integration/materialization/storage_sandbox_source.integration.spec.ts ./src/service/materialization/run/colocated_served_copy.spec.ts ./tests/component/r4/colocated_storage_parity.component.spec.ts ./tests/component/r4/served_big_integers.component.spec.ts ./tests/component/r4/served_copy_colocated.component.spec.ts ./tests/component/r4/served_copy_pair_counts.component.spec.ts ./tests/component/r4/materialize_storage_type_drift.component.spec.ts ./tests/component/database_table_alter_at_bind.component.spec.ts ./tests/component/materialization_rollup_over_incremental_base.component.spec.ts
+          bun test --timeout 200000 --max-workers=1 ./src/service/materialization/run/v1_cutover_postgres.spec.ts ./src/service/materialization/run/leftover_name_views_postgres.spec.ts ./tests/component/materialization_key_check_rebind.component.spec.ts ./tests/component/materialization_stale_chain.component.spec.ts ./tests/integration/materialization/cross_package_tables.integration.spec.ts ./tests/integration/materialization/storage_postgres_native_types.integration.spec.ts ./tests/integration/materialization/storage_postgres_decimal_precision.integration.spec.ts ./tests/integration/materialization/storage_sandbox_source.integration.spec.ts ./src/service/materialization/run/database_served_copy.spec.ts ./tests/component/r4/database_storage_parity.component.spec.ts ./tests/component/r4/served_big_integers.component.spec.ts ./tests/component/r4/served_copy_database.component.spec.ts ./tests/component/r4/served_copy_pair_counts.component.spec.ts ./tests/component/r4/materialize_storage_type_drift.component.spec.ts ./tests/component/database_table_alter_at_bind.component.spec.ts ./tests/component/materialization_rollup_over_incremental_base.component.spec.ts
 
       # The storage= build's warehouse read reaches BigQuery job records the unit
       # suite cannot: bigquery_execute's returned job id, the child job a

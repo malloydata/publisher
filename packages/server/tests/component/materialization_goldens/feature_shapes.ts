@@ -196,7 +196,7 @@ source: north_orders is orders extend {
       },
       queries: [
          { name: "a storage= view", malloy: "run: orders -> by_region" },
-         { name: "a colocated view", malloy: "run: orders -> by_status" },
+         { name: "a database view", malloy: "run: orders -> by_status" },
          { name: "a two-stage view", malloy: "run: orders -> two_stage" },
          { name: "a rolling-window view", malloy: "run: orders -> recent" },
          { name: "an unpersisted view", malloy: "run: orders -> plain" },
@@ -262,7 +262,7 @@ source: orders_wide_local is orders_raw extend {
                "run: orders_wide -> { group_by: region; aggregate: customers.customer_count }",
          },
          {
-            name: "a joined dimension, colocated",
+            name: "a joined dimension, database",
             malloy:
                "run: orders_wide_local -> { group_by: customers.loud_name; aggregate: total }",
          },
@@ -587,8 +587,8 @@ source: renamed is stored extend {
   measure: id_total is order_id.sum()
 }
 
-#(materialize) name="colocated_ext_t"
-source: colocated_ext is orders extend {
+#(materialize) name="database_ext_t"
+source: database_ext is orders extend {
   where: status = 'shipped'
 }
 `,
@@ -617,8 +617,8 @@ source: colocated_ext is orders extend {
             malloy: "run: renamed -> { group_by: region; aggregate: id_total }",
          },
          {
-            name: "a colocated extension",
-            malloy: "run: colocated_ext -> { group_by: region; aggregate: n }",
+            name: "a database extension",
+            malloy: "run: database_ext -> { group_by: region; aggregate: n }",
          },
       ],
    },
@@ -648,7 +648,7 @@ source: orders is orders_raw extend {
       },
       queries: [
          {
-            name: "a colocated rollup",
+            name: "a database rollup",
             malloy: "run: orders -> { group_by: region; aggregate: total }",
          },
          {

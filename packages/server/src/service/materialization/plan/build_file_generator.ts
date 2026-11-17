@@ -45,14 +45,14 @@
  * `name=`. `src__mat` is only the generated build source's internal name in
  * the companion model. Without a `name=`, a `storage=` source's table defaults
  * to the source's own name (the destination is Publisher's, and the existing
- * collision checks refuse two sources on one table). A colocated source (no
+ * collision checks refuse two sources on one table). A database source (no
  * `storage=`) is built into its own warehouse; without a `name=` Publisher
  * gives its table a readable name of its own (never the table it reads), and
  * only BigQuery, where a table needs a dataset, needs a `name=` that names
  * one (`needs_qualified_name`). The served copy re-roots it on that table, on its own connection,
- * as it re-roots a `storage=` source on its destination, and a v1 colocated
+ * as it re-roots a `storage=` source on its destination, and a v1 database
  * `#@ persist` table the same way
- * (`tests/component/r4/served_copy_colocated.component.spec.ts`). Only a
+ * (`tests/component/r4/served_copy_database.component.spec.ts`). Only a
  * legacy `.malloynb` cell still reads a table through Malloy's compiler
  * manifest (`ModelServing.manifestIfPersistent`).
  *
@@ -203,8 +203,8 @@
  * sources then sit in level files (`<model>.<n>.materialize-level.malloy`),
  * one per depth of the chain, which the companion imports, since a build
  * copy imports its parent's level and the companion cannot be imported by
- * what it imports. Only a pair on one tier (both colocated, or both in one
- * `storage=` destination) with no incremental keys chains. A colocated
+ * what it imports. Only a pair on one tier (both database, or both in one
+ * `storage=` destination) with no incremental keys chains. A database
  * extension's build reads its parent's build source, which Malloy's planner
  * resolves to the parent's table through the build manifest. A `storage=`
  * extension's warehouse cannot read its parent's stored table, so its build

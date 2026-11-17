@@ -9,7 +9,7 @@
  * refusal carries.
  *
  *  - Naming: two `#@ persist name=` values that differ only in case, on a
- *    destination that folds case (`storage=` and colocated DuckDB); two
+ *    destination that folds case (`storage=` and database DuckDB); two
  *    persisted views that resolve to one table (under
  *    `PERSIST_COLLISION_ENFORCE=false`; by default each fails the load).
  *  - Rollups: two models' same-named bases rolled up at one grain, whose
@@ -649,7 +649,7 @@ const ADDRESSED_PROBES: Probe[] = [
       tier: "storage",
    },
    {
-      name: "the colocated source",
+      name: "the database source",
       malloy: "run: placed -> { group_by: region; aggregate: total }",
       tier: "database",
    },
@@ -681,7 +681,7 @@ describe("PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION", () => {
    }
 
    // One compile, fixed connection digests: only the switch differs.
-   it("moves the storage= source's address and no colocated one", async () => {
+   it("moves the storage= source's address and no database one", async () => {
       const duckdb = new DuckDBConnection("duckdb");
       try {
          await duckdb.runSQL(

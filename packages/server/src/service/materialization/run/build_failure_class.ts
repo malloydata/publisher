@@ -122,7 +122,7 @@ const TRANSIENT_CODES_IN_MESSAGES: readonly string[] = [
 /**
  * Whether `err` is the refusal of a build whose persisted upstream no
  * manifest holds: the chained `storage=` refusal, or Malloy's strict manifest
- * miss on a colocated build. On its own it is unclassified (see
+ * miss on a database build. On its own it is unclassified (see
  * {@link BuildRetryable}); {@link classifySourceFailure} classifies it when
  * the upstream failed in this run.
  */

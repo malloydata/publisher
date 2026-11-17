@@ -27,7 +27,7 @@
  *    name, trimmed, and is looked up exactly: one no destination is
  *    configured under is not built, and the package warns that the source
  *    serves live;
- *  - no `storage=` builds colocated, in the source's own warehouse.
+ *  - no `storage=` builds in the database tier, in the source's own warehouse.
  *
  * Pure: reads only the annotations it is handed.
  */

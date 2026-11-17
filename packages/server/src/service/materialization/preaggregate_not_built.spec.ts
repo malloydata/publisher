@@ -97,7 +97,7 @@ describe("preaggregate-not-built", () => {
          const [rollupID] = Object.keys(rollupPlansIn(compiled));
          expect(rollupID).toBeDefined();
          // A rollup on a dialect whose connection creates no table: the
-         // colocated gate refuses it, and nothing else about it changes. The
+         // database gate refuses it, and nothing else about it changes. The
          // dialect is shadowed on the compiled source itself, so the plan
          // still projects that same object and keeps the rollup in
          // `sources`, as a real read-only-dialect refusal does.

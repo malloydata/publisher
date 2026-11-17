@@ -6,11 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { capturedColocatedSchema } from "./colocated_build_strategy";
+import { capturedDatabaseSchema } from "./database_build_strategy";
 import { observedDatabaseColumns } from "./database_column_read";
 
 /**
- * The bind's read of each colocated table's columns from its warehouse:
+ * The bind's read of each database table's columns from its warehouse:
  * batched catalog queries, never per query, each type spelled as the build's
  * capture spells it, bounded by a timeout, and fail safe (`unread`) when a
  * table cannot be read.
@@ -52,7 +52,7 @@ describe("observedDatabaseColumns on DuckDB", () => {
    });
 
    it("reads one in-process DESCRIBE per table, spelled as the build's capture", async () => {
-      const captured = await capturedColocatedSchema({
+      const captured = await capturedDatabaseSchema({
          connection,
          physicalTableName: "a",
          dialect: "duckdb",

@@ -3,7 +3,7 @@
     "buildErrors": {},
     "built": [
       {
-        "name": "colocated_ext",
+        "name": "database_ext",
         "tier": "database"
       },
       {
@@ -28,7 +28,7 @@
       }
     ],
     "verdicts": [
-      "colocated_ext:serves",
+      "database_ext:serves",
       "stored:serves",
       "by_given:serves",
       "east:serves",
@@ -121,7 +121,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
@@ -236,7 +236,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
         ],
@@ -333,7 +333,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
         ],
@@ -435,7 +435,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
@@ -541,7 +541,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
@@ -604,18 +604,18 @@
           ],
           "filteredDimensions": [],
           "filters": [],
-          "key": "2c68f147647c8966",
+          "key": "e355aa16f4d1c9b1",
           "kind": "reduce",
           "measures": [
             "n"
           ],
-          "source": "colocated_ext",
+          "source": "database_ext",
           "stages": 1
         },
-        "source": "colocated_ext"
+        "source": "database_ext"
       },
       "equalToLive": true,
-      "malloy": "run: colocated_ext -> { group_by: region; aggregate: n }",
+      "malloy": "run: database_ext -> { group_by: region; aggregate: n }",
       "path": {
         "considered": [
           {
@@ -675,7 +675,7 @@
           "measures": [
             "n"
           ],
-          "sourceName": "colocated_ext"
+          "sourceName": "database_ext"
         },
         "servedBy": {
           "kind": "materialized",
@@ -686,7 +686,7 @@
         },
         "warnings": []
       },
-      "query": "a colocated extension",
+      "query": "a database extension",
       "servedBy": "materialized",
       "servedFrom": "database",
       "switch": "off"
@@ -774,7 +774,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
@@ -889,7 +889,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
         ],
@@ -986,7 +986,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
         ],
@@ -1088,7 +1088,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
@@ -1194,7 +1194,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
@@ -1257,18 +1257,18 @@
           ],
           "filteredDimensions": [],
           "filters": [],
-          "key": "2c68f147647c8966",
+          "key": "e355aa16f4d1c9b1",
           "kind": "reduce",
           "measures": [
             "n"
           ],
-          "source": "colocated_ext",
+          "source": "database_ext",
           "stages": 1
         },
-        "source": "colocated_ext"
+        "source": "database_ext"
       },
       "equalToLive": true,
-      "malloy": "run: colocated_ext -> { group_by: region; aggregate: n }",
+      "malloy": "run: database_ext -> { group_by: region; aggregate: n }",
       "path": {
         "considered": [
           {
@@ -1328,7 +1328,7 @@
           "measures": [
             "n"
           ],
-          "sourceName": "colocated_ext"
+          "sourceName": "database_ext"
         },
         "servedBy": {
           "kind": "materialized",
@@ -1339,7 +1339,7 @@
         },
         "warnings": []
       },
-      "query": "a colocated extension",
+      "query": "a database extension",
       "servedBy": "materialized",
       "servedFrom": "database",
       "switch": "on"

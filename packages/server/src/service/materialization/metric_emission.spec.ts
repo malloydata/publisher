@@ -128,7 +128,7 @@ describe("publisher_materialization_eligibility_refused_total", () => {
 
    it("counts a source under its wire refusal, when the gates disagree", async () => {
       // A blank `storage=` is refused for its placement on the wire, and is
-      // colocated to every other gate.
+      // database to every other gate.
       const pkg = await packages.create(BLANK_STORAGE_SOURCE);
       const outcome = await computePackageBuildPlan(pkg);
       const refused = Object.values(outcome.plan?.refusedSources ?? {});
@@ -146,7 +146,7 @@ describe("publisher_materialization_eligibility_refused_total", () => {
    }, 30_000);
 
    it("counts no source the plan does not refuse", async () => {
-      // Colocated and buildable on the package's DuckDB sandbox, which a
+      // Database and buildable on the package's DuckDB sandbox, which a
       // `storage=` build cannot pass through: the storage gate's verdict
       // (only whether it may be served from a stored table) is not a refusal.
       const pkg = await packages.create(ONE_PERSIST_SOURCE);

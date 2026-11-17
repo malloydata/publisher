@@ -316,7 +316,7 @@ const buildPlanComputeFailedCounter = lazyCounter(
    "Package loads whose build plan failed to compute. The ROOT-CAUSE signal for " +
       "served_copy_bind{reason='build_plan_unavailable'}, which fires only " +
       "per declined entry per load -- a package that loads once and is never " +
-      "reloaded ticks that counter once and then sits with its colocated tier " +
+      "reloaded ticks that counter once and then sits with its database tier " +
       "off and a flat total, indistinguishable from healthy.",
 );
 const autoLoadCounter = lazyCounter(
@@ -335,7 +335,7 @@ const servedCopyBindCounter = lazyCounter(
       "'bound'|'partial'|'declined' for a source: 'partial' is a source that " +
       "serves with a join read as written or left out), reason ('none' when " +
       "bound, else why: 'build_plan_unavailable' when the package's build " +
-      "plan failed to compute, so every colocated source reverts to live; " +
+      "plan failed to compute, so every database source reverts to live; " +
       "'refused'; 'missing_table'; or the served copy's reason, as its " +
       "package warning, 'inline_join_kept' and 'cross_connection_join' being " +
       "the partial ones). Units differ by who counts: 'bound' and the bind's " +
@@ -703,8 +703,8 @@ export function recordSourceBound(): void {
  * Record one source entry declined: by the bind (the plan, its refusal, a
  * table built from another definition) or by the served copy's compile (the
  * reason its package warning gives). `build_plan_unavailable` is the one to
- * alert on: colocated is the default tier and is not gated by
- * PERSIST_STORAGE_MODE, so every colocated source of the package reverts to
+ * alert on: database is the default tier and is not gated by
+ * PERSIST_STORAGE_MODE, so every database source of the package reverts to
  * live until a load succeeds.
  */
 export function recordSourceDeclined(reason: BindDeclineReason): void {
@@ -790,7 +790,7 @@ export function recordAttributionSkipped(
 /**
  * Record a materialization-eligibility refusal. A build plan records each
  * source in its `refusedSources` once per derivation, under the reason there,
- * and never a source it does not refuse (a colocated source only unservable
+ * and never a source it does not refuse (a database source only unservable
  * from storage); a run records the refusals only it can find. The `given`
  * reason is a security
  * refusal (a frozen given-filtered table would leak rows across tenants); worth

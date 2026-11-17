@@ -20,7 +20,7 @@ eligibility refusals) so you can see exactly what the feature does and doesn't
 do. Every step here was run against a real server; the outputs shown are real.
 
 > **Terminology.** `storage=` is the authoring keyword on the persist
-> annotation. The default (no `storage=`) is a **colocated** materialization: the
+> annotation. The default (no `storage=`) is a **database** materialization: the
 > source materializes into and serves from its own warehouse, unchanged. This
 > tutorial is about **external** materialization — materialize into a _separate_
 > DuckLake store and serve from there. That store is a **storage destination**:
@@ -752,7 +752,7 @@ or the caller is denied, as live. The gate is not absent at read; it is absent *
 rest**. The table holds every caller's rows, ungated, and a `storage=` destination may
 be a separate, shared store, readable by anyone with direct access to it. Admitting a
 gated `storage=` source is a maintainer-approved exception made ahead of the managed
-tier's security review, for consistency with colocated. A colocated build has no
+tier's security review, for consistency with database. A database build has no
 separate store: the table stays in your own warehouse. When admitted, what is frozen is
 the data the gate DECIDES AGAINST — the gating column's values are whatever they were at
 build time, so a row that changes hands keeps being served to its former owner until
@@ -804,7 +804,7 @@ Everything you need is on the package status and the logs:
     warehouse while the tier is broken. The hit rate alone will not show that.
 
     Two things to get right before building a dashboard on this. **It covers the
-    `storage=` tier only** — a colocated `#@ persist` hit never reaches the
+    `storage=` tier only** — a database `#@ persist` hit never reaches the
     routing decision, so it is in neither the numerator nor the denominator; the
     rate is silent about that tier, not pessimistic about it. And **`live_fallback`
     here is not `QueryResult.servedFrom`'s `live_fallback`.** This label means the

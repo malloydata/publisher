@@ -21,7 +21,7 @@ afterEach(() => {
    for (const stub of quiet) stub.restore();
 });
 
-describe("a colocated drop of an unquotable name", () => {
+describe("a database drop of an unquotable name", () => {
    it("records nothing to drop for it, and drops the rest", async () => {
       const statements: string[] = [];
       const connection = {

@@ -664,7 +664,7 @@ function entryTableIdentity(
 }
 
 /**
- * What a rollup key record says of the table `entry` names, colocated or in a
+ * What a rollup key record says of the table `entry` names, database or in a
  * destination, or undefined when it names another table (a record never
  * describes a table it was not taken over).
  */

@@ -4,7 +4,7 @@
 /**
  * The conformance fixture (ms2data/service#7098): synthetic packages shaped
  * like real ones, each served four ways (v1 `#@ persist` with `storage=`,
- * v1 colocated, and `#(materialize)` with `storage=` and colocated), under the v1 cutover (`cutover`: v1
+ * v1 database, and `#(materialize)` with `storage=` and database), under the v1 cutover (`cutover`: v1
  * tables are read by the served copy, the rollup and view legs, or not at
  * all; since the retirement the only path), through the real
  * package path (src/test_helpers/conformance/package_runner.ts). Every query's served answer must
@@ -49,7 +49,7 @@ import {
    type Expect,
    type Gap,
    type GapMap,
-   isColocated,
+   isDatabase,
    MATERIALIZE_VARIANTS,
    renderFiles,
    type Shape,
@@ -182,7 +182,7 @@ function tierOf(answer: Answer): string {
    if (answer.via) return `served:${answer.via}`;
    return answer.servedFrom === "storage"
       ? "served:serve_shape"
-      : "served:colocated";
+      : "served:database";
 }
 
 /** What a case's served run did, for the report. */
@@ -437,9 +437,9 @@ for (const lake of LAKES) {
                         return;
                      }
                      expect(s.answer.servedBy).toBe("materialized");
-                     if (isColocated(variant) || want === "database") {
+                     if (isDatabase(variant) || want === "database") {
                         expect(s.answer.servedFrom).toBe("database");
-                        // After the cutover a colocated table is read by the
+                        // After the cutover a database table is read by the
                         // served copy, never Malloy's build manifest.
                         if (on === "cutover") {
                            expect(s.answer.via).toBe("served_copy");

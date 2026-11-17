@@ -98,7 +98,7 @@ interface FieldLike {
  * Refused to prevent an access-control leak: a rollup STORES the grain's
  * dimensions and each measure's partial, and the serve path rebinds that table
  * under the base's name without consulting the author's model, so a field
- * hidden on the source would be answered from the table. (The colocated tier
+ * hidden on the source would be answered from the table. (The database tier
  * happens to fail compiling such a reference; the storage tier plans from
  * compiled contents and would not, so the rule lives here for both.)
  *

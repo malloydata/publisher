@@ -290,8 +290,8 @@ source: ops is ${TABLE} extend {
   measure: n is count()
   #@ persist storage="lake"
   view: stored is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
-  #@ persist name="colocated_nest"
-  view: colocated is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
+  #@ persist name="database_nest"
+  view: database is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
 }
 `);
       expect(viewSources(c)).toEqual([]);
@@ -299,7 +299,7 @@ source: ops is ${TABLE} extend {
          (f) => f.code === PERSIST_VIEW_NOT_BUILT,
       );
       expect(nested.map((f) => f.subject).sort()).toEqual([
-         "ops -> colocated",
+         "ops -> database",
          "ops -> stored",
       ]);
       for (const f of nested) {

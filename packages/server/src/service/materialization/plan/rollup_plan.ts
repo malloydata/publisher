@@ -201,7 +201,7 @@ export interface ParentKeyNeed {
 
 /**
  * Whether a rollup at `placement` over a gated base may be read past its
- * base's gate (and so is worth building), by the gate policy: colocated,
+ * base's gate (and so is worth building), by the gate policy: database,
  * under `materialize.gatedSources` or, with it off, under G3 when every gate
  * is the base's `own`; in a storage destination once the managed-tier review
  * allows it.
@@ -249,7 +249,7 @@ function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
 /**
  * Whether a planned rollup's base gate is enforced when it is read (R3 for
  * rollups): `govern()` grafts and proves the base's gates on the rollup
- * variant, so the tier checks that refuse a gated build (the colocated and
+ * variant, so the tier checks that refuse a gated build (the database and
  * storage `authorize` refusals) do not apply to it. True only for a rollup
  * the rollup leg planned (a `#(preaggregate)` one, or a v1 `#@ preaggregate`
  * line read as one) over a gated base, whose every gate the
@@ -764,7 +764,7 @@ function rollupDeclarationsOf(
    const readsPreaggregateDeclarations =
       ctx.readsPreaggregateDeclarations ?? true;
    // One placement rule for both spellings: a grain with no container of its
-   // own (and no storage=) is created beside its base's colocated `name=`,
+   // own (and no storage=) is created beside its base's database `name=`,
    // and a deprecated `namespace=` is read with a warning naming `name=`.
    const inherited = basePersistNamespace(
       { annotations: def.annotations },
@@ -905,7 +905,7 @@ interface RollupFacts {
    /** The time zone the source sets, and whether a source in it joins it. */
    zone: ReturnType<typeof timezoneOf>;
    joinedInZone: boolean;
-   /** Whether a same-zone joiner reads a rollup placed in `storage` (none: colocated). */
+   /** Whether a same-zone joiner reads a rollup placed in `storage` (none: database). */
    readInZone(storage: string | undefined): boolean;
    scope: Parameters<typeof decomposeMeasure>[1];
    /** The joins a field path reads, or undefined when unknown. */
@@ -971,7 +971,7 @@ function rollupFactsOf(
    // times in that zone, and the base branch reads no query on it from a
    // rollup (`TIME_ZONE`), whose variant is redeclared without the zone. The
    // only reader left is the join branch (A7): through a join from a source
-   // in the same zone, to a colocated rollup or to one in a `storage=`
+   // in the same zone, to a database rollup or to one in a `storage=`
    // destination the joining source is stored in too (the branch reads no
    // other: `CROSS_CONNECTION`). Anything else is never read.
    // rollup_plan.spec.ts pins both.
@@ -987,7 +987,7 @@ function rollupFactsOf(
                     .joinsOf(n.sourceID)
                     .some((j) => j.sourceID === node.sourceID),
            );
-   /** Whether a same-zone joiner reads a rollup placed in `storage` (none: colocated). */
+   /** Whether a same-zone joiner reads a rollup placed in `storage` (none: database). */
    const readInZone = (storage: string | undefined) =>
       storage === undefined
          ? joinersInZone.length > 0
@@ -1638,7 +1638,7 @@ function storedDestinationsOf(map: SourceMap, struct: unknown): Set<string> {
  * when the rollup's grain is not one dimension. Run against the rollup
  * companion, which imports the base under {@link rollupBaseAlias}, so it reads
  * exactly the rows the rollup's build groups: the base's, on its own
- * connection, for a colocated and a `storage=` rollup alike. A NULL key meets
+ * connection, for a database and a `storage=` rollup alike. A NULL key meets
  * no joining row, so its repeats do not count.
  */
 export function rollupKeyCheckQuery(

@@ -96,7 +96,7 @@ function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
 }
 
 /**
- * The container a rollup inherits from its base's colocated `name=`: its
+ * The container a rollup inherits from its base's database `name=`: its
  * `#@ persist name=`, else (with `materialize`, the switch that reads it) its
  * `#(materialize) name=`, everything before the last dot; undefined when there
  * is none to inherit. A rollup of a table belongs beside it, `#(preaggregate)`

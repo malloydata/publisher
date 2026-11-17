@@ -6,7 +6,7 @@
  * behalf (ms2data/service#7802):
  *
  * - a published version bound to a manifest compiles once: its models are
- *   hydrated over the manifest's colocated entries, so the bind that follows
+ *   hydrated over the manifest's database entries, so the bind that follows
  *   does not reload them, and it serves what the load-then-reload served;
  * - a rebind whose entries differ only in what a compile does not read
  *   (freshness, schemas) binds them without a package compile;
@@ -111,7 +111,7 @@ describe("a package compiles once per thing a compile reads", () => {
          sourceLocation: null,
       });
 
-   /** A host manifest binding `summary` to `summary_a`, and its colocated entries. */
+   /** A host manifest binding `summary` to `summary_a`, and its database entries. */
    async function writeManifest(
       pkg: Package,
    ): Promise<{ file: string; entries: FreshnessManifest }> {
@@ -232,9 +232,9 @@ describe("a package compiles once per thing a compile reads", () => {
       expect(pkg.getModel("m.malloy")).toBe(model);
       const bound = (
          pkg.materialization() as unknown as {
-            boundColocatedEntries(): FreshnessManifest;
+            boundDatabaseEntries(): FreshnessManifest;
          }
-      ).boundColocatedEntries();
+      ).boundDatabaseEntries();
       expect(bound[id]).toMatchObject({
          dataAsOf: "2026-11-02T00:00:00Z",
          schema: [

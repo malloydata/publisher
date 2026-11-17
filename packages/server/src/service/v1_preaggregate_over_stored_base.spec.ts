@@ -201,7 +201,7 @@ describe("a v1 #@ preaggregate over a storage= base", () => {
       expect(new Set(instructions.map((i) => i.sourceEntityId)).size).toBe(3);
    });
 
-   it("gives a colocated grain with no namespace= no container from a storage= base's name=", async () => {
+   it("gives a database grain with no namespace= no container from a storage= base's name=", async () => {
       const { compiled, packagePath } = await compile(
          `##! experimental.persistence
 #@ persist storage="lake" name="analytics.lake_daily"

@@ -670,7 +670,7 @@ source: flights is duckdb.table('flights_src') extend {
 }
 `;
 
-describe("a colocated rollup over a base that is itself stored", () => {
+describe("a database rollup over a base that is itself stored", () => {
    it(
       "records no verdict for its key: its build grouped the stored table's rows, not the base's",
       async () => {
@@ -1012,7 +1012,7 @@ describe("the rollup key record, bound for serving", () => {
          ).toBeUndefined();
       }
       // A rollup's own check over another table never describes it; over
-      // its table in its destination, it does, as a colocated rollup's.
+      // its table in its destination, it does, as a database rollup's.
       expect(keyUniquenessAt({ h: record }, "h", stored)).toBeUndefined();
       const own = {
          ...record,
@@ -1253,7 +1253,7 @@ describe("the rollup key record, bound for serving", () => {
       ).toBeUndefined();
    });
 
-   it("reaches the colocated manifest from the store, and never from a host's manifest", () => {
+   it("reaches the database manifest from the store, and never from a host's manifest", () => {
       const annotated = withRollupKeyRecords({ a: entry }, [committed()]);
       expect(
          splitManifestEntries(annotated, "store", "store").tableNameManifest.a
@@ -1276,8 +1276,8 @@ describe("the rollup key record, bound for serving", () => {
       });
       await committer.autoLoad(
          {
-            loadRunManifest: async ({ colocated }) => {
-               bound = colocated;
+            loadRunManifest: async ({ database }) => {
+               bound = database;
                return { loaded: true };
             },
          },
@@ -1338,8 +1338,8 @@ describe("the rollup key record, bound for serving", () => {
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
       materialization.bind({
-         colocatedAsGiven: true,
-         colocated: {
+         databaseAsGiven: true,
+         database: {
             a: {
                tableName: "r_t",
                keyUniqueness: { keyColumn: "k", unique: true },
@@ -1383,8 +1383,8 @@ describe("the rollup key record, bound for serving", () => {
       } as never;
       const repeated = { keyColumn: "flight_id", unique: false };
       materialization.bind({
-         colocatedAsGiven: true,
-         colocated: {
+         databaseAsGiven: true,
+         database: {
             a: { tableName: "r_t", keyUniqueness: repeated },
             b: {
                tableName: "s_t",
@@ -1427,8 +1427,8 @@ describe("the rollup key record, bound for serving", () => {
       // only what each query source's primary key check found.
       for (const unique of [true, false]) {
          materialization.bind({
-            colocatedAsGiven: true,
-            colocated: {
+            databaseAsGiven: true,
+            database: {
                a: {
                   tableName: "r_t",
                   keyUniqueness: { parentKeys: { "flights@m": unique } },

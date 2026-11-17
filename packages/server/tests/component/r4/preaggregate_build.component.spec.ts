@@ -76,7 +76,7 @@ source: gated is duckdb.table('orders_raw') extend {
 
 describe("R4: #(preaggregate) rollups build the partials their measures merge from", () => {
    let fixture: R4Fixture;
-   /** The colocated table of the rollup of `base` at `grain`. */
+   /** The database table of the rollup of `base` at `grain`. */
    const table = (base: string, grain: string[]) => {
       const prefix = `${base}__rollup__${grain.join("_")}__`;
       const names = Object.keys(fixture.rollupTables).filter((n) =>

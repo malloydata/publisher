@@ -16,7 +16,7 @@
  * restated it in UTC; it now leaves it out, so a query reading it answers
  * live, and one that does not (`hour(ts)`, a filter) stays served.
  *
- * Every case, colocated and `storage=`, answers equal to live, served or
+ * Every case, database and `storage=`, answers equal to live, served or
  * declined; the inherited-zone ones are served. The other cases press the
  * per-column zone rule: joins, extensions that set or alias a zone, nests,
  * later stages and wildcards.
@@ -51,7 +51,7 @@ source: ev_ny is duckdb.table('ev') extend {
   dimension: ts_hr is hour(ts), ts_day is ts.day
 }
 `;
-/** The model, colocated (`name=`) or `storage=` in one destination. */
+/** The model, database (`name=`) or `storage=` in one destination. */
 function modelFor(tier: string) {
    const at = (n: string) =>
       tier === "database" ? `name="${n}"` : `storage="lake"`;

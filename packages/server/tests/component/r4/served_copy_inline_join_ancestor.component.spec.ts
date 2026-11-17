@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
-   colocatedFiles,
+   databaseFiles,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
@@ -88,22 +88,22 @@ const QUERIES = [
    ["the ancestor's view through the join", "run: long_flights -> by_carrier"],
 ] as const;
 
-// Colocated too (phase 3 pull request 6): the tables sit in the source's own
+// Database too (phase 3 pull request 6): the tables sit in the source's own
 // warehouse, so the parent's join kept as written stays on one connection
-// and nothing is left out. `chained` (`storage=` only, null colocated): the
+// and nothing is left out. `chained` (`storage=` only, null database): the
 // extension builds in the destination over its parent's stored table, the
 // parent's inlined join read from its stored columns as a record (#1661's
 // follow-up). Without the parent's `inline=`, its table holds no joined
 // column, so the extension builds over the raw chain.
 for (const [label, storage, parentInline, problems, chained] of [
    [
-      "colocated, the parent inlining it too",
+      "database, the parent inlining it too",
       "",
       'inline=["carriers"] ',
       [],
       null,
    ],
-   ["colocated, the parent not inlining it", "", "", [], null],
+   ["database, the parent not inlining it", "", "", [], null],
    [
       "storage=, the parent inlining it too",
       'storage="lake" ',
@@ -127,7 +127,7 @@ for (const [label, storage, parentInline, problems, chained] of [
       beforeAll(async () => {
          const files = { "m.malloy": model(storage, parentInline) };
          fixture = await buildScenario({
-            files: storage ? files : colocatedFiles(files),
+            files: storage ? files : databaseFiles(files),
             seedSql,
             materialize: true,
          });

@@ -94,7 +94,7 @@ describe("computeServeVerdicts", () => {
       ]);
    });
 
-   it("says a colocated source serves once bound, and will serve before", () => {
+   it("says a database source serves once bound, and will serve before", () => {
       const [unbound] = computeServeVerdicts(facts([plan("orders")]));
       expect(unbound).toMatchObject({
          sourceName: "orders",
@@ -148,11 +148,11 @@ describe("computeServeVerdicts", () => {
             storageMode === "off" ? "off" : storageMode,
          );
       }
-      // The mode says nothing about a colocated source.
-      const [colocated] = computeServeVerdicts(
+      // The mode says nothing about a database source.
+      const [database] = computeServeVerdicts(
          facts([plan("orders")], { storageMode: "off" }),
       );
-      expect(colocated.verdict).toBe("not_built");
+      expect(database.verdict).toBe("not_built");
    });
 
    it("names a source no published query reaches, with the fix", () => {
@@ -165,8 +165,8 @@ describe("computeServeVerdicts", () => {
       expect(verdict.fixes?.[0]).toContain("index.malloy");
    });
 
-   it("sends a gated stored source live, and keeps a gated colocated one", () => {
-      // G3 with gated sources off: the policy keeps a colocated table's gate.
+   it("sends a gated stored source live, and keeps a gated database one", () => {
+      // G3 with gated sources off: the policy keeps a database table's gate.
       const gated = {
          gated: () => true,
          keepsGate: (_id: string, tier: string) => tier === "database",
@@ -178,11 +178,11 @@ describe("computeServeVerdicts", () => {
          verdict: "live",
          reason: "row_level_gate",
       });
-      const [colocated] = computeServeVerdicts(facts([plan("orders")], gated));
-      expect(colocated.verdict).toBe("not_built");
+      const [database] = computeServeVerdicts(facts([plan("orders")], gated));
+      expect(database.verdict).toBe("not_built");
    });
 
-   it("serves a gated stored source plan admitted past its own gate (G3) as a colocated one, and no other stored source", () => {
+   it("serves a gated stored source plan admitted past its own gate (G3) as a database one, and no other stored source", () => {
       const bound = {
          gated: () => true,
          boundStorageNames: new Set(["orders", "other"]),
@@ -515,16 +515,16 @@ describe("computeServeVerdicts", () => {
             }),
          );
          expect(stored.verdict).toBe("serves");
-         const [colocated] = computeServeVerdicts(
+         const [database] = computeServeVerdicts(
             facts([plan("orders")], {
                boundEntityIds: new Set(["entity-orders"]),
                connectionCanHoldTable: () => false,
             }),
          );
-         expect(colocated.verdict).toBe("serves");
+         expect(database.verdict).toBe("serves");
       });
 
-      it("a colocated source on a connection that cannot hold a table is live, naming the connection", () => {
+      it("a database source on a connection that cannot hold a table is live, naming the connection", () => {
          const [v] = computeServeVerdicts(
             facts([plan("orders")], {
                connectionCanHoldTable: (name) => name !== "duckdb",
@@ -539,7 +539,7 @@ describe("computeServeVerdicts", () => {
          expect(v.fixes?.[0]).toContain("storage=");
       });
 
-      it("reads the connection's capability only for a colocated source, and never warns on an unknown one", () => {
+      it("reads the connection's capability only for a database source, and never warns on an unknown one", () => {
          // A storage= source only reads its own connection.
          const [stored] = computeServeVerdicts(
             facts([plan("orders", STORAGE)], {
@@ -605,9 +605,9 @@ describe("reachableSourceIDs", () => {
          verdict: "live",
          reason: "served_copy",
       });
-      // A colocated #(materialize) table is served by the served copy too,
+      // A database #(materialize) table is served by the served copy too,
       // on the source's own connection (phase 3 pull request 6).
-      const colocatedWith = (
+      const databaseWith = (
          state: "serves" | "off" | "not_served",
          bound = new Set(["entity-orders"]),
       ) =>
@@ -617,21 +617,21 @@ describe("reachableSourceIDs", () => {
                materialize: () => state,
             }),
          )[0];
-      expect(colocatedWith("serves")).toMatchObject({ verdict: "serves" });
-      expect(colocatedWith("serves").message).toContain("served copy");
-      expect(colocatedWith("not_served")).toMatchObject({
+      expect(databaseWith("serves")).toMatchObject({ verdict: "serves" });
+      expect(databaseWith("serves").message).toContain("served copy");
+      expect(databaseWith("not_served")).toMatchObject({
          verdict: "live",
          reason: "served_copy",
       });
-      expect(colocatedWith("serves", new Set())).toMatchObject({
+      expect(databaseWith("serves", new Set())).toMatchObject({
          verdict: "not_built",
       });
       // Off: the fix names only the materialize switch, not the storage tier.
-      expect(colocatedWith("off")).toMatchObject({
+      expect(databaseWith("off")).toMatchObject({
          verdict: "live",
          reason: "served_copy",
       });
-      expect(JSON.stringify(colocatedWith("off"))).not.toContain(
+      expect(JSON.stringify(databaseWith("off"))).not.toContain(
          "PERSIST_STORAGE_MODE",
       );
       // A #@ persist source keeps today's serve-shape rule.

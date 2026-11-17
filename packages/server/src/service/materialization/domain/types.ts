@@ -118,14 +118,14 @@ export interface FreshnessAwareManifestEntry {
    freshnessWindowSeconds?: number;
    freshnessFallback?: "live" | "stale_ok" | "fail";
    /**
-    * The colocated table's columns as its build captured them (the wire
+    * The database table's columns as its build captured them (the wire
     * entry's `schema`), in DuckDB's spelling; absent for a table whose
-    * build captured none. The served copy binds a v1 colocated
-    * table with it (colocated_bindings.ts).
+    * build captured none. The served copy binds a v1 database
+    * table with it (database_bindings.ts).
     */
    schema?: { name: string; type: string }[];
    /**
-    * The colocated table's columns with their types as the warehouse's own
+    * The database table's columns with their types as the warehouse's own
     * catalog names them (the wire entry's `nativeSchema`), which the served
     * copy casts a big-integer column to exactly (known limitation 12).
     */
@@ -154,7 +154,7 @@ export interface KeyUniqueness {
 }
 
 /**
- * One bound colocated table's columns as the bind read them from its
+ * One bound database table's columns as the bind read them from its
  * warehouse (DuckDB's spelling, as {@link FreshnessAwareManifestEntry.schema}),
  * or why they could not be read, in which case the table answers live.
  */

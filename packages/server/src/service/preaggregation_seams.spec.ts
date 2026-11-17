@@ -443,7 +443,7 @@ export { orders }
          // Bound to a table that does not exist, so a routed query fails
          // naming it, and a live one would quietly answer from the base.
          pkg.materialization().bind({
-            colocated: Object.fromEntries(
+            database: Object.fromEntries(
                rollupIds.map((id) => [
                   id,
                   {
@@ -492,7 +492,7 @@ export { notes }
          ];
          expect(rollupIds).toHaveLength(1);
          pkg.materialization().bind({
-            colocated: Object.fromEntries(
+            database: Object.fromEntries(
                rollupIds.map((id) => [
                   id,
                   {
@@ -596,7 +596,7 @@ source: regions is duckdb.sql("""
          // the author's model this test fails loudly rather than passing on a
          // substitution that happened to work.
          pkg.materialization().bind({
-            colocated: Object.fromEntries(
+            database: Object.fromEntries(
                rollupIds.map((id) => [
                   id,
                   {
@@ -734,7 +734,7 @@ function bindMissingRollupTables(pkg: Package) {
    const rollupIds = [...pkg.materialization().getPreaggregateEntityIds()];
    expect(rollupIds.length).toBeGreaterThan(0);
    pkg.materialization().bind({
-      colocated: Object.fromEntries(
+      database: Object.fromEntries(
          rollupIds.map((id) => [
             id,
             { tableName: "no_such_rollup_table", connectionName: "duckdb" },

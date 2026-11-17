@@ -48,7 +48,7 @@ async function declineOf(promise: Promise<unknown>): Promise<LegDecline> {
    return err as LegDecline;
 }
 
-describe("PersistedQueryServe (colocated)", () => {
+describe("PersistedQueryServe (database)", () => {
    let f: PersistedResultFixture;
    let tableId: string;
    let built: Record<string, { tableName: string }>;

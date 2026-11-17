@@ -219,7 +219,7 @@ source: daily is raw -> { where: category = $CAT; group_by: category; aggregate:
 `;
    it.each([
       [
-         "a colocated",
+         "a database",
          `${RAW}#@ persist name="t" partition="category"\n${ROLLUP}\n`,
       ],
       [
@@ -330,7 +330,7 @@ describe("annotation findings on a loaded package", () => {
    );
 
    it(
-      "plans #(materialize) name= at that name, whatever the package's scope, colocated or stored",
+      "plans #(materialize) name= at that name, whatever the package's scope, database or stored",
       async () => {
          await withMaterialize(
             async () => {

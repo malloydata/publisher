@@ -31,7 +31,7 @@ import { logger } from "../logger";
 import { sourceChain } from "./materialization/text/source_map";
 import {
    type Binding,
-   isColocated,
+   isDatabase,
    type Pinned,
    type Snapshot,
 } from "./materialization/domain/binding";
@@ -167,13 +167,13 @@ export function answerOf(route: RouteDecision<LegAnswer>): Answer {
       answer: route.extra,
       pastEntryPointGate: route.pastEntryPointGate === true,
       runFailed: false,
-      colocatedRead: new Set<string>(),
+      databaseRead: new Set<string>(),
    });
 }
 
 /**
  * The build manifest a run is handed, wrapped to record which entries Malloy
- * looked up and found: the colocated tables it substituted. Malloy looks a
+ * looked up and found: the database tables it substituted. Malloy looks a
  * persisted source up by its key in exactly one place (`persistedTableFor`,
  * `buildManifest.entries[buildId]`), so a hit is a table the SQL reads, with no
  * reading of the SQL text.
@@ -296,7 +296,7 @@ export async function queryPathFor(
          viewName: args.viewName,
       });
       const { pinned } = args;
-      // The colocated tables bound when the query was pinned.
+      // The database tables bound when the query was pinned.
       const planned = host.materializedTables();
       const catalog = planned && {
          ...planned,
@@ -338,7 +338,7 @@ export async function queryPathFor(
          origin: originOfTable(b.kind, b.sourceIDs?.[0] ?? ""),
          tablePath: b.tablePath,
          freshAsOf: b.freshAsOf,
-         ...(isColocated(b) ? { colocated: true as const } : {}),
+         ...(isDatabase(b) ? { database: true as const } : {}),
       });
       const storageTables = host.storageTables(pinned.snapshot);
       const published = args.includeHidden ? undefined : host.publishedNames();
@@ -347,7 +347,7 @@ export async function queryPathFor(
          modelPath: host.modelPath,
          chain: sourceChain(struct, modelDef),
          catalog,
-         freshColocated: pinned.hasEntries
+         freshDatabase: pinned.hasEntries
             ? new Set(Object.keys(pinned.compilerManifest.entries))
             : undefined,
          // The `storage=` tables, the `#(materialize)` tables the served copy
@@ -385,7 +385,7 @@ export async function queryPathFor(
                .map((b) => b.tablePath),
          ),
          runFailed: answer.leg !== "live" && answer.runFailed,
-         colocatedRead: answer.colocatedRead,
+         databaseRead: answer.databaseRead,
          ...(viewTable ? { view: viewTable } : {}),
          ...(routed?.rollupMember ? { rollupMember: routed.rollupMember } : {}),
          ...(variantRollups.length > 0

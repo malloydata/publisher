@@ -819,7 +819,7 @@ export class ModelServing {
    /**
     * Run the governed runnable with what the answer names: a run on a
     * virtual map (the served copy, a `storage=` view or rollup) takes no
-    * manifest; a colocated rollup reads the full pinned one, a colocated
+    * manifest; a database rollup reads the full pinned one, a database
     * persisted view the one without rollups, and the live compile an empty
     * one. Prepare runs INSIDE the run's try/catch, so a given-binding throw
     * at prepare gets the same error mapping as run instead of escaping as a
@@ -1672,7 +1672,7 @@ export class ModelServing {
    }
 }
 
-/** The pinned build manifest, or undefined when nothing colocated is bound. */
+/** The pinned build manifest, or undefined when nothing database is bound. */
 function pinnedManifest(pinned: Pinned): BuildManifest | undefined {
    return pinned.hasEntries ? pinned.compilerManifest : undefined;
 }

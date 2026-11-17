@@ -4,7 +4,7 @@
 /**
  * R4 for `#(preaggregate)` (materialization v2, phase 4): with
  * PUBLISHER_MATERIALIZE on, a query a rollup reproduces is answered from the
- * rollup's table, colocated or in a storage destination, and equals live; a
+ * rollup's table, database or in a storage destination, and equals live; a
  * query it cannot reproduce is answered live with the path report's reason.
  * One scenario per rule: A2 (qualifying measures, join-level aggregates), A3
  * (a rollup over a `storage=` base, #6293), A5 (givens, time zones), A6
@@ -41,7 +41,7 @@ const seedSql = [
     ) AS t(order_id, kind, qty)`,
 ];
 
-/** `#(preaggregate)` lines, colocated or into the scenario's destination. */
+/** `#(preaggregate)` lines, database or into the scenario's destination. */
 function model(placement: string): string {
    return `##! experimental { givens sql_functions }
 given: MIN_AMOUNT :: number is 0
@@ -505,7 +505,7 @@ function scenarioSuite(label: string, placement: string): void {
             storageTables(): { kept: unknown[] };
             servedCopy: { hasBindings(): boolean };
          };
-         // A storage= rollup is bound; a colocated one has no binding.
+         // A storage= rollup is bound; a database one has no binding.
          expect(fixture.bindings.length > 0).toBe(placement !== "");
          expect(internals.storageTables().kept).toEqual([]);
          expect(internals.servedCopy.hasBindings()).toBe(false);
@@ -534,7 +534,7 @@ function scenarioSuite(label: string, placement: string): void {
    });
 }
 
-scenarioSuite("built colocated", "");
+scenarioSuite("built in the database tier", "");
 scenarioSuite("built into a storage destination", ` storage="${DESTINATION}"`);
 
 describe("R4: a #(preaggregate) rollup over a storage= base (#6293)", () => {

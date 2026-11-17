@@ -3,9 +3,9 @@
 
 /**
  * Rows 1 and 21 on the build side: a `#(preaggregate)` rollup over a gated
- * base is planned and built (not refused by the colocated tier's `authorize`
+ * base is planned and built (not refused by the database tier's `authorize`
  * check) only when a query can read it past the gate, which is
- * `rollupGateEnforcedAtRead`: colocated, with `materialize.gatedSources` on,
+ * `rollupGateEnforcedAtRead`: database, with `materialize.gatedSources` on,
  * or off under G3 when every gate is the base's own (as here). A `storage=`
  * one waits for question 14's review either way (`preaggregate-not-built`,
  * reason `access_filter`). Drives `Package.create` on the worker path, as the
@@ -97,11 +97,11 @@ for (const gated of [true, false]) {
             .filter((r) => r.reason === "access_filter")
             .map((r) => r.name);
 
-      it("plans the colocated rollup and does not refuse it for its gate", () => {
-         const colocated = planned().filter((n) =>
+      it("plans the database rollup and does not refuse it for its gate", () => {
+         const database = planned().filter((n) =>
             n.startsWith("gated__rollup__"),
          );
-         expect(colocated.length).toBe(1);
+         expect(database.length).toBe(1);
          expect(refused().some((n) => n.startsWith("gated__rollup__"))).toBe(
             false,
          );

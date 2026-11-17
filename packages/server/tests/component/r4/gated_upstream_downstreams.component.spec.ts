@@ -10,7 +10,7 @@
  * The upstream is gated three ways (`#(access_filter)` in the same file and in
  * an imported one, `#(authorize)`, and an extend-block `where:` over a
  * given), and each downstream shape is stored four ways (v1 `#@ persist`
- * colocated and `storage=`, `#(materialize)` colocated and `storage=`):
+ * database and `storage=`, `#(materialize)` database and `storage=`):
  *
  *  - a query over it (`a -> { group_by … }`, `a -> { aggregate … }`,
  *    `a -> { select: * }`), an `extend` of it, and a query two hops away;
@@ -147,18 +147,18 @@ const READERS: [string, string][] = [
       "run: rd_author -> { group_by: org_id; aggregate: t is s.amount.sum() }",
    ],
    [
-      "an author join to its v1 colocated form",
+      "an author join to its v1 database form",
       "run: rd_author_pc -> { group_by: org_id; aggregate: t is s.amount.sum() }",
    ],
    ["an extension of it", "run: rd_ext -> { select: * }"],
-   ["an extension of its v1 colocated form", "run: rd_ext_pc -> { select: * }"],
+   ["an extension of its v1 database form", "run: rd_ext_pc -> { select: * }"],
    ["an extension, cross-file upstream", "run: rd_xf -> { select: * }"],
    [
       "a caller join to it",
       "run: orgs extend { join_many: s is af_ms_sel on org_id = s.org_id } -> { group_by: org_id; aggregate: t is s.amount.sum() }",
    ],
    [
-      "a caller join to its v1 colocated form",
+      "a caller join to its v1 database form",
       "run: orgs extend { join_many: s is af_pc_sel on org_id = s.org_id } -> { group_by: org_id; aggregate: t is s.amount.sum() }",
    ],
    [
@@ -220,14 +220,14 @@ function expectedGateRefusals(): string[] {
    for (const g of ["af", "az", "xf"]) {
       for (const s of SHAPES) {
          if (s === "ajoin") {
-            // The v1 colocated annotated join compiles to the plain join's
+            // The v1 database annotated join compiles to the plain join's
             // SQL, but names its own table (`name=`), so it is not on the
             // refused plain join's address and is not refused with it.
             continue;
          }
          // A gate reached only through a join is never the entry point's own;
          // a row filter over a dropped gate column classifies rejected; an
-         // inherited row filter is refused colocated and stored, either way.
+         // inherited row filter is refused database and stored, either way.
          if (s === "join" || g !== "az") {
             // Named by the gate's kind: a row filter or a lock.
             const reason = g === "az" ? "authorize" : "access_filter";
@@ -388,7 +388,7 @@ for (const gated of [false, true]) {
          expect(message).toContain("reads an #(access_filter) row-level gate");
       });
 
-      it("builds the v1 colocated annotated join its own table, apart from the refused plain join's, and serves it", () => {
+      it("builds the v1 database annotated join its own table, apart from the refused plain join's, and serves it", () => {
          // One build SQL, two `name=`s: two tables (foldDistinctTableNames),
          // so the plain join's refusal is its own. Every caller's answer
          // equals live (the matrix above).

@@ -5,13 +5,13 @@
  * R4 for rollup cases the other specs do not reach, each answered against
  * live and, where it must be, from the rollup:
  *
- *  - join-to-rollup through a v1 `#@ preaggregate`, colocated and in a
+ *  - join-to-rollup through a v1 `#@ preaggregate`, database and in a
  *    `storage=` destination beside the joining source;
  *  - a rollup on a zoned source read through a join from a source in the
  *    same zone, the one reader a zoned rollup has (v1 and v2);
  *  - the column types a rollup stores (v1 and v2): a BIGINT partial past
  *    2^53, a TIMESTAMPTZ grain, a DECIMAL partial and grain; all exact,
- *    colocated and in a `storage=` destination.
+ *    database and in a `storage=` destination.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";

@@ -11,7 +11,7 @@
  * package_case.ts for the four goldens it writes). The corpus:
  *
  *  - `conformance/`: every conformance fixture shape (ms2data/service#7098),
- *    in each variant it renders (`storage`, `colocated`, `materialize`);
+ *    in each variant it renders (`storage`, `database`, `materialize`);
  *  - `features/`: one package per feature the fixture does not reach
  *    (feature_shapes.ts): pair tables, hidden fields, given terms, rolling
  *    windows, extension tables, rollups, persisted views, gates;
@@ -85,8 +85,8 @@ function readTree(dir: string): Record<string, string> {
 function conformanceCases(): GoldenCase[] {
    const out: GoldenCase[] = [];
    for (const shape of SHAPES) {
-      // The colocated `#(materialize)` variant is checked against live by the
-      // conformance specs; its plan and build text are the colocated v1
+      // The database `#(materialize)` variant is checked against live by the
+      // conformance specs; its plan and build text are the database v1
       // variant's and the `materialize` variant's, so it adds no golden.
       for (const variant of (shape.variants ?? VARIANTS).filter(
          (v) => v !== "materialize_database",

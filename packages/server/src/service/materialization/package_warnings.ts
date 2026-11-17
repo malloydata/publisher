@@ -124,7 +124,7 @@ export function annotationFindingWarnings(
  */
 export function repeatedJoinOneKeyWarnings(
    plan: BuildPlan | null,
-   colocatedEntries: FreshnessManifest | undefined,
+   databaseEntries: FreshnessManifest | undefined,
    storageBindings: readonly Binding[],
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
@@ -138,7 +138,7 @@ export function repeatedJoinOneKeyWarnings(
    // join_one keyed on the rollup's grain. A stored rollup's rides on its
    // binding, once per table.
    const checks = new Map<string, { keyColumn?: string; unique?: boolean }>(
-      Object.entries(colocatedEntries ?? {}).flatMap(([id, entry]) =>
+      Object.entries(databaseEntries ?? {}).flatMap(([id, entry]) =>
          entry.keyUniqueness ? [[id, entry.keyUniqueness]] : [],
       ),
    );
@@ -471,7 +471,7 @@ export function storedColumnTypeWarnings(
 }
 
 /**
- * Warnings for colocated tables bound with no captured warehouse type for a
+ * Warnings for database tables bound with no captured warehouse type for a
  * big-integer column, one per source (by sourceID).
  */
 export function nativeSchemaWarnings(
@@ -506,7 +506,7 @@ export function nativeSchemaWarnings(
 /**
  * The publish warnings a serve verdict carries: `unreachable`, and the
  * deployment facts (a `storage=` destination the environment does not
- * configure, a colocated source on a connection that cannot create tables).
+ * configure, a database source on a connection that cannot create tables).
  * Unservable, not malformed: the source serves live, and a deployment warning
  * clears once the deployment changes, with no reload.
  */
@@ -638,7 +638,7 @@ function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
       );
    }
    return (
-      "This source's colocated table is bound with no captured warehouse " +
+      "This source's database table is bound with no captured warehouse " +
       "type for its big-integer columns (its manifest entry records none): " +
       `${parts.join("; ")}. The next full rebuild captures the types.`
    );
@@ -701,12 +701,12 @@ function servedCopyProblemMessage(
             (inlinedButKept
                ? "fix what keeps the inlined join from being answered from its stored columns (the warning on " +
                  "this join says what), materialize the joined source into the same destination, or keep this " +
-                 "source colocated."
+                 "source database."
                : takesInline
                  ? "inline the join (inline=), materialize the joined source into the same destination, or keep " +
-                   "this source colocated."
+                   "this source database."
                  : // `#@ persist` takes no `inline=`.
-                   "materialize the joined source into the same destination, or keep this source colocated.")
+                   "materialize the joined source into the same destination, or keep this source database.")
          );
       case "inline_join_kept":
          return (

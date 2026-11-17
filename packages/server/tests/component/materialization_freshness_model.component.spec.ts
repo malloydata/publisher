@@ -3,7 +3,7 @@
 
 /**
  * One freshness model: `freshness.window=` and `freshness.fallback=` mean the
- * same thing on `#@ persist`, `#(materialize)` and `#(preaggregate)`, colocated
+ * same thing on `#@ persist`, `#(materialize)` and `#(preaggregate)`, database
  * and `storage=`, built by a standalone run. End to end through a real
  * Environment and MaterializationService:
  *
@@ -147,8 +147,8 @@ describe.skipIf(process.platform === "win32")(
       const spies: { mockRestore(): void }[] = [];
       const catalogFile = () => path.join(lakeDir, "catalog.ducklake");
       const PACKAGES: { name: string; tier: Tier; fallback: Fallback }[] = [
-         { name: "colocated_live", tier: "database", fallback: "live" },
-         { name: "colocated_ok", tier: "database", fallback: "stale_ok" },
+         { name: "database_live", tier: "database", fallback: "live" },
+         { name: "database_ok", tier: "database", fallback: "stale_ok" },
          { name: "storage_live", tier: "storage", fallback: "live" },
          { name: "storage_ok", tier: "storage", fallback: "stale_ok" },
       ];
@@ -478,12 +478,12 @@ describe.skipIf(process.platform === "win32")(
 
       it("stamps nothing on a host's run: the host's manifest decides", async () => {
          const pkg = await env.getPackage(
-            parsePackageName("colocated_live"),
+            parsePackageName("database_live"),
             false,
          );
          const sources = Object.values(pkg.getBuildPlan()?.sources ?? {});
          expect(sources.length).toBe(3);
-         const m = await build("colocated_live", {
+         const m = await build("database_live", {
             buildInstructions: sources.map((s) => ({
                sourceEntityId: s.sourceEntityId,
                materializedTableId: `host-${s.name}`,

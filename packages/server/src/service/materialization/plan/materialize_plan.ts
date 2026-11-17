@@ -1899,7 +1899,7 @@ function pairLayoutOf(
       });
       // A pair table's delta replaces whole parents in DuckDB only
       // (pairDeltaStatements): the target of every `storage=` table, and of a
-      // colocated one in a DuckDB warehouse. A colocated one anywhere else is
+      // database one in a DuckDB warehouse. A database one anywhere else is
       // rebuilt in full every refresh, which the package says.
       if (
          "watermark" in incremental &&
@@ -1908,7 +1908,7 @@ function pairLayoutOf(
       ) {
          incremental = {
             fullRefresh:
-               `its table is colocated in its source's warehouse (dialect ` +
+               `its table is in its source's warehouse (dialect ` +
                `${String(def.dialect)}), and a pair table's delta is applied only in DuckDB ` +
                `(a \`storage=\` destination, or a DuckDB warehouse); declare ` +
                `storage= to refresh it incrementally`,
@@ -1949,7 +1949,7 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key"];
  * in the same file (the build copy re-roots it in that file's text; one in
  * another file is the companion compiler's, `crossFileEntries`), as is
  * every declaration between them (`path`). Both must be on one tier (both
- * colocated, or both `storage=` the same destination), carry no incremental
+ * database, or both `storage=` the same destination), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
  * `extend` re-applies that term, which would scope the extension's build to
  * one caller) and no current-time `where:` its build leaves out (the
@@ -1996,7 +1996,7 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
 /**
  * Whether an extension's plan may build over its parent's build source
  * (P10), whichever file declares the parent: both on one tier (both
- * colocated, whose build reads the parent's build source in its own
+ * database, whose build reads the parent's build source in its own
  * warehouse, or one storage destination, whose build reads the parent's
  * table there, see `overStored`), neither incremental, neither a table of
  * several inlined paths, the parent no pair table, and the parent with no

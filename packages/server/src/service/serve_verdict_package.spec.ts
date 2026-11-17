@@ -280,7 +280,7 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
       }
    });
 
-   it("follows a bind: a colocated source serves once its table is bound", async () => {
+   it("follows a bind: a database source serves once its table is bound", async () => {
       loaded = await loadTempPackage({ "orders.malloy": ORDERS });
       const plan = loaded.pkg.getBuildPlan();
       const orders = Object.values(plan?.sources ?? {}).find(
@@ -288,7 +288,7 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
       );
       expect(orders).toBeDefined();
       loaded.pkg.materialization().bind({
-         colocated: {
+         database: {
             [orders!.sourceEntityId]: { tableName: "orders_t" },
          },
       });

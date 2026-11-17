@@ -28,7 +28,7 @@ import { errMessage } from "../../utils";
 import type { Model } from "../model";
 import {
    type BuildPlanPackage,
-   type ColocatedSourceEligibility,
+   type DatabaseSourceEligibility,
    type RefusalNotices,
    type RefusedRollup,
    type SourceEligibility,
@@ -93,9 +93,8 @@ export class PlanLifecycle {
     * answer must not read as consent.
     */
    sourceEligibility: SourceEligibility | undefined = undefined;
-   /** The colocated analogue, keyed by sourceEntityId. Same "undefined refuses" rule. */
-   colocatedSourceEligibility: ColocatedSourceEligibility | undefined =
-      undefined;
+   /** The database analogue, keyed by sourceEntityId. Same "undefined refuses" rule. */
+   databaseSourceEligibility: DatabaseSourceEligibility | undefined = undefined;
    /**
     * Incremental-refresh gate inputs, resolved at compile because the rules
     * read the compiled schema, which the wire plan lacks. Empty when the plan
@@ -117,8 +116,8 @@ export class PlanLifecycle {
    private servingPlanWhileUnavailable: BuildPlan | null = null;
    /**
     * Connections edited since the plan was last derived. A failed
-    * re-derivation keeps colocated eligibility only for sources on other
-    * connections: a colocated table lives in, and is read through, its
+    * re-derivation keeps database eligibility only for sources on other
+    * connections: a database table lives in, and is read through, its
     * connection, so one the edit changed may now be a different warehouse.
     */
    private connectionsChangedSinceDerived = new Set<string>();
@@ -154,7 +153,7 @@ export class PlanLifecycle {
     * it here recompiles every model on this thread, so that happens only when
     * the worker left it at its soft deadline. Best-effort: a failure is logged
     * and the package serves without a plan, both eligibilities unknown, which
-    * refuses every storage AND colocated serve binding until a load succeeds.
+    * refuses every storage AND database serve binding until a load succeeds.
     *
     * Returns how long it took, or undefined when it failed.
     */
@@ -196,7 +195,7 @@ export class PlanLifecycle {
          this.servingPlanWhileUnavailable = null;
          this.annotationFindings = outcome.annotationFindings;
          this.sourceEligibility = outcome.sourceEligibility;
-         this.colocatedSourceEligibility = outcome.colocatedSourceEligibility;
+         this.databaseSourceEligibility = outcome.databaseSourceEligibility;
          this.buildConnectionNames = new Set(outcome.buildConnectionNames);
          // A persisted view's plan entry is its generated build source; its
          // findings name the author's view and the source it is declared on.
@@ -234,7 +233,7 @@ export class PlanLifecycle {
          // (build_plan_connection_refresh.spec.ts).
          this.buildPlan = null;
          this.sourceEligibility = undefined;
-         this.colocatedSourceEligibility = undefined;
+         this.databaseSourceEligibility = undefined;
          this.incrementalPolicySources = [];
          this.rollupsKeepingGates = new Set();
          this.refusedRollups = {};
@@ -309,13 +308,13 @@ export class PlanLifecycle {
          const seq = this.staleSeq;
          // A failed re-derivation keeps what serving reads from the last good
          // plan: storage eligibility is keyed by name and does not move with
-         // connection config, and colocated eligibility only admits addresses
+         // connection config, and database eligibility only admits addresses
          // that plan computed. Only run creation is refused (409) until a
          // retry succeeds.
          const lastGoodPlan = this.servingPlan();
          const lastGood = {
             sourceEligibility: this.sourceEligibility,
-            colocatedSourceEligibility: this.colocatedSourceEligibility,
+            databaseSourceEligibility: this.databaseSourceEligibility,
             incrementalPolicySources: this.incrementalPolicySources,
             buildConnectionNames: this.buildConnectionNames,
             compilerKeys: this.compilerKeys,
@@ -365,8 +364,8 @@ export class PlanLifecycle {
             this.connectionsChangedSinceDerived.clear();
          } else if (lastGood.sourceEligibility !== undefined) {
             Object.assign(this, lastGood);
-            this.colocatedSourceEligibility = withoutChangedConnections(
-               lastGood.colocatedSourceEligibility,
+            this.databaseSourceEligibility = withoutChangedConnections(
+               lastGood.databaseSourceEligibility,
                lastGoodPlan,
                this.connectionsChangedSinceDerived,
             );
@@ -451,16 +450,16 @@ function failedPlan(error: string): LoadPackageOutcome["buildPlan"] {
 }
 
 /**
- * Colocated eligibility from the last good plan, less every address a source on
+ * Database eligibility from the last good plan, less every address a source on
  * a changed connection builds: those tables were built through the connection
  * as it was, and are read through it as it is now. Refused with a reason, so
  * the bind's log says why they serve live until the plan is re-derived.
  */
 function withoutChangedConnections(
-   eligibility: ColocatedSourceEligibility | undefined,
+   eligibility: DatabaseSourceEligibility | undefined,
    plan: BuildPlan | null,
    changed: ReadonlySet<string>,
-): ColocatedSourceEligibility | undefined {
+): DatabaseSourceEligibility | undefined {
    if (!eligibility || changed.size === 0) return eligibility;
    const dropped = new Set<string>();
    for (const source of Object.values(plan?.sources ?? {})) {

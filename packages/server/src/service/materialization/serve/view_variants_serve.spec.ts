@@ -16,7 +16,7 @@ import { PersistedViewServe } from "./view_variants";
 
 /**
  * The persisted view leg against a real compile: which query texts call a
- * persisted view, which table it would read (colocated or `storage=`, built,
+ * persisted view, which table it would read (database or `storage=`, built,
  * stale or fresh), and each way an attempt declines or answers from the
  * stored result. No query runs; an answer is checked by the SQL it compiles.
  */
@@ -63,7 +63,7 @@ async function declineOf(promise: Promise<unknown>): Promise<LegDecline> {
    return err as LegDecline;
 }
 
-describe("PersistedViewServe (colocated)", () => {
+describe("PersistedViewServe (database)", () => {
    let f: PersistedResultFixture;
    let tableId: string;
    let built: Record<string, { tableName: string }>;

@@ -5,7 +5,7 @@
  * R4 for a persisted view's annotations: a `#@ persist` view's answer returns
  * each output column with the annotations live's does (`#(classification)`,
  * `#(doc)`, render tags such as `# currency` and `# label`, a multi-line
- * `#|`…`|#` note), colocated and
+ * `#|`…`|#` note), database and
  * `storage=`, for a column, a computed dimension, a timeframe, a measure and
  * a nest; and the access record reads the same fields as live.
  */
@@ -106,7 +106,7 @@ describe.each([
    ],
 ] as const)(
    "R4: a persisted view %s answers with live's annotations",
-   (_label, persist, colocated) => {
+   (_label, persist, database) => {
       let fixture: R4Fixture;
       useMaterializationOn();
       beforeAll(async () => {
@@ -114,9 +114,9 @@ describe.each([
             files: { "m.malloy": model(persist) },
             seedSql,
             persistedViews: true,
-            ...(colocated
+            ...(database
                ? {
-                    colocated: [
+                    database: [
                        "orders__by_month__view",
                        "orders__by_buyer__view",
                        "orders__nested__view",
@@ -233,9 +233,9 @@ describe.each([
          });
       }
 
-      // A nested view is stored colocated only (a destination holds no nest),
+      // A nested view is stored in the database tier only (a destination holds no nest),
       // and answered live: its nest's stored rows cannot be rebuilt exactly.
-      it.if(colocated)(
+      it.if(database)(
          "answers a nested view live, with a nest's columns and their annotations",
          async () => {
             const { live, served } = await both("run: orders -> nested");

@@ -311,7 +311,7 @@ describe("one table per stored projection", () => {
       expect(results[1].addresses).toEqual(results[0].addresses);
    });
 
-   it("leaves a colocated source of the build on the address it had", () => {
+   it("leaves a database source of the build on the address it had", () => {
       const built = withStorage(() =>
          tables(
             derive(

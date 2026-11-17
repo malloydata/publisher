@@ -9,7 +9,7 @@
  * filtered one and boolean ones among them, NULL included), dimensions,
  * timeframes, a calculation, a `having:`, a multi-stage view and a query that
  * goes on past the view are each compared, through the real package path, for
- * a `storage=` table and a colocated one. Before the view leg regrouped the
+ * a `storage=` table and a database one. Before the view leg regrouped the
  * stored rows, every measure came back a dimension.
  *
  * A view whose stored rows cannot be regrouped into exactly themselves (no

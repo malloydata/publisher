@@ -78,7 +78,7 @@ listed with the step that removes it in
 | Term              | Meaning                                                                                                                     |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Declaration       | What an author wrote on one source to ask for a table                                                                       |
-| Tier              | Where a table lives: `colocated` (the source's own warehouse) or `storage` (a configured storage destination). Nothing else |
+| Tier              | Where a table lives: `database` (the source's own warehouse) or `storage` (a configured storage destination). Nothing else |
 | Kind              | What a table holds: `persist`, `materialize`, `pair`, `rollup`, `view`                                                      |
 | Address           | A stored table's identity: source entity, tier, destination. A physical name is never part of it                            |
 | Refusal           | Plan decided not to build a declaration (wire: `refusedSources`)                                                            |

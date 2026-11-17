@@ -19,7 +19,7 @@
  *
  * Each runs against a `storage=` table built as a build casts it, one stored
  * uncast (as a build stores it when it declines or fails a cast), and a
- * colocated table as the control.
+ * database table as the control.
  *
  * Query-shaped `#@ persist` sources answered by the served copy are compared
  * alongside. Its big integers were already exact, and its TIMESTAMP_NS already
@@ -220,7 +220,7 @@ interface Case {
    declinedBecause?: Partial<Record<Tier, string>>;
    /**
     * The served copy's skip reason, when it declines a `storage=` table (a
-    * colocated one's path report does not list the served copy's skip).
+    * database one's path report does not list the served copy's skip).
     */
    servedSkipReason?: string;
 }

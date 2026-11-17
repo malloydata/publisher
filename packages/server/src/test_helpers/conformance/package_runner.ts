@@ -4,7 +4,7 @@
 /**
  * The package-case runner: a synthetic package (or a real package snapshot)
  * goes through the real production path (Environment, Package.create, the
- * package's own build plan, its colocated manifest bind and its `storage=`
+ * package's own build plan, its database manifest bind and its `storage=`
  * bind), and every query runs live first, then served with the materialize
  * switch off and on ({@link runPackageCase}). Three reporters read what it
  * produces, each comparing through `answer_difference.ts`:
@@ -23,7 +23,7 @@
  * another file, two models declaring one name, and the serve verdicts.
  */
 
-import { capturedNativeSchema } from "../../service/materialization/run/colocated_native_types";
+import { capturedNativeSchema } from "../../service/materialization/run/database_native_types";
 import {
    pairLeafKeyChecksOf,
    runRollupKeyCheck,
@@ -218,7 +218,7 @@ export interface LoadedFixture {
    /**
     * Bind the built tables again under the settings installed now, and settle
     * every model's served copy: the bindings a switch read at bind (the v1
-    * cutover's colocated tables) follow it.
+    * cutover's database tables) follow it.
     */
    rebind(): Promise<void>;
    run(
@@ -380,7 +380,7 @@ export async function loadFixture(
       root,
       lake,
       async bind(options: BindOptions = {}) {
-         const { built, buildErrors, colocated, stored } = await buildAll(
+         const { built, buildErrors, database, stored } = await buildAll(
             pkg,
             lake,
             options,
@@ -395,7 +395,7 @@ export async function loadFixture(
          };
          await settle();
          const tables: Record<string, string> = {};
-         for (const [id, e] of Object.entries(colocated)) {
+         for (const [id, e] of Object.entries(database)) {
             tables[id] = String(e.tableName);
          }
          for (const [id, e] of Object.entries(stored)) {
@@ -409,8 +409,8 @@ export async function loadFixture(
             stored,
             async rebind() {
                // Empty first, so the package derives every binding afresh.
-               pkg.materialization().bind({ colocated: {} });
-               pkg.materialization().bind({ colocated: colocated as never });
+               pkg.materialization().bind({ database: {} });
+               pkg.materialization().bind({ database: database as never });
                pkg.materialization().bind({ storage: stored as never });
                await settle();
             },
@@ -546,7 +546,7 @@ export async function runPackageCase<Q extends CaseQuery, S>(
 
 /**
  * Build every planned table as a build would, one per content address:
- * colocated in the origin warehouse (`duckdb`), `storage=` into the lake. A
+ * in the origin warehouse (`duckdb`), `storage=` into the lake. A
  * `storage=` table is computed on the origin and copied through Parquet, since
  * the origin reads the package's files by relative path and the lake cannot.
  */
@@ -563,7 +563,7 @@ async function buildAll(
 ): Promise<{
    built: LoadedFixture["built"];
    buildErrors: Record<string, string>;
-   colocated: Record<string, Record<string, unknown>>;
+   database: Record<string, Record<string, unknown>>;
    stored: Record<string, Record<string, unknown>>;
 }> {
    // Each source is built on its own connection, a DuckDB one: the
@@ -587,7 +587,7 @@ async function buildAll(
       }
       return warehouse;
    };
-   const colocated: Record<string, Record<string, unknown>> = {};
+   const database: Record<string, Record<string, unknown>> = {};
    const stored: Record<string, Record<string, unknown>> = {};
    const built: LoadedFixture["built"] = [];
    const buildErrors: Record<string, string> = {};
@@ -728,19 +728,19 @@ async function buildAll(
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
-               const database = await databaseFor(entry.connectionName);
-               await database.runSQL(
+               const origin = await databaseFor(entry.connectionName);
+               await origin.runSQL(
                   `CREATE OR REPLACE TABLE ${quoted} AS ${entry.sql}`,
                );
-               // The warehouse's own column types, captured as a colocated
-               // build captures them (colocated_native_types.ts).
+               // The warehouse's own column types, captured as a database
+               // build captures them (database_native_types.ts).
                const nativeSchema = await capturedNativeSchema({
                   run: (sql) => warehouse.runSQL(sql, { rowLimit: 10_000 }),
                   physicalTableName: table,
                   dialect: warehouse.dialectName,
                   sourceName: entry.name,
                });
-               colocated[entry.sourceEntityId] = {
+               database[entry.sourceEntityId] = {
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",
                   ...(nativeSchema ? { nativeSchema } : {}),
@@ -756,9 +756,9 @@ async function buildAll(
    } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
    }
-   pkg.materialization().bind({ colocated: colocated as never });
+   pkg.materialization().bind({ database: database as never });
    pkg.materialization().bind({ storage: stored as never });
-   return { built, buildErrors, colocated, stored };
+   return { built, buildErrors, database, stored };
 }
 
 /**

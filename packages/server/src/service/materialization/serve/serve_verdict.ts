@@ -38,8 +38,8 @@ const MATERIALIZATION_DESTINATION_MISSING_CODE =
    "materialization-destination-missing";
 
 /**
- * The `code` of the package warning for a colocated source whose connection
- * cannot hold a table (P13): a colocated build writes into that connection, so
+ * The `code` of the package warning for a database source whose connection
+ * cannot hold a table (P13): a database build writes into that connection, so
  * the source serves live.
  */
 const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
@@ -75,7 +75,7 @@ type ServeVerdictReason =
    | "shadowed"
    /** `storage=` names a destination the environment does not configure (P13). */
    | "destination_missing"
-   /** Colocated, on a connection whose type creates no tables (P13). */
+   /** Database, on a connection whose type creates no tables (P13). */
    | "connection_cannot_hold_table"
    /**
     * A `#(materialize)` source, which only the served copy reads: the served
@@ -160,7 +160,7 @@ export interface ServeVerdictFacts {
     * Whether a query let past a gated entry point may be answered from this
     * source's table, as the gate policy (`domain/gate_policy.ts`) decides it
     * for the router: the served copy over a table it keeps the gate on (a
-    * colocated one, a `storage=` one admitted past its own gate, any under
+    * database one, a `storage=` one admitted past its own gate, any under
     * `materialize.gatedSources`), or a rollup whose variant keeps its base's
     * gates.
     */
@@ -175,10 +175,10 @@ export interface ServeVerdictFacts {
       source: PersistSourcePlan,
       tier: "database" | "storage",
    ): string | undefined;
-   /** Colocated: the plan's sourceEntityIds the bound manifest has a table for. */
+   /** Database: the plan's sourceEntityIds the bound manifest has a table for. */
    boundEntityIds: ReadonlySet<string>;
    /**
-    * Colocated: the bound sourceEntityIds still within their freshness window
+    * Database: the bound sourceEntityIds still within their freshness window
     * (or whose fallback serves stale). Absent: every bound one is.
     */
    freshEntityIds?: ReadonlySet<string>;
@@ -351,7 +351,7 @@ function verdictFor(
    }
 
    // `#(materialize)` is served by the served copy alone, on either tier
-   // (never through the colocated build manifest, which Malloy never
+   // (never through the database build manifest, which Malloy never
    // substitutes for it), so the served copy decides its verdict.
    const materialized = facts.materialize(sourceID);
 
@@ -368,10 +368,10 @@ function verdictFor(
             `${origin === "preaggregate" ? "a rollup" : tier === "storage" ? "the storage tier" : "this table"} cannot keep ` +
             `yet, so every query that reaches it is answered live.`,
          [
-            // A colocated table already follows the first fix: only the
+            // A database table already follows the first fix: only the
             // gate's shape can change there.
             tier === "storage"
-               ? "Materialize the source without storage= (colocated), where the gate is kept."
+               ? "Materialize the source without storage= (database), where the gate is kept."
                : "Make the gate the entry point's own row-level gate, which a table in the source's database keeps.",
             "Or publish an ungated entry point over it, for the queries that need no gate.",
          ],
@@ -482,7 +482,7 @@ function verdictSubjectOf(
 
 /**
  * A deployment fact (P13) that sends the source live: a `storage=`
- * destination the environment does not configure, or a colocated connection
+ * destination the environment does not configure, or a database connection
  * that cannot hold a table. Undefined when neither does.
  */
 function deploymentVerdict(

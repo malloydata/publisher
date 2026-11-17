@@ -72,10 +72,10 @@ function judged(outcome: BuildPlanOutcome) {
          refused: sorted(Object.keys(outcome.sourceEligibility.refused)),
          gateKept: sorted(outcome.sourceEligibility.gateKept ?? []),
       },
-      colocatedSourceEligibility: {
-         eligible: sorted(outcome.colocatedSourceEligibility.eligibleEntityIds),
+      databaseSourceEligibility: {
+         eligible: sorted(outcome.databaseSourceEligibility.eligibleEntityIds),
          refused: sorted(
-            Object.keys(outcome.colocatedSourceEligibility.refused),
+            Object.keys(outcome.databaseSourceEligibility.refused),
          ),
       },
       compilerKeys: Object.entries(outcome.compilerKeys).sort(),

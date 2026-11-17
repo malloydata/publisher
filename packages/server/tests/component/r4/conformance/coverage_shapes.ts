@@ -6,7 +6,7 @@
  * through named views and extensions, rollups over typed and zoned bases,
  * persisted sources over a zoned base, a rolling window under `#@ persist`, joins declared on or read by a
  * persisted source, persisted views over persisted and materialized sources,
- * and `#(materialize)` over colocated and `storage=` sources joined in one
+ * and `#(materialize)` over database and `storage=` sources joined in one
  * model. Each is served like every other shape (conformance.component.spec.ts):
  * every answer equal to live, at the tier it names.
  */
@@ -63,7 +63,7 @@ source: orders_ext is orders extend {
    },
    {
       name: "rollup over a base with typed columns",
-      about: "A colocated rollup over a base whose grain is a DECIMAL or a TIMESTAMPTZ, whose measures sum a BIGINT past 2^53 and a DECIMAL, and which carries STRUCT and MAP columns outside the grain. In a storage= destination the BIGINT sum comes back rounded and the TIMESTAMPTZ grain as a timestamp: known gaps, in r4/rollup_coverage. An array column is the next shape: v1 refuses it as a fan-out join",
+      about: "A database rollup over a base whose grain is a DECIMAL or a TIMESTAMPTZ, whose measures sum a BIGINT past 2^53 and a DECIMAL, and which carries STRUCT and MAP columns outside the grain. In a storage= destination the BIGINT sum comes back rounded and the TIMESTAMPTZ grain as a timestamp: known gaps, in r4/rollup_coverage. An array column is the next shape: v1 refuses it as a fan-out join",
       variants: ["database"],
       files: {
          "m.malloy": `${HEADER}
@@ -371,7 +371,7 @@ source: reader is orders_raw extend {
             name: "through a join: a truncation of the inherited-zone column",
             malloy:
                "run: reader -> { group_by: zd is z.created_at.day; aggregate: n is count() }",
-            // Colocated, the join is on one connection and the truncation is
+            // Database, the join is on one connection and the truncation is
             // computed in the reader's zone over the stored instant; stored,
             // the joined table is on another connection.
             expect: { storage: "live", materialize: "live" },
@@ -464,14 +464,14 @@ source: pv_base is orders_raw -> {
       ],
    },
    {
-      name: "materialize: colocated and storage= in one model",
-      about: "A colocated #(materialize) dimension source and a storage= #(materialize) fact source in one model, each alone and joined (fixed annotations, not rendered per variant)",
+      name: "materialize: database and storage= in one model",
+      about: "A database #(materialize) dimension source and a storage= #(materialize) fact source in one model, each alone and joined (fixed annotations, not rendered per variant)",
       variants: ["materialize"],
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
 
-#(materialize) name="mz_dim_colocated"
+#(materialize) name="mz_dim_database"
 source: mz_dim is customers_raw extend {
   measure: customers is count()
 }
@@ -491,7 +491,7 @@ source: mz_joined is mz_fact extend {
       },
       queries: [
          {
-            name: "the colocated source alone",
+            name: "the database source alone",
             malloy:
                "run: mz_dim -> { group_by: segment; aggregate: customers }",
             expect: "database",
@@ -501,7 +501,7 @@ source: mz_joined is mz_fact extend {
             malloy: "run: mz_fact -> { group_by: region; aggregate: total }",
          },
          {
-            name: "the storage= source joined to the colocated one",
+            name: "the storage= source joined to the database one",
             model: "joined.malloy",
             malloy:
                "run: mz_joined -> { group_by: c.segment; aggregate: total }",

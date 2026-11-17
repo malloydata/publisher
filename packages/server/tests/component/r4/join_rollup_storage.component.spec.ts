@@ -212,7 +212,7 @@ const SERVED = [
       "run: flights -> { group_by: carrier; aggregate: crew.crew_count }",
    ],
    // Known limitation 29: `crew` holds each flight at most once, and its
-   // rollup's build checked it over the rows it read, as a colocated one's
+   // rollup's build checked it over the rows it read, as a database one's
    // does, so the parent's own aggregates read the join_one as live does.
    [
       "the parent's own aggregates beside a join_one checked unique",
@@ -826,7 +826,7 @@ describe("R4: join-to-rollup in a storage destination, over a stored query sourc
 });
 
 /**
- * The joined source's own primary key NULL in the data (see the colocated
+ * The joined source's own primary key NULL in the data (see the database
  * case in join_rollup.component.spec.ts): live counts and sums `segments`
  * over the rows whose `seg_id` is not NULL, the rollup in the destination
  * over every row. The rollup's build checks the key on the base's

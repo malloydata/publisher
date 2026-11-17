@@ -860,7 +860,7 @@ describe("BuildPlan.refusedSources", () => {
    afterEach(() => packages.cleanup());
 
    it(
-      "refuses a colocated source whose table a refused source shares, with that source's reason",
+      "refuses a database source whose table a refused source shares, with that source's reason",
       async () => {
          // `ok` and `leaky` compile to the same SQL, so one table (`ok` names
          // none, and `leaky`'s route, `name=` included, is dropped, so neither
@@ -1009,11 +1009,11 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
    );
 
    it(
-      "does NOT report a colocated gated source as refused once the row-level relaxation admits it (the storage-rules SourceEligibility.refused trap)",
+      "does NOT report a database gated source as refused once the row-level relaxation admits it (the storage-rules SourceEligibility.refused trap)",
       async () => {
          // Plain `#@ persist` (no `storage=`): the entry point's own
          // `#(access_filter)` gate classifies row_level + attributed, so the
-         // colocated relaxation admits it. The OLD `SourceEligibility.refused`
+         // database relaxation admits it. The OLD `SourceEligibility.refused`
          // (computed with the unconditional storage-tier assert) would report
          // this same source as `refused: authorize` — refusedSources must not
          // repeat that mistake now that it can actually build.

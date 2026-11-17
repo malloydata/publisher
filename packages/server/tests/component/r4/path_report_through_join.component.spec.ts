@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Under the v1 cutover's default, a query on a colocated
+ * Under the v1 cutover's default, a query on a database
  * persisted source through its join to another persisted source is answered
  * by the served copy from both tables, and the path report must name the
  * queried source's own table. It named the first table the served copy read,

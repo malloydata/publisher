@@ -57,7 +57,7 @@ async function outcomeOf(
    };
 }
 
-describe("RollupVariantServe (colocated)", () => {
+describe("RollupVariantServe (database)", () => {
    let f: PersistedResultFixture;
    let tableId: string;
    beforeAll(async () => {

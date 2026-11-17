@@ -255,7 +255,7 @@ describe("#(preaggregate) access filters (A4)", () => {
 });
 
 describe("#(preaggregate) over a gated source with gated sources off (G3 for rollups)", () => {
-   it("plans a colocated rollup over the base's own gate when its grain keeps the gate's field, and no other", async () => {
+   it("plans a database rollup over the base's own gate when its grain keeps the gate's field, and no other", async () => {
       expect(rollupGateEnforcedAtRead({ variant: true, baseGated: true })).toBe(
          false,
       );
@@ -398,7 +398,7 @@ describe("a storage= rollup whose grain no stored read declares", () => {
       expect(refused.map((r) => why(r))).toEqual(["unreadable_grain"]);
    });
 
-   it("plans a UUID grain in storage, and every one of them colocated", async () => {
+   it("plans a UUID grain in storage, and every one of them database", async () => {
       expect((await plan(rollup("u", ' storage="lake"'))).plans).toHaveLength(
          1,
       );
@@ -746,7 +746,7 @@ source: orders is ${ROWS} extend {
 }`,
    });
 
-   it("plans a colocated rollup whose grain keeps the gate's field, read at its gate", async () => {
+   it("plans a database rollup whose grain keeps the gate's field, read at its gate", async () => {
       const { plans, refused } = await plan(placed(""));
       expect(refused).toEqual([]);
       expect(plans).toHaveLength(1);

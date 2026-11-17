@@ -350,8 +350,8 @@ source: p is raw -> { select: * } extend {
       }
    });
 
-   it("refuses the join when the grant table is persisted colocated, without storage=", async () => {
-      // Only a storage binding is on the serve shape, so a colocated grant table
+   it("refuses the join when the grant table is persisted in the database tier, without storage=", async () => {
+      // Only a storage binding is on the serve shape, so a database grant table
       // leaves the join nothing to be re-emitted against.
       const source = await persistSourceWithGrants(
          `#@ persist name="colo_grants"

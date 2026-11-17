@@ -26,7 +26,7 @@ source: orders is shared_duckdb.sql("SELECT 1 AS id, 'east' AS region")
 source: by_region is orders -> { group_by: region; aggregate: n is count() }
 
 #@ persist name="database"
-source: colocated is orders -> { group_by: region }
+source: database is orders -> { group_by: region }
 `;
 
 /** A destination of the one declarable type; nothing connects to it at load. */
@@ -63,7 +63,7 @@ afterEach(async () => {
 });
 
 describe("a storage= source on an environment DuckDB connection", () => {
-   it("is refused at plan, warns, and answers live; its colocated sibling plans", async () => {
+   it("is refused at plan, warns, and answers live; its database sibling plans", async () => {
       const envPath = path.join(rootDir, "env");
       writePackageFiles(
          path.join(envPath, "pkg"),
@@ -87,7 +87,7 @@ describe("a storage= source on an environment DuckDB connection", () => {
 
       const plan = pkg.getBuildPlan();
       expect(Object.values(plan?.sources ?? {}).map((s) => s.name)).toEqual([
-         "colocated",
+         "database",
       ]);
       expect(
          Object.values(plan?.refusedSources ?? {}).map((r) => [

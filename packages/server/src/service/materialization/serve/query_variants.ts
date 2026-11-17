@@ -193,12 +193,12 @@ export class PersistedQueryServe {
    ): (ViewTable & { kind: "query" }) | undefined {
       const called = this.calledQuery(queryString);
       if (!called) return undefined;
-      const { virtualMap, quotedPath, binding, colocatedTable, ...table } =
+      const { virtualMap, quotedPath, binding, databaseTable, ...table } =
          this.views.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
       void quotedPath;
       void binding;
-      void colocatedTable;
+      void databaseTable;
       return { ...table, kind: "query" };
    }
 
@@ -287,7 +287,7 @@ export class PersistedQueryServe {
       }
       const table = this.views.tableOf(plan, args.pinned, args.buildManifest);
       if (!table.built) throw new LegDecline("query_not_built");
-      if (table.stale || (!table.virtualMap && !table.colocatedTable)) {
+      if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("query_stale");
       }
       const variant = await this.compiledVariant(plan, table);
@@ -383,7 +383,7 @@ export class PersistedQueryServe {
                     // resolve too.
                     alsoExported: [inlineTarget],
                  },
-         colocatedAlias: `${plan.buildSourceName}__stored`,
+         databaseAlias: `${plan.buildSourceName}__stored`,
          emit: (read) => {
             // malloy-text: the run target's own gate expressions, as the author wrote them, one per line (see gateLines)
             const gates = read.gates;
@@ -391,7 +391,7 @@ export class PersistedQueryServe {
             const zone = read.sourceTimezone;
             // The run target's own time zone: on the stored source beside the
             // timeframes a `storage=` read truncates again, on the
-            // redeclaration for a colocated table, read as built.
+            // redeclaration for a database table, read as built.
             let storedSource: string;
             let redeclaredZone = "";
             if ("typeText" in read.stored) {

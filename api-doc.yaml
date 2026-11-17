@@ -5144,7 +5144,7 @@ components:
             table is bound, but every model's source of that name is another
             source), `destination_missing` (`storage=` names a destination the
             environment does not configure), `connection_cannot_hold_table`
-            (colocated, on a connection whose type creates no tables),
+            (database, on a connection whose type creates no tables),
             `served_copy` (a `#(materialize)` source, which only the served copy
             reads: the served copy is off, or no model's served copy reads its
             table). An open set.
@@ -5338,7 +5338,7 @@ components:
             the configured manifest was not applied — not that nothing is. A
             failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
             a failed REBIND leaves the previously bound manifest in place: its
-            colocated substitutions stay compiled in, its storage serve bindings
+            database substitutions stay compiled in, its storage serve bindings
             stay installed, and `boundManifestUri`, `manifestEntryCount` and
             `storageServeBindings` all continue to describe it.
 
@@ -5366,9 +5366,9 @@ components:
           readOnly: true
           description: >-
             Server-computed, read-only: number of sourceEntityId -> physical-table
-            entries currently bound for the COLOCATED (same-connection tableName
+            entries currently bound for the DATABASE (same-connection tableName
             substitution) tier only. 0 when unbound, or when the bound manifest
-            carried no colocated entries — so a fully bound `storage=`-only
+            carried no database entries — so a fully bound `storage=`-only
             manifest reports `bound` with a count of 0. Corroborate a
             cross-connection bind with `storageServeBindings`, not this count.
 
@@ -5708,7 +5708,7 @@ components:
             `BuildPlan.refusedSources` member, carrying that gate's own message),
             a persist-target collision, and materialization-config problems that
             degrade attribution. A refusal is the one materialization finding the
-            build plan cannot also be read for: a refused `storage`/`colocated`
+            build plan cannot also be read for: a refused `storage`/`database`
             source is ABSENT from `BuildPlan.sources`, so nothing there records
             that the annotation was written at all. Discovery findings: a model
             on the package's surface whose export closure surfaces no sources or
@@ -6023,7 +6023,7 @@ components:
                   its source, `subject` the source, or a rollup's base, when
                   the plan knows the table; `warn`; see
                   docs/materialization.md).
-                  `stored-native-schema-missing`: a colocated table is bound
+                  `stored-native-schema-missing`: a database table is bound
                   with no captured warehouse type (its manifest entry's
                   `nativeSchema`) for a column whose field Malloy types as a big
                   integer. On BigQuery the column is read as `INT64`, its only
@@ -8574,9 +8574,9 @@ components:
             warehouse was not queried.
 
             `database` — served from a materialized table in the source's own
-            database (the colocated tier): a colocated `#@ persist` table Malloy substituted, a
-            colocated `#(materialize)` table the served copy read, or a
-            colocated rollup or persisted view.
+            database (the database tier): a database `#@ persist` table Malloy substituted, a
+            database `#(materialize)` table the served copy read, or a
+            database rollup or persisted view.
 
             `live_fallback` — the query DID route to storage and the store then
             failed underneath it, and the source's freshness fallback allowed it
@@ -8678,7 +8678,7 @@ components:
             Every materialized table on the queried source's chain, and every
             rollup of a source on it, that could have answered this query: the
             one that served it marked `used`, the rest `skipped` with a reason.
-            Listed as `storage=` tables, then colocated rollups, then colocated
+            Listed as `storage=` tables, then database rollups, then database
             tables nearest first, which is not the order Publisher tries them
             (a persisted view or query, then rollups coarsest first, then the
             served copy). A table
@@ -8800,7 +8800,7 @@ components:
           enum: [database, storage]
           description: >-
             Where the table that answered lives: `database`, the source's own
-            database (the colocated tier), or `storage`, a `storage=` destination. The same tier the
+            database (the database tier), or `storage`, a `storage=` destination. The same tier the
             query result's `servedFrom` reports. Absent when `kind` is `live`.
         dataAsOf:
           type: string
@@ -10711,14 +10711,14 @@ components:
         `persist-view-not-built`, `persist-query-not-built` or
         `preaggregate-not-built`) with this `message`. A `#@ persist`
         source's gate refusal is computed from the SAME tier-appropriate
-        eligibility assert the build path itself enforces (the colocated
+        eligibility assert the build path itself enforces (the database
         tier's post-relaxation admission for a proven row-level,
         fully-attributed authorize gate applies here too), so a source this
         reports as refused is refused for the tier it would actually build
         under. A `preaggregate`-tier entry can coexist with an entry of the
         same sourceID in `BuildPlan.sources`: the one tier where
         refused-and-present-in-sources is the correct, intended state, unlike
-        `storage`/`colocated` where a refusal means absence from `sources`.
+        `storage`/`database` where a refusal means absence from `sources`.
       required: [name, sourceID, tier, reason, message]
       properties:
         origin:
@@ -10838,9 +10838,9 @@ components:
             `#(materialize)` a field that is not a stored dimension);
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns);
-            `read_only_dialect` (a colocated build on a dialect that
+            `read_only_dialect` (a database build on a dialect that
             cannot create tables; SQL Server today, whose connection reports
-            `canPersist: false`); `needs_qualified_name` (a colocated table on
+            `canPersist: false`); `needs_qualified_name` (a database table on
             BigQuery, where a table needs a dataset, whose `name=` names none:
             a `#@ persist` source, a persisted view or query, a
             `#(materialize)` source, or a rollup whose own `name=` and base's
@@ -10898,7 +10898,7 @@ components:
             stored partial), and `unreadable_grain` (a `storage=` rollup
             over a DuckDB source whose grain dimension is stored as a type no
             stored read declares, a BLOB, INTERVAL, MAP or JSON, so no query
-            would read its table; colocated, it is built).
+            would read its table; database, it is built).
 
 
             Retained, no longer produced: `given` (replaced by the positional
@@ -11476,7 +11476,7 @@ components:
             declared now (a source that moved to or from `storage=` keeps its
             content address): a stored upstream is stacked on in its
             destination, and never rendered into warehouse SQL. Optional and
-            additive: a reference without it still serves a colocated upstream.
+            additive: a reference without it still serves a database upstream.
 
     BuildInstruction:
       type: object
@@ -11518,7 +11518,7 @@ components:
             `storage=` authoring axis) — an entry in the environment's
             `storageDestinations`, which is a disjoint set from `connections`.
             Absent means build into the persist source's own warehouse — the
-            default, unchanged (colocated) path. When present, the build runs
+            default, unchanged (database) path. When present, the build runs
             a native per-engine query-passthrough CTAS on a build-scoped session
             for that destination (the source computes; only results cross), and
             the manifest records the destination + captured schema so
@@ -11594,7 +11594,7 @@ components:
             physical name and its content address when `storage=` is added or
             removed (an annotation enters neither), so without this field a
             boundary measured on the stored table is indistinguishable from one
-            measured on a colocated table of the same name — and a delta computed
+            measured on a database table of the same name — and a delta computed
             from the wrong one can skip rows.
 
             A caller that has never recorded this field may omit it. An entry that
@@ -11716,7 +11716,7 @@ components:
             The persist source's own connection (the source warehouse),
             mirroring `ManifestEntry.connectionName`. Without this a failure-only
             source carries no destination discriminator at all, so a consumer
-            cannot tell a colocated failure from a `storage=` one and, lacking
+            cannot tell a database failure from a `storage=` one and, lacking
             `storageDestinationName`, would resolve a destination-scoped claim
             against the wrong key.
         storageDestinationName:
@@ -11724,7 +11724,7 @@ components:
           description: >-
             When the source was instructed to build into a `storage=`
             destination, the destination name, mirroring
-            `ManifestEntry.storageDestinationName`. Absent for a colocated
+            `ManifestEntry.storageDestinationName`. Absent for a database
             failure. A consumer computes the same destination key a successful
             build would (`storageDestinationName ?? connectionName`) whether the
             source built or failed.
@@ -11869,7 +11869,7 @@ components:
         nativeSchema:
           type: array
           description: >-
-            For a colocated entry (no `storageDestinationName`): each column of
+            For a database entry (no `storageDestinationName`): each column of
             the built table with its type as the warehouse's own catalog names it
             (`bigint`, `numeric`, `NUMBER(38,0)`, `UHUGEINT`), captured after the
             build. The served copy reads a big-integer column through a cast to
@@ -11914,7 +11914,7 @@ components:
 
             **Null is not zero**, and which paths report a figure differs.
 
-            A COLOCATED build reports one, taken from the Malloy connection's own
+            A DATABASE build reports one, taken from the Malloy connection's own
             statistics.
 
             A plain `storage=` build reports one when its warehouse read carried
@@ -11927,7 +11927,7 @@ components:
             reach its own job records also reports null; that case is counted by
             `publisher_storage_build_attribution_skipped_total`.
 
-            A COLOCATED incremental delta reports null because its statements do
+            A DATABASE incremental delta reports null because its statements do
             not run through a single call whose result reaches here. A delta
             into a `storage=` destination reports whatever its own bounded read
             reported: that read is issued through the same call a full build's
@@ -11956,7 +11956,7 @@ components:
             at least one persisted upstream was recomputed from its definition
             and inlined into this build, because its table could not be read --
             on either tier, an upstream this build neither materialized nor was
-            handed by reference; for a colocated build, an upstream that
+            handed by reference; for a database build, an upstream that
             landed in a `storage=` destination; for a `storage=` build, a
             source that reaches the warehouse through a non-persisted source,
             or whose shape does not compile in the destination.

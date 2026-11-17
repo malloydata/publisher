@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A colocated rollup over an incremental `#@ persist` base on Postgres builds
+ * A database rollup over an incremental `#@ persist` base on Postgres builds
  * from the base's stored table, and stores the rows a build from the
  * warehouse stores: after the seed, and after a delta advanced the base in
  * place.
@@ -84,7 +84,7 @@ function sorted(rows: Row[]): string[] {
 }
 
 describe.skipIf(!POSTGRES_URL)(
-   "a colocated rollup over an incremental #@ persist base",
+   "a database rollup over an incremental #@ persist base",
    () => {
       let root: string;
       let envPath: string;

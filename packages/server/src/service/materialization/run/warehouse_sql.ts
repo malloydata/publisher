@@ -5,7 +5,7 @@
  * The SQL text that differs by warehouse dialect, one family per section: the
  * string literal, the relation and view probes and the view drop, the
  * ownership probe and mark, the incremental refresh's probes and its
- * transaction around a delta, the colocated swap's transaction, the
+ * transaction around a delta, the database swap's transaction, the
  * leftover `name=` view's in-transaction replace, the native-type catalog
  * read, the read cost and the query tag.
  *
@@ -732,7 +732,7 @@ export function inOneTransaction(dialect: string, body: string[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// The colocated swap's transaction.
+// The database swap's transaction.
 // ---------------------------------------------------------------------------
 
 /**

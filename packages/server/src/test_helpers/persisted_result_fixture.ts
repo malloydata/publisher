@@ -164,7 +164,7 @@ export async function persistedResultFixture(
    };
 }
 
-/** A pin of `bindings` and colocated `entries`, now. */
+/** A pin of `bindings` and database `entries`, now. */
 export function pinnedOf(
    bindings: Binding[] = [],
    entries: FreshnessManifest = {},

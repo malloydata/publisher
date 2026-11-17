@@ -8,9 +8,9 @@
  * column is read through a faithful cast, or left out so that only a query
  * reading it answers live: every answer equals live's.
  *
- * The drift is made after the build with a real `ALTER TABLE`. A colocated
+ * The drift is made after the build with a real `ALTER TABLE`. A database
  * table's types are then read from its warehouse as a package's bind reads
- * them (`observeDatabaseColumns`), for each colocated mechanism:
+ * them (`observeDatabaseColumns`), for each database mechanism:
  * `#(materialize)`, `#@ persist` and a rollup. A `storage=` table's binding
  * carries its schema from the run that bound it, so its schema is altered
  * with it, as a run that bound the altered table would.
@@ -24,8 +24,8 @@
  * | flag   | BOOLEAN   | INTEGER     | cast to BOOLEAN          |
  * | d2     | DATE      | TIMESTAMP   | cast to DATE             |
  *
- * The `storage=` table and the colocated ones are held to the same answers.
- * A colocated rollup, read through Malloy's build-manifest substitution where
+ * The `storage=` table and the database ones are held to the same answers.
+ * A database rollup, read through Malloy's build-manifest substitution where
  * no cast reaches, answers live once a column it stores drifted. The
  * `storage-column-type-mismatch` warning's cast or live handling is pinned in
  * storage_bindings.spec.ts.
@@ -72,18 +72,18 @@ source: ${name} is ev extend {
   measure: total is ${measure}
 }
 `,
-      colocated: undefined,
+      database: undefined,
       servedFrom: "storage",
    },
    {
-      label: "#(materialize) colocated",
+      label: "#(materialize) database",
       model: (name: string, measure: string, table: string) =>
          `#(materialize) name="${table}"
 source: ${name} is ev extend {
   measure: total is ${measure}
 }
 `,
-      colocated: undefined,
+      database: undefined,
       servedFrom: "database",
    },
    {
@@ -94,7 +94,7 @@ source: ${name} is ev -> { select: * } extend {
   measure: total is ${measure}
 }
 `,
-      colocated: ["drift", "drift_m"],
+      database: ["drift", "drift_m"],
       servedFrom: "database",
    },
 ] as const;
@@ -196,8 +196,8 @@ ${tier.model("drift", "n.sum()", "drift_t")}
 ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
             },
             seedSql: SEED,
-            ...(tier.colocated
-               ? { colocated: [...tier.colocated] }
+            ...(tier.database
+               ? { database: [...tier.database] }
                : { materialize: true }),
          });
          // Alter each stored table after its build.
@@ -220,7 +220,7 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
                );
             }
          } else {
-            // A colocated table's types, read from its warehouse at bind.
+            // A database table's types, read from its warehouse at bind.
             const observed = await fixture.observeDatabaseColumns();
             expect(observed.unread).toEqual([]);
             // One drift per table (the two sources may share one).

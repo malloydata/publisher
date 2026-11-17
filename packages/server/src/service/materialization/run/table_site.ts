@@ -3,12 +3,12 @@
 
 /**
  * Where a materialized table's marks are read, and a leftover view dropped:
- * the source's own connection for a colocated table, or a session attached
+ * the source's own connection for a database table, or a session attached
  * read-write to its storage destination for a stored one. Used by the
  * ownership check and mark (table_ownership.ts), the drop's guards
  * (reclaimer.ts) and the leftover `name=` view cleanup
  * (leftover_name_views.ts). Each call opens and closes its own destination
- * session; a colocated site runs on the connection it is given.
+ * session; a database site runs on the connection it is given.
  */
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
@@ -34,8 +34,8 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
 }
 
-/** A colocated table's site: the source's own connection. */
-export function colocatedTableSite(
+/** A database table's site: the source's own connection. */
+export function databaseTableSite(
    connection: Pick<MalloyConnection, "runSQL" | "dialectName">,
    runOptions: Record<string, unknown> = {},
 ): TableSite {
@@ -66,14 +66,14 @@ export function storageTableSite(
 
 /** What reaching a table's site needs from the run or the sweep. */
 export interface TableSiteContext {
-   /** The source connection a colocated table lives on, or undefined. */
+   /** The source connection a database table lives on, or undefined. */
    connectionFor(
       connectionName: string,
    ): Promise<MalloyConnection | undefined> | MalloyConnection | undefined;
    /** A destination's config, or undefined when it is no longer configured. */
    destinationFor(destinationName: string): ApiConnection | undefined;
    environmentPath: string;
-   /** Options every colocated statement carries (query metadata). */
+   /** Options every database statement carries (query metadata). */
    runOptions?(connectionName: string): Record<string, unknown>;
 }
 
@@ -112,7 +112,7 @@ export async function atTableSite<T>(
    const connection = await context.connectionFor(target.connectionName);
    if (!connection) return undefined;
    return fn(
-      colocatedTableSite(
+      databaseTableSite(
          connection,
          context.runOptions?.(target.connectionName),
       ),

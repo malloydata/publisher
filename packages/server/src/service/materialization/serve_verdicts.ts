@@ -27,7 +27,7 @@ import { storageTablePath } from "./domain/storage_table_path";
 import type { FreshnessManifest } from "./domain/types";
 import type { PlanLifecycle } from "./plan_lifecycle";
 import {
-   deriveColocatedServeBindings,
+   deriveDatabaseServeBindings,
    keptTableAddresses,
    v1StoredColumnsOf,
 } from "./serve/bind";
@@ -79,7 +79,7 @@ interface ServeVerdictsHost {
       | undefined;
    snapshot(): Snapshot;
    storageBindings(): readonly Binding[];
-   colocatedEntries(): FreshnessManifest | undefined;
+   databaseEntries(): FreshnessManifest | undefined;
    deploymentFacts(): DeploymentFacts | undefined;
    destinationSchema(destinationName: string): string | undefined;
    declarationOf(sourceID: string): unknown;
@@ -162,13 +162,13 @@ export class ServeVerdicts {
 
    /**
     * The package's materialized tables as the path report reads them: every
-    * planned source by `sourceID`, and the colocated tables bound now.
+    * planned source by `sourceID`, and the database tables bound now.
     * Memoized on the plan, the bound entries and the live verdicts.
     */
    tableCatalog(): MaterializedTableCatalog {
       const { plan } = this.host;
       const liveVerdicts = this.liveVerdictsByTable();
-      const bound = this.host.colocatedEntries();
+      const bound = this.host.databaseEntries();
       const cached = this.tableCatalogCache;
       if (
          cached &&
@@ -350,7 +350,7 @@ export class ServeVerdicts {
          },
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
-         boundEntityIds: new Set(Object.keys(host.colocatedEntries() ?? {})),
+         boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
          freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
          boundStorageNames: new Set(storageBindings.map((b) => b.sourceName)),
          servedStorageNames,
@@ -406,10 +406,10 @@ export class ServeVerdicts {
       const models = host.models();
       const key = [
          plan.buildPlan,
-         host.colocatedEntries(),
+         host.databaseEntries(),
          host.storageBindings(),
          plan.sourceEligibility,
-         plan.colocatedSourceEligibility,
+         plan.databaseSourceEligibility,
          getPersistStorageMode(),
          models,
          // Read live, not replaced wholesale, so they key the memo by what
@@ -487,7 +487,7 @@ export class ServeVerdicts {
    /**
     * Why the bind refuses a planned source, as the bind decides it, or
     * undefined when it keeps it. Storage requires a positive eligibility, as
-    * the bind does. Colocated rollups need not appear in the colocated
+    * the bind does. Database rollups need not appear in the database
     * record, so only an authored source missing from it, or one it names as
     * refused, counts.
     */
@@ -505,7 +505,7 @@ export class ServeVerdicts {
          }
          return eligibility.refused[sourceID] ?? never;
       }
-      const eligibility = plan.colocatedSourceEligibility;
+      const eligibility = plan.databaseSourceEligibility;
       if (!eligibility) return undefined;
       const refused = eligibility.refused[source.sourceEntityId];
       if (refused !== undefined) return refused;
@@ -530,7 +530,7 @@ export class ServeVerdicts {
       const host = this.host;
       const plan = host.plan;
       const sources = plan.servingPlan()?.sources ?? {};
-      const eligible = plan.colocatedSourceEligibility?.eligibleEntityIds;
+      const eligible = plan.databaseSourceEligibility?.eligibleEntityIds;
       const viewBuilds = host.persistedViewBuildIDs();
       const entries: FreshnessManifest = {};
       for (const source of Object.values(sources)) {
@@ -552,7 +552,7 @@ export class ServeVerdicts {
             const schema = v1Schema(sourceID);
             return schema?.length ? { ...b, schema } : b;
          }),
-         ...deriveColocatedServeBindings({
+         ...deriveDatabaseServeBindings({
             entries,
             planSources: sources,
             materializePlans: plan.materializePlans,

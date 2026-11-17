@@ -11,7 +11,7 @@
  * `namespace=`, the older spelling of the container, is read for one more
  * release with a `deprecated-preaggregate-namespace` warning, in the same
  * container under the readable prefix. A
- * rollup with no placement of its own inherits its base's colocated `name=`
+ * rollup with no placement of its own inherits its base's database `name=`
  * container, from `#@ persist` or `#(materialize)`, so the two spellings land
  * in one schema. A rollup's table never takes its base's table, whatever the
  * two `name=`s say (#1794's distinct-name rules).
@@ -219,7 +219,7 @@ describe("a rollup with no placement of its own takes its base's name= container
       ],
       ["#(materialize)", '#(materialize) name="analytics.orders_t"'],
    ] as const) {
-      it(`from a colocated ${label} base, on both spellings, into one table`, async () => {
+      it(`from a database ${label} base, on both spellings, into one table`, async () => {
          const { compiled, packagePath } = await compile(
             `${declaration}
 source: orders is ${ROWS} -> { select: * } extend {

@@ -3,7 +3,7 @@
 // ==== <pkg>/m.malloy (text 1 of 2)
 ##! experimental.givens
 ##! experimental { virtual_source }
-type: colocated_ext__served is {
+type: database_ext__served is {
    id::number,
    customer_id::number,
    region::string,
@@ -51,8 +51,8 @@ source: renamed is stored extend {
   measure: id_total is order_id.sum()
 }
 
-#(materialize) name="colocated_ext_t"
-source: colocated_ext is duckdb.virtual('bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1')::colocated_ext__served extend {
+#(materialize) name="database_ext_t"
+source: database_ext is duckdb.virtual('bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1')::database_ext__served extend {
   private rename:
     id__stored is id
     customer_id__stored is customer_id
@@ -71,7 +71,7 @@ source: colocated_ext is duckdb.virtual('bfd63fc0b64f3eb8051d97c6733d8cfd5603c84
 // ==== <pkg>/m.malloy (text 2 of 2)
 ##! experimental.givens
 ##! experimental { virtual_source }
-type: colocated_ext__served is {
+type: database_ext__served is {
    id::number,
    customer_id::number,
    region::string,
@@ -247,8 +247,8 @@ source: renamed is __served_copy_alias_of_lake.virtual('d5200d694f4551cc166e0f82
   measure: id_total is order_id.sum()
 }
 
-#(materialize) name="colocated_ext_t"
-source: colocated_ext is duckdb.virtual('bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1')::colocated_ext__served extend {
+#(materialize) name="database_ext_t"
+source: database_ext is duckdb.virtual('bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1')::database_ext__served extend {
   private rename:
     id__stored is id
     customer_id__stored is customer_id
