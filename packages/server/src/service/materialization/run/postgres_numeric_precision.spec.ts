@@ -9,6 +9,7 @@ import {
    isDecimalDeltaGuardFailure,
    numericAsTextSQL,
    numericStorageFor,
+   postgresNumericColumns,
    stageNumericColumns,
 } from "./postgres_numeric_precision";
 
@@ -149,5 +150,82 @@ describe("staging and guarding in DuckDB", () => {
       expect(
          guardDeltaDecimals(sql, [{ column: "c", storedType: "VARCHAR" }]),
       ).toBe(sql);
+   });
+});
+
+/**
+ * L2: a build whose Postgres type probe fails must not store an exact
+ * `numeric` as the passthrough's DOUBLE. A gate column so stored rounds ids
+ * past 2^53 to one value, so a gated `storage=` table would serve one tenant
+ * another's rows. The build fails instead, and the source answers live.
+ */
+describe("postgresNumericColumns, when Postgres's column types cannot be read", () => {
+   /** A session whose describe answers `described`, and whose probe `probe` answers. */
+   const session = (
+      described: () => unknown,
+      probe: () => unknown,
+   ): DuckDBConnection =>
+      ({
+         runSQL: async (sql: string) =>
+            sql.startsWith("DESCRIBE") ? described() : probe(),
+      }) as unknown as DuckDBConnection;
+   const doubles = () => ({
+      rows: [
+         { column_name: "id", column_type: "BIGINT" },
+         { column_name: "acct", column_type: "DOUBLE" },
+      ],
+   });
+   const denied = () => {
+      throw new Error("permission denied for table pg_type");
+   };
+
+   it("fails the build when the type probe fails, keeping the driver's error", async () => {
+      const read = postgresNumericColumns(
+         session(doubles, denied),
+         "pg",
+         "SELECT id, acct FROM t",
+         "postgres",
+      );
+      await expect(read).rejects.toThrow(
+         /needs to store a numeric column exactly: permission denied/,
+      );
+      const err = await read.catch((e: unknown) => e as Error);
+      expect((err as Error & { cause?: unknown }).cause).toBeInstanceOf(Error);
+   });
+
+   it("fails the build when the describe fails", async () => {
+      await expect(
+         postgresNumericColumns(
+            session(denied, doubles),
+            "pg",
+            "SELECT id, acct FROM t",
+            "postgres",
+         ),
+      ).rejects.toThrow(/needs to store a numeric column exactly/);
+   });
+
+   it("still reads a numeric column as exact text when the probe answers", async () => {
+      expect(
+         await postgresNumericColumns(
+            session(doubles, () => ({ rows: [{ t0: "numeric" }] })),
+            "pg",
+            "SELECT id, acct FROM t",
+            "postgres",
+         ),
+      ).toMatchObject({ columns: ["id", "acct"], numeric: ["acct"] });
+   });
+
+   it("does not probe at all when nothing reads as DOUBLE", async () => {
+      expect(
+         await postgresNumericColumns(
+            session(
+               () => ({ rows: [{ column_name: "id", column_type: "BIGINT" }] }),
+               denied,
+            ),
+            "pg",
+            "SELECT id FROM t",
+            "postgres",
+         ),
+      ).toMatchObject({ columns: ["id"], numeric: [] });
    });
 });

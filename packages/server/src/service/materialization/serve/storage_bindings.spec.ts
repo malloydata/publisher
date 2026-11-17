@@ -353,12 +353,15 @@ describe("databaseDriftFindings", () => {
             sourceEntityId: "vr",
             modelPath: "m.malloy",
             preaggregate: { baseSourceName: "orders", grainDimensions: ["k"] },
-            columns: [{ name: "k", type: "number" }],
+            columns: [
+               { name: "k", type: "number" },
+               { name: "f", type: "boolean" },
+            ],
          },
       },
    } as unknown as BuildPlan;
 
-   it("handles each moved column as the bind does: cast, left out, or the whole table live", () => {
+   it("handles each moved column as the bind does, on every mechanism: cast or left out", () => {
       const findings = databaseDriftFindings(
          [
             {
@@ -403,8 +406,14 @@ describe("databaseDriftFindings", () => {
             },
             {
                sourceEntityId: "vr",
+               // A rollup, read by manifest substitution, by the same rule.
                columns: [
                   { column: "k", builtType: "BIGINT", observedType: "VARCHAR" },
+                  {
+                     column: "f",
+                     builtType: "BOOLEAN",
+                     observedType: "INTEGER",
+                  },
                ],
             },
             // Not in the plan: nothing to name it by.
@@ -414,7 +423,7 @@ describe("databaseDriftFindings", () => {
             },
          ],
          plan,
-         { servedCopy: (id) => id === "vh" },
+         {},
       );
       expect(findings).toEqual([
          {
@@ -460,7 +469,13 @@ describe("databaseDriftFindings", () => {
                   column: "k",
                   declaredType: "number",
                   storedType: "VARCHAR",
-                  handling: "table",
+                  handling: "live",
+               },
+               {
+                  column: "f",
+                  declaredType: "boolean",
+                  storedType: "INTEGER",
+                  handling: "cast",
                },
             ],
          },

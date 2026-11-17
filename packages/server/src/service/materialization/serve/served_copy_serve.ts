@@ -104,6 +104,7 @@ import {
    buildVirtualMap,
    optsOutOfPersist,
 } from "./bindings";
+import { entryPointGateExprs, gateReadNames } from "./gate_reads";
 import {
    type Binding,
    bindingServesModelSource,
@@ -613,7 +614,7 @@ function rerootFailureKey(
  * What a served copy's compile reads of a binding: everything but how fresh
  * the table is (`freshAsOf`, its window and fallback, which decide only
  * whether the pin reads it) and what the router reads of it beside the copy
- * (`ownGateKept`, a rollup's key check). A field added to `Binding` is read
+ * (`ownGateKept`, `retypedColumns`, a rollup's key check). A field added to `Binding` is read
  * here until it is listed, so a new input recompiles rather than reuses.
  * Memoized per binding, which is replaced, never edited.
  */
@@ -626,6 +627,7 @@ export function compileInputOf(b: Binding): string {
          freshnessWindowSeconds: _window,
          freshnessFallback: _fallback,
          ownGateKept: _gateKept,
+         retypedColumns: _retyped,
          rollupKey: _rollupKey,
          ...read
       } = b;
@@ -1015,6 +1017,7 @@ export class ServedCopyServe {
       await this.checkGateGraft(attempt);
       await checkOptOut(attempt);
       const { sql, tablesRead } = await readsRerootedTables(attempt);
+      await checkGateColumnsKept(attempt, tablesRead);
       await checkSourceZone(attempt);
       await this.checkResultShape(attempt, tablesRead);
       const pairsRead = await pairsReadPerTable(
@@ -1513,7 +1516,7 @@ export class ServedCopyServe {
          columns,
          def,
          fieldsByName,
-         chainZoneOf(map, def),
+         chainZoneOf(map, def) ?? inlineBaseZoneOf(def),
       );
       if (zoned.leftOut.length > 0) {
          // Left out like any column no read gives exactly, with its own
@@ -3467,6 +3470,20 @@ function chainZoneOf(map: SourceMap, struct: unknown): string | undefined {
 }
 
 /**
+ * The zone of the base a query-shaped source's query runs on when that base
+ * is written inline (`ev extend { timezone: … } -> { … }`): it has no
+ * `sourceID` of its own, so {@link chainZoneOf} never reaches it, yet the
+ * query's stage computes in it.
+ */
+function inlineBaseZoneOf(def: unknown): string | undefined {
+   const base = (def as { query?: { structRef?: unknown } } | undefined)?.query
+      ?.structRef;
+   return base !== null && typeof base === "object"
+      ? queryTimezoneOf(base)
+      : undefined;
+}
+
+/**
  * Whether a query whose zones are `zones` ({@link readZonesOf}) reads `table`
  * in another time zone than the one it was built in (`builtZones`);
  * an explicit `'UTC'` is the default zone ({@link sameZone}). One rule
@@ -4860,7 +4877,15 @@ function zonedTruncations(
  * reads in. A column of the table the query runs on is read by a field path of
  * one name; a joined table's, by a longer path ending in its name (an
  * unrelated field of the same name is declined too, never served wrong).
- * Fails closed on a query whose field reads cannot be listed.
+ *
+ * The entry point's row-level gate reads columns too, and is grafted on this
+ * compile after the check, in the query's zone: a gate over a stored
+ * truncation (`dday = $ON_DAY`) would compare the value truncated again in
+ * the caller's zone, which can be the next day's, so it admits another
+ * partition's rows. Every name the gates read, and every field those are
+ * computed from ({@link gateReadNames}), is a read here, on any table.
+ * Fails closed on a query whose field reads, or whose gates, cannot be
+ * listed.
  */
 async function checkZonedColumns(
    attempt: AnswerAttempt,
@@ -4881,6 +4906,16 @@ async function checkZonedColumns(
    if (usage === undefined) {
       decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
    }
+   const gates = gateNamesOf(compiled, view);
+   if (gates === undefined) {
+      decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
+   }
+   for (const b of elsewhere) {
+      const names = zonedOf(b) ?? new Set<string>();
+      if ([...gates!].some((n) => readsColumn(names, n))) {
+         decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
+      }
+   }
    // A table reached only through one of the query's source's joins is read
    // by a path through that join, never by a field path of one name. Any
    // other table may be the query's own (an extension of a table-backed or
@@ -4898,6 +4933,67 @@ async function checkZonedColumns(
          decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
       }
    }
+}
+
+/**
+ * A row-level gate that reads a column the copy leaves out of a table's type
+ * (a truncation stored in another zone than any read's, a type no read gives
+ * exactly) cannot be grafted here, and the graft would deny every caller where
+ * live answers: the query is declined and live answers it under the author's
+ * gate. Fails closed on gates that cannot be read.
+ */
+async function checkGateColumnsKept(
+   attempt: AnswerAttempt,
+   tablesRead: readonly Binding[],
+): Promise<void> {
+   const { compiled, decline, prepared } = attempt;
+   const leftOut = new Set(
+      tablesRead.flatMap(
+         (b) => compiled.leftOutColumns?.get(b.sourceIDs?.[0] ?? "") ?? [],
+      ),
+   );
+   if (leftOut.size === 0) return;
+   const gates = gateNamesOf(compiled, await prepared());
+   const zoned = new Set(
+      tablesRead.flatMap((b) => [
+         ...(compiled.zonedLeftOut?.get(b.sourceIDs?.[0] ?? "") ?? []),
+      ]),
+   );
+   const read =
+      gates === undefined
+         ? [...leftOut]
+         : [...leftOut].filter((n) => gates.has(n));
+   if (read.length === 0) return;
+   if (read.every((n) => zoned.has(n))) {
+      decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
+   }
+   decline(
+      "a row-level gate reads a column the served copy leaves out of a stored table's type",
+      "served_copy_not_served",
+   );
+}
+
+/**
+ * Every name the queried source's entry-point gates read on the served copy
+ * ({@link gateReadNames}), or undefined when its gates cannot be read.
+ */
+function gateNamesOf(
+   compiled: Compiled,
+   view: Pick<PreparedQueryView, "structRef">,
+): Set<string> | undefined {
+   let struct: unknown;
+   try {
+      struct = resolveStructRefSource(
+         view.structRef as never,
+         compiled.modelDef as never,
+      );
+   } catch {
+      return undefined;
+   }
+   const exprs = entryPointGateExprs(struct, compiled.modelDef);
+   return exprs === undefined
+      ? undefined
+      : gateReadNames(struct, exprs, compiled.modelDef);
 }
 
 /**

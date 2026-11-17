@@ -193,9 +193,12 @@ export interface LoadedFixture {
    /**
     * Bind the built tables again under the settings installed now, and settle
     * every model's served copy: the bindings a switch read at bind (the v1
-    * cutover's colocated tables) follow it.
+    * cutover's colocated tables) follow it. With `observe`, the database
+    * tables are bound as a server binds them, read as their warehouse holds
+    * them now (`readDatabaseColumns`), so a table altered after its build is
+    * bound with its drift.
     */
-   rebind(): Promise<void>;
+   rebind(options?: { observe?: boolean }): Promise<void>;
    run(
       modelPath: string,
       query: string,
@@ -369,10 +372,19 @@ export async function loadFixture(
             tables,
             buildErrors,
             stored,
-            async rebind() {
+            async rebind(options: { observe?: boolean } = {}) {
                // Empty first, so the package derives every binding afresh.
                pkg.materialization().bind({ colocated: {} });
-               pkg.materialization().bind({ colocated: colocated as never });
+               pkg.materialization().bind({
+                  colocated: colocated as never,
+                  ...(options.observe
+                     ? {
+                          observed: await pkg
+                             .materialization()
+                             .readDatabaseColumns(colocated as never),
+                       }
+                     : {}),
+               });
                pkg.materialization().bind({ storage: stored as never });
                await settle();
             },

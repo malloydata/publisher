@@ -475,6 +475,58 @@ export function serveTypePlan(
    return { casts, unservable };
 }
 
+/**
+ * How one database table's column that moved since its build is read now,
+ * the rule every reader of a database table and its warning share
+ * ({@link serveTypePlan}): `left_out` when the bind left it out (gone, a
+ * type Malloy reads as no basic type, a timestamp that gained or lost its
+ * zone off DuckDB) or no faithful cast reads its type as declared; `cast`
+ * (to a DuckDB type, `BOOLEAN` or `DATE`) where one does; else `as_is`, a
+ * type that still reads as declared.
+ */
+type DriftedColumnRead =
+   | { read: "as_is" }
+   | { read: "cast"; castTo: string }
+   | { read: "left_out" };
+
+export function driftedColumnRead(
+   column: { column: string; observedType?: string; leftOut?: true },
+   declaredType: string,
+   options: BuildCastOptions = {},
+): DriftedColumnRead {
+   if (column.leftOut || !column.observedType) return { read: "left_out" };
+   const [cast] = serveTypePlan(
+      [
+         {
+            column: column.column,
+            storedType: column.observedType,
+            declaredType,
+         },
+      ],
+      options,
+   ).casts;
+   if (cast) return { read: "cast", castTo: cast.castTo };
+   return storedTypeServesAs(column.observedType, declaredType) !== false
+      ? { read: "as_is" }
+      : { read: "left_out" };
+}
+
+/**
+ * The Malloy type a moved column must read as: its build source's declared
+ * one, else the one its build wrote.
+ */
+export function driftDeclaredType(
+   declared: readonly { name?: string; type?: string }[] | undefined,
+   column: string,
+   builtType: string,
+): string {
+   return (
+      declared?.find((c) => c.name === column)?.type ??
+      storedMalloyType(builtType) ??
+      builtType
+   );
+}
+
 /** A declared column, with the author's field when its big-integer read is asked. */
 export interface DeclaredRead extends DeclaredColumn {
    /** The compiled field: its `bigint` subtype decides a native read. */
