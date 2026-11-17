@@ -10,13 +10,13 @@ import {
    expect,
    it,
 } from "bun:test";
-import { swapIntoPlace } from "./colocated_build_strategy";
+import { swapIntoPlace } from "./database_build_strategy";
 import {
    dropLeftoverNameViews,
    provenOwnView,
    replaceOwnViewStatements,
 } from "./leftover_name_views";
-import { colocatedTableSite, type TableSiteContext } from "./table_site";
+import { databaseTableSite, type TableSiteContext } from "./table_site";
 
 /**
  * The leftover `name=` view cleanup on a real Postgres, where a view binds to
@@ -135,7 +135,7 @@ describe.skipIf(!POSTGRES_URL)(
       it("replaces this package's own view with the built table in the swap's transaction", async () => {
          await view("named_t", "g1", markOf(q("g1")));
          await run(`CREATE TABLE ${q("named_t_stage")} AS SELECT 5 AS x`);
-         const site = colocatedTableSite(pg);
+         const site = databaseTableSite(pg);
          const proven = await provenOwnView(site, q("named_t"), OWNER);
          expect(proven?.target).toBe(q("g1"));
          const statements = replaceOwnViewStatements(proven!, site);
@@ -160,7 +160,7 @@ describe.skipIf(!POSTGRES_URL)(
          await view("named_t", "g1", markOf(q("g1")));
          await view("readers_view", "named_t");
          await run(`CREATE TABLE ${q("named_t_stage")} AS SELECT 5 AS x`);
-         const site = colocatedTableSite(pg);
+         const site = databaseTableSite(pg);
          const proven = await provenOwnView(site, q("named_t"), OWNER);
          const failed = await swapIntoPlace({
             connection: pg,
@@ -184,7 +184,7 @@ describe.skipIf(!POSTGRES_URL)(
       it("leaves the view, and fails the build, when it was repointed after the proof", async () => {
          await view("named_t", "g1", markOf(q("g1")));
          await run(`CREATE TABLE ${q("named_t_stage")} AS SELECT 5 AS x`);
-         const site = colocatedTableSite(pg);
+         const site = databaseTableSite(pg);
          const proven = await provenOwnView(site, q("named_t"), OWNER);
          await run(
             `CREATE OR REPLACE VIEW ${q("named_t")} AS SELECT * FROM ${q("g2")}`,

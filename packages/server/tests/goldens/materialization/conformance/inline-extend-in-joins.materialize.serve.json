@@ -13,7 +13,7 @@
     "warnings": [
       {
         "code": "served-copy-not-served",
-        "message": "This source is stored in a destination its join `cust` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
+        "message": "This source is stored in a destination its join `cust` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source database.",
         "subject": "by_customer_plus"
       }
     ]
@@ -62,6 +62,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99"
           }
@@ -79,6 +80,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99",
           "tier": "storage",
           "via": "served_copy"
@@ -134,6 +136,7 @@
           {
             "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "CROSS_CONNECTION",
             "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99"
@@ -204,6 +207,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "MISSING_FIELD",
             "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99"
@@ -273,6 +277,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99"
           }
@@ -290,6 +295,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99",
           "tier": "storage",
           "via": "served_copy"
@@ -345,6 +351,7 @@
           {
             "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "CROSS_CONNECTION",
             "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99"
@@ -415,6 +422,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "MISSING_FIELD",
             "tableId": "71f8495dea14f21de55246d492a02ed7d2988d3cf10cf50157d9c94d37d2eb99"

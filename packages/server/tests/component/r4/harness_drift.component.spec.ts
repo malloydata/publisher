@@ -6,8 +6,8 @@
  * itself and binds the result the way it believes a run does. This spec
  * builds the same small models through the real {@link MaterializationService}
  * and checks that the harness still agrees with it, table for table and
- * answer for answer, for a colocated `#@ persist` table, a `storage=` one, and
- * a colocated `#(preaggregate)` rollup. A difference here means R4 is proving
+ * answer for answer, for a database `#@ persist` table, a `storage=` one, and
+ * a database `#(rollup)` rollup. A difference here means R4 is proving
  * something about a build no run performs.
  *
  * The storage case fakes the DuckLake seams as the other DuckLake component
@@ -63,10 +63,10 @@ const RAW = `source: raw is warehouse.sql("""
 """)`;
 
 /**
- * The colocated model, all in the warehouse: a `#(materialize)` table, a
+ * The database model, all in the warehouse: a `#(materialize)` table, a
  * `#@ persist` one, and a rollup.
  */
-const COLOCATED = `##! experimental { persistence }
+const DATABASE = `##! experimental { persistence }
 ${RAW}
 
 #(materialize) name="by_cat_t"
@@ -76,7 +76,7 @@ source: by_cat is raw -> { group_by: cat; aggregate: total is amt.sum() }
 source: by_cat_v1 is raw -> { group_by: cat; aggregate: total is amt.sum() }
 
 source: orders is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: total is amt.sum()
 }
 `;
@@ -241,7 +241,7 @@ async function servedBy(
    };
 }
 
-describe("R4 harness drift: colocated tables agree with a real run", () => {
+describe("R4 harness drift: database tables agree with a real run", () => {
    let restore: () => void;
    let f: ServiceFixture | undefined;
    /** The `#(materialize)` table and the rollup, as R4 builds them. */
@@ -253,18 +253,18 @@ describe("R4 harness drift: colocated tables agree with a real run", () => {
    beforeAll(async () => {
       restore = installSettings({ env: SETTINGS }).restore;
       await freshLoadPool();
-      f = await serviceFixture(COLOCATED);
+      f = await serviceFixture(DATABASE);
       run = await build(f);
       r4 = await buildScenario({
-         files: { "m.malloy": asR4(COLOCATED) },
+         files: { "m.malloy": asR4(DATABASE) },
          seedSql: [],
          materialize: true,
          preaggregate: true,
       });
       r4v1 = await buildScenario({
-         files: { "m.malloy": asR4(COLOCATED) },
+         files: { "m.malloy": asR4(DATABASE) },
          seedSql: [],
-         colocated: ["by_cat_v1"],
+         database: ["by_cat_v1"],
          unbuilt: ["by_cat"],
       });
    }, 120_000);
@@ -280,7 +280,7 @@ describe("R4 harness drift: colocated tables agree with a real run", () => {
    const serviceTable = (match: (name: string) => boolean) =>
       entries(run).find((e) => match(e.sourceName ?? ""))!.physicalTableName;
 
-   /** A harness's colocated table, by the prefix of its name. */
+   /** A harness's database table, by the prefix of its name. */
    async function harnessTable(r: R4Fixture, prefix: string): Promise<string> {
       const found = (
          await r.duckdb.runSQL(
@@ -360,7 +360,7 @@ describe("R4 harness drift: colocated tables agree with a real run", () => {
 
    // Last: it writes a marker row into the `#@ persist` tables, so the
    // marker shows that each side reads its table and not the warehouse.
-   it("answers a colocated #@ persist source from its table as the harness does", async () => {
+   it("answers a database #@ persist source from its table as the harness does", async () => {
       const query =
          "run: by_cat_v1 -> { group_by: cat; aggregate: t is total.sum(); order_by: cat }";
       const marker = "INSERT INTO %t VALUES ('zz', 99.0)";

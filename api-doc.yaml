@@ -5148,14 +5148,18 @@ components:
             The mechanism that declared the stored source: `persist` for
             `#@ persist` on a source, `materialize` for `#(materialize)`,
             `view` for `#@ persist` on a view, `query` for `#@ persist` on a
-            named `query:`, and `preaggregate` for a rollup the publisher
-            synthesized. A string, not an enum, so a new kind of variant
-            needs no client change.
+            named `query:`, and `rollup` for a rollup the publisher
+            synthesized (`#(rollup)`, or v1's `#@ preaggregate`). A string,
+            not an enum, so a new kind of variant needs no client change.
+            `preaggregate` is retained, no longer produced: releases before
+            this one said it for `rollup`.
         tier:
           type: string
           description: >-
-            Where its table lives: `colocated` (the source's own connection) or
-            `storage` (a `storage=` destination).
+            Where its table lives: `database` (the source's own connection's
+            database) or `storage` (a `storage=` destination). `colocated` is
+            retained, no longer produced: releases before this one said it for
+            `database`, so a client should accept both.
         verdict:
           type: string
           description: >-
@@ -5177,7 +5181,7 @@ components:
             table is bound, but every model's source of that name is another
             source), `destination_missing` (`storage=` names a destination the
             environment does not configure), `connection_cannot_hold_table`
-            (colocated, on a connection whose type creates no tables),
+            (database, on a connection whose type creates no tables),
             `served_copy` (a `#(materialize)` source, which only the served copy
             reads: the served copy is off, or no model's served copy reads its
             table). An open set.
@@ -5248,13 +5252,17 @@ components:
             package's models and reading a miss as corruption.
         origin:
           type: string
-          enum: [persist, preaggregate]
+          enum: [persist, materialize, view, query, rollup, preaggregate]
           default: persist
           description: >-
-            What the bound source IS: `persist` for one a modeler annotated,
-            which is the meaning of an absent value, and `preaggregate` for
-            a rollup the publisher synthesized from `#@ preaggregate`
-            measures. Mirrors `ManifestEntry.origin`.
+            The mechanism that declared the bound table: `persist` for
+            `#@ persist` on a source, which is the meaning of an absent
+            value, `materialize` for `#(materialize)`, `view` and `query` for
+            `#@ persist` on a view or a named query, and `rollup` for a
+            rollup. `preaggregate` is retained, no longer produced: releases
+            before this one said it for `rollup`. Releases before this one said `persist` for every table
+            that was not a rollup; a client must accept a value it does not
+            know as a table that is not a rollup.
         storageDestinationName:
           type: string
           description: >-
@@ -5368,7 +5376,7 @@ components:
             the configured manifest was not applied — not that nothing is. A
             failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
             a failed REBIND leaves the previously bound manifest in place: its
-            colocated substitutions stay compiled in, its storage serve bindings
+            database substitutions stay compiled in, its storage serve bindings
             stay installed, and `boundManifestUri`, `manifestEntryCount` and
             `storageServeBindings` all continue to describe it.
 
@@ -5396,9 +5404,9 @@ components:
           readOnly: true
           description: >-
             Server-computed, read-only: number of sourceEntityId -> physical-table
-            entries currently bound for the COLOCATED (same-connection tableName
+            entries currently bound for the DATABASE (same-connection tableName
             substitution) tier only. 0 when unbound, or when the bound manifest
-            carried no colocated entries — so a fully bound `storage=`-only
+            carried no database entries — so a fully bound `storage=`-only
             manifest reports `bound` with a count of 0. Corroborate a
             cross-connection bind with `storageServeBindings`, not this count.
 
@@ -5441,7 +5449,7 @@ components:
 
 
             "Bound" is not the same as "serving", and an entry with
-            `origin: preaggregate` is where the two most often part: a rollup is
+            `origin: rollup` is where the two most often part: a rollup is
             listed here once its table exists, but it is only offered to a query
             through a composite re-exposing its base's name, so it does not serve
             when something else already claims that name. Read `origin` before
@@ -5738,7 +5746,7 @@ components:
             `BuildPlan.refusedSources` member, carrying that gate's own message),
             a persist-target collision, and materialization-config problems that
             degrade attribution. A refusal is the one materialization finding the
-            build plan cannot also be read for: a refused `storage`/`colocated`
+            build plan cannot also be read for: a refused `storage`/`database`
             source is ABSENT from `BuildPlan.sources`, so nothing there records
             that the annotation was written at all. Discovery findings: a model
             on the package's surface whose export closure surfaces no sources or
@@ -5910,8 +5918,9 @@ components:
                   deprecated `#(filter)` annotations (one per declaring source,
                   `model` naming its file and `subject` the source).
                   `deprecated-preaggregate-annotation`: a measure declaring
-                  `#@ preaggregate`, whose v2 spelling is `#(preaggregate)` (one
-                  per measure, `model` its file, `subject` the source and the
+                  `#@ preaggregate` or the deprecated alias `#(preaggregate)`,
+                  whose v2 spelling is `#(rollup)`; the message names the
+                  spelling it found (one per measure, `model` its file, `subject` the source and the
                   message the measure; `warn`; only while
                   `PUBLISHER_MATERIALIZE` is on).
                   `deprecated-preaggregate-namespace`: a rollup line placed with
@@ -5945,31 +5954,42 @@ components:
                   appears only in the load failure's message (the publish 4xx
                   and `loadErrors`), never as a warning here:
                   `persist-invalid`, `materialize-invalid`,
-                  `preaggregate-invalid`, `persist-view-invalid` and
+                  `rollup-invalid`, `persist-view-invalid` and
                   `persist-query-invalid` (a bad value or contradictory
                   combination: a `storage=` that names nothing, an `@env.`
                   reference, an unusable, unsafe, unquoted or reserved
                   `name=`, an `inline=` that names no join, an incremental
                   key or `refresh="incremental"` on a view or query);
                   `persist-unknown-key`, `materialize-unknown-key` and
-                  `preaggregate-unknown-key` (every route's key set is
+                  `rollup-unknown-key` (every route's key set is
                   closed, a `freshness.` group's included);
                   `persist-retired-key` and `materialize-retired-key`
                   (`sharing=`, `schedule=`, `partition=`, and on `#@ persist`
                   `realization=`); `persist-unparseable`,
-                  `materialize-unparseable`, `preaggregate-unparseable`,
+                  `materialize-unparseable`, `rollup-unparseable`,
                   `persist-view-unparseable` and `persist-query-unparseable`; `persist-not-materializable` (a
                   `#@ persist` on a shape Malloy does not plan);
-                  `preaggregate-not-a-measure`, `preaggregate-unknown-grain`
-                  and `preaggregate-not-mergeable`;
+                  `rollup-not-a-measure`, `rollup-unknown-grain` and
+                  `rollup-not-mergeable` (a rollup line on a field that is not
+                  a measure, a grain naming no dimension, a measure no rollup
+                  can merge);
                   `materialization-table-collision` (two sources whose
                   `name=` puts them on one table; under
                   `PERSIST_COLLISION_ENFORCE=false` a refusal instead); and
                   `materialization-near-miss` (a misspelled materialization
                   route or directive, such as `#(materialise)` or
                   `#@ persits`). `preaggregate-malformed` is retained and no
-                  longer produced: it is `preaggregate-invalid` or
-                  `preaggregate-unparseable` now.
+                  longer produced: it is `rollup-invalid` or
+                  `rollup-unparseable` now. Retained, no longer produced:
+                  `preaggregate-invalid`, `preaggregate-unknown-key`,
+                  `preaggregate-unparseable`, `preaggregate-not-a-measure`,
+                  `preaggregate-unknown-grain` and
+                  `preaggregate-not-mergeable`, now `rollup-invalid`,
+                  `rollup-unknown-key`, `rollup-unparseable`,
+                  `rollup-not-a-measure`, `rollup-unknown-grain` and
+                  `rollup-not-mergeable`. A measure or
+                  source that carries both `#(rollup)` and `#(preaggregate)`
+                  is `rollup-invalid`.
                   A VALID annotation Publisher cannot build here is refused
                   alone, answered live, while the package loads, and is
                   severity `warn`, never `error`. Every one is a
@@ -5979,10 +5999,12 @@ components:
                   source), `materialize-not-built` (a `#(materialize)` source;
                   `subject` the source), `persist-view-not-built` and
                   `persist-query-not-built` (a persisted view or named query;
-                  `subject` the view or query), and `preaggregate-not-built`
-                  (a `#(preaggregate)` or `#@ preaggregate` rollup; `subject`
+                  `subject` the view or query), and `rollup-not-built`
+                  (a `#(rollup)` or `#@ preaggregate` rollup; `subject`
                   the base, or `<base>.<measure>` for one measure). The
                   message says why; the reason is on the refusal record.
+                  `preaggregate-not-built` is retained, no longer produced:
+                  it is `rollup-not-built` now.
                   `persist-source-refused` is `persist-not-built`'s former
                   name: a `#@ persist` source's refusal is repeated under it,
                   with the same message, for one release, then the repeat is
@@ -5993,7 +6015,7 @@ components:
                   `preaggregate-hidden-field`, `-access-filter`, `-time-zone`,
                   `-current-time`, `-reads-given`, `-unreadable-measure`,
                   `-join-level` and `-name-clash`, now each
-                  `preaggregate-not-built` with the reasons `hidden_field`,
+                  `rollup-not-built` with the reasons `hidden_field`,
                   `access_filter` (or `authorize`), `time_zone`,
                   `current_time`, `reads_given`,
                   `inherited_where_with_given` or
@@ -6010,6 +6032,13 @@ components:
                   the same SQL on one connection, so they share one table and
                   one boundary, where at least one is incremental (one per
                   source; `warn`).
+                  `rollup-join-one-key-repeated`: a bound rollup whose last
+                  build found the key of a `join_one` it reads repeated, so a
+                  query reading that join beside other aggregates is answered
+                  live; it clears once a build finds the key unique (one per
+                  rollup; `warn`). `preaggregate-join-one-key-repeated` is
+                  retained, no longer produced: it is
+                  `rollup-join-one-key-repeated` now.
                   `join-bypass`: an author join from a published source to one
                   with a stricter gate, which the join does not carry (one per
                   join, or one for a walk cut short at the join bound; always
@@ -6059,7 +6088,7 @@ components:
                   its source, `subject` the source, or a rollup's base, when
                   the plan knows the table; `warn`; see
                   docs/materialization.md).
-                  `stored-native-schema-missing`: a colocated table is bound
+                  `stored-native-schema-missing`: a database table is bound
                   with no captured warehouse type (its manifest entry's
                   `nativeSchema`) for a column whose field Malloy types as a big
                   integer. On BigQuery the column is read as `INT64`, its only
@@ -8610,9 +8639,9 @@ components:
             warehouse was not queried.
 
             `database` — served from a materialized table in the source's own
-            database (the colocated tier): a colocated `#@ persist` table Malloy substituted, a
-            colocated `#(materialize)` table the served copy read, or a
-            colocated rollup or persisted view.
+            database (`colocated` in releases before this one): a database `#@ persist` table Malloy substituted, a
+            database `#(materialize)` table the served copy read, or a
+            database rollup or persisted view.
 
             `live_fallback` — the query DID route to storage and the store then
             failed underneath it, and the source's freshness fallback allowed it
@@ -8714,7 +8743,7 @@ components:
             Every materialized table on the queried source's chain, and every
             rollup of a source on it, that could have answered this query: the
             one that served it marked `used`, the rest `skipped` with a reason.
-            Listed as `storage=` tables, then colocated rollups, then colocated
+            Listed as `storage=` tables, then database rollups, then database
             tables nearest first, which is not the order Publisher tries them
             (a persisted view or query, then rollups coarsest first, then the
             served copy). A table
@@ -8820,6 +8849,14 @@ components:
       properties:
         kind:
           $ref: "#/components/schemas/QueryPathTableKind"
+        origin:
+          type: string
+          enum: [persist, materialize, view, query, rollup]
+          description: >-
+            The mechanism that declared the table, as `PersistSourcePlan.origin`
+            names it. `kind: materialized` is `persist` or `materialize`.
+            Absent when `kind` is `live`, or when the table's mechanism is not
+            known.
         tableId:
           type: string
           description: The table that answered. Absent when `kind` is `live`.
@@ -8828,7 +8865,7 @@ components:
           enum: [database, storage]
           description: >-
             Where the table that answered lives: `database`, the source's own
-            database (the colocated tier), or `storage`, a `storage=` destination. The same tier the
+            database, or `storage`, a `storage=` destination. The same tier the
             query result's `servedFrom` reports. Absent when `kind` is `live`.
         dataAsOf:
           type: string
@@ -8854,6 +8891,14 @@ components:
           type: string
         kind:
           $ref: "#/components/schemas/QueryPathTableKind"
+        origin:
+          type: string
+          enum: [persist, materialize, view, query, rollup]
+          description: >-
+            The mechanism that declared the table, as `PersistSourcePlan.origin`
+            names it. `kind: materialized` is `persist` or `materialize`.
+            Absent when `kind` is `live`, or when the table's mechanism is not
+            known.
         outcome:
           type: string
           enum: [used, skipped]
@@ -8889,6 +8934,14 @@ components:
           type: string
         kind:
           $ref: "#/components/schemas/QueryPathTableKind"
+        origin:
+          type: string
+          enum: [persist, materialize, view, query, rollup]
+          description: >-
+            The mechanism that declared the table, as `PersistSourcePlan.origin`
+            names it. `kind: materialized` is `persist` or `materialize`.
+            Absent when `kind` is `live`, or when the table's mechanism is not
+            known.
         sourceName:
           type: string
           description: The source the table materializes; for a rollup, the source it rolls up.
@@ -8909,7 +8962,8 @@ components:
         What kind of answer: `view`, a persisted view's table; `query`, a
         persisted named query's table (`#@ persist` on a top-level `query:`);
         `rollup`, a pre-aggregation; `materialized`, a materialized source's
-        table; `live`, the source's own warehouse. A client treats a kind it
+        table (`origin` `persist` or `materialize`; this kind is not
+        extended); `live`, the source's own warehouse. A client treats a kind it
         does not know as a materialized table it cannot name.
 
     SkipReason:
@@ -10650,7 +10704,7 @@ components:
             Map of sourceID ("sourceName@modelURL") to every valid
             materialization declaration the package makes that is not built
             here: a `#@ persist` or `#(materialize)` source, a persisted view
-            or named query, or a rollup (`#(preaggregate)` or
+            or named query, or a rollup (`#(rollup)` or
             `#@ preaggregate`). Each is answered live while the rest of the
             package loads, and each carries its `reason`. An invalid
             declaration is never here: it fails the publish and the load. A
@@ -10733,7 +10787,7 @@ components:
             value); `eligibility_check_failed` (an eligibility gate failed
             with an error rather than a refusal); `projection_failed` (the
             plan entry could not otherwise be computed);
-            `rollup_companion_failed` (the generated `#(preaggregate)` rollup
+            `rollup_companion_failed` (the generated `#(rollup)` rollup
             companion, which also plans v1 `#@ preaggregate` rollups, did not
             plan or compile); `rollup_companion_blanking_failed` (that companion was
             not built because a `#@` line of the author's files could not be
@@ -10782,18 +10836,27 @@ components:
         is answered live, and the package carries one `*-not-built` warning
         for it (`persist-not-built`, `materialize-not-built`,
         `persist-view-not-built`, `persist-query-not-built` or
-        `preaggregate-not-built`) with this `message`. A `#@ persist`
+        `rollup-not-built`) with this `message`. A `#@ persist`
         source's gate refusal is computed from the SAME tier-appropriate
-        eligibility assert the build path itself enforces (the colocated
+        eligibility assert the build path itself enforces (the database
         tier's post-relaxation admission for a proven row-level,
         fully-attributed authorize gate applies here too), so a source this
         reports as refused is refused for the tier it would actually build
-        under. A `preaggregate`-tier entry can coexist with an entry of the
-        same sourceID in `BuildPlan.sources`: the one tier where
-        refused-and-present-in-sources is the correct, intended state, unlike
-        `storage`/`colocated` where a refusal means absence from `sources`.
+        under. A rollup's entry (`origin: rollup`) can coexist with an entry
+        of the same sourceID in `BuildPlan.sources`: the one mechanism where
+        refused-and-present-in-sources is the correct, intended state; for
+        every other a refusal means absence from `sources`.
       required: [name, sourceID, tier, reason, message]
       properties:
+        origin:
+          type: string
+          enum: [persist, materialize, view, query, rollup]
+          description: >-
+            The mechanism that declared it, as `PersistSourcePlan.origin` names
+            it: `persist`, `materialize`, `view`, `query`, or `rollup`. Read
+            this, not `tier`, to tell a rollup's refusal. Absent on a record a
+            release before this one wrote, where `tier: preaggregate` marked a
+            rollup.
         name:
           type: string
           description: >-
@@ -10813,16 +10876,20 @@ components:
             model path could not be resolved.
         tier:
           type: string
-          enum: [storage, colocated, preaggregate]
+          enum: [storage, database, preaggregate, colocated]
           description: >-
             Which build path this declaration was evaluated against: `storage`
             for one declaring `storage=<ref>` (a `#@ persist` source is
             evaluated against the full storage-destination eligibility gate,
-            which never admits an authorize-gated source); `colocated` for one
-            built in its own connection (a `#@ persist` source is evaluated
-            against the colocated gate, which admits a proven row-level,
-            fully-attributed gate); `preaggregate` for a rollup, whatever its
-            placement.
+            which never admits an authorize-gated source); `database` for one
+            built in its own connection's database (a `#@ persist` source is
+            evaluated against the database gate, which admits a proven
+            row-level, fully-attributed gate). A rollup's is its own placement,
+            as any other mechanism's. `preaggregate` is retained, no longer
+            produced: releases before this one said it for a rollup, whatever
+            its placement; read `origin` for the mechanism. `colocated` is
+            retained, no longer produced: it is what releases before this one
+            said for `database`, and a client should read it as `database`.
         reason:
           type: string
           enum:
@@ -10898,9 +10965,9 @@ components:
             `#(materialize)` a field that is not a stored dimension);
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns);
-            `read_only_dialect` (a colocated build on a dialect that
+            `read_only_dialect` (a database build on a dialect that
             cannot create tables; SQL Server today, whose connection reports
-            `canPersist: false`); `needs_qualified_name` (a colocated table on
+            `canPersist: false`); `needs_qualified_name` (a database table on
             BigQuery, where a table needs a dataset, whose `name=` names none:
             a `#@ persist` source, a persisted view or query, a
             `#(materialize)` source, or a rollup whose own `name=` and base's
@@ -10946,7 +11013,7 @@ components:
             generated build, a Publisher bug worth reporting).
 
 
-            A rollup (`#(preaggregate)` or `#@ preaggregate`): `hidden_field`
+            A rollup (`#(rollup)` or `#@ preaggregate`): `hidden_field`
             (a measure or grain dimension the published surface hides, which a
             rollup would publish), `access_filter` or `authorize` (a
             row-level gate a rollup cannot re-apply to its rows, named by the
@@ -10958,7 +11025,7 @@ components:
             stored partial), and `unreadable_grain` (a `storage=` rollup
             over a DuckDB source whose grain dimension is stored as a type no
             stored read declares, a BLOB, INTERVAL, MAP or JSON, so no query
-            would read its table; colocated, it is built).
+            would read its table; database, it is built).
 
 
             Retained, no longer produced: `given` (replaced by the positional
@@ -11084,15 +11151,22 @@ components:
           type: string
         origin:
           type: string
-          enum: [persist, preaggregate]
+          enum: [persist, materialize, view, query, rollup, preaggregate]
           default: persist
           description: >-
             Which authoring annotation produced this plan entry. `persist` — the
-            modeler wrote `#@ persist` on the source; every entry on a deployment
-            that uses no pre-aggregation, and the meaning of an absent value.
-            `preaggregate` — the modeler wrote `#@ preaggregate` on measures of
+            modeler wrote `#@ persist` on the source, and the meaning of an
+            absent value. `materialize` — `#(materialize)` on the source.
+            `view` and `query` — `#@ persist` on a view or a named `query:`,
+            whose generated build source this entry is. `rollup` — the
+            modeler wrote `#(rollup)` (or its deprecated alias
+            `#(preaggregate)`) or v1's `#@ preaggregate` on measures of
             `preaggregate.baseSourceName`, and the publisher SYNTHESIZED this
-            rollup source to serve them.
+            rollup source to serve them. Releases before this one said
+            `persist` for every entry that was not a rollup, and
+            `preaggregate` for a rollup: `preaggregate` is retained, no longer
+            produced. A client must accept a value it does not know as an
+            entry that is not a rollup.
 
 
             Note that BOTH kinds carry a `#@ persist` annotation by the time they
@@ -11114,7 +11188,7 @@ components:
           description: >-
             What the synthesized rollup covers: the base source it was derived
             from, the one grain it is built at, and the measures served there.
-            Present only when `origin` is `preaggregate`; null otherwise.
+            Present only when `origin` is `rollup`; null otherwise.
 
 
             Coverage is complete by construction — a measure that cannot be
@@ -11208,9 +11282,9 @@ components:
             declaring either on a source is a publish-time manifest error.)
 
 
-            A synthesized rollup (`origin: preaggregate`) resolves the same way,
+            A synthesized rollup (`origin: rollup`) resolves the same way,
             with its source level being its own `freshness.window=` /
-            `freshness.fallback=` (on `#(preaggregate)` or `#@ preaggregate`),
+            `freshness.fallback=` (on `#(rollup)` or `#@ preaggregate`),
             field by field over its base's own source-level declaration. A
             rollup that declares nothing therefore goes stale with its base,
             and a stale rollup is answered from the base, the same answer.
@@ -11285,7 +11359,7 @@ components:
             existing source must not re-address its table.
 
 
-            For a synthesized rollup (`origin: preaggregate`) the annotation was
+            For a synthesized rollup (`origin: rollup`) the annotation was
             generated by the publisher rather than authored, so this reports what
             synthesis emitted. It is still the annotation that governs the build,
             which is why it is reported the same way: a rollup is an ordinary
@@ -11300,7 +11374,7 @@ components:
             the source back to its model.
 
 
-            A synthesized rollup (`origin: preaggregate`) is declared by no model,
+            A synthesized rollup (`origin: rollup`) is declared by no model,
             so this is the model of its base — the file holding the
             `#@ preaggregate` annotations it was synthesized from, which is where
             an author would go to change it.
@@ -11536,7 +11610,7 @@ components:
             declared now (a source that moved to or from `storage=` keeps its
             content address): a stored upstream is stacked on in its
             destination, and never rendered into warehouse SQL. Optional and
-            additive: a reference without it still serves a colocated upstream.
+            additive: a reference without it still serves a database upstream.
 
     BuildInstruction:
       type: object
@@ -11578,7 +11652,7 @@ components:
             `storage=` authoring axis) — an entry in the environment's
             `storageDestinations`, which is a disjoint set from `connections`.
             Absent means build into the persist source's own warehouse — the
-            default, unchanged (colocated) path. When present, the build runs
+            default, unchanged (database) path. When present, the build runs
             a native per-engine query-passthrough CTAS on a build-scoped session
             for that destination (the source computes; only results cross), and
             the manifest records the destination + captured schema so
@@ -11654,7 +11728,7 @@ components:
             physical name and its content address when `storage=` is added or
             removed (an annotation enters neither), so without this field a
             boundary measured on the stored table is indistinguishable from one
-            measured on a colocated table of the same name — and a delta computed
+            measured on a database table of the same name — and a delta computed
             from the wrong one can skip rows.
 
             A caller that has never recorded this field may omit it. An entry that
@@ -11778,7 +11852,7 @@ components:
             The persist source's own connection (the source warehouse),
             mirroring `ManifestEntry.connectionName`. Without this a failure-only
             source carries no destination discriminator at all, so a consumer
-            cannot tell a colocated failure from a `storage=` one and, lacking
+            cannot tell a database failure from a `storage=` one and, lacking
             `storageDestinationName`, would resolve a destination-scoped claim
             against the wrong key.
         storageDestinationName:
@@ -11786,7 +11860,7 @@ components:
           description: >-
             When the source was instructed to build into a `storage=`
             destination, the destination name, mirroring
-            `ManifestEntry.storageDestinationName`. Absent for a colocated
+            `ManifestEntry.storageDestinationName`. Absent for a database
             failure. A consumer computes the same destination key a successful
             build would (`storageDestinationName ?? connectionName`) whether the
             source built or failed.
@@ -11877,13 +11951,21 @@ components:
             treat a miss as a corrupt manifest.
         origin:
           type: string
-          enum: [persist, preaggregate]
+          enum: [persist, materialize, view, query, rollup, preaggregate]
           default: persist
           description: >-
             Mirrors `PersistSourcePlan.origin` for the source this entry was built
             from: `persist` for a source the modeler wrote `#@ persist` on, which
-            is the meaning of an absent value, and `preaggregate` for a rollup
-            synthesized from `#@ preaggregate` measures. Repeated here because a
+            is the meaning of an absent value, and `rollup` for a rollup
+            synthesized from `#(rollup)` or `#@ preaggregate` measures.
+            `preaggregate`, what releases before this one wrote for a rollup, is
+            retained, no longer produced, and still read as a rollup, since a
+            host echoes the entries it stored. The
+            plan's other values (`materialize`, `view`, `query`) are accepted;
+            `persist` or an absent value stays valid for every entry that is not
+            a rollup, since a host echoes the entries it stored, and Publisher
+            reads only whether an entry is a rollup, taking the mechanism from
+            its own plan. Repeated here because a
             manifest travels without its build plan, and a consumer holding only
             the manifest otherwise cannot tell why it holds a table for a source
             that does not appear in the package.
@@ -11926,7 +12008,7 @@ components:
         nativeSchema:
           type: array
           description: >-
-            For a colocated entry (no `storageDestinationName`): each column of
+            For a database entry (no `storageDestinationName`): each column of
             the built table with its type as the warehouse's own catalog names it
             (`bigint`, `numeric`, `NUMBER(38,0)`, `UHUGEINT`), captured after the
             build. The served copy reads a big-integer column through a cast to
@@ -11971,7 +12053,7 @@ components:
 
             **Null is not zero**, and which paths report a figure differs.
 
-            A COLOCATED build reports one, taken from the Malloy connection's own
+            A DATABASE build reports one, taken from the Malloy connection's own
             statistics.
 
             A plain `storage=` build reports one when its warehouse read carried
@@ -11984,7 +12066,7 @@ components:
             reach its own job records also reports null; that case is counted by
             `publisher_storage_build_attribution_skipped_total`.
 
-            A COLOCATED incremental delta reports null because its statements do
+            A DATABASE incremental delta reports null because its statements do
             not run through a single call whose result reaches here. A delta
             into a `storage=` destination reports whatever its own bounded read
             reported: that read is issued through the same call a full build's
@@ -12013,7 +12095,7 @@ components:
             at least one persisted upstream was recomputed from its definition
             and inlined into this build, because its table could not be read --
             on either tier, an upstream this build neither materialized nor was
-            handed by reference; for a colocated build, an upstream that
+            handed by reference; for a database build, an upstream that
             landed in a `storage=` destination; for a `storage=` build, a
             source that reaches the warehouse through a non-persisted source,
             or whose shape does not compile in the destination.

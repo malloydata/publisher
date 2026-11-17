@@ -12,8 +12,8 @@
  *    query-shaped, read directly.
  *
  * Every case answers equal to live, served or declined, in a `storage=`
- * destination (the colocated variant is the conformance shape "persist over
- * a zoned base", which binds v1 colocated tables as a package does). A refinement of a base that sets only the zone is served, its
+ * destination (the database variant is the conformance shape "persist over
+ * a zoned base", which binds v1 database tables as a package does). A refinement of a base that sets only the zone is served, its
  * zone kept; one over a base that also declares zoned dimensions is not
  * re-rooted (`fields_not_carried`), so it answers live.
  */

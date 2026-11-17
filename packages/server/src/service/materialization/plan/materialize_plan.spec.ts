@@ -604,7 +604,7 @@ source: orders is orders_raw
    );
 
    it(
-      "chains a colocated extension over its colocated parent, and builds a storage= extension of a colocated parent over the raw chain (P10, phase 3 pull request 6)",
+      "chains a database extension over its database parent, and builds a storage= extension of a database parent over the raw chain (P10, phase 3 pull request 6)",
       async () => {
          const c = await compiled(`${BASE}
 #(materialize)
@@ -625,7 +625,7 @@ source: stored_ext is orders extend { dimension: east is region = 'east' }
          ).toEqual([
             ["orders", undefined, true],
             ["stored_ext", undefined, true],
-            // Colocated: its build reads the parent's build source in the
+            // Database: its build reads the parent's build source in the
             // warehouse, so nothing is compiled over a stored table.
             ["orders_ext", "orders", true],
          ]);
@@ -797,7 +797,7 @@ source: orders is orders_raw -> { select: * }
       { timeout: 30000 },
    );
 
-   it("builds a colocated source at its name=, or under its own name without one", () => {
+   it("builds a database source at its name=, or under its own name without one", () => {
       const notes = (text: string) => ({
          notes: [
             {
@@ -830,9 +830,9 @@ source: orders is orders_raw -> { select: * }
             fields: [field],
          },
       });
-      // A named colocated source is built at its name=; one without is
+      // A named database source is built at its name=; one without is
       // built under its own name (the run adds its package's or version's
-      // suffix, or a host its own name), colocated or stored.
+      // suffix, or a host its own name), database or stored.
       expect(
          plans.map((p) => [p.sourceName, p.persist, p.nameDefaulted]),
       ).toEqual([
@@ -843,7 +843,7 @@ source: orders is orders_raw -> { select: * }
       expect(refused).toEqual([]);
    });
 
-   it("refuses a colocated BigQuery source with no dataset-qualified name=, which alone places its table", () => {
+   it("refuses a database BigQuery source with no dataset-qualified name=, which alone places its table", () => {
       const declared = (text: string) => ({
          sourceID: "orders@file:///pkg/m.malloy",
          dialect: "standardsql",
@@ -936,7 +936,7 @@ source: orders is orders_raw -> { select: * }
             sourceID: "empty@file:///pkg/m.malloy",
             reason: "the source has no dimension to store",
             outcome: {
-               refused: { reason: "no_stored_columns", tier: "colocated" },
+               refused: { reason: "no_stored_columns", tier: "database" },
             },
          },
       ]);
@@ -1070,14 +1070,14 @@ source:
    );
 });
 
-describe("a colocated incremental pair table", () => {
+describe("a database incremental pair table", () => {
    it(
-      "plans a colocated incremental pair table outside DuckDB as a full rebuild, saying why",
+      "plans a database incremental pair table outside DuckDB as a full rebuild, saying why",
       async () => {
-         const colocated = pairSource(
+         const database = pairSource(
             'watermark=["order_date", "lines.loaded_on"]',
          ).replace(' storage="lake"', ' name="orders_pairs"');
-         const pkg = await packages.create(colocated);
+         const pkg = await packages.create(database);
          const contents = await contentsOf(pkg);
          // In a DuckDB warehouse its delta applies in place.
          const [inDuckDB] = planModelMaterialize(contents).plans;
@@ -1095,7 +1095,7 @@ describe("a colocated incremental pair table", () => {
          );
          const [plan] = planModelMaterialize(inPostgres).plans;
          expect(plan.pairFullRefresh).toMatch(
-            /colocated in its source's warehouse \(dialect postgres\).*declare storage=/,
+            /in its source's warehouse \(dialect postgres\).*declare storage=/,
          );
          expect(plan.persist).not.toHaveProperty("refresh");
          expect(plan.persist).not.toHaveProperty("watermark");
@@ -1171,7 +1171,7 @@ source: orders is orders_raw
    );
 
    it(
-      "builds a gated #@ persist storage= source under its own gate, switch on or off (G3), as a colocated one",
+      "builds a gated #@ persist storage= source under its own gate, switch on or off (G3), as a database one",
       async () => {
          for (const gatedSources of [true, false]) {
             const { outcome: o } = await outcome(

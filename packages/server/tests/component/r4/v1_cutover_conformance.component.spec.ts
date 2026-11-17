@@ -60,15 +60,15 @@ describe("the dry run's verdicts", () => {
    describe("v1 cutover: the dry run's serve path", () => {
       afterEach(freshLoadPool);
 
-      it("names the served copy for v1 storage= and colocated sources", async () => {
-         for (const variant of ["storage", "colocated"] as const) {
+      it("names the served copy for v1 storage= and database sources", async () => {
+         for (const variant of ["storage", "database"] as const) {
             const paths = await preview("baseline", variant, "cutover");
             expect(paths.daily).toEqual(["served_copy", undefined]);
          }
       }, 120_000);
 
-      it("names the served copy for a source with hidden columns, colocated or storage= (G2)", async () => {
-         for (const variant of ["colocated", "storage"] as const) {
+      it("names the served copy for a source with hidden columns, database or storage= (G2)", async () => {
+         for (const variant of ["database", "storage"] as const) {
             const paths = await preview(
                "joined persisted source with hidden fields, from an index",
                variant,
@@ -129,7 +129,7 @@ source: inherited is rows_base -> { select: id, region, amount }
 
 /**
  * The v1 cutover's dry run (6e) against what actually serves under the
- * cutover. For every fixture shape (storage and colocated v1 variants), a
+ * cutover. For every fixture shape (storage and database v1 variants), a
  * source reported `live` must never be answered by the served copy. The
  * preview bindings for v1 storage= sources must equal the bindings the bind
  * derives from the built table. And the dry run names the rollup leg for
@@ -144,7 +144,7 @@ describe("the dry run against what serves", () => {
          const saidServedNeverServed: string[] = [];
          const rollupNeverRollup: string[] = [];
          for (const shape of SHAPES) {
-            for (const variant of ["storage", "colocated"] as Variant[]) {
+            for (const variant of ["storage", "database"] as Variant[]) {
                if (shape.variants && !shape.variants.includes(variant))
                   continue;
                const restore = withSwitch("cutover");
@@ -311,7 +311,7 @@ source: orders is orders_raw extend {
             );
             const by = "error" in out ? out.error : out.answer.servedBy;
             const said = verdicts
-               .filter((v) => v.origin === "preaggregate")
+               .filter((v) => v.origin === "rollup")
                .map((v) => v.cutoverPath);
             if (by !== "rollup") expect(said).not.toContain("rollup");
          } finally {
@@ -338,7 +338,7 @@ describe("the runner as a library", () => {
          try {
             writePackageFiles(dir, {
                ...DATA_FILES,
-               ...renderFiles(shape, "colocated"),
+               ...renderFiles(shape, "database"),
             });
             const rows = await runV1CutoverConformance({
                package: { packageDir: dir },
@@ -551,7 +551,7 @@ describe("the runner as a CLI", () => {
          async () => {
             const { code, stdout, stderr } = await runScript(
                "baseline",
-               "colocated",
+               "database",
             );
             expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({
                code: 0,

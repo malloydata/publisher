@@ -27,7 +27,7 @@ regression here invisible in the rows. The proof is staleness — once the rollu
 built, changing the underlying data and asking again must return the answer that was
 stored.
 
-Colocated on Postgres, where the catalog can be asked which schema actually received
+Database on Postgres, where the catalog can be asked which schema actually received
 the table. A dialect that requires qualification cannot create an unqualified rollup at
 all; Postgres accepts either, which is what makes it able to tell the two apart.
 
@@ -172,7 +172,7 @@ rejects an unqualified `CREATE` outright — pre-aggregation could not build the
 Nothing in `#@ preaggregate` or `#@ persist` offered a way to supply a dataset, which is
 what `namespace=` now does.
 
-The placement half is why this runs colocated rather than into a storage destination: a
+The placement half is why this runs database rather than into a storage destination: a
 synthesized rollup is written to the source warehouse today regardless of the base's
 `storage=`, so that is where the table can be found. Letting a rollup follow its base
 into a `storage=` destination is separate work.

@@ -164,7 +164,7 @@ describe("a v1 #@ preaggregate rollup's annotations", () => {
          `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
       );
       pkg.materialization().bind({
-         colocated: {
+         database: {
             [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
          } as never,
       });

@@ -154,14 +154,14 @@ source: viewed is raw extend {
 
 #(access_filter) big = $TENANT
 source: gated is raw extend {
-  #(preaggregate) grain=["cat", "big"]
+  #(rollup) grain=["cat", "big"]
   measure: gtop is amt.max()
 }
 
 source: rolled is raw extend {
-  #(preaggregate) grain=["cat", "big"]
+  #(rollup) grain=["cat", "big"]
   measure: rtop is amt.max()
-  #(preaggregate) grain=["cat", "big"]
+  #(rollup) grain=["cat", "big"]
   measure: rn is count()
 }
 
@@ -419,7 +419,7 @@ function scenario(tier: Tier, bigTo: "double" | "text") {
          }
       }
       await f.pkg.reloadAllModels(
-         f.pkg.materialization().boundColocatedEntries() ?? {},
+         f.pkg.materialization().boundDatabaseEntries() ?? {},
       );
    }, 300_000);
    afterAll(async () => {

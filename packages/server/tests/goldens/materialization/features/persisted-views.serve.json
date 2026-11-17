@@ -8,7 +8,7 @@
       },
       {
         "name": "orders__by_status__view",
-        "tier": "colocated"
+        "tier": "database"
       },
       {
         "name": "orders__two_stage__view",
@@ -155,7 +155,7 @@
         },
         "warnings": []
       },
-      "query": "a colocated view",
+      "query": "a database view",
       "servedBy": "live",
       "servedFrom": null,
       "switch": "off"
@@ -546,6 +546,7 @@
         "considered": [
           {
             "kind": "view",
+            "origin": "view",
             "outcome": "used",
             "tableId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a"
           }
@@ -564,6 +565,7 @@
         },
         "servedBy": {
           "kind": "view",
+          "origin": "view",
           "tableId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a",
           "tier": "storage"
         },
@@ -617,6 +619,7 @@
         "considered": [
           {
             "kind": "view",
+            "origin": "view",
             "outcome": "used",
             "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4"
           }
@@ -634,12 +637,13 @@
         },
         "servedBy": {
           "kind": "view",
+          "origin": "view",
           "tableId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
           "tier": "database"
         },
         "warnings": []
       },
-      "query": "a colocated view",
+      "query": "a database view",
       "servedBy": "view",
       "servedFrom": "database",
       "switch": "on"
@@ -687,6 +691,7 @@
         "considered": [
           {
             "kind": "view",
+            "origin": "view",
             "outcome": "used",
             "tableId": "b3fc9bd92fd43c859fd061bf8bd1333035de41bb7a77730d0fc9aa70cba70d88"
           }
@@ -704,6 +709,7 @@
         },
         "servedBy": {
           "kind": "view",
+          "origin": "view",
           "tableId": "b3fc9bd92fd43c859fd061bf8bd1333035de41bb7a77730d0fc9aa70cba70d88",
           "tier": "storage"
         },
@@ -901,6 +907,7 @@
           {
             "detail": "the query refines `by_region` (`+ { … }`), and the stored result holds only the view as written",
             "kind": "view",
+            "origin": "view",
             "outcome": "skipped",
             "reason": "MISSING_FIELD",
             "tableId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a"

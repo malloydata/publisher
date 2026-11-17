@@ -91,6 +91,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb"
           }
@@ -108,6 +109,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb",
           "tier": "storage",
           "via": "served_copy"
@@ -166,6 +168,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb"
           }
@@ -183,6 +186,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb",
           "tier": "storage",
           "via": "served_copy"
@@ -241,6 +245,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb"
           }
@@ -258,6 +263,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb",
           "tier": "storage",
           "via": "served_copy"
@@ -316,6 +322,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb"
           }
@@ -333,6 +340,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "38ce5f3db9c65fb2c67e1dd4e7e5d6d52666932eabcb5ddc9b2ad503b52cfeeb",
           "tier": "storage",
           "via": "served_copy"

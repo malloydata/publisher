@@ -9,7 +9,7 @@
  * - the router's decision ({@link routeQuery}'s `considered`), which says how
  *   each candidate (the view, query, rollup and served legs) fared;
  * - the build-manifest entries the run that answered actually read, which say
- *   which colocated table answered: a colocated `#@ persist` table (or rollup)
+ *   which database table answered: a database `#@ persist` table (or rollup)
  *   Malloy substituted through the manifest, a tier that never reaches the
  *   router. Read from Malloy's own lookup, never from the SQL text;
  * - the package's catalog of materialized tables (its build plan, bound
@@ -33,6 +33,7 @@ import { recordedTimezoneOf } from "../../governance/ir/compiled_model";
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
 import type { FreshnessManifest } from "../domain/types";
+import type { TableOrigin } from "../domain/table_plans";
 import { forEachFieldPath } from "../../governance/ir/array_query";
 import { declineOfCode } from "../domain/leg_decline";
 
@@ -54,11 +55,11 @@ export interface PlannedTable {
    name: string;
    /** The content address: the table's `tableId` in the path report. */
    sourceEntityId: string;
-   origin: "persist" | "preaggregate";
+   origin: TableOrigin;
    /**
     * The key Malloy files the table under in a build manifest, where it is
     * not `sourceEntityId` (an address foldDistinctTableNames moved): a
-    * colocated persisted view or query is substituted under it.
+    * database persisted view or query is substituted under it.
     */
    compilerKey?: string;
    /**
@@ -94,12 +95,12 @@ export interface LiveTableVerdict {
 export interface MaterializedTableCatalog {
    /** Every planned source, keyed by `sourceID`. */
    planned: ReadonlyMap<string, PlannedTable>;
-   /** The colocated tables bound now, keyed by `sourceEntityId`. */
+   /** The database tables bound now, keyed by `sourceEntityId`. */
    bound: Readonly<FreshnessManifest>;
    /**
     * The tables whose serve verdict says no query is answered from them,
     * keyed by {@link liveVerdictKey} (tier and `sourceEntityId`: a `storage=`
-    * table and its colocated twin share the id but not the verdict). Absent
+    * table and its database twin share the id but not the verdict). Absent
     * when the verdicts are not known.
     */
    liveVerdicts?: ReadonlyMap<string, LiveTableVerdict>;
@@ -115,7 +116,7 @@ export interface MaterializedTableCatalog {
 
 /** The key of {@link MaterializedTableCatalog.liveVerdicts}. */
 export function liveVerdictKey(
-   tier: "storage" | "colocated",
+   tier: "storage" | "database",
    sourceEntityId: string,
 ): string {
    return `${tier}:${sourceEntityId}`;
@@ -126,15 +127,15 @@ export interface StorageTable {
    /** The source it materializes, or a rollup's synthesized name. */
    sourceName: string;
    sourceIDs?: readonly string[];
-   origin?: "persist" | "preaggregate";
+   origin?: TableOrigin;
    tablePath: string;
    freshAsOf?: string;
    /**
-    * A colocated `#(materialize)` table, which only the served copy reads, on
-    * the source's own connection: reported on the colocated tier, decided by
+    * A database `#(materialize)` table, which only the served copy reads, on
+    * the source's own connection: reported on the database tier, decided by
     * the served copy as a `storage=` table is.
     */
-   colocated?: true;
+   database?: true;
 }
 
 /** A rollup this model's pre-aggregation plans. */
@@ -143,7 +144,7 @@ interface ModelRollup {
    baseSourceName: string;
    baseSourceID?: string;
    /**
-    * A `#(preaggregate)` rollup, which the router's rollup leg answers on
+    * A `#(rollup)` rollup, which the router's rollup leg answers on
     * either tier (its `storage=` table too).
     */
    variant?: boolean;
@@ -160,7 +161,9 @@ interface TableState {
     */
    tableId?: string;
    kind: "materialized" | "rollup" | "view" | "query";
-   tier: "storage" | "colocated";
+   /** The mechanism that declared it, when known. */
+   origin?: TableOrigin;
+   tier: "storage" | "database";
    /** Built and bound, but withheld by its freshness window. */
    stale: boolean;
    /** Not bound to the package at all. */
@@ -171,17 +174,17 @@ interface TableState {
     */
    warned?: boolean;
    dataAsOf?: string;
-   /** For a colocated table: the name the SQL substitutes. */
+   /** For a database table: the name the SQL substitutes. */
    tableName?: string;
    /**
     * For a table a stored variant reads through a binding (a `storage=`
-    * table, or a colocated `#(materialize)` table the served copy reads):
+    * table, or a database `#(materialize)` table the served copy reads):
     * the binding.
     */
    binding?: StorageTable;
    /** For a rollup: its synthesized source name. */
    rollupName?: string;
-   /** A `#(preaggregate)` rollup: the rollup leg decides it on either tier. */
+   /** A `#(rollup)` rollup: the rollup leg decides it on either tier. */
    variant?: boolean;
 }
 
@@ -194,10 +197,10 @@ export interface QueryPathInput {
    chain: readonly string[];
    catalog: MaterializedTableCatalog | undefined;
    /**
-    * The colocated tables inside their freshness window now (the per-query
+    * The database tables inside their freshness window now (the per-query
     * build manifest's keys). Undefined treats every bound table as fresh.
     */
-   freshColocated?: ReadonlySet<string>;
+   freshDatabase?: ReadonlySet<string>;
    /** This model's `storage=` bindings, and the fresh subset of them. */
    storage: { all: readonly StorageTable[]; fresh: readonly StorageTable[] };
    /**
@@ -233,9 +236,9 @@ export interface QueryPathInput {
    runFailed?: boolean;
    /**
     * The manifest keys (`sourceEntityId`s) the run that answered read, from
-    * Malloy's manifest lookup: the colocated tables it substituted.
+    * Malloy's manifest lookup: the database tables it substituted.
     */
-   colocatedRead?: ReadonlySet<string>;
+   databaseRead?: ReadonlySet<string>;
    /**
     * For a query the rollup leg answered: the rollup it answered from (its
     * synthesized source name).
@@ -249,7 +252,7 @@ export interface QueryPathInput {
    view?: {
       kind?: "query";
       tableId?: string;
-      tier: "storage" | "colocated";
+      tier: "storage" | "database";
       built: boolean;
       stale: boolean;
       dataAsOf?: string;
@@ -266,14 +269,14 @@ export interface QueryPathInput {
 
 /**
  * Assemble the path report. `considered` lists `storage=` tables, then
- * colocated rollups, then colocated tables nearest first: not the order the
+ * database rollups, then database tables nearest first: not the order the
  * router tries the legs (`makeLegs`: persisted results, then rollups, then
  * the served copy).
  */
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
    // One decision per kind; where two candidates share a kind (the v1 and
-   // `#(preaggregate)` rollup legs), the one that answered.
+   // `#(rollup)` rollup legs), the one that answered.
    const decided = new Map<ConsideredVariant["kind"], ConsideredVariant>();
    for (const c of input.considered) {
       if (!decided.has(c.kind) || c.outcome === "used") decided.set(c.kind, c);
@@ -299,7 +302,7 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
       freshStorage,
    );
 
-   const rollupAnswered = colocatedRollupDecisions(
+   const rollupAnswered = databaseRollupDecisions(
       input,
       tally,
       tables,
@@ -324,19 +327,20 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
             considered.push({
                tableId: t.tableId,
                kind: t.kind,
+               ...originField(t),
                outcome: "used",
             });
          }
       }
    }
 
-   // Colocated `#@ persist`: Malloy substitutes the bound table into whatever
+   // Database `#@ persist`: Malloy substitutes the bound table into whatever
    // runnable answered, unless a stored variant replaced the source.
    if (!storageAnswered && !rollupAnswered) {
       let answered = false;
       for (const t of tables) {
          if (
-            t.tier !== "colocated" ||
+            t.tier !== "database" ||
             t.kind !== "materialized" ||
             t.unbuilt ||
             t.binding
@@ -386,6 +390,13 @@ interface PathTally {
    ): void;
 }
 
+/** A table's `origin` on the wire, when its mechanism is known. */
+function originField(t: Pick<TableState, "origin">): {
+   origin?: TableOrigin;
+} {
+   return t.origin ? { origin: t.origin } : {};
+}
+
 /** An empty tally: nothing considered, the query answered live. */
 function pathTally(): PathTally {
    const considered: ApiCandidate[] = [];
@@ -395,13 +406,19 @@ function pathTally(): PathTally {
    let servedBy: ApiServer = { kind: "live" };
    const markUsed = (t: TableState) => {
       if (t.tableId) {
-         considered.push({ tableId: t.tableId, kind: t.kind, outcome: "used" });
+         considered.push({
+            tableId: t.tableId,
+            kind: t.kind,
+            ...originField(t),
+            outcome: "used",
+         });
       }
       servedBy = {
          kind: t.kind,
+         ...originField(t),
          ...(t.tableId ? { tableId: t.tableId } : {}),
-         // The wire names the colocated tier by where it lives.
-         tier: t.tier === "colocated" ? "database" : "storage",
+         // The wire names the database tier by where it lives.
+         tier: t.tier === "database" ? "database" : "storage",
          ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
       };
    };
@@ -415,6 +432,7 @@ function pathTally(): PathTally {
       const candidate: ApiCandidate = {
          tableId: t.tableId,
          kind: t.kind,
+         ...originField(t),
          outcome: "skipped",
          reason,
          ...(code ? { code } : {}),
@@ -453,6 +471,7 @@ function viewTableDecision(
          key: `persisted-view/${input.view.tableId ?? ""}`,
          ...(input.view.tableId ? { tableId: input.view.tableId } : {}),
          kind: input.view.kind ?? "view",
+         origin: input.view.kind ?? "view",
          tier: input.view.tier,
          stale: input.view.stale,
          unbuilt: !input.view.built,
@@ -491,7 +510,7 @@ function viewTableDecision(
 /**
  * `storage=`: tried only when the tier was a candidate at all (mode on,
  * bindings and a destination present).
- * A colocated `#(materialize)` table is the served copy's, decided here
+ * A database `#(materialize)` table is the served copy's, decided here
  * with the storage tier's tables. Returns whether a stored table answered.
  */
 function storageTableDecisions(
@@ -573,7 +592,7 @@ function storageTableDecisions(
 
 /**
  * Each rollup's own decline, by synthesized source name, from every rollup
- * leg that tried it (the v1 and `#(preaggregate)` legs share the kind).
+ * leg that tried it (the v1 and `#(rollup)` legs share the kind).
  */
 function rollupMemberDeclines(
    considered: readonly ConsideredVariant[],
@@ -589,11 +608,11 @@ function rollupMemberDeclines(
 }
 
 /**
- * Rollups the rollup leg decides: colocated ones, and `#(preaggregate)` ones
+ * Rollups the rollup leg decides: database ones, and `#(rollup)` ones
  * on either tier. A rollup the leg tried carries its own reason; one it never
  * tried, the leg's. Returns whether a rollup answered.
  */
-function colocatedRollupDecisions(
+function databaseRollupDecisions(
    input: QueryPathInput,
    tally: PathTally,
    tables: readonly TableState[],
@@ -602,9 +621,9 @@ function colocatedRollupDecisions(
    storageAnswered: boolean,
 ): boolean {
    const { markUsed, skip } = tally;
-   const colocatedRollups = tables.filter(
+   const databaseRollups = tables.filter(
       (t) =>
-         (t.tier === "colocated" || t.variant) &&
+         (t.tier === "database" || t.variant) &&
          t.kind === "rollup" &&
          !t.unbuilt,
    );
@@ -612,11 +631,11 @@ function colocatedRollupDecisions(
    if (rollupDecision && !storageAnswered) {
       const used =
          rollupDecision.outcome === "used"
-            ? colocatedRollups.find(
+            ? databaseRollups.find(
                  (t) => !t.stale && t.rollupName === input.rollupMember,
               )
             : undefined;
-      for (const t of colocatedRollups) {
+      for (const t of databaseRollups) {
          if (t.stale) {
             skip(t, "STALE");
          } else if (rollupDecision.reason === "row_level_gate") {
@@ -687,7 +706,7 @@ function applyServeVerdicts(
    const warnings: ApiWarning[] = [];
    const own = ownSourceVerdict(input);
    if (verdicts.size === 0 && !own) return warnings;
-   // A table that answered (its colocated copy, beside a storage copy that is
+   // A table that answered (its database copy, beside a storage copy that is
    // not routed) is no table that "answers no query": its skipped twin keeps
    // the code, and no warning says otherwise.
    const used = new Set(
@@ -812,9 +831,9 @@ function skipReasonOf(decision: Pick<ConsideredVariant, "code">): SkipReason {
    return declineOfCode(decision.code)?.reason ?? "MISSING_FIELD";
 }
 
-/** Whether the run that answered read this colocated table from the manifest. */
+/** Whether the run that answered read this database table from the manifest. */
 function readByRun(input: QueryPathInput, t: TableState): boolean {
-   return !!t.tableId && !!input.colocatedRead?.has(t.tableId);
+   return !!t.tableId && !!input.databaseRead?.has(t.tableId);
 }
 
 /**
@@ -837,8 +856,8 @@ function tablesFor(
    };
    const planned = input.catalog?.planned;
    // A storage table, then (unless the storage tier answers for it) the
-   // source's own colocated table, which Malloy substitutes when the tier is
-   // not routed. An unbuilt colocated twin of a storage table is not reported:
+   // source's own database table, which Malloy substitutes when the tier is
+   // not routed. An unbuilt database twin of a storage table is not reported:
    // the source was never meant to build there.
    const addSource = (
       binding: StorageTable | undefined,
@@ -851,7 +870,7 @@ function tablesFor(
          ...(rollupName ? { rollupName } : {}),
          ...(variant ? { variant } : {}),
       };
-      // A `#(preaggregate)` table is the rollup leg's on either tier.
+      // A `#(rollup)` table is the rollup leg's on either tier.
       if (variant && binding) {
          add({ ...storageState(binding, plan, kind, fresh), ...named });
          return;
@@ -861,9 +880,9 @@ function tablesFor(
             add({ ...storageState(binding, plan, kind, fresh), ...named });
             return;
          }
-         // A colocated `#(materialize)` table the served copy was not tried
-         // for: reported as its colocated twin below, never warned.
-         if (input.storageWarned && !binding.colocated) {
+         // A database `#(materialize)` table the served copy was not tried
+         // for: reported as its database twin below, never warned.
+         if (input.storageWarned && !binding.database) {
             add({
                ...storageState(binding, plan, kind, fresh),
                ...named,
@@ -872,19 +891,19 @@ function tablesFor(
          }
       }
       if (!plan) return;
-      const colocated = { ...colocatedState(plan, kind, input), ...named };
-      if (!binding || !colocated.unbuilt) add(colocated);
+      const database = { ...databaseState(plan, kind, input), ...named };
+      if (!binding || !database.unbuilt) add(database);
    };
 
    // Persist tables, in chain order.
    for (const sourceID of input.chain) {
       const plan = planned?.get(sourceID);
       const binding = input.storage.all.find(
-         (b) => b.origin !== "preaggregate" && b.sourceIDs?.includes(sourceID),
+         (b) => b.origin !== "rollup" && b.sourceIDs?.includes(sourceID),
       );
       addSource(
          binding,
-         plan?.origin === "persist" ? plan : undefined,
+         plan?.origin !== "rollup" ? plan : undefined,
          "materialized",
       );
    }
@@ -899,8 +918,7 @@ function tablesFor(
       if (!baseOnChain) continue;
       const binding = input.storage.all.find(
          (b) =>
-            b.origin === "preaggregate" &&
-            b.sourceName === rollup.rollupSourceName,
+            b.origin === "rollup" && b.sourceName === rollup.rollupSourceName,
       );
       addSource(
          binding,
@@ -910,10 +928,10 @@ function tablesFor(
          rollup.variant,
       );
    }
-   // Storage first, then colocated; chain order within each.
+   // Storage first, then database; chain order within each.
    return [
       ...out.filter((t) => t.tier === "storage"),
-      ...out.filter((t) => t.tier === "colocated"),
+      ...out.filter((t) => t.tier === "database"),
    ];
 }
 
@@ -932,7 +950,7 @@ function planForRollup(
    rollupSourceName: string,
 ): PlannedTable | undefined {
    const named = [...(input.catalog?.planned.values() ?? [])].filter(
-      (p) => p.origin === "preaggregate" && p.name === rollupSourceName,
+      (p) => p.origin === "rollup" && p.name === rollupSourceName,
    );
    if (named.length <= 1) return named[0];
    const own = named.filter((p) => p.modelPath === input.modelPath);
@@ -947,7 +965,7 @@ function stateOfBinding(
    binding: StorageTable,
    fresh: ReadonlySet<string>,
 ): TableState {
-   const rollup = binding.origin === "preaggregate";
+   const rollup = binding.origin === "rollup";
    const plan = rollup
       ? planForRollup(input, binding.sourceName)
       : binding.sourceIDs
@@ -968,10 +986,11 @@ function storageState(
    fresh: ReadonlySet<string>,
 ): TableState {
    return {
-      key: `${binding.colocated ? "colocated" : "storage"}:${binding.tablePath}`,
+      key: `${binding.database ? "database" : "storage"}:${binding.tablePath}`,
       ...(plan ? { tableId: plan.sourceEntityId } : {}),
       kind,
-      tier: binding.colocated ? "colocated" : "storage",
+      ...originField({ origin: plan?.origin ?? binding.origin }),
+      tier: binding.database ? "database" : "storage",
       stale: !fresh.has(binding.tablePath),
       unbuilt: false,
       ...(binding.freshAsOf ? { dataAsOf: binding.freshAsOf } : {}),
@@ -979,22 +998,23 @@ function storageState(
    };
 }
 
-function colocatedState(
+function databaseState(
    plan: PlannedTable,
    kind: TableState["kind"],
-   input: Pick<QueryPathInput, "catalog" | "freshColocated">,
+   input: Pick<QueryPathInput, "catalog" | "freshDatabase">,
 ): TableState {
    const bound = input.catalog?.bound[plan.sourceEntityId];
    return {
-      key: `colocated:${plan.sourceEntityId}`,
+      key: `database:${plan.sourceEntityId}`,
       tableId: plan.sourceEntityId,
       kind,
-      tier: "colocated",
+      origin: plan.origin,
+      tier: "database",
       // Bound, but left out of this query's build manifest by its window.
       stale:
          !!bound &&
-         !!input.freshColocated &&
-         !input.freshColocated.has(plan.sourceEntityId),
+         !!input.freshDatabase &&
+         !input.freshDatabase.has(plan.sourceEntityId),
       unbuilt: !bound,
       ...(bound?.dataAsOf ? { dataAsOf: bound.dataAsOf } : {}),
       ...(bound ? { tableName: bound.tableName } : {}),
@@ -1017,9 +1037,7 @@ function nearbyTables(
    if (!queried || !input.catalog) return [];
    const builtStorage = new Set(
       input.storage.all.flatMap((b) =>
-         b.origin === "preaggregate"
-            ? [b.sourceName]
-            : [...(b.sourceIDs ?? [])],
+         b.origin === "rollup" ? [b.sourceName] : [...(b.sourceIDs ?? [])],
       ),
    );
    const found: (ApiNearby & { distance: number })[] = [];
@@ -1055,18 +1073,19 @@ function nearbyTables(
       found.push({
          tableId: table.sourceEntityId,
          kind,
+         origin: table.origin,
          sourceName,
          relationship,
          built:
             !!input.catalog?.bound[table.sourceEntityId] ||
             builtStorage.has(
-               table.origin === "preaggregate" ? table.name : table.sourceID,
+               table.origin === "rollup" ? table.name : table.sourceID,
             ),
          distance,
       });
    };
    for (const p of input.catalog.planned.values()) {
-      if (p.origin === "persist") {
+      if (p.origin !== "rollup") {
          consider(p.sourceID, p, "materialized", p.name);
       }
    }

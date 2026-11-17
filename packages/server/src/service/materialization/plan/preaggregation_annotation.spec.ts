@@ -457,7 +457,7 @@ describe("#@ preaggregate reader: reading storage=", () => {
       expect(declaration.grains).toEqual([]);
    });
 
-   it("an undeclared storage= leaves the grain colocated", () => {
+   it("an undeclared storage= leaves the grain database", () => {
       expect(storageOf("m_restated_grain")).toEqual([[["a_dim"], undefined]]);
    });
 });

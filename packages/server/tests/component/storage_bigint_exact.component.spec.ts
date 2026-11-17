@@ -13,7 +13,7 @@
  *
  * - The fix: a build stores a 128-bit integer it computed as DECIMAL(38,0),
  *   which Parquet keeps exactly, so a `#@ persist storage=` source, a
- *   `#(materialize)` source, a `#(preaggregate)` rollup and a persisted view
+ *   `#(materialize)` source, a `#(rollup)` rollup and a persisted view
  *   are served from the table and equal live digit for digit.
  * - The guard: a value past 38 digits fails that cast, the build stores the
  *   128-bit type (as an older build did), and every answer reading it is
@@ -71,7 +71,7 @@ source: raw is warehouse.sql("""
          (CASE WHEN i < ${GROUPS} THEN ${BIG} ELSE 1 END)::DECIMAL(38,0) AS d
   FROM range(${2 * GROUPS}) AS t(i)
 """) extend {
-  #(preaggregate) grain=["k"] storage="lake"
+  #(rollup) grain=["k"] storage="lake"
   measure: v_total is v.sum()
   #@ persist storage="lake"
   view: by_k is { group_by: k; aggregate: total is v.sum() }
@@ -82,7 +82,7 @@ source: raw is warehouse.sql("""
 // The control rollup has a table of its own: a rollup declines as a whole
 // when any column it stores has no exact read.
 source: raw_top is raw extend {
-  #(preaggregate) grain=["k"] storage="lake"
+  #(rollup) grain=["k"] storage="lake"
   measure: v_top is v.max()
 }
 
@@ -114,7 +114,7 @@ source: wide_base is warehouse.sql("""
 """)
 
 source: wide is wide_base extend {
-  #(preaggregate) grain=["k"] storage="lake"
+  #(rollup) grain=["k"] storage="lake"
   measure: h_total is h.sum()
   #@ persist storage="lake"
   view: by_k_wide is { group_by: k; aggregate: ht is h.sum() }
@@ -172,7 +172,7 @@ const CASES: {
       served: true,
    },
    {
-      name: "P4-01 #(preaggregate) storage=: a rollup of a BIGINT sum",
+      name: "P4-01 #(rollup) storage=: a rollup of a BIGINT sum",
       malloy: "run: raw -> { group_by: k; aggregate: v_total; order_by: k }",
       exact: { column: "v_total", value: SUM },
       served: true,
@@ -196,7 +196,7 @@ const CASES: {
       leg: "materialized",
    },
    {
-      name: "P4-01 guard, #(preaggregate) storage=: a rollup of it answers live",
+      name: "P4-01 guard, #(rollup) storage=: a rollup of it answers live",
       malloy: "run: wide -> { group_by: k; aggregate: h_total; order_by: k }",
       exact: { column: "h_total", value: WIDE },
       leg: "rollup",

@@ -15,7 +15,7 @@
  * beside the table. Where it failed, or was not recorded, the copy declines.
  *
  * Every answer equals live on its rows and its fields' types, on DuckDB (a
- * `storage=` table and a colocated one) and, when
+ * `storage=` table and a database one) and, when
  * `PUBLISHER_TEST_POSTGRES_URL` names one, on a real Postgres (the docker
  * `postgres:16` the gates run).
  */
@@ -64,7 +64,7 @@ const leafMeasures = (j: string) => `  measure:
 
 /**
  * The model on connection `w`, its tables in `schema`, each materialized
- * source placed by `at` (`storage="lake"`, or a colocated `name=`).
+ * source placed by `at` (`storage="lake"`, or a database `name=`).
  */
 function model(
    w: string,
@@ -305,7 +305,7 @@ const tiers: Tier[] = [
       }),
    },
    {
-      label: "DuckDB, colocated",
+      label: "DuckDB, database",
       storage: false,
       scenario: async () => ({
          files: {
@@ -318,7 +318,7 @@ const tiers: Tier[] = [
    ...(POSTGRES_URL
       ? [
            {
-              label: "Postgres, colocated",
+              label: "Postgres, database",
               storage: false,
               scenario: async () => {
                  const pg = new PostgresConnection({

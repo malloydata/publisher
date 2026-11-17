@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A colocated table on BigQuery needs a dataset, which only a dotted `name=`
+ * A database table on BigQuery needs a dataset, which only a dotted `name=`
  * gives it: a rollup's own or its base's container, or a source's
  * dataset-qualified name. A valid declaration with none is refused at plan,
  * alone, on every mechanism (`#@ persist`, a persisted view, `#(materialize)`,
- * `#(preaggregate)` and `#@ preaggregate`), with the one refusal record:
+ * `#(rollup)` and `#@ preaggregate`), with the one refusal record:
  * its mechanism's `*-not-built` warning and a `refusedSources` entry with the
  * reason `needs_qualified_name`. The package loads, the rest is planned, and
  * nothing reaches the warehouse: the check is the plan's.
@@ -53,7 +53,7 @@ const rows = (conn: string, extra = "") =>
 
 const MODEL = (conn: string) => `##! experimental { persistence }
 
-// Colocated #@ persist: a bare name places nothing, a dotted one a dataset.
+// Database #@ persist: a bare name places nothing, a dotted one a dataset.
 #@ persist name="bare_t"
 source: bare is ${rows(conn)} -> { group_by: k; aggregate: total is n.sum() }
 #@ persist name="scratch.placed_t"
@@ -69,20 +69,20 @@ source: mz_placed is ${rows(conn, ", 1 AS one")}
 
 // Rollups: their own name= container, their base's, or none.
 source: facts is ${rows(conn, ", 2 AS two")} extend {
-  #(preaggregate) grain=["k"]
+  #(rollup) grain=["k"]
   measure: v2_none is n.sum()
-  #(preaggregate) grain=["k"] name="scratch.facts_rollup"
+  #(rollup) grain=["k"] name="scratch.facts_rollup"
   measure: v2_named is n.max()
   #@ preaggregate grain="k"
   measure: v1_none is n.min()
 }
 #@ persist name="scratch.based_t"
 source: based is ${rows(conn, ", 3 AS three")} -> { select: * } extend {
-  #(preaggregate) grain=["k"]
+  #(rollup) grain=["k"]
   measure: inherits is n.sum()
 }
 
-// A persisted view, colocated, with no name.
+// A persisted view, database, with no name.
 source: viewed is ${rows(conn, ", 4 AS four")} extend {
   #@ persist
   view: by_k is { group_by: k; aggregate: vt is n.sum() }
@@ -119,7 +119,7 @@ async function load(conn: string, connections: Map<string, Connection>) {
          .map((s) => s.name)
          .sort(),
       refused: Object.values(plan?.refusedSources ?? {})
-         .map((r) => [r.name, r.tier, r.reason])
+         .map((r) => [r.name, r.origin, r.reason])
          .sort(),
       warnings: (pkg.getPackageMetadata().warnings ?? [])
          .filter((w) => w.code?.endsWith("-not-built"))
@@ -129,7 +129,7 @@ async function load(conn: string, connections: Map<string, Connection>) {
    };
 }
 
-describe("a colocated BigQuery table with no dataset is refused at plan", () => {
+describe("a database BigQuery table with no dataset is refused at plan", () => {
    it("refuses each mechanism alone, with one record and reason, and plans the rest", async () => {
       const ran: string[] = [];
       const { planned, refused, warnings, messages } = await load(
@@ -146,14 +146,14 @@ describe("a colocated BigQuery table with no dataset is refused at plan", () => 
          expect(refusedNames).toContain(name);
       }
       // The view's build source, and `facts`'s one unplaced rollup (its
-      // `#(preaggregate)` and `#@ preaggregate` measures share a grain, so
+      // `#(rollup)` and `#@ preaggregate` measures share a grain, so
       // one table), which stays listed beside its refusal, as a refused
       // rollup does.
       expect(refusedNames.filter((n) => n.startsWith("viewed"))).toHaveLength(
          1,
       );
       const refusedRollups = refused
-         .filter((r) => r[1] === "preaggregate")
+         .filter((r) => r[1] === "rollup")
          .map((r) => String(r[0]));
       expect(refusedRollups).toEqual([
          expect.stringMatching(/^facts__rollup__k__/),
@@ -175,7 +175,7 @@ describe("a colocated BigQuery table with no dataset is refused at plan", () => 
             "persist-not-built",
             "materialize-not-built",
             "persist-view-not-built",
-            "preaggregate-not-built",
+            "rollup-not-built",
          ]),
       );
       expect(warnings.every((w) => w[2] === "warn")).toBe(true);

@@ -3,7 +3,7 @@
 
 /**
  * The bind: committed manifest entries joined to the package's plan, as the
- * bindings and the colocated entries a snapshot holds, and the entries it
+ * bindings and the database entries a snapshot holds, and the entries it
  * declines with why. One function per half of a manifest, both pure.
  *
  * - {@link bindStorageEntries}: a `storage=` entry binds only when a plan
@@ -11,11 +11,11 @@
  *   alone: another version's or another edit's table is declined), and only
  *   for the sources the eligibility gate found eligible. Eligibility must be
  *   positive: no plan, or a source missing from it, declines.
- * - {@link bindColocatedEntries}: a colocated entry binds only when its
- *   content address is colocated-eligible, its table name quoted for its
+ * - {@link bindDatabaseEntries}: a database entry binds only when its
+ *   content address is database-eligible, its table name quoted for its
  *   plan's dialect (Malloy pastes a manifest's table name verbatim).
- * - {@link deriveColocatedServeBindings}: the served copy's bindings for the
- *   colocated `#(materialize)` and v1 `#@ persist` tables those entries name,
+ * - {@link deriveDatabaseServeBindings}: the served copy's bindings for the
+ *   database `#(materialize)` and v1 `#@ persist` tables those entries name,
  *   read on the source's own connection. A `#(materialize)` build source is
  *   read by no author query, so Malloy's own manifest substitution never
  *   serves it; the served copy re-roots the author's source on it, exactly as
@@ -35,6 +35,8 @@ import {
    isPersistedQuerySourceID,
    type MaterializePlan,
    type StoredColumn,
+   isRollupOrigin,
+   type TableOrigin,
 } from "../domain/table_plans";
 import { capabilitiesOf } from "../domain/dialect";
 import {
@@ -253,22 +255,22 @@ export function keptTableAddresses(
    return out;
 }
 
-/** One colocated entry the bind declined, for the facade's log and counter. */
-interface ColocatedBindDecline {
+/** One database entry the bind declined, for the facade's log and counter. */
+interface DatabaseBindDecline {
    reason: BindDeclineReason;
    sourceEntityId: string;
    detail: string;
 }
 
 /**
- * The colocated entries a manifest binds, filtered POSITIVELY against the
- * colocated eligibility (a miss is declined, not fatal), each table name
+ * The database entries a manifest binds, filtered POSITIVELY against the
+ * database eligibility (a miss is declined, not fatal), each table name
  * quoted for its plan's dialect: a table named by a reserved word or needing
  * its case kept reaches the warehouse only quoted, as the builder created it.
  * A name written as SQL is parsed and re-quoted; one its dialect cannot read
  * or quote is declined (`unquotable_name`), and the rest still bind.
  */
-export function bindColocatedEntries(args: {
+export function bindDatabaseEntries(args: {
    entries: FreshnessManifest;
    eligibility:
       | {
@@ -278,10 +280,10 @@ export function bindColocatedEntries(args: {
       | undefined;
    /** Each planned source's dialect, by its content address. */
    dialects: ReadonlyMap<string, string>;
-}): { entries: FreshnessManifest; declined: ColocatedBindDecline[] } {
+}): { entries: FreshnessManifest; declined: DatabaseBindDecline[] } {
    const { eligibility } = args;
    const entries: FreshnessManifest = {};
-   const declined: ColocatedBindDecline[] = [];
+   const declined: DatabaseBindDecline[] = [];
    for (const [sourceEntityId, entry] of Object.entries(args.entries)) {
       if (eligibility?.eligibleEntityIds.has(sourceEntityId)) {
          const dialect = args.dialects.get(sourceEntityId);
@@ -350,17 +352,17 @@ export function kindFromPlan(
 }
 
 /** What a binding reads of a build-plan source. */
-interface ColocatedPlanSource {
+interface DatabasePlanSource {
    name: string;
    sourceEntityId: string;
    connectionName: string;
    dialect?: string;
-   origin?: "persist" | "preaggregate";
+   origin?: TableOrigin | "preaggregate";
    annotationFields?: Record<string, string>;
 }
 
 /**
- * The served copy's bindings for the colocated `#(materialize)` tables the
+ * The served copy's bindings for the database `#(materialize)` tables the
  * bound manifest holds: one per planned `#(materialize)` source without
  * `storage=` whose content address the manifest names, admitted by
  * `eligible` (the same positive eligibility a `storage=` binding needs).
@@ -371,11 +373,11 @@ interface ColocatedPlanSource {
  * source over one is bound as a `storage=` source is. With neither, it binds
  * nothing: its table's columns are unknown, so it serves live.
  */
-export function deriveColocatedServeBindings(args: {
-   /** The bound colocated manifest, freshness fields included. */
+export function deriveDatabaseServeBindings(args: {
+   /** The bound database manifest, freshness fields included. */
    entries: FreshnessManifest | undefined;
    /** The build plan's sources, by sourceID. */
-   planSources: Readonly<Record<string, ColocatedPlanSource>>;
+   planSources: Readonly<Record<string, DatabasePlanSource>>;
    /** The `#(materialize)` plans, by the author's sourceID. */
    materializePlans: Readonly<Record<string, MaterializePlan>>;
    /** Whether the bind admits a planned source (positive eligibility). */
@@ -397,7 +399,7 @@ export function deriveColocatedServeBindings(args: {
    const bindings: Binding[] = [];
    for (const [sourceID, source] of Object.entries(planSources)) {
       const plan = materializePlans[sourceID];
-      if (source.origin === "preaggregate") continue;
+      if (isRollupOrigin(source.origin)) continue;
       if (!plan && (!args.v1Schema || args.notV1?.(sourceID))) continue;
       // A `storage=` table is bound from the storage manifest, never here.
       if (
@@ -437,7 +439,7 @@ export function deriveColocatedServeBindings(args: {
       }
       bindings.push({
          kind: plan ? "materialize" : "persist",
-         tier: "colocated",
+         tier: "database",
          sourceName: source.name,
          sourceIDs: [sourceID],
          destinationName: source.connectionName,
@@ -469,7 +471,7 @@ export function deriveColocatedServeBindings(args: {
 const ZONED_TIMESTAMP = /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i;
 
 /**
- * A colocated `#(materialize)` table's columns: the plan's, typed as Malloy
+ * A database `#(materialize)` table's columns: the plan's, typed as Malloy
  * declares them (a truncation's `DATE`, which the warehouse may hold as a
  * timestamp), and each zoned timestamp the build captured, which the plan
  * cannot spell, as it captured it, as a `storage=` binding declares one. No
@@ -491,7 +493,7 @@ function plannedWithCaptured(
 }
 
 /**
- * The columns a v1 colocated `#@ persist` build wrote, derived from the
+ * The columns a v1 database `#@ persist` build wrote, derived from the
  * source's compiled definition (for a table built before its build captured
  * a schema). A v1 build source is query-shaped, so its
  * stored columns are the query's output fields. They are read from the
@@ -554,7 +556,7 @@ export interface UnreadTable {
    detail?: string;
 }
 
-/** One bound colocated table whose warehouse columns moved since its build. */
+/** One bound database table whose warehouse columns moved since its build. */
 export interface ObservedDrift {
    sourceEntityId: string;
    /**
@@ -581,8 +583,8 @@ export interface ObservedDrift {
 }
 
 /**
- * The colocated bindings and entries held to the columns the bind read from
- * each table's warehouse ({@link ObservedColumns}). A colocated table's types
+ * The database bindings and entries held to the columns the bind read from
+ * each table's warehouse ({@link ObservedColumns}). A database table's types
  * are otherwise the plan's, or what its build captured, so a column altered
  * outside a build would be read with a type the table no longer holds.
  *
@@ -644,7 +646,7 @@ export function applyObservedColumns(args: {
    >();
    const served = new Set(
       args.bindings
-         .filter((b) => b.tier === "colocated")
+         .filter((b) => b.tier === "database")
          .map((b) => b.virtualHandle),
    );
    for (const [id, entry] of Object.entries(args.entries)) {
@@ -693,7 +695,7 @@ export function applyObservedColumns(args: {
       entries[id] = entry;
    }
    const bindings = args.bindings.flatMap((b): Binding[] => {
-      if (b.tier !== "colocated") return [b];
+      if (b.tier !== "database") return [b];
       if (left.has(b.virtualHandle)) return [];
       const read = reads.get(b.virtualHandle);
       if (!read) return [b];

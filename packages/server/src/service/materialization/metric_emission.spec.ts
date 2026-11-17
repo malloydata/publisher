@@ -128,7 +128,7 @@ describe("publisher_materialization_eligibility_refused_total", () => {
 
    it("counts a source under its wire refusal, when the gates disagree", async () => {
       // A blank `storage=` is refused for its placement on the wire, and is
-      // colocated to every other gate.
+      // database to every other gate.
       const pkg = await packages.create(BLANK_STORAGE_SOURCE);
       const outcome = await computePackageBuildPlan(pkg);
       const refused = Object.values(outcome.plan?.refusedSources ?? {});
@@ -146,7 +146,7 @@ describe("publisher_materialization_eligibility_refused_total", () => {
    }, 30_000);
 
    it("counts no source the plan does not refuse", async () => {
-      // Colocated and buildable on the package's DuckDB sandbox, which a
+      // Database and buildable on the package's DuckDB sandbox, which a
       // `storage=` build cannot pass through: the storage gate's verdict
       // (only whether it may be served from a stored table) is not a refusal.
       const pkg = await packages.create(ONE_PERSIST_SOURCE);
@@ -396,7 +396,7 @@ describe("the build loop's instruments", () => {
 
    it("publisher_materialization_stale_upstream_entry_total: once per run per upstream, by the recomputing build's tier", async () => {
       const planFacts = {};
-      const note = (upstream: string, build: "colocated" | "storage") =>
+      const note = (upstream: string, build: "database" | "storage") =>
          noteWrongTierRecompute({
             planFacts,
             build,
@@ -406,7 +406,7 @@ describe("the build loop's instruments", () => {
          });
       note("up_a", "storage");
       note("up_a", "storage");
-      note("up_b", "colocated");
+      note("up_b", "database");
       // Another run (its own plan facts) counts the same upstream again.
       noteWrongTierRecompute({
          planFacts: {},
@@ -424,7 +424,7 @@ describe("the build loop's instruments", () => {
       expect(
          await harness.collectCounter(
             "publisher_materialization_stale_upstream_entry_total",
-            { build: "colocated" },
+            { build: "database" },
          ),
       ).toBe(1);
    });

@@ -3,7 +3,7 @@
 
 /**
  * g-mixed for rollups (question 14): a gated query source reads an UNGATED
- * joined source's `#(preaggregate)` rollup through its join (A7), with the
+ * joined source's `#(rollup)` rollup through its join (A7), with the
  * gated-sources switch off, on the database tier and in a `storage=`
  * destination alike.
  *
@@ -71,14 +71,14 @@ given: BASE :: string
 
 source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${S}
-  #(preaggregate) grain=["flight_id", "kind"]${S}
+  #(rollup) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id", "kind"]${S}
   measure: seg_miles is miles.sum()
 }
 
 source: crew is duckdb.table('crew_raw') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: crew_size is size.sum()
 }
 

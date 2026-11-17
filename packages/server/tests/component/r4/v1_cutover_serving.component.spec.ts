@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The v1 cutover serving v1 `#@ persist` tables: gates on colocated tables
+ * The v1 cutover serving v1 `#@ persist` tables: gates on database tables
  * (G3), hidden columns (G2), the derived schema (G1), casts on an older
  * build's table, wide types, a drill expression, and gated queries on rollups.
  * Every answer is compared with live.
@@ -39,13 +39,13 @@ import { allowGatedStorageRollupsForTests } from "../../../src/config";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- reads internals */
 /**
- * Colocated v1 `#@ persist` sources behind gates,
- * under the cutover (contracts at read for colocated, G3), two callers per
+ * Database v1 `#@ persist` sources behind gates,
+ * under the cutover (contracts at read for database, G3), two callers per
  * gate kind, each answer against live (the switch off, before any bind).
  * Gates on the persisted source itself, on a same-file base it extends, and
  * a source gate (#(authorize)). The serve verdict (path report) is recorded.
  */
-describe("colocated gates", () => {
+describe("database gates", () => {
    const MODEL = `##! experimental { persistence givens }
 import "raw.malloy"
 
@@ -154,7 +154,7 @@ source: gated_ext is plain extend {}
       ],
    ];
 
-   describe("colocated v1 gates under the cutover, two callers per kind", () => {
+   describe("database v1 gates under the cutover, two callers per kind", () => {
       let restore: () => void = () => {};
       let fixture: LoadedFixture;
       let dispose: () => Promise<void>;
@@ -198,7 +198,7 @@ source: gated_ext is plain extend {}
       }
    });
 
-   describe("the colocated source over a gated base, today (switch off, tables bound)", () => {
+   describe("the database source over a gated base, today (switch off, tables bound)", () => {
       it("answers each caller with live's rows", async () => {
          await freshLoadPool();
          const restore = withSwitch("off");
@@ -224,11 +224,11 @@ source: gated_ext is plain extend {}
    });
 });
 
-// v1 colocated tables under the v1 cutover. Each query is answered live before any table is bound,
+// v1 database tables under the v1 cutover. Each query is answered live before any table is bound,
 // then served, callers interleaved and repeated; the served answer must equal
 // live per caller by the strict comparison, and a refusal must stay a
 // refusal. Wide column types keep their table and live's result types.
-describe("colocated parity", () => {
+describe("database parity", () => {
    type Q = {
       name: string;
       model: string;
@@ -301,7 +301,7 @@ import "raw.malloy"
 given: TENANTS :: string[]
 given: ROLE :: string
 
-// A row-scoping given term on a colocated persisted source's extend block.
+// A row-scoping given term on a database persisted source's extend block.
 #@ persist name="scoped"
 source: scoped is orders_raw -> {
   select: id, customer_id, region, amount
@@ -412,7 +412,7 @@ source: facts is orders_raw -> {
    ];
 
    for (const sw of ["cutover"] as const) {
-      describe(`[${sw}] colocated gates, givens and hidden columns`, () => {
+      describe(`[${sw}] database gates, givens and hidden columns`, () => {
          let r: Awaited<ReturnType<typeof probe>>;
          it("loads", async () => {
             r = await probe(sw, { "g.malloy": GOVERNED }, GOVERNED_QS);
@@ -423,7 +423,7 @@ source: facts is orders_raw -> {
       });
    }
 
-   // A BIGINT beyond 2^53 and a TIMESTAMPTZ column on a colocated table: today's
+   // A BIGINT beyond 2^53 and a TIMESTAMPTZ column on a database table: today's
    // manifest path keeps Malloy's own definition; the served copy declares them.
    const WIDE = `##! experimental { persistence }
 source: wide_raw is duckdb.sql("""
@@ -455,7 +455,7 @@ source: wide_tz is wide_raw -> { select: id, tz }
       },
    ];
    for (const sw of ["cutover"] as const) {
-      describe(`[${sw}] colocated wide types`, () => {
+      describe(`[${sw}] database wide types`, () => {
          let r: Awaited<ReturnType<typeof probe>>;
          it("loads", async () => {
             r = await probe(sw, { "w.malloy": WIDE }, WIDE_QS);
@@ -488,10 +488,10 @@ source: wide_tz is wide_raw -> { select: id, tz }
       await freshLoadPool();
    });
 
-   // Which column type keeps a colocated `wide` source on its table under the
+   // Which column type keeps a database `wide` source on its table under the
    // cutover, and a timestamptz column's result types with the build's captured
    // schema.
-   describe("colocated wide types: the table under the cutover", () => {
+   describe("database wide types: the table under the cutover", () => {
       const variant = (
          cols: string,
          select: string,
@@ -569,8 +569,8 @@ source: wide_tz is wide_raw -> { select: id, tz }
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
                };
             }
-            f.pkg.materialization().bind({ colocated: {} });
-            f.pkg.materialization().bind({ colocated: entries as never });
+            f.pkg.materialization().bind({ database: {} });
+            f.pkg.materialization().bind({ database: entries as never });
             for (const p of f.pkg.getModelPaths())
                await f.pkg.getModel(p)?.prepareServedCopy();
             const served = await f.run("w.malloy", Q);
@@ -657,7 +657,7 @@ source: t is ev -> {
 
 /**
  * The v1 cutover's G2 (materialization v2, phase 3 pull request 6): a v1
- * `#@ persist` table, colocated or `storage=`, holds its source's hidden
+ * `#@ persist` table, database or `storage=`, holds its source's hidden
  * columns (built from the source's own query), so the served copy binds them
  * and keeps the author's text after the query, which hides them again. A
  * measure over an `internal` column is served from the table, and the column
@@ -852,7 +852,7 @@ describe("hidden columns (G2)", () => {
       });
    }
 
-   for (const variant of ["colocated", "storage"] as const) {
+   for (const variant of ["database", "storage"] as const) {
       describeShape(
          "joined persisted source with hidden fields, from an index",
          variant,
@@ -868,7 +868,7 @@ describe("hidden columns (G2)", () => {
    /**
     * `#(carries)` reads what a caller can reach, never what a table stores: a
     * hidden column of a class off the list is allowed in a `storage=` table, as
-    * in a colocated one or a `#(materialize)` one, since the served copy hides it
+    * in a database one or a `#(materialize)` one, since the served copy hides it
     * again and the ceiling is checked on the served copy's own compile too. A
     * public field that reads it carries its class, so the package does not load,
     * on every tier alike, before anything is built.
@@ -891,12 +891,12 @@ ${exposed}}
 `,
    });
 
-   const PERSIST: Record<"colocated" | "storage", string> = {
-      colocated: "#@ persist",
+   const PERSIST: Record<"database" | "storage", string> = {
+      database: "#@ persist",
       storage: '#@ persist storage="lake"',
    };
 
-   for (const variant of ["colocated", "storage"] as const) {
+   for (const variant of ["database", "storage"] as const) {
       describe(`v1 cutover: #(carries) over a ${variant} table's hidden column`, () => {
          let restore: () => void = () => {};
          let fixture: LoadedFixture;
@@ -993,7 +993,7 @@ ${exposed}}
    }
 });
 
-// v1 colocated tables under the v1 cutover. Each query is
+// v1 database tables under the v1 cutover. Each query is
 // answered live before any table is bound, then under the cutover; the served
 // answer must equal live per caller, and a refusal must stay a refusal.
 describe("the cutover on", () => {
@@ -1181,7 +1181,7 @@ source: dropped is orders_raw -> {
       expect(rowDifference(l.answer.rows, s.answer.rows)).toBeUndefined();
    }
 
-   describe("v1 cutover on: gates on colocated tables (G3, G2)", () => {
+   describe("v1 cutover on: gates on database tables (G3, G2)", () => {
       let r: Awaited<ReturnType<typeof probe>>;
       beforeAll(async () => {
          r = await probe({ "g.malloy": GATED }, GATED_QS);
@@ -1209,7 +1209,7 @@ source: dropped is orders_raw -> {
    describe("v1 cutover on: a stored column the extend block excepts", () => {
       const Q = "run: dropped -> { group_by: region; aggregate: total }";
       const FILE = DERIVED;
-      it("colocated, with the build's captured schema", async () => {
+      it("database, with the build's captured schema", async () => {
          await freshLoadPool();
          const restore = withSwitch("cutover");
          const loader = await loadFixture({
@@ -1241,8 +1241,8 @@ source: dropped is orders_raw -> {
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
                };
             }
-            f.pkg.materialization().bind({ colocated: {} });
-            f.pkg.materialization().bind({ colocated: entries as never });
+            f.pkg.materialization().bind({ database: {} });
+            f.pkg.materialization().bind({ database: entries as never });
             for (const p of f.pkg.getModelPaths())
                await f.pkg.getModel(p)?.prepareServedCopy();
             const served = await f.run("d.malloy", Q);
@@ -1282,10 +1282,10 @@ source: dropped is orders_raw -> {
       }, 300_000);
    });
 
-   // G3's per-answer decision: a gated colocated source whose answer also reads
+   // G3's per-answer decision: a gated database source whose answer also reads
    // a `storage=` table must not be read past its gate without
    // PUBLISHER_MATERIALIZE_GATED_SOURCES.
-   describe("v1 cutover on: a gated colocated source joining a storage= table", () => {
+   describe("v1 cutover on: a gated database source joining a storage= table", () => {
       const FILE = `##! experimental { persistence givens }
 import "raw.malloy"
 
@@ -1411,7 +1411,7 @@ source: cust_b is customers_raw -> {
       for (const q of QS) it(q.name, () => check(r, q));
    });
 
-   // Containment (#1700, row 34) under the cutover: one v1 colocated source
+   // Containment (#1700, row 34) under the cutover: one v1 database source
    // whose re-root does not compile must cost that source alone.
    describe("v1 cutover on: one failing re-root costs that source alone", () => {
       const FILE = `##! experimental { persistence access_modifiers }
@@ -1858,7 +1858,7 @@ source: mid_zoned is ev -> {
  * R4 for gated queries on rollups (known limitation 1, R3 for rollups: route,
  * then govern). With PUBLISHER_MATERIALIZE_GATED_SOURCES on, a query whose
  * entry point carries a row-level gate or lock is answered from a
- * `#(preaggregate)` rollup over its source when every gate is provable on
+ * `#(rollup)` rollup over its source when every gate is provable on
  * the rollup (each field it reads a grain dimension): the run target is
  * redeclared over the rollup in its declaring file, gates written on it, and
  * `govern()` grafts and proves them there.
@@ -1869,7 +1869,7 @@ source: mid_zoned is ev -> {
  * denied. Negatives answer live (a gate field outside the grain, a gate
  * through a join, a caller join, a caller `count()`, an extension whose own
  * gate the rollup cannot prove), and a caller `except:` or `rename:` of the
- * gate field is denied, as live is. Colocated and `storage=` (the latter
+ * gate field is denied, as live is. Database and `storage=` (the latter
  * behind its review seam, as question 14 leaves it off in production).
  */
 describe("gated rollups", () => {
@@ -2154,7 +2154,7 @@ source: through_join is duckdb.table('orders_raw') extend {
       expect(rowDifference(run.live, run.served)).toBeUndefined();
    }
 
-   for (const placement of ["colocated", "storage"] as const) {
+   for (const placement of ["database", "storage"] as const) {
       describe(`v1 cutover R4: gated queries on ${placement} rollups (row 1, gated sources on)`, () => {
          let restore: () => void;
          let restoreReview: () => void;
@@ -2443,7 +2443,7 @@ source: through_join is duckdb.table('orders_raw') extend {
                malloy,
                givens: EAST.givens,
             });
-            if (placement === "colocated") {
+            if (placement === "database") {
                // The parent's own gate (a plain column) is grafted on the
                // variant, which keeps the author's rows (question 14).
                expect(run.servedBy?.kind).toBe("rollup");
@@ -2544,7 +2544,7 @@ source: through_join is duckdb.table('orders_raw') extend {
       });
    }
 
-   describe("v1 cutover R4: gated queries on colocated rollups with gated sources off (G3)", () => {
+   describe("v1 cutover R4: gated queries on database rollups with gated sources off (G3)", () => {
       let restore: () => void;
       let fixture: R4Fixture;
       beforeAll(async () => {
