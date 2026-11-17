@@ -689,8 +689,10 @@ the manifest field reference is [packages.md](packages.md).
   authentication, `localStorage`, `sessionStorage` and IndexedDB do not work, and
   a fetch to Publisher is cross-origin (no cookies; CORS applies), so an isolated
   page authenticates with `getToken`. Posts from the host go to `*` because an
-  opaque origin cannot be named; what protects them is that the host sends
-  nothing but the empty `hello` until the frame has answered it with the nonce. Prefer it for a
+  opaque origin cannot be named; the host sends
+  nothing but the empty `hello` until the frame has answered it with the nonce, and a token
+  or reply is never posted across a reload (the host checks the load generation after every
+  await). The remaining window is a navigation that starts after a post was sent. Prefer it for a
   page you want contained, not for one written against the same-origin contract.
 - **`x-publisher-page-context` is a trust boundary.** With
   `trustPageContextHeader` on, the header decides a page's names, API base and

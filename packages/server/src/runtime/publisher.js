@@ -714,6 +714,8 @@
       var helloTimer = null;
       var seq = 0;
       var gone = false;
+      // Bumped on every load and on destroy: an async answer is dropped if the frame moved on while it was pending.
+      var generation = 0;
 
       function hostPost(type, payload, extra) {
          var msg = { protocol: "publisher", v: 1, type: type };
@@ -742,13 +744,15 @@
 
       function sendToken() {
          if (!options.getToken) return;
+         var gen = generation;
          Promise.resolve()
             .then(function () {
                return options.getToken();
             })
             .then(
                function (token) {
-                  if (token) hostPost("auth.token", { token: String(token) });
+                  if (token && gen === generation && !gone)
+                     hostPost("auth.token", { token: String(token) });
                },
                function () {
                   /* the page's own 401 handling surfaces a missing token */
@@ -812,6 +816,7 @@
             }
             return;
          }
+         var gen = generation;
          var meta = { type: m.type, id: m.id };
          var results = list.map(function (fn) {
             try {
@@ -828,6 +833,7 @@
          }
          Promise.all(results).then(
             function (values) {
+               if (gen !== generation || gone) return;
                var answer = values.find(function (v) {
                   return v !== undefined;
                });
@@ -837,6 +843,7 @@
                });
             },
             function (err3) {
+               if (gen !== generation || gone) return;
                hostPost(m.type, undefined, {
                   id: m.id,
                   reply: true,
@@ -863,6 +870,7 @@
       window.addEventListener("message", onMessage);
       // A (re)load is a fresh page that has not bound yet.
       iframe.addEventListener("load", function () {
+         generation++;
          ready = false;
          helloTries = 0;
          sayHello();
@@ -870,6 +878,7 @@
 
       function cleanup() {
          gone = true;
+         generation++;
          clearTimeout(helloTimer);
          window.removeEventListener("message", onMessage);
          observer.disconnect();
@@ -909,8 +918,9 @@
                   );
                }, SEND_TIMEOUT_MS);
                pending[id] = { resolve: resolve, reject: reject, timer: timer };
+               var gen = generation;
                function go() {
-                  if (pending[id]) hostPost(type, payload, { id: id });
+                  if (pending[id] && gen === generation) hostPost(type, payload, { id: id });
                }
                if (ready) go();
                else readyWaiters.push(go);

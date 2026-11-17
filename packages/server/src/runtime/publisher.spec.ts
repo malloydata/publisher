@@ -1307,6 +1307,104 @@ describe("Publisher.embed (host side)", () => {
       expect(m.childPosts).toHaveLength(1);
    });
 
+   describe("never posting across a reload", () => {
+      const deferred = <T>() => {
+         let resolve!: (v: T) => void;
+         let reject!: (e: Error) => void;
+         const promise = new Promise<T>((res, rej) => {
+            resolve = res;
+            reject = rej;
+         });
+         return { promise, resolve, reject };
+      };
+      const ofType = (m: ReturnType<typeof mount>, type: string) =>
+         m.childPosts.filter((p) => p.msg.type === type);
+
+      it("posts the token on the normal path", async () => {
+         const d = deferred<string>();
+         const m = mount(bootHost(), { getToken: () => d.promise });
+         m.load();
+         helloReply(m);
+         d.resolve("tok");
+         await flush();
+         await flush();
+         expect(ofType(m, "auth.token")).toHaveLength(1);
+      });
+
+      it("drops a token that resolves after the frame reloaded", async () => {
+         const d = deferred<string>();
+         const m = mount(bootHost(), { getToken: () => d.promise });
+         m.load();
+         helloReply(m);
+         m.load();
+         d.resolve("tok");
+         await flush();
+         await flush();
+         expect(ofType(m, "auth.token")).toHaveLength(0);
+      });
+
+      it("drops a token that resolves after destroy", async () => {
+         const d = deferred<string>();
+         const m = mount(bootHost(), { getToken: () => d.promise });
+         m.load();
+         helloReply(m);
+         m.handle.destroy();
+         d.resolve("tok");
+         await flush();
+         await flush();
+         expect(ofType(m, "auth.token")).toHaveLength(0);
+      });
+
+      it("drops a handler reply, or error reply, that settles after a reload", async () => {
+         const d = deferred<unknown>();
+         const m = mount(bootHost());
+         m.handle.on("ask", () => d.promise);
+         m.load();
+         helloReply(m);
+         m.fromChild(m.msg("ask", { id: "r1" }));
+         m.load();
+         d.resolve(1);
+         await flush();
+         await flush();
+         expect(ofType(m, "ask")).toHaveLength(0);
+
+         const e = deferred<unknown>();
+         const n = mount(bootHost());
+         n.handle.on("ask", () => e.promise);
+         n.load();
+         helloReply(n);
+         n.fromChild(n.msg("ask", { id: "r2" }));
+         n.load();
+         e.reject(new Error("boom"));
+         await flush();
+         await flush();
+         expect(ofType(n, "ask")).toHaveLength(0);
+      });
+
+      it("drops a handler reply that settles after destroy, and answers in the same load", async () => {
+         const d = deferred<unknown>();
+         const m = mount(bootHost());
+         m.handle.on("ask", () => d.promise);
+         m.load();
+         helloReply(m);
+         m.fromChild(m.msg("ask", { id: "r1" }));
+         m.handle.destroy();
+         d.resolve(1);
+         await flush();
+         await flush();
+         expect(ofType(m, "ask")).toHaveLength(0);
+
+         const n = mount(bootHost());
+         n.handle.on("ask", async () => 7);
+         n.load();
+         helloReply(n);
+         n.fromChild(n.msg("ask", { id: "r2" }));
+         await flush();
+         await flush();
+         expect(ofType(n, "ask").map((p) => p.msg.payload)).toEqual([7]);
+      });
+   });
+
    it("rejects messages from the wrong source, origin or nonce", async () => {
       const page = bootHost();
       let tokens = 0;

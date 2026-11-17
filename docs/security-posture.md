@@ -319,8 +319,9 @@ same origin as the REST API. The consequences follow from that and are all inten
     so cookie authentication, `localStorage` and IndexedDB stop working and a fetch to Publisher
     becomes cross-origin (CORS applies, no cookies; use `getToken`). The host cannot name an
     opaque origin, so it posts to `*`; it sends only the empty `hello` until the frame has
-    proved the nonce, but a document that navigated into the frame after that would receive
-    later messages, including a refreshed token. Use it for a page you want contained, with
+    proved the nonce. A token or reply is never posted across a reload: the host checks the
+    load generation after every await. The remaining window is a navigation that starts after
+    a post was sent. Use it for a page you want contained, with
     short-lived tokens.
 - **`trustPageContextHeader` needs a gateway that strips the header.** With the setting on
   (default off), the request header `x-publisher-page-context` overrides a page's environment,

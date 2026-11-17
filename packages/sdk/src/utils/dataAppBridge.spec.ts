@@ -562,3 +562,93 @@ describe("destroy", () => {
       await expect(m.bridge.ready).resolves.toBeDefined();
    });
 });
+
+describe("never posting across a reload", () => {
+   const deferred = <T>() => {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((r) => (resolve = r));
+      return { promise, resolve };
+   };
+
+   it("posts the token on the normal path", async () => {
+      const d = deferred<string>();
+      const m = track(mount({ src: SRC, getToken: () => d.promise }));
+      m.load();
+      m.helloReply();
+      d.resolve("tok");
+      await flush();
+      expect(m.ofType("auth.token").map((p) => p.msg.payload)).toEqual([
+         { token: "tok" },
+      ]);
+   });
+
+   it("drops a token that resolves after the frame reloaded", async () => {
+      const d = deferred<string>();
+      const m = track(mount({ src: SRC, getToken: () => d.promise }));
+      m.load();
+      m.helloReply();
+      m.load();
+      d.resolve("tok");
+      await flush();
+      expect(m.ofType("auth.token")).toHaveLength(0);
+   });
+
+   it("drops a token that resolves after destroy", async () => {
+      const d = deferred<string>();
+      const m = track(mount({ src: SRC, getToken: () => d.promise }));
+      m.load();
+      m.helloReply();
+      m.bridge.destroy();
+      d.resolve("tok");
+      await flush();
+      expect(m.ofType("auth.token")).toHaveLength(0);
+   });
+
+   it("drops a handler reply that resolves after a reload, or after destroy", async () => {
+      const d = deferred<unknown>();
+      const m = track(mount());
+      m.bridge.on("ask", () => d.promise);
+      m.load();
+      m.helloReply();
+      m.fromChild(m.msg("ask", { id: "r1" }));
+      m.load();
+      d.resolve(1);
+      await flush();
+      expect(m.ofType("ask")).toHaveLength(0);
+
+      const e = deferred<unknown>();
+      const n = track(mount());
+      n.bridge.on("ask", () => e.promise);
+      n.load();
+      n.helloReply();
+      n.fromChild(n.msg("ask", { id: "r2" }));
+      n.bridge.destroy();
+      e.resolve(1);
+      await flush();
+      expect(n.ofType("ask")).toHaveLength(0);
+   });
+
+   it("drops a handler error reply that settles after a reload", async () => {
+      let reject!: (e: Error) => void;
+      const p = new Promise<unknown>((_, r) => (reject = r));
+      const m = track(mount());
+      m.bridge.on("ask", () => p);
+      m.load();
+      m.helloReply();
+      m.fromChild(m.msg("ask", { id: "r1" }));
+      m.load();
+      reject(new Error("boom"));
+      await flush();
+      expect(m.ofType("ask")).toHaveLength(0);
+   });
+
+   it("still answers a handler in the same load", async () => {
+      const m = track(mount());
+      m.bridge.on("ask", async () => 7);
+      m.load();
+      m.helloReply();
+      m.fromChild(m.msg("ask", { id: "r1" }));
+      await flush();
+      expect(m.ofType("ask").map((p) => p.msg.payload)).toEqual([7]);
+   });
+});

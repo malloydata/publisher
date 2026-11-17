@@ -202,6 +202,8 @@ export function createDataAppBridge(
    let isReady = false;
    let readySettled = false;
    let gone = false;
+   // Bumped on every load and on destroy: an async answer is dropped if the frame moved on while it was pending.
+   let generation = 0;
    let helloTries = 0;
    let helloTimer: ReturnType<typeof setTimeout> | undefined;
    let seq = 0;
@@ -252,11 +254,13 @@ export function createDataAppBridge(
 
    function sendToken() {
       if (!opts.getToken) return;
+      const gen = generation;
       Promise.resolve()
          .then(opts.getToken)
          .then(
             (token) => {
-               if (token) post("auth.token", { token: String(token) });
+               if (token && gen === generation && !gone)
+                  post("auth.token", { token: String(token) });
             },
             () => {
                /* the page's own 401 handling surfaces a missing token */
@@ -339,6 +343,7 @@ export function createDataAppBridge(
          }
          return;
       }
+      const gen = generation;
       const meta: PublisherMessageMeta = { type: m.type, id: m.id };
       const results = list.map((fn) => {
          try {
@@ -353,6 +358,7 @@ export function createDataAppBridge(
       }
       Promise.all(results).then(
          (values) => {
+            if (gen !== generation || gone) return;
             const answer = values.find((v) => v !== undefined);
             post(m.type, answer === undefined ? null : answer, {
                id: m.id,
@@ -360,6 +366,7 @@ export function createDataAppBridge(
             });
          },
          (err) => {
+            if (gen !== generation || gone) return;
             post(m.type, undefined, {
                id: m.id,
                reply: true,
@@ -374,6 +381,7 @@ export function createDataAppBridge(
 
    // A (re)load is a fresh page that has not proved the nonce yet.
    function onLoad() {
+      generation++;
       isReady = false;
       helloTries = 0;
       sayHello();
@@ -412,8 +420,11 @@ export function createDataAppBridge(
                );
             }, SEND_TIMEOUT_MS);
             pending.set(id, { resolve, reject, timer });
+            const gen = generation;
             const go = () => {
-               if (pending.has(id)) post(type, payload, { id });
+               if (pending.has(id) && gen === generation) {
+                  post(type, payload, { id });
+               }
             };
             if (isReady) go();
             else readyWaiters.push(go);
@@ -433,6 +444,7 @@ export function createDataAppBridge(
       destroy() {
          if (gone) return;
          gone = true;
+         generation++;
          clearTimeout(helloTimer);
          win.removeEventListener("message", onMessage);
          iframe.removeEventListener("load", onLoad);
