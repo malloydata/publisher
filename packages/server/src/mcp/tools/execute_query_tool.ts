@@ -112,7 +112,7 @@ A JSON object in Credible's execute_query shape, plus _columns:
 - _limit_source: "query" when the cap came from the query's own limit:/top:, "server_default" otherwise.
 - _limit_hit: the row count equals that cap AND the cap was the server default, so a query carrying its own limit:/top: never sets it and exactly that many rows is a complete answer.
 - _rows_truncated / _total_rows / _returned_rows: present only when the payload cap dropped rows.
-- _query_id: the warehouse's id for this query, where enabled.
+- _query_id: the database's id for this query, where enabled.
 - warning, renderLogErrors: present only when they apply.
 
 Values above 2^53 are returned as JSON strings so their digits survive.`;
