@@ -513,55 +513,45 @@ describe("the bind address is the one the generated workspace promises", () => {
  * loopback bind, adopt the script as `npm start`, suppress the exposure warning,
  * and write "this workspace is reachable from this machine only" into AGENTS.md.
  * Publisher's own parser reads `--host` and its address as two separate
- * arguments, so the joined form matches no branch, is dropped without a word,
- * and the bind falls back to `PUBLISHER_HOST || "0.0.0.0"`. Every unit spec on
- * the subject compares one string against another and would stay green either
- * way; this is the one place that boots a server with the flag and asks the
- * network what it did.
+ * arguments, so the joined form is the name of no flag. A server from before the
+ * configuration design's step 3 drops it without a word and binds REST to
+ * `PUBLISHER_HOST || "0.0.0.0"`; this checkout's server refuses it as an unknown
+ * flag and does not start. Neither binds loopback, and a script pins the server
+ * it was written for, so neither may be adopted. Every unit spec on the subject
+ * compares one string against another; this is the one place that boots a
+ * server with the flag and asks what it did.
  *
- * The workspace booted here is deliberately setup-only, with no package in it,
- * because a passing run means an unauthenticated server really is answering on
- * this machine's LAN address for as long as it takes to assert that. It is
- * killed immediately afterwards.
- *
- * If this ever fails, the server has started honouring the joined form, and
- * scaffold.ts's parser should be brought back into line with it rather than the
- * other way round.
+ * If this ever fails because the server started, it has started honouring the
+ * joined form, and scaffold.ts's parser should be brought back into line with it
+ * rather than the other way round.
  */
-describe("Publisher's own parser drops --host=<address>", () => {
-   const lan = lanAddress();
+describe("Publisher's own parser refuses --host=<address>", () => {
    let joinedTmp: string;
-   let joined: ChildProcess | undefined;
-   let joinedPort = 0;
-   let joinedMcpPort = 0;
    let joinedLog = "";
+   /** The exit code, or null when it was still running at the deadline. */
+   let joinedExit: number | null = null;
 
    beforeAll(async () => {
-      if (lan === undefined) {
-         return;
-      }
       joinedTmp = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-e2e-host-"));
-      // No package: nothing of anyone's is served while this runs.
+      // No package: nothing of anyone's is served if this ever starts.
       scaffold({
          name: undefined,
          cwd: joinedTmp,
          host: "claude-code",
          force: false,
       });
-      joinedPort = await freePort();
-      joinedMcpPort = await freePort();
-      joined = spawn(
+      const joined = spawn(
          "node",
          [
             serverBin,
-            "--server_root",
+            "--root",
             ".",
             "--config",
             "./publisher.config.json",
             "--port",
-            String(joinedPort),
-            "--mcp_port",
-            String(joinedMcpPort),
+            String(await freePort()),
+            "--mcp-port",
+            String(await freePort()),
             `--host=${BIND_HOST}`,
             "--watch-env",
             "default",
@@ -574,89 +564,71 @@ describe("Publisher's own parser drops --host=<address>", () => {
       );
       joined.stdout?.on("data", (chunk) => (joinedLog += chunk));
       joined.stderr?.on("data", (chunk) => (joinedLog += chunk));
-
-      const deadline = Date.now() + 150000;
-      while (Date.now() < deadline) {
-         if (await accepts("127.0.0.1", joinedPort, 1000)) {
-            return;
-         }
-         await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-      throw new Error(
-         `Server with --host=${BIND_HOST} never accepted a connection. Log:\n` +
-            joinedLog,
-      );
+      joinedExit = await new Promise<number | null>((resolve) => {
+         const deadline = setTimeout(() => {
+            joined.kill("SIGKILL");
+            resolve(null);
+         }, 60000);
+         joined.on("exit", (code) => {
+            clearTimeout(deadline);
+            resolve(code);
+         });
+      });
    });
 
    afterAll(() => {
-      if (joined && joined.exitCode === null) {
-         joined.kill("SIGKILL");
-      }
       if (joinedTmp) {
          fs.rmSync(joinedTmp, { recursive: true, force: true });
       }
    });
 
-   const lanTest = lan === undefined ? test.skip : test;
+   test(`--host=${BIND_HOST} stops the server starting, as an unknown flag`, () => {
+      if (joinedExit === null) {
+         throw new Error(
+            `Publisher now starts with --host=<address>. scaffold.ts declines a ` +
+               `start script carrying that form on the grounds that it does not ` +
+               `bind loopback, so bring the two back into line. Log:\n${joinedLog}`,
+         );
+      }
+      expect(joinedExit).not.toBe(0);
+      expect(joinedLog).toContain(`Unknown flag --host=${BIND_HOST}.`);
+      expect(joinedLog).toContain("PUBLISHER_INIT_FAILED");
+   });
 
-   lanTest(
-      `--host=${BIND_HOST} still serves this machine's LAN address (${lan})`,
-      async () => {
-         const reachable = await accepts(lan as string, joinedPort);
-         if (!reachable) {
-            throw new Error(
-               `Publisher now honours --host=<address>. scaffold.ts declines a ` +
-                  `start script carrying that form on the grounds that it does ` +
-                  `not, so bring the two back into line. Log:\n${joinedLog}`,
-            );
-         }
-         // The MCP listener no longer follows PUBLISHER_HOST into a wide bind:
-         // it reads MCP_HOST first and defaults to loopback, so a dropped
-         // `--host=` leaves it closed while REST above is still exposed. That
-         // asymmetry is the point -- the REST reachability above is what makes
-         // the joined form unsafe to adopt, and MCP being shut is the fix for
-         // the half of it that used to be the easier one to forget.
-         expect(await accepts(lan as string, joinedMcpPort)).toBe(false);
-      },
-   );
-
-   lanTest(
-      "so a start script carrying that form is not adopted as npm start",
-      () => {
-         // The same string the server was just booted with, in the place the
-         // tool reads it from. This is the assertion the observation above
-         // exists to justify: it fails if the tool ever calls the joined form
-         // loopback again.
-         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-e2e-adopt-"));
-         try {
-            fs.writeFileSync(
-               path.join(dir, "package.json"),
-               JSON.stringify({
-                  name: "someone-elses-app",
-                  scripts: {
-                     start:
-                        `npx -y @malloy-publisher/server --server_root . ` +
-                        `--config ./publisher.config.json --host=${BIND_HOST} ` +
-                        `--watch-env default`,
-                  },
-               }) + "\n",
-            );
-            const result = scaffold({
-               name: "sales",
-               cwd: dir,
-               host: "claude-code",
-               force: false,
-            });
-            expect(result.hasStartScript).toBe(false);
-            expect(result.declinedStartScript).toBeDefined();
-            expect(
-               fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"),
-            ).not.toContain("npm start");
-         } finally {
-            fs.rmSync(dir, { recursive: true, force: true });
-         }
-      },
-   );
+   test("so a start script carrying that form is not adopted as npm start", () => {
+      // The same string the server was just booted with, in the place the
+      // tool reads it from. This is the assertion the observation above
+      // exists to justify: it fails if the tool ever calls the joined form
+      // loopback again.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-e2e-adopt-"));
+      try {
+         fs.writeFileSync(
+            path.join(dir, "package.json"),
+            JSON.stringify({
+               name: "someone-elses-app",
+               scripts: {
+                  start:
+                     `npx -y @malloy-publisher/server --server_root . ` +
+                     `--config ./publisher.config.json --host=${BIND_HOST} ` +
+                     `--watch-env default`,
+               },
+            }) + "\n",
+         );
+         const result = scaffold({
+            name: "sales",
+            cwd: dir,
+            host: "claude-code",
+            force: false,
+         });
+         expect(result.hasStartScript).toBe(false);
+         expect(result.declinedStartScript).toBeDefined();
+         expect(
+            fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"),
+         ).not.toContain("npm start");
+      } finally {
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
 });
 
 /**
