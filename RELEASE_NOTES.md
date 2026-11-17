@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — an unhandled rejection from a connection driver is logged, not fatal
+
+**Fixed: an unhandled promise rejection from a connection driver is now logged instead of crashing the server.** For example, Malloy's BigQuery connection cancels a job on abort without awaiting it, so a failed cancel (after a materialization cancel or a query timeout) could take the process down. It is now logged at error with its message, and its stack when the reason is an Error, and counted on the new `publisher_unhandled_rejection_total` metric. That covers package-load workers too. An uncaught synchronous exception still ends the process.
+
 ## [Unreleased] — a rename that reuses or swaps names reads the right stored column
 
 **Fixed: a persisted source whose trailing `extend` renames a column to a name another column had could be served wrong values, and rows its gate hides.** A `#@ persist` source's table stores each column under its query's output name, and serving renames it again. When the renames swap or chain names (`rename: tmp is total; rename: total is n; rename: n is tmp`), serving read each renamed field from another field's stored column. That covers query-shaped sources and those declared by refinement of a table. Two consequences:
