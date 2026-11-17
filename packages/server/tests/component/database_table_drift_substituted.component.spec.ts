@@ -12,7 +12,7 @@
  *
  * | Drift                           | Read                                    |
  * | ------------------------------- | --------------------------------------- |
- * | a number of another width       | as it is: served                        |
+ * | a wider integer (a widening)    | as it is: served                        |
  * | a timestamp that gained a zone  | DuckDB: as it is (UTC); else left out   |
  * | a dropped column                | left out                                |
  * | a type Malloy cannot read       | left out                                |
@@ -75,7 +75,7 @@ source: raw is warehouse.sql("""
     ('b', CAST(3 AS INTEGER), CAST(2.5 AS DECIMAL(10,1)), true, DATE '2026-02-28', TIMESTAMP '2026-02-28 12:00:00', 'x')
   ) AS t(cat, n, amt, flag, d, ts, note)
 """) extend {
-  measure: total is n.sum()
+  measure: total is n.max()
   measure: top is amt.max()
 }
 
@@ -93,7 +93,7 @@ query: q_${k} is raw -> { group_by: ${GROUPING[k]}; aggregate: total; order_by: 
 
 source: rolled is raw extend {
   #(preaggregate) grain=["cat", "flag", "d", "ts", "note"]
-  measure: rtotal is n.sum()
+  measure: rtotal is n.max()
   #(preaggregate) grain=["cat", "flag", "d", "ts", "note"]
   measure: rtop is amt.max()
 }
@@ -182,7 +182,7 @@ const tiers: Tier[] = [
               },
               alter: {
                  num: (t: string, c: string) =>
-                    `ALTER TABLE ${t} ALTER COLUMN "${c}" TYPE integer`,
+                    `ALTER TABLE ${t} ALTER COLUMN "${c}" TYPE bigint`,
                  tz: (t: string, c: string) =>
                     `ALTER TABLE ${t} ALTER COLUMN "${c}" TYPE timestamptz`,
                  drop: (t: string, c: string) =>

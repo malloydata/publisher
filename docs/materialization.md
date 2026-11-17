@@ -621,9 +621,15 @@ faithful cast or left out, so only a query that reads it is answered live. A `#@
 `#(materialize)` table is read through its served copy. A rollup, persisted view or persisted query,
 read by Malloy's build-manifest substitution while its table is as built, is read once altered
 through a typed source over the columns its table holds now, on the source's own connection, as a
-`storage=` table is read: a rollup keeps serving every query that reads no left-out column, and a
-persisted view or query, whose every query reads all its columns, declines its table. A join to a
-rollup whose table was altered (a join branch) is answered live until the table is rebuilt. It
+`storage=` table is read, with one stricter rule: a column whose type moved inside one Malloy type
+is read as it is only when the move loses nothing (a wider integer, a decimal with no fewer integer
+or fraction digits, an integer into a decimal that holds all its digits, FLOAT to DOUBLE, a longer
+text); any other such move (DECIMAL(10,1) to DECIMAL(10,0), a BIGINT past 2^53 to DOUBLE) may have
+rounded what the table holds, so the column is left out. A rollup keeps serving every query that
+reads no left-out column; a gated rollup whose gate reads one declines, so the query is answered
+live, never denied and never with another caller's rows; and a persisted view or query, whose every
+query reads all its columns, declines its table. A join to a rollup whose table was altered (a join
+branch) is answered live until the table is rebuilt. It
 raises the same `storage-column-type-mismatch` package warning, one per table and column, saying that
 the table was altered outside a build and whether the column is cast or answered live, and counts
 in the same

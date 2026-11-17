@@ -161,8 +161,17 @@ export interface FreshnessAwareManifestEntry {
 interface HeldRead {
    /** The connection the table is on: its build source's. */
    connectionName: string;
-   /** Each column it holds now, in DuckDB's spelling, with its native type. */
-   columns: { name: string; type: string; nativeType?: string }[];
+   /**
+    * Each column it holds now, in DuckDB's spelling, with its native type;
+    * `moved` for one whose type moved since the build (read as it is, a
+    * lossless widening, or through a faithful cast).
+    */
+   columns: {
+      name: string;
+      type: string;
+      nativeType?: string;
+      moved?: true;
+   }[];
 }
 
 /** See {@link FreshnessAwareManifestEntry.keyUniqueness}. */

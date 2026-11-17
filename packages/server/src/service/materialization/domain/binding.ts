@@ -129,6 +129,14 @@ export function isColocated(b: Pick<Binding, "tier">): boolean {
  * table is, through a typed `virtual()` source over the columns it holds now,
  * on its own connection. Its handle is its content address. Undefined when
  * the bind recorded no `heldRead`.
+ *
+ * The rollup leg hands this binding to the gate policy (`gateTablesRead`),
+ * so a gate over a held table is judged on it. Its `moved` columns are the
+ * ones a binding's `retypedColumns` (the bind's columns retyped since the
+ * build, with the type held now) names: where bindings carry that field, set
+ * it here from them (`{ name, type: nativeType ?? type }`), and
+ * `gateColumnTypes` judges a moved grain column a gate reads as it does a
+ * served copy's.
  */
 export function heldReadBinding(
    kind: BindingKind,

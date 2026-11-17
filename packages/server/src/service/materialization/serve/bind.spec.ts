@@ -888,7 +888,9 @@ describe("applyObservedColumns", () => {
             ...entries.rollup1,
             heldRead: {
                connectionName: "pg",
-               columns: [{ name: "total__partial", type: "VARCHAR" }],
+               columns: [
+                  { name: "total__partial", type: "VARCHAR", moved: true },
+               ],
             },
          },
       });
@@ -946,10 +948,10 @@ describe("applyObservedColumns", () => {
             heldRead: {
                connectionName: "pg",
                columns: [
-                  { name: "flag", type: "INTEGER" },
-                  { name: "d2", type: "TIMESTAMP" },
+                  { name: "flag", type: "INTEGER", moved: true },
+                  { name: "d2", type: "TIMESTAMP", moved: true },
                   { name: "n", type: "DECIMAL(10,2)" },
-                  { name: "amt", type: "VARCHAR" },
+                  { name: "amt", type: "VARCHAR", moved: true },
                   { name: "other", type: "VARCHAR" },
                ],
             },
@@ -1011,6 +1013,49 @@ describe("applyObservedColumns", () => {
             },
          ]);
       });
+
+      // C1/H1: a move inside one Malloy type that may round a value is left
+      // out; only a widening that loses nothing is read as it is.
+      for (const [built, now, kept] of [
+         ["INTEGER", "BIGINT", true],
+         ["DECIMAL(10,1)", "DECIMAL(12,2)", true],
+         ["FLOAT", "DOUBLE", true],
+         ["INTEGER", "DECIMAL(10,0)", true],
+         ["DECIMAL(10,1)", "DECIMAL(10,0)", false],
+         ["DECIMAL(20,0)", "DOUBLE", false],
+         ["BIGINT", "INTEGER", false],
+         ["DOUBLE", "FLOAT", false],
+         ["BIGINT", "DECIMAL(18,0)", false],
+      ] as const) {
+         it(`reads ${built} now ${now} ${kept ? "as it is" : "left out"}`, () => {
+            const out = applyObservedColumns({
+               entries: {
+                  v1: {
+                     tableName: "t",
+                     connectionName: "duckdb",
+                     schema: [{ name: "x", type: built }],
+                     nativeSchema: [{ name: "x", type: built }],
+                  },
+               },
+               bindings: [],
+               observed: new Map([
+                  [
+                     "v1",
+                     {
+                        dialect: "duckdb",
+                        columns: [{ name: "x", type: now, nativeType: now }],
+                     },
+                  ],
+               ]),
+            });
+            expect(out.entries.v1?.leftOutColumns ?? []).toEqual(
+               kept ? [] : ["x"],
+            );
+            expect(
+               out.entries.v1?.heldRead?.columns.map((c) => c.name) ?? [],
+            ).toEqual(kept ? ["x"] : []);
+         });
+      }
 
       it("keeps the bare table when every moved column still reads as declared", () => {
          const out = applyObservedColumns({
