@@ -1131,6 +1131,7 @@ export class InstructedBuild {
             ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
                ? { rollup: true }
                : {}),
+            ...(run.signal ? { signal: run.signal } : {}),
          });
          // A manifest travels without its build plan, so this is the only
          // signal that a table belongs to a rollup in no model file; served

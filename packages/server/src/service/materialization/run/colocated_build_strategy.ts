@@ -9,6 +9,7 @@
  * text, which differs by dialect, is warehouse_sql.ts's.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "./error_code";
@@ -125,6 +126,7 @@ export class ColocatedTier
          runOptions,
          incrementalRefresh,
          replacesView,
+         signal,
       } = request;
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -154,11 +156,17 @@ export class ColocatedTier
       // Undefined on backends that do not report one.
       let buildCostBytes: number | undefined;
       try {
+         // A run cancelled before its read starts reads nothing; a driver
+         // that honours the signal cancels the read in flight.
+         if (signal?.aborted) throw new BuildCancelledError();
          const ctas = await connection.runSQL(
             `CREATE TABLE ${quotedStaging} AS (${buildSQL})`,
-            runOptions,
+            signal ? { ...runOptions, abortSignal: signal } : runOptions,
          );
          buildCostBytes = ctas?.runStats?.queryCostBytes;
+         // Cancelled while it read (a driver that ignores the signal): the
+         // staging table is dropped and never swapped into place.
+         if (signal?.aborted) throw new BuildCancelledError();
       } catch (err) {
          await dropStagingAfterFailure({
             connection,

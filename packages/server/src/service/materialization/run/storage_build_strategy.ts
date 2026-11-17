@@ -163,6 +163,11 @@ function storageSourceConnection(
 
 /** What a `storage=` build of one source starts from. */
 export interface StorageBuildRequest {
+   /**
+    * The run's cancel signal: interrupts the build's DuckDB session on abort
+    * (`interruptOnAbort`).
+    */
+   signal?: AbortSignal;
    persistSource: PersistSource;
    instruction: BuildInstruction;
    manifest: Manifest;
@@ -272,6 +277,7 @@ async function recomputeIntoStorage(
             ...(params.replacesView
                ? { replacesView: params.replacesView }
                : {}),
+            ...(params.signal ? { signal: params.signal } : {}),
          });
       // A same-catalog build reads and writes only the store, so its seconds
       // are the store's; a passthrough build's are mostly the warehouse's.

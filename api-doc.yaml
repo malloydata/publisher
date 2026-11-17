@@ -11744,6 +11744,13 @@ components:
             own, because it may be materialized in another destination or left
             out of instructions an orchestrator fixed, so retrying the same
             instructions would not supply it.
+        cancelled:
+          type: boolean
+          description: >-
+            True when the run was cancelled while this source was building:
+            the source did not fail, the run stopped it, and its staging table
+            was dropped. Read the source as cancelled rather than failed.
+            Absent for every other failure.
 
     ManifestEntry:
       type: object
