@@ -9,14 +9,14 @@
  * It reads a source's own table, `#(materialize)` or v1 `#@ persist`
  * (never a rollup's or a persisted view's): a `storage=` table only while
  * the host has storage destinations to serve from
- * (`PERSIST_STORAGE_MODE=on`), a colocated one always.
+ * (`PERSIST_STORAGE_MODE=on`), a database one always.
  *
  * The served copy compiles in a runtime whose connections are the package's
  * own plus each storage destination under a per-process alias
  * (served_copy_config.ts), so the author's text never names a destination. A
- * colocated table (`deriveColocatedServeBindings`, bind.ts) is read through
+ * database table (`deriveDatabaseServeBindings`, bind.ts) is read through
  * the source's own connection, which the package's connections already hold,
- * so a copy of colocated tables alone needs no storage tier.
+ * so a copy of database tables alone needs no storage tier.
  * A compile failure leaves the model's sources answering live and is
  * reported as a coded package warning.
  */
@@ -110,7 +110,7 @@ import {
    bindingServesModelSource,
    deriveServeBindings,
    EMPTY_SNAPSHOT,
-   isColocated,
+   isDatabase,
    pin,
    type Pinned,
    type Snapshot,
@@ -165,11 +165,11 @@ type VirtualMap = Map<string, Map<string, string>>;
 
 /**
  * The connection a binding's table is read through in the served copy: a
- * storage destination under its server-only alias, a colocated table on the
+ * storage destination under its server-only alias, a database table on the
  * source's own connection, which the package's connections already hold.
  */
 function servedConnectionOf(b: Binding): string {
-   return isColocated(b)
+   return isDatabase(b)
       ? b.destinationName
       : servedCopyAlias(b.destinationName);
 }
@@ -177,7 +177,7 @@ function servedConnectionOf(b: Binding): string {
 /** Nothing bound, pinned: what a copy reads with no host tables. */
 const NOTHING_PINNED = pin(EMPTY_SNAPSHOT, new Date(0));
 
-/** No storage destination: a served copy of colocated tables alone. */
+/** No storage destination: a served copy of database tables alone. */
 const NO_DESTINATIONS = (): MalloyConfig =>
    new MalloyConfig({ connections: {} });
 
@@ -305,7 +305,7 @@ interface ServedCopyHost {
    modelDef(): unknown;
    /**
     * The storage destinations, while the storage tier serves
-    * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only colocated
+    * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only database
     * tables are read.
     */
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
@@ -737,7 +737,7 @@ export class ServedCopyServe {
 
    /**
     * Whether any binding of `snapshot` could re-root a source (before
-    * compiling): a colocated table, or a storage table while the storage
+    * compiling): a database table, or a storage table while the storage
     * tier serves.
     */
    hasBindings(snapshot: Snapshot = this.current().snapshot): boolean {
@@ -748,11 +748,11 @@ export class ServedCopyServe {
     * Whether the served copy may read a binding: a source's own table (never
     * a rollup's or a persisted view's); a storage table only while the host
     * has storage destinations to serve from (`PERSIST_STORAGE_MODE=on`); a
-    * colocated table always, on its own connection.
+    * database table always, on its own connection.
     */
    private usable(b: Binding): boolean {
       if (b.kind !== "persist" && b.kind !== "materialize") return false;
-      return isColocated(b) || !!this.host.serveDestinationConfig();
+      return isDatabase(b) || !!this.host.serveDestinationConfig();
    }
 
    /** The host's tables, pinned now, for a caller outside a query. */
@@ -2110,7 +2110,7 @@ export class ServedCopyServe {
       const over = bindings;
       const problems: ServedCopyProblem[] = [];
       // Storage bindings reach here only with destinations (`usable`); a
-      // copy of colocated tables alone needs none.
+      // copy of database tables alone needs none.
       const destinations =
          this.host.serveDestinationConfig() ?? NO_DESTINATIONS;
       // No table to re-root on: the copy is the author's model, so there is
@@ -2218,7 +2218,7 @@ export class ServedCopyServe {
             destinations(),
             new Set(
                rerooted
-                  .filter((b) => !isColocated(b))
+                  .filter((b) => !isDatabase(b))
                   .map((b) => b.destinationName),
             ),
          );
@@ -3037,7 +3037,7 @@ function materializedColumnsOf(
             : [];
       }),
       def,
-      !isColocated(binding),
+      !isDatabase(binding),
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [
@@ -3056,12 +3056,12 @@ function materializedColumnsOf(
       }
       const type = stored.get(c.column);
       // A column live types as warehouse-native (a UUID) has no stored
-      // spelling, so a colocated table's captured columns leave it out: it is
+      // spelling, so a database table's captured columns leave it out: it is
       // left out here too, so only a query reading it answers live, as a
       // `storage=` table's is (declarableColumns).
       if (
          type === undefined &&
-         isColocated(binding) &&
+         isDatabase(binding) &&
          liveTypesAsNative(fieldsByName.get(c.dimension))
       ) {
          columnsLeftOut.push(c.column);
@@ -3125,7 +3125,7 @@ function materializedColumnsOf(
             type: "",
             field: fields.find((f) => fieldNameOf(f) === c.name),
          })),
-         { ...readOptions, ducklake: !isColocated(binding) },
+         { ...readOptions, ducklake: !isDatabase(binding) },
       );
    });
    // A joined field live types as a warehouse-native type has no
@@ -3222,7 +3222,7 @@ function v1ColumnsOf(
       subject;
    const { problems } = subject;
    let columnsLeftOut: string[] = [];
-   // A v1 table, colocated or `storage=`, holds the columns its build query
+   // A v1 table, database or `storage=`, holds the columns its build query
    // emits, hidden ones too: its columns are every column it holds, with no
    // access modifier, and the author's own text after the query (kept
    // whole, `keepsIncludes`) renames, drops and re-hides them, so a measure
@@ -3243,7 +3243,7 @@ function v1ColumnsOf(
    const typePlan = storedColumnReadPlan(
       narrowed,
       declaredColumnsOf(def.fields),
-      { queryTimezone: queryTimezoneOf(def), ducklake: !isColocated(binding) },
+      { queryTimezone: queryTimezoneOf(def), ducklake: !isDatabase(binding) },
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [
@@ -3660,7 +3660,7 @@ async function queriedChain(attempt: AnswerAttempt): Promise<{
 
 /**
  * The pair tables a query reads, one entry per table. Sources whose build SQL
- * is identical (differing only in gates or `name=`) share one colocated table
+ * is identical (differing only in gates or `name=`) share one database table
  * at their one content address, so each is a pair at that one path. Read
  * once, that table is read as the queried source's own when the queried
  * source is one of them, as on `storage=`, where each source has a table of
@@ -4446,7 +4446,7 @@ function bigIntegerReadsOf(
 
 /**
  * What decides a big-integer column's read for a binding: the author's
- * source's dialect, where the table is, and, for a colocated table, the
+ * source's dialect, where the table is, and, for a database table, the
  * warehouse types its build captured (`nativeSchema`).
  */
 function bigIntegerOptionsOf(
@@ -4455,8 +4455,8 @@ function bigIntegerOptionsOf(
 ): BigIntegerReadOptions {
    return {
       dialect: (def as { dialect?: unknown }).dialect,
-      colocated: isColocated(binding),
-      ...(isColocated(binding)
+      database: isDatabase(binding),
+      ...(isDatabase(binding)
          ? { nativeTypeOf: nativeTypeLookup(binding.nativeSchema) }
          : {}),
    };

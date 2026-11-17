@@ -120,7 +120,7 @@ source: by_cat is y extend { where: cat != 'c' }
    "rollup.malloy": `##! experimental.persistence
 source: tr is duckdb.table('trips.csv') extend {
   dimension: start_day is d.day
-  #(preaggregate) grain=["start_day"]
+  #(rollup) grain=["start_day"]
   measure: trip_count is count()
 }
 `,

@@ -114,7 +114,7 @@ import {
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
 import type {
-   ColocatedSourceEligibility,
+   DatabaseSourceEligibility,
    SourceEligibility,
 } from "./materialization/plan/build_plan";
 import {
@@ -435,10 +435,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    protected set sourceEligibility(eligibility: SourceEligibility | undefined) {
       this.mz.plan.sourceEligibility = eligibility;
    }
-   protected set colocatedSourceEligibility(
-      eligibility: ColocatedSourceEligibility | undefined,
+   protected set databaseSourceEligibility(
+      eligibility: DatabaseSourceEligibility | undefined,
    ) {
-      this.mz.plan.colocatedSourceEligibility = eligibility;
+      this.mz.plan.databaseSourceEligibility = eligibility;
    }
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
@@ -450,7 +450,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * ({@link compileKeyOf}); `bound` the whole entries last bound (freshness
     * and schemas too), undefined while none has been; `quoted` the entries
     * the compile quoted, from `quotedFrom`. Every other part is compared by
-    * identity: any other reload, colocated bind or plan change since makes
+    * identity: any other reload, database bind or plan change since makes
     * the next rebind recompile.
     */
    private reloadedFor:
@@ -460,7 +460,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
            quotedFrom: string;
            quoted: FreshnessManifest;
            models: Map<string, Model>;
-           colocated: unknown;
+           database: unknown;
            buildPlan: unknown;
            connectionEdits: number;
         }
@@ -947,14 +947,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
           */
          versionId?: string;
          /**
-          * The colocated entries of the manifest the package is about to be
+          * The database entries of the manifest the package is about to be
           * bound to, read while it compiles: its models are hydrated over
           * them, so the bind that follows (`reloadAllModels` with
           * `ifChanged`) binds without compiling the package a second time.
           * Undefined, or a read that fails, loads it as with none; nothing is
           * bound until that bind.
           */
-         colocated?: Promise<FreshnessManifest | undefined>;
+         database?: Promise<FreshnessManifest | undefined>;
       } = {},
    ): Promise<Package> {
       return withSpan(
@@ -976,7 +976,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   cleanupDirectoryOnFailure,
                   options.dryRun === true,
                   options.versionId,
-                  options.colocated,
+                  options.database,
                ),
             ),
       );
@@ -990,7 +990,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       cleanupDirectoryOnFailure: boolean,
       dryRun: boolean,
       versionId?: string,
-      colocated?: Promise<FreshnessManifest | undefined>,
+      database?: Promise<FreshnessManifest | undefined>,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -1023,7 +1023,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             manifestValidationTime,
             dryRun,
             versionId,
-            colocated,
+            database,
          );
       } catch (error) {
          // No caller ever holds a package whose load failed, so its own
@@ -1423,7 +1423,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       manifestValidationTime: number,
       dryRun: boolean,
       versionId?: string,
-      colocated?: Promise<FreshnessManifest | undefined>,
+      database?: Promise<FreshnessManifest | undefined>,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
@@ -1441,11 +1441,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             ...(versionId !== undefined ? { publishedVersion: true } : {}),
          }),
       );
-      const [outcome, databases, colocatedEntries] = await Promise.all([
+      const [outcome, databases, databaseEntries] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
          // The bind that follows reports a failed read; this load serves live.
-         colocated?.catch(() => undefined),
+         database?.catch(() => undefined),
       ]);
       assertOutcomeStagesAvailable(outcome);
       const workerDoneTime = performance.now();
@@ -1460,15 +1460,15 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
               quoted: FreshnessManifest;
            }
          | undefined;
-      if (colocatedEntries && Object.keys(colocatedEntries).length > 0) {
+      if (databaseEntries && Object.keys(databaseEntries).length > 0) {
          compiledFor = {
-            key: Package.compileKeyOf(colocatedEntries),
-            requested: JSON.stringify(colocatedEntries),
+            key: Package.compileKeyOf(databaseEntries),
+            requested: JSON.stringify(databaseEntries),
             quoted: await Package.quoteTableNames(
                packageName,
                (connectionName) =>
                   malloyConfig.connections.lookupConnection(connectionName),
-               colocatedEntries,
+               databaseEntries,
                Package.planConnectionsOf(
                   outcome.buildPlan?.ok ? outcome.buildPlan.outcome.plan : null,
                ),
@@ -1586,7 +1586,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          pkg.refreshServingIdentity();
 
          buildPlanMs = await pkg.mz.applyLoadBuildPlan(outcome.buildPlan);
-         // Before any bind, so a colocated rollup bound later is routed.
+         // Before any bind, so a database rollup bound later is routed.
          pkg.mz.pushServedCopyContextToModels();
 
          await applyLoadGates(pkg);
@@ -1594,7 +1594,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          await pkg.computeEntities(Package.entityPlansOf(outcome));
          entitiesMs = performance.now() - entitiesStarted;
          pkg.logEmptyDiscoveryWarnings();
-         // Compiled against them, bound to none yet (see `colocated`).
+         // Compiled against them, bound to none yet (see `database`).
          if (compiledFor) {
             pkg.reloadedFor = pkg.reloadKey(compiledFor.key, undefined, {
                from: compiledFor.requested,
@@ -2832,8 +2832,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                ? last.quoted
                : await this.quoteBoundTableNames(entries);
          this.mz.bind({
-            colocated: quoted,
-            colocatedAsGiven: true,
+            database: quoted,
+            databaseAsGiven: true,
             // Each table's columns as its warehouse holds them now.
             observed: await this.mz.readDatabaseColumns(quoted),
             // The first bind over a load's models publishes to them, as the
@@ -2925,8 +2925,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.wireServingResolvers();
       this.mz.pushServeDestinationConfigToModels();
       this.mz.bind({
-         colocated: entries,
-         colocatedAsGiven: true,
+         database: entries,
+         databaseAsGiven: true,
          observed,
          models: "installed",
       });
@@ -2951,7 +2951,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * The part of colocated entries a compile reads: each table's name and
+    * The part of database entries a compile reads: each table's name and
     * the connection it is quoted for (the models' build manifest is
     * `toTableNameManifest` of the quoted entries). Freshness, schemas and key
     * checks are read per query and by the bind, never by a compile.
@@ -2985,7 +2985,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          quotedFrom: quoting.from,
          quoted: quoting.quoted,
          models: this.models,
-         colocated: this.mz.boundColocatedEntries(),
+         database: this.mz.boundDatabaseEntries(),
          buildPlan: this.mz.getBuildPlan(),
          connectionEdits: this.connectionEdits,
       };
@@ -3008,7 +3008,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return (
          last.compiledFor === compiledFor &&
          last.models === this.models &&
-         last.colocated === this.mz.boundColocatedEntries() &&
+         last.database === this.mz.boundDatabaseEntries() &&
          last.buildPlan === this.mz.getBuildPlan() &&
          last.connectionEdits === this.connectionEdits
       );

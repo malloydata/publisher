@@ -11,7 +11,7 @@
  * did not read the warehouse (`observed` undefined) answers `"9.0"` and
  * fails here.
  *
- * Every mechanism: `#(materialize)`, `#@ persist` and a `#(preaggregate)`
+ * Every mechanism: `#(materialize)`, `#@ persist` and a `#(rollup)`
  * rollup, on DuckDB, and on Postgres when `PUBLISHER_TEST_POSTGRES_URL`
  * names one.
  */
@@ -63,7 +63,7 @@ source: v1 is raw -> { select: cat, amt } extend {
 }
 
 source: rolled is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: top is amt.max()
 }
 `;
@@ -80,7 +80,7 @@ interface Fixture {
 
 async function fixture(warehouse: unknown): Promise<Fixture> {
    const root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "colocated-alter-")),
+      fs.mkdtempSync(path.join(os.tmpdir(), "database-alter-")),
    );
    const envPath = path.join(root, "env");
    fs.mkdirSync(envPath);
@@ -281,7 +281,7 @@ for (const tier of tiers) {
          }
          // The bind every run, manifest and restart takes.
          await f.pkg.reloadAllModels(
-            f.pkg.materialization().boundColocatedEntries() ?? {},
+            f.pkg.materialization().boundDatabaseEntries() ?? {},
          );
       }, 180_000);
       afterAll(async () => {

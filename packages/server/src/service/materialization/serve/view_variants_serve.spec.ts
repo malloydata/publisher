@@ -16,7 +16,7 @@ import { PersistedViewServe } from "./view_variants";
 
 /**
  * The persisted view leg against a real compile: which query texts call a
- * persisted view, which table it would read (colocated or `storage=`, built,
+ * persisted view, which table it would read (database or `storage=`, built,
  * stale or fresh), and each way an attempt declines or answers from the
  * stored result. No query runs; an answer is checked by the SQL it compiles.
  */
@@ -63,7 +63,7 @@ async function declineOf(promise: Promise<unknown>): Promise<LegDecline> {
    return err as LegDecline;
 }
 
-describe("PersistedViewServe (colocated)", () => {
+describe("PersistedViewServe (database)", () => {
    let f: PersistedResultFixture;
    let tableId: string;
    let built: Record<string, { tableName: string }>;
@@ -109,7 +109,7 @@ describe("PersistedViewServe (colocated)", () => {
       const call = "run: orders -> by_region";
       expect(f.views.reportedTable(call, pinnedOf())).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: false,
          stale: false,
       });
@@ -128,14 +128,14 @@ describe("PersistedViewServe (colocated)", () => {
          ),
       ).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: true,
          dataAsOf: old,
       });
       expect(f.views.reportedTable(call, pinnedOf([], built))).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: false,
       });
@@ -148,7 +148,7 @@ describe("PersistedViewServe (colocated)", () => {
       const answer = await attemptOf(f, "run: orders -> by_region", built);
       expect(answer.table).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: false,
       });
@@ -300,7 +300,7 @@ describe("PersistedViewServe (storage=)", () => {
          mine,
          storedViewBinding("other@file:///x.malloy"),
          { ...mine, kind: "persist" },
-         { ...mine, tier: "colocated" },
+         { ...mine, tier: "database" },
       ]);
       expect(f.views.viewBindings(pinned, "bound")).toEqual([mine]);
       expect(f.views.viewBindings(pinned, "fresh")).toEqual([mine]);
@@ -429,7 +429,7 @@ describe("PersistedViewServe (storage=)", () => {
  * storage destination (a database origin whose destination the control plane
  * chose), and the run's manifest binds it as a storage table. The binding
  * decides the tier, not the annotation: the view is read from it exactly as a
- * `storage=` view's is, rather than looked for in the colocated manifest.
+ * `storage=` view's is, rather than looked for in the database manifest.
  */
 describe("PersistedViewServe (a host-chosen destination, no storage=)", () => {
    let f: PersistedResultFixture;
@@ -479,9 +479,9 @@ describe("PersistedViewServe (a host-chosen destination, no storage=)", () => {
       expect(sql).toContain('"main"."stored_view_t"');
    });
 
-   it("still reads the colocated manifest when no storage binding stores it", () => {
+   it("still reads the database manifest when no storage binding stores it", () => {
       expect(
          f.views.tableOf({ buildSourceID }, pinnedOf(), undefined).tier,
-      ).toBe("colocated");
+      ).toBe("database");
    });
 });

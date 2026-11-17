@@ -155,14 +155,12 @@ source: tracks is base_source extend {
    // scope may pass it.
    const AVG_ROLLUP = TRACKS_MODEL.replace(
       "  measure: total is n.sum()",
-      '  measure: total is n.sum()\n  #(preaggregate) grain=["id"]\n  measure: average is n.avg()',
+      '  measure: total is n.sum()\n  #(rollup) grain=["id"]\n  measure: average is n.avg()',
    );
 
    it("file: reports the refusal the load gives an unmergeable rollup", async () => {
       const { problems } = await compile("tracks.malloy", AVG_ROLLUP, "file");
-      const refused = problems.filter(
-         (p) => p.code === "preaggregate-not-mergeable",
-      );
+      const refused = problems.filter((p) => p.code === "rollup-not-mergeable");
       expect(refused).toHaveLength(1);
       expect(refused[0]).toMatchObject({
          severity: "error",
@@ -177,9 +175,7 @@ source: tracks is base_source extend {
          AVG_ROLLUP,
          "package",
       );
-      const refused = problems.filter(
-         (p) => p.code === "preaggregate-not-mergeable",
-      );
+      const refused = problems.filter((p) => p.code === "rollup-not-mergeable");
       expect(refused).toHaveLength(1);
       expect(refused[0]).toMatchObject({
          severity: "error",

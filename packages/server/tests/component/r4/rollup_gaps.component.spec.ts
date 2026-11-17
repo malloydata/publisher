@@ -9,8 +9,9 @@
  * - **A hidden grain dimension.** A `private` or `internal` dimension in a
  *   grain is stored, and redeclared with its modifier on the variant, so no
  *   query selects it and a query grouping by the rest of the grain is read
- *   from the rollup. A `private` dimension of a source the rollup's base
- *   extends is never stored: refused (`hidden_field`), answered live.
+ *   from the rollup. So is a `private` dimension of a source the rollup's
+ *   base extends in the same file: the build copy lifts that source's
+ *   statement too (rollup_hidden_fields.component.spec.ts has the rest).
  * - **A given-reading `where:`** whose every field is a grain dimension is
  *   left out of the build, so the table holds every caller's groups, and is
  *   written again on the variant, where each caller's givens bind it (the
@@ -54,27 +55,27 @@ given: REGION :: string
 source: hidden is duckdb.table('orders_raw') extend {
   private dimension: secret_cat is category
   internal dimension: tenant_i is tenant
-  #(preaggregate) grain=["secret_cat", "region"]${p}
+  #(rollup) grain=["secret_cat", "region"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["tenant_i", "region"]${p}
+  #(rollup) grain=["tenant_i", "region"]${p}
   measure: t_total is amount.sum()
   view: by_secret is { group_by: secret_cat; aggregate: total }
 }
 source: private_base is duckdb.table('orders_raw') extend {
   private dimension: hidden_cat is category
 }
-// A private dimension of the source it extends: never stored.
+// A private dimension of the source it extends: stored, still private.
 source: inherits_private is private_base extend {
-  #(preaggregate) grain=["hidden_cat", "region"]${p}
+  #(rollup) grain=["hidden_cat", "region"]${p}
   measure: total is amount.sum()
 }
 
 // (b) A given-reading where: over grain dimensions.
 source: scoped is duckdb.table('orders_raw') extend {
   where: region = $REGION
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: n is count()
 }
 // A parent joining it: the join reads the rollup's every-caller groups
@@ -87,19 +88,19 @@ source: cats is duckdb.table('cats_raw') extend {
 // Over a field the grain does not keep: refused.
 source: scoped_outside is duckdb.table('orders_raw') extend {
   where: region = $REGION
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
 }
 // Inherited from the source it extends: refused.
 source: scoped_inherited is scoped extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: inherited_total is amount.sum()
 }
 
 // (c) Zoned queries.
 source: timed is duckdb.table('orders_raw') extend {
   dimension: order_day is order_time.day
-  #(preaggregate) grain=["category", "order_day"]${p}
+  #(rollup) grain=["category", "order_day"]${p}
   measure: total is amount.sum()
 }
 `;
@@ -114,7 +115,7 @@ function expectLive(run: R4Run): void {
    expect(rowDifference(run.live, run.served)).toBeUndefined();
 }
 
-for (const placement of ["colocated", "storage"] as const) {
+for (const placement of ["database", "storage"] as const) {
    describe(`R4: rollup gaps closed (opportunity 13), ${placement}`, () => {
       let restore: () => void;
       let fixture: R4Fixture;
@@ -230,22 +231,27 @@ for (const placement of ["colocated", "storage"] as const) {
             },
          );
 
-         it("refuses a private dimension of the source it extends, and answers live", async () => {
+         it("answers from a rollup over a private dimension of the source it extends, equal to live", async () => {
             expect(
                fixture.rollupRefusals.filter(
                   (r) => r.sourceName === "inherits_private",
                ),
-            ).toEqual([
-               { reason: "hidden_field", sourceName: "inherits_private" },
-            ]);
-            expectLive(
+            ).toEqual([]);
+            expectRollup(
                await fixture.run({
                   name: "inherited private",
                   malloy:
                      "run: inherits_private -> { group_by: region; aggregate: total }",
-                  expectLive: true,
+                  truthSql:
+                     "SELECT region, CAST(SUM(amount) AS DOUBLE) AS total FROM orders_raw GROUP BY 1",
                }),
             );
+            fixture.setBindings(fixture.bindings);
+            await expect(
+               fixture.runAsIs(
+                  "run: inherits_private -> { group_by: hidden_cat; aggregate: total }",
+               ),
+            ).rejects.toThrow("'hidden_cat' is private");
          });
       });
 

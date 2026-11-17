@@ -314,7 +314,7 @@ for (const c of CASES) {
                   files: { "m.malloy": c.model(place, kind) },
                   seedSql: SEED,
                   ...(kind === "mat" ? { materialize: true } : {}),
-                  ...(tier === "database" ? { colocated: c.srcs } : {}),
+                  ...(tier === "database" ? { database: c.srcs } : {}),
                });
             });
             afterAll(async () => {

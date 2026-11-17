@@ -21,6 +21,8 @@ import type { components } from "../../../api";
 import {
    isPersistedQuerySourceID,
    isPersistedResultSourceID,
+   isRollupOrigin,
+   type TableOrigin,
 } from "../domain/table_plans";
 
 type BuildPlan = components["schemas"]["BuildPlan"];
@@ -38,8 +40,8 @@ const MATERIALIZATION_DESTINATION_MISSING_CODE =
    "materialization-destination-missing";
 
 /**
- * The `code` of the package warning for a colocated source whose connection
- * cannot hold a table (P13): a colocated build writes into that connection, so
+ * The `code` of the package warning for a database source whose connection
+ * cannot hold a table (P13): a database build writes into that connection, so
  * the source serves live.
  */
 const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
@@ -75,7 +77,7 @@ type ServeVerdictReason =
    | "shadowed"
    /** `storage=` names a destination the environment does not configure (P13). */
    | "destination_missing"
-   /** Colocated, on a connection whose type creates no tables (P13). */
+   /** Database, on a connection whose type creates no tables (P13). */
    | "connection_cannot_hold_table"
    /**
     * A `#(materialize)` source, which only the served copy reads: the served
@@ -118,9 +120,9 @@ export interface ServeVerdict {
     * (`#@ persist` on a view), `query` (`#@ persist` on a named query), or
     * `preaggregate` (a rollup).
     */
-   origin: "persist" | "materialize" | "view" | "query" | "preaggregate";
+   origin: TableOrigin;
    /** Where its table lives: the source's own connection, or a `storage=` destination. */
-   tier: "colocated" | "storage";
+   tier: "database" | "storage";
    /**
     * `serves`: bound, and queries can be answered from its table.
     * `not_built`: nothing is bound yet; queries will be answered from its
@@ -160,11 +162,11 @@ export interface ServeVerdictFacts {
     * Whether a query let past a gated entry point may be answered from this
     * source's table, as the gate policy (`domain/gate_policy.ts`) decides it
     * for the router: the served copy over a table it keeps the gate on (a
-    * colocated one, a `storage=` one admitted past its own gate, any under
+    * database one, a `storage=` one admitted past its own gate, any under
     * `materialize.gatedSources`), or a rollup whose variant keeps its base's
     * gates.
     */
-   keepsGate(sourceID: string, tier: "colocated" | "storage"): boolean;
+   keepsGate(sourceID: string, tier: "database" | "storage"): boolean;
    /**
     * Why the bind refuses this source although the plan holds it (the
     * eligibility gate the bind applies, such as a rollup name two models
@@ -173,12 +175,12 @@ export interface ServeVerdictFacts {
    refusedAtBind(
       sourceID: string,
       source: PersistSourcePlan,
-      tier: "colocated" | "storage",
+      tier: "database" | "storage",
    ): string | undefined;
-   /** Colocated: the plan's sourceEntityIds the bound manifest has a table for. */
+   /** Database: the plan's sourceEntityIds the bound manifest has a table for. */
    boundEntityIds: ReadonlySet<string>;
    /**
-    * Colocated: the bound sourceEntityIds still within their freshness window
+    * Database: the bound sourceEntityIds still within their freshness window
     * (or whose fallback serves stale). Absent: every bound one is.
     */
    freshEntityIds?: ReadonlySet<string>;
@@ -238,7 +240,7 @@ function originOf(
    rollup: boolean,
    facts: Pick<ServeVerdictFacts, "materialize" | "declaredMaterialize">,
 ): ServeVerdict["origin"] {
-   if (rollup) return "preaggregate";
+   if (rollup) return "rollup";
    if (isPersistedResultSourceID(sourceID)) {
       return isPersistedQuerySourceID(sourceID) ? "query" : "view";
    }
@@ -254,8 +256,8 @@ function originOf(
 }
 
 /** The tier a plan source's table lives in. */
-function planTier(source: PersistSourcePlan): "colocated" | "storage" {
-   return source.annotationFields?.storage?.trim() ? "storage" : "colocated";
+function planTier(source: PersistSourcePlan): "database" | "storage" {
+   return source.annotationFields?.storage?.trim() ? "storage" : "database";
 }
 
 /**
@@ -271,15 +273,21 @@ export function computeServeVerdicts(facts: ServeVerdictFacts): ServeVerdict[] {
    for (const [sourceID, refused] of Object.entries(
       facts.plan?.refusedSources ?? {},
    )) {
-      // A preaggregate-tier refusal sits beside its base's own plan entry,
-      // which already has a verdict.
+      // A rollup's refusal may sit beside its own plan entry, which already
+      // has a verdict.
       if (sourceID in sources) continue;
       out.push({
          sourceName: refused.name,
          sourceID,
          ...(refused.modelPath ? { modelPath: refused.modelPath } : {}),
-         origin: originOf(sourceID, refused.tier === "preaggregate", facts),
-         tier: refused.tier === "storage" ? "storage" : "colocated",
+         origin: originOf(
+            sourceID,
+            // `preaggregate` on `tier` is how a record before this release
+            // said rollup.
+            isRollupOrigin(refused.origin) || refused.tier === "preaggregate",
+            facts,
+         ),
+         tier: refused.tier === "storage" ? "storage" : "database",
          verdict: "live",
          reason: "refused",
          message: `Not built, so queries on it are answered live: ${refused.message}`,
@@ -338,7 +346,7 @@ function verdictFor(
    }
 
    // `#(materialize)` is served by the served copy alone, on either tier
-   // (never through the colocated build manifest, which Malloy never
+   // (never through the database build manifest, which Malloy never
    // substitutes for it), so the served copy decides its verdict.
    const materialized = facts.materialize(sourceID);
 
@@ -352,13 +360,13 @@ function verdictFor(
          "row_level_gate",
          `Every published entry point that reads ${subject} carries a ` +
             `row-level gate (#(authorize) or #(access_filter)), which ` +
-            `${origin === "preaggregate" ? "a rollup" : tier === "storage" ? "the storage tier" : "this table"} cannot keep ` +
+            `${origin === "rollup" ? "a rollup" : tier === "storage" ? "the storage tier" : "this table"} cannot keep ` +
             `yet, so every query that reaches it is answered live.`,
          [
-            // A colocated table already follows the first fix: only the
+            // A database table already follows the first fix: only the
             // gate's shape can change there.
             tier === "storage"
-               ? "Materialize the source without storage= (colocated), where the gate is kept."
+               ? "Materialize the source without storage= (database), where the gate is kept."
                : "Make the gate the entry point's own row-level gate, which a table in the source's database keeps.",
             "Or publish an ungated entry point over it, for the queries that need no gate.",
          ],
@@ -399,7 +407,7 @@ interface VerdictSubject {
    source: PersistSourcePlan;
    facts: ServeVerdictFacts;
    origin: ServeVerdict["origin"];
-   tier: "colocated" | "storage";
+   tier: "database" | "storage";
    base: Omit<ServeVerdict, "verdict" | "message">;
    rollupBase: string | undefined;
    view: ReturnType<NonNullable<ServeVerdictFacts["persistedViewOf"]>>;
@@ -418,7 +426,7 @@ function verdictSubjectOf(
    source: PersistSourcePlan,
    facts: ServeVerdictFacts,
 ): VerdictSubject {
-   const origin = originOf(sourceID, source.origin === "preaggregate", {
+   const origin = originOf(sourceID, isRollupOrigin(source.origin), {
       materialize: facts.materialize,
    });
    const tier = planTier(source);
@@ -469,7 +477,7 @@ function verdictSubjectOf(
 
 /**
  * A deployment fact (P13) that sends the source live: a `storage=`
- * destination the environment does not configure, or a colocated connection
+ * destination the environment does not configure, or a database connection
  * that cannot hold a table. Undefined when neither does.
  */
 function deploymentVerdict(
@@ -504,7 +512,7 @@ function deploymentVerdict(
       };
    }
    if (
-      tier === "colocated" &&
+      tier === "database" &&
       !facts.boundEntityIds.has(source.sourceEntityId) &&
       facts.connectionCanHoldTable(source.connectionName) === false
    ) {
@@ -571,7 +579,7 @@ function boundVerdict(
       if (materialized === "not_served") return notServed();
       if (
          materialized === undefined &&
-         origin !== "preaggregate" &&
+         origin !== "rollup" &&
          !facts.servedStorageNames.has(source.name)
       ) {
          return live(

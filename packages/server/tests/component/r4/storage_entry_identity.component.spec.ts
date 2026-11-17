@@ -83,7 +83,7 @@ describe("a storage= entry built from another definition of a same-named source"
          () => new FixedConnectionMap(new Map([[LAKE, before.lake]]), LAKE),
       );
       after.pkg.materialization().setServeDestinationConfig(() => lake);
-      after.pkg.materialization().bind({ colocated: {} });
+      after.pkg.materialization().bind({ database: {} });
       after.pkg.materialization().bind({ storage: built.stored as never });
       await after.pkg.getModel("m.malloy")?.prepareServedCopy();
 

@@ -14,7 +14,7 @@
  *
  * Mechanisms: a persisted view and a persisted named query (read by Malloy's
  * manifest substitution), a `#(materialize)` source and a `#@ persist` source
- * (each through the served copy), and a `#(preaggregate)` rollup.
+ * (each through the served copy), and a `#(rollup)` rollup.
  *
  * The retype is read as a server that has not seen the table before reads it:
  * the package-load schema cache is off and the connection's own schema cache
@@ -62,9 +62,9 @@ source: mat is warehouse.table('t')
 #@ persist
 source: per is warehouse.table('t') -> { select: cat, n, k is 1 }
 source: rolled is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: rtop is n.max()
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: rc is count()
 }
 `;
@@ -192,7 +192,7 @@ describe("every materialization over a column retyped upstream after its build",
       for (const [name, query] of Object.entries(QUERIES)) {
          before[name] = await ask(query);
       }
-      const bound = pkg.materialization().boundColocatedEntries() ?? {};
+      const bound = pkg.materialization().boundDatabaseEntries() ?? {};
 
       // Upstream, out of band: the source's column changes type.
       await warehouse.runSQL("ALTER TABLE t ALTER n TYPE VARCHAR");

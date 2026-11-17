@@ -357,7 +357,7 @@ put warm overhead at 0.1 to 0.6 ms and cold at 1 to 6 ms. The shape of the resul
 absolute numbers here are higher mainly because of the load, so rerun on a quiet machine before
 gating phase 1 on them.
 
-Not covered yet: colocated routing (the manifest tier) and pre-aggregation rollups. They need a
+Not covered yet: database routing (the manifest tier) and pre-aggregation rollups. They need a
 package directory and the rollup companion model, so they come with the variant router itself.
 
 ### What the baseline shows

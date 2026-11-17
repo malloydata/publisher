@@ -66,6 +66,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe"
           }
@@ -74,6 +75,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "注文",
             "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
@@ -91,6 +93,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe",
           "tier": "storage",
           "via": "served_copy"
@@ -145,6 +148,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
           }
@@ -153,6 +157,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "café",
             "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe"
@@ -170,6 +175,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652",
           "tier": "storage",
           "via": "served_copy"
@@ -223,6 +229,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "2405df3b7488da9e3e7d9cdeedb73b54628640971bb8f1bb5af19c95e29c6ede"
           }
@@ -239,6 +246,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "2405df3b7488da9e3e7d9cdeedb73b54628640971bb8f1bb5af19c95e29c6ede",
           "tier": "storage",
           "via": "served_copy"
@@ -293,6 +301,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe"
           }
@@ -301,6 +310,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "注文",
             "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
@@ -318,6 +328,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe",
           "tier": "storage",
           "via": "served_copy"
@@ -372,6 +383,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652"
           }
@@ -380,6 +392,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "café",
             "tableId": "906722090c9ae623e7254ab13cf1d687ac6d844df492f8397cdae8f437d09bbe"
@@ -397,6 +410,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "f82b7a7c65d7a942ab50f90ce47c7d11515bc1234214e9c8e799d4dfe78ac652",
           "tier": "storage",
           "via": "served_copy"
@@ -450,6 +464,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "2405df3b7488da9e3e7d9cdeedb73b54628640971bb8f1bb5af19c95e29c6ede"
           }
@@ -466,6 +481,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "2405df3b7488da9e3e7d9cdeedb73b54628640971bb8f1bb5af19c95e29c6ede",
           "tier": "storage",
           "via": "served_copy"

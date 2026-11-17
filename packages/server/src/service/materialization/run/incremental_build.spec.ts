@@ -122,7 +122,7 @@ describe("incrementalLineage", () => {
 
    it("describes a storage= build, whose table lives in the destination", () => {
       // The destination is part of the boundary's table identity, so the same
-      // source materialized colocated and stored yields two distinct lineages.
+      // source materialized in the database tier and stored yields two distinct lineages.
       const stored = lineage({
          targetDialect: "duckdb",
          storageDestinationName: "lake",

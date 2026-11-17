@@ -269,15 +269,15 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       physical_table_name VARCHAR NOT NULL,
       connection_name VARCHAR NOT NULL,
       -- The storage destination the table lives in, or '' when it lives in
-      -- connection_name's own warehouse (the colocated default). Part of the
+      -- connection_name's own warehouse (the database default). Part of the
       -- table's IDENTITY, not a description of it: a destination and a connection
       -- are separate namespaces that may share a name, and a source's physical
       -- name does not change when it moves between them, so without this a
       -- boundary measured on a stored table is indistinguishable from one
-      -- measured on a colocated table of the same name.
+      -- measured on a database table of the same name.
       --
       -- In the KEY, because two such tables coexist legitimately. A source
-      -- persisted colocated and another persisted into a destination under the
+      -- persisted in the database tier and another persisted into a destination under the
       -- same name are two different tables and neither is a misconfiguration —
       -- the within-package collision check keys on the destination too, so it
       -- correctly says nothing about the pair. Sharing one row between them makes
@@ -286,7 +286,7 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       -- never advances.
       --
       -- '' rather than NULL, and that is what makes it keyable. A NULL in the key
-      -- defeats ON CONFLICT (NULL never equals NULL, so two colocated rows both
+      -- defeats ON CONFLICT (NULL never equals NULL, so two database rows both
       -- insert) and forces every read to compare with IS NOT DISTINCT FROM. The
       -- sentinel keeps the key a plain equality on every path.
       storage_destination_name VARCHAR NOT NULL DEFAULT '',

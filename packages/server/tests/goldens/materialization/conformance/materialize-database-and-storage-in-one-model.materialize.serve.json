@@ -1,0 +1,462 @@
+{
+  "bind": {
+    "buildErrors": {},
+    "built": [
+      {
+        "name": "mz_fact",
+        "tier": "storage"
+      },
+      {
+        "name": "mz_dim",
+        "tier": "database"
+      }
+    ],
+    "verdicts": [
+      "mz_dim:serves",
+      "mz_fact:serves"
+    ],
+    "warnings": [
+      {
+        "code": "served-copy-not-served",
+        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source database.",
+        "subject": "mz_joined"
+      }
+    ]
+  },
+  "queries": [
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0a981de9cd246afb",
+          "kind": "reduce",
+          "measures": [
+            "customers"
+          ],
+          "source": "mz_dim",
+          "stages": 1
+        },
+        "source": "mz_dim"
+      },
+      "equalToLive": true,
+      "malloy": "run: mz_dim -> { group_by: segment; aggregate: customers }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "d97e22c42cac6734195188c4a825c6947067a776f362f519546a5e1190f1d900"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "customers"
+          ],
+          "sourceName": "mz_dim"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "d97e22c42cac6734195188c4a825c6947067a776f362f519546a5e1190f1d900",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the database source alone",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c0b69f6e16afa902",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "mz_fact",
+          "stages": 1
+        },
+        "source": "mz_fact"
+      },
+      "equalToLive": true,
+      "malloy": "run: mz_fact -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "mz_fact"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the storage= source alone",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "aed4ad2a6d6eead2",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "mz_joined",
+          "stages": 1
+        },
+        "source": "mz_joined"
+      },
+      "equalToLive": true,
+      "malloy": "run: mz_joined -> { group_by: c.segment; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "CROSS_CONNECTION",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "mz_joined"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the storage= source joined to the database one",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "off"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "customers"
+          },
+          {
+            "classifications": [],
+            "path": "segment"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "0a981de9cd246afb",
+          "kind": "reduce",
+          "measures": [
+            "customers"
+          ],
+          "source": "mz_dim",
+          "stages": 1
+        },
+        "source": "mz_dim"
+      },
+      "equalToLive": true,
+      "malloy": "run: mz_dim -> { group_by: segment; aggregate: customers }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "d97e22c42cac6734195188c4a825c6947067a776f362f519546a5e1190f1d900"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "segment"
+          ],
+          "measures": [
+            "customers"
+          ],
+          "sourceName": "mz_dim"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "d97e22c42cac6734195188c4a825c6947067a776f362f519546a5e1190f1d900",
+          "tier": "database",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the database source alone",
+      "servedBy": "materialized",
+      "servedFrom": "database",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "region"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "region"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "c0b69f6e16afa902",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "mz_fact",
+          "stages": 1
+        },
+        "source": "mz_fact"
+      },
+      "equalToLive": true,
+      "malloy": "run: mz_fact -> { group_by: region; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "region"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "mz_fact"
+        },
+        "servedBy": {
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
+          "via": "served_copy"
+        },
+        "warnings": []
+      },
+      "query": "the storage= source alone",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
+      "switch": "on"
+    },
+    {
+      "access": {
+        "decision": "open",
+        "fieldsRead": [
+          {
+            "classifications": [],
+            "path": "c.segment"
+          },
+          {
+            "classifications": [],
+            "path": "total"
+          }
+        ],
+        "fieldsReadComplete": true,
+        "gateGivenNames": [],
+        "gates": {
+          "accessFilter": [],
+          "authorize": []
+        },
+        "givenNames": [],
+        "shape": {
+          "complete": true,
+          "dimensions": [
+            "c.segment"
+          ],
+          "filteredDimensions": [],
+          "filters": [],
+          "key": "aed4ad2a6d6eead2",
+          "kind": "reduce",
+          "measures": [
+            "total"
+          ],
+          "source": "mz_joined",
+          "stages": 1
+        },
+        "source": "mz_joined"
+      },
+      "equalToLive": true,
+      "malloy": "run: mz_joined -> { group_by: c.segment; aggregate: total }",
+      "path": {
+        "considered": [
+          {
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "CROSS_CONNECTION",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [],
+        "query": {
+          "filteredBy": [],
+          "groupedBy": [
+            "c.segment"
+          ],
+          "measures": [
+            "total"
+          ],
+          "sourceName": "mz_joined"
+        },
+        "servedBy": {
+          "kind": "live"
+        },
+        "warnings": []
+      },
+      "query": "the storage= source joined to the database one",
+      "servedBy": "live",
+      "servedFrom": null,
+      "switch": "on"
+    }
+  ]
+}

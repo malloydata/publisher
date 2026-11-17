@@ -5,13 +5,13 @@
  * R4 for rollup cases the other specs do not reach, each answered against
  * live and, where it must be, from the rollup:
  *
- *  - join-to-rollup through a v1 `#@ preaggregate`, colocated and in a
+ *  - join-to-rollup through a v1 `#@ preaggregate`, database and in a
  *    `storage=` destination beside the joining source;
  *  - a rollup on a zoned source read through a join from a source in the
  *    same zone, the one reader a zoned rollup has (v1 and v2);
  *  - the column types a rollup stores (v1 and v2): a BIGINT partial past
  *    2^53, a TIMESTAMPTZ grain, a DECIMAL partial and grain; all exact,
- *    colocated and in a `storage=` destination.
+ *    database and in a `storage=` destination.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -61,7 +61,7 @@ const FLIGHTS_SEED = [
 ];
 
 for (const [label, placement] of [
-   ["colocated", ""],
+   ["database", ""],
    ["storage=", ` storage="${DESTINATION}"`],
 ] as const) {
    describe(`R4: join-to-rollup through a v1 #@ preaggregate [${label}]`, () => {
@@ -116,7 +116,7 @@ source: flights is duckdb.table('flights_raw') -> { select: * } extend {`
 }
 
 for (const [label, route] of [
-   ["v2 #(preaggregate)", `#(preaggregate) grain=["flight_id"]`],
+   ["v2 #(rollup)", `#(rollup) grain=["flight_id"]`],
    ["v1 #@ preaggregate", `#@ preaggregate grain="flight_id"`],
 ] as const) {
    describe(`R4: a ${label} rollup on a zoned source, read through a same-zone join`, () => {
@@ -194,14 +194,14 @@ const TYPED_SEED = [
 
 const ROUTES = {
    v2: (grain: string, placement: string) =>
-      `#(preaggregate) grain=["${grain}"]${placement}`,
+      `#(rollup) grain=["${grain}"]${placement}`,
    v1: (grain: string, placement: string) =>
       `#@ preaggregate grain="${grain}"${placement}`,
 };
 
 for (const [route, annotate] of Object.entries(ROUTES)) {
    for (const [label, placement] of [
-      ["colocated", ""],
+      ["database", ""],
       ["storage=", ` storage="${DESTINATION}"`],
    ] as const) {
       describe(`R4: the column types a ${route} rollup stores [${label}]`, () => {

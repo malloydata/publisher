@@ -755,7 +755,7 @@ async function compileFile(ctx: CompileContext): Promise<CompileSourceResult> {
 
 /** A materialization route, written anywhere in a file's text. */
 const MATERIALIZATION_ROUTE =
-   /#\(\s*(?:preaggregate|materialize)\b|#@\s*(?:persist|preaggregate)\b/;
+   /#\(\s*(?:rollup|preaggregate|materialize)\b|#@\s*(?:persist|preaggregate)\b/;
 
 /**
  * Whether the file-scope compile runs the load's materialization checks: the

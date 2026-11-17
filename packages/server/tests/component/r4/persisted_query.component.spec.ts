@@ -74,7 +74,7 @@ source: fl is ${TABLE} extend {
 query: by_carrier is fl -> { group_by: carrier; aggregate: n, dist; order_by: dist desc }
 
 #@ persist
-query: by_carrier_colocated is fl -> { group_by: carrier; aggregate: n, dist; order_by: dist desc, carrier }
+query: by_carrier_database is fl -> { group_by: carrier; aggregate: n, dist; order_by: dist desc, carrier }
 
 #@ persist
 query: top is fl -> { group_by: carrier; aggregate: n; order_by: n desc, carrier; limit: 2 }
@@ -226,9 +226,9 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
    const served: [label: string, model: string, malloy: string][] = [
       ["an exact call, storage=", "m.malloy", "run: by_carrier"],
       ["a backticked call", "m.malloy", "run: `by_carrier`"],
-      ["an exact call, colocated", "m.malloy", "run: by_carrier_colocated"],
+      ["an exact call, database", "m.malloy", "run: by_carrier_database"],
       ["a limited query", "m.malloy", "run: top"],
-      ["a timeframe column, colocated", "m.malloy", "run: by_month"],
+      ["a timeframe column, database", "m.malloy", "run: by_month"],
       ["a timeframe column, storage=", "m.malloy", "run: by_month_stored"],
       ["a query that selects", "m.malloy", "run: listing"],
       ["a query that selects duplicate rows", "m.malloy", "run: with_dupes"],
@@ -242,7 +242,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "run: by_carrier -> { aggregate: total is dist.sum() }",
       ],
       [
-         "a query that goes on past it, colocated",
+         "a query that goes on past it, database",
          "m.malloy",
          "run: top -> { select: carrier; where: n > 1; order_by: carrier }",
       ],
@@ -346,21 +346,21 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
       expect(fixture.built.map((b) => `${b.name}:${b.tier}`).sort()).toEqual(
          [
             "by_carrier__query:storage",
-            "by_carrier_colocated__query:colocated",
-            "by_month__query:colocated",
+            "by_carrier_database__query:database",
+            "by_month__query:database",
             "by_month_stored__query:storage",
-            "elsewhere__query:colocated",
-            "flagged__query:colocated",
-            "inline_target__query:colocated",
-            "listing__query:colocated",
-            "with_dupes__query:colocated",
-            "having_only__query:colocated",
-            "totals__query:colocated",
-            "null_flag__query:colocated",
-            "top__query:colocated",
-            "two_stage__query:colocated",
-            "vq__query:colocated",
-            "vs__by_tenant__view:colocated",
+            "elsewhere__query:database",
+            "flagged__query:database",
+            "inline_target__query:database",
+            "listing__query:database",
+            "with_dupes__query:database",
+            "having_only__query:database",
+            "totals__query:database",
+            "null_flag__query:database",
+            "top__query:database",
+            "two_stage__query:database",
+            "vq__query:database",
+            "vs__by_tenant__view:database",
          ].sort(),
       );
       const notBuilt = fixture.warnings
@@ -551,7 +551,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "a join to a named query that reads the run target",
          "query",
          "m.malloy",
-         "run: by_carrier_colocated -> { extend: { join_one: f is fl_q on carrier = f.carrier }; select: carrier, f.c; order_by: carrier }",
+         "run: by_carrier_database -> { extend: { join_one: f is fl_q on carrier = f.carrier }; select: carrier, f.c; order_by: carrier }",
          "names the named query `fl_q` beside",
       ],
       [
@@ -637,8 +637,8 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "a join to another model source after the query",
          "query",
          "m.malloy",
-         // A colocated table: a storage= one cannot join a warehouse source.
-         "run: by_carrier_colocated -> { extend: { join_one: cc is carrier_counts on carrier = cc.carrier }; select: carrier, n, cc.c; order_by: carrier }",
+         // A database table: a storage= one cannot join a warehouse source.
+         "run: by_carrier_database -> { extend: { join_one: cc is carrier_counts on carrier = cc.carrier }; select: carrier, n, cc.c; order_by: carrier }",
       ],
    ];
 

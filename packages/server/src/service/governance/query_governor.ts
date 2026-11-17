@@ -289,7 +289,7 @@ export interface GovernRequest {
    routedPastEntryPointGate?: boolean;
    /**
     * The routed compile writes again the run target's given-reading `where:`
-    * terms its stored table left out (a `#(preaggregate)` rollup's variant).
+    * terms its stored table left out (a `#(rollup)` rollup's variant).
     * Re-proven on that compile: its run target must apply exactly the
     * given-reading terms the live run target does, by text, or the query is
     * denied, so a variant that lost one never answers with every caller's

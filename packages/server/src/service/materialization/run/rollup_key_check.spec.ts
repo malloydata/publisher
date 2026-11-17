@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The rollup key check (known limitation 29): a `#(preaggregate)` rollup
+ * The rollup key check (known limitation 29): a `#(rollup)` rollup
  * whose grain is the key of a join_one is checked, after its build, for a
  * key value its base holds more than once. Through real builds run after run
  * as auto-run drives them: the record describes the table the checking run
@@ -71,7 +71,7 @@ const SEED = [
 
 const CREW = `source: crew is duckdb.table('crew_src') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: crew_size is size.sum()
 }
 `;
@@ -356,7 +356,7 @@ ${MANY.replace(
  */
 const SEGS = `source: segments is duckdb.table('segs_src') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: seg_miles is miles.sum()
 }
 source: flights is duckdb.table('flights_src') extend {
@@ -659,7 +659,7 @@ source: crew_base is duckdb.table('crew_src') -> { select: * }
 
 source: crew is crew_base extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: crew_size is size.sum()
 }
 
@@ -670,7 +670,7 @@ source: flights is duckdb.table('flights_src') extend {
 }
 `;
 
-describe("a colocated rollup over a base that is itself stored", () => {
+describe("a database rollup over a base that is itself stored", () => {
    it(
       "records no verdict for its key: its build grouped the stored table's rows, not the base's",
       async () => {
@@ -1012,7 +1012,7 @@ describe("the rollup key record, bound for serving", () => {
          ).toBeUndefined();
       }
       // A rollup's own check over another table never describes it; over
-      // its table in its destination, it does, as a colocated rollup's.
+      // its table in its destination, it does, as a database rollup's.
       expect(keyUniquenessAt({ h: record }, "h", stored)).toBeUndefined();
       const own = {
          ...record,
@@ -1128,7 +1128,7 @@ describe("the rollup key record, bound for serving", () => {
             physicalTableName: `crew_${id}_t`,
             connectionName: "duckdb",
             storageDestinationName: "lake",
-            origin: "preaggregate",
+            origin: "rollup",
             schema: [{ name: "flight_id", type: "INTEGER" }],
             keyUniqueness: { keyColumn: "flight_id", unique },
          }) as unknown as ManifestEntry;
@@ -1179,7 +1179,7 @@ describe("the rollup key record, bound for serving", () => {
          materialization
             .repeatedJoinOneKeyWarnings()
             .map((w) => [w.subject, w.code]),
-      ).toEqual([["crew", "preaggregate-join-one-key-repeated"]]);
+      ).toEqual([["crew", "rollup-join-one-key-repeated"]]);
       materialization.forgetKeyUniqueness(["a"]);
       expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
    });
@@ -1253,7 +1253,7 @@ describe("the rollup key record, bound for serving", () => {
       ).toBeUndefined();
    });
 
-   it("reaches the colocated manifest from the store, and never from a host's manifest", () => {
+   it("reaches the database manifest from the store, and never from a host's manifest", () => {
       const annotated = withRollupKeyRecords({ a: entry }, [committed()]);
       expect(
          splitManifestEntries(annotated, "store", "store").tableNameManifest.a
@@ -1276,8 +1276,8 @@ describe("the rollup key record, bound for serving", () => {
       });
       await committer.autoLoad(
          {
-            loadRunManifest: async ({ colocated }) => {
-               bound = colocated;
+            loadRunManifest: async ({ database }) => {
+               bound = database;
                return { loaded: true };
             },
          },
@@ -1338,8 +1338,8 @@ describe("the rollup key record, bound for serving", () => {
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
       materialization.bind({
-         colocatedAsGiven: true,
-         colocated: {
+         databaseAsGiven: true,
+         database: {
             a: {
                tableName: "r_t",
                keyUniqueness: { keyColumn: "k", unique: true },
@@ -1383,8 +1383,8 @@ describe("the rollup key record, bound for serving", () => {
       } as never;
       const repeated = { keyColumn: "flight_id", unique: false };
       materialization.bind({
-         colocatedAsGiven: true,
-         colocated: {
+         databaseAsGiven: true,
+         database: {
             a: { tableName: "r_t", keyUniqueness: repeated },
             b: {
                tableName: "s_t",
@@ -1396,7 +1396,7 @@ describe("the rollup key record, bound for serving", () => {
       });
       const warnings = materialization.repeatedJoinOneKeyWarnings();
       expect(warnings.map((w) => [w.subject, w.code, w.model])).toEqual([
-         ["crew", "preaggregate-join-one-key-repeated", "m.malloy"],
+         ["crew", "rollup-join-one-key-repeated", "m.malloy"],
       ]);
       expect(warnings[0].message).toContain("`flight_id` more than once");
       // A run about to rewrite the table forgets the check, and the warning.
@@ -1427,8 +1427,8 @@ describe("the rollup key record, bound for serving", () => {
       // only what each query source's primary key check found.
       for (const unique of [true, false]) {
          materialization.bind({
-            colocatedAsGiven: true,
-            colocated: {
+            databaseAsGiven: true,
+            database: {
                a: {
                   tableName: "r_t",
                   keyUniqueness: { parentKeys: { "flights@m": unique } },

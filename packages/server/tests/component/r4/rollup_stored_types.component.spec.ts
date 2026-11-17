@@ -3,8 +3,8 @@
 
 /**
  * R4 for the types a `storage=` rollup reads its stored table with (v1
- * `#@ preaggregate` and v2 `#(preaggregate)`), against live, beside the same
- * rollup colocated:
+ * `#@ preaggregate` and v2 `#(rollup)`), against live, beside the same
+ * rollup database:
  *
  *  - a BIGINT sum past 2^53, stored as a HUGEINT partial: read through its
  *    native type, so every digit comes back;
@@ -43,7 +43,7 @@ const SEED = [
 
 const ROUTES = {
    v2: (grain: string, placement: string) =>
-      `#(preaggregate) grain=["${grain}"]${placement}`,
+      `#(rollup) grain=["${grain}"]${placement}`,
    v1: (grain: string, placement: string) =>
       `#@ preaggregate grain="${grain}"${placement}`,
 };
@@ -53,7 +53,7 @@ const BIG_SUM =
 
 for (const [route, annotate] of Object.entries(ROUTES)) {
    for (const [label, placement] of [
-      ["colocated", ""],
+      ["database", ""],
       ["storage=", ` storage="${DESTINATION}"`],
    ] as const) {
       describe(`R4: the stored types a ${route} rollup reads [${label}]`, () => {
