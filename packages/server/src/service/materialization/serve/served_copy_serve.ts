@@ -27,6 +27,7 @@ import {
    hiddenAccess,
    modelDefOf,
    queryTimezoneOf,
+   timezoneOf,
 } from "../../governance/ir/compiled_model";
 import {
    MalloyError,
@@ -1130,7 +1131,11 @@ export class ServedCopyServe {
          gateColumns: authorStruct
             ? gateColumnsOf(authorStruct, authorModel)
             : "all",
-         zoned: setsTimezone(query),
+         // A query's own `timezone:`, or the source's (question 14, L1).
+         zoned:
+            setsTimezone(query) ||
+            (authorStruct !== undefined &&
+               timezoneOf(authorStruct) !== undefined),
          leftOut: (t) =>
             (t.sourceIDs ?? []).flatMap(
                (id) => compiled.leftOutColumns?.get(id) ?? [],

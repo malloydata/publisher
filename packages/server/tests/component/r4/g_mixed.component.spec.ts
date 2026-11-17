@@ -138,6 +138,9 @@ source: mz_ev is orders_raw -> {
 #(access_filter) order_day = $ON_DAY
 source: mz_ev_day is mz_ev extend {}
 
+#(access_filter) order_day = $ON_DAY
+source: mz_ev_day_la is mz_ev extend { timezone: 'America/Los_Angeles' }
+
 // A stored source derived from a gated one: its rows are the gated
 // source's, so it is never proven ungated (refused, as an inherited row
 // filter is).
@@ -291,6 +294,11 @@ CASES.push(
          live: true,
       }),
    ),
+   {
+      name: "a gate over a stored day, on a source in its own time zone",
+      malloy: "run: mz_ev_day_la -> { group_by: region; aggregate: n }",
+      live: true,
+   },
 );
 
 const NORTH: Givens = {
