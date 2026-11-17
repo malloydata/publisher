@@ -100,6 +100,12 @@ A query that fails tells you whose problem it is. Branch on `reason`, not on the
   - `CONNECTION_AUTH_FAILED`: the database rejected the connection's user, password, key or token.
   - `CONNECTION_NOT_FOUND`: the model names a connection the environment does not have, usually
     one deleted after the package was loaded.
+- **403 with `reason: STORAGE_ACCESS_DENIED`:** the database ran the query, and the storage holding
+  a table's data (a DuckLake data path, an object-store bucket) refused its read. The query and the
+  model are fine; do not retry until the database's storage credentials are fixed. The query route
+  and the raw `sqlQuery` route answer it alike; the body names what you read and never a storage
+  path, which is in the server log. Any other 4xx that carries the database's text has its URLs
+  replaced with `<storage path>`.
 - **502 with `reason: CONNECTION_FAILED`:** the database connection is down: the database could not
   be reached, so the query never ran. The query is fine; retry once, then report it. Without that reason, a 502 is some other
   failure in the database behind the connection.

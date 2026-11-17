@@ -798,6 +798,37 @@ describe("storedSourceCopyText: a source re-rooted on its own build source", () 
       );
    });
 
+   it("P2-29: drops an except: item naming a column the table does not store", () => {
+      const clipped = [
+         "source: orders is raw extend {",
+         "  except: mark, amt",
+         "  measure: n is count()",
+         "}",
+      ].join("\n");
+      expect(
+         storedSourceCopyText(
+            clipped,
+            plan,
+            {
+               url: "file:///pkg/m.malloy",
+               range: {
+                  start: { line: 0, character: 8 },
+                  end: { line: 3, character: 1 },
+               },
+            } as never,
+            "m.malloy.materialize.malloy",
+         ),
+      ).toBe(
+         [
+            "import { orders__mat } from 'm.malloy.materialize.malloy'",
+            "source: orders is orders__mat extend {",
+            "  except: amt",
+            "  measure: n is count()",
+            "}",
+         ].join("\n"),
+      );
+   });
+
    it("is undefined when the declaration is not where the range says", () => {
       expect(
          storedSourceCopyText(
