@@ -43,6 +43,7 @@ import {
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
 import {
+   measureRefusalKey,
    planModelRollups,
    parentKeyCheckQuery,
    readsAsJoinMany,
@@ -55,7 +56,12 @@ import {
    generateRollupBuildFile,
    packageRelativeSourceID,
    ROLLUP_COMPANION_SUFFIX,
+   readsBuildCopy,
+   rollupBuildCopyName,
+   rollupBuildCopyText,
 } from "../text/read_text";
+import { overlayKey } from "../../overlay_key";
+import { PREAGGREGATE_NOT_BUILT_CODE } from "../../annotation_reader";
 import type { ParentKeyCheck, RollupVariantPlan } from "../domain/table_plans";
 import type { PersistSource } from "@malloydata/malloy";
 import {
@@ -111,7 +117,8 @@ function overStoredBaseNotes(
    // By the sourceID the companion declares each rollup under.
    const rollups = new Set<string>();
    for (const plan of plans) {
-      if (plan.storage !== undefined) continue;
+      // A base read from its build copy is never its stored table.
+      if (plan.storage !== undefined || readsBuildCopy(plan)) continue;
       const node = map.node(plan.baseSourceID);
       const def = node?.def as { annotations?: AnnotationsDef } | undefined;
       const own = ownLevelNotes(def?.annotations).filter(
@@ -131,6 +138,67 @@ function overStoredBaseNotes(
       rollups.add(`${plan.rollupSourceName}@${companionHref}`);
    }
    return { keep, rollups };
+}
+
+/**
+ * The build copy of each base whose rollups read one ({@link readsBuildCopy}:
+ * its declaring file, the author's model, with its given-reading terms left
+ * out and, for a private grain dimension, its own access modifiers lifted),
+ * keyed by the copy's URL beside the model. A base whose copy cannot be made
+ * has its rollups refused, by the reason the copy was for.
+ */
+function rollupBuildCopies(
+   plans: readonly RollupVariantPlan[],
+   text: string | undefined,
+   modelFile: string,
+): {
+   files: Map<string, string>;
+   refused: (RollupRefusal & { plan: RollupVariantPlan })[];
+} {
+   const files = new Map<string, string>();
+   const refused: (RollupRefusal & { plan: RollupVariantPlan })[] = [];
+   const bases = new Map<string, RollupVariantPlan[]>();
+   for (const p of plans.filter(readsBuildCopy)) {
+      bases.set(p.baseSourceID, [...(bases.get(p.baseSourceID) ?? []), p]);
+   }
+   for (const of of bases.values()) {
+      const first = of[0] as RollupVariantPlan;
+      const made =
+         text === undefined
+            ? { reason: "its file could not be read" }
+            : rollupBuildCopyText(
+                 text,
+                 first,
+                 of.some((p) => (p.privateGrain ?? []).length > 0),
+              );
+      if ("copy" in made) {
+         const name = rollupBuildCopyName(
+            path.basename(modelFile),
+            first.baseDeclaredName,
+         );
+         files.set(
+            pathToFileURL(path.join(path.dirname(modelFile), name)).href,
+            made.copy,
+         );
+         continue;
+      }
+      for (const plan of of) {
+         refused.push({
+            plan,
+            tier: "unservable",
+            code: PREAGGREGATE_NOT_BUILT_CODE,
+            message: `#(preaggregate) rollup of source "${plan.baseSourceName}" at (${plan.grainDimensions.join(", ")}) is not built, so its measures are served live: ${made.reason}.`,
+            sourceName: plan.baseSourceName,
+            refused: measureRefusalKey(
+               plan.baseSourceID,
+               plan.baseDeclaredName,
+               undefined,
+               plan.readTimeTerms?.length ? "reads_given" : "hidden_field",
+            ),
+         });
+      }
+   }
+   return { files, refused };
 }
 
 /** Where the rollup companion for `modelPath` lives, as an absolute URL. */
@@ -179,16 +247,32 @@ export async function tryCompileRollupCompanion(args: {
       );
       refused = planned.refused;
       plannedNames = planned.plans.map((p) => p.rollupSourceName);
-      const text = generateRollupBuildFile(
-         planned.plans,
-         path.basename(args.modelPath),
-      );
-      if (!text) return { refused };
+      if (planned.plans.length === 0) return { refused };
       const url = rollupCompanionURL(args.packagePath, args.modelPath);
       const files = GeneratedFiles.over(args.getRuntime);
       // The shared, checked blanking (persist_blanking.ts): each compiler
       // span must hold its note and the file must lex the same once blanked.
       const overlay = await files.blanked(args.modelDef);
+      // A base's build copy is made from its file as the companion reads it:
+      // blanked, where it has a `#@` line to blank.
+      const modelURL = pathToFileURL(modelFile);
+      const copies = overlay
+         ? rollupBuildCopies(
+              planned.plans,
+              overlay.get(overlayKey(modelURL)) ??
+                 (await files.readIfAny(modelURL)),
+              modelFile,
+           )
+         : { files: new Map<string, string>(), refused: [] };
+      refused = [...refused, ...copies.refused];
+      planned.plans = planned.plans.filter(
+         (p) => !copies.refused.some((r) => r.plan === p),
+      );
+      const text = generateRollupBuildFile(
+         planned.plans,
+         path.basename(args.modelPath),
+      );
+      if (!text) return { refused };
       if (!overlay) {
          // Building over the author's files as they are would chain a rollup
          // onto its base's table; build nothing instead.
@@ -205,6 +289,7 @@ export async function tryCompileRollupCompanion(args: {
          };
       }
       overlay.set(url.href, text);
+      for (const [copy, copyText] of copies.files) overlay.set(copy, copyText);
       const { runtime, materializer, model } = await files.compile(
          url,
          overlay,
@@ -227,6 +312,9 @@ export async function tryCompileRollupCompanion(args: {
             const kept = await files.blanked(args.modelDef, overStored.keep);
             if (!kept) return out;
             kept.set(url.href, text);
+            for (const [copy, copyText] of copies.files) {
+               kept.set(copy, copyText);
+            }
             const compiled = await files.compile(url, kept);
             const targets = await compiled.runtime.getBuildTargets(
                compiled.model,

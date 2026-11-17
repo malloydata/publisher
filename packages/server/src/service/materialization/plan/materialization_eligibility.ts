@@ -29,6 +29,7 @@ import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
 import { tableKeepsGates } from "../domain/gate_policy";
+import { capabilitiesOf } from "../domain/dialect";
 import { MaterializationEligibilityError } from "../../../errors";
 import type { AnnotationNote } from "../../annotations";
 import { parseAuthorizeAnnotation } from "../../authorize";
@@ -353,6 +354,13 @@ export function assertColocatedPersistNotAuthorizeGated(
       });
    }
 
+   assertColocatedTablePlaceable(
+      persistSource,
+      sourceName,
+      origin,
+      annotationFields,
+   );
+
    // A given INSIDE the persisted query is frozen at its default and served to
    // every caller; one in the source's `filterList` is applied per caller at
    // read and is the documented form (docs/row-level-access.md). Only the first
@@ -493,6 +501,47 @@ export function assertColocatedPersistNotAuthorizeGated(
          `classification this pass cannot show the served artifact matches ` +
          `what a live query would enforce.` +
          `${alsoRollup} This is refused for safety. ${remedy}`,
+   });
+}
+
+/**
+ * A BigQuery table needs a dataset, and only a dotted `name=` gives a
+ * colocated one its container (a rollup's own, or its base's): without one the
+ * build fails on BigQuery's own error, so it is refused here, before any
+ * warehouse work, as a `#(materialize)` source is at its plan
+ * (`needs_qualified_name`), on every mechanism.
+ */
+function assertColocatedTablePlaceable(
+   persistSource: PersistSource,
+   sourceName: string,
+   origin: "persist" | "preaggregate",
+   annotationFields: Record<string, string>,
+): void {
+   if (
+      annotationFields.storage ||
+      !capabilitiesOf(persistSource.dialectName).needsQualifiedTable ||
+      annotationFields.name?.includes(".")
+   ) {
+      return;
+   }
+   throw new MaterializationEligibilityError({
+      reason: "needs_qualified_name",
+      message:
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}' cannot be built in ` +
+              `its base's warehouse: its connection ` +
+              `'${persistSource.connectionName}' is BigQuery, where a ` +
+              `table needs a dataset, and neither the rollup nor its base ` +
+              `names one. The measure serves live. Give the rollup a ` +
+              `name= whose container is a dataset ` +
+              `(name="analytics.orders_rollup"), or build it into a ` +
+              `storage destination with storage=.`
+            : `Source '${sourceName}' cannot be materialized (colocated): ` +
+              `its connection '${persistSource.connectionName}' is ` +
+              `BigQuery, where a table needs a dataset, and its name= ` +
+              `names none. The source serves live. Give it a ` +
+              `dataset-qualified name= (\`dataset.table\`), or build it ` +
+              `into a storage destination with storage=.`,
    });
 }
 

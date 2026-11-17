@@ -939,23 +939,40 @@ source: orders is duckdb.sql("""
    );
 
    it(
-      "plans no rollup for an authorize-only entry point, so nothing routes or is metered",
+      "plans the rollup of a source's own authorize lock (G3), and with no table built nothing routes or is metered",
       async () => {
          const harness = await startMetricsHarness();
          resetMaterializationTelemetryForTesting();
          try {
             const pkg = await loadPackage(SOURCE_AUTHORIZE_GATED);
-            // A lock-only gate stops the rollup leg exactly as a row filter
-            // does: no rollup is planned over the gated source.
-            expect(planSources(pkg)).toHaveLength(0);
-            await runGatedQuery(
-               pkg,
-               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
-               { ROLE: ["finance"] },
-            );
+            // The source's own lock is kept on the rollup (G3), as a row
+            // filter of its own is: the rollup is planned, and the lock is
+            // grafted and re-proven when it is read. Nothing is built here.
+            expect(planSources(pkg)).toHaveLength(1);
             expect(
-               await harness.collectCounter("publisher_query_route_total", {}),
+               await runGatedQuery(
+                  pkg,
+                  "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+                  { ROLE: ["finance"] },
+               ),
+            ).toEqual([
+               { category: "A", total: 30 },
+               { category: "B", total: 30 },
+            ]);
+            // The rollup leg is tried past the lock now, and with no table
+            // it answers nothing: live answers.
+            expect(
+               await harness.collectCounter("publisher_query_route_total", {
+                  leg: "rollup",
+                  outcome: "used",
+               }),
             ).toBe(0);
+            expect(
+               await harness.collectCounter("publisher_query_route_total", {
+                  leg: "live",
+                  outcome: "used",
+               }),
+            ).toBe(1);
          } finally {
             resetMaterializationTelemetryForTesting();
             await harness.shutdown();

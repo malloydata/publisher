@@ -2538,7 +2538,7 @@ source: through_join is duckdb.table('orders_raw') extend {
       });
    }
 
-   describe("v1 cutover R4: gated queries on rollups with gated sources off", () => {
+   describe("v1 cutover R4: gated queries on colocated rollups with gated sources off (G3)", () => {
       let restore: () => void;
       let fixture: R4Fixture;
       beforeAll(async () => {
@@ -2560,27 +2560,30 @@ source: through_join is duckdb.table('orders_raw') extend {
          await disposeScenarios();
       });
 
-      it("builds no rollup over a gated base (row 21)", () => {
+      it("builds no rollup over an inherited gate (G3 keeps only a base's own)", () => {
          expect(
-            Object.keys(fixture.rollupTables).filter(
-               (n) =>
-                  !n.startsWith("open__rollup__") &&
-                  !n.startsWith("order_lines__rollup__"),
+            Object.keys(fixture.rollupTables).filter((n) =>
+               n.startsWith("by_inherited__rollup__"),
             ),
          ).toEqual([]);
       });
 
       for (const c of CASES) {
-         it(`answers ${c.kind} live, equal to live`, async () => {
-            for (const caller of c.callers) {
-               expectLive(
-                  await fixture.run({
-                     name: `${c.source} ${caller.name}`,
-                     malloy: `run: ${c.source} -> { group_by: category; aggregate: total }`,
-                     givens: caller.givens,
-                     expectLive: true,
-                  }),
-               );
+         const own = c.source !== "by_inherited";
+         it(`answers ${c.kind} ${own ? "from the rollup, each caller's own rows" : "live"}, equal to live`, async () => {
+            for (const caller of [...c.callers, ...c.callers]) {
+               const run = await fixture.run({
+                  name: `${c.source} ${caller.name}`,
+                  malloy: `run: ${c.source} -> { group_by: category; aggregate: total }`,
+                  givens: caller.givens,
+                  truthSql: truthByCategory(caller),
+                  ...(own ? {} : { expectLive: true }),
+               });
+               if (own) expectRollup(run);
+               else expectLive(run);
+               expect(
+                  rowDifference(run.truth ?? [], run.served),
+               ).toBeUndefined();
             }
          });
       }

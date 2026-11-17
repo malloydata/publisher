@@ -19,7 +19,11 @@
  */
 
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
-import type { MaterializeReadTimeTerm, TermUse } from "./read_time_terms";
+import type {
+   GivenReadTerm,
+   MaterializeReadTimeTerm,
+   TermUse,
+} from "./read_time_terms";
 import type { AggregateLeaf, MeasureExpr, RollupPlan } from "./rollup_measures";
 
 /** A stored column's name and type, in DuckDB's spelling (`DESCRIBE`'s). */
@@ -506,10 +510,32 @@ export interface RollupVariantPlan extends RollupPlan {
     */
    baseGated: boolean;
    /**
-    * Grain dimensions the base declares `internal` (A4: only a field a gate
-    * reads), stored, and redeclared `internal` on the variant.
+    * Every gate of the base is its own (none inherited from a source it
+    * extends, none through a join or a derivation): what the gate policy
+    * keeps under G3 for a colocated rollup with the gated-sources switch off.
+    */
+   baseGateOwn?: true;
+   /**
+    * Grain dimensions the base declares `internal`, stored, and redeclared
+    * `internal` on the variant, so no query selects one (a gate or a
+    * re-applied `where:` reads it, as on live).
     */
    internalGrain: string[];
+   /**
+    * Grain dimensions the base itself declares `private`: stored, read by the
+    * build through its build copy's lift, and redeclared `private` on the
+    * variant. Absent: none.
+    */
+   privateGrain?: string[];
+   /**
+    * The base's own given-reading `where:` terms, each over grain dimensions
+    * only: left out of the build (replaced by `true` in its build copy), so
+    * the table holds every caller's groups, and written again on the variant,
+    * where each caller's givens bind them, as live applies them. Absent: none.
+    */
+   readTimeTerms?: GivenReadTerm[];
+   /** Where the base is declared: what its build copy's edits are against. */
+   declaration?: TermUse;
    /**
     * The uniqueness check of the grain's one dimension (known limitation 29):
     * set when the grain is one dimension of the base and the companion

@@ -78,10 +78,12 @@ describe("#(preaggregate) rollups whose build reads a given", () => {
       const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
          (w) => w.code === "preaggregate-not-built",
       );
+      // Its where: reads `region`, which the grain does not keep, so it
+      // could not be re-applied to the rollup's rows per caller.
       expect(warnings.map((w) => [w.model, w.subject])).toEqual([
-         ["m.malloy", "scoped"],
+         ["m.malloy", "scoped.total"],
       ]);
-      expect(warnings[0].message).toContain("read a given");
+      expect(warnings[0].message).toContain("reads a given and `region`");
       expect(
          Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
             (r) => r.reason,

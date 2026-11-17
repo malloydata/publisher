@@ -59,7 +59,7 @@ Candidates from the coverage review, each a product call:
 
 Known gaps with no pull request yet: a Malloy upgrade re-addresses the tables that aggregate through joins (address drift), and the flags on the control-plane side.
 
-Also open: the rest of the hosted lifecycle redesign (Ownership), and the two parts of table naming #1776 left (question 17: rollup placement and a placement-only key). The rest of table naming is decided (decision 47).
+Also open: the rest of the hosted lifecycle redesign (Ownership). Table naming is decided (decision 47; question 17's rollup placement settled by one placement key, `name=`).
 
 ### Support matrix, in brief
 
@@ -241,7 +241,7 @@ The rest of the lifecycle redesign is open: in-place writes in hosted, ownership
 - Existing default-named tables are rebuilt once under the new name by the next auto-run, and the old table is dropped only through a guarded migration (five guards; a run's `renamedTables` record is retried by later runs, and every loaded slot is rebound first, `ensureBound`). Servers sharing a schema must upgrade together.
 - A second address on a name already taken in the run is not built and is refused with the new `RefusedSource.reason` `table_name_collision` (approved). Not a breaking change. Hosted and orchestrated runs are untouched: only self-instructed runs derive names.
 
-What is left open is question 17: rollup placement and a placement-only key.
+Question 17's last part, rollup placement and a placement-only key, is settled: a rollup is placed by its `name=` container (or its base's), and `namespace=` is deprecated.
 
 ## Joins
 
@@ -1525,9 +1525,7 @@ Each comes with the answer this plan assumes; none blocks phases 0 to 2. Questio
     - **How the three fit together:** `name=` is the exact name where a stable name is possible and the prefix and container where it is not; a readable name covers every table a standalone Publisher names itself, and hosted tables take the control plane's generation names under the same prefix.
     - **BigQuery colocated builds with no default dataset:** not built today (`materialize-not-built`); a per-connection materialization dataset is recorded as future work (Scope, "Still under consideration").
 
-    Still open:
-    - **Rollup placement.** Whether `#(preaggregate)` rollups inherit their base's placement (its schema or container); today a rollup's `namespace=` is its container. *Proposed:* inherit, rather than adding `name=` to rollups.
-    - **A placement-only key.** Whether a key such as `schema=`, separate from `name=`, should exist on both annotations, for placement without naming.
+    - **Rollup placement, and a placement-only key (settled 2026-11-16, materialization distillation 7).** One placement key: a rollup takes `name=`, whose container places its table while its leaf stays Publisher's readable name; `#(preaggregate)` inherits its base's colocated `name=` container, as `#@ preaggregate` does; `namespace=` is deprecated, read for one release with a `deprecated-preaggregate-namespace` warning. No separate placement-only key.
 
 ## Known limitations, to revisit
 

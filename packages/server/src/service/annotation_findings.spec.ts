@@ -364,7 +364,8 @@ describe("annotation findings on a loaded package", () => {
                      expect(formatPublishRejections(pkg)).toBeUndefined();
                   }
                }
-               // #(preaggregate) never took a name=: an unknown key.
+               // A rollup's name= places its table, so one with no
+               // container places nothing: invalid.
                await fs.rm(path.join(envPath, "pkg"), {
                   recursive: true,
                   force: true,
@@ -372,7 +373,7 @@ describe("annotation findings on a loaded package", () => {
                const message = await loadError(
                   `${RAW}source: sales is raw extend {\n  #(preaggregate) grain=["category"] name="r"\n  measure: total is amount.sum()\n}\n`,
                );
-               expect(message).toContain("[preaggregate-unknown-key]");
+               expect(message).toContain("[preaggregate-invalid]");
             },
             { PERSIST_STORAGE_MODE: "on" },
          );

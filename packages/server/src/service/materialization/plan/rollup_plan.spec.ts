@@ -254,23 +254,23 @@ describe("#(preaggregate) access filters (A4)", () => {
    });
 });
 
-describe("#(preaggregate) over a gated source with gated sources off (row 21)", () => {
-   it("plans no rollup over a gated source, even one whose grain keeps the gate's field", async () => {
+describe("#(preaggregate) over a gated source with gated sources off (G3 for rollups)", () => {
+   it("plans a colocated rollup over the base's own gate when its grain keeps the gate's field, and no other", async () => {
       expect(rollupGateEnforcedAtRead({ variant: true, baseGated: true })).toBe(
          false,
       );
       const { plans, refused } = await plan(GATED);
-      expect(plans).toEqual([]);
+      expect(plans.map((p) => [p.grainDimensions, p.baseGateOwn])).toEqual([
+         [["category", "region"], true],
+      ]);
+      expect(rollupGateEnforcedAtRead(plans[0])).toBe(true);
+      // The grain that drops the gate's field.
       expect(refused.map((r) => [r.tier, why(r)])).toEqual([
          ["unservable", "access_filter"],
-         ["unservable", "access_filter"],
       ]);
-      expect(refused[0]?.message).toContain(
-         "PUBLISHER_MATERIALIZE_GATED_SOURCES",
-      );
    });
 
-   it("plans none under an #(authorize) gate that reads no field", async () => {
+   it("plans one under the base's own #(authorize) gate that reads no field", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
 given: ROLE :: string is 'viewer'
@@ -280,12 +280,12 @@ source: orders is ${ROWS} extend {
   measure: total is amount.sum()
 }`,
       });
-      expect(plans).toEqual([]);
-      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
+      expect(plans.map((p) => p.baseGateOwn)).toEqual([true]);
+      expect(refused).toEqual([]);
    });
 
    it("plans none over an extension that inherits the gate, and still plans the ungated", async () => {
-      const { plans } = await plan({
+      const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
 given: REGION :: string is 'x'
 #(access_filter) region = $REGION
@@ -300,6 +300,24 @@ source: open is ${ROWS} extend {
 }`,
       });
       expect(plans.map((p) => p.baseSourceName)).toEqual(["open"]);
+      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
+      expect(refused[0]?.message).toContain(
+         "PUBLISHER_MATERIALIZE_GATED_SOURCES",
+      );
+   });
+
+   it("plans none in a storage destination, whose gate awaits its review", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental.givens
+given: REGION :: string is 'x'
+#(access_filter) region = $REGION
+source: orders is ${ROWS} extend {
+  #(preaggregate) grain=["category", "region"] storage="lake"
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
    });
 });
 
@@ -673,7 +691,7 @@ source: orders is ${ROWS} extend {
       expect(rollupGateEnforcedAtRead(plans[0])).toBe(false);
    });
 
-   it("stores an internal gate field in the grain, and no other hidden field (A4)", async () => {
+   it("stores an internal gate field in the grain, and a private one its source declares, each redeclared hidden (A4)", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental { givens access_modifiers }
 given: TENANT :: string is 'x'
@@ -686,12 +704,17 @@ source: orders is ${ROWS} extend {
   measure: total is amount.sum()
 }`,
       });
-      expect(plans.map((p) => [p.grainDimensions, p.internalGrain])).toEqual([
-         [["category", "tenant"], ["tenant"]],
+      expect(
+         plans.map((p) => [p.grainDimensions, p.internalGrain, p.privateGrain]),
+      ).toEqual([
+         [["category", "tenant"], ["tenant"], undefined],
+         [["category", "secret", "tenant"], ["tenant"], ["secret"]],
       ]);
-      expect(refused.map((r) => why(r))).toEqual(["hidden_field"]);
+      expect(refused).toEqual([]);
       const text = generateRollupBuildFile(plans, "orders.malloy") ?? "";
       expect(text).toContain("include { public: * } -> {");
+      // The private one is read from the base's build copy, which lifts it.
+      expect(text).toContain('from "orders.malloy.orders.rollup-build.malloy"');
    });
 
    it("walks an inherited gate as the governor does, on an extension's own rollup", async () => {
@@ -808,8 +831,8 @@ source: orders is ${ROWS} extend {
    });
 });
 
-describe("a v1 rollup's namespace under the v1 cutover", () => {
-   it("inherits its base's #@ persist name= namespace when its line names none, as v1 places it", async () => {
+describe("a v1 rollup's container under the v1 cutover", () => {
+   it("inherits its base's #@ persist name= container when its line names none, as v1 places it", async () => {
       const modelDef = await mz.compile({
          "orders.malloy": `##! experimental.persistence
 #@ persist name="analytics.orders_tbl"
@@ -817,7 +840,7 @@ source: orders is ${ROWS} -> {
   select: category, region, amount
 } extend {
   measure:
-    #@ preaggregate grain="region" namespace="rollups"
+    #@ preaggregate grain="region" name="rollups.regional"
     regional is amount.sum()
   measure:
     #@ preaggregate grain="category"

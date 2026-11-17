@@ -289,7 +289,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
       ).find((c) => c.kind === "rollup");
 
    for (const on of [true, false]) {
-      it(`keeps the contracts only with gated sources on (${on ? "on" : "off"})`, () => {
+      it(`is tried past the gate with gated sources ${on ? "on" : "off (G3)"}, and keeps it off only for a colocated rollup`, () => {
          const { restore } = installSettings({
             env: {
                PUBLISHER_MATERIALIZE: "true",
@@ -297,7 +297,17 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
             },
          });
          try {
-            expect(rollupCandidate()?.keepsContracts).toBe(on);
+            const candidate = rollupCandidate();
+            expect(candidate?.keepsContracts).toBe(true);
+            const read = (tier: "colocated" | "storage") =>
+               candidate?.keepsContractsFor?.({
+                  runnable,
+                  tablesRead: undefined,
+                  gateTablesRead: [{ tier }],
+                  shapeBindings: [],
+               } as never);
+            expect(read("colocated")).toBe(true);
+            expect(read("storage")).toBe(on);
          } finally {
             restore();
          }

@@ -24,7 +24,7 @@ import {
 } from "./preaggregation_annotation";
 import { classifyMeasureAdditivity } from "./preaggregation_classifier";
 import type { RollupMeasure, RollupPlan } from "../domain/rollup_measures";
-import { isSpliceableNamespace } from "./preaggregation_namespace";
+import { nameContainer } from "./preaggregation_namespace";
 import { fieldNotes } from "../text/field_notes";
 import {
    hasFanoutJoin,
@@ -75,32 +75,6 @@ export function rollupSourceName(
 }
 
 /**
- * The namespace half of a `#@ persist name=` — everything before the LAST dot.
- *
- * `analytics.orders` yields `analytics`; `proj.analytics.orders` yields
- * `proj.analytics`; a bare `orders` yields undefined. Split on the last dot
- * rather than the first because BigQuery names can carry a project as well as a
- * dataset, and the rollup belongs beside the base in whichever of those it names.
- *
- * **A quoted name yields nothing, deliberately.** `"My.Schema"` is one
- * identifier the last-dot rule would tear apart, and even `"A"."B"` would join a
- * quoted prefix to an unquoted segment, which the two sides of the bind quote
- * differently (`quoteManifestTablePath` passes quoted paths through; the CREATE
- * side quotes every segment). Such an author names the namespace explicitly.
- *
- * A trailing dot yields nothing either: the base's own table segment is empty, so
- * the name is malformed and inventing a namespace from it would hide that.
- */
-function persistNamespace(persistName: string | undefined): string | undefined {
-   if (!persistName) return undefined;
-   const lastDot = persistName.lastIndexOf(".");
-   if (lastDot <= 0) return undefined;
-   if (persistName.slice(lastDot + 1).trim() === "") return undefined;
-   const candidate = persistName.slice(0, lastDot);
-   return isSpliceableNamespace(candidate) ? candidate : undefined;
-}
-
-/**
  * Order two rollups on one base so the COARSER is offered first.
  *
  * The rollup leg offers rollups in this order and uses the first that
@@ -122,40 +96,52 @@ function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
 }
 
 /**
- * The namespace a rollup inherits from its base's `#@ persist name=`, or undefined
- * when there is none to inherit.
+ * The container a rollup inherits from its base's colocated `name=`: its
+ * `#@ persist name=`, else (with `materialize`, the switch that reads it) its
+ * `#(materialize) name=`, everything before the last dot; undefined when there
+ * is none to inherit. A rollup of a table belongs beside it, `#(preaggregate)`
+ * and `#@ preaggregate` alike.
  *
  * Read from annotations because synthesis runs before a build plan exists.
  * Unreadable annotations are treated as absent, as in
  * {@link readPreaggregateAnnotation}.
  *
- * **A `storage=` base lends nothing — not its destination, and not a namespace.**
+ * **A `storage=` base lends nothing — not its destination, and not a container.**
  *
  * Not the DESTINATION: a rollup's placement is its own line's and part of its
  * identity (the rollup's name digests it), so adding or removing `storage=` on
  * a base never moves its rollups' tables. A rollup over a stored base builds
  * from the author's rows, not the base's table, wherever its own line puts it.
  *
- * Not the NAMESPACE, because the base's `name=` is a name in the destination's
+ * Not the CONTAINER, because the base's `name=` is a name in the destination's
  * catalog and means nothing in the source warehouse where the rollup is built.
  */
 export function basePersistNamespace(
    source: ValidatableSource,
+   options: { materialize?: boolean } = {},
 ): string | undefined {
    if (!source.annotations) return undefined;
    try {
-      const tag = readRouteIfAny(
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         new Annotations(source.annotations as any),
-         "@",
-      );
-      if (!tag?.has("persist")) return undefined;
-      const read = placementOf(tag, "persist");
-      // A base built in a destination, or refused, lends no namespace.
-      if (!("placement" in read) || read.placement.tier !== "colocated") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const annotations = new Annotations(source.annotations as any);
+      const persist = readRouteIfAny(annotations, "@");
+      const declared = persist?.has("persist")
+         ? placementOf(persist, "persist")
+         : options.materialize
+           ? (() => {
+                const tag = readRouteIfAny(annotations, "materialize");
+                return tag ? placementOf(tag) : undefined;
+             })()
+           : undefined;
+      // A base built in a destination, or refused, lends no container.
+      if (
+         !declared ||
+         !("placement" in declared) ||
+         declared.placement.tier !== "colocated"
+      ) {
          return undefined;
       }
-      return persistNamespace(read.placement.name);
+      return nameContainer(declared.placement.name);
    } catch {
       return undefined;
    }

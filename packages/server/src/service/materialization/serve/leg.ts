@@ -41,6 +41,7 @@ import type { GraftScope } from "../../gate_classification";
 import type { ConsideredVariant } from "../../query_router";
 import { type Binding, isColocated, type Pinned } from "../domain/binding";
 import type { BuildManifest } from "../domain/types";
+import type { TableRead } from "../domain/gate_policy";
 import type { RollupVariantServe } from "./rollup_variants";
 import type { ServedCopyServe } from "./served_copy_serve";
 import type { PersistedViewServe, ViewTable } from "./view_variants";
@@ -81,12 +82,12 @@ export interface LegAnswer {
     */
    readonly tablesRead: readonly Binding[] | undefined;
    /**
-    * For the served copy: the tables the answer is judged to read when the
-    * router decides whether it keeps an entry point's gate, which fails
-    * closed (every re-rooted `storage=` table not proven unread). Undefined
-    * means {@link tablesRead}.
+    * The tables the answer is judged to read when the router decides whether
+    * it keeps an entry point's gate, which fails closed: for the served copy,
+    * every re-rooted `storage=` table not proven unread; for a rollup, its
+    * own. Undefined means {@link tablesRead}.
     */
-   readonly gateTablesRead?: readonly Binding[];
+   readonly gateTablesRead?: readonly TableRead[];
    /**
     * The bindings the runnable's shape was built from: a store failure is
     * retried live only when every one allows it. Empty when the answer reads
@@ -235,6 +236,12 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
          return {
             runnable: answer.runnable,
             tablesRead: undefined,
+            // The rollup it read, for the gate policy (G3 for rollups): a
+            // `storage=` one by its binding, a colocated one through the
+            // build manifest.
+            gateTablesRead: answer.binding
+               ? [answer.binding]
+               : [{ tier: answer.virtualMap ? "storage" : "colocated" }],
             // Every stored table the answer reads, when that is more than the
             // rollup's (a join branch answered in a storage destination reads
             // the query source's table there too): together they decide

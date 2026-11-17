@@ -30,18 +30,19 @@ source: orders is duckdb.table('data/orders.parquet') extend {
 
 The rest of this page describes `#@ preaggregate`, which keeps working (deprecated). Where `#(preaggregate)` differs:
 
-- **Keys.** `grain=[…]` (required), and `storage=` or `namespace=`, never both. Any other key, a grain that is not a list of the source's own dimensions, or the annotation on anything but a measure fails the publish and the load (`preaggregate-unknown-key`, `preaggregate-unknown-grain`, `preaggregate-not-a-measure`).
+- **Keys.** `grain=[…]` (required), and `storage=` or `name=`, never both (`name=` places the table; see [below](#where-the-rollups-table-is-created)). `namespace=` is `name=`'s deprecated spelling. Any other key, a grain that is not a list of the source's own dimensions, or the annotation on anything but a measure fails the publish and the load (`preaggregate-unknown-key`, `preaggregate-unknown-grain`, `preaggregate-not-a-measure`).
 - **Which measures.** Read from the measure's own text: `count()`, `x.sum()`, `x.min()`, `x.max()` (and `sum(x)` and so on), each optionally filtered, references to other such measures, and arithmetic or scalar functions over them. Each aggregate is stored as its own partial and merged at read, so `revenue / order_count` stays a ratio of totals. `avg`, a distinct count (`count(x)`), `stddev` and the like, `all()` and `exclude()` fail the publish and the load (`preaggregate-not-mergeable`). Text outside what is read (`pick`, a cast, a date literal, `|` in a filter, `x.count()` on a field, a joined source's measure) is a warning, and the measure serves live. The reading is checked against the compiled measure: a measure whose aggregates the compiler records differently is a warning too, never stored.
 - **Joins.** A source with a `join_many` or `join_cross` can be rolled up. An aggregate through a join (`carriers.fleet.sum()`) is stored only when the join's key (`carrier` in `join_one: carriers with carrier`) is in the grain; otherwise it is a warning and serves live. Its stored total is the joined rows' within each group, and groups that share the key hold the same joined rows, so a query reads a join-level sum or count from the rollup only when it groups by, or fixes, every other grain dimension at each level that aggregates it (a grain of the key alone has none). A join-level `min` or `max` (`carriers.fleet.max()`, key in the grain) is stored too, and merged with `min` or `max`: a repeated joined row cannot change either, so it is read from the rollup however the query groups, and a group with no joined row is `NULL`, as live. An aggregate through more than one join (`carriers.hubs.gates.sum()`) is a warning and serves live. A grain dimension read through a `join_many` is a fan-out dimension: a query reads the rollup only when it groups by it, or fixes it to one value with `where:`, at every level that aggregates.
 - **Where it is declared.** A declaration belongs to the source that writes it. An extension inherits its base's rollups' meaning but does not get its own; an include-list item's annotation is the including source's. Each rollup is planned once, under the model that declares its base, and its name carries that model, so two same-named sources in two models never share a table.
 - **Extensions.** A query on an extension or rename of a rolled-up source (`source: orders_plus is orders extend { … }`) is answered from that source's rollups when the extension adds no `where:` and no `timezone:` (and, past a gate, only gates the rollup can prove; see below), and the query reads only grain dimensions, stored measures, and dimensions the extension defines over grain dimensions alone (`dimension: cat_lower is lower(category)`). A dimension over anything else or written in raw SQL (`sql_string(…)`), a measure the extension adds, an extension that filters its rows, and an extension that binds a base field's name to another field (`rename: region_was is region; dimension: region is 'east'`, which changes what the base's stored measures read) are answered live (`GRAIN_TOO_COARSE`, `MISSING_FIELD`, `TIME_ZONE`).
-- **Access filters.** A query whose entry point carries a row-level gate (`#(access_filter)`) or a lock (`#(authorize)`) is answered from a rollup only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well, and only from a colocated one. The queried source is then redeclared over the rollup with its gates, and the gate is grafted and proven on that compile as on live (route, then govern), so each caller gets live's answer over the rows its gate admits. A gate is exact on a rollup only when each field it reads is a grain dimension: a column (`#(access_filter) region = $REGION` with `region` in the grain), a dimension the source computes from its own columns, or a truncation (`order_day`). A lock that reads no field, a lock beside a filter, an inherited gate, and `#(authorize) true` re-opening a locked base beside a filter are proven as their parts. The gate's field is often `internal`; an `internal` grain dimension a gate reads is the one hidden field a rollup stores, and it stays `internal` on the rollup, so no query selects it (a caller's own `extend` reads it within the rows the gate admits, as live). A rollup whose gate reads a field the grain drops, reads through a join (`account.org_id`, or a dimension defined through one), or whose source joins a gated source, is not built (`preaggregate-not-built`, reason `access_filter`), and its queries are answered live. With the switch off, no rollup over a gated source is built at all (the same warning), since no query would read it; a rollup in a `storage=` destination over a gated source is not built with the switch on either, until the managed tier's security review. A query skipped for its gate reports `CONTRACT`, whose detail never names the gate. A caller's own `except:` or `rename:` of the gate's field is denied, as live is, and a caller's join into a gated source keeps the query off every rollup. Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+- **Access filters.** A query whose entry point carries a row-level gate (`#(access_filter)`) or a lock (`#(authorize)`) is answered from a colocated rollup when every gate of the rollup's base is the base's own (G3, with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off, as a stored source keeps its own row-level gate), or, with that switch on, whatever the base inherits; never from a `storage=` one yet. The queried source is then redeclared over the rollup with its gates, and the gate is grafted and proven on that compile as on live (route, then govern), so each caller gets live's answer over the rows its gate admits. A gate is exact on a rollup only when each field it reads is a grain dimension: a column (`#(access_filter) region = $REGION` with `region` in the grain), a dimension the source computes from its own columns, or a truncation (`order_day`). A lock that reads no field, a lock beside a filter, an inherited gate, and `#(authorize) true` re-opening a locked base beside a filter are proven as their parts. The gate's field is often `internal`; a hidden grain dimension is stored and stays hidden on the rollup (see **Hidden grain dimensions**), so no query selects it (a caller's own `extend` reads an `internal` one within the rows the gate admits, as live). A rollup whose gate reads a field the grain drops, reads through a join (`account.org_id`, or a dimension defined through one), or whose source joins a gated source, is not built (`preaggregate-not-built`, reason `access_filter`), and its queries are answered live. With the switch off, a rollup over a base whose gate it inherits from a source it extends (the gate's note written on that source, not the base's own statement) is not built (the same warning), since no query would read it; a rollup in a `storage=` destination over a gated source is not built with the switch on either, until the managed tier's security review. A query skipped for its gate reports `CONTRACT`, whose detail never names the gate. A caller's own `except:` or `rename:` of the gate's field is denied, as live is, and a caller's join into a gated source keeps the query off every rollup. Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 - **Through a join (join-to-rollup).** A query on another source that reads this source's measures through a join (`run: flights -> { group_by: carrier; aggregate: segments.seg_miles }`, with `join_many: segments on segments.flight_id = id`) is answered from this source's rollup when the rollup's grain keeps the join's key (`grain=["flight_id"]`, or `["flight_id", "kind"]` to also group or filter by `segments.kind`). The join is re-pointed at the rollup for that query; everything else about the querying source is as written, so a parent with no rows answers as live does. It reads this source's stored measures only: an aggregate the query writes over the join (`segments.count()`, `count(segments.flight_id)`) is answered live. The rules for this source's own queries hold through the join, with each field named `segments.<field>`: a fan-out grain dimension (`line_kind is lines.kind`, read through `segments`' own `join_many`) must be grouped (`group_by: segments.line_kind`) or fixed to one value (`where: segments.line_kind = 'a'`) at every level that aggregates through the join, and a join-level sum or count needs every other grain dimension grouped or fixed there too. Grouping or fixing the querying source's key (`group_by: id`, with `on segments.flight_id = id`) fixes the join's key, since each rollup row a parent meets carries it. A level that aggregates only the querying source's own rows (`flight_count`) asks nothing; a level that reads this source's measures through an expression, a `having:`, or a measure of the querying source is held to every grain dimension a measure fans out across, and a dimension of the querying source over a fan-out dimension (`dimension: k is segments.line_kind`) does not count as grouping it. The rollup was built in this source's time zone, so a querying source that declares a different `timezone:` (or a joined source that declares its own) is answered live (`TIME_ZONE`). Through a `join_one`, a query that also aggregates the querying source's own rows (`flight_count` beside `crew.crew_size`, a `having:` on one, another join's measure) is served only when the rollup's build checked the join's key unique: when a `join_one` in the package is keyed on the rollup's one grain dimension (`join_one: crew with id` and `grain=["flight_id"]`), each build of the rollup, colocated or in a `storage=` destination, also groups the rows it read (the base's, on its own connection) on that key and records whether any non-NULL value repeats. A build that read a stored upstream's table instead (its entry says `upstreamReuse: "reused"`, as for a base that is itself stored) records no check, since the base's own rows may not be the rows it grouped, and the query is answered live. Unique, the joined rows live and the rollup's are the same rows, and the query is served. A repeated key (the data breaks the declared `join_one`, which is logged at build and reported as a package warning, `preaggregate-join-one-key-repeated`, on the rollup's source while that build's table is bound) or no check on record is answered live (`COUNT_SEMANTICS`): live counts each parent once per joined row, which a rollup with one row per key cannot reproduce. No check is on record for a table a control plane's manifest binds, a build whose check could not run, or a table a run is rewriting; a check describes the rows the table was built from, and a rebuild checks again. A query that reads another `join_one` whose key a rollup's build found repeated is answered live too (`COUNT_SEMANTICS`), since re-pointing one join changes how Malloy aggregates over the rows the other repeats; one never checked is served as before. A join read as a `join_many` (a declared one, or a `join_one` read at a grain finer than its key) is used only when it is keyed on the querying source's primary key (`on segments.flight_id = id` with `primary_key: id`): keyed on another field (`join_one: crew with flight_id` from a source of segments, or a `join_many` from a source with no primary key), one rollup row meets several of the querying source's rows, which live counts differently, so it is answered live (`COUNT_SEMANTICS`). The data has to keep that primary key too: each build of a colocated rollup also checks every source the package declares that reads it through such a join, grouping that source's rows on its primary key, and records whether a value repeats or is NULL. Unique and never NULL, the query is served. A repeated key (two rows with `id = 1`, where the variant reads flight 1's rollup row twice and live sums each segment once) or a NULL key (where the variant's `count()` counts a row live's skips), logged at build, or no check on record, is answered live (`COUNT_SEMANTICS`). The check describes the querying source's rows as the rollup's build found them, is carried and forgotten with the rollup's table exactly as the `join_one` key check is, and is never on record for a table a control plane's manifest binds; a querying source the build could not check (one whose `where:` reads a given, with or without a default, since one check cannot stand for every caller's rows; on another connection; or defined in the query, `run: flights extend { … } -> …`) is answered live. A rollup in a `storage=` destination is read beside the querying source's stored table there, so that table's build checks the key instead, over every row it holds (a `where:` term the served copy applies at read only narrows them), with the same rules: unique and never NULL serves, anything else, or no check on record, is answered live. A rollup in a `storage=` destination is read through the join when the querying source is stored in the same destination (a `#(materialize) storage=` table, or a `#@ persist storage=` source, read through the served copy, with `PUBLISHER_MATERIALIZE` and the storage tier on): the querying source is read from its stored table and the join from the rollup, so the whole query runs in the destination, with the querying source's given-reading `where:` terms and rolling windows applied at read as the served copy applies them. The path report names the rollup as the table that answered (`servedBy`) and lists the querying source's table as `used` beside it. Both tables must be fresh. A querying source not stored there, one whose table is not built or not fresh, or a reader that opts out with `#@ -persist`, is answered without the rollup (`CROSS_CONNECTION`), since Malloy joins within one connection; so is a query that reads a definition of the querying source the served copy leaves out because it reads the join to a source not stored in the destination (a measure or view over `segments`, when `segments` itself is not stored there). A querying source stored as a pair table (`inline=` on a `join_many`) is not read this way (`COUNT_SEMANTICS`), and the served copy's rules for a join it stores inline hold (`COUNT_SEMANTICS`, `MISSING_FIELD`). A parent with no rows counts as no rows and sums nothing, live and from the rollup, so a `count()` through a `join_many` and a sum of any value (`sum(miles + 1)`, a constant) are served, as is a `count()`, `sum` or `avg` the query takes through another `join_many` while this join is re-pointed. Malloy does not skip that parent's row for a `min` or `max`, so one of a value that is not NULL there (`max(coalesce(miles, 0))`, a constant) is answered live (`COUNT_SEMANTICS`); a `min` or `max` of a column is served. A join-level measure's column (`kinds.weight` in `kinds.weight.sum()`) is NULL there when its join is keyed on a column of this source, so it is served; an aggregate at a join keyed on a computed dimension (`join_one: k is kinds with coalesce_kind`) can match a row for a parent with no rows and is answered live (`COUNT_SEMANTICS`). Since Malloy 0.0.438, live also takes a `count()`, `sum` or `avg` of this source's own rows only over the rows whose primary key is not NULL, and once per distinct key where the rows fan out, while the rollup reads every row. So when a join reaches this source on a column other than its primary key (`on segments.flight_id = id`, with `primary_key: seg_id`), each build of the rollup also checks this source's primary key, over its rows on its own connection, colocated or in a `storage=` destination, and records whether a value repeats or is NULL. Unique and never NULL, a count or sum through the join is served. A repeated or NULL `seg_id`, or no check on record (the same cases as the querying source's check above), is answered live (`COUNT_SEMANTICS`). A `min` or `max` is served either way, and a join keyed on this source's primary key (`join_one: crew with id`, with `primary_key: flight_id`) needs no check.
 - **Its own time zone.** A rollup over a source that sets its own `timezone:`, or inherits one, is not built (`preaggregate-not-built`, reason `time_zone`): a query on that source is never answered from a rollup (`TIME_ZONE`, above), so the table would cost a build no query reads. The exception is a rollup that another source in the same `timezone:` joins, which a query on that source reads through the join: colocated, or in a `storage=` destination that source (or a source it is built on) is stored in too. A rollup in a destination that no such source is stored in is not built either (reason `time_zone`): the join leg reads it only for a querying source stored beside it, and a query from one stored elsewhere is answered live (`CROSS_CONNECTION`).
 - **The current time.** A rollup over a source whose rows read `now` (a rolling window, `where: t > now - 7 days`), or whose grain dimension or measure reads it, is not built (`preaggregate-not-built`, reason `current_time`): the rollup would keep the window its build saw, while a live query moves it at every read.
 - **A stored base.** A rollup builds from the author's rows, never from its base's stored table, so a rollup over a `#@ persist storage=` base builds and serves (#6293).
-- **What routes.** The query's text is compiled where its source's name means the rollup. It routes when every field it groups or filters by is in the grain, every aggregate is a stored measure's merge (an aggregate written in the query or in a `having:`, or a `select:` stage, is not; this is read from the compiled query, not its text), and it sets no `timezone:`, in any stage or nest. A query on a source that sets its own `timezone:` is answered live (`TIME_ZONE`): the rollup's stored times are not read in that zone, so a truncation, a filter on one, or a gate on one would not match live. Since no query on it reads such a rollup, a `#(preaggregate)` on a source that sets (or inherits) its own `timezone:` is not built (`preaggregate-not-built`, reason `time_zone`), unless a source in the same zone joins it, the one read left (through a join, above). A `calculate:` over a measure (`lag(total)`) reads that measure at its level, so it is held to the same rules as an aggregate there. A fan-out dimension counts as fixed by `where: d = <one value>`, alone or as one conjunct of an `and`. A query that supplies a given routes. A named `view:` routes as its own query does: `run: orders -> by_category`, a refinement of it, a query starting from it, and a `nest:` of one are compiled with the view as you wrote it, and answered from the rollup when the view's query passes the same checks, its text, and the text of every view it builds on, still compiles to the view the served model holds (an edit not yet reloaded is answered live), and it reads no raw SQL (`sql_boolean(…)`, whose columns the rollup may not keep). A persisted view of that name (`#@ persist` on the view) answers its own call first. The path report names the reason for each skip, and an answer from a rollup reports its tier in `servedFrom`: `storage` for a `storage=` rollup, `database` for one in the source's own database.
-- **Givens.** A rollup whose build reads a given is not built (a warning): its table would hold one value's rows.
+- **What routes.** The query's text is compiled where its source's name means the rollup. It routes when every field it groups or filters by is in the grain, every aggregate is a stored measure's merge (an aggregate written in the query or in a `having:`, or a `select:` stage, is not; this is read from the compiled query, not its text), and a `timezone:` it sets, in any stage or nest, changes nothing it reads from the rollup: it reads no date or timestamp, directly or through a dimension, a stored measure or the base's `where:`, and nothing through a join (`run: orders -> { timezone: 'America/New_York'; group_by: category; aggregate: total }` routes; grouping or filtering by `order_day` there does not, `TIME_ZONE`, since the rollup stored its days in the model's zone). A query on a source that sets its own `timezone:` is answered live (`TIME_ZONE`): the rollup's stored times are not read in that zone, so a truncation, a filter on one, or a gate on one would not match live. Since no query on it reads such a rollup, a `#(preaggregate)` on a source that sets (or inherits) its own `timezone:` is not built (`preaggregate-not-built`, reason `time_zone`), unless a source in the same zone joins it, the one read left (through a join, above). A `calculate:` over a measure (`lag(total)`) reads that measure at its level, so it is held to the same rules as an aggregate there. A fan-out dimension counts as fixed by `where: d = <one value>`, alone or as one conjunct of an `and`. A query that supplies a given routes. A named `view:` routes as its own query does: `run: orders -> by_category`, a refinement of it, a query starting from it, and a `nest:` of one are compiled with the view as you wrote it, and answered from the rollup when the view's query passes the same checks, its text, and the text of every view it builds on, still compiles to the view the served model holds (an edit not yet reloaded is answered live), and it reads no raw SQL (`sql_boolean(…)`, whose columns the rollup may not keep). A persisted view of that name (`#@ persist` on the view) answers its own call first. The path report names the reason for each skip, and an answer from a rollup reports its tier in `servedFrom`: `storage` for a `storage=` rollup, `database` for one in the source's own database.
+- **Givens.** A `where:` of the source's own that reads a given (`where: region = $REGION`) and whose every field is a grain dimension is left out of the rollup's build, so its table holds every caller's groups, and is written again on the rollup when it is read, where each caller's givens bind it, so each caller gets exactly live's rows. The routed answer is re-proven in `govern()`, as a gate is: its source must apply exactly the given-reading terms the live source does, or the query is denied. Such a rollup is not read through a join, nor by a query on another source that extends its base (both answered live). A term over a field the grain does not keep, one the source inherits, or one that reads the current time too, refuses the rollup (`preaggregate-not-built`, reason `reads_given`), as does any other build that reads a given: its table would hold one value's rows.
+- **Hidden grain dimensions.** A `private` or `internal` dimension may be in a grain: it is stored, and stays `private` or `internal` on the rollup, so no query selects it, while a query grouping by the rest of the grain, or a view that reads it, is answered from the rollup. A `private` dimension the base inherits from a source it extends is never stored (Malloy keeps it private there), so that rollup is not built (`preaggregate-not-built`, reason `hidden_field`). A measure the source hides is not built either (`hidden_field`).
 - **Other compile-time refusals.** A valid rollup that a compile-time gate refuses alone is not built, and its measures are answered live, while the rest of the package loads: one on a dialect whose connection creates no table (SQL Server), one whose table name another rollup's table holds, one over a base scoped by a given, a v1 `#@ preaggregate` rollup over a base with a row-level gate, or one the `storage=` gate refuses. The warning is `preaggregate-not-built`, with `subject` the base, and its message names the base, the grain and the reason. Every rollup refused alone carries this one code, its reason (`access_filter`, `time_zone`, `current_time`, `reads_given`, `hidden_field`, `join_level`, `unreadable_measure`, `name_clash`, or a gate's) on its record in the build plan's `refusedSources`. A line Publisher cannot read fails the publish and the load, on `#@ preaggregate` as on `#(preaggregate)`: one that does not parse is `preaggregate-unparseable`, and a value that is wrong, such as an empty `grain=[]`, an empty or non-text `storage=` or an `@env.` reference, is `preaggregate-invalid`. The retired `preaggregate-malformed` is no longer produced ([fails the load, or refused alone](materialization.md#fails-the-load-or-refused-alone)).
 
 ## Declare a rollup
@@ -171,7 +172,7 @@ Three limits are worth knowing before you decide pre-aggregation will help your 
 
 **A named view routes when its own query does.** The rollup is read in a copy of your source's own file, so a view it declares is carried onto it and checked for coverage like a written-out query: `run: orders -> by_category` reads the rollup when `by_category`'s query is one the rollup covers.
 
-**A rollup over rows that read a [given](givens.md) is not built.** A rollup holds the rows its build saw, one given value's, so a source whose rows depend on a given gets no rollup, with a `preaggregate-not-built` warning (reason `reads_given`), and its queries are answered from the base. A given the rows do not read changes nothing.
+**A rollup over rows that read a [given](givens.md) is built only when the term can be re-applied.** A `where:` of the source's own that reads a given over grain dimensions only is left out of the build and applied again per caller when the rollup is read. Any other given the rows read (a term over a field the grain drops, an inherited one, a given inside a query-shaped base) refuses the rollup, with a `preaggregate-not-built` warning (reason `reads_given`), and its queries are answered from the base: the table would hold one given value's rows. A given the rows do not read changes nothing.
 
 **A query grouping by an expression rather than a dimension does not route.** `group_by: order_time.month` is an expression, and the rollup has no such field. Group by the declared dimension (`order_day`) or a coarser truncation of it (`order_day.month`) instead.
 
@@ -194,71 +195,88 @@ Nothing about a rollup appears in model discovery. Your model is never edited, s
 
 You do not name a rollup's table — Publisher derives it from the base, the grain and a
 digest, so the resolver and the content address can rely on it. You *do* choose the
-namespace it is created in, and on some warehouses you must.
+schema or dataset it is created in, with the same `name=` every other table is placed
+with, and on some warehouses you must.
 
 ```malloy
 source: orders is bigquery.table('project.raw.orders') extend {
-  measure:
-    #@ preaggregate grain="category" namespace="analytics"
-    total is amount.sum()
+  #(preaggregate) grain=["category"] name="analytics.orders_rollup"
+  measure: total is amount.sum()
 }
 ```
 
 That builds `analytics.<package>__<file>__orders_by_category__p<hash>`, the rollup's
-[readable name](materialization.md#readable-table-names) in the `analytics` namespace.
+[readable name](materialization.md#readable-table-names) in `analytics`. A rollup's
+`name=` places its table: everything before the last dot is the container, and the leaf
+is not used, since Publisher names a rollup's table itself. A `name=` with no container
+(`name="orders_rollup"`) would place nothing, so it fails the publish and the load
+(`preaggregate-invalid`). `#@ preaggregate grain="category" name="analytics.orders_rollup"`
+places a v1 rollup the same way.
+
+**`namespace=` is deprecated.** `namespace="analytics"` is the older spelling of the same
+container. It is read for one more release, places the table exactly where
+`name="analytics.<table>"` does (the table does not move when you switch), and warns
+`deprecated-preaggregate-namespace` naming the rewrite. Writing both `name=` and
+`namespace=` on one line fails the publish and the load (`preaggregate-invalid`).
 
 **BigQuery requires it.** An unqualified `CREATE` is rejected outright there
-(`must be qualified with a dataset`), so a rollup without a namespace cannot be built
-on BigQuery at all. Name a dataset the connection can write — typically a scratch
-dataset, the same one you would give an authored `#@ persist name=`. Other engines
-accept an unqualified name and create the table in the connection's default schema, so
-`namespace` is optional there.
+(`must be qualified with a dataset`), so a rollup with no container, its own or its
+base's, is not built on BigQuery: it is refused at plan, before any warehouse work
+(`preaggregate-not-built`, reason `needs_qualified_name`), and its measures are answered
+live. Name a dataset the connection can write — typically a scratch dataset, the same one
+you would give an authored `#@ persist name=`. Other engines accept an unqualified name
+and create the table in the connection's default schema, so the container is optional
+there.
 
 **The namespace has to exist already.** Nothing in the tier creates a dataset or a
 schema, so a name that is merely plausible fails the build. Create it once, and let the
 connection's credential create tables in it.
 
-**It belongs to the grain, not to the measure.** A namespace is written on the same
+**It belongs to the grain, not to the measure.** A `name=` is written on the same
 line as the `grain=` it applies to, and applies to nothing else — two grains are two
 tables and can be created in two places:
 
 ```malloy
 measure:
-  #@ preaggregate grain="category" namespace="analytics"
-  #@ preaggregate grain="order_date" namespace="archive"
+  #@ preaggregate grain="category" name="analytics.by_category"
+  #@ preaggregate grain="order_date" name="archive.by_day"
   total is amount.sum()
 ```
 
 Measures that share a grain share its one table, so they must agree on where it goes.
-Two naming different namespaces fail the publish and the load (`preaggregate-invalid`) rather than being resolved silently.
+Two naming different containers fail the publish and the load (`preaggregate-invalid`) rather than being resolved silently.
+One grain placed in two containers by two lines of one measure is two tables, each built.
 
-**A persisted base lends its own.** If the base carries `#@ persist
-name="analytics.orders_tbl"`, its rollups are created in `analytics` without being told
-— a rollup of a table belongs beside it. An explicit `namespace` overrides that, and is
-the only option when the base is not persisted at all, which is common: the annotation
-goes on a measure, and the source it belongs to need not be materialized.
+**A materialized base lends its own.** If the base carries `#@ persist
+name="analytics.orders_tbl"`, or `#(materialize) name="analytics.orders_tbl"`, its rollups
+are created in `analytics` without being told — a rollup of a table belongs beside it,
+on `#(preaggregate)` and `#@ preaggregate` alike, so the two spellings land in one
+schema. A rollup's own `name=` overrides that, and is the only option when the base is
+not materialized at all, which is common: the annotation goes on a measure, and the
+source it belongs to need not be materialized. A rollup's table is never its base's,
+whatever the two `name=`s say: the rollup's leaf is always its own readable name.
 
-A base that also carries `storage=` lends nothing — not its namespace, and not its
+A base that also carries `storage=` lends nothing — not its container, and not its
 destination. See [Rollups in the managed store](#rollups-in-the-managed-store) below.
 
-**Changing it does not move a table that already exists.** A namespace is not part of
+**Changing it does not move a table that already exists.** A container is not part of
 what identifies a rollup's contents, so a package whose rollups have already built keeps
 them where they are: the annotation changes and the table does not. Ask for the rebuild
 explicitly — `malloy-pub materialize --force-refresh`, or `forceRefresh` on the build
 endpoint — which is what defeats the unchanged-content skip. Dropping the table by hand
 does not, and leaves the manifest pointing at something that is no longer there.
 
-**A re-stated grain takes the namespace on its own line, including none.** Writing
-`grain="category"` again without `namespace=` clears the one an earlier line gave that
+**A re-stated grain takes the `name=` on its own line, including none.** Writing
+`grain="category"` again without `name=` clears the one an earlier line gave that
 grain, which matters most across an extend chain: an extending source that re-states its
-base's grain must restate the namespace too, or the rollup moves. To turn a declaration
+base's grain must restate the `name=` too, or the rollup moves. To turn a declaration
 off rather than replace it, negate with `#@ -preaggregate`.
 
-**It is a namespace, not a name.** Write it as plain identifiers — letters, digits,
-underscore, dollar or hyphen — dot-separated where the warehouse needs more than one
-part (`analytics`, `my-project.analytics` on BigQuery). A value needing quotes fails the
-load rather than being mangled, because the generated table name is appended to it and the
-two halves would then be quoted inconsistently.
+**Its container is plain names.** Write the container as plain identifiers — letters,
+digits, underscore, dollar or hyphen — dot-separated where the warehouse needs more than
+one part (`name="analytics.t"`, `name="my-project.analytics.t"` on BigQuery). A container
+needing quotes fails the load rather than being mangled, because the generated table name
+is appended to it and the two halves would then be quoted inconsistently.
 
 ## Rollups in the managed store
 
@@ -278,12 +296,13 @@ source: orders is orders_pg.table('public.orders') extend {
 Nothing about the query changes. It still names `orders` and still knows no rollup
 exists; only where the answer is read from moves.
 
-**A rollup may not store what the source hides.** A rollup stores its grain and each
-measure's partial, and the stored table is served under the base's name without the
-source's field visibility applying to it — so pre-aggregating a hidden field would publish
-it. The planner therefore refuses to plan one: `#@ preaggregate` on a measure the source
-does not publicly expose builds nothing, and neither does a grain naming a hidden
-dimension.
+**A rollup may not publish what the source hides.** A rollup stores its grain and each
+measure's partial. A hidden grain dimension (`private` or `internal`) is stored and
+redeclared hidden on the rollup, so no query selects it, as a stored source keeps its
+hidden columns. A hidden measure would be served under its name, so `#@ preaggregate` on
+a measure the source does not publicly expose builds nothing, and neither does a grain
+naming a `private` dimension the base inherits from a source it extends, which its build
+cannot read.
 
 That is reported as a **warning** (`preaggregate-not-built`, reason `hidden_field`) that refuses the rollup
 alone, rather than failing your publish and load as the mistakes in this section do. Partly because such a package published before the rule existed and
@@ -305,7 +324,7 @@ reads as. Each grain is one table, in the destination its own line names or, wit
 `storage=`, alongside the base in the warehouse the base reads from, under the rollup's
 [readable name](materialization.md#readable-table-names)
 (`<package>__<file>__<base>_by_<grain>__p<hash>`), never the base's. The base's own
-`name=` is neither a prefix nor a namespace for it. A query a rollup covers is answered
+`name=` is neither a prefix nor a container for it. A query a rollup covers is answered
 from the rollup; one it does not is answered as it was before:
 
 - **A query-shaped base** builds its own stored table as well, which keeps answering every
@@ -321,20 +340,20 @@ rows read a given (reason `reads_given`) or the current time
 `PUBLISHER_MATERIALIZE_GATED_SOURCES` lets a query read the rollup past its gate
 (reason `access_filter`). Each is a `preaggregate-not-built` warning, and the measure is served live.
 
-A colocated base's `name=` namespace *is* inherited, and the asymmetry is not about
+A colocated base's `name=` container *is* inherited, and the asymmetry is not about
 inheritance. Colocated rollups are offered through a companion model whose members
 Publisher names itself, with the base under an import alias, so nothing there is keyed on
 your source's name and there is no binding to collide with.
 
-**It belongs to the grain, like `namespace=`.** Two grains are two tables and can be
+**It belongs to the grain, like `name=`.** Two grains are two tables and can be
 placed differently — one in the store, one alongside the base. Measures sharing a grain
 share its one table, so two of them naming different destinations fail the publish and the
 load (`preaggregate-invalid`).
 
-**`namespace=` and `storage=` cannot be combined.** Placement inside a destination is
+**`name=` and `storage=` cannot be combined on a rollup.** Placement inside a destination is
 derived, not authored: a freshly provisioned catalog has no schema to create the table
-in. Writing both on one `#@ preaggregate` line fails the publish and the load
-(`preaggregate-invalid`).
+in. Writing both (or `namespace=` beside `storage=`) on one line fails the publish and
+the load (`preaggregate-invalid`).
 
 **The tier's switch applies.** With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is
 not built — and not built anywhere else either. Falling back to a build alongside the

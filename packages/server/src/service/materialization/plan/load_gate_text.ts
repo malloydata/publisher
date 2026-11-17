@@ -341,7 +341,6 @@ export const PREAGG_WARN_ONLY: ReadonlyMap<
    // Governance: an extension that hides an inherited field cannot fix
    // its base's annotation.
    ["non_public_measure", "hidden_field"],
-   ["grain_dimension_not_public", "hidden_field"],
    // A rollup over a fan-out join, as `#(preaggregate)` refuses one.
    ["base_source_has_fanout_join", "join_level"],
 ]);
