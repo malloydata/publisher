@@ -40,6 +40,7 @@ import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { logger } from "../logger";
+import { recordUnhandledRejection } from "../process_safety";
 import { ImportOutsidePackageError } from "../utils";
 import { Settings, settings } from "../settings";
 import type {
@@ -742,6 +743,12 @@ export class PackageLoadPool {
             return;
          case "log":
             handleWorkerLog(msg);
+            return;
+         case "unhandled-rejection":
+            recordUnhandledRejection(
+               { message: msg.message, stack: msg.stack },
+               { workerId: pw.id },
+            );
             return;
          default: {
             const exhaustive: never = msg;

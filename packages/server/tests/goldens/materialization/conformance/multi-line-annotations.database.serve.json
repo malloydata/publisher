@@ -10,13 +10,7 @@
     "verdicts": [
       "annotated:serves"
     ],
-    "warnings": [
-      {
-        "code": "storage-column-type-mismatch",
-        "message": "stores column `order_month` as TIMESTAMP, not its declared Malloy type `date`: its table was altered outside a build. It is read through a cast to `date`, so it still serves from the table; rebuilding the table clears this.",
-        "subject": "annotated"
-      }
-    ]
+    "warnings": []
   },
   "queries": [
     {
