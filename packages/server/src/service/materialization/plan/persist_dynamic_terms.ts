@@ -775,7 +775,7 @@ function localFieldNames(entry: unknown): string[] {
 /**
  * The source's own read-time dynamic terms, INDEPENDENT of whether
  * {@link admitGivenPositions} admits it. That classification returns no terms
- * on a refusal, and the colocated gate does not refuse the positional cases, so
+ * on a refusal, and the database gate does not refuse the positional cases, so
  * reading terms off it would yield an empty ("no scoping needed") scope for a
  * caller-scoped source. Callers that must not fail open (the incremental merge
  * scope) read this instead.

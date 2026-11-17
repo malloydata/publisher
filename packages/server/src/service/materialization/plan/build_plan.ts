@@ -57,9 +57,10 @@ import {
    authoredNotes,
 } from "../../annotation_near_miss";
 import {
+   MATERIALIZE_NOT_BUILT_CODE,
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
-   PREAGGREGATE_NOT_BUILT_CODE,
+   ROLLUP_NOT_BUILT_CODE,
    persistAnnotationFindings,
    persistUnparseableFinding,
    type PackageAnnotationFinding,
@@ -92,7 +93,10 @@ import type { RollupPlan } from "../domain/rollup_measures";
 import {
    isPersistedResultSourceID,
    materializeKindOf,
+   isRollupOrigin,
+   originOfTable,
    splitSourceID,
+   type TableOrigin,
    type MaterializePlan,
    type PersistedQueryPlan,
    type PersistSourceGateClassification,
@@ -113,12 +117,14 @@ export {
    type CrossFileCompanions,
 } from "./materialize_compile";
 import {
+   PERSIST_VIEW_NOT_BUILT,
    persistedQueryRefusalFinding,
    persistedQueryRefusalKey,
    persistedViewRefusalFinding,
    planModelPersistedViews,
 } from "./persisted_view";
 import {
+   PERSIST_QUERY_NOT_BUILT,
    declaredPersistQueries,
    persistQueryInvalidFindings,
    persistQueryKeyFindings,
@@ -167,8 +173,8 @@ import {
    type SourceBuild,
 } from "../domain/compiled_build_plan";
 import {
-   colocatedRefusalsByAddress,
-   collectColocatedSourceEligibility,
+   databaseRefusalsByAddress,
+   collectDatabaseSourceEligibility,
    collectSourceEligibility,
    EligibilityCheckFailed,
    planVerdicts,
@@ -176,7 +182,7 @@ import {
    refuseRewrittenNames,
    sharedTables,
    withoutSources,
-   type ColocatedSourceEligibility,
+   type DatabaseSourceEligibility,
    type SourceEligibility,
    type TableVerdict,
 } from "./eligibility_collect";
@@ -213,7 +219,7 @@ export type { TableFolds } from "./addressing";
 export {
    sharedTables,
    tierGateInputs,
-   type ColocatedSourceEligibility,
+   type DatabaseSourceEligibility,
    type SourceEligibility,
 } from "./eligibility_collect";
 export {
@@ -904,7 +910,7 @@ async function authorSourceGate(
 }
 
 /**
- * The `#(preaggregate)` rollups a model declares:
+ * The `#(rollup)` rollups a model declares:
  * one build source per rollup, planned only in the model that declares its
  * base, so a rollup is listed once however many models import the base. Each
  * keeps its compiled `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`)
@@ -944,9 +950,9 @@ async function collectGeneratedRollups(
             rollupRefusalFinding(
                {
                   tier: "unservable",
-                  code: PREAGGREGATE_NOT_BUILT_CODE,
+                  code: ROLLUP_NOT_BUILT_CODE,
                   message:
-                     `#(preaggregate) rollup of source "${plan.baseSourceName}" at ` +
+                     `#(rollup) rollup of source "${plan.baseSourceName}" at ` +
                      `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
                      "are served live: its rows read a given, and a table holds one " +
                      "value's rows.",
@@ -954,7 +960,7 @@ async function collectGeneratedRollups(
                   refused: {
                      sourceID: source.sourceID,
                      name: source.name,
-                     tier: "preaggregate",
+                     tier: tierOf(plan.storage),
                      // A given read while the stored relation is built,
                      // as every other mechanism names it.
                      reason: "reads_given",
@@ -1412,7 +1418,7 @@ async function collectGeneratedTables(
       });
    }
    // Rollups: v1 `#@ preaggregate` lines are read as their declarations, and
-   // `#(preaggregate)` with PUBLISHER_MATERIALIZE. A model declaring only rollups needs no
+   // `#(rollup)` with PUBLISHER_MATERIALIZE. A model declaring only rollups needs no
    // persistence flag.
    await collectGeneratedRollups(parts, {
       modelPath,
@@ -1452,7 +1458,7 @@ function v1RollupRefusals(
          {
             route: "@",
             tier: "unservable",
-            code: PREAGGREGATE_NOT_BUILT_CODE,
+            code: ROLLUP_NOT_BUILT_CODE,
             message: violation.message,
             subject: violation.fieldName ?? violation.sourceName,
             model: modelPath,
@@ -1725,8 +1731,8 @@ export function deriveBuildPlan(
    for (const [sourceID, table] of Object.entries(tables)) {
       const { source } = table;
       // One unreadable source must not cost the package its plan: addressing
-      // throws for a colocated source referencing a given with no default, and
-      // an escaping throw would drop EVERY colocated binding for the package.
+      // throws for a database source referencing a given with no default, and
+      // an escaping throw would drop EVERY database binding for the package.
       try {
          const decided = verdicts.get(sourceID)!.wire;
          if ("failed" in decided) throw decided.failed;
@@ -1758,7 +1764,7 @@ export function deriveBuildPlan(
       }
    }
 
-   refuseColocatedTablesSharedWithARefusal(
+   refuseDatabaseTablesSharedWithARefusal(
       compiled,
       verdicts,
       wireSources,
@@ -1790,7 +1796,7 @@ function wireSourceOf(
       sourceID: source.sourceID,
       connectionName: source.connectionName,
       dialect: source.dialectName,
-      origin: rollup ? "preaggregate" : "persist",
+      origin: originOfTable(table.kind, source.sourceID),
       preaggregate: rollup
          ? {
               baseSourceName: rollup.baseSourceName,
@@ -1819,15 +1825,15 @@ function wireSourceOf(
 }
 
 /**
- * Move to `refusedSources` each planned v1 colocated source whose table another
- * source the colocated gate refuses shares (one content address: identical
- * SQL, different gates). A colocated table is served by its address, and the
+ * Move to `refusedSources` each planned v1 database source whose table another
+ * source the database gate refuses shares (one content address: identical
+ * SQL, different gates). A database table is served by its address, and the
  * bind refuses an address any source on it is refused for
- * (collectColocatedSourceEligibility), as the build does
- * (instructed_build.ts, colocatedRefusalOn): such a table would be built for
+ * (collectDatabaseSourceEligibility), as the build does
+ * (instructed_build.ts, databaseRefusalOn): such a table would be built for
  * nothing. The plan says so, with the sibling's reason, in sourceID order.
  */
-function refuseColocatedTablesSharedWithARefusal(
+function refuseDatabaseTablesSharedWithARefusal(
    compiled: Pick<
       CompiledBuildPlan,
       "tables" | "connectionDigests" | "tableFolds"
@@ -1841,17 +1847,17 @@ function refuseColocatedTablesSharedWithARefusal(
    // addressed by its generated build (the plan's `targets`), which this
    // projection does not see, and the bind keys it the same way.
    const v1 = (id: string) => !tables[id]?.materialize;
-   const colocated = Object.entries(wireSources).filter(
+   const database = Object.entries(wireSources).filter(
       ([id, s]) =>
-         s.origin === "persist" && !s.annotationFields?.storage && v1(id),
+         !isRollupOrigin(s.origin) && !s.annotationFields?.storage && v1(id),
    );
-   if (colocated.length === 0) return;
-   const refusals = colocatedRefusalsByAddress(
+   if (database.length === 0) return;
+   const refusals = databaseRefusalsByAddress(
       compiled,
       verdicts,
       (id) => !tables[id].rollup && v1(id),
    );
-   for (const [sourceID, planned] of colocated) {
+   for (const [sourceID, planned] of database) {
       const sibling = refusals
          .get(planned.sourceEntityId)
          ?.find((r) => r.sourceID !== sourceID);
@@ -1861,12 +1867,12 @@ function refuseColocatedTablesSharedWithARefusal(
          name: planned.name,
          sourceID: planned.sourceID,
          modelPath: tables[sourceID]?.modelPath,
-         tier: "colocated",
+         tier: "database",
          reason: (sibling.reason ?? "authorize") as WireRefusedSource["reason"],
          message:
             `'${planned.name}' is not built: it shares its table with ` +
             `'${sibling.name}', which the eligibility gate refuses for a ` +
-            `colocated build, and a colocated table is served to every ` +
+            `database build, and a database table is served to every ` +
             `source on it. ${sibling.message}`,
       };
    }
@@ -1880,7 +1886,7 @@ export interface BuildPlanOutcome {
    /** See {@link BuildPlanParts.modelGateLines}. */
    modelGateLines: { preaggregate: string[]; nearMiss: string[] };
    sourceEligibility: SourceEligibility;
-   colocatedSourceEligibility: ColocatedSourceEligibility;
+   databaseSourceEligibility: DatabaseSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
    /**
     * Every connection a persist source builds on, including sources the plan
@@ -1895,7 +1901,7 @@ export interface BuildPlanOutcome {
     */
    materializePlans: Record<string, MaterializePlan>;
    /**
-    * The `#(preaggregate)` rollups over a gated base whose gates are grafted
+    * The `#(rollup)` rollups over a gated base whose gates are grafted
     * on their variant at read ({@link rollupGateEnforcedAtRead}), by their
     * sourceID, so the serve verdict does not call them gated out.
     */
@@ -2059,11 +2065,17 @@ export function deriveBuildPlanOutcome(
          : deriveBuildPlan(compiled, materializationConfig, verdicts);
    // A collision this deployment refuses alone, rather than failing the
    // load, is a refusal record like any other.
-   const { plan, annotationFindings, refusalNotices } = projectRefusals(
+   const projected = projectRefusals(
       derived,
       compiled.annotationFindings.map((f) =>
          relaxedCollision(f, getPersistCollisionEnforce()),
       ),
+   );
+   const { annotationFindings, refusalNotices } = projected;
+   const plan = withRefusalOrigins(
+      projected.plan,
+      compiled.tables,
+      refusalNotices,
    );
    return {
       plan,
@@ -2072,7 +2084,7 @@ export function deriveBuildPlanOutcome(
       refusalNotices,
       modelGateLines: compiled.modelGateLines,
       sourceEligibility: collectSourceEligibility(compiled, verdicts),
-      colocatedSourceEligibility: collectColocatedSourceEligibility(
+      databaseSourceEligibility: collectDatabaseSourceEligibility(
          compiled,
          verdicts,
       ),
@@ -2203,17 +2215,61 @@ function persistedViewOf(
    return match ? { sourceName: match[1], viewName: match[2] } : undefined;
 }
 
+/** The mechanism a refusal's `*-not-built` warning code names. */
+const ORIGIN_OF_NOT_BUILT_CODE: Readonly<Record<string, TableOrigin>> = {
+   [PERSIST_NOT_BUILT_CODE]: "persist",
+   [MATERIALIZE_NOT_BUILT_CODE]: "materialize",
+   [PERSIST_VIEW_NOT_BUILT]: "view",
+   [PERSIST_QUERY_NOT_BUILT]: "query",
+   [ROLLUP_NOT_BUILT_CODE]: "rollup",
+};
+
+/**
+ * The plan with each refusal record's `origin`, the mechanism that declared
+ * it, read off the plan and never off a name: a rollup's record (`tier`
+ * `preaggregate`), a persisted view's or query's generated build source, the
+ * planned table's kind, and, for a declaration refused before it was
+ * planned, the mechanism its `*-not-built` warning names.
+ */
+function withRefusalOrigins(
+   plan: BuildPlan | null,
+   tables: Readonly<Record<string, Pick<TablePlan, "kind">>>,
+   notices: RefusalNotices,
+): BuildPlan | null {
+   const refused = plan?.refusedSources;
+   if (!plan || !refused || Object.keys(refused).length === 0) return plan;
+   const originOf = (sourceID: string, tier: string): TableOrigin => {
+      // How a record before this release said rollup.
+      if (tier === "preaggregate") return "rollup";
+      if (isPersistedResultSourceID(sourceID)) {
+         return originOfTable("view", sourceID);
+      }
+      const table = tables[sourceID];
+      if (table) return originOfTable(table.kind, sourceID);
+      return (
+         ORIGIN_OF_NOT_BUILT_CODE[notices[sourceID]?.code ?? ""] ?? "persist"
+      );
+   };
+   return {
+      ...plan,
+      refusedSources: Object.fromEntries(
+         Object.entries(refused).map(([sourceID, r]) => [
+            sourceID,
+            { ...r, origin: originOf(sourceID, r.tier) },
+         ]),
+      ),
+   };
+}
+
 /** {@link BuildPlanOutcome.refusedRollups}. */
 function refusedRollupsOf(
    plan: BuildPlan | null,
    tables: Readonly<Record<string, Pick<TablePlan, "rollup">>>,
 ): Record<string, RefusedRollup> {
    const out: Record<string, RefusedRollup> = {};
-   for (const [sourceID, refused] of Object.entries(
-      plan?.refusedSources ?? {},
-   )) {
+   for (const sourceID of Object.keys(plan?.refusedSources ?? {})) {
       const rollup = tables[sourceID]?.rollup;
-      if (refused.tier !== "preaggregate" || !rollup) continue;
+      if (!rollup) continue;
       out[sourceID] = {
          baseSourceName: rollup.baseSourceName,
          grainDimensions: rollup.grainDimensions,

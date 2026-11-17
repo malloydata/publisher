@@ -15,7 +15,7 @@ SPDX-License-Identifier: MIT
 annotation is inert and nothing is written.
 
 A rollup needs the same guarantee for a sharper reason. A rollup names no source in any
-model file — its name is generated — so falling back to a colocated build would not
+model file — its name is generated — so falling back to a database build would not
 merely ignore an annotation, it would create a table in the customer's own warehouse
 under a name nobody wrote and nobody can recognise. "Ignore the placement and build it
 somewhere else" is the wrong reading of a kill switch here.

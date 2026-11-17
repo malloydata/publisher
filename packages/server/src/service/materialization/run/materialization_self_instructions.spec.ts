@@ -13,7 +13,7 @@ import { installSettings } from "../../../test_helpers/settings_env";
 
 /**
  * Auto-run self-instructions: which sources an auto run instructs itself to
- * build, and which it refuses (eligibility, the colocated #(authorize) gate,
+ * build, and which it refuses (eligibility, the database #(authorize) gate,
  * a refused source beside admitted ones).
  */
 
@@ -163,7 +163,7 @@ describe("deriveSelfInstructions", () => {
       }
    });
 
-   it("self-assigns the name= verbatim for a storage= source, exactly as a colocated build", () => {
+   it("self-assigns the name= verbatim for a storage= source, exactly as a database build", () => {
       const { restore } = installSettings({
          env: { PERSIST_STORAGE_MODE: "on" },
       });
@@ -197,10 +197,10 @@ describe("deriveSelfInstructions", () => {
          const lake = byId["aa11aa11aa11aa11aa11"];
          const wh = byId["bb22bb22bb22bb22bb22"];
          // storage= → the `name=` value verbatim in the destination (no
-         // content-hash decoration); only the destination differs from a colocated build.
+         // content-hash decoration); only the destination differs from a database build.
          expect(lake.destination).toBe("lake");
          expect(lake.physicalTableName).toBe("daily");
-         // colocated → the plain logical (source) name, no destination.
+         // database → the plain logical (source) name, no destination.
          expect(wh.destination).toBeUndefined();
          expect(wh.physicalTableName).toBe("wh_src");
       } finally {
@@ -221,25 +221,25 @@ describe("deriveSelfInstructions", () => {
       ).deriveSelfInstructions(compiled, undefined, {});
    }
 
-   /** A colocated (no `storage=`) fakeSource carrying an #(access_filter) gate. */
-   const authorizeGatedColocated = fakeSource({
+   /** A database (no `storage=`) fakeSource carrying an #(access_filter) gate. */
+   const authorizeGatedDatabase = fakeSource({
       name: "s1",
       sourceEntityId: "c1c1c1c1c1c1c1c1",
       sourceDef: { blockNotes: ["#(authorize) true"] },
    });
 
-   describe("colocated #(authorize) gate", () => {
+   describe("database #(authorize) gate", () => {
       let restoreSettings: (() => void) | undefined;
       afterEach(() => {
          restoreSettings?.();
          restoreSettings = undefined;
       });
 
-      it("refuses a colocated authorize-gated source with no compile-time gate outcome (fail-closed default)", () => {
+      it("refuses a database authorize-gated source with no compile-time gate outcome (fail-closed default)", () => {
          // No `sourceGateOutcomes` supplied — the relaxation below requires a
          // PROVEN row_level+attributed outcome, so an unclassified gate keeps
          // refusing exactly as it always has.
-         const compiled = compiledWith({ s1: authorizeGatedColocated }, [
+         const compiled = compiledWith({ s1: authorizeGatedDatabase }, [
             ["s1"],
          ]);
          expect(() => derive(compiled)).toThrow(
@@ -250,11 +250,11 @@ describe("deriveSelfInstructions", () => {
 
       // A `row_level` + `attributed` compile-time gate outcome proves the
       // entry point's own gate is a row filter and nothing else is reachable
-      // beneath it, so colocated serving grafts exactly what a live query
-      // would — see `assertColocatedPersistNotAuthorizeGated`'s doc.
-      it("admits a colocated authorize-gated source whose compile-time outcome is row_level and attributed", () => {
+      // beneath it, so database serving grafts exactly what a live query
+      // would — see `assertDatabasePersistNotAuthorizeGated`'s doc.
+      it("admits a database authorize-gated source whose compile-time outcome is row_level and attributed", () => {
          const compiled = compiledWith(
-            { s1: authorizeGatedColocated },
+            { s1: authorizeGatedDatabase },
             [["s1"]],
             new Map(),
             { s1: { classification: "row_level", attributed: true } },
@@ -264,7 +264,7 @@ describe("deriveSelfInstructions", () => {
 
       it("still refuses when the compile-time outcome is row_level but NOT attributed (a join-only gate outside identity reach)", () => {
          const compiled = compiledWith(
-            { s1: authorizeGatedColocated },
+            { s1: authorizeGatedDatabase },
             [["s1"]],
             new Map(),
             { s1: { classification: "row_level", attributed: false } },
@@ -276,7 +276,7 @@ describe("deriveSelfInstructions", () => {
 
       it("still refuses when the compile-time outcome is rejected", () => {
          const compiled = compiledWith(
-            { s1: authorizeGatedColocated },
+            { s1: authorizeGatedDatabase },
             [["s1"]],
             new Map(),
             { s1: { classification: "rejected", attributed: true } },
@@ -286,7 +286,7 @@ describe("deriveSelfInstructions", () => {
          );
       });
 
-      it("leaves an ungated colocated source unaffected", () => {
+      it("leaves an ungated database source unaffected", () => {
          const compiled = compiledWith(
             {
                s1: fakeSource({
@@ -311,7 +311,7 @@ describe("deriveSelfInstructions", () => {
          });
          const compiled = compiledWith({ s1: storageGated }, [["s1"]]);
          // Same message as assertMaterializationEligible's storage-destination
-         // refusal (no double-refusal, no changed message from the colocated path).
+         // refusal (no double-refusal, no changed message from the database path).
          expect(() => derive(compiled)).toThrow(
             /cannot be materialized into a storage destination/,
          );
@@ -363,7 +363,7 @@ describe("deriveSelfInstructions", () => {
          expect(Object.keys(refused)).toEqual(["refused"]);
          expect(refused.refused).toMatchObject({
             name: "refused",
-            tier: "colocated",
+            tier: "database",
          });
          expect(refused.refused.message).toMatch(/authorize/i);
       });
@@ -440,7 +440,10 @@ describe("deriveSelfInstructions", () => {
          const { instructions, refused } = deriveWith(compiled);
 
          expect(instructions).toHaveLength(0);
-         expect(refused.rollup.tier).toBe("preaggregate");
+         expect(refused.rollup).toMatchObject({
+            origin: "rollup",
+            tier: "database",
+         });
       });
 
       it("still throws when sourceNames names the refused source", () => {

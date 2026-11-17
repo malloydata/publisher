@@ -33,13 +33,13 @@ import "raw.malloy"
 
 #(access_filter) region = $REGION
 source: by_column is orders_raw extend {
-  #(preaggregate) grain=["status", "region"]
+  #(rollup) grain=["status", "region"]
   measure: total is amount.sum()
 }
 
 #(authorize) 'admin' = $ROLE
 source: by_lock is orders_raw extend {
-  #(preaggregate) grain=["status"]
+  #(rollup) grain=["status"]
   measure: total is amount.sum()
 }
 
@@ -80,7 +80,7 @@ import { REGION, ROLE, by_lock, gated_mat, locked_mat } from "m.malloy.rollup-au
 import { by_column__rollup__region_status__5f704d70__built is by_column__rollup__region_status__5f704d70 } from "m.malloy.preaggregate.malloy"
 source: by_column__rollup__region_status__5f704d70__served is by_column__rollup__region_status__5f704d70__built extend {
   measure:
-    #(preaggregate) grain=["status", "region"]
+    #(rollup) grain=["status", "region"]
     total is total__partial.sum()
 }
 #(access_filter) region = $REGION
@@ -94,7 +94,7 @@ import { REGION, ROLE, by_column, gated_mat, locked_mat } from "m.malloy.rollup-
 import { by_lock__rollup__status__eb4380b4__built is by_lock__rollup__status__eb4380b4 } from "m.malloy.preaggregate.malloy"
 source: by_lock__rollup__status__eb4380b4__served is by_lock__rollup__status__eb4380b4__built extend {
   measure:
-    #(preaggregate) grain=["status"]
+    #(rollup) grain=["status"]
     total is total__partial.sum()
 }
 #(authorize) 'admin' = $ROLE
@@ -135,13 +135,13 @@ import "raw.malloy"
 
 #(access_filter) region = $REGION
 source: by_column is orders_raw extend {
-  #(preaggregate) grain=["status", "region"]
+  #(rollup) grain=["status", "region"]
   measure: total is amount.sum()
 }
 
 #(authorize) 'admin' = $ROLE
 source: by_lock is orders_raw extend {
-  #(preaggregate) grain=["status"]
+  #(rollup) grain=["status"]
   measure: total is amount.sum()
 }
 

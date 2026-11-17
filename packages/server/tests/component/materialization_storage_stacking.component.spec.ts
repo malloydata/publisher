@@ -114,7 +114,7 @@ const CHAIN_QUERY =
 
 /** A `storage=` rollup over a `#(materialize) storage=` base, at `grain`. */
 const materializeRollupModel = (grain = "cat", rollupExtra = "") => {
-   const rollup = `#(preaggregate) grain=["${grain}"] storage="${LAKE}"${rollupExtra}`;
+   const rollup = `#(rollup) grain=["${grain}"] storage="${LAKE}"${rollupExtra}`;
    return `##! experimental.persistence
 source: raw is ${RAW}
 
@@ -503,7 +503,7 @@ describe.skipIf(process.platform === "win32")(
          await setUp({ "m.malloy": ROLLUP_MODEL });
          const pkg = await env.getPackage(parsePackageName(PKG), false);
          const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
-            (s) => s.origin === "preaggregate",
+            (s) => s.origin === "rollup",
          )!.name;
          const m = await build({ sourceNames: [rollupName] });
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);

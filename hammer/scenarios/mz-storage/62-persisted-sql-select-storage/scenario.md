@@ -24,7 +24,7 @@ branch of the same switch, not typed to `query_source` — so it serves an
 below is that proof.
 
 This is a real capability difference between the tiers, not an accident of this
-scenario: the colocated control (`persisted-sql-select-colocated`) builds the table
+scenario: the database control (`persisted-sql-select-database`) builds the table
 and then recomputes anyway. Read them as a pair.
 
 ## Publisher

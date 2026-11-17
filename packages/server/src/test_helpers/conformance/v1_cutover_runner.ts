@@ -18,7 +18,7 @@
  *    answer.
  *
  * Before the retirement (6g) a third column, `today`, answered through the
- * storage serve shape, the composite and the colocated build manifest, and
+ * storage serve shape, the composite and the database build manifest, and
  * the verdict compared the two; those paths are gone, so the verdict reads
  * the cutover's answer alone.
  *
@@ -28,7 +28,7 @@
  * a number's integer or decimal subtype and the `#(malloy)` drill metadata
  * set aside (known limitation 12, accepted for the cutover).
  *
- * Every table is built for real (colocated on the source's own connection,
+ * Every table is built for real (database on the source's own connection,
  * `storage=` into a DuckDB destination `lake`), so the snapshot must be a
  * DuckDB copy of the data. `PERSIST_STORAGE_MODE` is `on` throughout.
  */
@@ -135,7 +135,7 @@ function asResultField(f: Answer["fields"][number]): unknown {
 function pathOf(a: Answer): string {
    if (a.servedBy !== "materialized") return a.servedBy;
    if (a.via) return a.via;
-   return a.servedFrom === "storage" ? "serve_shape" : "colocated_manifest";
+   return a.servedFrom === "storage" ? "serve_shape" : "database_manifest";
 }
 
 function verdictOf(cutover: Classification): CutoverRow["verdict"] {

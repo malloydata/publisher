@@ -320,7 +320,7 @@ export async function postgresCollation(
 
 /** A table an answer read, as the stored-side check reads it. */
 interface StoredTable {
-   readonly tier: "colocated" | "storage";
+   readonly tier: "database" | "storage";
    readonly virtualHandle?: string;
    readonly tablePath?: string;
    readonly destinationName?: string;
@@ -331,14 +331,14 @@ interface StoredTable {
  * compare a string column as its source does, or undefined: the stored
  * column's own collation, which an `ALTER … SET DATA TYPE … COLLATE` after
  * the build, or a destination's `default_collation`, can change. Every table
- * read is checked, however it was admitted (colocated, a `storage=` table
+ * read is checked, however it was admitted (database, a `storage=` table
  * past its own gate, or one holding only ungated rows), so a new admission
  * mark needs nothing here.
  *
- * - a `storage=` table, and a colocated one in a DuckDB-dialect warehouse:
+ * - a `storage=` table, and a database one in a DuckDB-dialect warehouse:
  *   byte-exact only when the instance sets no `default_collation` and the
  *   table's definition names no `COLLATE`;
- * - a colocated table in Postgres: each collatable column's collation, as
+ * - a database table in Postgres: each collatable column's collation, as
  *   the source side reads it (binary under `C`/`POSIX`, deterministic under
  *   any other deterministic one);
  * - anything else, or a table this cannot find: unknown.
@@ -349,7 +349,7 @@ export async function storedTableCollationRefusal(args: {
    tables: readonly StoredTable[];
    answerRunnable: QueryMaterializer;
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
-   /** The author's compile: a colocated table shares its source's dialect. */
+   /** The author's compile: a database table shares its source's dialect. */
    authorRunnable: QueryMaterializer;
    reads: GateReads | undefined;
 }): Promise<string | undefined> {
@@ -448,7 +448,7 @@ async function entryDialectOf(runnable: QueryMaterializer): Promise<string> {
 /**
  * One table's stored-side collation. A `storage=` table is found through the
  * answer's virtual map, in its DuckLake destination; one it cannot find is
- * unknown. A colocated table is in its source's own warehouse, built from
+ * unknown. A database table is in its source's own warehouse, built from
  * the source with its collations: a DuckDB-dialect one is checked by its
  * definition (or, when the answer names no path, the instance's every
  * table), a Postgres one by its columns; in any other warehouse it compares

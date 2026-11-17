@@ -77,7 +77,7 @@ source: hidden_grants_opps is raw -> { where: amount > 1; select: * } extend {
 } include { private: g; public: * }
 
 // A gated v1 storage= source is read past its own gate, grafted and proven,
-// as its colocated form is (G3, contracts at read).
+// as its database form is (G3, contracts at read).
 #(access_filter) org_id = $ORG_ID
 #@ persist name="gated_opps" storage="lake"
 source: gated_opps is raw -> { where: amount > 2; select: * } extend {

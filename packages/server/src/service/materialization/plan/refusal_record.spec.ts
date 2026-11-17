@@ -28,10 +28,10 @@ function finding(
    o: Partial<PackageAnnotationFinding> = {},
 ): PackageAnnotationFinding {
    return {
-      route: "preaggregate",
+      route: "rollup",
       tier: "unservable",
-      code: "preaggregate-not-built",
-      message: '#(preaggregate) on measure "total" is not built',
+      code: "rollup-not-built",
+      message: '#(rollup) on measure "total" is not built',
       subject: "orders.total",
       model: "m.malloy",
       refused: measureRefusalKey(
@@ -51,7 +51,8 @@ describe("measureRefusalKey", () => {
       ).toEqual({
          sourceID: `orders.total@${COMPANION}`,
          name: "orders.total",
-         tier: "preaggregate",
+         // A refusal of a measure names no table: the database's.
+         tier: "database",
          reason: "time_zone",
       });
    });
@@ -113,7 +114,7 @@ describe("projectRefusals", () => {
    it("moves each refusal finding into refusedSources once, and keeps the rest", () => {
       const kept = finding({
          tier: "malformed",
-         code: "preaggregate-invalid",
+         code: "rollup-invalid",
          refused: undefined,
       });
       const refusal = finding({ rewrite: "expose it" });
@@ -131,14 +132,14 @@ describe("projectRefusals", () => {
                name: "orders.total",
                sourceID: id,
                modelPath: "m.malloy",
-               tier: "preaggregate",
+               tier: "database",
                reason: "hidden_field",
                message: `${refusal.message}; expose it`,
             },
          },
       });
       expect(refusalNotices).toEqual({
-         [id]: { code: "preaggregate-not-built", subject: "orders.total" },
+         [id]: { code: "rollup-not-built", subject: "orders.total" },
       });
    });
 
@@ -169,7 +170,7 @@ describe("persistRefusalWarnings", () => {
          name: sourceID.split("@")[0],
          sourceID,
          modelPath: "m.malloy",
-         tier: "colocated" as const,
+         tier: "database" as const,
          reason: "authorize" as const,
          message: "refused",
          ...o,
@@ -186,14 +187,14 @@ describe("persistRefusalWarnings", () => {
          },
          {},
          {},
-         { [id]: { code: "preaggregate-not-built", subject: "orders.total" } },
+         { [id]: { code: "rollup-not-built", subject: "orders.total" } },
       );
       expect(warnings).toEqual([
          {
             model: "m.malloy",
             subject: "orders.total",
             message: "refused",
-            code: "preaggregate-not-built",
+            code: "rollup-not-built",
             severity: "warn",
          },
       ]);

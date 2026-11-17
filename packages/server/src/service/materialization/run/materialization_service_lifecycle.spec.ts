@@ -875,7 +875,7 @@ describe("runBuild (branch behavior)", () => {
             reportSourceBuilt(
                {
                   kind: "persist",
-                  tier: "colocated",
+                  tier: "database",
                   sourceEntityId: "build-orders",
                   sourceName: "orders",
                },
@@ -920,7 +920,7 @@ describe("runBuild (branch behavior)", () => {
          ).toEqual([
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "built",
                failure_class: "none",
             },

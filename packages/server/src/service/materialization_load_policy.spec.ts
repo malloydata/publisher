@@ -11,7 +11,7 @@
  *    before, and a restart that loads the package from config. The failure
  *    names the mistake with its code; the package never serves around it.
  *  - The SAME mistake gets the same outcome on every annotation: `#@ persist`
- *    on a source, `#(materialize)`, `#(preaggregate)`, v1 `#@ preaggregate`, a
+ *    on a source, `#(materialize)`, `#(rollup)`, v1 `#@ preaggregate`, a
  *    persisted view and a persisted named query (the table below).
  *  - A VALID annotation Publisher cannot build is refused alone: the package
  *    loads, the item is not built, and it answers live with live's rows.
@@ -65,7 +65,7 @@ const ROUTES: Record<string, Route> = {
          `${HEADER}source: raw is ${ROWS}\n${line}\nsource: orders is raw extend { dimension: big is amount > 6 }\n`,
    },
    preaggregate: {
-      name: "#(preaggregate)",
+      name: "#(rollup)",
       model: (line) =>
          `${HEADER}source: orders is ${ROWS} extend {\n  ${line}\n  measure: total is amount.sum()\n}\n`,
    },
@@ -99,12 +99,12 @@ const MISTAKES: Mistake[] = [
          persist: ['#@ persist name="t" storage=""', "persist-invalid"],
          materialize: ['#(materialize) storage=""', "materialize-invalid"],
          preaggregate: [
-            '#(preaggregate) grain=["category"] storage=""',
-            "preaggregate-invalid",
+            '#(rollup) grain=["category"] storage=""',
+            "rollup-invalid",
          ],
          v1Preaggregate: [
             '#@ preaggregate grain="category" storage=""',
-            "preaggregate-invalid",
+            "rollup-invalid",
          ],
          view: ['#@ persist storage=""', "persist-view-invalid"],
          query: ['#@ persist storage=""', "persist-query-invalid"],
@@ -116,12 +116,12 @@ const MISTAKES: Mistake[] = [
          persist: ['#@ persist nmae="t"', "persist-unknown-key"],
          materialize: ['#(materialize) nmae="t"', "materialize-unknown-key"],
          preaggregate: [
-            '#(preaggregate) grain=["category"] stroage="lake"',
-            "preaggregate-unknown-key",
+            '#(rollup) grain=["category"] stroage="lake"',
+            "rollup-unknown-key",
          ],
          v1Preaggregate: [
             '#@ preaggregate grain="category" stroage="lake"',
-            "preaggregate-unknown-key",
+            "rollup-unknown-key",
          ],
          view: ['#@ persist nmae="t"', "persist-unknown-key"],
          query: ['#@ persist nmae="t"', "persist-unknown-key"],
@@ -136,12 +136,12 @@ const MISTAKES: Mistake[] = [
             "materialize-unknown-key",
          ],
          preaggregate: [
-            '#(preaggregate) grain=["category"] freshness.windw="1h"',
-            "preaggregate-unknown-key",
+            '#(rollup) grain=["category"] freshness.windw="1h"',
+            "rollup-unknown-key",
          ],
          v1Preaggregate: [
             '#@ preaggregate { grain="category" stroage="lake" }',
-            "preaggregate-unknown-key",
+            "rollup-unknown-key",
          ],
          view: ['#@ persist { nmae="t" }', "persist-unknown-key"],
          query: ['#@ persist { nmae="t" }', "persist-unknown-key"],
@@ -152,13 +152,10 @@ const MISTAKES: Mistake[] = [
       lines: {
          persist: ['#@ persist name="t', "persist-unparseable"],
          materialize: ['#(materialize) name="t', "materialize-unparseable"],
-         preaggregate: [
-            '#(preaggregate) grain=["category"',
-            "preaggregate-unparseable",
-         ],
+         preaggregate: ['#(rollup) grain=["category"', "rollup-unparseable"],
          v1Preaggregate: [
             '#@ preaggregate grain="category',
-            "preaggregate-unparseable",
+            "rollup-unparseable",
          ],
          view: ['#@ persist name="t', "persist-view-unparseable"],
          query: ['#@ persist name="t', "persist-query-unparseable"],
@@ -174,12 +171,12 @@ const MISTAKES: Mistake[] = [
             "materialize-invalid",
          ],
          preaggregate: [
-            '#(preaggregate) grain=["category"] storage=@env.LAKE',
-            "preaggregate-invalid",
+            '#(rollup) grain=["category"] storage=@env.LAKE',
+            "rollup-invalid",
          ],
          v1Preaggregate: [
             '#@ preaggregate grain="category" storage=@env.LAKE',
-            "preaggregate-invalid",
+            "rollup-invalid",
          ],
          view: ["#@ persist name=@env.TABLE", "persist-view-invalid"],
          query: ["#@ persist name=@env.TABLE", "persist-query-invalid"],
@@ -196,12 +193,12 @@ const MISTAKES: Mistake[] = [
          // A rollup's name= leaf starts its table's name, which Publisher
          // ends with its own hash: a leaf already ending so is invalid.
          preaggregate: [
-            '#(preaggregate) grain=["category"] name="t__p0123abcd"',
-            "preaggregate-invalid",
+            '#(rollup) grain=["category"] name="t__p0123abcd"',
+            "rollup-invalid",
          ],
          v1Preaggregate: [
             '#@ preaggregate grain="category" name="t__p0123abcd"',
-            "preaggregate-invalid",
+            "rollup-invalid",
          ],
          view: ['#@ persist name="t__p0123abcd"', "persist-view-invalid"],
          query: ['#@ persist name="t__p0123abcd"', "persist-query-invalid"],
@@ -549,7 +546,7 @@ source: orders is ${ROWS} extend {
 }
 `);
             const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-               (w) => w.code === "preaggregate-not-built",
+               (w) => w.code === "rollup-not-built",
             );
             expect(warnings.map((w) => [w.subject, w.severity])).toEqual([
                ["orders", "warn"],

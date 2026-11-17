@@ -66,7 +66,7 @@ source: ci_open is ${CI} extend { primary_key: id; where: region != $EXCL }
 
 source: ci_roll is ${CI} extend {
   where: region != $EXCL
-  #(preaggregate) grain=["category", "region"] storage="${LAKE}"
+  #(rollup) grain=["category", "region"] storage="${LAKE}"
   measure: total is amount.sum()
 }
 
@@ -81,7 +81,7 @@ source: bin_m_eq is ${BIN} extend { primary_key: id }
 
 source: bin_roll is ${BIN} extend {
   where: region != $EXCL
-  #(preaggregate) grain=["category", "region"] storage="${LAKE}"
+  #(rollup) grain=["category", "region"] storage="${LAKE}"
   measure: total is amount.sum()
 }
 
@@ -97,7 +97,7 @@ source: tz_m_eq is duckdb.sql("""
 source: plain is ${BIN} extend { primary_key: id }
 #(access_filter) region = $REGION
 source: comp_own is compose(plain, plain extend { dimension: x is 1 }) extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: total is amount.sum()
 }
 `;

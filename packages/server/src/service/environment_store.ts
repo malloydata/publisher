@@ -1037,7 +1037,7 @@ export class EnvironmentStore
       // Re-establish serve routing when a package loads, from its latest
       // successful materialization — so serving survives a restart, not only
       // a fresh build. The full entry map is returned; the environment splits
-      // it by tier (colocated + storage=) in rebindServeBindingsFromLocalStore.
+      // it by tier (database + storage=) in rebindServeBindingsFromLocalStore.
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(

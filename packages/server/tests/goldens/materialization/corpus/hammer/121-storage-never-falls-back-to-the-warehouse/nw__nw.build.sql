@@ -15,8 +15,8 @@ FROM public.nw_orders as base
 GROUP BY 1
 ORDER BY 2 desc NULLS LAST
 
--- ==== source colocated_daily
--- sourceID: colocated_daily@<hammer>/nw/nw.malloy
+-- ==== source database_daily
+-- sourceID: database_daily@<hammer>/nw/nw.malloy
 -- connection: orders_pg
 -- sourceEntityId: de1fb34ea9ae01a3dc662c160fd9d1d3d49299db910cc3550c817fd8a31f51f1
 -- compiler key: de1fb34ea9ae01a3dc662c160fd9d1d3d49299db910cc3550c817fd8a31f51f1 (the sourceEntityId)

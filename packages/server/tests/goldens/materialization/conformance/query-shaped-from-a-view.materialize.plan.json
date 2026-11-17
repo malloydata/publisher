@@ -127,7 +127,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "from_view",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

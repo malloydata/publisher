@@ -319,7 +319,7 @@ const pairMeasures = `  measure:
 describe.skipIf(!url)(
    "a published version serves a pair table's counts through the inlined join, after its run's rebind",
    () => {
-      // `flights` is stored and `flights_co` colocated, over the same rows;
+      // `flights` is stored and `flights_co` database, over the same rows;
       // `flights_dup`'s leaf holds segment 20 twice, the same row, so its
       // check fails.
       const MODEL = `source: segs is warehouse.table('public.segs') extend {
@@ -419,7 +419,7 @@ ${pairMeasures}
          expect(served.servedFrom).toBe("storage");
       });
 
-      it("serves the same counts from the colocated pair table", async () => {
+      it("serves the same counts from the database pair table", async () => {
          const served = await f.query(
             byCarrier("flights_co", "flight_count, seg_n, seg_ids, seg_total"),
          );
@@ -590,7 +590,7 @@ describe.skipIf(!url)(
       // flight_id, its key, which must be unique.
       const MODEL = `source: crew is warehouse.table('public.crew') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"] storage="lake"
+  #(rollup) grain=["flight_id"] storage="lake"
   measure: crew_size is size.sum()
 }
 
@@ -654,7 +654,7 @@ describe.skipIf(!url)(
       // `segs`'s rollup through a join keyed on its primary key.
       const MODEL = `source: segs is warehouse.table('public.segs') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"] storage="lake"
+  #(rollup) grain=["flight_id"] storage="lake"
   measure: seg_miles is miles.sum()
 }
 

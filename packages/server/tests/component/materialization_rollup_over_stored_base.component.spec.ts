@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A colocated rollup over a colocated `#@ persist` base builds from the
+ * A database rollup over a database `#@ persist` base builds from the
  * base's stored table when the run holds it, rather than from the warehouse,
  * and stores the same rows. End to end through a real Environment and
  * MaterializationService on DuckDB:
@@ -98,7 +98,7 @@ type Entry = {
    origin?: string;
 };
 
-describe("a colocated rollup over a colocated #@ persist base", () => {
+describe("a database rollup over a database #@ persist base", () => {
    let root: string;
    let envPath: string;
    let db: DuckDBConnection;
@@ -189,7 +189,7 @@ describe("a colocated rollup over a colocated #@ persist base", () => {
    const rollupOf = (m: Materialization, base: string) => {
       const hit = entries(m).find(
          (e) =>
-            e.origin === "preaggregate" &&
+            e.origin === "rollup" &&
             e.sourceName.startsWith(`${base}__rollup__`),
       );
       if (!hit) throw new Error(`no rollup of ${base}`);
@@ -315,7 +315,7 @@ describe("a colocated rollup over a colocated #@ persist base", () => {
       await setUp();
       const pkg = await env.getPackage(parsePackageName(PKG), false);
       const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
-         (s) => s.origin === "preaggregate" && s.name.startsWith("daily__"),
+         (s) => s.origin === "rollup" && s.name.startsWith("daily__"),
       )!.name;
       const m = await build({ sourceNames: [rollupName] });
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);

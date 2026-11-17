@@ -118,7 +118,7 @@ export function buildTierOf(
 ): BuildTier {
    return instruction.destination && getPersistStorageMode() !== "off"
       ? "storage"
-      : "colocated";
+      : "database";
 }
 
 /**

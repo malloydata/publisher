@@ -9,8 +9,8 @@
  * tier, v1 or not, and the switches is a row, written against the code as it
  * was before the gate-keeping policy became one table, so that change must
  * leave every row as it is. Rows changed since, by maintainer decision:
- * colocated `#(materialize)` keeps its own row-level gate under G3 with the
- * gated-sources switch off, as v1 colocated does, and so does a `storage=`
+ * database `#(materialize)` keeps its own row-level gate under G3 with the
+ * gated-sources switch off, as v1 database does, and so does a `storage=`
  * table, v1 or `#(materialize)`, on the same conditions (a maintainer-approved
  * exception made ahead of the question-14 review, for consistency). A
  * `storage=` table of an ungated source reached only through a gated entry
@@ -106,9 +106,9 @@ source: pair_sto is ${ROWS} extend {
 
 GATE
 source: roll is ${ROWS} extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: total_col is amount.sum()
-  #(preaggregate) grain=["category", "region"] storage="lake"
+  #(rollup) grain=["category", "region"] storage="lake"
   measure: total_sto is amount.sum()
 }
 
@@ -254,112 +254,110 @@ afterAll(() => {
 /** Plan and serve verdict, per gate shape and switches: see the header. */
 const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
    "a gate on the declared source, materialize on, gated sources on": {
-      mat_col: "planned | colocated | not_built",
+      mat_col: "planned | database | not_built",
       mat_sto: "planned | storage | not_built",
-      pair_col: "planned | colocated | not_built",
+      pair_col: "planned | database | not_built",
       pair_sto: "planned | storage | not_built",
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll.total_sto": "refused access_filter | colocated | live refused",
-      roll__rollup__category_region__7617040b:
-         "planned | colocated | not_built",
-      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
-      views__by_region_col__view: "planned | colocated | not_built",
+      "roll.total_sto": "refused access_filter | storage | live refused",
+      roll__rollup__category_region__7617040b: "planned | database | not_built",
+      roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
+      views__by_region_col__view: "planned | database | not_built",
       views__by_region_sto__view:
          "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize on, gated sources off": {
-      mat_col: "planned | colocated | not_built",
+      mat_col: "planned | database | not_built",
       mat_sto: "planned | storage | not_built",
-      pair_col: "planned | colocated | not_built",
+      pair_col: "planned | database | not_built",
       pair_sto: "planned | storage | not_built",
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
-      // G3 for a colocated rollup: the base's own gate, proven on its grain.
-      roll__rollup__category_region__7617040b:
-         "planned | colocated | not_built",
-      "roll.total_sto": "refused access_filter | colocated | live refused",
-      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      // G3 for a database rollup: the base's own gate, proven on its grain.
+      roll__rollup__category_region__7617040b: "planned | database | not_built",
+      "roll.total_sto": "refused access_filter | storage | live refused",
+      roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
       views__by_region_col__view:
-         "refused access_filter | colocated | live refused",
+         "refused access_filter | database | live refused",
       views__by_region_sto__view:
          "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources on": {
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
-      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
       views__by_region_col__view:
-         "refused materialization_off | colocated | live refused",
+         "refused materialization_off | database | live refused",
       views__by_region_sto__view:
          "refused materialization_off | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources off": {
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
-      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      roll_v1__rollup__region__b3ca2623: "planned | database | not_built",
       views__by_region_col__view:
-         "refused materialization_off | colocated | live refused",
+         "refused materialization_off | database | live refused",
       views__by_region_sto__view:
          "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize on, gated sources on": {
-      mat_col: "planned | colocated | not_built",
+      mat_col: "planned | database | not_built",
       mat_sto: "planned | storage | not_built",
-      pair_col: "planned | colocated | not_built",
+      pair_col: "planned | database | not_built",
       pair_sto: "planned | storage | not_built",
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
       roll__rollup__category_region__7617040b:
-         "planned | colocated | live row_level_gate",
+         "planned | database | live row_level_gate",
       roll__rollup__category_region__b1b70c25:
          "planned | storage | live row_level_gate",
       roll_v1__rollup__region__b3ca2623:
-         "planned | colocated | live row_level_gate",
-      secure_persist_col: "planned | colocated | not_built",
+         "planned | database | live row_level_gate",
+      secure_persist_col: "planned | database | not_built",
       secure_persist_sto: "planned | storage | not_built",
-      views__by_region_col__view: "planned | colocated | not_built",
+      views__by_region_col__view: "planned | database | not_built",
       views__by_region_sto__view: "planned | storage | not_built",
    },
    "a gate above it, materialize on, gated sources off": {
-      mat_col: "planned | colocated | not_built",
+      mat_col: "planned | database | not_built",
       mat_sto: "planned | storage | live row_level_gate",
-      pair_col: "planned | colocated | not_built",
+      pair_col: "planned | database | not_built",
       pair_sto: "planned | storage | live row_level_gate",
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
       roll__rollup__category_region__7617040b:
-         "planned | colocated | live row_level_gate",
+         "planned | database | live row_level_gate",
       roll__rollup__category_region__b1b70c25:
          "planned | storage | live row_level_gate",
       roll_v1__rollup__region__b3ca2623:
-         "planned | colocated | live row_level_gate",
-      secure_persist_col: "planned | colocated | not_built",
+         "planned | database | live row_level_gate",
+      secure_persist_col: "planned | database | not_built",
       secure_persist_sto: "planned | storage | not_built",
-      views__by_region_col__view: "planned | colocated | not_built",
+      views__by_region_col__view: "planned | database | not_built",
       views__by_region_sto__view: "planned | storage | live row_level_gate",
    },
    "a gate above it, materialize off, gated sources on": {
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
       roll_v1__rollup__region__b3ca2623:
-         "planned | colocated | live row_level_gate",
-      secure_persist_col: "planned | colocated | not_built",
+         "planned | database | live row_level_gate",
+      secure_persist_col: "planned | database | not_built",
       secure_persist_sto: "planned | storage | not_built",
       views__by_region_col__view:
-         "refused materialization_off | colocated | live refused",
+         "refused materialization_off | database | live refused",
       views__by_region_sto__view:
          "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize off, gated sources off": {
-      persist_col: "planned | colocated | not_built",
+      persist_col: "planned | database | not_built",
       persist_sto: "planned | storage | not_built",
       roll_v1__rollup__region__b3ca2623:
-         "planned | colocated | live row_level_gate",
-      secure_persist_col: "planned | colocated | not_built",
+         "planned | database | live row_level_gate",
+      secure_persist_col: "planned | database | not_built",
       secure_persist_sto: "planned | storage | not_built",
       views__by_region_col__view:
-         "refused materialization_off | colocated | live refused",
+         "refused materialization_off | database | live refused",
       views__by_region_sto__view:
          "refused materialization_off | storage | live refused",
    },
@@ -394,140 +392,140 @@ describe("gate keeping at plan and at the serve verdict, on a package load", () 
 /** The plan's own predicates, per kind, tier, v1 or not, and switches. */
 const PLAN_PREDICATES: Record<string, Record<string, boolean>> = {
    "materialize on, gated sources on, storage rollups not reviewed": {
-      "persist (v1), colocated": false,
+      "persist (v1), database": false,
       "persist (v1), storage": true,
       "persist (v1), storage, a gate not its own": false,
       "persist (v1), storage, an inherited row filter": false,
-      "materialize, colocated": true,
-      "materialize, colocated, an inherited row filter": false,
-      "materialize, colocated, a gate not row-level": false,
-      "materialize, colocated, a gate not its own": false,
+      "materialize, database": true,
+      "materialize, database, an inherited row filter": false,
+      "materialize, database, a gate not row-level": false,
+      "materialize, database, a gate not its own": false,
       "materialize, storage": true,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
-      "rollup, colocated": true,
+      "rollup, database": true,
       "rollup, storage": false,
-      "rollup, colocated, ungated base": false,
-      "rollup (v1), colocated": false,
+      "rollup, database, ungated base": false,
+      "rollup (v1), database": false,
    },
    "materialize on, gated sources on, storage rollups reviewed": {
-      "persist (v1), colocated": false,
+      "persist (v1), database": false,
       "persist (v1), storage": true,
       "persist (v1), storage, a gate not its own": false,
       "persist (v1), storage, an inherited row filter": false,
-      "materialize, colocated": true,
-      "materialize, colocated, an inherited row filter": false,
-      "materialize, colocated, a gate not row-level": false,
-      "materialize, colocated, a gate not its own": false,
+      "materialize, database": true,
+      "materialize, database, an inherited row filter": false,
+      "materialize, database, a gate not row-level": false,
+      "materialize, database, a gate not its own": false,
       "materialize, storage": true,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
-      "rollup, colocated": true,
+      "rollup, database": true,
       "rollup, storage": true,
-      "rollup, colocated, ungated base": false,
-      "rollup (v1), colocated": false,
+      "rollup, database, ungated base": false,
+      "rollup (v1), database": false,
    },
    "materialize on, gated sources off, storage rollups not reviewed": {
-      "persist (v1), colocated": false,
+      "persist (v1), database": false,
       "persist (v1), storage": true,
       "persist (v1), storage, a gate not its own": false,
       "persist (v1), storage, an inherited row filter": false,
-      "materialize, colocated": true,
-      "materialize, colocated, an inherited row filter": false,
-      "materialize, colocated, a gate not row-level": false,
-      "materialize, colocated, a gate not its own": false,
+      "materialize, database": true,
+      "materialize, database, an inherited row filter": false,
+      "materialize, database, a gate not row-level": false,
+      "materialize, database, a gate not its own": false,
       "materialize, storage": true,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
-      "rollup, colocated": false,
+      "rollup, database": false,
       "rollup, storage": false,
-      "rollup, colocated, ungated base": false,
-      "rollup (v1), colocated": false,
+      "rollup, database, ungated base": false,
+      "rollup (v1), database": false,
    },
    "materialize on, gated sources off, storage rollups reviewed": {
-      "persist (v1), colocated": false,
+      "persist (v1), database": false,
       "persist (v1), storage": true,
       "persist (v1), storage, a gate not its own": false,
       "persist (v1), storage, an inherited row filter": false,
-      "materialize, colocated": true,
-      "materialize, colocated, an inherited row filter": false,
-      "materialize, colocated, a gate not row-level": false,
-      "materialize, colocated, a gate not its own": false,
+      "materialize, database": true,
+      "materialize, database, an inherited row filter": false,
+      "materialize, database, a gate not row-level": false,
+      "materialize, database, a gate not its own": false,
       "materialize, storage": true,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
-      "rollup, colocated": false,
+      "rollup, database": false,
       "rollup, storage": false,
-      "rollup, colocated, ungated base": false,
-      "rollup (v1), colocated": false,
+      "rollup, database, ungated base": false,
+      "rollup (v1), database": false,
    },
    "materialize off, gated sources on, storage rollups not reviewed": {
-      "persist (v1), colocated": false,
+      "persist (v1), database": false,
       "persist (v1), storage": true,
       "persist (v1), storage, a gate not its own": false,
       "persist (v1), storage, an inherited row filter": false,
-      "materialize, colocated": false,
-      "materialize, colocated, an inherited row filter": false,
-      "materialize, colocated, a gate not row-level": false,
-      "materialize, colocated, a gate not its own": false,
+      "materialize, database": false,
+      "materialize, database, an inherited row filter": false,
+      "materialize, database, a gate not row-level": false,
+      "materialize, database, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
-      "rollup, colocated": true,
+      "rollup, database": true,
       "rollup, storage": false,
-      "rollup, colocated, ungated base": false,
-      "rollup (v1), colocated": false,
+      "rollup, database, ungated base": false,
+      "rollup (v1), database": false,
    },
    "materialize off, gated sources on, storage rollups reviewed": {
-      "persist (v1), colocated": false,
+      "persist (v1), database": false,
       "persist (v1), storage": true,
       "persist (v1), storage, a gate not its own": false,
       "persist (v1), storage, an inherited row filter": false,
-      "materialize, colocated": false,
-      "materialize, colocated, an inherited row filter": false,
-      "materialize, colocated, a gate not row-level": false,
-      "materialize, colocated, a gate not its own": false,
+      "materialize, database": false,
+      "materialize, database, an inherited row filter": false,
+      "materialize, database, a gate not row-level": false,
+      "materialize, database, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
-      "rollup, colocated": true,
+      "rollup, database": true,
       "rollup, storage": true,
-      "rollup, colocated, ungated base": false,
-      "rollup (v1), colocated": false,
+      "rollup, database, ungated base": false,
+      "rollup (v1), database": false,
    },
    "materialize off, gated sources off, storage rollups not reviewed": {
-      "persist (v1), colocated": false,
+      "persist (v1), database": false,
       "persist (v1), storage": true,
       "persist (v1), storage, a gate not its own": false,
       "persist (v1), storage, an inherited row filter": false,
-      "materialize, colocated": false,
-      "materialize, colocated, an inherited row filter": false,
-      "materialize, colocated, a gate not row-level": false,
-      "materialize, colocated, a gate not its own": false,
+      "materialize, database": false,
+      "materialize, database, an inherited row filter": false,
+      "materialize, database, a gate not row-level": false,
+      "materialize, database, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
-      "rollup, colocated": false,
+      "rollup, database": false,
       "rollup, storage": false,
-      "rollup, colocated, ungated base": false,
-      "rollup (v1), colocated": false,
+      "rollup, database, ungated base": false,
+      "rollup (v1), database": false,
    },
    "materialize off, gated sources off, storage rollups reviewed": {
-      "persist (v1), colocated": false,
+      "persist (v1), database": false,
       "persist (v1), storage": true,
       "persist (v1), storage, a gate not its own": false,
       "persist (v1), storage, an inherited row filter": false,
-      "materialize, colocated": false,
-      "materialize, colocated, an inherited row filter": false,
-      "materialize, colocated, a gate not row-level": false,
-      "materialize, colocated, a gate not its own": false,
+      "materialize, database": false,
+      "materialize, database, an inherited row filter": false,
+      "materialize, database, a gate not row-level": false,
+      "materialize, database, a gate not its own": false,
       "materialize, storage": false,
       "materialize, storage, an inherited row filter": false,
       "materialize, storage, a gate not row-level": false,
-      "rollup, colocated": false,
+      "rollup, database": false,
       "rollup, storage": false,
-      "rollup, colocated, ungated base": false,
-      "rollup (v1), colocated": false,
+      "rollup, database, ungated base": false,
+      "rollup (v1), database": false,
    },
 };
 
@@ -542,7 +540,7 @@ describe("gate keeping at plan, per kind and tier, with the storage-rollup revie
       tables: { [ID]: plan },
    });
    const inputs: Record<string, Parameters<typeof gateEnforcedAtRead>[1]> = {
-      "persist (v1), colocated": table({ kind: "persist", gate }),
+      "persist (v1), database": table({ kind: "persist", gate }),
       "persist (v1), storage": table({ kind: "persist", gate }),
       "persist (v1), storage, an inherited row filter": table({
          kind: "persist",
@@ -552,22 +550,22 @@ describe("gate keeping at plan, per kind and tier, with the storage-rollup revie
          kind: "persist",
          gate: { ...gate, attributed: false },
       }),
-      "materialize, colocated": table({
+      "materialize, database": table({
          kind: "materialize",
          materialize: {},
          gate,
       }),
-      "materialize, colocated, an inherited row filter": table({
+      "materialize, database, an inherited row filter": table({
          kind: "materialize",
          materialize: {},
          gate: { ...gate, inheritedRowFilter: true },
       }),
-      "materialize, colocated, a gate not row-level": table({
+      "materialize, database, a gate not row-level": table({
          kind: "materialize",
          materialize: {},
          gate: { classification: "unclassified", attributed: true },
       }),
-      "materialize, colocated, a gate not its own": table({
+      "materialize, database, a gate not its own": table({
          kind: "materialize",
          materialize: {},
          gate: { ...gate, attributed: false },
@@ -587,7 +585,7 @@ describe("gate keeping at plan, per kind and tier, with the storage-rollup revie
          materialize: { persist: { storage: "lake" } },
          gate: { classification: "unclassified", attributed: true },
       }),
-      "rollup, colocated": table({
+      "rollup, database": table({
          kind: "rollup",
          rollup: { variant: true, baseGated: true },
       }),
@@ -595,11 +593,11 @@ describe("gate keeping at plan, per kind and tier, with the storage-rollup revie
          kind: "rollup",
          rollup: { variant: true, baseGated: true, storage: "lake" },
       }),
-      "rollup, colocated, ungated base": table({
+      "rollup, database, ungated base": table({
          kind: "rollup",
          rollup: { variant: true, baseGated: false },
       }),
-      "rollup (v1), colocated": table({
+      "rollup (v1), database": table({
          kind: "rollup",
          rollup: { baseGated: true },
       }),
@@ -638,95 +636,95 @@ describe("gate keeping at plan, per kind and tier, with the storage-rollup revie
 
 /** The router under an entry-point veto, per leg, tier read, and switches. */
 const ROUTER: Record<string, Record<string, string>> = {
-   "materialize on, gated sources on, the colocated rule on (as every model passes it)":
+   "materialize on, gated sources on, the database rule on (as every model passes it)":
       {
-         "view, colocated tables": "used, past the gate",
+         "view, database tables": "used, past the gate",
          "view, storage tables": "used, past the gate",
-         "view, colocated and storage tables": "used, past the gate",
+         "view, database and storage tables": "used, past the gate",
          "view, storage tables kept past their own gate": "used, past the gate",
          "view, a kept and another storage table": "used, past the gate",
          "view, no table": "used, past the gate",
-         "rollup, colocated tables": "used, past the gate",
+         "rollup, database tables": "used, past the gate",
          "rollup, storage tables": "used, past the gate",
-         "rollup, colocated and storage tables": "used, past the gate",
+         "rollup, database and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
             "used, past the gate",
          "rollup, a kept and another storage table": "used, past the gate",
          "rollup, no table": "used, past the gate",
-         "served, colocated tables": "used, past the gate",
+         "served, database tables": "used, past the gate",
          "served, storage tables": "used, past the gate",
-         "served, colocated and storage tables": "used, past the gate",
+         "served, database and storage tables": "used, past the gate",
          "served, storage tables kept past their own gate":
             "used, past the gate",
          "served, a kept and another storage table": "used, past the gate",
          "served, no table": "used, past the gate",
       },
-   "materialize on, gated sources off, the colocated rule on (as every model passes it)":
+   "materialize on, gated sources off, the database rule on (as every model passes it)":
       {
-         "view, colocated tables": "skipped row_level_gate",
+         "view, database tables": "skipped row_level_gate",
          "view, storage tables": "skipped row_level_gate",
-         "view, colocated and storage tables": "skipped row_level_gate",
+         "view, database and storage tables": "skipped row_level_gate",
          "view, storage tables kept past their own gate":
             "skipped row_level_gate",
          "view, a kept and another storage table": "skipped row_level_gate",
          "view, no table": "skipped row_level_gate",
-         "rollup, colocated tables": "used, past the gate",
+         "rollup, database tables": "used, past the gate",
          "rollup, storage tables": "skipped row_level_gate",
-         "rollup, colocated and storage tables": "used, past the gate",
+         "rollup, database and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
             "skipped row_level_gate",
          "rollup, a kept and another storage table": "skipped row_level_gate",
          "rollup, no table": "used, past the gate",
-         "served, colocated tables": "used, past the gate",
+         "served, database tables": "used, past the gate",
          "served, storage tables": "skipped row_level_gate",
-         "served, colocated and storage tables": "skipped row_level_gate",
+         "served, database and storage tables": "skipped row_level_gate",
          "served, storage tables kept past their own gate":
             "used, past the gate",
          "served, a kept and another storage table": "skipped row_level_gate",
          "served, no table": "skipped row_level_gate",
       },
-   "materialize off, gated sources on, the colocated rule on (as every model passes it)":
+   "materialize off, gated sources on, the database rule on (as every model passes it)":
       {
-         "view, colocated tables": "used, past the gate",
+         "view, database tables": "used, past the gate",
          "view, storage tables": "used, past the gate",
-         "view, colocated and storage tables": "used, past the gate",
+         "view, database and storage tables": "used, past the gate",
          "view, storage tables kept past their own gate": "used, past the gate",
          "view, a kept and another storage table": "used, past the gate",
          "view, no table": "used, past the gate",
-         "rollup, colocated tables": "used, past the gate",
+         "rollup, database tables": "used, past the gate",
          "rollup, storage tables": "used, past the gate",
-         "rollup, colocated and storage tables": "used, past the gate",
+         "rollup, database and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
             "used, past the gate",
          "rollup, a kept and another storage table": "used, past the gate",
          "rollup, no table": "used, past the gate",
-         "served, colocated tables": "used, past the gate",
+         "served, database tables": "used, past the gate",
          "served, storage tables": "used, past the gate",
-         "served, colocated and storage tables": "used, past the gate",
+         "served, database and storage tables": "used, past the gate",
          "served, storage tables kept past their own gate":
             "used, past the gate",
          "served, a kept and another storage table": "used, past the gate",
          "served, no table": "used, past the gate",
       },
-   "materialize off, gated sources off, the colocated rule on (as every model passes it)":
+   "materialize off, gated sources off, the database rule on (as every model passes it)":
       {
-         "view, colocated tables": "skipped row_level_gate",
+         "view, database tables": "skipped row_level_gate",
          "view, storage tables": "skipped row_level_gate",
-         "view, colocated and storage tables": "skipped row_level_gate",
+         "view, database and storage tables": "skipped row_level_gate",
          "view, storage tables kept past their own gate":
             "skipped row_level_gate",
          "view, a kept and another storage table": "skipped row_level_gate",
          "view, no table": "skipped row_level_gate",
-         "rollup, colocated tables": "used, past the gate",
+         "rollup, database tables": "used, past the gate",
          "rollup, storage tables": "skipped row_level_gate",
-         "rollup, colocated and storage tables": "used, past the gate",
+         "rollup, database and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
             "skipped row_level_gate",
          "rollup, a kept and another storage table": "skipped row_level_gate",
          "rollup, no table": "used, past the gate",
-         "served, colocated tables": "used, past the gate",
+         "served, database tables": "used, past the gate",
          "served, storage tables": "skipped row_level_gate",
-         "served, colocated and storage tables": "skipped row_level_gate",
+         "served, database and storage tables": "skipped row_level_gate",
          "served, storage tables kept past their own gate":
             "used, past the gate",
          "served, a kept and another storage table": "skipped row_level_gate",
@@ -736,10 +734,10 @@ const ROUTER: Record<string, Record<string, string>> = {
 
 describe("gate keeping at the router, under an entry-point veto", () => {
    const table = (
-      tier: "colocated" | "storage",
+      tier: "database" | "storage",
    ): {
       kind: string;
-      tier: "colocated" | "storage";
+      tier: "database" | "storage";
       sourceName: string;
       tablePath: string;
       destinationName: string;
@@ -754,9 +752,9 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       schema: [{ name: "id", type: "BIGINT" }],
    });
    const reads: Record<string, ReturnType<typeof table>[]> = {
-      "colocated tables": [table("colocated")],
+      "database tables": [table("database")],
       "storage tables": [table("storage")],
-      "colocated and storage tables": [table("colocated"), table("storage")],
+      "database and storage tables": [table("database"), table("storage")],
       // G3 on the storage tier: a table plan admitted past its own gate,
       // alone and beside one it did not admit.
       "storage tables kept past their own gate": [
@@ -824,7 +822,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
    }
 
    for (const s of SWITCHES) {
-      const label = `${switchLabel(s)}, the colocated rule on (as every model passes it)`;
+      const label = `${switchLabel(s)}, the database rule on (as every model passes it)`;
       it(label, async () => {
          const restore = installSettings({
             env: {
