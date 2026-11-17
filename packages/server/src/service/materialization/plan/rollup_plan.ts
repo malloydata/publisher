@@ -92,6 +92,7 @@ import { byReadCost } from "../domain/read_cost";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { hasFanoutJoin } from "./preaggregation_validation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
+import { rowFilterOnComposite } from "../../composite_row_filter";
 import { collectEntryPointGates } from "../../gate_classification";
 import { createHash } from "node:crypto";
 import {
@@ -105,10 +106,7 @@ import {
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
-import {
-   ACCESS_FILTER_ROUTE,
-   canonicalAuthorizeRoute,
-} from "../../authorize_routes";
+import { canonicalAuthorizeRoute } from "../../authorize_routes";
 import {
    ROLLUP_INVALID_CODE,
    DEPRECATED_PREAGGREGATE_ANNOTATION_CODE,
@@ -941,8 +939,11 @@ interface RollupFacts {
    joinUsage: ReturnType<SourceMap["fieldJoinsOf"]>;
    declaredName: string;
    gate: ReturnType<typeof gateFieldNames>;
-   /** The base is a composite source (`compose(…)`, or an extension of one). */
-   composite: boolean;
+   /**
+    * A row filter in the base's gate set was declared on a composite source,
+    * wherever the gate walk reaches it ({@link rowFilterOnComposite}).
+    */
+   compositeRowFilter: boolean;
    /** The source's rows read the current time (S25b). */
    windowed: boolean;
    /**
@@ -1126,7 +1127,7 @@ function rollupFactsOf(
       scope,
       joinsRead,
       dialect: typeof def.dialect === "string" ? def.dialect : undefined,
-      composite: (def as { type?: unknown }).type === "composite",
+      compositeRowFilter: rowFilterOnComposite(def, map.model()),
       unservable,
    };
 }
@@ -1257,11 +1258,11 @@ function declarationRefusal(
    // A composite source's own row filter is not grafted on live (the
    // filter binding guard denies every caller), so a rollup of it would
    // answer what live refuses: it is not built.
-   if (gate.declared && gate.rowFilter && facts.composite) {
+   if (gate.declared && facts.compositeRowFilter) {
       return unservable(
          gate.reason.base,
          decl,
-         "the source is a composite with a row-level gate (`#(access_filter)`), which live refuses every caller, so no rollup of it is read",
+         "the source reads a row-level gate (`#(access_filter)`) declared on a composite source, which live refuses every caller, so no rollup of it is read",
       );
    }
    // Row 21: a gated base's rollup is built only where a query can read
@@ -1564,8 +1565,6 @@ function gateFieldNames(
    dimensions: string[];
    unkeepable: string[];
    declared: boolean;
-   /** A gate is a row filter (`#(access_filter)`), not a lock. */
-   rowFilter: boolean;
    joinGated: boolean;
    /** Every gate is the base's own: none inherited, none from a derivation. */
    own: boolean;
@@ -1617,9 +1616,6 @@ function gateFieldNames(
       dimensions: [...dimensions].sort(byCodepoint),
       unkeepable: [...unkeepable].sort(byCodepoint),
       declared: entries.length > 0,
-      rowFilter: entries.some(
-         (e) => canonicalAuthorizeRoute(e.route) === ACCESS_FILTER_ROUTE,
-      ),
       joinGated,
       reason: {
          base: gateRefusalReason(entries.map((e) => e.route)),

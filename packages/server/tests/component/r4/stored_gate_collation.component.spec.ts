@@ -100,6 +100,19 @@ source: comp_own is compose(plain, plain extend { dimension: x is 1 }) extend {
   #(rollup) grain=["category", "region"]
   measure: total is amount.sum()
 }
+
+// A row filter declared on a composite, reached through an extension or a
+// query-shaped source over it: refused live for every caller too.
+#(access_filter) region = $REGION
+source: gated_comp is compose(plain, plain extend { dimension: x is 1 })
+source: ext_of_gated_comp is gated_comp extend {
+  #(rollup) grain=["category", "region"]
+  measure: total is amount.sum()
+}
+source: q_of_gated_comp is gated_comp -> { select: id, amount, category, region } extend {
+  #(rollup) grain=["category", "region"]
+  measure: total is amount.sum()
+}
 `;
 
 const byRegion = (s: string) =>
@@ -184,6 +197,18 @@ const CASES: Case[] = [
       malloy: "run: tz_m_eq -> { select: id; order_by: id }",
       callers: [{ AT: "2026-01-04 04:00:00" }, { AT: "2026-01-05 06:00:00" }],
       served: "live",
+   },
+   {
+      name: "an extension of a composite with a row filter",
+      malloy:
+         "run: ext_of_gated_comp -> { group_by: category; aggregate: total; order_by: category }",
+      callers: [{ REGION: "east" }, { REGION: "west" }],
+   },
+   {
+      name: "a query-shaped source over a composite with a row filter",
+      malloy:
+         "run: q_of_gated_comp -> { group_by: category; aggregate: total; order_by: category }",
+      callers: [{ REGION: "east" }, { REGION: "west" }],
    },
    {
       name: "a composite with its own row filter",

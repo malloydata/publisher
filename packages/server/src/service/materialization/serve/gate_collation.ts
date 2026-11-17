@@ -26,6 +26,12 @@
  * An equality-only comparison holds on the copy under `binary` or
  * `deterministic`; anything else only under `binary`. Fail closed: what this
  * cannot read is `unknown`, and the answer is then not kept (live answers).
+ *
+ * When it is read: the source side once per compiled model (a reload or a
+ * rebind compiles a new one, which reads it again), and for a DuckDB
+ * instance once per query SQL, so a source altered in place is read again
+ * only after a reload; the stored side on every answer, since a stored
+ * table is the one place altered after Publisher built it.
  */
 
 import type {
@@ -270,6 +276,14 @@ function pgRows(connection: Connection, sql: string): Promise<Rows["rows"]> {
  * definition of any table or view the instance holds (a column's collation
  * is not otherwise readable).
  */
+/**
+ * How many user definitions in the instance name a `COLLATE`: tables, views,
+ * and macros (a macro can return a collated value to a view or a query).
+ * Attached databases' definitions are listed too.
+ */
+const DUCKDB_COLLATE_DEFINITIONS =
+   "SELECT (SELECT count(*) FROM duckdb_tables() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_views() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_functions() WHERE NOT internal AND function_type IN ('macro', 'table_macro') AND (macro_definition IS NULL OR macro_definition ILIKE '%collate%')) AS n";
+
 export async function duckdbCollation(
    connection: Connection,
    sql: string,
@@ -280,17 +294,37 @@ export async function duckdbCollation(
       "SELECT current_setting('default_collation') AS c",
    );
    if (String(setting?.c ?? "").trim() !== "") return "unknown";
-   const [defs] = await rows(
-      connection,
-      "SELECT (SELECT count(*) FROM duckdb_tables() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_views() WHERE NOT internal AND sql ILIKE '%collate%') AS n",
-   );
+   const [defs] = await rows(connection, DUCKDB_COLLATE_DEFINITIONS);
    return Number(defs?.n ?? 1) === 0 ? "binary" : "unknown";
 }
 
 /**
+ * A Postgres collation row, judged: the database default by the database's
+ * own collation and locale provider (an ICU default is deterministic, never
+ * binary, whatever `datcollate` says), any other by its own row. Binary only
+ * under a libc `C` or `POSIX`.
+ */
+function postgresJudged(row: Record<string, unknown> | undefined): Collation {
+   if (!row) return "unknown";
+   const binaryName = (c: unknown) => c === "C" || c === "POSIX";
+   if (row.name === "default") {
+      return row.dbp !== "i" && binaryName(row.dbc)
+         ? "binary"
+         : "deterministic";
+   }
+   if (row.det !== true) return "unknown";
+   return row.prov === "c" && binaryName(row.cc) ? "binary" : "deterministic";
+}
+
+/** The columns {@link postgresJudged} reads, from `pg_collation c, pg_database d`. */
+const PG_COLLATION_COLUMNS =
+   "c.collname AS name, c.collisdeterministic AS det, c.collcollate AS cc, c.collprovider AS prov, d.datcollate AS dbc, to_jsonb(d) ->> 'datlocprovider' AS dbp";
+
+/**
  * A Postgres column's collation, read from the source's own SQL
- * (`pg_collation_for`): binary under `C` or `POSIX`, deterministic under any
- * other deterministic collation, the database default included.
+ * (`pg_collation_for`, looked up by its OID): binary under a libc `C` or
+ * `POSIX`, deterministic under any other deterministic collation, the
+ * database default included.
  */
 export async function postgresCollation(
    connection: Connection,
@@ -298,24 +332,9 @@ export async function postgresCollation(
 ): Promise<Collation> {
    const [row] = await pgRows(
       connection,
-      `SELECT pg_collation_for((SELECT q.probe_value FROM (${sql}) q LIMIT 1)) AS coll, (SELECT datcollate FROM pg_database WHERE datname = current_database()) AS dbc`,
+      `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.oid = (pg_collation_for((SELECT q.probe_value FROM (${sql}) q LIMIT 1)))::regcollation AND d.datname = current_database()`,
    );
-   const coll = row?.coll;
-   if (typeof coll !== "string") return "unknown";
-   const binaryName = (c: unknown) => c === "C" || c === "POSIX";
-   if (coll === "default" || coll === '"default"') {
-      return binaryName(row?.dbc) ? "binary" : "deterministic";
-   }
-   const name = coll.replace(/^"(.*)"$/, "$1");
-   const [c] = await pgRows(
-      connection,
-      `SELECT collisdeterministic AS det, collcollate AS cc FROM pg_collation WHERE collname = '${name.replace(/'/g, "''")}' LIMIT 1`,
-   );
-   if (!c) return "unknown";
-   if (c.det !== true) return "unknown";
-   return binaryName(c.cc) || name === "C" || name === "POSIX"
-      ? "binary"
-      : "deterministic";
+   return postgresJudged(row);
 }
 
 /** A table an answer read, as the stored-side check reads it. */
@@ -420,14 +439,13 @@ export async function postgresTableCollation(
    tablePath: string,
 ): Promise<Collation> {
    const path = tablePath.replace(/'/g, "''");
-   const [row] = await pgRows(
+   const columns = await pgRows(
       connection,
-      `SELECT bool_and(c.collisdeterministic) AS det, bool_and(c.collname IN ('C', 'POSIX') OR (c.collname = 'default' AND (SELECT datcollate FROM pg_database WHERE datname = current_database()) IN ('C', 'POSIX'))) AS bin, count(*) AS n FROM pg_attribute a JOIN pg_collation c ON c.oid = a.attcollation WHERE a.attrelid = '${path}'::regclass AND a.attnum > 0 AND NOT a.attisdropped`,
+      `SELECT ${PG_COLLATION_COLUMNS} FROM pg_attribute a JOIN pg_collation c ON c.oid = a.attcollation, pg_database d WHERE a.attrelid = '${path}'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND d.datname = current_database()`,
    );
-   if (!row) return "unknown";
-   if (Number(row.n ?? 0) === 0) return "binary";
-   if (row.det !== true) return "unknown";
-   return row.bin === true ? "binary" : "deterministic";
+   const judged = columns.map(postgresJudged);
+   if (judged.includes("unknown")) return "unknown";
+   return judged.includes("deterministic") ? "deterministic" : "binary";
 }
 
 /** The dialect of the source a compiled query runs on, or "" when unread. */

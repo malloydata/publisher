@@ -45,6 +45,22 @@ describe("a DuckDB source's string comparison", () => {
       }
    });
 
+   it("is unknown when a macro returns a collated value", async () => {
+      const db = new DuckDBConnection("duckdb", ":memory:");
+      try {
+         await db.runSQL("CREATE MACRO gate_ci(x) AS CAST(x AS VARCHAR) COLLATE NOCASE");
+         expect(
+            await duckdbCollation(
+               db as unknown as Connection,
+               "SELECT gate_ci('a') AS probe_value",
+            ),
+         ).toBe("unknown");
+      } finally {
+         await db.runSQL("DROP MACRO IF EXISTS gate_ci").catch(() => {});
+         await db.close();
+      }
+   });
+
    it("is unknown under an instance default_collation", async () => {
       const db = new DuckDBConnection("duckdb", ":memory:");
       try {
@@ -186,6 +202,36 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
          ),
       ).toBe("unknown");
       await pg.runSQL(`DROP TABLE gate_coll_c`);
+   });
+
+   it("judges a database created with an ICU default deterministic, never binary", async () => {
+      const icu = new PostgresConnection(
+         "pg_icu",
+         () => ({}),
+         async () => ({
+            connectionString: url!.replace(/\/[^/]*$/, "/gate_icu"),
+         }),
+      );
+      await pg
+         .runSQL(
+            `CREATE DATABASE gate_icu LOCALE_PROVIDER icu ICU_LOCALE 'und' LOCALE 'C' TEMPLATE template0`,
+         )
+         .catch(() => {});
+      try {
+         await icu.runSQL(`DROP TABLE IF EXISTS t_icu`);
+         await icu.runSQL(`CREATE TABLE t_icu (c text)`);
+         expect(
+            await postgresCollation(
+               icu as unknown as Connection,
+               `SELECT c AS probe_value FROM t_icu`,
+            ),
+         ).toBe("deterministic");
+         expect(
+            await postgresTableCollation(icu as unknown as Connection, "t_icu"),
+         ).toBe("deterministic");
+      } finally {
+         await icu.close();
+      }
    });
 
    it("reads an empty source's column too", async () => {

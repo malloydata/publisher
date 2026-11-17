@@ -19,6 +19,7 @@
  * through the answer.
  */
 
+import { rowFilterOnComposite } from "./composite_row_filter";
 import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../config";
 import {
@@ -131,6 +132,9 @@ export function variantsOf(
    let reads: Promise<GateReads | undefined> | undefined;
    const gateReadsOnce = () =>
       (reads ??= gateReadsOfQuery(facts.authorRunnable));
+   let composite: Promise<boolean> | undefined;
+   const compositeOnce = () =>
+      (composite ??= entryRowFilterOnComposite(facts.authorRunnable));
    return legs.map((leg) => {
       // A leg with no row in the gate policy (the query leg) is never tried
       // past an entry-point gate: the policy fails closed.
@@ -145,6 +149,9 @@ export function variantsOf(
             legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
          keepsContractsFor: async (answer: LegAnswer) => {
             if (gateLeg === undefined) return false;
+            // Live refuses every caller of a source whose row filter was
+            // declared on a composite: no stored answer is kept for it.
+            if (await compositeOnce()) return false;
             const tables = await withGateColumnTypes(
                answer.gateTablesRead ?? answer.tablesRead ?? [],
                gateReadsOnce,
@@ -289,6 +296,26 @@ async function assertRowScopeExact(
       throw decline(
          "the query's source scopes its rows by a column a stored table does not compare as its source does",
       );
+   }
+}
+
+/**
+ * Whether the query's entry point reads a row filter declared on a composite
+ * source ({@link rowFilterOnComposite}); a compile that cannot be read
+ * reads true.
+ */
+async function entryRowFilterOnComposite(
+   runnable: QueryMaterializer,
+): Promise<boolean> {
+   try {
+      const prepared = await readPreparedQuery(runnable);
+      const struct = resolveStructRefSource(
+         prepared.structRef as never,
+         prepared.modelDef as never,
+      );
+      return rowFilterOnComposite(struct, prepared.modelDef);
+   } catch {
+      return true;
    }
 }
 
