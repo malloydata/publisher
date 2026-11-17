@@ -160,7 +160,7 @@ describe("servingApiEnabled and adminApiEnabled", () => {
       expect(code).not.toBe(0);
       expect(output).toContain("adminApiEnabled from ");
       expect(output).toContain(
-         'expected a boolean (true/false, 1/0, yes/no or on/off), got "no"',
+         'expected true or false as a JSON boolean, or a ${VAR} reference to one, got "no"',
       );
    });
 });

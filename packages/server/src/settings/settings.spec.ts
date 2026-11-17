@@ -395,27 +395,29 @@ describe("flags", () => {
       });
    });
 
-   it("warns about a flag it does not know, naming the nearest", () => {
-      const warnings = Settings.load({
+   it("refuses a flag it does not know, naming the nearest", () => {
+      const errors = Settings.load({
          argv: ["--mcp_prot", "5000", "--server-root", "/x", "--help"],
          env: {},
          cwd: "/nonexistent",
-      }).warnings.map((warning) => warning.message);
-      expect(warnings).toEqual([
-         "Unknown flag --mcp_prot, so it is ignored. Did you mean --mcp-port?",
-         "Unknown flag --server-root, so it is ignored.",
+      })
+         .errors()
+         .map((error) => error.message);
+      expect(errors).toEqual([
+         "Unknown flag --mcp_prot. Did you mean --mcp-port?",
+         "Unknown flag --server-root.",
       ]);
    });
 
-   it("warns about a flag given without its value", () => {
-      const warnings = Settings.load({
+   it("refuses a flag given without its value", () => {
+      const errors = Settings.load({
          argv: ["--admin_port"],
          env: {},
          cwd: "/nonexistent",
-      }).warnings.map((warning) => warning.message);
-      expect(warnings).toEqual([
-         "--admin_port has no value after it, so it is ignored.",
-      ]);
+      })
+         .errors()
+         .map((error) => error.message);
+      expect(errors).toEqual(["--admin_port has no value after it."]);
    });
 
    it("lets the last of a repeated flag win, except --watch-env, which adds", () => {
@@ -478,30 +480,42 @@ describe("worker threads", () => {
    });
 });
 
-describe("step 1's rules", () => {
+describe("step 1's rules, refused from step 3", () => {
    const warningsFor = (input: Parameters<typeof withSettings>[0]) =>
       withSettings(input, () =>
          Settings.current()
             .warnings.filter((warning) => warning.kind !== "deprecated")
             .map((warning) => warning.message),
       );
+   /** Startup's errors, with the config file's path shown as `<file>`. */
+   const errorsFor = (input: Parameters<typeof withSettings>[0]) =>
+      withSettings(input, ({ serverRoot }) =>
+         Settings.current()
+            .errors()
+            .map((error) =>
+               error.message.replace(
+                  path.join(serverRoot, "publisher.config.json"),
+                  "<file>",
+               ),
+            ),
+      );
 
-   it("keeps a boolean's meaning where readers disagree, and says how to write it", () => {
-      expect(warningsFor({ env: { INITIALIZE_STORAGE: "1" } })).toEqual([
-         'initializeStorage: INITIALIZE_STORAGE=1 is read as off, as it always has been, though other boolean settings read "1" as on. Write true or false: a later release refuses "1" here.',
+   it("refuses a boolean the readers disagree on, and says how to write it", () => {
+      expect(errorsFor({ env: { INITIALIZE_STORAGE: "1" } })).toEqual([
+         'initializeStorage: INITIALIZE_STORAGE=1 is refused: it has always been read as off here, but every other boolean setting reads "1" as on. Write true or false.',
       ]);
-      withSettings({ env: { INITIALIZE_STORAGE: "1" } }, () => {
-         expect(settings.get("initializeStorage")).toBe(false);
+      // A value both readers read the same way still works under today's name.
+      withSettings({ env: { INITIALIZE_STORAGE: "true" } }, () => {
+         expect(settings.get("initializeStorage")).toBe(true);
+         expect(Settings.current().errors()).toEqual([]);
       });
    });
 
-   it("reads a negated variable's disagreement in the variable's own words", () => {
-      withSettings({ env: { DISABLE_RESPONSE_LOGGING: "yes" } }, () => {
-         expect(settings.get("logging.responseBodiesEnabled")).toBe(true);
-         expect(Settings.current().warnings[0].message).toContain(
-            "DISABLE_RESPONSE_LOGGING=yes is read as off",
-         );
-      });
+   it("refuses a negated variable's disagreement in the variable's own words", () => {
+      const [message] = errorsFor({ env: { DISABLE_RESPONSE_LOGGING: "yes" } });
+      expect(message).toContain(
+         "DISABLE_RESPONSE_LOGGING=yes is refused: it has always been read as off here",
+      );
    });
 
    it("fails a value no boolean reader accepts", () => {
@@ -529,9 +543,9 @@ describe("step 1's rules", () => {
       ]);
    });
 
-   it("warns about a file key no setting reads, with the nearest one", () => {
-      const messages = withSettings(
-         {
+   it("refuses a file key no setting reads, naming the nearest one", () => {
+      expect(
+         errorsFor({
             file: {
                adminApiEnable: false,
                query: { maxRows: 5, maxRow: 6 },
@@ -539,35 +553,26 @@ describe("step 1's rules", () => {
                environments: [],
                retrieval: {},
             },
-         },
-         ({ serverRoot }) =>
-            Settings.current().warnings.map((warning) =>
-               warning.message.replace(
-                  path.join(serverRoot, "publisher.config.json"),
-                  "<file>",
-               ),
-            ),
-      );
-      expect(messages).toEqual([
-         '<file> has "adminApiEnable", which no setting reads, so it is ignored. Did you mean "adminApiEnabled"?',
-         '<file> has "query.maxRow", which no setting reads, so it is ignored. Did you mean "query.maxRows"?',
-         '<file> has "mcp.includeHiddenFiles", which no setting reads, so it is ignored. Did you mean "mcp.includeHiddenFilesAndSources"?',
+         }),
+      ).toEqual([
+         '<file> has "adminApiEnable", which no setting reads. Did you mean "adminApiEnabled"?',
+         '<file> has "query.maxRow", which no setting reads. Did you mean "query.maxRows"?',
+         '<file> has "mcp.includeHiddenFiles", which no setting reads. Did you mean "mcp.includeHiddenFilesAndSources"?',
       ]);
    });
 
-   it("says a launch setting in the file is ignored, and what to set instead", () => {
-      const [message] = warningsFor({ file: { root: "/srv" } });
-      expect(message).toEndWith(
-         "is a variable or a flag only (PUBLISHER_ROOT, --root).",
-      );
+   it("refuses a launch setting in the file, and says what to set instead", () => {
+      expect(errorsFor({ file: { root: "/srv" } })).toEqual([
+         '"root" in <file> cannot be set there: it decides which file is read, or must not come from one, so it is a variable or a flag only (PUBLISHER_ROOT, --root).',
+      ]);
    });
 
    it("leaves a structured setting's own keys to its parser", () => {
-      expect(
-         warningsFor({
-            file: { theme: { anything: 1 }, retrieval: { indexing: {} } },
-         }),
-      ).toEqual([]);
+      const input = {
+         file: { theme: { anything: 1 }, retrieval: { indexing: {} } },
+      };
+      expect(warningsFor(input)).toEqual([]);
+      expect(errorsFor(input)).toEqual([]);
    });
 });
 
@@ -625,12 +630,6 @@ describe("every setting, under each of its names", () => {
          it(`${key} refuses a bad ${name}`, () => {
             withSettings({ env: { [name]: bad } }, () => {
                const current = Settings.current();
-               if (entry.aliases.today?.invalid === "warn") {
-                  // Kept from today: a bad value is the default, with a warning.
-                  expect(settings.get(key) as unknown).toEqual(entry.default);
-                  expect(current.warnings[0].message).toContain(name);
-                  return;
-               }
                expect(() => settings.get(key)).toThrow(`${key} from ${name}`);
                expect(current.errors().length).toBe(1);
             });
@@ -756,10 +755,13 @@ describe("step 2: the derived names", () => {
             argv: ["--admin-catalog-database", "x"],
             env: {},
             cwd: "/nonexistent",
-         }).warnings.map((warning) => warning.message),
-      ).toContain("Unknown flag --admin-catalog-database, so it is ignored.");
+         })
+            .errors()
+            .map((error) => error.message),
+      ).toContain("Unknown flag --admin-catalog-database.");
       // No secrets, but the design gives them no flag: the flag their key
-      // would derive is unknown, and the setting keeps its default.
+      // would derive is unknown, so startup fails and the setting keeps its
+      // default.
       const noFlag: Array<[SettingKey, string, string, string]> = [
          ["packageVersioning", "--package-versioning", "off", "on"],
          ["packageInlineFields", "--package-inline-fields", "off", "on"],
@@ -773,9 +775,11 @@ describe("step 2: the derived names", () => {
          });
          expect(loaded.get(key)).toBe(unchanged);
          expect(
-            loaded.warnings.some((warning) =>
-               warning.message.startsWith(`Unknown flag ${flag}`),
-            ),
+            loaded
+               .errors()
+               .some((error) =>
+                  error.message.startsWith(`Unknown flag ${flag}`),
+               ),
          ).toBe(true);
       }
    });
@@ -1088,25 +1092,21 @@ describe("step 2: the derived names", () => {
       });
    });
 
-   it("warns that a boolean flag takes no value, and names the flag that turns it off", () => {
+   it("refuses a value after a boolean flag, and names the flag that turns it off", () => {
       const loaded = Settings.load({
          argv: ["--allow-proxy-connections", "false"],
          env: {},
          cwd: "/nonexistent",
       });
-      expect(loaded.get("allow.proxyConnections")).toBe(true);
-      expect(loaded.warnings.map((warning) => warning.message)).toContain(
-         '--allow-proxy-connections takes no value, so the "false" after it is ignored and --allow-proxy-connections turns allow.proxyConnections on. To turn it off, write --no-allow-proxy-connections.',
-      );
+      expect(loaded.errors().map((error) => error.message)).toEqual([
+         '--allow-proxy-connections takes no value, so it cannot be given "false": --allow-proxy-connections alone turns allow.proxyConnections on. To turn it off, write --no-allow-proxy-connections.',
+      ]);
       const plain = Settings.load({
          argv: ["--allow-proxy-connections", "--port", "4000"],
          env: {},
          cwd: "/nonexistent",
       });
-      expect(
-         plain.warnings.some((warning) =>
-            warning.message.includes("takes no value"),
-         ),
-      ).toBe(false);
+      expect(plain.errors()).toEqual([]);
+      expect(plain.get("allow.proxyConnections")).toBe(true);
    });
 });

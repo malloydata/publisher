@@ -61,7 +61,7 @@ export const mcp = [
          "Offer includeHiddenFilesAndSources on MCP execute_query, for authors testing curation.",
       aliases: {
          file: ["mcp.includeHiddenFilesAndSources"],
-         today: { file: "json-boolean", invalid: "warn" },
+         today: { file: "json-boolean" },
       },
    }),
    setting({

@@ -166,12 +166,13 @@ describe("settings by their derived names", () => {
       expect(stderr).toContain("PUBLISHER_INIT_FAILED");
    });
 
-   it("ignores a launch setting in the file, and says so", async () => {
-      const server = await boot({
+   it("refuses a launch setting in the file, and says what to set instead", async () => {
+      const stderr = await refused({
          config: { root: "/srv/elsewhere", environments: [] },
       });
-      expect(server.output()).toContain(
-         "is a variable or a flag only (PUBLISHER_ROOT, --root).",
+      expect(stderr).toContain(
+         "cannot be set there: it decides which file is read, or must not come from one, so it is a variable or a flag only (PUBLISHER_ROOT, --root).",
       );
+      expect(stderr).toContain("PUBLISHER_INIT_FAILED");
    });
 });

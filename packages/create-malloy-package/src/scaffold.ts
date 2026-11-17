@@ -70,8 +70,9 @@ export interface DeclinedScript {
    /**
     * The value written as `--host=<value>`, which Publisher's own argument
     * parser does not accept (it matches the whole argv entry `--host` and takes
-    * the next one), so the flag is dropped in silence and the bind falls back
-    * to 0.0.0.0. Carried alongside `reason: "no-host-flag"`, which is what such a
+    * the next one). A server from before the configuration design's step 3
+    * drops it in silence and binds 0.0.0.0; from step 3 it refuses it and does
+    * not start. Carried alongside `reason: "no-host-flag"`, which is what such a
     * script really is as far as the server is concerned, so a caller can say
     * which of the two shapes it saw without guessing.
     */
@@ -1246,9 +1247,9 @@ function declineReasonFor(
    const host = hostFlagOf(script);
    if (host === undefined) {
       // Publisher's own default is 0.0.0.0, so no flag is not loopback. A
-      // `--host=<value>` counts as no flag here, because that is what it is to
-      // the server: it matches none of its argument branches, is dropped without
-      // a word, and the bind falls back to 0.0.0.0.
+      // `--host=<value>` counts as no flag here, because it matches none of the
+      // server's flags: a server from before the configuration design's step 3
+      // drops it and binds 0.0.0.0, and a later one refuses to start.
       const joined = joinedHostFlagOf(script);
       return joined === undefined
          ? { script, reason: "no-host-flag" }
@@ -1573,11 +1574,11 @@ function isSingleServerInvocation(script: string): boolean {
  * Whitespace only, because that is the whole of what Publisher accepts: the
  * flag reader in `packages/server/src/settings/settings.ts` looks each argv
  * entry up by its exact name and takes the next entry as its value.
- * `--host=127.0.0.1` is the name of no flag, and an unknown flag is only warned
- * about, so the flag is dropped and PUBLISHER_HOST falls back to "0.0.0.0" for
- * the REST listener. The MCP listener reads MCP_HOST first and defaults to
- * loopback on its own, so a dropped --host exposes REST and leaves MCP where it
- * was.
+ * `--host=127.0.0.1` is the name of no flag. A server from before the
+ * configuration design's step 3 only warned about an unknown flag, so it dropped
+ * the flag and PUBLISHER_HOST fell back to "0.0.0.0" for the REST listener (the
+ * MCP listener reads its own host first and defaults to loopback, so it stayed
+ * where it was); from step 3 the server refuses it and does not start.
  *
  * Accepting the `=` form here was worse than useless: it made the one shape that
  * looks private and is not the one shape this tool called safest, suppressing the
@@ -1768,7 +1769,7 @@ function hostFlagOf(script: string): string | undefined {
    return value;
 }
 
-/** The value of the last `--host=<value>`, the form the server ignores. */
+/** The value of the last `--host=<value>`, the form the server does not read. */
 function joinedHostFlagOf(script: string): string | undefined {
    let value: string | undefined;
    for (const match of script.matchAll(

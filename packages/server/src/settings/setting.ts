@@ -18,9 +18,9 @@ export interface Resolving {
 
 /**
  * How today's names are read where that differs from the setting's type. Step 1
- * of the configuration design keeps these, so no value changes meaning: where
- * a boolean's reading here and the common reader disagree, today's wins, with a
- * warning. Each is removed, from here, by the step that ends it.
+ * of the configuration design kept these so no value changed meaning; from step
+ * 3 a value this reading and the common reader disagree on fails startup, and a
+ * value both read the same way still works. They go with today's names.
  */
 export interface TodayReading {
    /**
@@ -38,13 +38,11 @@ export interface TodayReading {
     * - `json-boolean`: a JSON boolean only.
     */
    file?: "truthy" | "boolean-or-reference" | "json-boolean";
-   /** A value that does not parse is the default today, with a warning. */
-   invalid?: "warn";
 }
 
 /**
  * Today's names for a setting, read with a deprecation warning where the
- * design renamed them, and removed in step 3.
+ * design renamed them, and removed in the release after step 3's.
  */
 export interface Aliases {
    env?: readonly string[];

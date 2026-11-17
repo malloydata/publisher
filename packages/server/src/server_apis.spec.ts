@@ -67,7 +67,7 @@ describe("getServerApiSettings", () => {
          '{"adminApiEnabled": "false"}',
          {},
          (file) =>
-            `adminApiEnabled from ${file}: expected a boolean (true/false, 1/0, yes/no or on/off), got "false"`,
+            `adminApiEnabled from ${file}: expected true or false as a JSON boolean, or a \${VAR} reference to one, got "false"`,
       );
    });
 
