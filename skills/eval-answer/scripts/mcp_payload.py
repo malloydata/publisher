@@ -107,9 +107,9 @@ def entity_hits(payload: dict[str, Any]) -> list[dict[str, Any]]:
     source cards, so flattening card by card interleaves. The harness used to
     write `range(1, n+1)` here and call it a rank; read `relevance` instead.
 
-    Entities are the only thing that carries this. A source card's own target
-    attribution is discarded by the server before an entity object exists, so
-    a `source:` hit has none and says so with `matched_targets: None`.
+    Publisher attributes entities only: a `source:` hit there has none and
+    says so with `matched_targets: None`. A host that states attribution on
+    the source card itself keeps it on the `source:` hit.
     """
     hits: list[dict[str, Any]] = []
     seen: set[str] = set()

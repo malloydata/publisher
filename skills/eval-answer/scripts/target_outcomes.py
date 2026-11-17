@@ -125,6 +125,9 @@ def outcome(index: int, target: dict[str, Any], call: dict[str, Any]) -> dict[st
         "n_found_anywhere": sum(1 for g in req if everything & set(g)),
         "found": [" | ".join(g) for g in req if own_set & set(g)],
         "missing": [" | ".join(g) for g in req if not own_set & set(g)],
+        # Every id the label counts as right, so two runs compare a target
+        # only when it was scored against the same label.
+        "label_ids": sorted(ok),
         "n_returned": len(own),
         "n_ok": len(own_set & ok) if labelled else None,
         "noise": sorted(own_set - ok) if labelled else [],

@@ -104,7 +104,7 @@ weighs the same), in `summary.json` and on the console:
 | `recall` | `score_retrieval.py`'s recall, which also credits the same field name under another source, or a name in a returned source's docs. When it is above `recall_exact`, the field reached the result only by that weaker route |
 | `precision` | returned ids that are required, in an any-of group, or acceptable, over every returned id, source cards included. None when nothing came back, so the pooled mean leaves that case out and `empty_responses` counts it |
 | `missing`, `noise` | the needs that did not come back, and the returned ids that are not labelled |
-| `targets` | per target: the recall and precision of what THAT search returned against the target's own `expectedEntities`, scored by `score_targets.py` (`skill:eval-answer`). Shows which search of a case missed. Pooled as `target_recall` |
+| `targets` | per target: the recall and precision of what THAT search returned against the target's own `expectedEntities`, scored by `target_outcomes.py` (`skill:eval-answer`). Shows which search of a case missed. Pooled as `target_recall` |
 
 `summary.json` also holds `per_target`, the same run pooled over search
 targets instead of cases (`target_outcomes.py` in `skill:eval-answer`). These

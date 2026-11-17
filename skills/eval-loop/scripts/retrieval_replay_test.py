@@ -290,6 +290,10 @@ class Compare(unittest.TestCase):
         b[0]["targets"][0]["search_text"] = "sales"
         c = rr.compare(a, b)
         self.assertEqual((c["targets_compared"], c["targets_set_aside"], c["recall"]["lost"]), (2, 1, []))
+        # A changed `acceptable` or `closest` changes what counts as right, so it sets the target aside too.
+        b = self.rows()
+        b[0]["targets"][2]["label_ids"] = [MARGIN]
+        self.assertEqual(rr.compare(self.rows(), b)["targets_set_aside"], 1)
 
     def test_an_errored_case_is_set_aside_and_qids_limit_the_comparison(self):
         b = self.rows(SALES)
@@ -380,6 +384,12 @@ class EndToEnd(unittest.TestCase):
         with self.assertRaises(SystemExit) as e, contextlib.redirect_stdout(io.StringIO()):
             rr.main(["--set", str(self.d), "--get-context-url", self.url, "--case-scopes", "--label", "r1"])
         self.assertIn("--case-scopes: 2 case(s) carry no scope", str(e.exception))
+
+    def test_case_scopes_refuses_one_target_version_for_the_whole_set(self):
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stdout(io.StringIO()):
+            rr.main(["--set", str(self.d), "--get-context-url", self.url, "--case-scopes",
+                     "--target-version", "1.0.0", "--label", "r1"])
+        self.assertIn("put the version in each case's scope", str(e.exception))
 
     def test_retrieval_that_stops_ranking_mid_run_is_an_error_not_a_miss(self):
         StubMcp.first = [payload(SALES), payload(SALES)]        # the two gate probes

@@ -311,7 +311,7 @@ def _answers(rows: list[dict[str, Any]]) -> dict[str, dict[tuple, bool]]:
             key = (r["qid"], t["index"])
             out["sent"][key] = (t["target_type"], t.get("search_text"),
                                 tuple(sorted((t.get("found") or []) + (t.get("missing") or []))),
-                                bool(t.get("absent")))
+                                tuple(t.get("label_ids") or ()), bool(t.get("absent")))
             for g in t.get("found") or []:
                 out["recall"][key + (g,)] = True
             for g in t.get("missing") or []:
@@ -495,6 +495,10 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
                          "Fix: pass a new --label or --out.")
     # Which package version answers, read before anything is written so a
     # wrong --target-version is refused with nothing spent.
+    if a.case_scopes and a.target_version:
+        raise SystemExit("--target-version names one package's version, and cases with their "
+                         "own scope may span packages. Fix: put the version in each case's "
+                         "scope as `version`, and drop --target-version.")
     version = rb.version_pin(a)
     a.out.mkdir(parents=True, exist_ok=True)
     scope = {k: v for k, v in (("environment", a.environment), ("package", a.package)) if v}
