@@ -184,7 +184,6 @@ function boot(
       protocol: "publisher",
       v: 1,
       type,
-      nonce: NONCE,
       ...extra,
    });
    return {
@@ -208,7 +207,6 @@ const envelope = (type: string, extra: Json = {}) => ({
    protocol: "publisher",
    v: 1,
    type,
-   nonce: NONCE,
    ...extra,
 });
 
@@ -461,7 +459,7 @@ describe("handshake", () => {
       expect(page.posted[0].msg.id).toBeUndefined();
    });
 
-   it("rejects a wrong source, origin, nonce or malformed envelope", () => {
+   it("rejects a wrong source, origin or malformed envelope", () => {
       const rejected: [string, () => void][] = [
          [
             "source",
@@ -481,20 +479,6 @@ describe("handshake", () => {
                const page = boot();
                page.posted.length = 0;
                page.hello("https://evil.example.com");
-               expect(page.posted).toEqual([]);
-               expect(page.Publisher.emit("x")).toBe(false);
-            },
-         ],
-         [
-            "nonce",
-            () => {
-               const page = boot();
-               page.posted.length = 0;
-               page.send(envelope("hello", { id: "h1", nonce: "wrong" }));
-               page.send({
-                  ...envelope("hello", { id: "h2" }),
-                  nonce: undefined,
-               });
                expect(page.posted).toEqual([]);
                expect(page.Publisher.emit("x")).toBe(false);
             },
@@ -522,7 +506,16 @@ describe("handshake", () => {
       }
    });
 
-   it("accepts messages without a nonce when the page URL has none", () => {
+   it("takes host messages without a nonce and echoes its own on every post", () => {
+      const page = boot();
+      page.posted.length = 0;
+      page.hello();
+      page.Publisher.emit("x", 1);
+      expect(page.posted).toHaveLength(2);
+      for (const p of page.posted) expect(p.msg.nonce).toBe(NONCE);
+   });
+
+   it("posts no nonce when the page URL has none", () => {
       const page = boot({
          url: `${PAGE}/environments/env1/packages/pkg1/index.html`,
       });
@@ -1224,7 +1217,6 @@ describe("Publisher.embed (host side)", () => {
             v: 1,
             type: "hello",
             id: "hello-1",
-            nonce: m.nonce,
          },
       });
       await page.clock.advance(500);
@@ -1273,7 +1265,6 @@ describe("Publisher.embed (host side)", () => {
                protocol: "publisher",
                v: 1,
                type: "auth.token",
-               nonce: m.nonce,
                payload: { token: "tok-a" },
             },
          },
@@ -1361,7 +1352,7 @@ describe("Publisher.embed (host side)", () => {
       const sent = m.childPosts.filter((p) => p.msg.type !== "auth.token");
       expect(sent.map((p) => p.msg.type)).toEqual(["givens.set", "nobody"]);
       expect(sent[0].msg.payload).toEqual({ givens: { a: 1 } });
-      expect(sent[0].msg.nonce).toBe(m.nonce);
+      expect(sent[0].msg.nonce).toBeUndefined();
       m.fromChild(
          m.msg("givens.set", {
             id: sent[0].msg.id,
@@ -1440,6 +1431,74 @@ describe("Publisher.embed (host side)", () => {
          postMessage() {},
       });
       expect(m.handle.iframe.style.height).toBe("321px");
+   });
+
+   it("never sends the nonce, in either mode and for every kind of post", async () => {
+      for (const isolate of [false, true]) {
+         const page = bootHost();
+         const m = mount(page, { isolate, getToken: () => "tok" });
+         const origin = isolate ? "null" : APP;
+         m.load();
+         m.fromChild(m.msg("hello", { id: "hello-1", reply: true }), origin);
+         m.handle.on("chat.ask", () => 1);
+         const sent = m.handle.send("ping");
+         m.fromChild(m.msg("auth.token.request"), origin);
+         m.fromChild(m.msg("chat.ask", { id: "p1" }), origin);
+         m.fromChild(m.msg("nobody.ask", { id: "p2" }), origin);
+         await flush();
+         await flush();
+         const types = new Set(m.childPosts.map((p) => p.msg.type));
+         for (const t of [
+            "hello",
+            "auth.token",
+            "ping",
+            "chat.ask",
+            "nobody.ask",
+         ]) {
+            expect(types.has(t)).toBe(true);
+         }
+         for (const p of m.childPosts) expect("nonce" in p.msg).toBe(false);
+         m.handle.destroy();
+         await sent.catch(() => {});
+      }
+   });
+
+   it("rejects a page that has not proved the nonce after a reload, and sends it no token", async () => {
+      const page = bootHost();
+      let tokens = 0;
+      const m = mount(page, { getToken: () => String(++tokens) });
+      m.load();
+      helloReply(m);
+      await flush();
+      await flush();
+      expect(tokens).toBe(1);
+      // The frame navigated to a document that never had the fragment.
+      m.load();
+      m.childPosts.length = 0;
+      const strangers = [
+         {
+            ...m.msg("hello", { id: "hello-1", reply: true }),
+            nonce: undefined,
+         },
+         { ...m.msg("hello", { id: "hello-1", reply: true }), nonce: "wrong" },
+         { ...m.msg("ready"), nonce: undefined },
+         { ...m.msg("auth.token.request"), nonce: undefined },
+         { ...m.msg("auth.token.request"), nonce: "wrong" },
+      ];
+      for (const data of strangers) m.fromChild(data);
+      const queued = m.handle.send("secret", {});
+      await flush();
+      await flush();
+      expect(tokens).toBe(1);
+      expect(m.childPosts.filter((p) => p.msg.type !== "hello")).toEqual([]);
+      void queued.catch(() => {});
+      await page.clock.advance(5000);
+      // The real page, with the fragment, still proves itself.
+      m.load();
+      helloReply(m);
+      await flush();
+      await flush();
+      expect(tokens).toBe(2);
    });
 
    it("isolate accepts only the null origin and posts with *", async () => {

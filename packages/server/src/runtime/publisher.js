@@ -20,7 +20,8 @@
 //       first on ready, again whenever the page asks. `token` appends ?embed_token= to
 //       the URL instead and is deprecated. isolate drops allow-same-origin from the
 //       sandbox. Every embed adds a random #publisher-nonce=<n> to src; the host accepts
-//       bus messages only from that window, at src's origin, carrying that nonce.
+//       bus messages only from that window, at src's origin, echoing that nonce. The host
+//       never sends the nonce: a document that navigated into the frame cannot learn it.
 //   - Publisher.context  ({ environment, package } from the injected page context, else inferred from URL)
 //   - Publisher.setToken(token)  (override Bearer token; default uses cookies)
 //   - Publisher.on(type, fn) → unsubscribe  (host → page messages; fn(payload, meta) may
@@ -40,8 +41,9 @@
 // payload }; a reply adds reply: true and carries payload or error: { code, message }.
 // The host sends `hello`; the runtime binds to that message's origin, replies with
 // { handles, runtime }, and from then on posts only to that origin. Inbound messages are
-// accepted from window.parent at an allowed origin only, and with the nonce from
-// #publisher-nonce= when the URL has one. Page → host events: ready, query.ran,
+// accepted from window.parent at an allowed origin only. Every page → host envelope
+// echoes the nonce from #publisher-nonce= when the URL has one; host → page ones carry
+// none. Page → host events: ready, query.ran,
 // givens.changed, auth.token.request, version.unavailable. Host → page: auth.token (built
 // in), givens.set (built in; advertised once the page calls onGivensChange), and whatever
 // the page registers with on(). A request nobody handles gets error "unhandled".
@@ -416,7 +418,6 @@
       if (boundOrigin && e.origin !== boundOrigin) return;
       var m = e.data;
       if (!isEnvelope(m) || m.reply) return;
-      if (pageNonce && m.nonce !== pageNonce) return;
       var isRequest = m.id !== undefined;
       if (m.type === "hello") {
          boundOrigin = e.origin;
@@ -721,7 +722,6 @@
             if (extra.reply) msg.reply = true;
             if (extra.error) msg.error = extra.error;
          }
-         msg.nonce = nonce;
          if (payload !== undefined) msg.payload = payload;
          try {
             iframe.contentWindow.postMessage(msg, targetOrigin);
