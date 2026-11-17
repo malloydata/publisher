@@ -184,18 +184,37 @@ export function declaredColumnsOf(
 }
 
 /**
- * The declared columns of a persist source being built, or none when its field
- * list cannot be read (the build then runs uncast, as it did before, and the
- * serve-side check still guards the result).
+ * The declared columns of a persist source being built, each under the name
+ * its build's SELECT outputs it as, or none when its field list cannot be read
+ * (the build then runs uncast, as it did before, and the serve-side check
+ * still guards the result).
+ *
+ * A field a trailing `extend` renames (`rename: kind is sub`) is the query's
+ * `sub` column under another name: the SELECT, and so the stored table,
+ * hold `sub`, and the serve side renames it again. Its definition keeps the
+ * output name (`name`) beside the new one (`as`), so the column is declared
+ * as `sub`. A dimension the `extend` computes is no column of
+ * the SELECT, and is not declared.
  */
 export function persistSourceDeclaredColumns(persistSource: {
    _explore: { intrinsicFields: readonly unknown[] };
 }): DeclaredColumn[] {
    try {
       return declaredColumnsOf(
-         exploreOf(persistSource).intrinsicFields.filter((f) =>
-            (f as { isAtomicField?: () => boolean }).isAtomicField?.(),
-         ),
+         exploreOf(persistSource).intrinsicFields.flatMap((f) => {
+            const field = f as {
+               isAtomicField?: () => boolean;
+               name?: unknown;
+               type?: unknown;
+               fieldTypeDef?: { name?: unknown; e?: unknown };
+            };
+            if (!field.isAtomicField?.()) return [];
+            const def = field.fieldTypeDef;
+            if (def?.e !== undefined) return [];
+            const output =
+               typeof def?.name === "string" ? def.name : field.name;
+            return [{ name: output, type: field.type }];
+         }),
       );
    } catch {
       return [];
@@ -782,6 +801,26 @@ export function bigIntegerReads(
       if (typeof key !== "string" || typeof type !== "string") continue;
       byName.set(key, f);
       declared.push({ name: key, type });
+   }
+   // A field a trailing `extend` renames (`rename: amount is total`) is
+   // stored under its output name (`total`): matched by that too, where no
+   // field already goes by it (P2-45).
+   for (const f of fields ?? []) {
+      const { name, as, type } = (f ?? {}) as {
+         name?: unknown;
+         as?: unknown;
+         type?: unknown;
+      };
+      if (
+         typeof as !== "string" ||
+         typeof name !== "string" ||
+         typeof type !== "string" ||
+         byName.has(name)
+      ) {
+         continue;
+      }
+      byName.set(name, f);
+      declared.push({ name, type });
    }
    const out: BigIntegerRead[] = [];
    for (const column of schema) {
