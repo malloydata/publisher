@@ -405,6 +405,12 @@ export interface SourceBuildOptions {
     * when it cannot.
     */
    storedBase?: StoredRollupBase;
+   /**
+    * The source is a rollup: a `storage=` build reports `upstreamReuse`
+    * only when it stacked on a stored table, never from the manifest's
+    * classification of its author's text (which names the base).
+    */
+   rollup?: boolean;
 }
 
 /**
@@ -434,6 +440,7 @@ export async function buildSource(
       planFacts = NO_PLAN_FACTS,
       replacesView,
       storedBase,
+      rollup,
    } = options;
    const physicalTableName = instruction.physicalTableName;
    const rendered = renderBuildSQL(
@@ -515,6 +522,7 @@ export async function buildSource(
          lift,
          ...(replacesView ? { replacesView } : {}),
          ...(storedBase ? { storedBase } : {}),
+         ...(rollup ? { rollup } : {}),
       });
    }
 

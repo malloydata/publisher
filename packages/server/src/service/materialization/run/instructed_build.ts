@@ -830,7 +830,6 @@ export class InstructedBuild {
          persistSource,
          sourceEntityId,
          built,
-         stacked,
       );
       run.builtSources.push(persistSource.name);
       reportSourceBuilt(
@@ -1075,6 +1074,9 @@ export class InstructedBuild {
             planFacts: run.planFacts,
             ...(replacesView ? { replacesView } : {}),
             ...(storedBase ? { storedBase } : {}),
+            ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
+               ? { rollup: true }
+               : {}),
          });
          // A manifest travels without its build plan, so this is the only
          // signal that a table belongs to a rollup in no model file; served
@@ -2287,10 +2289,13 @@ function withRollupUpstreamReuse(
    persistSource: PersistSource,
    address: string,
    entry: ManifestEntry,
-   /** A `storage=` rollup's build grouped its base's stored table. */
-   stackedOnBase = false,
 ): ManifestEntry {
-   if (run.compiled.tables[persistSource.sourceID]?.kind !== "rollup") {
+   // A `storage=` build reports what it read itself: `reused` only when it
+   // stacked on a stored table (storage_build_strategy.ts, `rollup`).
+   if (
+      run.compiled.tables[persistSource.sourceID]?.kind !== "rollup" ||
+      entry.storageDestinationName
+   ) {
       return entry;
    }
    const {
@@ -2298,12 +2303,7 @@ function withRollupUpstreamReuse(
       upstreamRecomputeReason: _reason,
       ...rest
    } = entry;
-   // Colocated: it read the base's table exactly when the run recorded it
-   // (overStoredBaseSource). `storage=`: exactly when it stacked on the
-   // base's stored table in its destination; one built from the warehouse
-   // says nothing, as a colocated one does.
-   const read = entry.storageDestinationName
-      ? stackedOnBase
-      : run.readFrom?.has(address) === true;
-   return read ? { ...rest, upstreamReuse: "reused" } : rest;
+   return run.readFrom?.has(address)
+      ? { ...rest, upstreamReuse: "reused" }
+      : rest;
 }

@@ -202,6 +202,8 @@ export interface StorageBuildRequest {
    replacesView?: string[];
    /** See SourceBuildOptions.storedBase. */
    storedBase?: StoredRollupBase;
+   /** See SourceBuildOptions.rollup. */
+   rollup?: boolean;
 }
 
 /**
@@ -827,7 +829,11 @@ export class StorageBuildStrategy
               }
             : stackedOnBase
               ? { upstreamReuse: "reused" as const }
-              : baseReuse),
+              : // A rollup that did not stack read the warehouse, whatever
+                // the classification of its author's text says.
+                params.rollup
+                ? {}
+                : baseReuse),
          // SCANNED, not billed, matching the colocated path's runStats
          // (totalBytesProcessed), so the field sums consistently across sources.
          // Null when the read reported nothing: a build with an empty metadata
