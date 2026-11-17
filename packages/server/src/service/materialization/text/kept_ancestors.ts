@@ -25,7 +25,7 @@
  */
 
 import { declarationSpans, declaredBaseName } from "./declaration_text";
-import { offsetOf } from "./malloy_lexer";
+import { lexAll, offsetOf } from "./malloy_lexer";
 import type { SourceMap } from "./source_map";
 import {
    splitSourceID,
@@ -188,16 +188,185 @@ export function confirmedAncestors(
       if (from < 0 || to < from) break;
       const spans = declarationSpans(text.slice(from, to));
       if (!spans) break;
-      out.push({
-         ...ancestor,
-         ...(spans.extendStart !== undefined
-            ? { runText: text.slice(from + spans.extendStart, to).trimEnd() }
-            : {}),
-      });
+      const runText =
+         spans.extendStart !== undefined
+            ? text.slice(from + spans.extendStart, to).trimEnd()
+            : undefined;
+      // Across files, the run is compiled in the importing file: only where
+      // each name it reads is provably the one its own file reads.
+      if (
+         ancestor.url !== childURL &&
+         !bindsAlikeAcrossFiles(
+            childText,
+            childURL,
+            text,
+            ancestor.url,
+            runText ?? "",
+         )
+      ) {
+         break;
+      }
+      out.push({ ...ancestor, ...(runText !== undefined ? { runText } : {}) });
       child = ancestor.range;
       childURL = ancestor.url;
    }
    return out;
+}
+
+/**
+ * Whether `runText`, written in the file at `ancestorURL`, reads every name
+ * the same way compiled in the file at `childURL` (P2-22, review). Proven
+ * only when:
+ *
+ *  - the child imports the ancestor's file whole (`import "<file>"`), never
+ *    by a selective import, which may leave a name out for the child to
+ *    declare itself;
+ *  - the ancestor's file imports nothing, so every source name its run reads
+ *    is one it declares, which the whole import hands the child as is;
+ *  - no word of the run is a name the child declares or imports selectively
+ *    from elsewhere.
+ *
+ * Unproven, the blocks are not carried and the source is served as before
+ * (or answers live): a join in the run that bound to another source in the
+ * child would read a table curation or a gate keeps from the caller.
+ */
+function bindsAlikeAcrossFiles(
+   childText: string,
+   childURL: string,
+   ancestorText: string,
+   ancestorURL: string,
+   runText: string,
+): boolean {
+   const childImports = topLevelImports(childText, childURL);
+   const ancestorImports = topLevelImports(ancestorText, ancestorURL);
+   if (!childImports || !ancestorImports) return false;
+   if (ancestorImports.length > 0) return false;
+   if (
+      !childImports.some((i) => i.whole && sameFile(i.resolved, ancestorURL))
+   ) {
+      return false;
+   }
+   const runTokens = lexAll(runText);
+   if (!runTokens) return false;
+   const runWords = new Set(
+      runTokens.flatMap((t) => (t.kind === "word" ? [unquote(t.text)] : [])),
+   );
+   const childNames = namesDeclaredOrImported(childText, childImports);
+   if (!childNames) return false;
+   for (const name of childNames) if (runWords.has(name)) return false;
+   return true;
+}
+
+/** A top-level `import` of a file: its path resolved, and whether it is whole. */
+interface FileImport {
+   resolved: string;
+   whole: boolean;
+   /** A selective import's local names. */
+   names: string[];
+}
+
+/** The file's top-level imports, or undefined when the text does not lex. */
+function topLevelImports(text: string, url: string): FileImport[] | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const out: FileImport[] = [];
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.kind !== "word" || t.text !== "import" || t.depth !== 0) continue;
+      const names: string[] = [];
+      let whole = true;
+      let j = k + 1;
+      if (tokens[j]?.text === "{") {
+         whole = false;
+         // `{ a, b is c }`: each local name is the word before `is`, or the
+         // word alone.
+         j++;
+         let expectName = true;
+         for (; j < tokens.length && tokens[j].text !== "}"; j++) {
+            const w = tokens[j];
+            if (w.text === ",") {
+               expectName = true;
+               continue;
+            }
+            if (expectName && w.kind === "word") {
+               names.push(unquote(w.text));
+               expectName = false;
+            }
+         }
+         j++;
+         if (tokens[j]?.text === "from") j++;
+      }
+      // The path is the statement's first string at the top level.
+      while (j < tokens.length && !/^["']/.test(tokens[j].text)) j++;
+      const literal = tokens[j];
+      if (!literal || literal.depth !== 0) return undefined;
+      const path = literal.text.slice(1, -1);
+      if (path.includes("\\")) return undefined;
+      let resolved: string;
+      try {
+         resolved = new URL(path, url).href;
+      } catch {
+         return undefined;
+      }
+      out.push({ resolved, whole, names });
+   }
+   return out;
+}
+
+/**
+ * The names the file declares at top level (`source:`, `query:`, `given:`
+ * statements, each item of one), and the local names its selective imports
+ * bind. Undefined when the text does not lex.
+ */
+function namesDeclaredOrImported(
+   text: string,
+   imports: readonly FileImport[],
+): Set<string> | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const names = new Set(imports.flatMap((i) => i.names));
+   const declaring = new Set(["source", "query", "given", "run"]);
+   let inStatement = false;
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.depth !== 0) continue;
+      if (
+         t.kind === "word" &&
+         declaring.has(t.text) &&
+         tokens[k + 1]?.text === ":"
+      ) {
+         inStatement = true;
+         k++;
+         const next = tokens[k + 1];
+         if (next?.kind === "word") names.add(unquote(next.text));
+         continue;
+      }
+      // A later item of the same statement: `, name is …`.
+      if (inStatement && t.text === "," && tokens[k + 1]?.kind === "word") {
+         names.add(unquote(tokens[k + 1].text));
+         continue;
+      }
+      if (
+         t.kind === "word" &&
+         tokens[k + 1]?.text === ":" &&
+         !declaring.has(t.text)
+      ) {
+         inStatement = false;
+      }
+   }
+   return names;
+}
+
+function unquote(word: string): string {
+   return word.startsWith("`") && word.endsWith("`") ? word.slice(1, -1) : word;
+}
+
+function sameFile(a: string, b: string): boolean {
+   try {
+      return new URL(a).href === new URL(b).href;
+   } catch {
+      return a === b;
+   }
 }
 
 /** The file a compiled declaration was declared in. */
