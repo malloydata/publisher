@@ -8605,7 +8605,7 @@ components:
             warehouse was not queried.
 
             `database` — served from a materialized table in the source's own
-            database (the database tier): a database `#@ persist` table Malloy substituted, a
+            database (`colocated` in releases before this one): a database `#@ persist` table Malloy substituted, a
             database `#(materialize)` table the served copy read, or a
             database rollup or persisted view.
 
@@ -8831,7 +8831,7 @@ components:
           enum: [database, storage]
           description: >-
             Where the table that answered lives: `database`, the source's own
-            database (the database tier), or `storage`, a `storage=` destination. The same tier the
+            database, or `storage`, a `storage=` destination. The same tier the
             query result's `servedFrom` reports. Absent when `kind` is `live`.
         dataAsOf:
           type: string

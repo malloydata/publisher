@@ -1496,7 +1496,7 @@ export class RollupVariantServe {
 
    /**
     * The storage destination the rollup's table is in, or undefined when it
-    * is in the database tier: its binding's, else the annotation's (storageLookupOf).
+    * is in the source's own database: its binding's, else the annotation's (storageLookupOf).
     */
    private storedIn(
       plan: RollupVariantPlan,

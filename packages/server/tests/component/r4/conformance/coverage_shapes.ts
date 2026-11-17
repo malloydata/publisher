@@ -63,7 +63,7 @@ source: orders_ext is orders extend {
    },
    {
       name: "rollup over a base with typed columns",
-      about: "A database rollup over a base whose grain is a DECIMAL or a TIMESTAMPTZ, whose measures sum a BIGINT past 2^53 and a DECIMAL, and which carries STRUCT and MAP columns outside the grain. In a storage= destination the BIGINT sum comes back rounded and the TIMESTAMPTZ grain as a timestamp: known gaps, in r4/rollup_coverage. An array column is the next shape: v1 refuses it as a fan-out join",
+      about: "A database rollup over a base whose grain is a DECIMAL or a TIMESTAMPTZ, whose measures sum a BIGINT past 2^53 and a DECIMAL, and which carries STRUCT and MAP columns outside the grain. In a storage= destination every one of these reads back exact too (r4/rollup_coverage). On the Parquet run the database rollup's BIGINT sum is held as a DOUBLE, which the bind's column read guards: answered live, with every digit (F-13). An array column is the next shape: v1 refuses it as a fan-out join",
       variants: ["database"],
       files: {
          "m.malloy": `${HEADER}
