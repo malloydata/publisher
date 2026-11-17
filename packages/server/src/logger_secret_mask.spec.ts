@@ -11,7 +11,12 @@
 import { describe, expect, it } from "bun:test";
 import { Writable } from "stream";
 import winston from "winston";
-import { logger, maskedForLog, publisherLogFormat } from "./logger";
+import {
+   guardedEntries,
+   logger,
+   maskedForLog,
+   publisherLogFormat,
+} from "./logger";
 import { initFailedLine } from "./pg_helpers";
 
 const SECRET = "deadbeef1234";
@@ -20,20 +25,23 @@ const SIGNED = `HTTP GET error on 'https://b.s3.amazonaws.com/org_1/t.parquet?X-
 /** A logger with the server's format in one mode, writing to `lines`. */
 function capture(json: boolean): { log: winston.Logger; text: () => string } {
    const lines: string[] = [];
-   const log = winston.createLogger({
-      level: "debug",
-      format: publisherLogFormat(json),
-      transports: [
-         new winston.transports.Stream({
-            stream: new Writable({
-               write(chunk, _encoding, done) {
-                  lines.push(String(chunk));
-                  done();
-               },
+   // As the server's own logger is made: its format, its guarded entries.
+   const log = guardedEntries(
+      winston.createLogger({
+         level: "debug",
+         format: publisherLogFormat(json),
+         transports: [
+            new winston.transports.Stream({
+               stream: new Writable({
+                  write(chunk, _encoding, done) {
+                     lines.push(String(chunk));
+                     done();
+                  },
+               }),
             }),
-         }),
-      ],
-   });
+         ],
+      }),
+   );
    return { log, text: () => lines.join("\n") };
 }
 
@@ -109,22 +117,26 @@ for (const [mode, json] of [
 }
 
 describe("maskedForLog", () => {
-   it("keeps an Error an Error of its class, with its cause and code masked and kept", () => {
+   it("logs an Error as a plain object of its fields, cause and code masked and kept", () => {
       class StorageError extends Error {}
       const err = Object.assign(
          new StorageError(SIGNED, { cause: new Error(SIGNED) }),
          { code: "E_STORAGE" },
       );
-      const out = maskedForLog(err) as StorageError & {
+      const out = maskedForLog(err) as {
+         name: string;
+         message: string;
+         stack: string;
          code: string;
-         cause: Error;
+         cause: { message: string };
       };
-      expect(out).toBeInstanceOf(StorageError);
-      expect(out).not.toBe(err);
+      expect(out).not.toBeInstanceOf(Error);
+      expect(Object.keys(out)).toEqual(
+         expect.arrayContaining(["name", "message", "stack", "code", "cause"]),
+      );
       expect(out.message).not.toContain(SECRET);
-      expect(out.stack ?? "").not.toContain(SECRET);
+      expect(out.stack).not.toContain(SECRET);
       expect(out.code).toBe("E_STORAGE");
-      expect(out.cause).toBeInstanceOf(Error);
       expect(out.cause.message).not.toContain(SECRET);
       // The original is untouched.
       expect(err.message).toBe(SIGNED);
@@ -151,6 +163,10 @@ describe("maskedForLog", () => {
       logger.add(transport);
       try {
          logger.warn(`Error loading package: ${SIGNED}`);
+         // A frozen Error logged whole: winston writes the level onto the
+         // entry, so the server's logger hands it a fresh one.
+         const frozen = Object.freeze(new Error(SIGNED));
+         expect(() => logger.error(frozen)).not.toThrow();
       } finally {
          logger.remove(transport);
       }
