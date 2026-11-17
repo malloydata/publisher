@@ -11,11 +11,7 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 The `Release (NPM + Docker + PyPI)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — an unhandled rejection from a connection driver is logged, not fatal
-
-**Fixed: an unhandled promise rejection from a connection driver is now logged instead of crashing the server.** For example, Malloy's BigQuery connection cancels a job on abort without awaiting it, so a failed cancel (after a materialization cancel or a query timeout) could take the process down. It is now logged at error with its message and stack, on the main thread and in package-load workers. Each one also counts on the new `publisher_unhandled_rejection_total` metric (main thread; a worker's is only logged). An uncaught synchronous exception still ends the process.
-
-## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
 One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
 
@@ -24,6 +20,10 @@ Both steps handle several sections, which matters because unrelated narratives a
 Give the heading a title — `## [Unreleased] — what changed`, with an em dash, a colon or a hyphen. The version is already the release's own title, so the marker is stripped and the title is what appears on the page; a bare `## [Unreleased]` has nothing to put there and fails CI on the PR that writes it.
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
+
+## [Unreleased] — an unhandled rejection from a connection driver is logged, not fatal
+
+**Fixed: an unhandled promise rejection from a connection driver is now logged instead of crashing the server.** For example, Malloy's BigQuery connection cancels a job on abort without awaiting it, so a failed cancel (after a materialization cancel or a query timeout) could take the process down. It is now logged at error with its message, and its stack when the reason is an Error, and counted on the new `publisher_unhandled_rejection_total` metric. That covers package-load workers too. An uncaught synchronous exception still ends the process.
 
 ## [Unreleased] — a rename that reuses or swaps names reads the right stored column
 

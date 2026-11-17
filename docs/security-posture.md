@@ -300,9 +300,9 @@ is what makes them reviewable in a pull request and agent-authorable. Keeping th
 deliberate property, not an accident of scope. It is not absolute today: gap 3 below is where a
 declarative artifact still carries author-controlled HTML.
 
-## Known gaps
+**Process backstop.** An unhandled promise rejection, whether from a connection driver (a fire-and-forget cancel, for one) or from Publisher's own code, is logged at error and counted on `publisher_unhandled_rejection_total`, and the server keeps running, including a rejection inside a package-load worker. An uncaught synchronous exception still ends the process, because it can leave state half-written.
 
-An unhandled promise rejection from a dependency (a connection driver's fire-and-forget cancel, for one) is logged at error and the server keeps running; an uncaught synchronous exception still ends the process.
+## Known gaps
 
 Ordered by how much they would matter on a deployment that has put a gateway in front of
 Publisher. Gap 1 is now fixed and is kept here, struck through, because the reasoning about
