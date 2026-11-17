@@ -19,9 +19,21 @@
     "databricks": "'it\\'s \\\\ here'",
     "trino": "'it''s \\ here'",
     "presto": "'it''s \\ here'",
-    "mysql": "'it''s \\\\ here'",
+    "mysql": "CONCAT('it''s ', CHAR(92 USING utf8mb4), ' here')",
     "sqlserver": "N'it''s \\ here'",
     "unknown_dialect": "'it''s \\ here'"
+  },
+  "sqlString.lineBreaks": {
+    "duckdb": "'a\nb\rc'",
+    "postgres": "'a\nb\rc'",
+    "standardsql": "'a\\nb\\rc'",
+    "snowflake": "'a\nb\rc'",
+    "databricks": "'a\nb\rc'",
+    "trino": "'a\nb\rc'",
+    "presto": "'a\nb\rc'",
+    "mysql": "'a\nb\rc'",
+    "sqlserver": "N'a\nb\rc'",
+    "unknown_dialect": "'a\nb\rc'"
   },
   "relationProbeSql.one": {
     "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('orders') AND database_name = current_database() AND schema_name = current_schema() UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('orders') AND database_name = current_database() AND schema_name = current_schema()",
@@ -362,7 +374,7 @@
     "databricks": "SELECT table_type AS kind, comment FROM `p``j\\`.information_schema.tables WHERE table_schema = lower('d\"s\\\\`') AND table_name = lower('t`\\'x')",
     "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM \"p`j\\\".information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = lower('d\"s\\`') AND t.table_name = lower('t`''x')",
     "presto": "SELECT table_type AS kind, CAST(NULL AS varchar) AS comment FROM \"p`j\\\".information_schema.tables WHERE table_schema = lower('d\"s\\`') AND table_name = lower('t`''x')",
-    "mysql": "SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'd\"s\\\\`' AND TABLE_NAME = 't`''x'",
+    "mysql": "SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment FROM information_schema.TABLES WHERE TABLE_SCHEMA = CONCAT('d\"s', CHAR(92 USING utf8mb4), '`') AND TABLE_NAME = 't`''x'",
     "sqlserver": {
       "refused": "a SQL Server name takes at most a schema, not 'p`j\\.d\"s\\`.t`'x'"
     },
@@ -1703,7 +1715,7 @@
       "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\`') ORDER BY ordinal_position"
     ],
     "mysql": [
-      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM `p``j\\`.information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\\\`') ORDER BY ordinal_position"
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM `p``j\\`.information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower(CONCAT('d\"s', CHAR(92 USING utf8mb4), '`')) ORDER BY ordinal_position"
     ],
     "sqlserver": [
       "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower(N't`''x') AND lower(table_schema) = lower(N'd\"s\\`') ORDER BY ordinal_position"

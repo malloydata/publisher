@@ -96,9 +96,9 @@ describe("service/package quoteBoundTableNames", () => {
       expect(spy.called).toBe(false);
    });
 
-   it("passes an already-quoted name through without double-quoting", async () => {
+   it("re-quotes an already-quoted name to itself, never double-quoting it", async () => {
       const pkg = makePackage();
-      const spy = sinon.stub(pkg, "getMalloyConnection");
+      stubDialect(pkg, "snowflake");
 
       const out = await quote(pkg, {
          s1: {
@@ -108,19 +108,46 @@ describe("service/package quoteBoundTableNames", () => {
       });
 
       expect(out.s1.tableName).toBe('"schema"."already_canonical"');
-      expect(spy.called).toBe(false);
    });
 
-   it("passes an already-backticked name through without re-quoting", async () => {
+   it("re-quotes a legacy partly quoted name to the table it named, folding the bare part", async () => {
       const pkg = makePackage();
-      const spy = sinon.stub(pkg, "getMalloyConnection");
+      stubDialect(pkg, "snowflake");
+
+      const out = await quote(pkg, {
+         s1: { tableName: '"Sch".orders', connectionName: "sf" },
+      });
+
+      expect(out.s1.tableName).toBe('"Sch"."ORDERS"');
+   });
+
+   it("re-quotes an already-backticked BigQuery name to itself", async () => {
+      const pkg = makePackage();
+      stubDialect(pkg, "standardsql");
 
       const out = await quote(pkg, {
          s1: { tableName: "`ds`.`events`", connectionName: "bq" },
       });
 
       expect(out.s1.tableName).toBe("`ds`.`events`");
-      expect(spy.called).toBe(false);
+   });
+
+   it("leaves out an entry whose name its dialect cannot read, never inlining it, and binds the rest", async () => {
+      const pkg = makePackage();
+      stubDialect(pkg, "standardsql");
+      const errSpy = sinon.stub(logger, "error");
+
+      const out = await quote(pkg, {
+         bad: { tableName: "`ds`.`a``b`", connectionName: "bq" },
+         good: { tableName: "ds.events", connectionName: "bq" },
+      });
+
+      expect(out.bad).toBeUndefined();
+      expect(out.good.tableName).toBe("`ds`.`events`");
+      expect(errSpy.calledOnce).toBe(true);
+      expect(String(errSpy.firstCall.args[0])).toContain(
+         "cannot read or quote",
+      );
    });
 
    it("degrades one entry (unquoted) and logs an actionable error when its connection is unresolvable", async () => {

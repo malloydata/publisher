@@ -150,6 +150,7 @@ async function statements(): Promise<Record<string, unknown>> {
    // The relation, ownership and view probes, the mark and the view drop.
    out.relationProbeSupported = perDialect((d) => relationProbeSupported(d));
    out.sqlString = perDialect((d) => sqlString("it's \\ here", d));
+   out["sqlString.lineBreaks"] = perDialect((d) => sqlString("a\nb\rc", d));
    for (const [shape, segments] of Object.entries(PATHS)) {
       out[`relationProbeSql.${shape}`] = perDialect((d) =>
          relationProbeSql(segments, d),

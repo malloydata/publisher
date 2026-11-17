@@ -191,7 +191,7 @@ import {
    type ReportTag,
 } from "./report";
 import { sqlLiteral } from "./introspection_sql";
-import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
+import { quoteManifestTablePath, UnquotableIdentifierError } from "./quoting";
 import { Model } from "./model";
 import {
    callerVisibleText,
@@ -2653,7 +2653,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * Quote each manifest table path for its connection's dialect, mirroring how
     * the builder CREATEs it: Malloy pastes `tableName` into `FROM` verbatim, so
     * on a case-folding engine the case-preserved name is reachable only quoted.
-    * An already-quoted name passes through.
+    * A name written as SQL is parsed and re-quoted; one the dialect cannot read
+    * or quote is left out (logged at ERROR), so its source answers live.
     *
     * Verbatim otherwise in two different cases: no `connectionName` (an
     * engine-folding producer; benign), or an unresolvable one (a
@@ -2679,13 +2680,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const out: FreshnessManifest = {};
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
          let tableName = entry.tableName;
-         if (entry.connectionName && !isQuotedIdentifierPath(tableName)) {
+         if (entry.connectionName) {
+            let connection: Connection | undefined;
             try {
-               const connection = await lookupConnection(entry.connectionName);
-               tableName = quoteManifestTablePath(
-                  tableName,
-                  connection.dialectName,
-               );
+               connection = await lookupConnection(entry.connectionName);
             } catch (err) {
                recordManifestBindDegraded();
                logger.error(
@@ -2704,6 +2702,32 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                      error: err instanceof Error ? err.message : String(err),
                   },
                );
+            }
+            if (connection) {
+               try {
+                  tableName = quoteManifestTablePath(
+                     tableName,
+                     connection.dialectName,
+                  );
+               } catch (err) {
+                  if (!(err instanceof UnquotableIdentifierError)) throw err;
+                  // Never inlined as given: the entry is not bound, and its
+                  // source answers live.
+                  recordManifestBindDegraded();
+                  logger.error(
+                     `Manifest entry '${sourceEntityId}' names a table its ` +
+                        `connection's dialect cannot read or quote, so it is ` +
+                        `not bound and its source answers live. Fix: rebuild ` +
+                        `the manifest, or correct the entry's table name.`,
+                     {
+                        packageName,
+                        sourceEntityId,
+                        connectionName: entry.connectionName,
+                        error: err.message,
+                     },
+                  );
+                  continue;
+               }
             }
          }
          out[sourceEntityId] = { ...entry, tableName };

@@ -48,7 +48,10 @@ import {
 import { getPersistStorageMode } from "../../../config";
 import { withSpan } from "../../../telemetry";
 import { errMessage } from "../../../utils";
-import { quoteManifestTablePath } from "../../quoting";
+import {
+   quoteManifestTablePath,
+   UnquotableIdentifierError,
+} from "../../quoting";
 import { ColocatedTier } from "./colocated_build_strategy";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
@@ -86,6 +89,7 @@ import {
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
 import { freshnessOf } from "../domain/freshness";
+import { STORAGE_DIALECT } from "../domain/dialect";
 import {
    allSourcesRefusedError,
    BuildEnvironment,
@@ -752,14 +756,28 @@ export class InstructedBuild {
             // The build Manifest feeds a downstream `FROM` verbatim, so it needs
             // the quoting the table was CREATEd with. `entries` (the committed
             // manifest) keeps the logical, unquoted name.
-            manifest.update(sourceEntityId, {
-               tableName: this.quoteSeedTablePath(
+            let tableName: string | undefined;
+            try {
+               tableName = this.quoteSeedTablePath(
                   sourceEntityId,
                   entry.physicalTableName,
                   entry.connectionName,
                   connections,
-               ),
-            });
+               );
+            } catch (err) {
+               if (!(err instanceof UnquotableIdentifierError)) throw err;
+               // A name its dialect cannot quote is not bound: a downstream
+               // reads its upstream live (or, strict, fails its own compile),
+               // and the rest of the run goes on.
+               logger.warn(
+                  "Seeded upstream's table name cannot be quoted for its dialect; " +
+                     "not binding it for downstream reads",
+                  { sourceEntityId, error: err.message },
+               );
+            }
+            if (tableName !== undefined) {
+               manifest.update(sourceEntityId, { tableName });
+            }
          }
          entries[sourceEntityId] = entry;
       }
@@ -870,6 +888,26 @@ export class InstructedBuild {
             compiled.tables[persistSource.sourceID]?.target,
             compiled.tableFolds,
          );
+
+      // A host-supplied name its dialect cannot quote (it does not parse, or
+      // holds a part the dialect cannot hold) fails the same way on every
+      // attempt, so this source alone is refused, not built and retried.
+      const unquotable = unquotableTargetName(persistSource, instruction);
+      if (unquotable) {
+         recordPendingRefusal(
+            run,
+            persistSource,
+            instruction,
+            sourceEntityId,
+            new MaterializationEligibilityError({
+               message:
+                  `'${persistSource.name}' is not built: its table name ` +
+                  `cannot be written as SQL. ${unquotable}`,
+            }),
+            true,
+         );
+         return undefined;
+      }
 
       // A colocated table is served by its address, so the bind refuses the
       // whole address when any source on it is refused
@@ -1370,6 +1408,27 @@ function refusedForItsConnection(
  * against its address until {@link settleRefusals} knows whether an eligible
  * sibling built that address.
  */
+/**
+ * Why `instruction`'s table name cannot be quoted for the dialect it is
+ * written in (the source's own, or the storage destination's), or undefined
+ * when it can.
+ */
+function unquotableTargetName(
+   persistSource: PersistSource,
+   instruction: BuildInstruction,
+): string | undefined {
+   try {
+      quoteManifestTablePath(
+         instruction.physicalTableName,
+         instruction.destination ? STORAGE_DIALECT : persistSource.dialectName,
+      );
+      return undefined;
+   } catch (err) {
+      if (err instanceof UnquotableIdentifierError) return err.message;
+      throw err;
+   }
+}
+
 function recordPendingRefusal(
    run: InstructedRun,
    persistSource: PersistSource,
