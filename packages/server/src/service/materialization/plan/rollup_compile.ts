@@ -618,7 +618,7 @@ async function compileOverStoredBases(args: {
    }
    for (const [copy, copyText] of args.copies) kept.set(copy, copyText);
    // Each stored copy checked on its own: one that does not compile (a base
-   // whose `except:` names a column its build source never had, say) is left
+   // whose kept `rename:` names a column its build source never had, say) is left
    // out, so only its own rollups build from the warehouse.
    const materializedFiles = new Map(kept);
    for (const [file, fileText] of args.materialized?.files ?? []) {

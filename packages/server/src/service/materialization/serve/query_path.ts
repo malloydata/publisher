@@ -307,6 +307,7 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
       tally,
       tables,
       rollupDecision,
+      rollupMemberDeclines(input.considered),
       storageAnswered,
    );
    const { considered, tierOf, markUsed, skip } = tally;
@@ -590,14 +591,33 @@ function storageTableDecisions(
 }
 
 /**
+ * Each rollup's own decline, by synthesized source name, from every rollup
+ * leg that tried it (the v1 and `#(rollup)` legs share the kind).
+ */
+function rollupMemberDeclines(
+   considered: readonly ConsideredVariant[],
+): ReadonlyMap<string, { code: string; callerDetail?: string }> {
+   const out = new Map<string, { code: string; callerDetail?: string }>();
+   for (const c of considered) {
+      if (c.kind !== "rollup" || !c.members) continue;
+      for (const [name, member] of Object.entries(c.members)) {
+         if (!out.has(name)) out.set(name, member);
+      }
+   }
+   return out;
+}
+
+/**
  * Rollups the rollup leg decides: database ones, and `#(rollup)` ones
- * on either tier. Returns whether a rollup answered.
+ * on either tier. A rollup the leg tried carries its own reason; one it never
+ * tried, the leg's. Returns whether a rollup answered.
  */
 function databaseRollupDecisions(
    input: QueryPathInput,
    tally: PathTally,
    tables: readonly TableState[],
    rollupDecision: ConsideredVariant | undefined,
+   memberDeclines: ReadonlyMap<string, { code: string; callerDetail?: string }>,
    storageAnswered: boolean,
 ): boolean {
    const { markUsed, skip } = tally;
@@ -631,7 +651,19 @@ function databaseRollupDecisions(
                skip(t, "GRAIN_TOO_COARSE");
             }
          } else {
-            skip(t, skipReasonOf(rollupDecision), rollupDecision.callerDetail);
+            const own =
+               t.rollupName !== undefined
+                  ? memberDeclines.get(t.rollupName)
+                  : undefined;
+            if (own) {
+               skip(t, skipReasonOf(own), own.callerDetail);
+            } else {
+               skip(
+                  t,
+                  skipReasonOf(rollupDecision),
+                  rollupDecision.callerDetail,
+               );
+            }
          }
       }
    }
@@ -795,7 +827,7 @@ function verdictWarningMessage(reason: string): string {
  * Anything unexplained is a compile failure against the stored form: almost
  * always a field or refinement the stored form does not carry.
  */
-function skipReasonOf(decision: ConsideredVariant): SkipReason {
+function skipReasonOf(decision: Pick<ConsideredVariant, "code">): SkipReason {
    return declineOfCode(decision.code)?.reason ?? "MISSING_FIELD";
 }
 

@@ -20,6 +20,13 @@ import type { components } from "../../../api";
 export interface VariantSkipExplanation {
    code: string;
    callerDetail?: string;
+   /**
+    * The rollup leg's own decline for each rollup it tried, by the rollup's
+    * synthesized source name, when it tried more than one: the path report
+    * gives each rollup its own reason, and {@link code} stays the leg's
+    * summary.
+    */
+   members?: Readonly<Record<string, Omit<VariantSkipExplanation, "members">>>;
 }
 
 type SkipReason = components["schemas"]["SkipReason"];
@@ -105,6 +112,11 @@ export class LegDecline extends Error {
    readonly warnedCode?: string;
    /** Decided from the query's shape alone, before compiling against it. */
    readonly shapeCheck: boolean;
+   /**
+    * For the rollup leg's summary decline: each rollup it tried, by its
+    * synthesized source name, with that rollup's own decline.
+    */
+   readonly members?: ReadonlyMap<string, LegDecline>;
 
    constructor(
       readonly code: LegDeclineCode,
@@ -114,9 +126,13 @@ export class LegDecline extends Error {
          shapeCheck?: boolean;
          /** For logs only, when it says more than the caller's detail. */
          message?: string;
+         members?: ReadonlyMap<string, LegDecline>;
       } = {},
    ) {
       super(options.message ?? callerDetail ?? code);
+      if (options.members && options.members.size > 0) {
+         this.members = options.members;
+      }
       const decline: { reason: SkipReason; warnedCode?: string } =
          DECLINES[code];
       this.reason = decline.reason;
@@ -150,4 +166,40 @@ export function declineOfCode(
    return code !== undefined && Object.hasOwn(DECLINES, code)
       ? DECLINES[code as LegDeclineCode]
       : undefined;
+}
+
+/**
+ * `summary`, the leg's one decline, carrying `members`, each tried rollup's
+ * own: a fresh decline, so a shared instance is never changed.
+ */
+export function withMemberDeclines(
+   summary: LegDecline,
+   members: ReadonlyMap<string, LegDecline>,
+): LegDecline {
+   if (members.size === 0) return summary;
+   return new LegDecline(summary.code, summary.callerDetail, {
+      shapeCheck: summary.shapeCheck,
+      message: summary.message,
+      members,
+   });
+}
+
+/** A decline's {@link VariantSkipExplanation}, its members' included. */
+export function explanationOfDecline(
+   decline: LegDecline,
+): VariantSkipExplanation {
+   const one = (d: LegDecline) => ({
+      code: d.code,
+      ...(d.callerDetail ? { callerDetail: d.callerDetail } : {}),
+   });
+   return {
+      ...one(decline),
+      ...(decline.members
+         ? {
+              members: Object.fromEntries(
+                 [...decline.members].map(([name, d]) => [name, one(d)]),
+              ),
+           }
+         : {}),
+   };
 }

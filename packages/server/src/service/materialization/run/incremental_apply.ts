@@ -20,6 +20,7 @@
  * between the commit and the ledger advance costs a repeat, not a corruption.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "./error_code";
 import type { IncrementalStepReason } from "../../../materialization_metrics";
@@ -249,8 +250,12 @@ export function deltaSelect(params: {
 /** How a probe or DML statement reaches the warehouse. */
 export type SqlRunner = (
    sql: string,
-   /** A row limit past the connection's default (as few as ten rows). */
-   options?: { rowLimit?: number },
+   options?: {
+      /** A row limit past the connection's default (as few as ten rows). */
+      rowLimit?: number;
+      /** The run's cancel signal, for the delta's own statement only. */
+      abortSignal?: AbortSignal;
+   },
 ) => Promise<{ rows: unknown[] }>;
 
 /**
@@ -708,9 +713,18 @@ export async function applyDeltaScript(
    runner: SqlRunner,
    dialect: string,
    statements: string[],
+   /**
+    * The run's cancel signal: given to the delta's script, which reads the
+    * warehouse, never to its rollback.
+    */
+   abortSignal?: AbortSignal,
 ): Promise<void> {
    try {
-      await runner(deltaScript(statements));
+      if (abortSignal?.aborted) throw new BuildCancelledError();
+      await runner(
+         deltaScript(statements),
+         abortSignal ? { abortSignal } : undefined,
+      );
    } catch (err) {
       if (statements.length > 1) {
          try {
@@ -964,6 +978,8 @@ export interface DeltaTarget {
    dialect: string;
    /** The connection holding the table: every probe and the DML run here. */
    runner: SqlRunner;
+   /** The run's cancel signal, given to the delta's script alone. */
+   abortSignal?: AbortSignal;
    /** The table as the CREATE quoted it, for the DML and the emptiness probe. */
    quotedTablePath: string;
    /**
@@ -1010,11 +1026,14 @@ export function warehouseDeltaTarget(params: {
     * the seed's CTAS runs (see {@link deltaSelect}).
     */
    sourceSQL: string;
+   /** The run's cancel signal, for the delta's script. */
+   abortSignal?: AbortSignal;
 }): DeltaTarget {
    const { dialect, runner, lineage, sourceSQL } = params;
    return {
       dialect,
       runner,
+      ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
       quotedTablePath: params.quotedTablePath,
       logicalTablePath: lineage.physicalTableName,
       deltaRows: async (start, end) =>

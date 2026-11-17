@@ -132,4 +132,10 @@ export interface DatabaseBuildRequest {
     * name, run first in the swap's transaction (leftover_name_views.ts).
     */
    replacesView?: string[];
+   /**
+    * The run's cancel signal. Passed to the statements that read the
+    * warehouse (the CTAS, an incremental delta) and never to a swap, DROP or
+    * backup, so a cancel never leaves a half-swapped table.
+    */
+   signal?: AbortSignal;
 }

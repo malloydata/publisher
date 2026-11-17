@@ -139,6 +139,27 @@ export function mayBeOneTable(a: string, b: string): boolean {
    return tableNamesMeet(canon(a), canon(b));
 }
 
+/**
+ * A written name's table segment, unquoted and case-folded: the key a
+ * reclaim or a run's delete compares names by. Containers are left out, since
+ * a container does not say which table a name reaches (on DuckDB a two-part
+ * name may be a catalog's or a schema's: `memory.t` and `main.t` are one
+ * table), and nor does a place (two names for one DuckLake).
+ */
+export function tableLeafKey(name: string): string {
+   const parts = name.split(".");
+   return parts[parts.length - 1].replace(/["`[\]]/g, "").toLowerCase();
+}
+
+/**
+ * Whether two written names may be one table wherever each is, compared by
+ * table segment alone ({@link tableLeafKey}). The conservative answer for
+ * deciding whether to drop a table: an over-wide match only keeps one.
+ */
+export function mayBeOneTableAnywhere(a: string, b: string): boolean {
+   return tableLeafKey(a) === tableLeafKey(b);
+}
+
 /*
  * A run's build instructions: derived by auto-run from the compiled plan, or
  * checked when a caller supplies them, and where each instructed table lives.

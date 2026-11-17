@@ -6,6 +6,10 @@
 // source an `index.malloy` re-exports, an inherited `#@ preaggregate`, serving
 // after a connection edit, and the verdicts, path report, preview and package
 // warnings agreeing about one package.
+import {
+   castToDeclaredTypes,
+   wideIntegerColumns,
+} from "../../src/service/materialization/stored_column_types";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -370,7 +374,21 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
       const table = `t_${entry.sourceEntityId.slice(0, 12)}`;
       const storage = entry.annotationFields?.storage;
       if (storage) {
-         await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
+         // As a real build stores a sum: a warehouse's numeric arrives as a
+         // DECIMAL, and a DuckDB-computed 128-bit integer is cast to
+         // DECIMAL(38,0), which a lake keeps exactly (P4-01).
+         const computed = await lake.runSQL(`DESCRIBE (${entry.sql})`);
+         const select = castToDeclaredTypes(entry.sql, [], {
+            exactIntegers: wideIntegerColumns(
+               (
+                  computed.rows as {
+                     column_name: string;
+                     column_type: string;
+                  }[]
+               ).map((r) => ({ name: r.column_name, type: r.column_type })),
+            ),
+         });
+         await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${select}`);
          const described = await lake.runSQL(`DESCRIBE ${table}`);
          stored[entry.sourceEntityId] = {
             sourceEntityId: entry.sourceEntityId,

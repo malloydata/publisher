@@ -94,6 +94,12 @@ interface Case {
    live?: true;
    /** The DuckDB tiers only (HUGEINT columns). */
    duckdbOnly?: true;
+   /**
+    * Answered live from a `storage=` table (P4-01): a storage destination is
+    * DuckLake, whose Parquet files hold a 128-bit integer as a DOUBLE, so the
+    * column has no exact read there. Served from a database DuckDB table.
+    */
+   liveOnStorage?: true;
 }
 
 const DUCKDB_CASES: Case[] = [
@@ -136,6 +142,7 @@ const DUCKDB_CASES: Case[] = [
          "run: s -> { group_by: g; aggregate: th is h.sum(), top is hmax.max(); order_by: g }",
       expect: { column: "top", values: [`${HUGE_MAX}`, "-5"] },
       duckdbOnly: true,
+      liveOnStorage: true,
    },
 ];
 
@@ -205,6 +212,8 @@ interface Tier {
    cases: Case[];
    /** Postgres: live rounds past 2^53, and served must equal that. */
    rounds?: true;
+   /** A `storage=` (DuckLake in production) tier. */
+   storage?: true;
    scenario: () => Promise<R4Scenario & { cleanup?: () => Promise<void> }>;
 }
 
@@ -213,6 +222,7 @@ const duckdbCases = [...DUCKDB_CASES, ...AUTHOR_FIELD_CASES];
 const tiers: Tier[] = [
    {
       label: "#@ persist storage=, served copy",
+      storage: true,
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       cases: duckdbCases,
       scenario: async () => ({
@@ -222,6 +232,7 @@ const tiers: Tier[] = [
    },
    {
       label: "#(materialize) storage=",
+      storage: true,
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       cases: [...duckdbCases, ...JOIN_CASES],
       scenario: async () => ({
@@ -336,7 +347,7 @@ for (const tier of tiers) {
             expect(bigintFields(run.servedFields)).toEqual(
                bigintFields(run.liveFields),
             );
-            if (c.live) {
+            if (c.live || (c.liveOnStorage && tier.storage)) {
                expect(run.servedVia).toBeUndefined();
                return;
             }

@@ -296,6 +296,8 @@ type AccessOutcome =
 export function outcomeOf(error: unknown, status: number): AccessOutcome {
    const kind = errorKind(error);
    if (kind === "access_denied") return "denied_lock";
+   // A 403 from the storage behind a table, not a gate: the query failed.
+   if (kind === "storage_access_denied") return "error";
    if (kind === "model_not_found" || status === 404) {
       return "refused_surface";
    }

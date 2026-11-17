@@ -621,6 +621,8 @@ export function recordInstructedBuildFailure(
       ...(instruction.destination
          ? { storageDestinationName: instruction.destination }
          : {}),
+      // The run was cancelled while this source built: stopped, not failed.
+      ...(run.signal?.aborted ? { cancelled: true } : {}),
    };
    // Deprecated mirror into `entries` for consumers that read the failure
    // from `ManifestEntry.error`; without it they would see the source as

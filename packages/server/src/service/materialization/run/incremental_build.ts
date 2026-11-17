@@ -561,7 +561,12 @@ export async function applyIncrementalStep(params: {
    // together (see deltaScript). A failure leaves the table and the boundary
    // as they were; the next run recomputes the same range.
    try {
-      await applyDeltaScript(target.runner, target.dialect, step.statements);
+      await applyDeltaScript(
+         target.runner,
+         target.dialect,
+         step.statements,
+         target.abortSignal,
+      );
    } catch (err) {
       // A pair delta whose parent-row check failed was rolled back: rebuild
       // in full, which writes the flag over the whole table (fail safe).

@@ -1037,6 +1037,7 @@ export class ModelServing {
          packageName: this.host.packageName,
          modelPath: this.host.modelPath,
          failurePrefix: "Query execution failed",
+         subject: governed.compiledSource ?? sourceName ?? undefined,
          // A connection-classified failure (exhausted pool) keeps its own
          // status rather than reading as a bad query.
          passThrough: [ConnectionError],

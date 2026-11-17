@@ -99,8 +99,10 @@ import {
 import { declarableColumns } from "../../../src/service/materialization/stored_column_types";
 import {
    castToDeclaredTypes,
+   isCastConversionError,
    persistSourceDeclaredColumns,
    persistSourceQueryTimezone,
+   wideIntegerColumns,
 } from "../../../src/service/materialization/stored_column_types";
 import type {
    KeyUniqueness,
@@ -980,16 +982,32 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          built = { sql: planned.sql, source: planned.downstream };
          storedBuildSQL[source.name] = planned.sql;
       }
-      // Cast to the declared types as the storage build does.
+      const origin = connections.get(source.connectionName);
+      // Cast to the declared types as the storage build does, a 128-bit
+      // integer computed in DuckDB stored as DECIMAL(38,0) (P4-01).
+      const computedInDuckDB = !origin || origin === duckdb;
       const select = scenario.uncast
          ? built.sql
          : castToDeclaredTypes(
               built.sql,
               persistSourceDeclaredColumns(built.source),
-              { queryTimezone: persistSourceQueryTimezone(built.source) },
+              {
+                 queryTimezone: persistSourceQueryTimezone(built.source),
+                 exactIntegers: computedInDuckDB
+                    ? wideIntegerColumns(
+                         (
+                            await duckdb.runSQL(`DESCRIBE (${built.sql})`, {
+                               rowLimit: 10_000,
+                            })
+                         ).rows.map((r) => ({
+                            name: String(r.column_name),
+                            type: String(r.column_type),
+                         })),
+                      )
+                    : [],
+              },
            );
       builtSQL[source.name] = select;
-      const origin = connections.get(source.connectionName);
       if (origin && origin !== duckdb) {
          // Built on its origin, its rows copied into the destination.
          const file = path.join(dir, `${table}.parquet`);
@@ -998,9 +1016,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             `CREATE TABLE ${DESTINATION}.${table} AS SELECT * FROM read_parquet('${file}')`,
          );
       } else {
-         await duckdb.runSQL(
-            `CREATE TABLE ${DESTINATION}.${table} AS ${select}`,
-         );
+         try {
+            await duckdb.runSQL(
+               `CREATE TABLE ${DESTINATION}.${table} AS ${select}`,
+            );
+         } catch (err) {
+            // As the storage build does: a value the casts cannot convert
+            // stores the computed types instead.
+            if (!isCastConversionError(err)) throw err;
+            builtSQL[source.name] = built.sql;
+            await duckdb.runSQL(
+               `CREATE TABLE ${DESTINATION}.${table} AS ${built.sql}`,
+            );
+         }
       }
       // runSQL returns 10 rows unless told otherwise: one per column here.
       const described = await duckdb.runSQL(

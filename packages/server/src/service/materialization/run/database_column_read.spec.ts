@@ -8,6 +8,7 @@ import * as os from "os";
 import * as path from "path";
 import { capturedDatabaseSchema } from "./database_build_strategy";
 import { observedDatabaseColumns } from "./database_column_read";
+import { recordConnectionType } from "../../connection_type";
 
 /**
  * The bind's read of each database table's columns from its warehouse:
@@ -68,7 +69,13 @@ describe("observedDatabaseColumns on DuckDB", () => {
          connectionNameOf: () => "duckdb",
          connection: async () => connection,
       });
-      expect(statements).toHaveLength(3);
+      // One DESCRIBE per table, and one read of which catalogs are DuckLake.
+      expect(
+         statements.filter((sql) => !sql.includes("duckdb_databases()")),
+      ).toHaveLength(3);
+      expect(
+         statements.filter((sql) => sql.includes("duckdb_databases()")),
+      ).toHaveLength(1);
       const a = observed.get("ida") as {
          columns: { name: string; type?: string }[];
       };
@@ -256,7 +263,9 @@ describe("observedDatabaseColumns: batched, bounded, timed out", () => {
          connectionNameOf: () => "d",
          connection: async () => r.connection,
       });
-      expect(r.statements).toHaveLength(10);
+      expect(
+         r.statements.filter((sql) => !sql.includes("duckdb_databases()")),
+      ).toHaveLength(10);
       expect(r.maxInFlight()).toBe(4);
    });
 
@@ -319,5 +328,135 @@ describe("observedDatabaseColumns: batched, bounded, timed out", () => {
          connection: async () => r.connection,
       });
       expect(observed.get("t")).toEqual({ unread: "ambiguous" });
+   });
+});
+
+/**
+ * P4-01: DuckLake writes a 128-bit integer to Parquet as a DOUBLE while its
+ * catalog still says HUGEINT. A table on a `ducklake` connection reads such a
+ * column as the DOUBLE it holds; the same column on a plain DuckDB connection,
+ * which keeps every digit, reads as its own type.
+ */
+describe("observedDatabaseColumns: a DuckLake 128-bit integer (P4-01)", () => {
+   const open = async (name: string) => {
+      const c = new DuckDBConnection(
+         name,
+         path.join(
+            fs.mkdtempSync(path.join(os.tmpdir(), "observed-")),
+            "db.duckdb",
+         ),
+      );
+      await c.runSQL(
+         `CREATE TABLE t AS SELECT 1::HUGEINT AS h, 1::UHUGEINT AS u, 1::BIGINT AS b, 1::DECIMAL(38,0) AS d`,
+      );
+      return c;
+   };
+   const read = async (connection: DuckDBConnection) =>
+      (
+         (
+            await observedDatabaseColumns({
+               entries: { id: { tableName: "t" } },
+               connectionNameOf: () => "w",
+               connection: async () => connection,
+            })
+         ).get("id") as { columns: unknown[] }
+      ).columns;
+
+   it("reads it as a DOUBLE on a ducklake connection", async () => {
+      const c = recordConnectionType(await open("lake_like"), "ducklake");
+      try {
+         expect(await read(c)).toEqual([
+            {
+               name: "h",
+               type: "DOUBLE",
+               nativeType: "DOUBLE",
+               storedAsDouble: true,
+            },
+            {
+               name: "u",
+               type: "DOUBLE",
+               nativeType: "DOUBLE",
+               storedAsDouble: true,
+            },
+            { name: "b", type: "BIGINT", nativeType: "BIGINT" },
+            { name: "d", type: "DOUBLE", nativeType: "DECIMAL(38,0)" },
+         ]);
+      } finally {
+         await c.close();
+      }
+   });
+
+   it("reads it as its own type on a plain duckdb connection", async () => {
+      const c = recordConnectionType(await open("plain"), "duckdb");
+      try {
+         const columns = (await read(c)) as {
+            name: string;
+            storedAsDouble?: true;
+         }[];
+         expect(columns.some((col) => col.storedAsDouble)).toBe(false);
+         expect(columns[0]).toMatchObject({ name: "h", nativeType: "HUGEINT" });
+      } finally {
+         await c.close();
+      }
+   });
+});
+
+/**
+ * P4-01: the guard is decided per table, from its catalog: a DuckDB
+ * connection whose setup attached a DuckLake writes lake tables while it
+ * reports `duckdb`.
+ */
+describe("observedDatabaseColumns: a DuckLake catalog on a duckdb connection (P4-01)", () => {
+   it("reads a lake table's 128-bit integer as a DOUBLE, and a native table's as itself", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "observed-lake-"));
+      const c = recordConnectionType(
+         new DuckDBConnection("attached_lake", path.join(dir, "db.duckdb")),
+         "duckdb",
+      );
+      try {
+         await c.runSQL("INSTALL ducklake");
+         await c.runSQL("LOAD ducklake");
+         await c.runSQL(
+            `ATTACH 'ducklake:${path.join(dir, "m.ducklake")}' AS lake (DATA_PATH '${path.join(dir, "data")}/')`,
+         );
+         await c.runSQL("CREATE TABLE lake.main.lt AS SELECT 1::HUGEINT AS h");
+         await c.runSQL("CREATE TABLE nt AS SELECT 1::HUGEINT AS h");
+         const observed = await observedDatabaseColumns({
+            entries: {
+               lake: { tableName: "lake.main.lt" },
+               native: { tableName: "nt" },
+            },
+            connectionNameOf: () => "w",
+            connection: async () => c,
+         });
+         expect(
+            (observed.get("lake") as { columns: unknown[] }).columns,
+         ).toEqual([
+            {
+               name: "h",
+               type: "DOUBLE",
+               nativeType: "DOUBLE",
+               storedAsDouble: true,
+            },
+         ]);
+         expect(
+            (observed.get("native") as { columns: unknown[] }).columns,
+         ).toEqual([{ name: "h", type: "BIGINT", nativeType: "HUGEINT" }]);
+         // A USE of the lake makes an unqualified name a lake table.
+         await c.runSQL("USE lake");
+         await c.runSQL("CREATE TABLE ut AS SELECT 1::HUGEINT AS h");
+         const used = await observedDatabaseColumns({
+            entries: { used: { tableName: "ut" } },
+            connectionNameOf: () => "w",
+            connection: async () => c,
+         });
+         expect(
+            (used.get("used") as { columns: { storedAsDouble?: true }[] })
+               .columns[0].storedAsDouble,
+         ).toBe(true);
+      } finally {
+         await c.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
    });
 });

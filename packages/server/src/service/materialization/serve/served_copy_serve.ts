@@ -72,6 +72,7 @@ import {
    type BigIntegerReadOptions,
    nativeTypeLookup,
    declaredColumnsOf,
+   holdsDucklakeDouble,
    liveKeepsBigIntegers,
    storedColumnReadPlan,
    storedTypeServesAs,
@@ -1608,10 +1609,12 @@ export class ServedCopyServe {
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
+         // An `except:` naming a column the table does not store has nothing
+         // to exclude on any re-root, v1 or `#(materialize)` (P2-29).
+         dropsUnstoredExcepts: true as const,
          ...(!plan
             ? {
                  keepsIncludes: true as const,
-                 dropsUnstoredExcepts: true as const,
                  ...(refinesUnfilteredBase(map.node(node.sourceID), map)
                     ? { refinementRooted: true as const }
                     : {}),
@@ -1744,9 +1747,10 @@ export class ServedCopyServe {
    }
 
    /**
-    * The trailing `extend` runs of a `#(materialize)` source's ancestors in
-    * its own file, root first ({@link keptAncestorChain}, confirmed against
-    * the file's text), which its re-root keeps ahead of its own blocks. Kept
+    * The trailing `extend` runs of a `#(materialize)` source's ancestors, in
+    * its own file or the files it imports, root first
+    * ({@link keptAncestorChain}, confirmed against each file's
+    * text), which its re-root keeps ahead of its own blocks. Kept
     * for an extension table (P10), whose table holds every one of their rows
     * and stored columns, so it loses no measure, join or view any of them
     * declares; and for one whose bases declare a measure, view or join it
@@ -1763,10 +1767,12 @@ export class ServedCopyServe {
    ): string | undefined {
       const plan = this.materializePlans[reroot.sourceID];
       if (!plan) return undefined;
-      const text = fileText(reroot.url);
-      if (text === undefined) return undefined;
+      // Across files: an extension in a file that imports its base's file
+      // keeps that base's blocks too, so it is re-rooted on its own table
+      // rather than left reading its base's (P2-22).
       const confirmed = confirmedAncestors(
-         text,
+         fileText,
+         reroot.url,
          reroot.range,
          keptAncestorChain(map, reroot.sourceID, reroot.url),
       );
@@ -1780,9 +1786,7 @@ export class ServedCopyServe {
          confirmed.some((a) => declaresBlocks(map.node(a.sourceID)?.def));
       if (!needed) return undefined;
       return confirmed
-         .flatMap((a) =>
-            a.run ? [text.slice(a.run.start, a.run.end).trimEnd()] : [],
-         )
+         .flatMap((a) => (a.runText ? [a.runText] : []))
          .reverse()
          .join(" ");
    }
@@ -2994,6 +2998,7 @@ function materializedColumnsOf(
             : [];
       }),
       def,
+      !isDatabase(binding),
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [
@@ -3081,7 +3086,7 @@ function materializedColumnsOf(
             type: "",
             field: fields.find((f) => fieldNameOf(f) === c.name),
          })),
-         readOptions,
+         { ...readOptions, ducklake: !isDatabase(binding) },
       );
    });
    // A joined field live types as a warehouse-native type has no
@@ -3092,7 +3097,12 @@ function materializedColumnsOf(
          liveTypesAsNative(fields.find((f) => fieldNameOf(f) === c.name)),
       );
    });
-   if (joinedNative || joinedReads.some((plan) => plan.refusals.length > 0)) {
+   if (
+      joinedNative ||
+      joinedReads.some(
+         (plan) => plan.refusals.length > 0 || plan.leftOut.length > 0,
+      )
+   ) {
       problems.push({
          sourceName,
          sourceID: node.sourceID,
@@ -3123,6 +3133,8 @@ function materializedColumnsOf(
 export function materializedReadPlan(
    schema: readonly { name: string; type: string }[],
    def: { fields?: unknown[] } | undefined,
+   /** A `storage=` (DuckLake) table: a 128-bit integer column is left out. */
+   ducklake = false,
 ): ReturnType<typeof storedColumnReadPlan> {
    const live = new Map<string, string>();
    for (const f of (def?.fields ?? []) as {
@@ -3147,7 +3159,7 @@ export function materializedReadPlan(
    return storedColumnReadPlan(
       own,
       own.map((c) => ({ name: c.name, type: live.get(c.name) as string })),
-      { queryTimezone: queryTimezoneOf(def) },
+      { queryTimezone: queryTimezoneOf(def), ducklake },
    );
 }
 
@@ -3192,7 +3204,7 @@ function v1ColumnsOf(
    const typePlan = storedColumnReadPlan(
       narrowed,
       declaredColumnsOf(def.fields),
-      { queryTimezone: queryTimezoneOf(def) },
+      { queryTimezone: queryTimezoneOf(def), ducklake: !isDatabase(binding) },
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [
@@ -4704,6 +4716,18 @@ export function chainBuildText(
    const aliases: Record<string, string[]> = {};
    const sourceIDs = new Map<string, readonly string[] | undefined>();
    for (const upstream of request.upstreams) {
+      // An upstream table holding a 128-bit integer (a list's or struct's
+      // leaf included) holds its digits rounded
+      // (DuckLake stores it as a DOUBLE, P4-01): never stacked on, so the
+      // downstream recomputes from its raw source rather than storing those
+      // rounded values as exact. Its text then reads the upstream as written.
+      if (
+         (upstream.entry.schema ?? []).some((c) =>
+            holdsDucklakeDouble(c.type ?? ""),
+         )
+      ) {
+         continue;
+      }
       const address = upstream.entry.sourceEntityId;
       entries[address] = upstream.entry;
       const names = Object.keys(upstream.names);

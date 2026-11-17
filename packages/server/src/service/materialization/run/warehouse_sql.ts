@@ -1024,7 +1024,22 @@ export interface CatalogBatch {
    columnsOf(
       rows: Record<string, unknown>[],
    ): Map<string, NativeColumn[] | "ambiguous">;
+   /**
+    * On a DuckDB connection, which may attach a DuckLake catalog: the query
+    * that lists its attached catalogs and their types
+    * ({@link DUCKDB_CATALOGS_SQL}), and the catalog the batch's one table
+    * names (undefined: the session's current one).
+    */
+   attachedCatalogs?: { sql: string; catalog: string | undefined };
 }
+
+/**
+ * A DuckDB session's attached catalogs (`database_name`, `type`) and its
+ * current one (`current`): a table in a catalog of type `ducklake` holds a
+ * 128-bit integer as a DOUBLE.
+ */
+const DUCKDB_CATALOGS_SQL =
+   "SELECT database_name, type, current_database() AS current FROM duckdb_databases()";
 
 /** Tables per catalog query: keeps an `IN (...)` list and its SQL bounded. */
 const CATALOG_BATCH_SIZE = 100;
@@ -1074,6 +1089,10 @@ export function nativeTypeCatalogBatches(
                sql: single.sql,
                keys: [t.key],
                columnsOf: (rows) => new Map([[t.key, rows.map(single.read)]]),
+               attachedCatalogs: {
+                  sql: DUCKDB_CATALOGS_SQL,
+                  catalog: t.parts.length >= 3 ? t.parts[0] : undefined,
+               },
             };
          });
       case "postgres":
