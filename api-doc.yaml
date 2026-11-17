@@ -4265,7 +4265,14 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
-      description: Forbidden - insufficient permissions to perform the operation
+      description: |
+        Forbidden - insufficient permissions to perform the operation. With
+        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes),
+        the database ran the query and the storage holding a table's data (a
+        DuckLake data path, an object-store bucket) refused its read: the
+        query and the model are fine, and a retry fails the same way until
+        the database's storage credentials are fixed. The body names what
+        the caller read and never a storage path; the full text is logged.
       content:
         application/json:
           schema:
@@ -9955,6 +9962,13 @@ components:
             the environment does not have, usually one deleted after the
             package was loaded.
 
+            STORAGE_ACCESS_DENIED, on a 403, means the storage holding a
+            table's data (a DuckLake data path, an object-store bucket)
+            refused the database's read. The query and the model are fine;
+            whoever configures the database's storage credentials has to fix
+            it, and retrying fails the same way. The body names the source or
+            connection the caller read and no storage path.
+
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
             client generated before it -- on the one field whose purpose is to
@@ -9995,7 +10009,7 @@ components:
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
-            MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
+            STORAGE_ACCESS_DENIED, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
             VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
             PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,

@@ -1744,6 +1744,50 @@
       ]
     }
   },
+  "StorageAccessDeniedError": {
+    "class": "StorageAccessDeniedError",
+    "http": {
+      "status": 403,
+      "json": {
+        "code": 403,
+        "message": "The storage holding the data \"trips\" reads refused the database's read (HTTP 403). The query and the model are fine; the database's storage credentials are not.",
+        "reason": "STORAGE_ACCESS_DENIED"
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Storage access denied"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "The storage holding the data \"trips\" reads refused the database's read (HTTP 403). The query and the model are fine; the database's storage credentials are not.",
+      "suggestions": [
+        "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the storage credentials are fixed.",
+        "Report that the database's credentials for the storage holding this table's data were refused."
+      ],
+      "logs": [
+        [
+          "warn",
+          "Storage access denied during executeQuery"
+        ]
+      ]
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: HTTP Error: HTTP GET error on '<storage path>' (HTTP 403 Forbidden)",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "UnsupportedCatalogFormatError": {
     "class": "UnsupportedCatalogFormatError",
     "http": {
@@ -2546,7 +2590,7 @@
       "logs": []
     },
     "mcpSetup": {
-      "message": "An unexpected internal error occurred during executeQuery (Setup).: installed from gs://b/p.zip; a reload would discard the change",
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: installed from <storage path>; a reload would discard the change",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
