@@ -59,6 +59,7 @@ import {
    bindStorageEntries,
    deriveColocatedServeBindings,
    type ObservedDrift,
+   type UnreadTable,
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./serve/bind";
@@ -70,6 +71,7 @@ import {
    colocatedDriftFindings,
 } from "./serve/storage_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
+import { tablePathParts } from "../quoting";
 import * as warnings from "./package_warnings";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
@@ -98,6 +100,12 @@ export function toTableNameManifest(
       out[sourceEntityId] = { tableName: entry.tableName };
    }
    return out;
+}
+
+/** A bound table's path as a person reads it: its parts, unquoted. */
+function tableNameOf(name: string | undefined): { tableName?: string } {
+   if (!name) return {};
+   return { tableName: (tablePathParts(name, "") ?? [name]).join(".") };
 }
 
 /** Tries to read a table a bind left unread, before polls alone retry it. */
@@ -175,7 +183,7 @@ export class PackageMaterialization {
       | undefined;
    private observedOutcome: {
       drifted: ObservedDrift[];
-      unread: { sourceEntityId: string; reason: string }[];
+      unread: UnreadTable[];
    } = { drifted: [], unread: [] };
    /** The `storage=` bindings a host's or a run's manifest made. */
    private storageBindings: readonly Binding[] = [];
@@ -504,8 +512,28 @@ export class PackageMaterialization {
     * rather than skip, so the table is read once it can be.
     */
    hasUnreadDatabaseTables(): boolean {
+      return this.knownUnread().length > 0;
+   }
+
+   /**
+    * The unread tables this package reads: an entry whose address its plan
+    * or a served binding names. A manifest entry for a table no source here
+    * reads (another definition's) is neither warned of nor rebound for.
+    */
+   private knownUnread(): UnreadTable[] {
       this.snapshot();
-      return this.observedOutcome.unread.length > 0;
+      // The bindings before the observation leaves the unread ones out.
+      const known = new Set<string>(
+         this.colocatedServeBindings().map((b) => b.virtualHandle),
+      );
+      for (const source of Object.values(
+         (this.plan.servingPlan() ?? this.plan.buildPlan)?.sources ?? {},
+      )) {
+         if (source.sourceEntityId) known.add(source.sourceEntityId);
+      }
+      return this.observedOutcome.unread.filter((u) =>
+         known.has(u.sourceEntityId),
+      );
    }
 
    private cancelUnreadRetry(): void {
@@ -524,9 +552,15 @@ export class PackageMaterialization {
       const observed = this.observedColumns;
       const entries = this.colocatedEntries;
       if (!observed || !entries || attempt > UNREAD_RETRY_ATTEMPTS) return;
-      const unread = [...observed]
-         .filter(([id, o]) => "unread" in o && Object.hasOwn(entries, id))
-         .map(([id]) => id);
+      // Only tables a source here reads: another definition's never is.
+      const unread = this.knownUnread()
+         .map((u) => u.sourceEntityId)
+         .filter((id) => {
+            const o = observed.get(id);
+            return (
+               o !== undefined && "unread" in o && Object.hasOwn(entries, id)
+            );
+         });
       if (unread.length === 0) return;
       const delay = Math.min(
          UNREAD_RETRY_BASE_MS * 2 ** (attempt - 1),
@@ -618,7 +652,8 @@ export class PackageMaterialization {
             {
                packageName: this.owner.packageName(),
                sourceEntityId: miss.sourceEntityId,
-               error: miss.reason,
+               reason: miss.reason,
+               ...(miss.detail !== undefined ? { error: miss.detail } : {}),
             },
          );
       }
@@ -1050,9 +1085,13 @@ export class PackageMaterialization {
     * is unread (`database-table-unread`).
     */
    databaseTableUnreadWarnings(): ApiPackageWarning[] {
-      this.snapshot();
       return warnings.databaseTableUnreadWarnings(
-         this.observedOutcome.unread,
+         this.knownUnread().map((u) => ({
+            ...u,
+            ...tableNameOf(
+               this.colocatedEntries?.[u.sourceEntityId]?.tableName,
+            ),
+         })),
          this.plan.servingPlan() ?? this.plan.buildPlan,
          this.unreadRetry !== undefined,
       );

@@ -130,14 +130,19 @@ describe("observedDatabaseColumns on DuckDB", () => {
             return connection;
          },
       });
-      expect(Object.keys(observed.get("gone")!)).toEqual(["unread"]);
+      // A fixed class for the API; the driver's text only as the log's detail.
+      expect(observed.get("gone")).toMatchObject({
+         unread: "catalog_query_failed",
+      });
       expect(observed.get("nowhere")).toEqual({
-         unread: "the table's connection is not known",
+         unread: "connection_failed",
+         detail: "the table's connection is not known",
       });
-      expect(observed.get("broken")).toEqual({ unread: "no such connection" });
-      expect(observed.get("garbled")).toEqual({
-         unread: "the table's name does not parse",
+      expect(observed.get("broken")).toEqual({
+         unread: "connection_failed",
+         detail: "no such connection",
       });
+      expect(observed.get("garbled")).toEqual({ unread: "unparseable" });
    });
 });
 
@@ -187,9 +192,7 @@ describe("observedDatabaseColumns: batched, bounded, timed out", () => {
          dialect: "postgres",
          columns: [{ name: "n", type: "BIGINT", nativeType: "bigint" }],
       });
-      expect(observed.get("id4")).toEqual({
-         unread: "the table was not found in its catalog",
-      });
+      expect(observed.get("id4")).toEqual({ unread: "not_found" });
    });
 
    it("reads ten tables of one schema in one information_schema query, and one per other schema", async () => {
@@ -238,6 +241,26 @@ describe("observedDatabaseColumns: batched, bounded, timed out", () => {
       expect(r.maxInFlight()).toBe(4);
    });
 
+   it("redacts a connection's secret from the detail the log reads", async () => {
+      const failing = {
+         dialectName: "postgres",
+         password: "hunter2-secret",
+         runSQL: async () => {
+            throw new Error(
+               "password authentication failed: postgres://u:hunter2-secret@h/db",
+            );
+         },
+      } as never;
+      const observed = await observedDatabaseColumns({
+         entries: { t: { tableName: "sch.t" } },
+         connectionNameOf: () => "pg",
+         connection: async () => failing,
+      });
+      const read = observed.get("t") as { unread: string; detail?: string };
+      expect(read.unread).toBe("catalog_query_failed");
+      expect(read.detail).not.toContain("hunter2-secret");
+   });
+
    it("reads a table whose query outlives the timeout as unread", async () => {
       const r = recording("postgres", () => [], 200);
       const started = Date.now();
@@ -249,7 +272,8 @@ describe("observedDatabaseColumns: batched, bounded, timed out", () => {
       });
       expect(Date.now() - started).toBeLessThan(150);
       expect(observed.get("slow")).toEqual({
-         unread: "the catalog read timed out after 20ms",
+         unread: "timed_out",
+         detail: "the catalog read timed out after 20ms",
       });
    });
 
@@ -275,8 +299,6 @@ describe("observedDatabaseColumns: batched, bounded, timed out", () => {
          connectionNameOf: () => "w",
          connection: async () => r.connection,
       });
-      expect(observed.get("t")).toEqual({
-         unread: "the table's name matched more than one table",
-      });
+      expect(observed.get("t")).toEqual({ unread: "ambiguous" });
    });
 });

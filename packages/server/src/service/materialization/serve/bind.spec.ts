@@ -785,16 +785,25 @@ describe("applyObservedColumns", () => {
       const out = applyObservedColumns({
          entries,
          bindings: [binding],
-         observed: new Map([["addr1", { unread: "connection refused" }]]),
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  unread: "connection_failed" as const,
+                  detail: "connection refused",
+               },
+            ],
+         ]),
       });
       expect(out.entries).toEqual({});
       expect(out.bindings).toEqual([]);
       expect(out.unread).toEqual([
-         { sourceEntityId: "addr1", reason: "connection refused" },
          {
-            sourceEntityId: "rollup1",
-            reason: "the table was not read at this bind",
+            sourceEntityId: "addr1",
+            reason: "connection_failed",
+            detail: "connection refused",
          },
+         { sourceEntityId: "rollup1", reason: "not_read" },
       ]);
    });
 

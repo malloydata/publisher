@@ -28,12 +28,20 @@ describe("databaseTableUnreadWarnings", () => {
       },
    } as unknown as BuildPlan;
 
-   it("names the source, or a rollup's base, the reason and the pending retry", () => {
+   it("names the table or rollup, its source or base, a fixed reason and the pending retry", () => {
       expect(
          databaseTableUnreadWarnings(
             [
-               { sourceEntityId: "addr1", reason: "timed out" },
-               { sourceEntityId: "addr2", reason: "not found" },
+               {
+                  sourceEntityId: "addr1",
+                  reason: "timed_out",
+                  tableName: "s.orders_t",
+               },
+               {
+                  sourceEntityId: "addr2",
+                  reason: "not_found",
+                  tableName: "s.r_t",
+               },
             ],
             plan,
             true,
@@ -45,7 +53,7 @@ describe("databaseTableUnreadWarnings", () => {
             code: "database-table-unread",
             severity: "warn",
             message:
-               "The table of `orders` in its database could not be read when it was bound (timed out), so its queries are answered live. A retry is pending.",
+               "The table `s.orders_t` of `orders` could not be read in its database when it was bound (the catalog read timed out), so its queries are answered live. A retry is pending.",
          },
          {
             model: "m.malloy",
@@ -53,14 +61,14 @@ describe("databaseTableUnreadWarnings", () => {
             code: "database-table-unread",
             severity: "warn",
             message:
-               "The table of `orders` in its database could not be read when it was bound (not found), so its queries are answered live. A retry is pending.",
+               "The rollup `orders__rollup__r` of `orders` could not be read in its database when it was bound (it was not found in its database's catalog), so its queries are answered live. A retry is pending.",
          },
       ]);
    });
 
    it("says the next bind reads it when no retry is left, and warns of nothing once read", () => {
       const [w] = databaseTableUnreadWarnings(
-         [{ sourceEntityId: "addr1", reason: "x" }],
+         [{ sourceEntityId: "addr1", reason: "connection_failed" }],
          plan,
          false,
       );

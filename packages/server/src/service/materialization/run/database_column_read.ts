@@ -23,6 +23,7 @@ import { tablePathParts } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import type { FreshnessManifest, ObservedColumns } from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
+import { redactConnectionSecrets } from "./materialization_run_support";
 import {
    type CatalogBatch,
    type CatalogTable,
@@ -58,7 +59,10 @@ export async function observedDatabaseColumns(args: {
    for (const id of Object.keys(args.entries)) {
       const name = args.connectionNameOf(id);
       if (!name) {
-         out.set(id, { unread: "the table's connection is not known" });
+         out.set(id, {
+            unread: "connection_failed",
+            detail: "the table's connection is not known",
+         });
          continue;
       }
       byConnection.set(name, [...(byConnection.get(name) ?? []), id]);
@@ -69,7 +73,10 @@ export async function observedDatabaseColumns(args: {
       try {
          connection = await args.connection(name);
       } catch (err) {
-         for (const id of ids) out.set(id, { unread: errMessage(err) });
+         const detail = redactConnectionSecrets(errMessage(err));
+         for (const id of ids) {
+            out.set(id, { unread: "connection_failed", detail });
+         }
          continue;
       }
       const dialect = connection.dialectName;
@@ -77,14 +84,15 @@ export async function observedDatabaseColumns(args: {
       for (const id of ids) {
          const parts = tablePathParts(args.entries[id].tableName, dialect);
          if (parts) tables.push({ key: id, parts });
-         else out.set(id, { unread: "the table's name does not parse" });
+         else out.set(id, { unread: "unparseable" });
       }
       const batches = nativeTypeCatalogBatches(tables, dialect);
       const batched = new Set(batches.flatMap((b) => b.keys));
       for (const t of tables) {
          if (!batched.has(t.key)) {
             out.set(t.key, {
-               unread: "the table's name gives no catalog to read",
+               unread: "unparseable",
+               detail: "the table's name gives no catalog to read",
             });
          }
       }
@@ -120,7 +128,12 @@ async function readBatch(
       );
       rows = result.rows as Record<string, unknown>[];
    } catch (err) {
-      for (const key of batch.keys) out.set(key, { unread: errMessage(err) });
+      const detail = redactConnectionSecrets(errMessage(err), connection);
+      const unread =
+         err instanceof CatalogReadTimeout
+            ? "timed_out"
+            : "catalog_query_failed";
+      for (const key of batch.keys) out.set(key, { unread, detail });
       return;
    }
    const columns = batch.columnsOf(rows);
@@ -128,17 +141,17 @@ async function readBatch(
    for (const key of batch.keys) {
       const read = columns.get(key);
       if (read === undefined) {
-         out.set(key, { unread: "the table was not found in its catalog" });
+         out.set(key, { unread: "not_found" });
       } else if (read === "ambiguous") {
          out.set(key, {
-            unread: "the table's name matched more than one table",
+            unread: "ambiguous",
          });
       } else {
          const named = read.filter((c) => c.name !== "" && c.type !== "");
          out.set(
             key,
             named.length === 0
-               ? { unread: "the table's columns read empty" }
+               ? { unread: "not_found", detail: "its columns read empty" }
                : {
                     dialect,
                     columns: named.map((c) => {
@@ -165,16 +178,20 @@ async function readBatch(
    }
 }
 
+/** A catalog read that outlived its bound. */
+class CatalogReadTimeout extends Error {
+   constructor(ms: number) {
+      super(`the catalog read timed out after ${ms}ms`);
+   }
+}
+
 /** `promise`, or a rejection after `ms`. */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
    let timer: ReturnType<typeof setTimeout> | undefined;
    return Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-         timer = setTimeout(
-            () => reject(new Error(`the catalog read timed out after ${ms}ms`)),
-            ms,
-         );
+         timer = setTimeout(() => reject(new CatalogReadTimeout(ms)), ms);
       }),
    ]).finally(() => clearTimeout(timer));
 }

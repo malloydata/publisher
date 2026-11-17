@@ -43,6 +43,7 @@ import type {
    FreshnessManifest,
    ManifestEntry,
    ObservedColumns,
+   UnreadReason,
 } from "../domain/types";
 import {
    type Binding,
@@ -464,6 +465,14 @@ export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
    });
 }
 
+/** A bound database table the bind could not read, and why. */
+export interface UnreadTable {
+   sourceEntityId: string;
+   reason: UnreadReason;
+   /** The driver's message, secrets redacted: for the log alone. */
+   detail?: string;
+}
+
 /** One bound colocated table whose warehouse columns moved since its build. */
 export interface ObservedDrift {
    sourceEntityId: string;
@@ -515,7 +524,7 @@ export function applyObservedColumns(args: {
    entries: FreshnessManifest;
    bindings: Binding[];
    drifted: ObservedDrift[];
-   unread: { sourceEntityId: string; reason: string }[];
+   unread: UnreadTable[];
 } {
    const { observed } = args;
    if (!observed) {
@@ -528,7 +537,7 @@ export function applyObservedColumns(args: {
    }
    const entries: FreshnessManifest = {};
    const drifted: ObservedDrift[] = [];
-   const unread: { sourceEntityId: string; reason: string }[] = [];
+   const unread: UnreadTable[] = [];
    const left = new Set<string>();
    const reads = new Map<
       string,
@@ -540,11 +549,15 @@ export function applyObservedColumns(args: {
          .map((b) => b.virtualHandle),
    );
    for (const [id, entry] of Object.entries(args.entries)) {
-      const read = observed.get(id) ?? {
-         unread: "the table was not read at this bind",
+      const read: ObservedColumns = observed.get(id) ?? {
+         unread: "not_read",
       };
       if ("unread" in read) {
-         unread.push({ sourceEntityId: id, reason: read.unread });
+         unread.push({
+            sourceEntityId: id,
+            reason: read.unread,
+            ...(read.detail !== undefined ? { detail: read.detail } : {}),
+         });
          left.add(id);
          continue;
       }

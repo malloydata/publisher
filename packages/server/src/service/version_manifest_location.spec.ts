@@ -150,8 +150,37 @@ async function total(pkg: Package): Promise<number> {
    return Number((res.compactResult as unknown as { t: number }[])[0].t);
 }
 
-/** `host` (42) and `local` (7) in the version's own DuckDB, once the retry has read them. */
-async function storeTables(pkg: Package): Promise<void> {
+/**
+ * `host` (42) and `local` (7) in the version's own DuckDB, once the retry has
+ * read them. The version bound them before they existed, so its bind could
+ * not read them: that is asserted first, before they are created, so it
+ * holds whatever the retry's timing.
+ */
+async function storeTables(pkg: Package, unread = true): Promise<void> {
+   const unreadWarnings = () =>
+      (pkg.getPackageMetadata().warnings ?? []).filter(
+         (w) => w.code === "database-table-unread",
+      );
+   expect(pkg.materialization().hasUnreadDatabaseTables()).toBe(unread);
+   if (!unread) {
+      // Nothing to warn of, and nothing a poll would rebind for.
+      expect(unreadWarnings()).toEqual([]);
+   }
+   // Unread, and the package says so, with a fixed reason and a pending
+   // retry, never the driver's text.
+   const [warning] = unread ? unreadWarnings() : [];
+   if (unread)
+      expect(warning).toMatchObject({
+         code: "database-table-unread",
+         severity: "warn",
+         subject: "summary",
+      });
+   if (unread) {
+      // DuckDB's DESCRIBE of a missing table fails: a fixed class.
+      expect(warning.message).toContain("(the catalog query failed)");
+      expect(warning.message).toContain("A retry is pending.");
+      expect(warning.message).not.toContain("Catalog Error");
+   }
    const duckdb = await pkg
       .getMalloyConfig()
       .connections.lookupConnection("duckdb");
@@ -161,25 +190,7 @@ async function storeTables(pkg: Package): Promise<void> {
    await duckdb.runSQL(
       `CREATE OR REPLACE TABLE summary_local AS SELECT 1 AS a, 7::BIGINT AS n`,
    );
-   // The tables exist only now, after the version bound them: that bind
-   // could not read them, so they answer live until the facade's retry reads
-   // them (no rebind here: the retry is what is proven).
-   const unreadWarnings = () =>
-      (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "database-table-unread",
-      );
-   // While a table is unread, the package says so, and that a retry is due.
-   if (pkg.materialization().hasUnreadDatabaseTables()) {
-      const [warning] = unreadWarnings();
-      expect(warning?.severity).toBe("warn");
-      // Named by its source when the plan knows the table's address (an
-      // unversioned package's host table here is another definition's).
-      if (warning?.subject !== undefined) {
-         expect(warning.subject).toBe("summary");
-      }
-      expect(warning.message).toContain("does not exist");
-      expect(warning.message).toContain("A retry is pending.");
-   }
+   // No rebind here: the facade's retry is what is proven.
    const deadline = Date.now() + 15_000;
    while (pkg.materialization().hasUnreadDatabaseTables()) {
       if (Date.now() > deadline) {
@@ -461,7 +472,8 @@ describe("a version's manifestLocation is its registry row's", () => {
       // And a load afresh stays live.
       const reloaded = await loadAfresh("1.0.0");
       expect(reloaded.getManifestLocation()).toBeNull();
-      await storeTables(reloaded);
+      // Not unread: nothing is bound.
+      await storeTables(reloaded, false);
       expect(await total(reloaded)).toBe(1);
    });
 });
@@ -534,7 +546,8 @@ describe("a local run of a host-bound package or version", () => {
       const soloId = Object.values(solo.getBuildPlan()?.sources ?? {})[0]
          ?.sourceEntityId as string;
       localStore = { [soloId]: entryFor(soloId, "summary_local") };
-      await storeTables(solo);
+      // Not unread: its host table is another definition's: no source here reads it.
+      await storeTables(solo, false);
       expect(solo.getManifestLocation()).toBe(host);
 
       await env.updatePackage("solo", { name: "solo", manifestLocation: null });
@@ -563,7 +576,8 @@ describe("a local run of a host-bound package or version", () => {
          },
          "storageBindingResolver",
       );
-      await storeTables(solo);
+      // Not unread: its host table is another definition's: no source here reads it.
+      await storeTables(solo, false);
 
       await env.updatePackage("solo", { name: "solo", manifestLocation: null });
       expect(solo.getManifestLocation()).toBeNull();
