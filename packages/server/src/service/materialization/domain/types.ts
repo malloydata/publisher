@@ -205,15 +205,20 @@ export type RunManifestLoad =
    | { loaded: false; step: "reload" | "bind"; error: string };
 
 /** Why a table a run replaced is kept rather than reclaimed, and listed. */
-export type KeptTableReason = "author_name" | "destination_missing";
+export type KeptTableReason =
+   | "author_name"
+   | "destination_missing"
+   | "may_be_served";
 
 /**
  * A table an auto-run replaced and Publisher keeps, listed on the run record
  * (`metadata.keptTables`) and raised as a package warning
  * (`table-kept-after-rename`) until the table is dropped or the name is
  * reused: one at an author's exact `name=` (`author_name`), which Publisher
- * never drops, or one in a storage destination that is no longer configured
- * (`destination_missing`), which it cannot reach.
+ * never drops; one in a storage destination that is no longer configured
+ * (`destination_missing`), which it cannot reach; or one at the name the
+ * source is served under now, left in its old place by a `storage=` or tier
+ * move (`may_be_served`), which may be the very table served.
  */
 export interface KeptTable {
    sourceEntityId: string;

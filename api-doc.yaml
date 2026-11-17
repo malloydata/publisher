@@ -5993,10 +5993,13 @@ components:
                   `table-kept-after-rename`: a table an auto-run replaced
                   when its source's table was renamed or moved, which
                   Publisher keeps rather than drops: one at an author's exact
-                  `name=` (never dropped), or one in a storage destination
+                  `name=` (never dropped), one in a storage destination
                   that is no longer configured (which, when the destination
                   was renamed rather than removed, may be the table served
-                  under the new name). Listed on the newest run's
+                  under the new name), or one a `storage=` or tier move left
+                  under the name the source is served under now (which may
+                  be the very table served, so it is never dropped).
+                  Listed on the newest run's
                   `metadata.keptTables` until the table is dropped (a run
                   notices one dropped by hand) or its name is used again
                   (one per table, `model` the model

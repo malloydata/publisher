@@ -48,10 +48,6 @@ import {
    type KeptTableReason,
    ManifestEntry,
 } from "../domain/types";
-import {
-   connectionApartFromDestination,
-   destinationsApart,
-} from "../../destination_overlap";
 import { ColocatedTier } from "./colocated_build_strategy";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
@@ -68,11 +64,7 @@ import {
    type RecordedNameView,
 } from "./leftover_name_views";
 import { packageOwner } from "./table_mark_sql";
-import {
-   ownedElsewhere,
-   sameTableProbe,
-   tableExistsAt,
-} from "./table_ownership";
+import { ownedElsewhere, tableExistsAt } from "./table_ownership";
 import { atTableSite, type TableSiteContext } from "./table_site";
 import { capabilitiesOf } from "../domain/dialect";
 import type { RunLifecycle } from "./run_lifecycle";
@@ -120,7 +112,8 @@ function keptTablesIn(metadata: Record<string, unknown> | null): KeptTable[] {
          typeof (t as KeptTable).physicalTableName === "string" &&
          typeof (t as KeptTable).connectionName === "string" &&
          ((t as KeptTable).reason === "author_name" ||
-            (t as KeptTable).reason === "destination_missing"),
+            (t as KeptTable).reason === "destination_missing" ||
+            (t as KeptTable).reason === "may_be_served"),
    );
 }
 
@@ -199,7 +192,6 @@ const TRANSIENT_GUARDS: ReadonlySet<string> = new Set([
    "replacement-not-committed",
    "not-serving-replacement",
    "still-referenced",
-   "identity-unknown",
 ]);
 
 /** How many kept tables' existence is probed at once. */
@@ -643,47 +635,9 @@ type Place = {
    storageDestinationName?: string | null;
 };
 
-/** Whether two places may hold one table under one name. */
-/** Whether two places may hold one table under `name` (as each spells it). */
-type MayBeOnePlace = (a: Place, b: Place, name: string) => boolean;
-
-/**
- * Whether two places may be one, by the environment's configs: the same
- * place, or two places their configs do not prove apart. Two storage
- * destinations are apart when they are provably different DuckLakes, or
- * different schemas of one (destinationsApart); a connection's own database
- * and a destination when the connection provably cannot reach the
- * destination's tables (connectionApartFromDestination). Two connections'
- * own databases are never proven apart. A place whose config is gone is
- * not proven apart from anything: it may have been renamed.
- */
-function placeAliasing(environment: MaterializationEnvironment): MayBeOnePlace {
-   const configOf = (lookup: () => ApiConnection) => {
-      try {
-         return lookup();
-      } catch {
-         return undefined;
-      }
-   };
-   const destination = (name: string) =>
-      configOf(() => environment.getStorageDestination(name));
-   const connection = (name: string) =>
-      configOf(() => environment.getApiConnection(name));
-   return (a, b, name) => {
-      const da = a.storageDestinationName ?? undefined;
-      const db = b.storageDestinationName ?? undefined;
-      if (da === undefined && db === undefined) return true;
-      if (da !== undefined && db !== undefined) {
-         if (da === db) return true;
-         const x = destination(da);
-         const y = destination(db);
-         return !(x && y && destinationsApart(x, y, name));
-      }
-      const [own, stored] = da === undefined ? [a, db!] : [b, da];
-      const c = connection(own.connectionName ?? "");
-      const d = destination(stored);
-      return !(c && d && connectionApartFromDestination(c, d, name));
-   };
+/** A place as one key: two places are one only when their keys match. */
+function placeKey(p: Place): string {
+   return `${p.connectionName ?? ""}\u0000${p.storageDestinationName ?? ""}`;
 }
 
 /**
@@ -706,40 +660,50 @@ function newestServingRun(
 /**
  * The tables `run` lists as kept: those the serving line's newest run
  * before it that lists any (an empty list included) listed, and `fresh`,
- * less any no committed run of the package names any more (dropped with
- * its runs) and any a table of `run` may be (its name taken again, in a
- * place that may be the same). `write`
- * says whether the list goes on the run: when it lists any, or when the run
- * before it listed any, so a list that emptied is written empty once and
- * stops being carried.
+ * less any no committed run of the package names in its place any more
+ * (dropped with its runs) and any `run` builds again, under its name in
+ * its place. A kept table whose name `run` serves in another place may be
+ * that served table (a table's name does not say where it is, and two
+ * places can reach one table), so it is listed as `may_be_served` whatever
+ * it was kept for, and never advised dropped. `write` says whether the list
+ * goes on the run: when it lists any, or when the run before it listed any,
+ * so a list that emptied is written empty once and stops being carried.
  */
 function keptAfter(
    run: Materialization,
    runs: Materialization[],
    reader: ServingReader,
    fresh: KeptTable[],
-   mayBeOne: MayBeOnePlace,
 ): { tables: KeptTable[]; write: boolean } {
    const before = newestListing(runs, reader, { until: run, except: run.id });
    const carried = [
       ...keptTablesIn(before?.metadata ?? null),
       ...keptTablesIn(run.metadata ?? null),
    ];
-   const at = (t: KeptTable, e: ManifestEntry): boolean =>
+   const sameName = (t: KeptTable, e: ManifestEntry): boolean =>
       !!e.physicalTableName &&
-      mayBeOneTable(e.physicalTableName, t.physicalTableName) &&
-      mayBeOne(e, t, t.physicalTableName);
+      mayBeOneTable(e.physicalTableName, t.physicalTableName);
+   const at = (t: KeptTable, e: ManifestEntry): boolean =>
+      sameName(t, e) && placeKey(e) === placeKey(t);
    const named = (t: KeptTable) =>
       runs.some(
          (m) =>
             m.status === "MANIFEST_FILE_READY" &&
             Object.values(m.manifest?.entries ?? {}).some((e) => at(t, e)),
       );
-   const reused = (t: KeptTable) =>
-      Object.values(run.manifest?.entries ?? {}).some((e) => at(t, e));
+   const entries = Object.values(run.manifest?.entries ?? {});
+   const reused = (t: KeptTable) => entries.some((e) => at(t, e));
+   const servedElsewhere = (t: KeptTable) =>
+      entries.some((e) => sameName(t, e) && !at(t, e));
    const byKey = new Map<string, KeptTable>();
    for (const t of [...carried, ...fresh]) byKey.set(keptKey(t), t);
-   const tables = [...byKey.values()].filter((t) => named(t) && !reused(t));
+   const tables = [...byKey.values()]
+      .filter((t) => named(t) && !reused(t))
+      .map((t) =>
+         t.reason === "author_name" && servedElsewhere(t)
+            ? { ...t, reason: "may_be_served" as const }
+            : t,
+      );
    return {
       tables,
       write:
@@ -777,11 +741,6 @@ export class Reclaimer {
           * run starts while the reclaim decides and drops. Absent: no lock
           * (a spec's).
           */
-         /**
-          * Whether two tables are one (sameTableProbe, the default); a spec
-          * whose destinations are fakes passes its own.
-          */
-         sameTable?: typeof sameTableProbe;
          withRunLock?: <T>(
             environment: MaterializationEnvironment,
             environmentId: string,
@@ -1038,8 +997,8 @@ export class Reclaimer {
     * run of the same serving line, replaced (RENAMED_TABLES_KEY: a table
     * renamed, moved to another container or another `storage=`
     * destination, or named before readable names) that Publisher can prove
-    * is its own, and list the ones it keeps at an author's `name=`
-    * (KEPT_TABLES_KEY). A table is dropped only when every guard holds,
+    * is its own, and list the ones it keeps at an author's `name=` or
+    * under a name the package serves elsewhere (KEPT_TABLES_KEY). A table is dropped only when every guard holds,
     * and is otherwise left and logged; a table Publisher cannot prove is
     * its own is never dropped:
     *
@@ -1061,10 +1020,12 @@ export class Reclaimer {
     * 5. Nothing else names it: no table the package serves now may be it,
     *    and no run `reader` does not read (another version's own, an
     *    orchestrated run of another version) names it. "May be" is by name
-    *    and by place: two places are one unless their configs prove them
-    *    apart (placeAliasing), so a move between two names for one
-    *    DuckLake, or from a connection that reaches the destination, never
-    *    drops the table it moved to.
+    *    alone, whatever the place: a table's name does not say where it
+    *    is, and two places (two names for one DuckLake, a connection that
+    *    reaches a destination) can reach one table. So a table left by a
+    *    `storage=` or tier move that kept its name is never dropped: kept,
+    *    listed, and logged as `may_be_served`, since it may be the very
+    *    table the package serves now.
     *
     * A table in a storage destination that is no longer configured cannot
     * be reached: kept and listed, `destination_missing`.
@@ -1110,7 +1071,6 @@ export class Reclaimer {
             parseEnvironmentName(environmentName),
             false,
          );
-         const mayBeOne = placeAliasing(environment);
          // Resolved outside the lock: resolving may load the package, which
          // takes the package's lock.
          const connectionFor = await this.connectionResolverFor(
@@ -1129,7 +1089,7 @@ export class Reclaimer {
             return {
                runs,
                run,
-               ...this.decideRenamedTables(runs, run, reader, mayBeOne, log),
+               ...this.decideRenamedTables(runs, run, reader, log),
             };
          };
          // Asked before the lock (a rebind takes the package's lock): only
@@ -1144,8 +1104,7 @@ export class Reclaimer {
          // few at a time. A table listed only under the lock is not probed,
          // and stays listed.
          const gone = await this.keptTablesGone(
-            keptAfter(before.run, before.runs, reader, before.kept, mayBeOne)
-               .tables,
+            keptAfter(before.run, before.runs, reader, before.kept).tables,
             dropReach(
                environment,
                environmentName,
@@ -1194,7 +1153,7 @@ export class Reclaimer {
                   runId,
                   reader,
                   now,
-                  { bound, connectionFor, mayBeOne, gone },
+                  { bound, connectionFor, gone },
                );
             },
          );
@@ -1227,7 +1186,6 @@ export class Reclaimer {
       options: {
          bound: boolean;
          connectionFor: (name: string) => Promise<MalloyConnection | undefined>;
-         mayBeOne: MayBeOnePlace;
          /** The kept tables found gone, by keptKey. */
          gone: ReadonlySet<string>;
       },
@@ -1245,22 +1203,6 @@ export class Reclaimer {
             continue;
          }
          toDrop.push(entry);
-      }
-      if (toDrop.length > 0 && options.bound) {
-         await this.dropOnlyOtherTables(
-            toDrop,
-            runs,
-            reader,
-            retried,
-            dropReach(
-               environment,
-               environmentName,
-               packageName,
-               runId,
-               "reclaim",
-               options.connectionFor,
-            ).viewContext,
-         );
       }
       if (toDrop.length > 0 && !options.bound) {
          logger.warn(
@@ -1304,7 +1246,7 @@ export class Reclaimer {
                !skippedKeys.has(entryRenamedKey(e)),
          ),
       );
-      const listed = keptAfter(run, runs, reader, kept, options.mayBeOne);
+      const listed = keptAfter(run, runs, reader, kept);
       // A kept table dropped by hand is no longer listed.
       const present = listed.tables.filter(
          (t) => !options.gone.has(keptKey(t)),
@@ -1338,61 +1280,6 @@ export class Reclaimer {
          }
       }
       return present;
-   }
-
-   /**
-    * Take out of `toDrop` each table that may be the one the package serves
-    * now under the same name in another place (two names for one DuckLake,
-    * a connection that reaches a destination: what the place rules could
-    * not rule out by config). Each is tested on the table itself
-    * (sameTableProbe): one that is the served table is kept and forgotten,
-    * and one the probe cannot tell about is kept, to be tried again.
-    */
-   private async dropOnlyOtherTables(
-      toDrop: ManifestEntry[],
-      runs: Materialization[],
-      reader: ServingReader,
-      retried: Set<string>,
-      context: TableSiteContext,
-   ): Promise<void> {
-      const served = Object.values(newestServingEntries(runs, reader));
-      const keep = new Set<ManifestEntry>();
-      for (const entry of toDrop) {
-         for (const other of served) {
-            if (
-               !other.physicalTableName ||
-               !mayBeOneTable(other.physicalTableName, entry.physicalTableName)
-            ) {
-               continue;
-            }
-            const same = await (this.deps.sameTable ?? sameTableProbe)(
-               {
-                  physicalTableName: entry.physicalTableName,
-                  connectionName: entry.connectionName ?? "",
-                  ...(entry.storageDestinationName
-                     ? { storageDestinationName: entry.storageDestinationName }
-                     : {}),
-               },
-               {
-                  physicalTableName: other.physicalTableName,
-                  connectionName: other.connectionName ?? "",
-                  ...(other.storageDestinationName
-                     ? { storageDestinationName: other.storageDestinationName }
-                     : {}),
-               },
-               context,
-            );
-            if (same === false) continue;
-            const guard = same ? "still-served" : "identity-unknown";
-            logKept(entry, guard);
-            if (!same) retried.add(entryRenamedKey(entry));
-            keep.add(entry);
-            break;
-         }
-      }
-      const left = toDrop.filter((entry) => !keep.has(entry));
-      toDrop.length = 0;
-      toDrop.push(...left);
    }
 
    /**
@@ -1441,7 +1328,6 @@ export class Reclaimer {
       runs: Materialization[],
       run: Materialization,
       reader: ServingReader,
-      mayBeOne: MayBeOnePlace,
       /** Log each kept table's guard (the pass that acts on the decision). */
       log: boolean,
    ): {
@@ -1467,13 +1353,7 @@ export class Reclaimer {
       )) {
          const key = renamedKey(table);
          if (decided.has(key)) continue;
-         const guard = this.renamedTableGuard(
-            table,
-            run,
-            runs,
-            reader,
-            mayBeOne,
-         );
+         const guard = this.renamedTableGuard(table, run, runs, reader);
          decided.add(key);
          const entry: ManifestEntry = {
             sourceEntityId: table.sourceEntityId,
@@ -1496,9 +1376,9 @@ export class Reclaimer {
                guard,
             });
          }
-         if (guard === "author_name") {
+         if (guard === "author_name" || guard === "may_be_served") {
             kept.push({
-               ...keptOf(entry, "author_name"),
+               ...keptOf(entry, guard),
                ...(table.sourceName ? { sourceName: table.sourceName } : {}),
             });
          }
@@ -1535,17 +1415,16 @@ export class Reclaimer {
    /**
     * Which guard of {@link reclaimRenamedTables} keeps `table`, or undefined
     * when none does (guard 3 is the drop's, and a missing destination the
-    * caller's). `author_name` is the one that lists it as kept.
+    * caller's). `author_name` and `may_be_served` are the ones that list it
+    * as kept.
     */
    private renamedTableGuard(
       table: RenamedTable,
       run: Materialization,
       runs: Materialization[],
       reader: ServingReader,
-      mayBeOne: MayBeOnePlace,
    ): string | undefined {
-      const place = (e: Place) =>
-         `${e.connectionName ?? ""}\u0000${e.storageDestinationName ?? ""}`;
+      const place = placeKey;
       const oldAt: Place = {
          connectionName: table.connectionName,
          storageDestinationName: previousDestinationOf(table),
@@ -1584,13 +1463,21 @@ export class Reclaimer {
       ) {
          return "not-in-package-records";
       }
+      // 5: no table the package serves now may be it. By name alone: a
+      // table's name does not say where it is, and two places (two names
+      // for one DuckLake, a connection that reaches a destination) can
+      // reach one table, which no config or probe proves otherwise. Served
+      // in this very place, it is the served table; served under its name
+      // in another place, as after a `storage=` or tier move that kept the
+      // name, it may be, so it is never dropped: kept and listed.
       const namesIt = (e: ManifestEntry) =>
          !!e.physicalTableName &&
-         mayBeOneTable(e.physicalTableName, table.previousName) &&
-         mayBeOne(e, oldAt, table.previousName);
-      // 5: no table the package serves now may be it (another source's, or
-      // the source's own under a name, or in a place, that may be it).
-      if (Object.values(serving).some(namesIt)) return "still-served";
+         mayBeOneTable(e.physicalTableName, table.previousName);
+      const servedUnderName = Object.values(serving).filter(namesIt);
+      if (servedUnderName.some((e) => place(e) === place(oldAt))) {
+         return "still-served";
+      }
+      if (servedUnderName.length > 0) return "may_be_served";
       // 5: no run this run does not supersede still names it.
       if (
          runs.some(
