@@ -79,9 +79,9 @@ type ServeVerdictReason =
    | "connection_cannot_hold_table"
    /**
     * A `#(materialize)` source, which only the served copy reads: the served
-    * copy is off (PUBLISHER_MATERIALIZE or PERSIST_STORAGE_MODE), or no
-    * model's served copy re-roots it (see the `served-copy-not-served`
-    * warning), or it is colocated, which the served copy does not serve yet.
+    * copy is off (PUBLISHER_MATERIALIZE, or PERSIST_STORAGE_MODE for a
+    * `storage=` table), or no model's served copy re-roots it (see the
+    * `served-copy-not-served` warning).
     */
    | "served_copy";
 
@@ -352,10 +352,14 @@ function verdictFor(
          "row_level_gate",
          `Every published entry point that reads ${subject} carries a ` +
             `row-level gate (#(authorize) or #(access_filter)), which ` +
-            `${origin === "preaggregate" ? "a rollup" : "the storage tier"} cannot keep ` +
+            `${origin === "preaggregate" ? "a rollup" : tier === "storage" ? "the storage tier" : "this table"} cannot keep ` +
             `yet, so every query that reaches it is answered live.`,
          [
-            "Materialize the source without storage= (colocated), where the gate is kept.",
+            // A colocated table already follows the first fix: only the
+            // gate's shape can change there.
+            tier === "storage"
+               ? "Materialize the source without storage= (colocated), where the gate is kept."
+               : "Make the gate the entry point's own row-level gate, which a colocated table keeps.",
             "Or publish an ungated entry point over it, for the queries that need no gate.",
          ],
       );

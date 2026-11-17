@@ -35,16 +35,19 @@
  * there, so a view has one build source and one table however many models
  * import its source.
  *
- * What is refused here, from the declaration alone (each a publish warning,
- * `persist-view-not-built`, and the view serves live): an `@env.` reference on
- * the line, the unsupported `partition=`, an incremental key (`watermark`,
- * `merge_key`; a view's result is rebuilt whole), and two views whose
- * generated names collide. The
- * build plan refuses the rest once it has compiled them (`build_plan.ts`): a
- * view that reads a given or the current time (its result differs per caller
- * or per read), a nested result stored with `storage=` (a destination's
- * `type:` cannot declare it), and a gated source whose gate the view's result
- * cannot keep (question 3).
+ * Read here, from the declaration alone, in both settings of the switch: a
+ * line that is invalid fails the publish and the load (an `@env.` reference,
+ * an empty `storage=` or bad `name=`, `persist-view-invalid`; a line that
+ * does not parse, `persist-view-unparseable`; an incremental key, since a
+ * view's result is rebuilt whole, `persist-view-invalid`; an unknown or
+ * retired key such as `partition=` or `realization=`, `persist-unknown-key`
+ * or `persist-retired-key`). Refused alone (`persist-view-not-built`, and the
+ * view serves live): a line spanning several lines, and two views whose
+ * generated names collide. The build plan refuses the rest once it has
+ * compiled them (`build_plan.ts`): a view that reads a given or the current
+ * time (its result differs per caller or per read), a nested result on
+ * either tier (the view leg cannot rebuild a nest's rows exactly), and a
+ * gated source whose gate the view's result cannot keep (question 3).
  *
  * Behind `PUBLISHER_MATERIALIZE`. Every name in the generated text goes
  * through `malloy_text`; the author's own `#@` line is copied verbatim.
@@ -59,13 +62,16 @@
  *     source: top_carriers__query is top_carriers
  *
  * The `__query` segment is the query marker in the build source's name, and
- * so in its default table name (`<query>__query__p<8 hex>`), so no existing
+ * so in its default table name
+ * (`<package>__<file>__<query>_query__p<8 hex>`), so no existing
  * table name moves and a source of the query's name never shares its table.
  *
- * Refused here, from the declaration alone (each a `persist-query-not-built`
- * warning; the query is answered live): an `@env.` reference on the line, an
- * incremental key (a result is rebuilt whole), a line spanning several lines,
- * an empty `storage=`, a run target named in the query's file but declared in
+ * Invalid, failing the publish and the load (`persist-query-invalid`, or
+ * `persist-query-unparseable` for a line that does not parse): an `@env.`
+ * reference on the line, an incremental key (a result is rebuilt whole) and
+ * an empty `storage=`. Refused here, from the declaration alone (each a
+ * `persist-query-not-built` warning; the query is answered live): a line
+ * spanning several lines, a run target named in the query's file but declared in
  * another (the overlay that serves it reads one file), and a generated name
  * that collides with a name the file already has. A run target imported from
  * another file compiles into the query whole, as an inline one does. What

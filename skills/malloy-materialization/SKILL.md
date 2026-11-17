@@ -31,8 +31,8 @@ Publisher has two spellings. **v1** is `#@ persist` on a source and `#@ preaggre
 
 | The server | A table in a storage destination | A table in the source's own warehouse | A rollup on a measure |
 |---|---|---|---|
-| `PUBLISHER_MATERIALIZE` on | `#(materialize) storage="lake"` (needs `PERSIST_STORAGE_MODE=on` too) | `#(materialize)`, or `#(materialize) name="schema.table"` to name and place it | `#(preaggregate) grain=["a", "b"]` |
-| switch off (the default) | `#@ persist name="..." storage="lake"` | `#@ persist name="..."` | `#@ preaggregate grain="a, b"` |
+| `PUBLISHER_MATERIALIZE` on (the default) | `#(materialize) storage="lake"` (needs `PERSIST_STORAGE_MODE=on` too) | `#(materialize)`, or `#(materialize) name="schema.table"` to name and place it | `#(preaggregate) grain=["a", "b"]` |
+| switch off (`PUBLISHER_MATERIALIZE=false`) | `#@ persist name="..." storage="lake"` | `#@ persist name="..."` | `#@ preaggregate grain="a, b"` |
 
 So for new work, write v2 where the server has the switch on, and v1 where it is off. A source with a row-level gate (`#(authorize)`, `#(access_filter)`) of its own is built and served past that gate on either tier, colocated or `storage=`, `#(materialize)` or `#@ persist`, with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off: the table holds every caller's rows and the gate is re-applied on every read. A `storage=` table puts those rows, ungated, in the destination, where anyone with direct access to it can read them; say so when you materialize a gated source there. A row filter it inherits, a gate reached through a join, or a gate over a source whose build reads a given is refused on both tiers. Ask whoever runs the server if you cannot tell; the startup log lists `materialize.enabled=true from PUBLISHER_MATERIALIZE` when it is on. **With the switch off, `#(materialize)` is ignored with no warning at all** (no build, no serve verdict, answered live), and `#(preaggregate)` is only an `annotation-near-miss` warning, so a v2 annotation on a v1 server looks exactly like a build that never ran.
 

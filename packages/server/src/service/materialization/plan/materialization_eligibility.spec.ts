@@ -819,7 +819,7 @@ source: by_category is orders -> {
          }
       });
 
-      it("builds the same gated source colocated as a #@ persist, whose gate Malloy's build manifest keeps", async () => {
+      it("builds the same gated source colocated as a #@ persist, whose own gate the served copy keeps (G3)", async () => {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          withEnv(

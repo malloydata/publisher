@@ -5137,16 +5137,15 @@ components:
             released server: a rollup over a `storage=` base is planned like
             any other), `unreachable` (no source on the package's
             published surface reads it), `row_level_gate` (every query through
-            it carries an `#(authorize)` or `#(access_filter)` gate, which the
-            storage tier and rollups cannot keep yet), `shadowed` (its storage
+            it carries an `#(authorize)` or `#(access_filter)` gate its table
+            cannot keep yet, on either tier), `shadowed` (its storage
             table is bound, but every model's source of that name is another
             source), `destination_missing` (`storage=` names a destination the
             environment does not configure), `connection_cannot_hold_table`
             (colocated, on a connection whose type creates no tables),
             `served_copy` (a `#(materialize)` source, which only the served copy
-            reads: the served copy is off, no model's served copy reads its
-            table, or it is colocated, which the served copy does not serve
-            yet). An open set.
+            reads: the served copy is off, or no model's served copy reads its
+            table). An open set.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
@@ -8644,8 +8643,10 @@ components:
             Every materialized table on the queried source's chain, and every
             rollup of a source on it, that could have answered this query: the
             one that served it marked `used`, the rest `skipped` with a reason.
-            In the order Publisher tries them: `storage=` tables, then colocated
-            rollups, then colocated `#@ persist` tables nearest first. A table
+            Listed as `storage=` tables, then colocated rollups, then colocated
+            tables nearest first, which is not the order Publisher tries them
+            (a persisted view or query, then rollups coarsest first, then the
+            served copy). A table
             that was not tried because an earlier one answered is left out.
             Empty when the queried source has no materialized table.
           items:

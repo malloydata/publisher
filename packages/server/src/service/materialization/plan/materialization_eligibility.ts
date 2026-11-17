@@ -1065,7 +1065,8 @@ export function assertTierEligible(
             `served copy, which keeps only the entry point's own row-level ` +
             `gate, and only with PUBLISHER_MATERIALIZE on. The source serves ` +
             `live. Turn that setting on, or use '#@ persist', whose colocated ` +
-            `table keeps the gate through Malloy's build manifest.`,
+            `table the served copy reads past the source's own row-level ` +
+            `gate under the same rule (G3) with that setting off.`,
       });
    }
    // A persisted view's or query's table over a gated source is read past

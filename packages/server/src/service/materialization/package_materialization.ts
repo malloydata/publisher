@@ -915,7 +915,10 @@ export class PackageMaterialization {
    }
 
    servedCopyWarnings(): ApiPackageWarning[] {
-      return warnings.servedCopyWarnings(this.owner.models());
+      const materialized = this.plan.materializePlans;
+      return warnings.servedCopyWarnings(this.owner.models(), (sourceID) =>
+         Object.hasOwn(materialized, sourceID),
+      );
    }
 
    storedColumnTypeWarnings(): ApiPackageWarning[] {
