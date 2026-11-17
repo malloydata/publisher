@@ -100,6 +100,15 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             // The metadata flat rows drop.
             expect(envelope._meta.schema).toBeDefined();
             expect(typeof envelope._meta.connection_name).toBe("string");
+            // What each column is, one entry per row key: `c` is an aggregate.
+            expect(
+               envelope._columns.map((c: { name: string }) => c.name),
+            ).toEqual(Object.keys(envelope.rows[0]));
+            expect(envelope._columns[0]).toMatchObject({
+               name: "c",
+               type: "number",
+               measure: true,
+            });
          },
          { timeout: 30000 },
       );
