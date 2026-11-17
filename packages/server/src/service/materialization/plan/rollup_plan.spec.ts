@@ -375,13 +375,13 @@ describe("a storage= rollup whose grain no stored read declares", () => {
 }`,
    });
 
-   it("refuses a BLOB, INTERVAL, MAP or JSON grain at plan, as not_duckdb_portable", async () => {
+   it("refuses a BLOB, INTERVAL, MAP or JSON grain at plan, as unreadable_grain", async () => {
       for (const grain of ["b", "iv", "m", "j"]) {
          const { plans, refused } = await plan(
             rollup(grain, ' storage="lake"'),
          );
          expect(plans).toEqual([]);
-         expect(refused.map((r) => why(r))).toEqual(["not_duckdb_portable"]);
+         expect(refused.map((r) => why(r))).toEqual(["unreadable_grain"]);
          expect(refused[0]?.message).toContain(`\`${grain}\``);
       }
    });

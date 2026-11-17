@@ -10735,6 +10735,7 @@ components:
               unreadable_measure,
               join_level,
               name_clash,
+              unreadable_grain,
             ]
           description: >-
             The bounded refusal reason; `message` says the specifics.
@@ -10818,16 +10819,16 @@ components:
             measure definition outside what a rollup reads), `join_level` (a
             measure that aggregates through a join its grain does not key),
             `name_clash` (a field already takes the name of the measure's
-            stored partial), and `not_duckdb_portable` (a `storage=` rollup
+            stored partial), and `unreadable_grain` (a `storage=` rollup
             over a DuckDB source whose grain dimension is stored as a type no
             stored read declares, a BLOB, INTERVAL, MAP or JSON, so no query
             would read its table; colocated, it is built).
 
 
             Retained, no longer produced: `given` (replaced by the positional
-            given reasons above), `not_duckdb_portable` on every mechanism but
-            a rollup (a `storage=` table no column of which Malloy can type is
-            now built, and its source is answered live), the three `partition_*` reasons (`partition=` is a
+            given reasons above), `not_duckdb_portable` (a `storage=` table no
+            column of which Malloy can type is now built, and its source is
+            answered live), the three `partition_*` reasons (`partition=` is a
             retired key, which fails the publish and the load as
             `persist-retired-key` or `materialize-retired-key`), `env_reference`
             and `empty_storage` (invalid annotations, which fail the publish

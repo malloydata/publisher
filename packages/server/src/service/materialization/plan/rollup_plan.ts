@@ -1149,7 +1149,7 @@ function declarationRefusal(
          : unreadableStoredGrain(decl.grain, byName, facts.dialect);
    if (unreadableGrain) {
       return unservable(
-         "not_duckdb_portable",
+         "unreadable_grain",
          decl,
          `its grain dimension \`${unreadableGrain.name}\` is stored as ${unreadableGrain.storedType}, which no read of a storage destination declares, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse, which reads it`,
       );

@@ -608,7 +608,7 @@ or `interval` column as text until it is rebuilt in full. The build does
 not refuse such a table, even one with no column left to declare: the served copy declines that
 source at bind, so every query over it is answered live. A `storage=` rollup over a DuckDB source
 whose grain is such a column is the exception: every read of it groups by its grain, so it is refused
-at plan (`not_duckdb_portable`, [preaggregation](preaggregation.md)). Each column a `storage=` build stores that
+at plan (`unreadable_grain`, [preaggregation](preaggregation.md)). Each column a `storage=` build stores that
 no type declares is counted in `publisher_storage_serve_shape_type_fallback_total` and logged.
 
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
