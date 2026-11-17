@@ -43,6 +43,7 @@ const seedSql = [
       (5, 12.5, 'C', 'west', 't1', TIMESTAMP '2026-01-01 23:30:00'),
       (6,  7.5, 'C', 'east', 't2', TIMESTAMP '2026-02-01 12:00:00')
     ) AS t(id, amount, category, region, tenant, order_time)`,
+   `CREATE TABLE cats_raw AS SELECT DISTINCT category FROM orders_raw`,
 ];
 
 const model = (p: string) => `##! experimental { givens access_modifiers }
@@ -75,6 +76,13 @@ source: scoped is duckdb.table('orders_raw') extend {
   #(preaggregate) grain=["category", "region"]${p}
   measure: n is count()
 }
+// A parent joining it: the join reads the rollup's every-caller groups
+// unless the term goes with it, so the join branch is refused (live).
+source: cats is duckdb.table('cats_raw') extend {
+  primary_key: category
+  join_many: scoped on scoped.category = category
+}
+
 // Over a field the grain does not keep: refused.
 source: scoped_outside is duckdb.table('orders_raw') extend {
   where: region = $REGION
@@ -316,6 +324,32 @@ for (const placement of ["colocated", "storage"] as const) {
                live.audit.summary?.decision,
             );
             fixture.setBindings(fixture.bindings);
+         });
+
+         it("answers a parent joining it live, never from its rollup through the join, each caller's rows", async () => {
+            for (const region of ["east", "west", "east", "west"]) {
+               const run = await fixture.run({
+                  name: `cats ${region}`,
+                  malloy:
+                     "run: cats -> { group_by: category; aggregate: t is scoped.total }",
+                  givens: { REGION: region },
+                  truthSql: `SELECT c.category, CAST(SUM(o.amount) AS DOUBLE) AS t FROM cats_raw c LEFT JOIN orders_raw o ON o.category = c.category AND o.region = '${region}' GROUP BY 1`,
+                  expectLive: true,
+               });
+               expectLive(run);
+               expect(
+                  rowDifference(run.truth ?? [], run.served),
+               ).toBeUndefined();
+            }
+            // Refused for its re-applied term, not by chance.
+            fixture.setBindings(fixture.bindings);
+            const { path } = await fixture.runAsIs(
+               "run: cats -> { group_by: category; aggregate: t is scoped.total }",
+               { REGION: "east" },
+            );
+            expect(JSON.stringify(path?.considered ?? [])).toContain(
+               "re-applies a `where:` that reads a given",
+            );
          });
 
          it("refuses a term over a field the grain does not keep, and one inherited, and answers both live", async () => {
