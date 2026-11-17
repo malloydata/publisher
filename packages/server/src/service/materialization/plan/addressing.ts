@@ -525,7 +525,7 @@ export function foldDistinctTableNames(
             {
                source: PersistSource;
                target?: BuildTarget;
-               rollup?: unknown;
+               rollup?: { namespace?: string; prefix?: string };
                materialize?: { nameDefaulted?: true };
             }
          >
@@ -562,15 +562,17 @@ export function foldDistinctTableNames(
          continue; // Unaddressable: refused on its own path.
       }
       const rollup = !!table.rollup;
-      const written = deriveAnnotationFields(source).name?.trim();
-      // A rollup's leaf is Publisher's own, so only its container (its
-      // `name=`'s, or its base's) tells its tables apart: one grain placed
-      // in two containers is two tables, never one written twice.
-      const declared =
-         rollup && written !== undefined
-            ? written.slice(0, Math.max(0, written.lastIndexOf("."))) ||
-              undefined
-            : written;
+      // A rollup's table is told apart by its container (its `name=`'s, or
+      // its base's) and its `name=` leaf, the prefix of its readable name:
+      // one grain placed in two containers, or named by two leaves, is two
+      // tables, never one written twice. Joined without dots, so the
+      // author-name rule of containers that meet never merges two of them.
+      const placed = table.rollup;
+      const declared = placed
+         ? placed.namespace !== undefined || placed.prefix !== undefined
+            ? `rollup:${[placed.namespace ?? "", placed.prefix ?? ""].join("\u0000").replace(/\./g, "\u0001")}`
+            : undefined
+         : deriveAnnotationFields(source).name?.trim();
       const materialize = table.materialize;
       const defaulted = materialize ? !!materialize.nameDefaulted : !declared;
       const group = groups.get(address) ?? [];

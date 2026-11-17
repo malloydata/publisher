@@ -352,8 +352,9 @@ function bindingsAllowDegradeToLive(bindings: readonly Binding[]): boolean {
  * `freshnessFallback=live` marks the tier as an optimisation, not a
  * dependency. Deliberately narrow: only an answer read through a virtual map,
  * only per {@link bindingsAllowDegradeToLive} over the bindings that produced
- * THIS shape (a sibling source must not decide), never for a client error (a
- * bad given) or an abort.
+ * THIS shape (a sibling source must not decide), or for DECIMAL arithmetic the
+ * destination cannot hold ({@link isStoredDecimalArithmeticError}), never for
+ * a client error (a bad given) or an abort.
  */
 export function canDegradeToLive(
    answer: Answer,
@@ -368,7 +369,24 @@ export function canDegradeToLive(
       !String((error as { code?: string })?.code ?? "").startsWith(
          "runtime-given-",
       ) &&
-      bindingsAllowDegradeToLive(answer.answer.shapeBindings)
+      (bindingsAllowDegradeToLive(answer.answer.shapeBindings) ||
+         isStoredDecimalArithmeticError(error))
+   );
+}
+
+/**
+ * Whether `error` is DuckDB refusing DECIMAL arithmetic past its 38 digits: a
+ * product whose scale exceeds 38 (`DECIMAL(38,20) * DECIMAL(38,20)`), or a
+ * product, sum or addition that overflows. A Postgres `numeric` is stored as
+ * the exact DECIMAL(38, s) that holds it (`run/postgres_numeric_precision.ts`),
+ * where live's arbitrary precision has room the destination's arithmetic does
+ * not. The table is right and only the arithmetic ran out, so such an answer
+ * degrades to live whatever the bindings' `freshnessFallback` says.
+ */
+export function isStoredDecimalArithmeticError(error: unknown): boolean {
+   const message = error instanceof Error ? error.message : String(error);
+   return /Out of Range Error: (Needed scale .*DECIMAL|Overflow in [^\n]*DECIMAL|Overflow in HUGEINT)/.test(
+      message,
    );
 }
 

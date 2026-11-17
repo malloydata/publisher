@@ -32,7 +32,53 @@ import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
 import { storageTablePath } from "../domain/storage_table_path";
-import { STORAGE_DIALECT } from "../domain/dialect";
+import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
+import {
+   decimalTypeOf,
+   guardDeltaDecimals,
+   numericAsTextSQL,
+   postgresNumericColumns,
+} from "./postgres_numeric_precision";
+
+/**
+ * The Postgres numeric columns of a delta that the table stores exactly: as a
+ * DECIMAL, or as the text a seed kept when no DECIMAL held it. A column an
+ * older build stored as DOUBLE keeps the passthrough's DOUBLE until the table
+ * is next seeded. Undefined when there is none.
+ */
+async function exactNumericColumns(
+   session: DuckDBConnection,
+   sourceType: FederatedSourceType,
+   handle: string,
+   innerSQL: string,
+   quotedTablePath: string,
+): Promise<
+   | { columns: string[]; stored: { column: string; storedType: string }[] }
+   | undefined
+> {
+   const { columns, numeric } = await postgresNumericColumns(
+      session,
+      handle,
+      innerSQL,
+      sourceType,
+   );
+   if (numeric.length === 0) return undefined;
+   const described = await session.runSQL(`DESCRIBE ${quotedTablePath}`);
+   const rows = (
+      Array.isArray(described) ? described : (described.rows ?? [])
+   ) as Record<string, unknown>[];
+   const typeOf = new Map(
+      rows.map((r) => [String(r.column_name), String(r.column_type)]),
+   );
+   const stored = numeric.flatMap((column) => {
+      const storedType = typeOf.get(column);
+      return storedType &&
+         (decimalTypeOf(storedType) || storedType.toUpperCase() === "VARCHAR")
+         ? [{ column, storedType }]
+         : [];
+   });
+   return stored.length > 0 ? { columns, stored } : undefined;
+}
 
 /**
  * The delta target for a source materialized into a `storage=` destination — the
@@ -136,15 +182,36 @@ export function storageDeltaTarget(params: {
             // like a full build. On BigQuery the read is billed before the DML's
             // transaction opens, so a failed delta's retry pays again — the same
             // trade as a full build, bounded by the delta.
+            // A numeric the seed stored as DECIMAL (or kept as text) is read as
+            // Postgres's exact text too, and cast into its column only when it
+            // fits; one that does not re-seeds (postgres_numeric_precision.ts).
+            const exact = capabilitiesOf(sourceType).passthroughNumericAsDouble
+               ? await exactNumericColumns(
+                    session,
+                    sourceType,
+                    handle,
+                    bounded,
+                    quotedTablePath,
+                 )
+               : undefined;
             const read = await issuePassthroughRead(
                session,
                sourceType,
                handle,
-               bounded,
+               exact
+                  ? numericAsTextSQL(
+                       bounded,
+                       exact.columns,
+                       exact.stored.map((c) => c.column),
+                       sourceType,
+                    )
+                  : bounded,
                queryMetadata,
             );
             readCost = read.cost;
-            return read.selectSQL;
+            return exact
+               ? guardDeltaDecimals(read.selectSQL, exact.stored)
+               : read.selectSQL;
          },
 
          probeSourceFrontier: async () => {
