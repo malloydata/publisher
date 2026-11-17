@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a Postgres `storage=` build keeps `numeric` precision
+
+**Who was affected.** A `storage=` table (`#@ persist`, `#(materialize)`, a `#(preaggregate)` rollup, a persisted view or query) built from a Postgres source with an unconstrained `numeric` column, a `numeric(p,s)` with p > 38, or any numeric expression (`a + b`, a window sum, a rollup's partial sum). DuckDB's Postgres passthrough read those as DOUBLE, so the table stored binary floats and a query served from it could differ from live in the last digits: `sum` of 0.1 and 0.2 served `0.30000000000000004` where live answers `0.3`. A `numeric(p,s)` with p <= 38 was already stored as `DECIMAL(p,s)` and is unchanged.
+
+**What changes.** The build reads each such column as Postgres's own text, which is exact, and stores it as `DECIMAL(38,s)`, with `s` the widest scale the build read, so `sum` and `avg` served from the table equal live. A column no `DECIMAL(38,s)` holds exactly (more than 38 digits, or a `NaN` or `Infinity`) is not rounded: it is stored as that text, which the served copy does not declare as a number, so a query reading it is answered live, and the package reports it under the existing `storage-column-type-mismatch` warning. A `double precision` column stays DOUBLE, as live sums it. BigQuery and Snowflake reads already arrive as DECIMAL and are unchanged; a BigQuery `BIGNUMERIC` still arrives as text and is answered live.
+
+An incremental table refreshes in the same types: a delta reads the column as text and is cast into the stored `DECIMAL` only when the value fits it exactly. A delta value that needs more digits than the table holds is not rounded into it: the table rebuilds in full at the wider scale (incremental reason `decimal_does_not_fit`).
+
+**What to do.** Nothing. Each affected table is stored with `DECIMAL` on its next full build. An incremental table built before this keeps DOUBLE until it next seeds; force a full rebuild to convert it sooner.
+
 ## [Unreleased] — materialization telemetry: standard log fields, refusal events, key-check and routing metrics
 
 **Log queries may need updating.** Materialization log lines now name the same things by the same fields: `runId`, `destinationName`, `error`, `environmentName`, `packageName`. Renamed:

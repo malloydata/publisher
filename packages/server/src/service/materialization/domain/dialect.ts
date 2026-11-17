@@ -134,6 +134,15 @@ export interface Capabilities {
     * not name; 128 less 13 for SQL Server; 120 for the rest.
     */
    leafBudget: number;
+   /**
+    * A `storage=` build's DuckDB passthrough reads some of its exact decimals
+    * as DOUBLE (Postgres: an unconstrained `numeric`, a `numeric(p,s)` with
+    * p > 38, and every numeric expression), so the build reads those columns
+    * as the warehouse's text and stores the DECIMAL that holds them
+    * (`run/postgres_numeric_precision.ts`). BigQuery's NUMERIC and
+    * Snowflake's NUMBER already arrive as DECIMAL.
+    */
+   passthroughNumericAsDouble: boolean;
 }
 
 const NONE: Capabilities = Object.freeze({
@@ -153,6 +162,7 @@ const NONE: Capabilities = Object.freeze({
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
    leafBudget: 50,
+   passthroughNumericAsDouble: false,
 });
 
 /** Each dialect's capabilities. */
@@ -173,6 +183,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
    }),
    postgres: Object.freeze({
       ...NONE,
+      passthroughNumericAsDouble: true,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
       merge: true,

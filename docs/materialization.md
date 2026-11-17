@@ -526,6 +526,17 @@ convert a value (a boolean the warehouse returned as `'open'`) retries the build
 and stores what the warehouse returned, rather than failing a build that used to succeed or storing
 `TRY_CAST`'s NULLs.
 
+A Postgres `numeric` keeps its exact value. DuckDB's Postgres passthrough reads an unconstrained
+`numeric`, a `numeric(p,s)` with p > 38 and every numeric expression (`a + b`, a window sum, a
+rollup's partial sum) as DOUBLE, so a storage build reads each such column as Postgres's text instead
+and stores it as `DECIMAL(38,s)`, `s` the widest scale it read: `sum` and `avg` served from the table
+equal live. A column no `DECIMAL(38,s)` holds exactly (more than 38 digits, a `NaN` or an `Infinity`)
+is stored as that text rather than rounded, so a query reading it is answered live and the package
+reports it under `storage-column-type-mismatch`. An incremental delta is cast into the stored
+`DECIMAL` only when its value fits; one that needs more digits rebuilds the table at the wider scale.
+BigQuery `NUMERIC` and Snowflake `NUMBER` already arrive as DECIMAL; a BigQuery `BIGNUMERIC` arrives
+as text and is answered live. A same-catalog DuckLake build computes in DuckDB, as live does.
+
 A column whose stored type still does not serve as its declared type, such as any castable column of
 a table built before this cast, is read through a cast to its declared type where that is faithful:
 an integer flag as a `boolean`, a naive timestamp as a `date`, and an instant as a `date` when the
