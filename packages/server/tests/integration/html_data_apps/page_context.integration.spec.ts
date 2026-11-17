@@ -15,11 +15,16 @@
 
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs";
+import * as fsp from "fs/promises";
 import http from "http";
 import os from "os";
 import path from "path";
 import { logger } from "../../../src/logger";
 import { createMainApp } from "../../../src/routes/main_app";
+import {
+   parseEnvironmentName,
+   parsePackageName,
+} from "../../../src/service/identity";
 import { bootMainServer } from "../../harness/main_server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
@@ -74,6 +79,11 @@ function writePackage(
          Buffer.from("<p>hi</p>", "utf16le"),
       ]),
    );
+   // Nothing to splice at in its first 64 KiB, so it is sent as it is.
+   pub("late-head.html", `${"x".repeat(70 * 1024)}<head></head>`);
+   // At the size cap, built to make a naive scan slow.
+   pub("hostile.html", "<!--<head>-->".repeat(Math.floor(2097152 / 13)));
+   pub(".hidden.html", page("hidden"));
    // Past the size a page is buffered to splice.
    pub(
       "big.html",
@@ -281,6 +291,74 @@ describe("data-app page context and versioned static URLs", () => {
       await other.text();
    });
 
+   it("answers a matching conditional request after a stat alone, never reading the file", async () => {
+      const first = await fetch(versioned("1.0.0", "index.html"));
+      const etag = first.headers.get("etag") ?? "";
+      await first.text();
+
+      const read = spyOn(fsp, "readFile");
+      try {
+         const again = await fetch(versioned("1.0.0", "index.html"), {
+            headers: { "if-none-match": etag },
+         });
+         expect(again.status).toBe(304);
+         expect(read).not.toHaveBeenCalled();
+
+         const full = await fetch(versioned("1.0.0", "index.html"));
+         expect(full.status).toBe(200);
+         await full.text();
+         expect(read).toHaveBeenCalledTimes(1);
+      } finally {
+         read.mockRestore();
+      }
+   });
+
+   it("changes its ETag when the file changes, and when the injected context does", async () => {
+      // The served copy: the package is copied in on publish.
+      const { environmentStore } = await bootMainServer();
+      const served = await (
+         await environmentStore.getEnvironment(
+            parseEnvironmentName(ENV_NAME),
+            false,
+         )
+      ).getPackage(parsePackageName(PLAIN), false);
+      const file = path.join(served.getPackagePath(), "public", "etag.html");
+      const url = plainPage("etag.html");
+      const tagOf = async (target: string, headers: HeadersInit = {}) => {
+         const res = await fetch(target, { headers });
+         await res.text();
+         return res.headers.get("etag");
+      };
+      fs.writeFileSync(file, "<!doctype html><head></head><body>one</body>");
+      const first = await tagOf(url);
+      expect(await tagOf(url)).toBe(first);
+
+      // Same size, later mtime: still a different page.
+      fs.writeFileSync(file, "<!doctype html><head></head><body>two</body>");
+      fs.utimesSync(file, new Date(), new Date(Date.now() + 60_000));
+      const second = await tagOf(url);
+      expect(second).not.toBe(first);
+
+      // The same file with another context is another page, and the first
+      // page's tag does not revalidate it.
+      const trustedPage = plainPage("etag.html", trustedUrl);
+      const base = await tagOf(trustedPage);
+      const overridden = await tagOf(trustedPage, {
+         "x-publisher-page-context": JSON.stringify({ apiBase: "/gw/api/v0" }),
+      });
+      expect(overridden).not.toBe(base);
+      const res = await fetch(trustedPage, {
+         headers: {
+            "if-none-match": base ?? "",
+            "x-publisher-page-context": JSON.stringify({
+               apiBase: "/gw/api/v0",
+            }),
+         },
+      });
+      expect(res.status).toBe(200);
+      expect(contextOf(await res.text()).apiBase).toBe("/gw/api/v0");
+   });
+
    it("answers a range request for HTML with the whole page", async () => {
       const full = await (await fetch(versioned("1.0.0", "index.html"))).text();
       const ranged = await fetch(versioned("1.0.0", "index.html"), {
@@ -333,6 +411,19 @@ describe("data-app page context and versioned static URLs", () => {
       const text = await big.text();
       expect(text).not.toContain("publisher-context");
       expect(text.length).toBeGreaterThan(2 * 1024 * 1024);
+   });
+
+   it("sends a page with no insertion point in its first 64 KiB unchanged, and a hostile one promptly", async () => {
+      const late = await fetch(versioned("1.0.0", "late-head.html"));
+      expect(await late.text()).toBe(`${"x".repeat(70 * 1024)}<head></head>`);
+
+      const started = performance.now();
+      const hostile = await fetch(versioned("1.0.0", "hostile.html"));
+      const body = await hostile.text();
+      expect(hostile.status).toBe(200);
+      expect(body).not.toContain("publisher-context");
+      expect(body.startsWith("<!--<head>--><!--<head>-->")).toBe(true);
+      expect(performance.now() - started).toBeLessThan(1000);
    });
 
    it("404s a version the package does not have, with the page that names both URL forms", async () => {
@@ -471,11 +562,54 @@ describe("data-app page context and versioned static URLs", () => {
       expect(await pinned.text()).toBe("/* js v1 */");
    });
 
-   it("404s a missing page without redirecting, and refuses traversal before redirecting", async () => {
-      const missing = await noFollow(short("nope.html"));
-      expect(missing.status).toBe(404);
-      const traversal = await noFollow(short("..%2f..%2fpublisher.json"));
-      expect([400, 403, 404]).toContain(traversal.status);
+   it("404s a missing page and a dotfile without redirecting", async () => {
+      expect((await noFollow(short("nope.html"))).status).toBe(404);
+      // `latest` redirects without looking at the disk; the page it names answers.
+      expect((await fetch(versioned("latest", ".hidden.html"))).status).toBe(
+         404,
+      );
+      for (const url of [
+         short(".hidden.html"),
+         versioned("1.0.0", ".hidden.html"),
+      ]) {
+         const res = await noFollow(url);
+         expect([url, res.status, res.headers.get("location")]).toEqual([
+            url,
+            404,
+            null,
+         ]);
+      }
+   });
+
+   it("refuses an HTML path that leaves public/ before any redirect, on every route", async () => {
+      for (const url of [
+         short("..%2f..%2fpublisher.html"),
+         short("sub/..%2f..%2f..%2fpublisher.html"),
+         versioned("1.0.0", "..%2f..%2fpublisher.html"),
+         versioned("latest", "..%2f..%2fpublisher.html"),
+         versioned("latest", "sub%2f..%2f..%2f..%2fpublisher.html"),
+      ]) {
+         const res = await noFollow(url);
+         expect([url, res.status, res.headers.get("location")]).toEqual([
+            url,
+            400,
+            null,
+         ]);
+         await res.text();
+      }
+   });
+
+   it("builds the redirect from the normalized path under public/", async () => {
+      expect(
+         (await noFollow(short("sub%2f..%2fsub%2fpage.html"))).headers.get(
+            "location",
+         ),
+      ).toBe(absolute("2.0.0", "sub/page.html"));
+      expect(
+         (
+            await noFollow(versioned("latest", "sub%2f.%2fpage.html"))
+         ).headers.get("location"),
+      ).toBe(absolute("2.0.0", "sub/page.html"));
    });
 
    it("serves a package with no versions directly, with a null versionId", async () => {

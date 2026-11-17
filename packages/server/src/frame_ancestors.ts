@@ -73,9 +73,19 @@ export function hostOriginPattern(source: string): string | undefined {
  * usable, which turns the page's host bus off.
  */
 export function frameAncestorHostOrigins(raw: string | undefined): string[] {
-   const patterns = parseFrameAncestors(raw)
-      .split(/\s+/)
+   const patterns = frameAncestorSources(raw)
       .map(hostOriginPattern)
       .filter((pattern): pattern is string => pattern !== undefined);
    return [...new Set(patterns)];
+}
+
+/** The configured sources {@link hostOriginPattern} drops: they stay in the CSP but never become bus origins. */
+export function droppedFrameAncestorSources(raw: string | undefined): string[] {
+   return frameAncestorSources(raw).filter(
+      (source) => hostOriginPattern(source) === undefined,
+   );
+}
+
+function frameAncestorSources(raw: string | undefined): string[] {
+   return parseFrameAncestors(raw).split(/\s+/);
 }

@@ -359,6 +359,7 @@ describe("In-package HTML data apps (E2E)", () => {
       // Only HTML files under public/ are listed; the toEqual pins the exact
       // set, so non-public files (manifest, models, data) can't appear.
       expect(paths).toEqual([
+         "Upper.HTML",
          "barehtml.html",
          "bodymeta.html",
          "fitcomment.html",
@@ -370,6 +371,9 @@ describe("In-package HTML data apps (E2E)", () => {
          "unterminated.html",
       ]);
 
+      expect(dataApps.find((a) => a.path === "Upper.HTML")?.title).toBe(
+         "Upper Case Extension",
+      );
       const index = dataApps.find((a) => a.path === "index.html");
       expect(index?.title).toBe("Carrier Dashboard");
       expect(index?.packageName).toBe(PACKAGE_NAME);

@@ -10,47 +10,99 @@
 /** Past this size a page is not worth buffering to splice; it is sent as is. */
 export const MAX_INJECTABLE_HTML_BYTES = 2 * 1024 * 1024;
 
+/** How much of a document is scanned for an insertion point; a page's head sits well inside it. */
+const SCAN_BYTES = 64 * 1024;
+
 /** How far into a document a browser looks for its charset declaration. */
 const CHARSET_PRESCAN_BYTES = 1024;
 
-// Bounded attribute spans: a file of unclosed `<meta ` tags must not scan quadratically.
+// Bounded attribute spans, sticky so each is tried once at a `<`: a file of unclosed tags stays linear.
 const CHARSET_META =
-   /<meta\b[^>]{0,512}?(?:\bcharset\s*=|\bhttp-equiv\s*=\s*["']?content-type)[^>]{0,512}>/gi;
-const HEAD_OPEN = /<head(?=[\s/>])[^>]{0,1024}>/gi;
-const DOCTYPE = /<!doctype[^>]{0,1024}>/gi;
-const COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
+   /<meta\b[^>]{0,512}?(?:\bcharset\s*=|\bhttp-equiv\s*=\s*["']?content-type)[^>]{0,512}>/iy;
+const HEAD_OPEN = /<head(?=[\s/>])[^>]{0,1024}>/iy;
+const DOCTYPE = /<!doctype[^>]{0,1024}>/iy;
+
+// Elements whose content is text, never markup.
+const RAW_TEXT_OPEN = /<(script|style|title|textarea)(?=[\s/>])/iy;
+const RAW_TEXT_CLOSE = new Map(
+   ["script", "style", "title", "textarea"].map((name) => [
+      name,
+      new RegExp(`</${name}(?=[\\s/>])[^>]{0,1024}>`, "gi"),
+   ]),
+);
+
+/**
+ * Where the text that is not markup, starting at the `<` at `at`, ends: an HTML
+ * comment, or a script, style, title or textarea element through its closing
+ * tag. One that is never closed runs to the end of `text`. Undefined when `at`
+ * starts neither. A forward-only scan, so a caller that continues from the
+ * returned index never reads a character twice.
+ */
+export function nonTagTextEnd(text: string, at: number): number | undefined {
+   if (text.startsWith("<!--", at)) {
+      const close = text.indexOf("-->", at + 2);
+      return close === -1 ? text.length : close + 3;
+   }
+   RAW_TEXT_OPEN.lastIndex = at;
+   const open = RAW_TEXT_OPEN.exec(text);
+   if (!open) return undefined;
+   const closer = RAW_TEXT_CLOSE.get(open[1].toLowerCase())!;
+   closer.lastIndex = at + open[0].length;
+   const close = closer.exec(text);
+   return close ? close.index + close[0].length : text.length;
+}
+
+function stickyEnd(pattern: RegExp, text: string, at: number) {
+   pattern.lastIndex = at;
+   const m = pattern.exec(text);
+   return m ? at + m[0].length : undefined;
+}
 
 /**
  * `html` with `snippet` inserted, or undefined when the document is left
- * alone (a UTF-16 byte-order mark: its bytes cannot be scanned as ASCII).
+ * alone: a UTF-16 byte-order mark (its bytes cannot be scanned as ASCII), or
+ * no insertion point in its first 64 KiB.
  *
- * The snippet goes after the charset meta when one sits in the first 1024
+ * The snippet goes after the charset meta when one ends in the first 1024
  * bytes (so the meta stays inside the prescan window), else after `<head>`,
- * else after the doctype, else at the start past any UTF-8 byte-order mark.
- * A tag inside an HTML comment is not a tag.
+ * else after the doctype, else, for a document that fits the scan, at the
+ * start past any UTF-8 byte-order mark. Text that is not markup (comments,
+ * script, style, title, textarea) holds no tag.
  */
 export function injectAfterHeadStart(
    html: Buffer,
    snippet: string,
 ): Buffer | undefined {
    if (isUtf16(html)) return undefined;
-   const text = html.toString("latin1");
-   const comments = [...text.matchAll(COMMENT)].map(
-      (m) => [m.index, m.index + m[0].length] as const,
-   );
-   const live = (index: number) =>
-      !comments.some(([start, end]) => index >= start && index < end);
-   const endOfFirst = (pattern: RegExp, scanned = text) => {
-      for (const m of scanned.matchAll(pattern)) {
-         if (live(m.index)) return m.index + m[0].length;
+   const text = html.subarray(0, SCAN_BYTES).toString("latin1");
+   let charset: number | undefined;
+   let head: number | undefined;
+   let doctype: number | undefined;
+   let i = text.indexOf("<");
+   while (i !== -1 && charset === undefined) {
+      const skipped = nonTagTextEnd(text, i);
+      if (skipped !== undefined) {
+         i = text.indexOf("<", skipped);
+         continue;
       }
-      return undefined;
-   };
+      const metaEnd = stickyEnd(CHARSET_META, text, i);
+      if (metaEnd !== undefined && metaEnd <= CHARSET_PRESCAN_BYTES) {
+         charset = metaEnd;
+      }
+      head ??= stickyEnd(HEAD_OPEN, text, i);
+      doctype ??= stickyEnd(DOCTYPE, text, i);
+      i = text.indexOf("<", i + 1);
+   }
    const at =
-      endOfFirst(CHARSET_META, text.slice(0, CHARSET_PRESCAN_BYTES)) ??
-      endOfFirst(HEAD_OPEN) ??
-      endOfFirst(DOCTYPE) ??
-      (html.subarray(0, 3).equals(UTF8_BOM) ? UTF8_BOM.length : 0);
+      charset ??
+      head ??
+      doctype ??
+      (html.length <= SCAN_BYTES
+         ? html.subarray(0, 3).equals(UTF8_BOM)
+            ? UTF8_BOM.length
+            : 0
+         : undefined);
+   if (at === undefined) return undefined;
    return Buffer.concat([
       html.subarray(0, at),
       Buffer.from(snippet, "latin1"),

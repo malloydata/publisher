@@ -10,12 +10,15 @@
 
 import { createHash } from "crypto";
 import type express from "express";
-import type { Dirent } from "fs";
+import type { Dirent, Stats } from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
 import { API_PREFIX } from "../constants";
 import { internalErrorToHttpError } from "../errors";
-import { frameAncestorHostOrigins } from "../frame_ancestors";
+import {
+   droppedFrameAncestorSources,
+   frameAncestorHostOrigins,
+} from "../frame_ancestors";
 import { logger } from "../logger";
 import { safeJoinUnderRoot, stepsOutside } from "../path_safety";
 import { confinedPackagePath } from "../utils";
@@ -23,7 +26,11 @@ import { pathToFileURL } from "url";
 import type { PackageLookup } from "../service/environment_ports";
 import { versionRefOf } from "../route_params";
 import { LATEST_VERSION_ALIAS } from "../service/versions/version_service";
-import { injectAfterHeadStart, MAX_INJECTABLE_HTML_BYTES } from "./html_inject";
+import {
+   injectAfterHeadStart,
+   MAX_INJECTABLE_HTML_BYTES,
+   nonTagTextEnd,
+} from "./html_inject";
 import { apiRoute } from "./json_route";
 import {
    PAGE_CONTEXT_HEADER,
@@ -87,7 +94,23 @@ function sendNotFound(res: express.Response): void {
 
 const isHtmlFile = (file: string) => /\.html?$/i.test(file);
 
-/** The versioned static URL of `subPath` (as the request spelled it) under `public/`. */
+// Containment is lexical, so it answers the same before the package's real public/ is known.
+const LEXICAL_PUBLIC_ROOT = path.join(path.sep, "public");
+
+/**
+ * The request's path under `public/`, normalized and confined to it (400 on a
+ * step outside); empty for `public/` itself, with a trailing slash kept.
+ */
+function containedSubPath(raw: string): string {
+   const joined = safeJoinUnderRoot(LEXICAL_PUBLIC_ROOT, raw);
+   const rel = path
+      .relative(LEXICAL_PUBLIC_ROOT, joined)
+      .split(path.sep)
+      .join("/");
+   return rel !== "" && raw.endsWith("/") ? `${rel}/` : rel;
+}
+
+/** The versioned static URL of `subPath` (from `containedSubPath`) under `public/`. */
 function versionedPublicUrl(
    req: express.Request,
    versionId: string,
@@ -113,8 +136,11 @@ async function serveFromPackage(
    res: express.Response,
    versionInPath?: string,
 ): Promise<void> {
-   const subPathRaw = (req.params as Record<string, string>)["0"] ?? "";
    try {
+      // Before either redirect and before the disk: a path outside public/ is refused, never redirected.
+      const subPath = containedSubPath(
+         (req.params as Record<string, string>)["0"] ?? "",
+      );
       const environment = await deps.environmentStore.getEnvironment(
          parseEnvironmentName(req.params.environmentName),
          false,
@@ -142,7 +168,7 @@ async function serveFromPackage(
             302,
             withRequestQuery(
                req,
-               versionedPublicUrl(req, latest, subPathRaw),
+               versionedPublicUrl(req, latest, subPath),
                "versionId",
             ),
          );
@@ -160,14 +186,14 @@ async function serveFromPackage(
       // This directory boundary is the whole access control for static files.
       const publicRoot = path.join(pkg.getPackagePath(), "public");
 
-      let subPath = subPathRaw;
-      if (subPath === "" || subPath.endsWith("/")) {
-         subPath = subPath + "index.html";
-      }
-
-      // Lexical containment first (400 on `..` or encoded traversal), before
-      // touching the disk.
-      const fullPath = safeJoinUnderRoot(publicRoot, subPath);
+      // The directory form serves its index.html. The join re-checks
+      // containment at the sink, before touching the disk.
+      const fullPath = safeJoinUnderRoot(
+         publicRoot,
+         subPath === "" || subPath.endsWith("/")
+            ? `${subPath}index.html`
+            : subPath,
+      );
 
       // Then containment by the package's own walk, which never looks
       // outside the package. public/ itself is resolved against the package
@@ -198,21 +224,31 @@ async function serveFromPackage(
       const versionId = pkg.getVersionId() ?? null;
       if (isHtmlFile(realFullPath)) {
          const stat = await fsp.stat(realFullPath).catch(() => undefined);
-         if (!stat?.isFile()) return sendNotFound(res);
+         // A dotfile is not served, as `sendFile` does for any other type.
+         if (!stat?.isFile() || path.basename(realFullPath).startsWith(".")) {
+            return sendNotFound(res);
+         }
          if (versionInPath === undefined && versionId !== null) {
             res.setHeader("Cache-Control", "no-store");
             res.redirect(
                302,
                withRequestQuery(
                   req,
-                  versionedPublicUrl(req, versionId, subPathRaw),
+                  versionedPublicUrl(req, versionId, subPath),
                   "versionId",
                ),
             );
             return;
          }
          if (stat.size <= MAX_INJECTABLE_HTML_BYTES) {
-            await sendHtmlWithContext(deps, req, res, realFullPath, versionId);
+            await sendHtmlWithContext(
+               deps,
+               req,
+               res,
+               realFullPath,
+               stat,
+               versionId,
+            );
             return;
          }
       }
@@ -232,20 +268,21 @@ async function serveFromPackage(
 
 /**
  * An HTML page with its context spliced in. Sent with `res.send` so Express
- * answers HEAD and `If-None-Match` itself; a range request gets the whole
- * page, because byte offsets into a rewritten body would mean nothing. The
- * ETag is weak because a gzip proxy strips strong ones, and the page is
- * revalidated every time because the context it carries can differ per
- * request under `trustPageContextHeader`.
+ * answers HEAD itself; a range request gets the whole page, because byte
+ * offsets into a rewritten body would mean nothing. The ETag is weak because a
+ * gzip proxy strips strong ones, and is derived from the file's stat and the
+ * context alone, so a conditional request that matches costs one `stat`: no
+ * read, no scan. The page is revalidated every time because the context it
+ * carries can differ per request under `trustPageContextHeader`.
  */
 async function sendHtmlWithContext(
    deps: StaticFileDeps,
    req: express.Request,
    res: express.Response,
    file: string,
+   stat: Stats,
    versionId: string | null,
 ): Promise<void> {
-   const bytes = await fsp.readFile(file);
    let override = {};
    if (deps.trustPageContextHeader) {
       res.vary(PAGE_CONTEXT_HEADER);
@@ -267,14 +304,25 @@ async function sendHtmlWithContext(
       hostOrigins: deps.hostOrigins,
       ...override,
    };
-   const page =
-      injectAfterHeadStart(bytes, pageContextScript(context)) ?? bytes;
+   const snippet = pageContextScript(context);
    res.setHeader(
       "ETag",
-      `W/"${createHash("sha256").update(page).digest("hex")}"`,
+      `W/"${createHash("sha256")
+         .update(`${stat.size}:${stat.mtimeMs}:${stat.ino}:${snippet}`)
+         .digest("hex")}"`,
    );
    res.setHeader("Cache-Control", "no-cache");
-   res.type(path.extname(file)).send(page);
+   res.type(path.extname(file));
+   if (req.fresh) {
+      res.status(304).end();
+      return;
+   }
+   const bytes = await fsp.readFile(file).catch(() => undefined);
+   if (bytes === undefined) {
+      res.removeHeader("ETag");
+      return sendNotFound(res);
+   }
+   res.send(injectAfterHeadStart(bytes, snippet) ?? bytes);
 }
 
 /**
@@ -327,6 +375,13 @@ export function registerDataAppStaticRoutes(
    runtimePath: string,
    options: { frameAncestors?: string; trustPageContextHeader: boolean },
 ): void {
+   const unusable = droppedFrameAncestorSources(options.frameAncestors);
+   if (unusable.length > 0) {
+      logger.warn(
+         "frameAncestors sources that cannot be data-app host bus origins (the CSP still applies them)",
+         { sources: unusable },
+      );
+   }
    const deps: StaticFileDeps = {
       environmentStore,
       hostOrigins: frameAncestorHostOrigins(options.frameAncestors),
@@ -365,11 +420,13 @@ export function registerDataAppStaticRoutes(
       "/environments/:environmentName/packages/:packageName/versions/:versionId/public";
    app.get(versionedRoot, (req, res, next) => {
       if (req.path.endsWith("/")) return next();
-      const canonical =
-         `/environments/${encodeURIComponent(req.params.environmentName)}` +
-         `/packages/${encodeURIComponent(req.params.packageName)}` +
-         `/versions/${encodeURIComponent(req.params.versionId)}/public/`;
-      res.redirect(308, withRequestQuery(req, canonical));
+      res.redirect(
+         308,
+         withRequestQuery(
+            req,
+            versionedPublicUrl(req, req.params.versionId, ""),
+         ),
+      );
    });
    app.get(`${versionedRoot}/*`, (req, res) =>
       serveFromPackage(deps, req, res, req.params.versionId),
@@ -424,22 +481,21 @@ type DataAppItem = {
    fit?: "viewport";
 };
 
-// Where a "<meta ...>" literal is not a live tag: HTML comments (terminated or
-// not) and raw-text elements. One alternation, so the fixpoint loop below is a
-// single self-referential replace, the shape CodeQL recognizes as complete.
-const NON_TAG_TEXT_PATTERN =
-   /<!--[\s\S]*?-->|<!--[\s\S]*$|<(script|style|title|textarea)\b[\s\S]*?<\/\1\s*>/gi;
-
-// Repeated to a fixpoint because one removal can splice a new match together
-// (CWE-116). Each pass only deletes, so the loop terminates.
+// `input` without the comments and raw-text elements, where a "<meta ...>" literal is not a live tag.
 function stripNonTagText(input: string): string {
-   let current = input;
-   let previous: string;
-   do {
-      previous = current;
-      current = current.replace(NON_TAG_TEXT_PATTERN, "");
-   } while (current !== previous);
-   return current;
+   let kept = "";
+   let copied = 0;
+   for (let i = input.indexOf("<"); i !== -1; ) {
+      const end = nonTagTextEnd(input, i);
+      if (end === undefined) {
+         i = input.indexOf("<", i + 1);
+         continue;
+      }
+      kept += input.slice(copied, i);
+      copied = end;
+      i = input.indexOf("<", end);
+   }
+   return kept + input.slice(copied);
 }
 
 /**
@@ -525,10 +581,7 @@ async function listPackageDataApps(
          if (real === undefined) continue;
          if (entry.isDirectory()) {
             await walk(full, real, depth + 1);
-         } else if (
-            entry.isFile() &&
-            (entry.name.endsWith(".html") || entry.name.endsWith(".htm"))
-         ) {
+         } else if (entry.isFile() && isHtmlFile(entry.name)) {
             const rel = path.relative(publicRoot, full).replace(/\\/g, "/");
             // Metadata comes from the first 4KB only.
             let title = rel;

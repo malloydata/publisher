@@ -127,10 +127,69 @@ describe("injectAfterHeadStart", () => {
       expect(out.subarray(out.length - body.length).equals(body)).toBe(true);
    });
 
-   it("stays linear on a file of unclosed meta tags", () => {
-      const html = "<meta ".repeat(100_000);
-      const started = performance.now();
-      inject(html);
-      expect(performance.now() - started).toBeLessThan(2000);
+   describe("on adversarial input at the 2 MiB cap", () => {
+      const CAP = 2 * 1024 * 1024;
+      const fill = (unit: string) => unit.repeat(Math.ceil(CAP / unit.length));
+      const cases: [string, string][] = [
+         ["repeated commented-out heads", fill("<!--<head>-->")],
+         ["an unclosed comment per tag", fill("<!--")],
+         ["an unclosed script", `<script ${"x".repeat(CAP)}`],
+         ["repeated unclosed scripts", fill("<script ")],
+         ["unclosed closing tags in a script", `<script>${fill("</script ")}`],
+         ["repeated unclosed metas", fill("<meta ")],
+         ["repeated unclosed heads", fill("<head ")],
+         ["repeated unclosed titles", fill("<title>")],
+      ];
+      for (const [name, html] of cases) {
+         it(`is fast on ${name}`, () => {
+            const started = performance.now();
+            injectAfterHeadStart(Buffer.from(html, "latin1"), SNIPPET);
+            expect(performance.now() - started).toBeLessThan(200);
+         });
+      }
+   });
+
+   it("does not take a tag inside a script, style, title, textarea or comment for a live one", () => {
+      for (const [open, close] of [
+         ["<script>", "</script>"],
+         ["<SCRIPT type=module>", "</Script >"],
+         ["<style>", "</style>"],
+         ["<title>", "</title>"],
+         ["<textarea>", "</textarea>"],
+         ["<!--", "-->"],
+      ]) {
+         const decoy = `${open}<head><meta charset="x">${close}`;
+         expect(inject(`<!doctype html>${decoy}<head><p>`)).toBe(
+            `<!doctype html>${decoy}<head>${SNIPPET}<p>`,
+         );
+      }
+   });
+
+   it("does not insert after an unclosed raw-text element or inside its text", () => {
+      expect(inject("<!doctype html><script>var a='<head>'")).toBe(
+         `<!doctype html>${SNIPPET}<script>var a='<head>'`,
+      );
+      expect(inject("<title>t")).toBe(`${SNIPPET}<title>t`);
+   });
+
+   it("does not close a raw-text element on a longer tag name", () => {
+      expect(inject("<script>a</scripts><head>b</script><head>")).toBe(
+         `<script>a</scripts><head>b</script><head>${SNIPPET}`,
+      );
+   });
+
+   it("leaves a document alone when nothing is found in its first 64 KiB", () => {
+      const pad = "x".repeat(64 * 1024);
+      expect(
+         injectAfterHeadStart(Buffer.from(`${pad}<head>`), SNIPPET),
+      ).toBeUndefined();
+      expect(
+         injectAfterHeadStart(Buffer.from(`<!--${pad}--><head>`), SNIPPET),
+      ).toBeUndefined();
+   });
+
+   it("scans only the first 64 KiB, and splices at a head found there", () => {
+      const tail = "<head>".repeat(1000) + "x".repeat(200 * 1024);
+      expect(inject(`<head>${tail}`)).toBe(`<head>${SNIPPET}${tail}`);
    });
 });

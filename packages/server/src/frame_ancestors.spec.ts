@@ -19,6 +19,7 @@ import os from "os";
 import request from "supertest";
 import {
    FRAME_ANCESTORS_ENV,
+   droppedFrameAncestorSources,
    frameAncestorHostOrigins,
    frameAncestorsMiddleware,
    hostOriginPattern,
@@ -154,6 +155,20 @@ describe("hostOriginPattern", () => {
       ]) {
          expect(hostOriginPattern(source)).toBeUndefined();
       }
+   });
+});
+
+describe("droppedFrameAncestorSources", () => {
+   it("names the sources the bus cannot use, and none for a usable list or the default", () => {
+      expect(droppedFrameAncestorSources(undefined)).toEqual([]);
+      expect(
+         droppedFrameAncestorSources("'self' https://*.app.example.com"),
+      ).toEqual([]);
+      expect(
+         droppedFrameAncestorSources(
+            "'self' * https://a.example/path https://b.example https:",
+         ),
+      ).toEqual(["*", "https://a.example/path", "https:"]);
    });
 });
 
