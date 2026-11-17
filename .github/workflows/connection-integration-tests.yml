@@ -33,6 +33,8 @@ on:
       - "packages/server/src/storage/**"
       - "packages/server/tests/component/materialization_key_check_rebind.component.spec.ts"
       - "packages/server/tests/component/materialization_stale_chain.component.spec.ts"
+      - "packages/server/tests/component/database_table_alter_at_bind.component.spec.ts"
+      - "packages/server/tests/component/database_truncation_types.component.spec.ts"
       - "packages/server/tests/component/r4/**"
       - "packages/server/tests/integration/materialization/**"
       # The passthrough surfaces this job exists to catch are provided by the
@@ -70,6 +72,8 @@ on:
       - "packages/server/src/storage/**"
       - "packages/server/tests/component/materialization_key_check_rebind.component.spec.ts"
       - "packages/server/tests/component/materialization_stale_chain.component.spec.ts"
+      - "packages/server/tests/component/database_table_alter_at_bind.component.spec.ts"
+      - "packages/server/tests/component/database_truncation_types.component.spec.ts"
       - "packages/server/tests/component/r4/**"
       - "packages/server/tests/integration/materialization/**"
       # The passthrough surfaces this job exists to catch are provided by the
