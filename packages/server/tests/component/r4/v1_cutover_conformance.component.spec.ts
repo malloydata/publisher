@@ -311,7 +311,7 @@ source: orders is orders_raw extend {
             );
             const by = "error" in out ? out.error : out.answer.servedBy;
             const said = verdicts
-               .filter((v) => v.origin === "preaggregate")
+               .filter((v) => v.origin === "rollup")
                .map((v) => v.cutoverPath);
             if (by !== "rollup") expect(said).not.toContain("rollup");
          } finally {

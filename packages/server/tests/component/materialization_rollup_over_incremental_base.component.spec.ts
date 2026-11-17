@@ -130,7 +130,7 @@ describe.skipIf(!POSTGRES_URL)(
 
       /** The rollup's stored rows equal its warehouse build's (its planned SQL). */
       async function expectParity(m: Materialization): Promise<Entry> {
-         const rollup = entries(m).find((e) => e.origin === "preaggregate")!;
+         const rollup = entries(m).find((e) => e.origin === "rollup")!;
          expect(rollup.upstreamReuse).toBe("reused");
          const pkg = await env.getPackage(parsePackageName(PKG), false);
          const planned = Object.values(pkg.getBuildPlan()!.sources).find(

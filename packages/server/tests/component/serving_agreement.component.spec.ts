@@ -189,7 +189,7 @@ describe("a #@ preaggregate measure reused in a persisted query", () => {
          [],
       );
       expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe("");
-      expect(planEntry(pkg, "daily").origin).not.toBe("preaggregate");
+      expect(planEntry(pkg, "daily").origin).not.toBe("rollup");
    });
 
    it("still refuses an annotation written on a dimension, named once, by the file that declares it", async () => {

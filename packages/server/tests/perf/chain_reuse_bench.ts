@@ -136,7 +136,7 @@ async function main(): Promise<void> {
       ).entries,
    );
    const rollup = entries.find((e) =>
-      CHAIN ? e.sourceName === "child" : e.origin === "preaggregate",
+      CHAIN ? e.sourceName === "child" : e.origin === "rollup",
    )!;
    const creates = statements.filter((s) => /^\s*CREATE\b/i.test(s.sql));
    const rawScans = creates.filter((s) => s.sql.includes(MARK)).length;
