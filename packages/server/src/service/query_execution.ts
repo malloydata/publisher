@@ -11,6 +11,7 @@
 
 import { withSpan } from "../telemetry";
 import {
+   EMPTY_BUILD_MANIFEST,
    MalloyError,
    type QueryMaterializer,
    type Result,
@@ -93,6 +94,15 @@ async function prepareAndRunUntraced(
       };
    },
 ): Promise<PreparedRun> {
+   // Never undefined: Malloy reads an undefined `buildManifest` as "use the
+   // Runtime's", and a host's manifest bind leaves the whole manifest on the
+   // Runtime, unfiltered by freshness. A caller with nothing to substitute
+   // (a strip that left nothing, the cutover's live leg, a serve shape) must
+   // read no table at all.
+   options = {
+      ...options,
+      buildManifest: options.buildManifest ?? EMPTY_BUILD_MANIFEST,
+   };
    const prepared = await runnable.getPreparedResult(options);
    const preparedLimit = prepared.resultExplore.limit;
    const rowLimitSource = queryRowLimitSource(preparedLimit);

@@ -1,16 +1,30 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { EOL } from "os";
+import {
+  describe,
+  test,
+  expect,
+  mock,
+  beforeEach,
+  afterEach,
+  spyOn,
+} from "bun:test";
 import { PublisherClient } from "../api/client";
 import * as packageCommands from "../commands/packages";
 
 describe("Package Commands", () => {
-  let consoleLogSpy: any;
+  // logOutput writes through a winston Console transport, which goes straight
+  // to process.stdout.write, not through console.log, so capture stdout.
+  let stdoutSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
-    consoleLogSpy = mock(() => {});
-    console.log = consoleLogSpy as any;
+    stdoutSpy = spyOn(process.stdout, "write").mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
   });
 
   test("listPackages should call listPackages API", async () => {
@@ -49,7 +63,7 @@ describe("Package Commands", () => {
     await packageCommands.getPackage(mockClient, "proj", "pkg-1");
 
     expect(mockClient.getPackage).toHaveBeenCalledWith("proj", "pkg-1");
-    expect(consoleLogSpy).toHaveBeenCalledWith(JSON.stringify(pkg, null, 2));
+    expect(stdoutSpy).toHaveBeenCalledWith(JSON.stringify(pkg, null, 2) + EOL);
   });
 
   test("createPackage should call API with correct arguments", async () => {

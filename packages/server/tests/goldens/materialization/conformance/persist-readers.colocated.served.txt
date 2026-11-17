@@ -1,0 +1,29 @@
+// conformance: #@ -persist readers [colocated]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: summary__served is {
+   region::string,
+   status::string,
+   total::number
+}
+
+import "raw.malloy"
+
+#@ persist name="summary"
+source: summary is duckdb.virtual('2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da')::summary__served
+
+#@ -persist
+source: summary_fresh is summary extend {
+  measure: grand is total.sum()
+}
+
+source: summary_fresh_rollup is summary_fresh -> {
+  group_by: region
+  aggregate: g is grand
+}
+
+source: summary_kept is summary extend {
+  measure: grand is total.sum()
+}

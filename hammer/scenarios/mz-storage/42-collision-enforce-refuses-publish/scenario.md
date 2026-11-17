@@ -8,28 +8,31 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# PERSIST_COLLISION_ENFORCE rejects a colliding publish
+# A colliding publish is refused by default; PERSIST_COLLISION_ENFORCE=false opts out
 
-A within-package persist-target collision is warn-only by default (see
-`within-package-collision`), so a package published before the check existed
-never breaks on a routine re-publish. A deployment that has audited its packages
-can opt into strictness with `PERSIST_COLLISION_ENFORCE=true`, which turns the
-collision into a hard **publish rejection** — but only on the author-in-the-loop
-publish path (POST /packages), never at startup/reload (still fail-safe).
+A within-package persist-target collision is a hard **publish rejection** by
+default (`PERSIST_COLLISION_ENFORCE` defaults to `true`) — but only on the
+author-in-the-loop publish path (POST /packages), never at startup/reload, which
+stays fail-safe and only warns (see `within-package-collision`). A deployment
+whose existing packages carry a latent collision it cannot fix yet opts out with
+`PERSIST_COLLISION_ENFORCE=false`, which turns the rejection back into a warning.
 
 The discriminating pair: the SAME colliding package published against two
-publishers. The one booted with `PERSIST_COLLISION_ENFORCE=true` refuses the
-publish; the one without accepts it (warn-only). The flag is fixed at process
-start, so each is a separate publisher (`## Publisher` carries the env var).
+publishers. The one booted with the default refuses the publish; the one booted
+with `PERSIST_COLLISION_ENFORCE=false` accepts it (warn-only). The flag is fixed
+at process start, so each is a separate publisher (`## Publisher` carries the
+env var).
 
 `alpha` and `beta` both declare `name="coe_dup" storage=lake` — the collision.
 
+Package versioning is off on both publishers: `## Republish` re-publishes in place (`POST /packages` with no location), which a versioned package refuses with `PACKAGE_IS_VERSIONED`. This scenario is about the collision gate, not versions.
+
 ## Publisher strict
 
-Boot with the enforce flag set.
+Boot with the default: collisions are enforced.
 
 - PERSIST_STORAGE_MODE: on
-- PERSIST_COLLISION_ENFORCE: true
+- PUBLISHER_PACKAGE_VERSIONING: off
 
 ## Data orders_pg.coe_orders
 
@@ -60,15 +63,17 @@ source: beta is orders -> {
 
 ## Republish refused coe
 
-Under `PERSIST_COLLISION_ENFORCE`, publishing the colliding package is rejected.
+By default, publishing the colliding package is rejected.
 
 cites: resolve to the same materialized table
 
 ## Publisher lax
 
-A second publisher WITHOUT the flag (the default posture).
+A second publisher that opts out.
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: off
+- PERSIST_COLLISION_ENFORCE: false
 
 ## Republish coe
 

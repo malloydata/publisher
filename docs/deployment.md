@@ -36,7 +36,7 @@ agent started there connects with no manual setup. It only ever creates, never e
 several cases including git working trees and the home directory; see
 [configuration.md](configuration.md#the-mcpjson-the-server-writes) for the rules.
 
-For a service rather than a terminal, set `PUBLISHER_NO_MCP_CONFIG=1`, which is what the Docker image
+For a service rather than a terminal, set `PUBLISHER_MCP_CONFIG_FILE_ENABLED=false`, which is what the Docker image
 does: nothing starts an agent session in a service, so the file is pure side effect there. Two things
 otherwise bite. The file outlives the process and is never corrected, so a stale one can point an agent
 at whatever holds that port now. And a process manager that leaves the working directory unset lands in

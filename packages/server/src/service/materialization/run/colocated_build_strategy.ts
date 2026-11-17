@@ -1,13 +1,33 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The colocated tier: a table built in its source's own warehouse, by a
+ * delta or by a staging table swapped onto the served name
+ * ({@link ColocatedTier}, {@link swapIntoPlace}); its schema capture, its
+ * drop and its key check on the source's connection. The swap's transaction
+ * text, which differs by dialect, is warehouse_sql.ts's.
+ */
+
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
-import { recordSourceBuildDuration } from "../../../materialization_metrics";
+import { errorCodeOf } from "./error_code";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
-import { ManifestEntry } from "../types";
-import type { BuildStrategy, ColocatedBuildRequest } from "./build_strategy";
+import { storedColumnsOfOutput } from "../stored_column_types";
+import { capturedNativeSchema } from "./colocated_native_types";
+import { ManifestEntry } from "../domain/types";
+import { capabilitiesOf } from "../domain/dialect";
+import type {
+   ColocatedBuildRequest,
+   ColocatedSite,
+   DroppedTable,
+   KeyCheck,
+   KeyCheckRecord,
+   TierAdapter,
+} from "./tier";
+import { runRollupKeyCheck } from "./inline_uniqueness";
+import { buildColocatedDelta } from "./incremental_delta_strategy";
 import {
    advanceLedgerAfterSeed,
    ledgerFields,
@@ -15,6 +35,7 @@ import {
    resetLedger,
 } from "./incremental_build";
 import { backupSuffix, stagingSuffix } from "./materialization_run_support";
+import { transactionalSwapSql } from "./warehouse_sql";
 
 /**
  * A full rebuild of a colocated table in the source's own warehouse: COPY into
@@ -34,10 +55,67 @@ import { backupSuffix, stagingSuffix } from "./materialization_run_support";
  * incremental source it also clears the ledger before the rebuild and records
  * the new boundary after it.
  */
-export class ColocatedCtasStrategy
-   implements BuildStrategy<ColocatedBuildRequest>
+export class ColocatedTier
+   implements TierAdapter<ColocatedBuildRequest, ColocatedSite>
 {
+   readonly tier = "colocated" as const;
+
+   /** A delta for an incremental table the run can advance, else a rebuild in full. */
    async build(request: ColocatedBuildRequest): Promise<ManifestEntry> {
+      return (await buildColocatedDelta(request)) ?? this.buildInFull(request);
+   }
+
+   /**
+    * Drop the table, quoted as the build quoted it so what built also drops,
+    * then the staging table a crash between its create and the swap can
+    * leave, and the previous copy a crash between the swap's two renames
+    * can leave.
+    */
+   async drop(site: ColocatedSite, table: DroppedTable): Promise<void> {
+      const { connection, runOptions } = site;
+      const dialect = connection.dialectName;
+      try {
+         await connection.runSQL(
+            `DROP TABLE IF EXISTS ${quoteTablePath(
+               table.physicalTableName,
+               dialect,
+            )}`,
+            runOptions,
+         );
+      } catch (err) {
+         if (!table.onDropFailed) throw err;
+         await table.onDropFailed(err);
+      }
+      if (table.leftoversOf === undefined) return;
+      await connection.runSQL(
+         `DROP TABLE IF EXISTS ${quoteTablePath(
+            `${table.physicalTableName}${stagingSuffix(table.leftoversOf)}`,
+            dialect,
+         )}`,
+         runOptions,
+      );
+      await connection.runSQL(
+         `DROP TABLE IF EXISTS ${quoteTablePath(
+            `${table.physicalTableName}${backupSuffix(table.leftoversOf)}`,
+            dialect,
+         )}`,
+         runOptions,
+      );
+   }
+
+   /** On the warehouse connection itself. */
+   checkKey(
+      site: ColocatedSite,
+      check: KeyCheck,
+      table: string,
+   ): Promise<KeyCheckRecord | undefined> {
+      return runRollupKeyCheck(check, site.connection, table);
+   }
+
+   /** The staging CTAS and the swap onto the served name. */
+   private async buildInFull(
+      request: ColocatedBuildRequest,
+   ): Promise<ManifestEntry> {
       const {
          persistSource,
          instruction,
@@ -46,6 +124,7 @@ export class ColocatedCtasStrategy
          buildSQL,
          runOptions,
          incrementalRefresh,
+         replacesView,
       } = request;
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -98,6 +177,7 @@ export class ColocatedCtasStrategy
          stagingTableName,
          backupTableName: `${physicalTableName}${backupSuffix(sourceEntityId)}`,
          connectionName: persistSource.connectionName,
+         ...(replacesView ? { replacesView } : {}),
       });
 
       // Visible to later downstreams in this run, under the SAME quoted path
@@ -106,10 +186,26 @@ export class ColocatedCtasStrategy
       manifest.update(sourceEntityId, { tableName: quotedPhysical });
 
       const durationMs = Math.round(performance.now() - startTime);
-      recordSourceBuildDuration(durationMs, "in_warehouse");
-      logger.info(`Built materialized source ${persistSource.name}`, {
+      // A colocated `#@ persist` table is bound on the served copy with the
+      // columns its build wrote, captured here as a `storage=` build captures
+      // them (the v1 cutover's G1).
+      const schema = await capturedColocatedSchema({
+         connection,
          physicalTableName,
-         durationMs,
+         dialect,
+         sourceName: persistSource.name,
+      });
+
+      // Each column's type as the warehouse names it, so the served copy
+      // reads a big-integer column through a cast to exactly that type and
+      // never narrows one (known limitation 12). Captured on every build: a
+      // `#(materialize)` table records no other schema.
+      const nativeSchema = await capturedNativeSchema({
+         run: (sql, options) =>
+            connection.runSQL(sql, { ...runOptions, ...options }),
+         physicalTableName,
+         dialect,
+         sourceName: persistSource.name,
       });
 
       // The table now holds a full snapshot; its boundary turns the NEXT
@@ -130,7 +226,7 @@ export class ColocatedCtasStrategy
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
          connectionName: persistSource.connectionName,
-         realization: instruction.realization,
+         realization: "COPY",
          ...ledgerFields(incrementalRefresh?.lineage, seededThrough),
          // Reported for any incremental source that rebuilt, so a full rebuild
          // is distinguishable from a delta.
@@ -139,8 +235,63 @@ export class ColocatedCtasStrategy
          buildDurationMs: durationMs,
          // The recurring warehouse cost of keeping this source materialized.
          queryCostBytes: buildCostBytes ?? null,
+         ...(schema?.length ? { schema } : {}),
+         ...(nativeSchema?.length ? { nativeSchema } : {}),
          ...request.upstreamReuse,
       };
+   }
+}
+
+/**
+ * The columns of a colocated table just built, read back from its warehouse
+ * through the connection's own schema reader and spelled as a `storage=`
+ * entry's are (DuckDB's names; `storedColumnsOfOutput`). Undefined when the
+ * read fails or yields nothing: the build stands, and the served copy derives
+ * the columns from the compiled source instead (colocated_bindings.ts).
+ */
+export async function capturedColocatedSchema(args: {
+   connection: Pick<MalloyConnection, "fetchSchemaForTables">;
+   physicalTableName: string;
+   dialect: string;
+   sourceName: string;
+}): Promise<{ name: string; type: string }[] | undefined> {
+   const key = args.physicalTableName;
+   // Read as the build CREATEd it: quoted for the dialect, so a name a
+   // case-folding warehouse (Snowflake) keeps in its case is found.
+   const tablePath = quoteTablePath(key, args.dialect);
+   try {
+      const read = await args.connection.fetchSchemaForTables(
+         { [key]: tablePath },
+         { refreshTimestamp: Date.now() },
+      );
+      const fields = read.schemas[key]?.fields;
+      if (!fields?.length) {
+         logger.warn(
+            "Could not read a colocated table's columns after its build; the served copy derives them",
+            {
+               sourceName: args.sourceName,
+               physicalTableName: key,
+               error: read.errors[key],
+            },
+         );
+         return undefined;
+      }
+      const columns = storedColumnsOfOutput(fields, {
+         nested: capabilitiesOf(args.dialect).nestedColumns,
+         bigint: true,
+         timestamptz: true,
+      });
+      return columns.length > 0 ? columns : undefined;
+   } catch (err) {
+      logger.warn(
+         "Could not read a colocated table's columns after its build; the served copy derives them",
+         {
+            sourceName: args.sourceName,
+            physicalTableName: key,
+            error: errMessage(err),
+         },
+      );
+      return undefined;
    }
 }
 
@@ -179,19 +330,6 @@ async function dropStagingAfterFailure({
    }
 }
 
-/**
- * Dialects whose swap is one transaction: DDL is transactional there, and the
- * swap reaches one database session (see {@link swapInTransaction}).
- *
- * Not the others: Snowflake, MySQL, Databricks and Trino commit DDL as it
- * runs, and BigQuery refuses DROP and RENAME inside a transaction. SQL Server
- * has transactional DDL, but not this rename, so it gains nothing here.
- */
-const TRANSACTIONAL_SWAP_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "duckdb",
-]);
-
 interface SwapArgs {
    connection: Pick<MalloyConnection, "runSQL">;
    runOptions: ColocatedBuildRequest["runOptions"];
@@ -200,6 +338,8 @@ interface SwapArgs {
    stagingTableName: string;
    backupTableName: string;
    connectionName: string;
+   /** Run first in the swap's transaction: see ColocatedBuildRequest. */
+   replacesView?: string[];
 }
 
 /**
@@ -212,11 +352,18 @@ interface SwapArgs {
  * back the staging table once the served one is intact.
  */
 export async function swapIntoPlace(args: SwapArgs): Promise<void> {
-   if (TRANSACTIONAL_SWAP_DIALECTS.has(args.dialect)) {
+   if (capabilitiesOf(args.dialect).transactionalSwap) {
       await swapInTransaction(args);
-   } else {
-      await swapByRenamingAside(args);
+      return;
    }
+   if (args.replacesView?.length) {
+      // Only DuckDB and Postgres are given these, whose swap is one
+      // transaction; anywhere else they run just before it.
+      for (const sql of args.replacesView) {
+         await args.connection.runSQL(sql, args.runOptions);
+      }
+   }
+   await swapByRenamingAside(args);
 }
 
 /**
@@ -245,32 +392,35 @@ async function swapInTransaction({
    physicalTableName,
    stagingTableName,
    connectionName,
+   replacesView,
 }: SwapArgs): Promise<void> {
    const run = (sql: string) => connection.runSQL(sql, runOptions);
-   const body = [
-      `DROP TABLE IF EXISTS ${quoteTablePath(physicalTableName, dialect)}`,
-      `ALTER TABLE ${quoteTablePath(stagingTableName, dialect)} RENAME TO ${quoteRenameTarget(physicalTableName, dialect)}`,
-   ];
-   const explicit = dialect !== "postgres";
-   const statements = explicit
-      ? ["BEGIN TRANSACTION", ...body, "COMMIT"]
-      : body;
+   const swap = transactionalSwapSql(dialect, {
+      before: replacesView ?? [],
+      quotedPhysical: quoteTablePath(physicalTableName, dialect),
+      quotedStaging: quoteTablePath(stagingTableName, dialect),
+      renameTarget: quoteRenameTarget(physicalTableName, dialect),
+   });
    try {
-      await run(statements.map((s) => `${s};`).join("\n"));
-   } catch (err) {
-      if (explicit) {
+      await run(swap.sql);
+      return;
+   } catch (failure) {
+      if (swap.rollback !== undefined) {
          try {
-            await run("ROLLBACK");
+            await run(swap.rollback);
          } catch (rollbackErr) {
             // Usually no transaction was left open, which is harmless.
             logger.warn("Failed to roll back a materialized table swap", {
                physicalTableName,
                connectionName,
                error: errMessage(rollbackErr),
-               cause: errMessage(err),
+               // The swap's error can quote its SQL; it reaches the run's
+               // record.
+               causeCode: errorCodeOf(failure),
             });
          }
       }
+      // Rolled back, so the served table is as it was.
       await dropStagingAfterFailure({
          connection,
          runOptions,
@@ -278,8 +428,25 @@ async function swapInTransaction({
          stagingTableName,
          connectionName,
       });
-      throw err;
+      if (replacesView?.length && dependedOn(failure)) {
+         throw new Error(
+            `the table cannot take the name '${physicalTableName}': the name= ` +
+               `view this package left there in an earlier release has views of ` +
+               `its own over it, so dropping it would drop them too. Nothing was ` +
+               `changed. Drop or repoint those views, then build again.`,
+         );
+      }
+      throw failure;
    }
+}
+
+/** Whether a statement failed because other objects depend on what it drops. */
+function dependedOn(err: unknown): boolean {
+   const code = (err as { code?: unknown } | null)?.code;
+   return (
+      code === "2BP01" ||
+      /depend on it|dependent objects|has dependent/i.test(errMessage(err))
+   );
 }
 
 /**

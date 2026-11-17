@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { linkTextKeptVerbatim } from "../../test_helpers/link_text";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
@@ -78,6 +79,47 @@ describe("readPackageAgents", () => {
       expect(result.warnings[0]).toContain("Fix:");
       return result.warnings[0]!;
    };
+
+   it("drops an agent whose skills root links out the same way whether or not the outside directory exists", () => {
+      const answers: string[] = [];
+      fs.mkdirSync(path.join(outside, "present"));
+      for (const which of ["present", "absent_"]) {
+         fs.rmSync(path.join(pkg, "agents"), { recursive: true, force: true });
+         write("agents/analyst/instructions.md", "Be careful.");
+         // Out through <outside>/<which> and back into the package's own
+         // agents/analyst directory.
+         const through = path.join(outside, which);
+         fs.mkdirSync(path.join(pkg, "agents", "analyst", "real"), {
+            recursive: true,
+         });
+         fs.symlinkSync(
+            `${through}/${path.relative(through, path.join(pkg, "agents", "analyst", "real"))}`,
+            path.join(pkg, "agents", "analyst", "skills"),
+         );
+         const agents = {
+            analyst: {
+               description: "d",
+               instructions: "agents/analyst/instructions.md",
+               skills: ["agents/analyst/skills"],
+            },
+         };
+         if (linkTextKeptVerbatim()) {
+            answers.push(dropped(agents));
+         } else {
+            // Normalized when made (Windows), the link leads to the agent's
+            // own real/ inside the package, and the agent is served.
+            const result = read(agents);
+            expect(result.agents.has("analyst")).toBe(true);
+            answers.push(JSON.stringify(result.warnings));
+         }
+      }
+      expect(answers[0]).toBe(answers[1]);
+      if (linkTextKeptVerbatim()) {
+         expect(answers[0]).toContain("resolves outside the package");
+      } else {
+         expect(answers[0]).not.toContain("resolves outside the package");
+      }
+   });
 
    it("returns nothing and no warning when the manifest declares no agents", () => {
       expect(read(undefined)).toEqual({

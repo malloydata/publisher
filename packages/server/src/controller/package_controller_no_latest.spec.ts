@@ -3,19 +3,20 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { internalErrorToHttpError, PackageVersionError } from "../errors";
 import { Environment } from "../service/environment";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
-import { initializeSchema } from "../storage/duckdb/schema";
 import { PackageController } from "./package.controller";
 import { parsePackageName, VersionRef } from "../service/identity";
 import { fakeOf } from "../test_helpers/store_fakes";
 import type { PackageAdmin } from "../service/environment_ports";
 import { testRetrieval } from "../test_helpers/test_retrieval";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../test_helpers/temp_storage";
 
 // A versioned package with no `latest` yet: published under explicit
 // promotion, and no version made latest. Through the package routes'
@@ -81,19 +82,10 @@ async function answered(promise: Promise<unknown>) {
 }
 
 beforeEach(async () => {
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "package-no-latest-")),
-   );
-   envPath = path.join(root, "env");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-      [ENV_ID, ENV_NAME, envPath],
-   );
-   repo = createDuckDBRepository(db);
+   ({ root, envPath, db, repo } = await openTempStorage("package-no-latest-", {
+      id: ENV_ID,
+      name: ENV_NAME,
+   }));
    env = await Environment.create(ENV_NAME, envPath, []);
    env.bindVersions(repo, ENV_ID, {
       downloaderFor: (_packageName, location) => async (stagingPath) => {
@@ -139,8 +131,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
    await env.closeAllConnections();
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
 });
 
 describe("a versioned package with no latest yet", () => {

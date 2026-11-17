@@ -3,6 +3,7 @@
 
 import { Manifest } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
+import type { ManifestEntry } from "../domain/types";
 import {
    manifestExcludingStorage,
    manifestForCompiler,
@@ -10,8 +11,27 @@ import {
    stagingSuffix,
    strictMissSourceId,
    tallySources,
+   chainedPlanFacts,
+   currentUpstreamEntries,
+   entryTier,
+   noteWrongTierRecompute,
+   normalizedTier,
+   upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
+   WRONG_TIER_MARKER,
+   wrongTierDetail,
+   PACKAGE_STALE_MARKER,
+   withChainBuildText,
+   ChainedPackageStaleError,
 } from "./materialization_run_support";
+import {
+   fakeSource,
+   persistTables,
+} from "../../../test_helpers/materialization_test_fixtures";
+import { installSettings } from "../../../test_helpers/settings_env";
+import { logger } from "../../../logger";
+import * as sinon from "sinon";
+import { errorCodeOf } from "./error_code";
 
 /**
  * The pure helpers behind a materialization run (materialization_run_support.ts),
@@ -124,6 +144,76 @@ describe("manifestExcludingStorage (chained-storage inline)", () => {
       expect(reduced.entries.wh_up.tableName).toBe('"wh_up_v1"');
       expect(reduced.entries.lake_up).toBeUndefined();
       expect(reduced.strict).toBe(true);
+   });
+});
+
+// ms2data/service#7087: an entry is an upstream only at the tier its source is
+// declared in now; the content address does not include the destination.
+describe("upstreamEntryIsCurrent", () => {
+   const facts = {
+      declaredTiersByAddress: {
+         stored: ["lake"],
+         colocated: [null],
+         split: [null, "lake"],
+      },
+   };
+   it("keeps an entry at its source's declared tier", () => {
+      expect(
+         upstreamEntryIsCurrent(
+            "stored",
+            { storageDestinationName: "lake" },
+            facts,
+         ),
+      ).toBe(true);
+      expect(upstreamEntryIsCurrent("colocated", {}, facts)).toBe(true);
+   });
+   it("rejects an entry from before its source moved tier", () => {
+      // A warehouse table, or an unlabeled reference, for a source now stored.
+      expect(upstreamEntryIsCurrent("stored", {}, facts)).toBe(false);
+      // A stored table for a source now colocated, or now in another destination.
+      expect(
+         upstreamEntryIsCurrent(
+            "colocated",
+            { storageDestinationName: "lake" },
+            facts,
+         ),
+      ).toBe(false);
+      expect(
+         upstreamEntryIsCurrent(
+            "stored",
+            { storageDestinationName: "lake2" },
+            facts,
+         ),
+      ).toBe(false);
+   });
+   it("keeps either tier on an address its sources split, and every entry the plan does not know", () => {
+      expect(upstreamEntryIsCurrent("split", {}, facts)).toBe(true);
+      expect(
+         upstreamEntryIsCurrent(
+            "split",
+            { storageDestinationName: "lake" },
+            facts,
+         ),
+      ).toBe(true);
+      expect(upstreamEntryIsCurrent("unknown", {}, facts)).toBe(true);
+      expect(upstreamEntryIsCurrent("stored", {}, {})).toBe(true);
+   });
+   it("drops a stale warehouse entry from the warehouse manifest", () => {
+      const manifest = new Manifest();
+      manifest.update("stored", { tableName: '"up__g004"' });
+      manifest.update("colocated", { tableName: '"co_v1"' });
+      const built: Record<string, ManifestEntry> = {
+         stored: { sourceEntityId: "stored", physicalTableName: "up__g004" },
+         colocated: { sourceEntityId: "colocated", physicalTableName: "co_v1" },
+      };
+      const reduced = manifestExcludingStorage(manifest, built, facts);
+      expect(Object.keys(reduced.entries)).toEqual(["colocated"]);
+      // Without plan facts, every warehouse entry is kept, as before.
+      const legacy = manifestExcludingStorage(manifest, built);
+      expect(Object.keys(legacy.entries).sort()).toEqual([
+         "colocated",
+         "stored",
+      ]);
    });
 });
 
@@ -446,7 +536,7 @@ describe("upstreamReuseFromManifest", () => {
 describe("manifestForCompiler", () => {
    const facts = {
       addressBySourceId: {
-         "p@m": "addr-p-partitioned",
+         "p@m": "addr-p-with-destination",
          "u@m": "addr-u",
          "x@m": undefined,
       },
@@ -456,10 +546,10 @@ describe("manifestForCompiler", () => {
          "x@m": "key-x",
       },
    };
-   it("adds a partitioned entry under the compiler's key and leaves everything else alone", () => {
+   it("adds the entry of a source whose address folds in its destination under the compiler's key and leaves everything else alone", () => {
       const full = {
          entries: {
-            "addr-p-partitioned": { tableName: "p__g1" },
+            "addr-p-with-destination": { tableName: "p__g1" },
             "addr-u": { tableName: "u__g1" },
          },
          strict: true,
@@ -469,9 +559,11 @@ describe("manifestForCompiler", () => {
          strict: boolean;
       };
       expect(out.entries["key-p"]).toEqual({ tableName: "p__g1" });
-      expect(out.entries["addr-p-partitioned"]).toEqual({ tableName: "p__g1" });
+      expect(out.entries["addr-p-with-destination"]).toEqual({
+         tableName: "p__g1",
+      });
       expect(Object.keys(out.entries).sort()).toEqual([
-         "addr-p-partitioned",
+         "addr-p-with-destination",
          "addr-u",
          "key-p",
       ]);
@@ -514,5 +606,266 @@ describe("strictMissSourceId", () => {
          ),
       ).toBeUndefined();
       expect(strictMissSourceId(undefined)).toBeUndefined();
+   });
+});
+
+// The #7087 review: a host can imply a destination the annotation does not
+// declare, and a destination that is the source's own connection is the same
+// database, not a move.
+describe("current tiers (implied destinations, the source's own connection)", () => {
+   it("reads a destination that is the source's own connection as the warehouse", () => {
+      expect(normalizedTier("pg", "pg")).toBeNull();
+      expect(normalizedTier("lake", "pg")).toBe("lake");
+      expect(normalizedTier(undefined, "pg")).toBeNull();
+      expect(
+         entryTier({ storageDestinationName: "pg", connectionName: "pg" }),
+      ).toBeNull();
+   });
+
+   it("keeps a table built into the source's own database for a source that declares no storage=", () => {
+      const facts = { declaredTiersByAddress: { a: [null] } };
+      expect(
+         upstreamEntryIsCurrent(
+            "a",
+            { storageDestinationName: "pg", connectionName: "pg" },
+            facts,
+         ),
+      ).toBe(true);
+   });
+
+   function withMode<T>(mode: string, fn: () => T): T {
+      const { restore } = installSettings({
+         env: { PERSIST_STORAGE_MODE: mode },
+      });
+      try {
+         return fn();
+      } finally {
+         restore();
+      }
+   }
+
+   it("takes a source's tier from its instruction over its annotation", () => {
+      const up = fakeSource({ name: "tier_up", sourceEntityId: "tierup" });
+      const stored = fakeSource({
+         name: "tier_stored",
+         sourceEntityId: "tierstored",
+         annotationFields: { storage: "lake" },
+      });
+      const facts = withMode("on", () =>
+         chainedPlanFacts(
+            persistTables({ tier_up: up, tier_stored: stored }),
+            { duckdb: "dig" },
+            undefined,
+            (sourceID) =>
+               sourceID === "tier_up" ? { destination: "lake2" } : undefined,
+         ),
+      );
+      // Instructed into lake2 though it declares nothing.
+      expect(facts.declaredTiersByAddress?.tierup).toEqual(["lake2"]);
+      // Uninstructed: its annotation.
+      expect(facts.declaredTiersByAddress?.tierstored).toEqual(["lake"]);
+   });
+
+   it("reads an instructed destination that is the source's own connection as the warehouse", () => {
+      const up = fakeSource({ name: "tier_own", sourceEntityId: "tierown" });
+      const facts = withMode("on", () =>
+         chainedPlanFacts(
+            persistTables({ tier_own: up }),
+            { duckdb: "dig" },
+            undefined,
+            () => ({
+               destination: "duckdb",
+            }),
+         ),
+      );
+      expect(facts.declaredTiersByAddress?.tierown).toEqual([null]);
+   });
+
+   it("reads every source as the warehouse while storage mode is off, and by its declaration under write-only", () => {
+      const stored = fakeSource({
+         name: "tier_mode",
+         sourceEntityId: "tiermode",
+         annotationFields: { storage: "lake" },
+      });
+      const off = withMode("off", () =>
+         chainedPlanFacts(
+            persistTables({ tier_mode: stored }),
+            { duckdb: "dig" },
+            undefined,
+         ),
+      );
+      expect(off.declaredTiersByAddress?.tiermode).toEqual([null]);
+      const writeOnly = withMode("write-only", () =>
+         chainedPlanFacts(
+            persistTables({ tier_mode: stored }),
+            { duckdb: "dig" },
+            undefined,
+         ),
+      );
+      expect(writeOnly.declaredTiersByAddress?.tiermode).toEqual(["lake"]);
+   });
+
+   it("records both tiers for an address whose sources split them", () => {
+      const base = fakeSource({
+         name: "split_base",
+         sourceEntityId: "splitab",
+      });
+      const ext = fakeSource({
+         name: "split_ext",
+         sourceEntityId: "splitab",
+         annotationFields: { storage: "lake" },
+      });
+      const facts = withMode("on", () =>
+         chainedPlanFacts(
+            persistTables({ split_base: base, split_ext: ext }),
+            { duckdb: "dig" },
+            undefined,
+         ),
+      );
+      expect([...(facts.declaredTiersByAddress?.splitab ?? [])].sort()).toEqual(
+         ["lake", null].sort(),
+      );
+   });
+});
+
+describe("wrongTierDetail", () => {
+   const facts = { declaredTiersByAddress: { up: ["lake"], co: [null] } };
+   it("says an unlabeled entry is a warehouse table or an unlabeled reference, and where the source is declared", () => {
+      const detail = wrongTierDetail("up", "up", {}, facts);
+      expect(detail).toContain(
+         "'up' is declared in storage destination 'lake'",
+      );
+      expect(detail).toContain(
+         "a warehouse table, or a reference that does not say where it lives",
+      );
+      expect(detail).toContain(WRONG_TIER_MARKER);
+      expect(detail).not.toContain("before its destination changed");
+   });
+   it("names the destination a labeled entry is in", () => {
+      expect(
+         wrongTierDetail("co", "co", { storageDestinationName: "lake" }, facts),
+      ).toContain(
+         "'co' is declared in its warehouse, but its manifest entry is a table in storage destination 'lake'",
+      );
+   });
+});
+
+describe("the stacking filter (currentUpstreamEntries)", () => {
+   const facts = {
+      declaredTiersByAddress: {
+         implied: [null],
+         stored: ["lake"],
+         moved: ["lake"],
+      },
+   };
+   const built: Record<string, ManifestEntry> = {
+      // A parent on a database connection the host built into that database.
+      implied: {
+         sourceEntityId: "implied",
+         physicalTableName: "p_v1",
+         storageDestinationName: "duckdb",
+         connectionName: "duckdb",
+      },
+      stored: {
+         sourceEntityId: "stored",
+         physicalTableName: "s_v1",
+         storageDestinationName: "lake",
+         connectionName: "duckdb",
+      },
+      // The warehouse table from before the parent moved to storage=.
+      moved: {
+         sourceEntityId: "moved",
+         physicalTableName: "m_v1",
+         connectionName: "duckdb",
+      },
+   };
+   it("keeps a parent built into its own database and a parent in its declared destination, and drops one at the wrong tier", () => {
+      expect(Object.keys(currentUpstreamEntries(built, facts)).sort()).toEqual([
+         "implied",
+         "stored",
+      ]);
+   });
+   it("keeps every entry without plan facts", () => {
+      expect(Object.keys(currentUpstreamEntries(built, {})).sort()).toEqual([
+         "implied",
+         "moved",
+         "stored",
+      ]);
+   });
+});
+
+describe("noteWrongTierRecompute", () => {
+   it("warns once per run per upstream", () => {
+      const warn = sinon.stub(logger, "warn");
+      try {
+         const run = {};
+         const note = (upstream: string) =>
+            noteWrongTierRecompute({
+               planFacts: run,
+               build: "colocated",
+               sourceName: "down",
+               upstream,
+               detail: "d",
+            });
+         note("up");
+         note("up");
+         note("other");
+         noteWrongTierRecompute({
+            planFacts: {},
+            build: "colocated",
+            sourceName: "down",
+            upstream: "up",
+            detail: "d",
+         });
+         expect(warn.callCount).toBe(3);
+      } finally {
+         warn.restore();
+      }
+   });
+});
+
+describe("withChainBuildText", () => {
+   const request = {
+      downstream: { sourceID: "d@m", name: "d" },
+      destination: { name: "lake", schema: "main" },
+      upstreams: [],
+   };
+   const text = { declined: "the package's own answer" } as const;
+
+   it("asks the package for the text while it is current", () => {
+      const scoped = withChainBuildText({} as never, {
+         chainBuildText: () => text,
+         getPackagePath: () => "/pkg",
+      }) as { chainBuildText(r: unknown): unknown };
+      expect(scoped.chainBuildText(request)).toBe(text);
+   });
+
+   it("declines with package_stale, asking nothing of the package, while it serves an older model", () => {
+      let stale = true;
+      let asked = 0;
+      const scoped = withChainBuildText(
+         {} as never,
+         {
+            getPackagePath: () => "/pkg",
+            chainBuildText: () => {
+               asked++;
+               return text;
+            },
+         },
+         () => stale,
+      ) as { chainBuildText(r: unknown): { declined: string; code?: string } };
+      const out = scoped.chainBuildText(request);
+      expect(out.code).toBe("package_stale");
+      expect(out.declined).toContain(PACKAGE_STALE_MARKER);
+      expect(asked).toBe(0);
+      // Asked at each build, not once: a later save that loads clears it.
+      stale = false;
+      expect(scoped.chainBuildText(request)).toBe(text);
+   });
+
+   it("gives a stale package's refusal its own code", () => {
+      expect(errorCodeOf(new ChainedPackageStaleError("x"))).toBe(
+         "package_stale",
+      );
    });
 });

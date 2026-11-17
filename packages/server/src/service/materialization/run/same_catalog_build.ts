@@ -1,6 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Whether a source and a `storage=` destination are the same DuckLake catalog
+ * ({@link isSameCatalog}), and whether a source's definition carries author
+ * SQL ({@link carriesAuthorSql}): together, whether a build may run on a
+ * read-write session on that catalog. Read by the build session and the
+ * `storage=` tier.
+ *
+ * Pure. Both answers fail closed: a config it cannot compare (a
+ * `connectionString`) is not the same catalog, and an unreadable definition
+ * carries author SQL.
+ */
+
 import { components } from "../../../api";
 
 type ApiConnection = components["schemas"]["Connection"];

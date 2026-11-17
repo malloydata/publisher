@@ -27,6 +27,7 @@ import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    escapeSQL,
+   isDuckLakeInitRace,
    tablePartitionKeys,
    type PartitionKey,
 } from "./connection";
@@ -325,6 +326,15 @@ export class CatalogAdmin {
             );
          }
       } catch (error) {
+         // Another create of this catalog, begun after the check above, made it
+         // first.
+         if (isDuckLakeInitRace(error)) {
+            throw new CatalogAdminError(
+               409,
+               "CATALOG_EXISTS",
+               `A DuckLake catalog named '${name}' already exists.`,
+            );
+         }
          throw this.redacted(error);
       } finally {
          await dispose();

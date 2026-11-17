@@ -1,0 +1,6 @@
+import "base.malloy"
+
+source: b_items is items extend {
+  dimension: scaled is v * 2
+  measure: scaled_total is scaled.sum()
+}

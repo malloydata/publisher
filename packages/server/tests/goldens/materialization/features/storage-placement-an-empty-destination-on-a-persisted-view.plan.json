@@ -1,0 +1,3 @@
+{
+  "loadError": "m.malloy: #@ persist on view \"v_empty\" of source \"views\" is invalid: its `storage=` names no destination: name the storage destination to build it into, or remove the key to build it in its own warehouse. [persist-view-invalid]"
+}

@@ -25,6 +25,7 @@ import {
 } from "./access_gates";
 import { sourceFilters } from "./filters";
 import { findForbiddenIndexPolicyKeys } from "./index_annotation_parsing";
+import { isIndexNote } from "../annotation_reader";
 import {
    walkExploreTree,
    type JoinDescentRule,
@@ -320,10 +321,9 @@ export function assertNoForbiddenIndexPolicyKeys(
    }
 }
 
-// This file is the authority on which taglines opt a field into the index; keep
-// the accepted #(index)/#(index_values) tag set in sync with
-// index_annotation_parsing.ts's INDEX_TAG when adding a variant. A host that
-// recognizes index tags itself must accept the same set.
+// Which taglines opt a field into the index is `isIndexNote` in
+// annotation_reader.ts, the one shape `findForbiddenIndexPolicyKeys` reads
+// too. A host that recognizes index tags itself must accept the same set.
 //
 // Parenthesis-only on purpose, unlike the gate and agent-hidden matchers, which
 // cover all four bracket pairs Malloy routes. `#[index]` routes there too, so
@@ -331,9 +331,8 @@ export function assertNoForbiddenIndexPolicyKeys(
 // an agent-hidden tag exposes something the author meant to withhold; missing
 // an index tag leaves a dimension UNindexed, so its values stay out of value
 // search and the author sees their own index not working. Widening it is also
-// three coordinated edits plus the parity test, and it changes which dimension
-// values get indexed — a data-surface change that belongs in its own change.
-const INDEX_TAG_PATTERN = /^#\s*\(\s*index(?:_values)?\b/;
+// a coordinated edit with hosts, and it changes which dimension values get
+// indexed — a data-surface change that belongs in its own change.
 
 /**
  * Returns true iff one of the field's taglines opts the field into
@@ -343,7 +342,7 @@ const INDEX_TAG_PATTERN = /^#\s*\(\s*index(?:_values)?\b/;
  * ``#(index)`` and ``#( index_values n=200 )`` in the wild.
  */
 function hasIndexTag(tags: string[]): boolean {
-   return tags.some((t) => INDEX_TAG_PATTERN.test(t));
+   return tags.some((t) => isIndexNote(t));
 }
 
 /**

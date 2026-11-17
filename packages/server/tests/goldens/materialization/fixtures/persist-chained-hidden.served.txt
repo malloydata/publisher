@@ -1,0 +1,36 @@
+// fixture: persist-chained-hidden: files generated while serving
+
+// ==== <pkg>/chained_hidden.malloy
+##! experimental { persistence access_modifiers }
+
+##! experimental { virtual_source }
+type: west_spend__served is {
+   segment::string,
+   west_total::number
+}
+type: customers_hidden__served is {
+   id::number,
+   segment::string,
+   home_region::string,
+   amount::number
+}
+
+source: raw_customers is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (1, 'a', 'west', 10.0),
+    (2, 'b', 'east', 5.0),
+    (3, 'a', 'west', 7.0)
+  ) AS t(id, segment, home_region, amount)
+""")
+
+// A stored parent with a hidden column and a renamed one: its table holds
+// both, under the names its query gives them.
+#@ persist name="customers_hidden" storage=lake
+source: customers_hidden is __served_copy_alias_of_lake.virtual('e201ceaf6812d2eb1a1fd36a43cee466300f3540098013c0d0eb24d60a75f064')::customers_hidden__served extend {
+  rename: spend is amount
+} include { internal: home_region; public: * }
+
+// A chained child over the parent's table that reads the hidden and the
+// renamed column through the parent's own text.
+#@ persist name="west_spend" storage=lake
+source: west_spend is __served_copy_alias_of_lake.virtual('f00b9c12fbf1334a5f57a674598c3026223c7009fb28793e4a1b12e121aa4572')::west_spend__served
