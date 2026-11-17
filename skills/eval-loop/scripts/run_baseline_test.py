@@ -2404,5 +2404,54 @@ class RowsGoldenInAFile(unittest.TestCase):
         self.assertTrue(rb.renders_goldens(ns(rebuild=True, rejudge=True)))
 
 
+def _assistant(t, *uses):
+    return {"type": "assistant", "_t": t, "message": {"content": list(uses)}}
+
+
+def _use(name, **inp):
+    return {"type": "tool_use", "name": name, "input": inp}
+
+
+class TimingFieldsTest(unittest.TestCase):
+    """Seconds to the first get_context and execute_query, read off the `_t`
+    stamp run_cli puts on each streamed event, and the guides fetched with the
+    MCP get_skill tool (which `skills_invoked`, the Skill tool only, cannot see)."""
+
+    def test_first_calls_and_fetched_guides(self):
+        events = [
+            {"type": "system", "_t": 0.5},
+            _assistant(3.2, _use("mcp__srv__get_skill", skill_name="malloy-queries")),
+            _assistant(4.1, _use("mcp__srv__get_context")),
+            _assistant(9.0, _use("mcp__srv__get_context")),
+            _assistant(12.5, _use("mcp__srv__execute_query")),
+            _assistant(14.0, _use("mcp__srv__get_skill")),
+        ]
+        self.assertEqual(rb.timing_fields(events), {
+            "first_get_context_s": 4.1,
+            "first_execute_s": 12.5,
+            "get_skill_names": ["malloy-queries", "(list)"],
+        })
+
+    def test_no_calls_and_no_stamps(self):
+        self.assertEqual(rb.timing_fields([_assistant(None, {"type": "text", "text": "hi"})]), {
+            "first_get_context_s": None, "first_execute_s": None, "get_skill_names": []})
+
+
+class OutsideWorkspaceBreachesTest(unittest.TestCase):
+    """A file tool that reads outside the answerer's own workspace is a breach,
+    whatever it read: the operator's memory or notes can carry the answers."""
+
+    def test_reads_outside_the_workspace_are_flagged(self):
+        events = [_assistant(1.0,
+                             _use("Read", file_path="/tmp/ans-q1-abc/.claude/skills/x/SKILL.md"),
+                             _use("Read", file_path="/Users/me/.claude/memory/MEMORY.md"),
+                             _use("Grep", path="~/notes"),
+                             _use("Read", file_path="relative/file.md"))]
+        out = rb.outside_workspace_breaches(events, "q1")
+        self.assertEqual(len(out), 2)
+        self.assertIn("MEMORY.md", out[0])
+        self.assertIn("~/notes", out[1])
+
+
 if __name__ == "__main__":
     unittest.main()
