@@ -33,10 +33,74 @@ export function quoteIdentifier(identifier: string, dialect: string): string {
  * plane sends `physicalTableName` unquoted; quoting is the publisher's job.
  */
 export function quoteTablePath(tableName: string, dialect: string): string {
-   return tableName
-      .split(".")
-      .map((segment) => quoteIdentifier(segment, dialect))
-      .join(".");
+   return quotePathParts(tableName.split("."), dialect);
+}
+
+/** Dialect-quote each part of a table path and join them: {@link quoteTablePath}'s rule. */
+export function quotePathParts(
+   parts: readonly string[],
+   dialect: string,
+): string {
+   return parts.map((part) => quoteIdentifier(part, dialect)).join(".");
+}
+
+/**
+ * The identifier parts of a table path, quoted or not: the inverse of
+ * {@link quoteTablePath}, and the one parser of a bound table name.
+ *
+ * - An unquoted part runs to the next dot.
+ * - A part in double quotes or backticks runs to its closing quote; a doubled
+ *   quote inside it is one quote character, and a dot inside it is part of
+ *   the name (`"my.schema"."t"` is two parts).
+ * - On BigQuery (`standardsql`), one backtick pair around a dotted path
+ *   (`` `proj.ds.t` ``) is the whole path, as BigQuery reads it, so its dots
+ *   still separate parts.
+ *
+ * Undefined for a path that does not parse (an unclosed quote, an empty
+ * part, text after a closing quote other than a dot).
+ */
+export function tablePathParts(
+   path: string,
+   dialect: string,
+): string[] | undefined {
+   const parts: string[] = [];
+   let i = 0;
+   for (;;) {
+      const quote = path[i];
+      if (quote === '"' || quote === "`") {
+         let part = "";
+         let j = i + 1;
+         for (;;) {
+            if (j >= path.length) return undefined;
+            if (path[j] === quote) {
+               if (path[j + 1] === quote) {
+                  part += quote;
+                  j += 2;
+                  continue;
+               }
+               break;
+            }
+            part += path[j];
+            j++;
+         }
+         if (quote === "`" && dialect === "standardsql" && part.includes(".")) {
+            parts.push(...part.split("."));
+         } else {
+            parts.push(part);
+         }
+         i = j + 1;
+      } else {
+         const end = path.indexOf(".", i);
+         const part = end < 0 ? path.slice(i) : path.slice(i, end);
+         if (part.includes('"') || part.includes("`")) return undefined;
+         parts.push(part);
+         i = end < 0 ? path.length : end;
+      }
+      if (i >= path.length) break;
+      if (path[i] !== ".") return undefined;
+      i++;
+   }
+   return parts.length > 0 && parts.every((p) => p !== "") ? parts : undefined;
 }
 
 /**

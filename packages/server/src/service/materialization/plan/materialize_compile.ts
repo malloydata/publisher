@@ -96,6 +96,12 @@ interface GeneratedMaterialize {
     */
    generatedURLs: ReadonlySet<string>;
    /**
+    * The text of every file generated beside the author's, by URL: what a
+    * compile that imports a generated build source needs (rollup_compile.ts,
+    * a rollup over a stored `#(materialize)` base).
+    */
+   files: ReadonlyMap<string, string>;
+   /**
     * Each uniqueness check's compiler over a run's compiler manifest, by
     * {@link keyCheckCompilerKey}: compiled through the companion, which only
     * this process holds.
@@ -574,6 +580,7 @@ async function compileCompanion(
       runtime,
       text,
       generatedURLs: new Set(overlay.keys()),
+      files: overlay,
       checkCompilers,
       ...(used.size > 0
          ? {

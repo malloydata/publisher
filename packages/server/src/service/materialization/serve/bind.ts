@@ -43,6 +43,7 @@ import type {
    FreshnessManifest,
    ManifestEntry,
    ObservedColumns,
+   UnreadReason,
 } from "../domain/types";
 import {
    type Binding,
@@ -464,6 +465,14 @@ export function v1StoredColumnsOf(def: unknown): StoredColumn[] | undefined {
    });
 }
 
+/** A bound database table the bind could not read, and why. */
+export interface UnreadTable {
+   sourceEntityId: string;
+   reason: UnreadReason;
+   /** The driver's message, secrets redacted: for the log alone. */
+   detail?: string;
+}
+
 /** One bound colocated table whose warehouse columns moved since its build. */
 export interface ObservedDrift {
    sourceEntityId: string;
@@ -502,7 +511,7 @@ export function applyObservedColumns(args: {
    entries: FreshnessManifest;
    bindings: Binding[];
    drifted: ObservedDrift[];
-   unread: { sourceEntityId: string; reason: string }[];
+   unread: UnreadTable[];
 } {
    const { observed } = args;
    if (!observed) {
@@ -515,27 +524,46 @@ export function applyObservedColumns(args: {
    }
    const entries: FreshnessManifest = {};
    const drifted: ObservedDrift[] = [];
-   const unread: { sourceEntityId: string; reason: string }[] = [];
+   const unread: UnreadTable[] = [];
    const left = new Set<string>();
-   const schemas = new Map<string, { name: string; type?: string }[]>();
+   const reads = new Map<
+      string,
+      Extract<ObservedColumns, { columns: unknown }>
+   >();
    const served = new Set(
       args.bindings
          .filter((b) => b.tier === "colocated")
          .map((b) => b.virtualHandle),
    );
    for (const [id, entry] of Object.entries(args.entries)) {
-      const read = observed.get(id) ?? {
-         unread: "the table was not read at this bind",
+      const read: ObservedColumns = observed.get(id) ?? {
+         unread: "not_read",
       };
       if ("unread" in read) {
-         unread.push({ sourceEntityId: id, reason: read.unread });
+         unread.push({
+            sourceEntityId: id,
+            reason: read.unread,
+            ...(read.detail !== undefined ? { detail: read.detail } : {}),
+         });
          left.add(id);
          continue;
       }
-      schemas.set(id, read.columns);
-      const columns = driftOf(entry.schema ?? [], read.columns);
+      reads.set(id, read);
+      const columns = entry.schema?.length
+         ? entry.schema.flatMap((c) => {
+              const d = columnDrift(
+                 c,
+                 nativeTypeOf(entry.nativeSchema, c.name),
+                 read,
+              );
+              return d.kind === "none" ? [] : [d.report];
+           })
+         : // A build that captured only native types (a warehouse whose
+           // schema reader refused the name): those are what moved or not.
+           nativeDriftOf(entry.nativeSchema ?? [], read);
       if (columns.length > 0) {
          drifted.push({ sourceEntityId: id, columns });
+         // Read by Malloy's manifest substitution alone: no cast reaches it.
          if (!served.has(id)) {
             left.add(id);
             continue;
@@ -546,36 +574,29 @@ export function applyObservedColumns(args: {
    const bindings = args.bindings.flatMap((b): Binding[] => {
       if (b.tier !== "colocated") return [b];
       if (left.has(b.virtualHandle)) return [];
-      const observedColumns = schemas.get(b.virtualHandle);
-      if (!observedColumns) return [b];
-      const built = new Map(
-         (args.entries[b.virtualHandle]?.schema ?? []).map((c) => [c.name, c]),
-      );
+      const read = reads.get(b.virtualHandle);
+      if (!read) return [b];
+      const entry = args.entries[b.virtualHandle];
+      const built = new Map((entry?.schema ?? []).map((c) => [c.name, c]));
       const extra: ObservedDrift["columns"] = [];
       let moved = false;
+      const retyped = new Map<string, string>();
       const schema = b.schema.flatMap((c) => {
-         const now = columnNamed(observedColumns, c.name);
-         const builtType = built.get(c.name)?.type ?? c.type;
-         if (!now) {
-            moved = true;
-            if (!built.has(c.name)) extra.push({ column: c.name, builtType });
-            return [];
-         }
-         if (
-            now.type === undefined ||
-            typeFamily(now.type) === typeFamily(builtType)
-         ) {
-            return [c];
-         }
+         const d = columnDrift(
+            built.get(c.name) ?? c,
+            nativeTypeOf(b.nativeSchema ?? entry?.nativeSchema, c.name),
+            read,
+         );
+         if (d.kind === "none") return [c];
          moved = true;
-         if (!built.has(c.name)) {
-            extra.push({ column: c.name, builtType, observedType: now.type });
-         }
-         return [{ name: c.name, type: now.type }];
+         if (!built.has(c.name)) extra.push(d.report);
+         if (d.kind === "drop") return [];
+         if (d.nativeType !== undefined) retyped.set(c.name, d.nativeType);
+         return [{ name: c.name, type: d.type }];
       });
       if (extra.length > 0) {
          const known = drifted.find(
-            (d) => d.sourceEntityId === b.virtualHandle,
+            (x) => x.sourceEntityId === b.virtualHandle,
          );
          if (known) {
             for (const e of extra) {
@@ -587,24 +608,122 @@ export function applyObservedColumns(args: {
             drifted.push({ sourceEntityId: b.virtualHandle, columns: extra });
          }
       }
-      return [moved ? { ...b, schema } : b];
+      if (!moved) return [b];
+      // A big-integer column is cast to its native type at read: the type
+      // the warehouse holds now, never the one it was built with.
+      const nativeSchema = b.nativeSchema?.map((n) =>
+         retyped.has(n.name) ? { ...n, type: retyped.get(n.name)! } : n,
+      );
+      return [{ ...b, schema, ...(nativeSchema ? { nativeSchema } : {}) }];
    });
    return { entries, bindings, drifted, unread };
 }
 
-/** The columns of `built` whose observed type reads as another Malloy type, or that are gone. */
-function driftOf(
+/** The built native columns whose native type moved, or that are gone. */
+function nativeDriftOf(
    built: readonly { name: string; type: string }[],
-   observed: readonly { name: string; type?: string }[],
+   read: Extract<ObservedColumns, { columns: unknown }>,
 ): ObservedDrift["columns"] {
    return built.flatMap((c) => {
-      const now = columnNamed(observed, c.name);
-      if (!now) return [{ column: c.name, builtType: c.type }];
-      return now.type === undefined ||
-         typeFamily(now.type) === typeFamily(c.type)
-         ? []
-         : [{ column: c.name, builtType: c.type, observedType: now.type }];
+      const now = columnNamed(read.columns, c.name);
+      const report = {
+         column: c.name,
+         builtType: c.type,
+         ...(now?.nativeType !== undefined
+            ? { observedType: now.nativeType }
+            : {}),
+      };
+      if (!now) return [report];
+      return now.nativeType !== undefined &&
+         normalizedType(now.nativeType) !== normalizedType(c.type)
+         ? [report]
+         : [];
    });
+}
+
+/** A column's type as the build's native capture named it, by name. */
+function nativeTypeOf(
+   nativeSchema: readonly { name: string; type: string }[] | undefined,
+   name: string,
+): string | undefined {
+   return columnNamed(nativeSchema ?? [], name)?.type;
+}
+
+/** What one built column's observed type does to its read. */
+type ColumnDrift =
+   | { kind: "none" }
+   | {
+        kind: "retype";
+        /** The observed type, in the binding schema's spelling. */
+        type: string;
+        /** The observed native type, for a big-integer cast. */
+        nativeType?: string;
+        report: ObservedDrift["columns"][number];
+     }
+   | { kind: "drop"; report: ObservedDrift["columns"][number] };
+
+/**
+ * Whether a built column drifted, and how it is read now:
+ *
+ * - gone, or a type Malloy reads as no basic type whose native type moved:
+ *   `drop` (left out, so a query reading it answers live);
+ * - a timestamp now zoned, or a zoned one now naive: `drop`, unless the
+ *   dialect is DuckDB, whose serving sessions run in UTC so either reads
+ *   alike;
+ * - another Malloy type, or the same one with another native type (a
+ *   `bigint` altered to `numeric(10,2)`): `retype`, read through the one
+ *   stored-column read plan with the type it holds now;
+ * - otherwise `none`.
+ */
+function columnDrift(
+   built: { name: string; type: string },
+   builtNative: string | undefined,
+   read: Extract<ObservedColumns, { columns: unknown }>,
+): ColumnDrift {
+   const now = columnNamed(read.columns, built.name);
+   const report = {
+      column: built.name,
+      builtType: built.type,
+      ...(now?.type !== undefined ? { observedType: now.type } : {}),
+   };
+   if (!now) return { kind: "drop", report };
+   const nativeMoved =
+      builtNative !== undefined &&
+      now.nativeType !== undefined &&
+      normalizedType(builtNative) !== normalizedType(now.nativeType);
+   if (now.type === undefined) {
+      return nativeMoved ? { kind: "drop", report } : { kind: "none" };
+   }
+   if (
+      typeFamily(now.type) === "timestamp" &&
+      typeFamily(built.type) === "timestamp" &&
+      isZoned(now.type) !== isZoned(built.type)
+   ) {
+      return capabilitiesOf(read.dialect).utcSessions
+         ? { kind: "none" }
+         : { kind: "drop", report };
+   }
+   if (typeFamily(now.type) !== typeFamily(built.type) || nativeMoved) {
+      return {
+         kind: "retype",
+         type: now.type,
+         ...(now.nativeType !== undefined
+            ? { nativeType: now.nativeType }
+            : {}),
+         report,
+      };
+   }
+   return { kind: "none" };
+}
+
+/** A native type compared by its spelling, case and spacing aside. */
+function normalizedType(type: string): string {
+   return type.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/** A zoned timestamp, as the capture spells it. */
+function isZoned(type: string): boolean {
+   return /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(type.trim());
 }
 
 /**

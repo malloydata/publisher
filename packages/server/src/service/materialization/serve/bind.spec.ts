@@ -784,17 +784,126 @@ describe("applyObservedColumns", () => {
       const out = applyObservedColumns({
          entries,
          bindings: [binding],
-         observed: new Map([["addr1", { unread: "connection refused" }]]),
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  unread: "connection_failed" as const,
+                  detail: "connection refused",
+               },
+            ],
+         ]),
       });
       expect(out.entries).toEqual({});
       expect(out.bindings).toEqual([]);
       expect(out.unread).toEqual([
-         { sourceEntityId: "addr1", reason: "connection refused" },
          {
-            sourceEntityId: "rollup1",
-            reason: "the table was not read at this bind",
+            sourceEntityId: "addr1",
+            reason: "connection_failed",
+            detail: "connection refused",
          },
+         { sourceEntityId: "rollup1", reason: "not_read" },
       ]);
+   });
+
+   it("re-reads a big integer altered to a decimal: retyped, and cast to the type it holds now", () => {
+      const big: Binding = {
+         ...binding,
+         schema: [{ name: "n", type: "BIGINT" }],
+         nativeSchema: [{ name: "n", type: "bigint" }],
+      };
+      const out = applyObservedColumns({
+         entries: {
+            addr1: {
+               tableName: "orders_t",
+               schema: [{ name: "n", type: "BIGINT" }],
+               nativeSchema: [{ name: "n", type: "bigint" }],
+            },
+         },
+         bindings: [big],
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  dialect: "postgres",
+                  columns: [
+                     { name: "n", type: "DOUBLE", nativeType: "numeric(10,2)" },
+                  ],
+               },
+            ],
+         ]),
+      });
+      // Never cast to the bigint it was built as: that truncates a fraction.
+      expect(out.bindings[0].schema).toEqual([{ name: "n", type: "DOUBLE" }]);
+      expect(out.bindings[0].nativeSchema).toEqual([
+         { name: "n", type: "numeric(10,2)" },
+      ]);
+      expect(out.drifted.map((d) => d.columns.map((c) => c.column))).toEqual([
+         ["n"],
+      ]);
+   });
+
+   it("leaves out a timestamp whose zone changed, unless the session is DuckDB's UTC", () => {
+      const ts: Binding = {
+         ...binding,
+         schema: [{ name: "at", type: "TIMESTAMP" }],
+      };
+      const read = (dialect: string) =>
+         applyObservedColumns({
+            entries: {
+               addr1: {
+                  tableName: "orders_t",
+                  schema: [{ name: "at", type: "TIMESTAMP" }],
+               },
+            },
+            bindings: [ts],
+            observed: new Map([
+               [
+                  "addr1",
+                  {
+                     dialect,
+                     columns: [
+                        {
+                           name: "at",
+                           type: "TIMESTAMP WITH TIME ZONE",
+                           nativeType: "timestamp with time zone",
+                        },
+                     ],
+                  },
+               ],
+            ]),
+         });
+      expect(read("postgres").bindings[0].schema).toEqual([]);
+      expect(read("duckdb").bindings[0].schema).toEqual(ts.schema);
+   });
+
+   it("leaves out a rollup whose big integer's native type moved", () => {
+      const out = applyObservedColumns({
+         entries: {
+            rollup1: {
+               tableName: "orders_by_d",
+               schema: [{ name: "total__partial", type: "BIGINT" }],
+               nativeSchema: [{ name: "total__partial", type: "bigint" }],
+            },
+         },
+         bindings: [],
+         observed: new Map([
+            [
+               "rollup1",
+               {
+                  dialect: "postgres",
+                  columns: [
+                     {
+                        name: "total__partial",
+                        type: "DOUBLE",
+                        nativeType: "double precision",
+                     },
+                  ],
+               },
+            ],
+         ]),
+      });
+      expect(out.entries).toEqual({});
    });
 
    it("passes a storage binding through untouched", () => {

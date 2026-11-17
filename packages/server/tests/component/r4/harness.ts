@@ -56,10 +56,8 @@ import {
    v1StoredColumnsOf,
 } from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
-import {
-   capturedColocatedSchema,
-   observedColocatedColumns,
-} from "../../../src/service/materialization/run/colocated_build_strategy";
+import { capturedColocatedSchema } from "../../../src/service/materialization/run/colocated_build_strategy";
+import { observedDatabaseColumns } from "../../../src/service/materialization/run/database_column_read";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -341,7 +339,7 @@ export interface R4Fixture {
     * to them (`applyObservedColumns`): for a test that alters a table after
     * its build. Returns what the read found.
     */
-   observeColocatedColumns(): Promise<{
+   observeDatabaseColumns(): Promise<{
       drifted: ObservedDrift[];
       unread: { sourceEntityId: string; reason: string }[];
    }>;
@@ -1326,7 +1324,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;
       },
-      async observeColocatedColumns() {
+      async observeDatabaseColumns() {
          // Each entry with what its build captured and its connection, as a
          // run's manifest entry carries them.
          const all = Object.fromEntries(
@@ -1335,7 +1333,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                { ...e, ...colocatedServeEntries[id] },
             ]),
          );
-         const observed = await observedColocatedColumns({
+         const observed = await observedDatabaseColumns({
             entries: all,
             connectionNameOf: (id) => all[id]?.connectionName ?? "duckdb",
             connection: async (name) => connections.get(name) ?? duckdb,

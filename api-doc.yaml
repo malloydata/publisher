@@ -5990,6 +5990,21 @@ components:
                   view's or query's build source, the message naming the
                   column, both types and which applies; `warn`; see
                   docs/materialization.md).
+                  `database-table-unread`: a bound table in a source's own
+                  database whose columns could not be read when it was bound
+                  (missing, unreadable, slower than the read's bound, or named
+                  in more than one schema), so its queries are answered live
+                  until a read succeeds; the message names the table or
+                  rollup, one fixed reason (its connection could not be
+                  opened, the catalog read timed out, the catalog query
+                  failed, not found, a name matching more than one table, a
+                  name the catalog cannot read; never the driver's text) and
+                  whether a retry is pending, and the warning clears once the
+                  table is read (only for a table a source of the package
+                  reads; one per table, `model` the model declaring
+                  its source, `subject` the source, or a rollup's base, when
+                  the plan knows the table; `warn`; see
+                  docs/materialization.md).
                   `stored-native-schema-missing`: a colocated table is bound
                   with no captured warehouse type (its manifest entry's
                   `nativeSchema`) for a column whose field Malloy types as a big
