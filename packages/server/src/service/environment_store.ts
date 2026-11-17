@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { redactStorageUrls } from "../pg_helpers";
 import { localPackageFingerprint } from "./configured_publish_retry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -1928,9 +1929,16 @@ export class EnvironmentStore
             });
          }
       }
-      // Absent, not empty, when nothing failed.
+      // Absent, not empty, when nothing failed. A load error can quote a
+      // driver's text: never a storage URL in it (the server's own file
+      // paths, which name no bucket, stay).
       if (loadErrors.length > 0) {
-         status.loadErrors = loadErrors;
+         status.loadErrors = loadErrors.map((e) => ({
+            ...e,
+            ...(e.message !== undefined
+               ? { message: redactStorageUrls(e.message) }
+               : {}),
+         }));
       }
       // The one place a /status poller learns the server found no config.
       if (this.unconfiguredNotice && status.environments.length === 0) {

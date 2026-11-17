@@ -995,6 +995,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "424":
@@ -1421,6 +1423,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "410":
@@ -4092,31 +4096,16 @@ paths:
       summary: Delete a materialization
       description: |
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
-        materialization record. By default this removes the publisher's record
-        only; the caller owns table GC. Set dropTables=true to also drop
-        the physical tables this run produced (from the materialization's
-        manifest) as a best-effort cleanup.
+        materialization record. A delete is record-only: it never drops a
+        table, and the caller owns table GC. To drop a table this run produced,
+        check that no remaining run, of any version, names a table with that
+        name in any place, then drop it through its connection.
+        `dropTables=true` is refused with 400 and deletes nothing;
+        `dropTables=false`, which older clients send, is accepted and ignored.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - $ref: "#/components/parameters/materializationId"
-        - name: dropTables
-          in: query
-          required: false
-          description: |
-            When true, also drop the physical tables recorded in the
-            materialization's manifest before deleting the record. Defaults to
-            false (record-only delete; the caller owns table GC). A table
-            whose table segment another committed run of the package names,
-            in any place or container, is kept: it may be that run's table
-            reached under another name (two names for one DuckLake).
-
-            Only `true` and `false` are accepted. Any other value is refused
-            with 400 rather than read as `false`, which would delete the record,
-            leave the tables on disk, and still answer 204.
-          schema:
-            type: boolean
-            default: false
         - $ref: "#/components/parameters/versionId"
       responses:
         "204":
@@ -4283,12 +4272,14 @@ components:
     Forbidden:
       description: |
         Forbidden - insufficient permissions to perform the operation. With
-        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes),
-        the database ran the query and the storage holding a table's data (a
-        DuckLake data path, an object-store bucket) refused its read: the
-        query and the model are fine, and a retry fails the same way until
-        the database's storage credentials are fixed. The body names what
-        the caller read and never a storage path; the full text is logged.
+        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes,
+        and `sqlTemporaryTable`), the database ran the query and an object
+        store refused its read. Under a data path the environment configures
+        (a DuckLake catalog's), the query and the model are fine and a retry
+        fails the same way until the database's storage credentials are
+        fixed; otherwise the path the query reads refused access. The body
+        names what the caller read and never a storage path; the full text is
+        logged.
       content:
         application/json:
           schema:
@@ -6040,7 +6031,7 @@ components:
                   be the very table served, so it is never dropped).
                   Listed on the newest run's
                   `metadata.keptTables` until no committed run names it in
-                  its place (its runs deleted, with or without `dropTables`),
+                  its place (its runs deleted; a delete is record-only),
                   a run finds it dropped by hand (never on Snowflake or
                   MySQL, whose catalogs hide tables), or its name is used
                   again in its own place
@@ -10025,12 +10016,13 @@ components:
             the environment does not have, usually one deleted after the
             package was loaded.
 
-            STORAGE_ACCESS_DENIED, on a 403, means the storage holding a
-            table's data (a DuckLake data path, an object-store bucket)
-            refused the database's read. The query and the model are fine;
-            whoever configures the database's storage credentials has to fix
-            it, and retrying fails the same way. The body names the source or
-            connection the caller read and no storage path.
+            STORAGE_ACCESS_DENIED, on a 403, means an object store refused the
+            database's read. Under a data path the environment configures (a
+            DuckLake catalog's), the query and the model are fine and whoever
+            configures the database's storage credentials has to fix it;
+            otherwise the path the query reads refused access. Retrying fails
+            the same way. The body names the source or connection the caller
+            read and no storage path.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
@@ -11883,13 +11875,6 @@ components:
             own, because it may be materialized in another destination or left
             out of instructions an orchestrator fixed, so retrying the same
             instructions would not supply it.
-        cancelled:
-          type: boolean
-          description: >-
-            True when the run was cancelled while this source was building:
-            the source did not fail, the run stopped it, and its staging table
-            was dropped. Read the source as cancelled rather than failed.
-            Absent for every other failure.
 
     ManifestEntry:
       type: object

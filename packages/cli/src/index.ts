@@ -374,10 +374,6 @@ program
     "Environment name (required for package/connection)",
   )
   .option("--package <n>", "Package name")
-  .option(
-    "--drop-tables",
-    "Also drop the materialized tables (materialization only)",
-  )
   .action(async (resource, name, options) => {
     try {
       const client = getClient();
@@ -418,7 +414,6 @@ program
             options.environment,
             options.package,
             name,
-            options.dropTables === true,
           );
           break;
         default:

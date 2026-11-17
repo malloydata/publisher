@@ -598,7 +598,7 @@ describe.skipIf(process.platform === "win32")(
          expect(await catalogTables()).toEqual(tablesBefore);
          expect(await dataFiles()).toEqual(filesBefore);
 
-         // Deleting the record alone (no dropTables) touches no catalog and
+         // Deleting the record (record-only) touches no catalog and
          // leaves the first run serving.
          attaches.length = 0;
          await service.deleteMaterialization(ENV, PKG, reused.id);
@@ -666,18 +666,16 @@ describe.skipIf(process.platform === "win32")(
          }
       });
 
-      it("reclaims: a superseded run's drop keeps the shared tables, the last run's drop removes them and serving goes live", async () => {
+      it("deletes are record-only: the tables stay in the catalog, and once no run is left serving goes live", async () => {
          const filesBefore = await dataFiles();
          const tables = NAMES.map(
             (n) => firstEntries[n].physicalTableName,
          ).sort();
 
-         // The first run's tables carry the same names the forced run serves,
-         // so its drop skips every one: no read-write attach at all.
+         // Deleting the superseded run touches no catalog, and the forced
+         // run still serves the tables both name.
          attaches.length = 0;
-         await service.deleteMaterialization(ENV, PKG, first.id, {
-            dropTables: true,
-         });
+         await service.deleteMaterialization(ENV, PKG, first.id);
          expect(attaches).toEqual([]);
          expect(await catalogTables()).toEqual(tables);
          await reopenServe();
@@ -685,31 +683,13 @@ describe.skipIf(process.platform === "win32")(
             expect((await ask(name)).servedFrom).toBe("storage");
          }
 
-         // The last run's drop: per entry, a read-write session that checks no
-         // other package has marked the table, then one that drops it (and
-         // its backup name).
-         attaches.length = 0;
-         await service.deleteMaterialization(ENV, PKG, second.id, {
-            dropTables: true,
-         });
-         expect(attaches).toEqual(
-            [...NAMES, ...NAMES].map(() => ({ fn: "readWrite", dbName: LAKE })),
-         );
+         // Deleting the last run touches no catalog either: its tables stay
+         // for the operator to drop through the connection.
+         await service.deleteMaterialization(ENV, PKG, second.id);
+         expect(attaches).toEqual([]);
          expect(await repo.getMaterializationById(second.id)).toBeFalsy();
-         expect(await catalogTables()).toEqual([]);
-         await inspect(async (c) => {
-            const left = await c.runSQL(
-               `SELECT table_name FROM duckdb_tables() WHERE database_name = '${LAKE}'`,
-            );
-            expect(left.rows).toEqual([]);
-         });
-         // A drop retires the table in the catalog; its Parquet files stay on
-         // disk until a file cleanup, which the reclaim does not run.
-         for (const table of tables) {
-            for (const file of filesBefore[table]) {
-               expect(fs.existsSync(file)).toBe(true);
-            }
-         }
+         expect(await catalogTables()).toEqual(tables);
+         expect(await dataFiles()).toEqual(filesBefore);
 
          // No run is left, so the package is rebound to nothing and serves live.
          await reopenServe();
@@ -1767,7 +1747,7 @@ source: plain is raw extend { measure: total is amt.sum() }
          );
       });
 
-      it("a drop skips a table another package has marked since, and drops this package's table with its backup name", async () => {
+      it("a reclaim's drop skips a table another package has marked since, and drops this package's table with its backup name", async () => {
          const owned = lake.entriesByName(builtRun).owned;
          // Another package has built `plain`'s table since, and an earlier
          // release left `shared_t`'s backup name behind.
@@ -1786,25 +1766,20 @@ source: plain is raw extend { measure: total is amt.sum() }
             backup,
          ]);
 
-         // The refused run's drop: `plain` is still the built run's, so
-         // nothing is dropped or attached.
+         // The built run's tables, dropped as a reclaim drops them: `plain`
+         // is probed and skipped; `shared_t` is probed, then dropped with its
+         // backup name in one session.
          lake.attaches.length = 0;
-         await lake.service.deleteMaterialization(ENV, PKG, refusedRun.id, {
-            dropTables: true,
-         });
-         expect(lake.attaches).toEqual([]);
-         expect(await lake.catalogTables()).toEqual([
-            PLAIN,
-            "shared_t",
-            backup,
-         ]);
-
-         // The built run's drop: `plain` is probed and skipped; `shared_t` is
-         // probed, then dropped with its backup name in one session.
-         lake.attaches.length = 0;
-         await lake.service.deleteMaterialization(ENV, PKG, builtRun.id, {
-            dropTables: true,
-         });
+         await lake.service.reclaimer.dropManifestEntries(
+            lake.env,
+            ENV,
+            PKG,
+            builtRun.id,
+            "reclaim",
+            Object.values(builtRun.manifest?.entries ?? {}),
+            new Set(),
+            (name) => lake.pkg.getMalloyConnection(name),
+         );
          expect(lake.attaches).toEqual([
             { fn: "readWrite", dbName: LAKE },
             { fn: "readWrite", dbName: LAKE },
@@ -2056,12 +2031,17 @@ describe.skipIf(process.platform === "win32")(
       });
 
       it("a failed first build leaves no table behind", async () => {
-         // Every run's tables dropped, so `orders` has never been built.
+         // Every run deleted and its tables dropped by hand, so `orders` has
+         // never been built.
          for (const m of await lake.service.listMaterializations(ENV, PKG)) {
-            await lake.service.deleteMaterialization(ENV, PKG, m.id, {
-               dropTables: true,
-            });
+            await lake.service.deleteMaterialization(ENV, PKG, m.id);
          }
+         const left = await lake.catalogTables();
+         await lake.inspect(async (c) => {
+            for (const table of left) {
+               await c.runSQL(`DROP TABLE ${LAKE}.main."${table}"`);
+            }
+         }, false);
          expect(await lake.catalogTables()).toEqual([]);
          lake.statements.length = 0;
          const m = await failing(failOrdersReadBack, () => lake.run());

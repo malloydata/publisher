@@ -23,9 +23,9 @@ import {
 import { installSettings } from "../../../test_helpers/settings_env";
 
 /**
- * Drop and cleanup: deleteMaterialization (state guards, the storage= table
- * drop, serve-binding rebinds, telemetry) and the reclaim of storage tables a
- * failed run left behind.
+ * Delete and cleanup: deleteMaterialization (state guards, record-only,
+ * serve-binding rebinds), the reclaim's table drop and its telemetry, and the
+ * reclaim of storage tables a failed run left behind.
  */
 
 describe("deleteMaterialization", () => {
@@ -33,114 +33,6 @@ describe("deleteMaterialization", () => {
 
    beforeEach(() => {
       ctx = createMocks();
-   });
-
-   describe("deleteMaterialization drop of a storage= table", () => {
-      it("routes a storage entry to a destination-aware RW drop (best-effort, delete still completes)", async () => {
-         // getApiConnection returns a non-storage type so the RW drop refuses
-         // at its destination gate (pre-session), exercising the routing + the
-         // best-effort failure handling without needing a live DuckDB attach.
-         const environment = buildEnvironmentStub({
-            destinations: { lake: { name: "lake", type: "postgres" } },
-            environmentPath: "/test",
-         });
-         const getStorageDestination = environment.getStorageDestination;
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            ...UNVERSIONED_ENVIRONMENT,
-            getPackage: sinon
-               .stub()
-               .resolves({ getMalloyConnection: async () => ({}) }),
-            ...environment,
-         });
-         ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({
-               status: "MANIFEST_FILE_READY",
-               manifest: {
-                  entries: {
-                     se1: {
-                        sourceEntityId: "se1",
-                        sourceName: "daily",
-                        physicalTableName: "daily__mabc123",
-                        connectionName: "wh",
-                        storageDestinationName: "lake",
-                     },
-                  },
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               } as any,
-            }),
-         );
-
-         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
-            dropTables: true,
-         });
-
-         // Routed to the storage path (resolved the destination connection for
-         // an RW drop, not the old skip), and the delete completed despite the
-         // drop's best-effort failure.
-         expect(getStorageDestination.calledWith("lake")).toBe(true);
-         expect(
-            (
-               ctx.repository.deleteMaterialization as sinon.SinonStub
-            ).calledWith("mat-1"),
-         ).toBe(true);
-      });
-
-      it("skips the drop when another MANIFEST_FILE_READY run still references the table (MED-3)", async () => {
-         // name=-verbatim: generations of a source share one physical name, so
-         // dropping a superseded record's table must NOT take out the table a
-         // remaining run still serves.
-         const environment = buildEnvironmentStub({
-            destinations: { lake: { name: "lake", type: "duckdb" } },
-            environmentPath: "/test",
-         });
-         const getStorageDestination = environment.getStorageDestination;
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            ...UNVERSIONED_ENVIRONMENT,
-            getPackage: sinon
-               .stub()
-               .resolves({ getMalloyConnection: async () => ({}) }),
-            ...environment,
-         });
-         const entries = {
-            se1: {
-               sourceEntityId: "se1",
-               sourceName: "daily",
-               physicalTableName: "daily", // shared logical name
-               connectionName: "wh",
-               storageDestinationName: "lake",
-            },
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         } as any;
-         ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({
-               id: "mat-1",
-               status: "MANIFEST_FILE_READY",
-               manifest: { entries },
-            }),
-         );
-         // Another remaining successful run references the SAME lake.daily table.
-         ctx.repository.listMaterializations.resolves([
-            makeMaterialization({ id: "mat-1", manifest: { entries } }),
-            makeMaterialization({
-               id: "mat-2",
-               status: "MANIFEST_FILE_READY",
-               manifest: { entries },
-            }),
-         ]);
-
-         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
-            dropTables: true,
-         });
-
-         // The drop was skipped (never resolved the destination), and the record
-         // was still deleted.
-         expect(getStorageDestination.called).toBe(false);
-         expect(
-            (
-               ctx.repository.deleteMaterialization as sinon.SinonStub
-            ).calledWith("mat-1"),
-         ).toBe(true);
-      });
    });
 
    describe("deleteMaterialization rebinds serve bindings (both tiers)", () => {
@@ -309,7 +201,7 @@ describe("deleteMaterialization", () => {
          });
       }
 
-      it("does not drop tables by default (record-only delete)", async () => {
+      it("deletes the record only, never dropping a table", async () => {
          const runSQL = sinon.stub().resolves();
          const getMalloyConnection = sinon.stub().resolves({ runSQL });
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
@@ -342,123 +234,116 @@ describe("deleteMaterialization", () => {
             ctx.repository.deleteMaterialization.calledOnceWith("mat-1"),
          ).toBe(true);
       });
-
-      it("drops manifest tables (and staging) when dropTables is set", async () => {
-         const runSQL = sinon.stub().resolves();
-         const getMalloyConnection = sinon
-            .stub()
-            .resolves({ runSQL, dialectName: "duckdb" });
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon.stub().resolves({ getMalloyConnection }),
-            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
-               fn(),
-         });
-         ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({
-               status: "MANIFEST_FILE_READY",
-               manifest: {
-                  builtAt: new Date().toISOString(),
-                  strict: false,
-                  entries: {
-                     b1: {
-                        sourceEntityId: "b1",
-                        physicalTableName: "orders_mz",
-                        connectionName: "duckdb",
-                     },
-                  },
-               },
-            }),
-         );
-
-         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
-            dropTables: true,
-         });
-
-         expect(getMalloyConnection.calledOnceWith("duckdb")).toBe(true);
-         const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
-         expect(dropped).toContain('DROP TABLE IF EXISTS "orders_mz"');
-         expect(dropped.some((s) => s.includes('"orders_mz_'))).toBe(true);
-         expect(
-            ctx.repository.deleteMaterialization.calledOnceWith("mat-1"),
-         ).toBe(true);
-      });
-
-      it("dialect-quotes the drop DDL from the live connection (backtick + container path)", async () => {
-         const runSQL = sinon.stub().resolves();
-         const getMalloyConnection = sinon
-            .stub()
-            .resolves({ runSQL, dialectName: "standardsql" });
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon.stub().resolves({ getMalloyConnection }),
-            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
-               fn(),
-         });
-         ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({
-               status: "MANIFEST_FILE_READY",
-               manifest: {
-                  builtAt: new Date().toISOString(),
-                  strict: false,
-                  entries: {
-                     b1: {
-                        sourceEntityId: "b1",
-                        // Container path on a hyphenated BigQuery project: each
-                        // segment must be backtick-quoted independently.
-                        physicalTableName: "my-proj.ds.engaged",
-                        connectionName: "bq",
-                     },
-                  },
-               },
-            }),
-         );
-
-         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
-            dropTables: true,
-         });
-
-         const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
-         expect(dropped).toContain(
-            "DROP TABLE IF EXISTS `my-proj`.`ds`.`engaged`",
-         );
-      });
-
-      it("still deletes the record when a table drop fails", async () => {
-         const runSQL = sinon.stub().rejects(new Error("boom"));
-         const getMalloyConnection = sinon.stub().resolves({ runSQL });
-         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-            getPackage: sinon.stub().resolves({ getMalloyConnection }),
-            withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
-               fn(),
-         });
-         ctx.repository.getMaterializationById.resolves(
-            makeMaterialization({
-               status: "FAILED",
-               manifest: {
-                  builtAt: new Date().toISOString(),
-                  strict: false,
-                  entries: {
-                     b1: {
-                        sourceEntityId: "b1",
-                        physicalTableName: "orders_mz",
-                        connectionName: "duckdb",
-                     },
-                  },
-               },
-            }),
-         );
-
-         await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
-            dropTables: true,
-         });
-
-         expect(
-            ctx.repository.deleteMaterialization.calledOnceWith("mat-1"),
-         ).toBe(true);
-      });
    });
 });
 
-describe("deleteMaterialization telemetry", () => {
+/**
+ * The drop a reclaim makes (an archived or deleted version's tables, a table
+ * a rename replaced), called directly: a run's delete never drops a table.
+ */
+describe("dropManifestEntries", () => {
+   let ctx: ReturnType<typeof createMocks>;
+
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   const ORDERS = {
+      sourceEntityId: "b1",
+      physicalTableName: "orders_mz",
+      connectionName: "duckdb",
+   };
+
+   function reclaimer(): Reclaimer {
+      return new Reclaimer({
+         repository: () => ctx.repository,
+         host: {} as never,
+         lifecycle: {} as never,
+         dropManifestEntries: async () => [],
+      });
+   }
+
+   function drop(
+      runSQL: sinon.SinonStub,
+      entries: Parameters<Reclaimer["dropManifestEntries"]>[5],
+      dialectName = "duckdb",
+      environment: unknown = { getApiConnection: () => undefined },
+   ) {
+      return reclaimer().dropManifestEntries(
+         environment as never,
+         "my-env",
+         "pkg",
+         "mat-1",
+         "reclaim",
+         entries,
+         new Set(),
+         async () => ({ runSQL, dialectName }) as never,
+      );
+   }
+
+   it("routes a storage entry to a destination-aware RW drop, best-effort", async () => {
+      // A non-storage destination type refuses the RW drop at its gate
+      // (pre-session), exercising the routing and the best-effort failure
+      // handling without a live DuckDB attach.
+      const environment = buildEnvironmentStub({
+         destinations: { lake: { name: "lake", type: "postgres" } },
+         environmentPath: "/test",
+      });
+      const entry = {
+         sourceEntityId: "se1",
+         sourceName: "daily",
+         physicalTableName: "daily__mabc123",
+         connectionName: "wh",
+         storageDestinationName: "lake",
+      };
+
+      const owed = await drop(sinon.stub().resolves(), [entry], "duckdb", {
+         ...UNVERSIONED_ENVIRONMENT,
+         ...environment,
+      });
+
+      expect(environment.getStorageDestination.calledWith("lake")).toBe(true);
+      expect(owed).toEqual([entry]);
+   });
+
+   it("drops a manifest table and its staging", async () => {
+      const runSQL = sinon.stub().resolves();
+      expect(await drop(runSQL, [ORDERS])).toEqual([]);
+      const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(dropped).toContain('DROP TABLE IF EXISTS "orders_mz"');
+      expect(dropped.some((s) => s.includes('"orders_mz_'))).toBe(true);
+   });
+
+   it("dialect-quotes the drop DDL from the live connection (backtick + container path)", async () => {
+      const runSQL = sinon.stub().resolves();
+      // Container path on a hyphenated BigQuery project: each segment must
+      // be backtick-quoted independently.
+      await drop(
+         runSQL,
+         [
+            {
+               sourceEntityId: "b1",
+               physicalTableName: "my-proj.ds.engaged",
+               connectionName: "bq",
+            },
+         ],
+         "standardsql",
+      );
+      const dropped = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(dropped).toContain(
+         "DROP TABLE IF EXISTS `my-proj`.`ds`.`engaged`",
+      );
+   });
+
+   it("returns a table whose drop failed as owed, and never throws", async () => {
+      const owed = await drop(sinon.stub().rejects(new Error("boom")), [
+         ORDERS,
+      ]);
+      expect(owed).toEqual([ORDERS]);
+   });
+});
+
+describe("table drop telemetry", () => {
    let ctx: ReturnType<typeof createMocks>;
    let harness: MetricsHarness;
    withQueryMetadataOn();
@@ -477,53 +362,29 @@ describe("deleteMaterialization telemetry", () => {
 
    const DROP_COUNTER = "publisher_materialization_drop_tables_total";
 
-   // A terminal materialization whose manifest names one physical table, so
-   // dropMaterializedTables issues exactly one DROP — the emission under test.
-   function dropTablesFixture(runSQL: sinon.SinonStub) {
-      const getMalloyConnection = sinon
-         .stub()
-         .resolves({ runSQL, dialectName: "duckdb" });
-      (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
-         getPackage: sinon.stub().resolves({ getMalloyConnection }),
-         withPackageLock: async (_n: string, fn: () => Promise<unknown>) =>
-            fn(),
-      });
-      ctx.repository.getMaterializationById.resolves(
-         makeMaterialization({
-            status: "MANIFEST_FILE_READY",
-            manifest: {
-               builtAt: new Date().toISOString(),
-               strict: false,
-               entries: {
-                  b1: {
-                     sourceEntityId: "b1",
-                     physicalTableName: "orders_mz",
-                     connectionName: "duckdb",
-                  },
-               },
+   function dropOrders(runSQL: sinon.SinonStub) {
+      return new Reclaimer({
+         repository: () => ctx.repository,
+         host: {} as never,
+         lifecycle: {} as never,
+         dropManifestEntries: async () => [],
+      }).dropManifestEntries(
+         { getApiConnection: () => undefined } as never,
+         "my-env",
+         "pkg",
+         "mat-1",
+         "reclaim",
+         [
+            {
+               sourceEntityId: "b1",
+               physicalTableName: "orders_mz",
+               connectionName: "duckdb",
             },
-         }),
+         ],
+         new Set(),
+         async () => ({ runSQL, dialectName: "duckdb" }) as never,
       );
    }
-
-   it("meters a successful physical-table drop as outcome=success, occasion=delete", async () => {
-      dropTablesFixture(sinon.stub().resolves());
-
-      await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
-         dropTables: true,
-      });
-
-      expect(
-         await harness.collectCounter(DROP_COUNTER, {
-            outcome: "success",
-            engine: "in_warehouse",
-            occasion: "delete",
-         }),
-      ).toBe(1);
-      expect(
-         await harness.collectCounter(DROP_COUNTER, { outcome: "failure" }),
-      ).toBe(0);
-   });
 
    it("meters a drop Publisher makes on its own as occasion=reclaim", async () => {
       const runSQL = sinon.stub().resolves();
@@ -567,11 +428,7 @@ describe("deleteMaterialization telemetry", () => {
       // A drop is warehouse work someone accounts for later, and it is the one
       // statement an operator goes looking for after a table disappears.
       const runSQL = sinon.stub().resolves();
-      dropTablesFixture(runSQL);
-
-      await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
-         dropTables: true,
-      });
+      await dropOrders(runSQL);
 
       expect(runSQL.callCount).toBeGreaterThan(0);
       for (const call of runSQL.getCalls()) {
@@ -584,21 +441,13 @@ describe("deleteMaterialization telemetry", () => {
       }
    });
 
-   it("meters a failed drop as outcome=failure and still deletes the record", async () => {
-      dropTablesFixture(sinon.stub().rejects(new Error("drop boom")));
-
-      // The drop is best-effort: a failure is metered but never surfaces to the
-      // caller, and the record is still removed.
-      await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1", {
-         dropTables: true,
-      });
+   it("meters a failed drop as outcome=failure", async () => {
+      // The drop is best-effort: a failure is metered but never surfaces.
+      await dropOrders(sinon.stub().rejects(new Error("drop boom")));
 
       expect(
          await harness.collectCounter(DROP_COUNTER, { outcome: "failure" }),
       ).toBe(1);
-      expect(ctx.repository.deleteMaterialization.calledOnceWith("mat-1")).toBe(
-         true,
-      );
    });
 });
 

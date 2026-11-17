@@ -20,6 +20,7 @@ import {
    ConnectionNotFoundError,
    databaseAccessFailure,
    statementRejection,
+   StorageAccessDeniedError,
    storageAccessFailure,
    InvalidArgumentError,
    PackageNotFoundError,
@@ -213,7 +214,11 @@ function classifyDriverFailure(error: unknown): Error {
  * statement itself (400 with the driver's message, or 404 for a table it does
  * not have).
  */
-function sqlRunFailure(error: unknown, subject?: string): Error {
+function sqlRunFailure(
+   error: unknown,
+   subject?: string,
+   environment?: Pick<Environment, "isConfiguredStorageUrl">,
+): Error {
    // Already classified (an exhausted pool), with a message written for the
    // caller.
    if (error instanceof ConnectionError) return error;
@@ -222,10 +227,27 @@ function sqlRunFailure(error: unknown, subject?: string): Error {
       // The storage behind a table refused the read: 403, as on the query
       // route, rather than an outage's 502. Only this case changes; every
       // other warehouse rejection keeps its status.
-      storageAccessFailure(error, subject) ??
+      judgedStorageRefusal(
+         storageAccessFailure(error, subject, "connection"),
+         environment,
+      ) ??
       statementRejection(error) ??
       new ConnectionError((error as Error).message)
    );
+}
+
+/**
+ * `refusal` marked managed when its URL lies under a data path `environment`
+ * configures (StorageAccessDeniedError.managed).
+ */
+function judgedStorageRefusal(
+   refusal: StorageAccessDeniedError | undefined,
+   environment: Pick<Environment, "isConfiguredStorageUrl"> | undefined,
+): StorageAccessDeniedError | undefined {
+   if (refusal?.url !== undefined && environment) {
+      refusal.managed = environment.isConfiguredStorageUrl(refusal.url);
+   }
+   return refusal;
 }
 
 /**
@@ -992,7 +1014,11 @@ export class ConnectionController {
                // If the timer fired, runWithQueryTimeout replaces this with
                // a QueryTimeoutError, so this matters only for real driver
                // failures.
-               throw sqlRunFailure(error, connectionName);
+               throw sqlRunFailure(
+                  error,
+                  connectionName,
+                  environmentForAdmission,
+               );
             }
          }, getQueryTimeoutMs());
          return { data: JSON.stringify(streamed), queryCorrelationId };
@@ -1009,7 +1035,7 @@ export class ConnectionController {
                optionsWithSignal,
             );
          } catch (error) {
-            throw sqlRunFailure(error, connectionName);
+            throw sqlRunFailure(error, connectionName, environmentForAdmission);
          }
       }, getQueryTimeoutMs());
 
@@ -1120,7 +1146,7 @@ export class ConnectionController {
             // The timeout wrapper converts this; do not bury it in a
             // ConnectionError.
             if (signal.aborted) throw error;
-            throw sqlRunFailure(error, connectionName);
+            throw sqlRunFailure(error, connectionName, environmentForAdmission);
          }
       }, getQueryTimeoutMs());
    }

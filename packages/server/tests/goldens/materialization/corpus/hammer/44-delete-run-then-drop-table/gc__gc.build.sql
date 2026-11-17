@@ -1,4 +1,4 @@
--- hammer/44-reclaim-drop-tables/gc/gc.malloy: build plan
+-- hammer/44-delete-run-then-drop-table/gc/gc.malloy: build plan
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 

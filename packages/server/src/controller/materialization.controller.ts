@@ -486,7 +486,7 @@ export class MaterializationController {
       environmentName: string,
       packageName: string,
       materializationId: string,
-      options: { dropTables?: boolean; versionId?: VersionRef } = {},
+      options: { versionId?: VersionRef } = {},
    ) {
       return this.materializationService.deleteMaterialization(
          environmentName,

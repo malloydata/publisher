@@ -68,6 +68,9 @@ export function nativeSchemaNotices(
          dialect: def.dialect,
          database: true,
          nativeTypeOf: captured,
+         // A v1 table stores its query's output names; a `#(materialize)`
+         // table, each field's own name after its renames.
+         storesOutputNames: !plan,
       }).filter((r) => captured(r.column) === undefined);
       if (uncaptured.length === 0) continue;
       out.push({

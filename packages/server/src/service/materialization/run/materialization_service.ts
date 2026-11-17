@@ -1805,14 +1805,14 @@ export class MaterializationService {
 
    /**
     * Delete a terminal materialization record; an active run must be stopped
-    * first. Physical-table GC is the caller's, unless `dropTables` asks for a
-    * best-effort drop of the run's tables (a failure never blocks the delete).
+    * first. Record-only: it never drops a table. Physical-table GC is the
+    * caller's, through the connection.
     */
    async deleteMaterialization(
       environmentName: string,
       packageName: string,
       id: string,
-      options: { dropTables?: boolean; versionId?: VersionRef } = {},
+      options: { versionId?: VersionRef } = {},
    ): Promise<void> {
       const m = await this.getMaterialization(
          environmentName,
@@ -1827,14 +1827,6 @@ export class MaterializationService {
          );
       }
 
-      if (options.dropTables) {
-         await this.reclaimer.dropMaterializedTables(
-            environmentName,
-            packageName,
-            m,
-         );
-      }
-
       // The record is part of what proves a recorded uniqueness pass still
       // holds: once it goes, an older run's pass could read as the newest
       // over a table this run rewrote. Forgotten first, so a failure leaves
@@ -1842,7 +1834,7 @@ export class MaterializationService {
       await this.forgetUniquenessPasses(m.environmentId, packageName, id);
       await this.repository.deleteMaterialization(id);
 
-      // The deleted run may have been the one serving (and its tables dropped);
+      // The deleted run may have been the one serving;
       // routing has no run-time fallback, so rebind to the next-latest
       // generation, or clear to serve live.
       // (Mirrors the load-time Environment.rebindServeBindingsFromLocalStore;

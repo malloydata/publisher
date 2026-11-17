@@ -47,7 +47,7 @@ describe("a database drop of an unquotable name", () => {
          "env",
          "pkg",
          "run-1",
-         "delete",
+         "reclaim",
          [
             {
                sourceEntityId: "bad",

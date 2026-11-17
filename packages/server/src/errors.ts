@@ -9,9 +9,13 @@ import {
    causeChain,
    isConnectionFailure,
    isCredentialRejection,
-   isObjectStoreRefusal,
+   objectStoreRefusalUrl,
 } from "./driver_errors";
-import { redactPgSecrets } from "./pg_helpers";
+import {
+   redactPgSecrets,
+   redactSignedUrlParams,
+   redactStorageUrls,
+} from "./pg_helpers";
 import { RetrievalSettingsError } from "./settings/errors";
 
 export { isConnectionFailure, isCredentialRejection };
@@ -59,7 +63,9 @@ const MAX_LOGGED_DETAIL_CHARS = 2000;
  * - Control characters, NEL and U+2028/U+2029 are stripped so caller text
  *   cannot forge log lines; `format.json()` does not escape the latter three.
  * - Postgres passwords and URI userinfo are redacted: a failed DuckLake attach
- *   echoes the metadata connection string, password included.
+ *   echoes the metadata connection string, password included. So is a signed
+ *   URL's signature, credential or token (`redactSignedUrlParams`): an object
+ *   store's refusal quotes the URL it read.
  * - `level` is `warn` for upstream failures, which a caller can drive in a loop,
  *   so they do not flood the error log meant for our own bugs.
  */
@@ -80,17 +86,15 @@ export function logInternalFailure(
    const framesOnly = stack.startsWith(`${error.name}: ${message}`)
       ? stack.slice(`${error.name}: ${message}`.length).replace(/^\r?\n/, "")
       : stack;
+   // A signed URL's signature or token is masked; its bucket and path stay,
+   // for the operator.
+   const redact = (value: string): string =>
+      redactSignedUrlParams(redactPgSecrets(value));
    logger[level](summary, {
       error: {
          name: error.name,
-         message: redactPgSecrets(strip(message)).slice(
-            0,
-            MAX_LOGGED_DETAIL_CHARS,
-         ),
-         stack: redactPgSecrets(strip(framesOnly)).slice(
-            0,
-            MAX_LOGGED_DETAIL_CHARS,
-         ),
+         message: redact(strip(message)).slice(0, MAX_LOGGED_DETAIL_CHARS),
+         stack: redact(strip(framesOnly)).slice(0, MAX_LOGGED_DETAIL_CHARS),
       },
    });
 }
@@ -850,20 +854,50 @@ export class StorageAccessDeniedError extends Error {
       return "storage_access_denied";
    }
 
+   /**
+    * The refused URL lies under a storage destination's or a DuckLake
+    * catalog's configured data path, so the fault is the database's storage
+    * credentials, not the query. Set by the layer that holds the environment
+    * (`Environment.isConfiguredStorageUrl`); unset, the answer does not claim
+    * the query is fine: the URL may be one the query names itself.
+    */
+   managed = false;
+
    constructor(
       message: string,
       /** What the caller read, in its own terms: a source or a connection. */
       readonly subject?: string,
+      /** The refused URL, for {@link managed}; never sent. */
+      readonly url?: string,
+      /** Whether {@link subject} names a source (the query route) or a connection (`sqlQuery`). */
+      readonly subjectKind: "source" | "connection" = "source",
    ) {
       super(message);
    }
 
    /** The answer's message: no URL, no driver text. */
    get callerMessage(): string {
-      const what = this.subject
-         ? ` "${this.subject}" reads`
-         : " the query reads";
-      return `The storage holding the data${what} refused the database's read (HTTP 403). The query and the model are fine; the database's storage credentials are not.`;
+      const reads =
+         this.subject === undefined
+            ? "the query reads"
+            : this.subjectKind === "connection"
+              ? `this query reads through connection "${this.subject}"`
+              : `source "${this.subject}" reads`;
+      return this.managed
+         ? `The storage holding the data ${reads} refused the database's read (HTTP 403). The query and the model are fine; the database's storage credentials are not.`
+         : `The storage at a path ${reads} refused access (HTTP 403).`;
+   }
+
+   /** What an agent should do next, by {@link managed}. */
+   get suggestions(): string[] {
+      return this.managed
+         ? [
+              "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the storage credentials are fixed.",
+              "Report that the database's credentials for the storage holding this table's data were refused.",
+           ]
+         : [
+              "Check the path the query or the model reads (a file or table URL) and that the database may read it. Retrying unchanged fails the same way.",
+           ];
    }
 }
 
@@ -876,11 +910,13 @@ export class StorageAccessDeniedError extends Error {
 export function storageAccessFailure(
    error: unknown,
    subject?: string,
+   subjectKind: "source" | "connection" = "source",
 ): StorageAccessDeniedError | undefined {
    if (error instanceof StorageAccessDeniedError) return error;
-   if (!isObjectStoreRefusal(error)) return undefined;
+   const url = objectStoreRefusalUrl(error);
+   if (url === undefined) return undefined;
    const message = error instanceof Error ? error.message : String(error);
-   return new StorageAccessDeniedError(message, subject);
+   return new StorageAccessDeniedError(message, subject, url, subjectKind);
 }
 
 // A reachable catalog whose on-disk format the pinned DuckLake extension cannot
@@ -1643,7 +1679,7 @@ export type McpAdvice<E> =
    | {
         advice: "fixed";
         message?: (error: E, site: McpSite) => string;
-        suggestions: readonly string[];
+        suggestions: readonly string[] | ((error: E) => readonly string[]);
         log?: string;
      }
    | { advice: "not_found" }
@@ -1832,7 +1868,12 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       problems: (error) => error.problems.map(toQueryTextProblem),
       mcp: { advice: "malloy" },
    },
-   malloy: { status: 400, mcp: { advice: "malloy" } },
+   malloy: {
+      status: 400,
+      // A Malloy error can carry the driver's text, a storage URL with it.
+      message: (error) => redactStorageUrls(error.message),
+      mcp: { advice: "malloy" },
+   },
    table_not_found: {
       status: 404,
       reason: "TABLE_NOT_FOUND",
@@ -1894,10 +1935,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       mcp: {
          advice: "fixed",
          message: (error) => error.callerMessage,
-         suggestions: [
-            "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the storage credentials are fixed.",
-            "Report that the database's credentials for the storage holding this table's data were refused.",
-         ],
+         suggestions: (error) => error.suggestions,
          log: "Storage access denied",
       },
    },
@@ -1939,6 +1977,8 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    },
    model_compilation: {
       status: 424,
+      // A failed load can quote a driver's text, a storage URL with it.
+      message: (error) => redactStorageUrls(error.message),
       mcp: { advice: "malloy" },
       mcpSetup: "resource",
    },

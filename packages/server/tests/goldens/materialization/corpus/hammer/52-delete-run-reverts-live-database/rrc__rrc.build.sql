@@ -1,16 +1,16 @@
--- hammer/51-reclaim-reverts-live-external/rrx/rrx.malloy: build plan
+-- hammer/52-delete-run-reverts-live-database/rrc/rrc.malloy: build plan
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 
 -- ==== source daily
--- sourceID: daily@<hammer>/rrx/rrx.malloy
+-- sourceID: daily@<hammer>/rrc/rrc.malloy
 -- connection: orders_pg
--- sourceEntityId: 0c270e50a9800488e1de0e5139be478ba0f595223cdd0c91379d41d529d062e0
--- compiler key: 0c270e50a9800488e1de0e5139be478ba0f595223cdd0c91379d41d529d062e0 (the sourceEntityId)
+-- sourceEntityId: 15b55e6dc57f590c3eadf4c175108973723ce5e4771a5d3d8a725c7f9d23a7dd
+-- compiler key: 15b55e6dc57f590c3eadf4c175108973723ce5e4771a5d3d8a725c7f9d23a7dd (the sourceEntityId)
 -- build SQL:
 SELECT 
    base."order_date" as "order_date",
    COALESCE(SUM(base."amount"),0) as "total_amount"
-FROM public.rrx_orders as base
+FROM public.rrc_orders as base
 GROUP BY 1
 ORDER BY 1 desc NULLS LAST
