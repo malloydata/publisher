@@ -4093,7 +4093,10 @@ paths:
           description: |
             When true, also drop the physical tables recorded in the
             materialization's manifest before deleting the record. Defaults to
-            false (record-only delete; the caller owns table GC).
+            false (record-only delete; the caller owns table GC). A table
+            whose table segment another committed run of the package names,
+            in any place or container, is kept: it may be that run's table
+            reached under another name (two names for one DuckLake).
 
             Only `true` and `false` are accepted. Any other value is refused
             with 400 rather than read as `false`, which would delete the record,

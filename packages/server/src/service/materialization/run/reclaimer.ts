@@ -70,6 +70,8 @@ import { capabilitiesOf } from "../domain/dialect";
 import type { RunLifecycle } from "./run_lifecycle";
 import {
    mayBeOneTable,
+   mayBeOneTableAnywhere,
+   tableLeafKey,
    previousDestinationOf,
    type RenamedTable,
 } from "./run_instructions";
@@ -432,8 +434,20 @@ function recordedNameViews(
 }
 
 /**
+ * The key {@link tablesStillReferenced} holds a table segment under, so a
+ * delete keeps any table a committed run names anywhere under that segment.
+ */
+function leafReferenceKey(physicalTableName: string): string {
+   return `\u0000leaf:${tableLeafKey(physicalTableName)}`;
+}
+
+/**
  * The destination-and-name keys of every table a MANIFEST_FILE_READY run
- * references, among the `listed` runs `include` admits.
+ * references, among the `listed` runs `include` admits, and the key of each
+ * table segment they name ({@link leafReferenceKey}): a table's name does
+ * not say where it is, so one in another place or container may be the
+ * table a run references (two names for one DuckLake, a DuckDB catalog
+ * name), and a delete keeps it.
  */
 function tablesStillReferenced(
    listed: Materialization[],
@@ -447,6 +461,7 @@ function tablesStillReferenced(
          const dest = e.storageDestinationName ?? e.connectionName;
          if (dest && e.physicalTableName) {
             stillReferenced.add(tableKey(dest, e.physicalTableName));
+            stillReferenced.add(leafReferenceKey(e.physicalTableName));
          }
       }
    }
@@ -478,6 +493,15 @@ async function keptInPlace(
             destinationName: destForKey,
          },
       );
+      return true;
+   }
+   if (stillReferenced.has(leafReferenceKey(physicalTableName))) {
+      logger.info("Keeping a table a delete would drop: it may be served", {
+         runId: materializationId,
+         physicalTableName,
+         destinationName: destForKey,
+         guard: "may_be_served",
+      });
       return true;
    }
    const markedBy = await atTableSite(
@@ -662,10 +686,10 @@ function newestServingRun(
  * before it that lists any (an empty list included) listed, and `fresh`,
  * less any no committed run of the package names in its place any more
  * (dropped with its runs) and any `run` builds again, under its name in
- * its place. A kept table whose name `run` serves in another place may be
- * that served table (a table's name does not say where it is, and two
- * places can reach one table), so it is listed as `may_be_served` whatever
- * it was kept for, and never advised dropped. `write` says whether the list
+ * its place. A kept table whose table segment `run` serves in another place,
+ * or under another container, may be that served table (a table's name does
+ * not say where it is, and two places can reach one table), so it is listed
+ * as `may_be_served` whatever it was kept for, and never advised dropped. `write` says whether the list
  * goes on the run: when it lists any, or when the run before it listed any,
  * so a list that emptied is written empty once and stops being carried.
  */
@@ -680,11 +704,10 @@ function keptAfter(
       ...keptTablesIn(before?.metadata ?? null),
       ...keptTablesIn(run.metadata ?? null),
    ];
-   const sameName = (t: KeptTable, e: ManifestEntry): boolean =>
-      !!e.physicalTableName &&
-      mayBeOneTable(e.physicalTableName, t.physicalTableName);
    const at = (t: KeptTable, e: ManifestEntry): boolean =>
-      sameName(t, e) && placeKey(e) === placeKey(t);
+      !!e.physicalTableName &&
+      mayBeOneTable(e.physicalTableName, t.physicalTableName) &&
+      placeKey(e) === placeKey(t);
    const named = (t: KeptTable) =>
       runs.some(
          (m) =>
@@ -694,13 +717,18 @@ function keptAfter(
    const entries = Object.values(run.manifest?.entries ?? {});
    const reused = (t: KeptTable) => entries.some((e) => at(t, e));
    const servedElsewhere = (t: KeptTable) =>
-      entries.some((e) => sameName(t, e) && !at(t, e));
+      entries.some(
+         (e) =>
+            !!e.physicalTableName &&
+            mayBeOneTableAnywhere(e.physicalTableName, t.physicalTableName) &&
+            !at(t, e),
+      );
    const byKey = new Map<string, KeptTable>();
    for (const t of [...carried, ...fresh]) byKey.set(keptKey(t), t);
    const tables = [...byKey.values()]
       .filter((t) => named(t) && !reused(t))
       .map((t) =>
-         t.reason === "author_name" && servedElsewhere(t)
+         t.reason !== "may_be_served" && servedElsewhere(t)
             ? { ...t, reason: "may_be_served" as const }
             : t,
       );
@@ -797,7 +825,10 @@ export class Reclaimer {
             const dest = entry.storageDestinationName;
             const table = entry.physicalTableName;
             if (!dest || !table) continue;
-            if (stillReferenced.has(tableKey(dest, table))) {
+            if (
+               stillReferenced.has(tableKey(dest, table)) ||
+               stillReferenced.has(leafReferenceKey(table))
+            ) {
                logger.info(
                   "Keeping a table from a failed run: a live manifest still serves it",
                   { destinationName: dest, physicalTableName: table },
@@ -826,7 +857,10 @@ export class Reclaimer {
     *
     * A name is dropped only when NO other MANIFEST_FILE_READY run references
     * it: generations of a source share one physical name, so dropping a
-    * superseded record's table would take out the one still serving.
+    * superseded record's table would take out the one still serving. Judged
+    * by table segment, whatever the place or container: after a `storage=`
+    * move that kept the name, the other run's table may be this very table
+    * (two names for one DuckLake), so it is kept and logged `may_be_served`.
     */
    async dropMaterializedTables(
       environmentName: string,
@@ -1463,18 +1497,25 @@ export class Reclaimer {
       ) {
          return "not-in-package-records";
       }
-      // 5: no table the package serves now may be it. By name alone: a
-      // table's name does not say where it is, and two places (two names
-      // for one DuckLake, a connection that reaches a destination) can
-      // reach one table, which no config or probe proves otherwise. Served
-      // in this very place, it is the served table; served under its name
-      // in another place, as after a `storage=` or tier move that kept the
-      // name, it may be, so it is never dropped: kept and listed.
+      // 5: no table the package serves now may be it. By table segment
+      // alone (mayBeOneTableAnywhere): a table's name does not say where it
+      // is, and two places (two names for one DuckLake, a connection that
+      // reaches a destination) can reach one table, which no config or
+      // probe proves otherwise; nor does a container (on DuckDB `memory.t`
+      // and `main.t` are one table). Served at that very name in this very
+      // place, it is the served table; otherwise it may be, so it is never
+      // dropped: kept and listed.
       const namesIt = (e: ManifestEntry) =>
          !!e.physicalTableName &&
-         mayBeOneTable(e.physicalTableName, table.previousName);
+         mayBeOneTableAnywhere(e.physicalTableName, table.previousName);
       const servedUnderName = Object.values(serving).filter(namesIt);
-      if (servedUnderName.some((e) => place(e) === place(oldAt))) {
+      if (
+         servedUnderName.some(
+            (e) =>
+               place(e) === place(oldAt) &&
+               mayBeOneTable(e.physicalTableName, table.previousName),
+         )
+      ) {
          return "still-served";
       }
       if (servedUnderName.length > 0) return "may_be_served";
@@ -1496,7 +1537,7 @@ export class Reclaimer {
             (m) =>
                isActiveRun(m.status) &&
                tableNamesIn(m.metadata, WRITES_TABLES_KEY).some((name) =>
-                  mayBeOneTable(name, table.previousName),
+                  mayBeOneTableAnywhere(name, table.previousName),
                ),
          )
       ) {

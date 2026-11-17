@@ -351,7 +351,9 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
       );
       for (const warning of kept) {
          expect(warning.message).toContain("may be the very table");
-         expect(warning.message).not.toMatch(/drop it|dropTables/i);
+         expect(warning.message).not.toMatch(
+            /drop it yourself|built it with dropTables/i,
+         );
       }
       // The reclaim wrote no comment on any table: no identity probe.
       for (const lake of [0, 1]) {
@@ -463,6 +465,28 @@ describe.skipIf(!url)("the one rename rule across places, on Postgres", () => {
       expect(await lakeTables(0)).toContain("summary_moved_t");
       expect(await lakeTables(1)).not.toContain(readable);
       expect(keptOf(moved)).not.toContain(`lake2:${readable}:may_be_served`);
+      expect(await who()).toBe("pa");
+   });
+
+   it("never drops the served table when the runs before a move between two names for one DuckLake are deleted with dropTables=true", async () => {
+      await edit('#@ persist storage="lake"');
+      const first = await build();
+      const name = tableOf(first);
+      await edit('#@ persist storage="lake_alias"');
+      const moved = await build();
+      expect(tableOf(moved)).toBe(name);
+      // Every run but the one serving, deleted with its tables.
+      const runs = (await (
+         await fetch(`${api()}/materializations`)
+      ).json()) as Run[];
+      for (const run of runs.filter((m) => m.id !== moved.id)) {
+         const res = await fetch(
+            `${api()}/materializations/${run.id}?dropTables=true`,
+            { method: "DELETE" },
+         );
+         expect(res.status).toBeLessThan(300);
+      }
+      expect(await lakeTables(0)).toContain(name);
       expect(await who()).toBe("pa");
    });
 });

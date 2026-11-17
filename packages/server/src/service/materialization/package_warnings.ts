@@ -176,7 +176,9 @@ const KEPT_REASON_TEXT: Record<KeptTable["reason"], string> = {
    author_name:
       "It is at a name= the author chose, which Publisher never drops, since " +
       "a reader outside Malloy may rely on it. Drop it yourself once nothing " +
-      "reads it, or delete the runs that built it with dropTables=true.",
+      "reads it, or delete the runs that built it with dropTables=true, " +
+      "which drops it only while no other committed run of the package " +
+      "names a table of that name, in any place.",
    destination_missing:
       "Its storage destination is no longer configured under that name, so " +
       "Publisher cannot reach it to drop it. If the destination was renamed " +
@@ -184,12 +186,14 @@ const KEPT_REASON_TEXT: Record<KeptTable["reason"], string> = {
       "under the new name: check that before dropping anything. Configure " +
       "the destination again for the next run to decide it.",
    may_be_served:
-      "The source is served now under this same name in another place, and " +
-      "a table's name does not say where it is: two places can reach one " +
-      "table (two names for one DuckLake, or a connection that reaches the " +
-      "destination). So this may be the very table the package serves now, " +
-      "and Publisher never drops it. Check whether it is before doing " +
-      "anything with it.",
+      "A table's name does not say where it is: two places can reach one " +
+      "table (two names for one DuckLake, a connection that reaches the " +
+      "destination, or on DuckDB a catalog and a schema of one database). " +
+      "So this may be the very table the package serves now, and Publisher " +
+      "never drops it, in a reclaim or when a run is deleted with " +
+      "dropTables=true. Check whether it is before doing anything with it. " +
+      "To clear this warning, delete the runs that built it here without " +
+      "dropTables (a record-only delete); the next auto-run stops listing it.",
 };
 
 /**
@@ -227,8 +231,8 @@ export function keptTableWarnings(
          message:
             (table.reason === "may_be_served"
                ? `table \`${table.physicalTableName}\` ${where} was kept: ` +
-                 `the source's table moved from here to another place and ` +
-                 `kept this name. `
+                 `the package now serves a table of the same name from ` +
+                 `another place or container. `
                : `table \`${table.physicalTableName}\` ${where} is no longer ` +
                  `read: the source's table was renamed or moved, and its new ` +
                  `table serves now. `) + KEPT_REASON_TEXT[table.reason],
