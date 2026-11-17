@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a rollup over a `#(materialize)` base builds from the base's table
+
+**A colocated rollup over a colocated `#(materialize)` base builds from the base's stored table** when the run building it holds that table, built earlier in the same run or carried forward, as one over a colocated `#@ persist` base already does. It stores the same rows a build from the warehouse stores, and the same guards apply: the base's entry must be colocated and at the tier the base declares now, and a rollup with a freshness window reads a carried base only when the base's `dataAsOf` is known and inside that window. Otherwise it builds from the warehouse, as before. A base stored as a pair table (an inlined join_many), one whose `where:` reads a given or the current time, one in a `storage=` destination, and any `storage=` rollup are unchanged. No new key, setting, metric or wire field, and the plan (addresses, SQL, edges) is unchanged.
+
+**Manifest output:** such a rollup's entry now carries `upstreamReuse: "reused"` when it read the base's table, and none when it built from the warehouse, as a rollup over a `#@ persist` base's does. It had none before.
+
 ## [Unreleased] — rollups placed by `name=`; an unplaceable BigQuery table refused at plan; rollups over hidden grains, given-reading `where:` and zoned queries; G3 for colocated rollups
 
 **Contract change: one placement key.** A rollup, `#(preaggregate)` or `#@ preaggregate`, now takes `name=`: everything before its last dot is the schema or dataset its table is created in, and its leaf is not used, since Publisher names a rollup's table itself (`<pkg>__<file>__<base>_by_<grain>__p<hash>`). A `name=` with no container, or beside `storage=` or `namespace=`, fails the publish and the load (`preaggregate-invalid`).

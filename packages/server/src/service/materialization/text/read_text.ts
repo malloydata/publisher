@@ -252,6 +252,19 @@ export function rollupBuildCopyName(
    return `${importPath}.${baseDeclaredName}.rollup-build.malloy`;
 }
 
+/**
+ * The copy a rollup's `#(materialize)` base is imported from when the rollup
+ * builds from the base's stored table (rollup_compile.ts): the base's
+ * declaring file, `importPath`, with the base re-rooted on its generated
+ * build source, beside it so its own imports resolve.
+ */
+export function rollupStoredBaseCopyName(
+   importPath: string,
+   baseDeclaredName: string,
+): string {
+   return `${importPath}.${baseDeclaredName}.rollup-stored-base.malloy`;
+}
+
 /** Whether a rollup's base is read from its build copy. */
 export function readsBuildCopy(
    plan: Pick<RollupVariantPlan, "readTimeTerms" | "privateGrain">,
@@ -316,12 +329,14 @@ export function rollupBuildCopyText(
  * The generated build companion for one declaring model, or undefined when it
  * declares no rollup. Every planned base is declared in that model, so each is
  * imported from it by `importPath`, or from its build copy beside it when its
- * plans have one. The experimental flag lives here, so the author's file
- * needs none.
+ * plans have one, or, for a base named in `storedBases`, from the copy that
+ * re-roots it on its stored table ({@link rollupStoredBaseCopyName}). The
+ * experimental flag lives here, so the author's file needs none.
  */
 export function generateRollupBuildFile(
    plans: readonly RollupVariantPlan[],
    importPath: string,
+   storedBases: ReadonlySet<string> = new Set(),
 ): string | undefined {
    if (plans.length === 0) return undefined;
    const bases = [...new Set(plans.map((p) => p.baseDeclaredName))].sort(
@@ -333,7 +348,7 @@ export function generateRollupBuildFile(
    const imports = bases
       .map(
          (base) =>
-            `import { ${identifier(rollupBaseAlias(base))} is ${identifier(base)} } from ${doubleQuotedString(copied.has(base) ? rollupBuildCopyName(importPath, base) : importPath)}`,
+            `import { ${identifier(rollupBaseAlias(base))} is ${identifier(base)} } from ${doubleQuotedString(copied.has(base) ? rollupBuildCopyName(importPath, base) : storedBases.has(base) ? rollupStoredBaseCopyName(importPath, base) : importPath)}`,
       )
       .join("\n");
    // `include { public: * }` (an internal gate field in a grain) needs the
