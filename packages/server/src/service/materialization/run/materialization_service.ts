@@ -351,6 +351,26 @@ export class MaterializationService {
          lifecycle: this.lifecycle,
          dropManifestEntries: (...args) =>
             this.collaborators.dropManifestEntries(...args),
+         // The locks a run's start takes for its active-run check, in the
+         // same order (see createMaterialization), so a reclaim never
+         // decides while a run starts, and never waits on a run's start
+         // while holding a lock that start needs.
+         withRunLock: (
+            environment,
+            environmentId,
+            packageName,
+            versionId,
+            fn,
+         ) => {
+            if (versionId === undefined) {
+               return environment.withPackageLock(packageName, fn);
+            }
+            const versions = environment.getVersionService();
+            if (!versions) return fn();
+            return versions.withVersionLock(packageName, versionId, () =>
+               this.claims.withTableLock(environmentId, packageName, fn),
+            );
+         },
       });
       const real = this.realCollaborators();
       this.collaborators = {
@@ -1625,25 +1645,29 @@ export class MaterializationService {
       // copy of the package has rebound from the store: one that did not
       // (a version an earlier run's failed load left on the old table)
       // still reads it.
+      // Unbound, nothing is dropped, but the tables it keeps are still
+      // listed (Reclaimer.reclaimRenamedTables).
       if (!orchestrated) {
-         if (bound) {
-            await this.reclaimer.reclaimRenamedTables(
-               environmentName,
-               packageName,
-               id,
-               reader,
-               () =>
-                  this.committer.rebindLoadedVersions(
-                     environmentName,
-                     packageName,
-                  ),
-            );
-         } else if (renamed.length > 0) {
+         if (!bound && renamed.length > 0) {
             logger.warn(
                "Keeping the tables readable names replaced: the package did not bind to this run",
                { packageName, tables: renamed.map((t) => t.previousName) },
             );
          }
+         const kept = await this.reclaimer.reclaimRenamedTables(
+            environmentName,
+            packageName,
+            id,
+            reader,
+            bound
+               ? () =>
+                    this.committer.rebindLoadedVersions(
+                       environmentName,
+                       packageName,
+                    )
+               : async () => false,
+         );
+         if (kept !== undefined) pkg.setKeptTables?.(kept);
       }
 
       // Carried forward, so never in the build loop: counted once the run

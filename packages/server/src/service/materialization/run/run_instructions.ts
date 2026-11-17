@@ -23,6 +23,9 @@ import {
    readableTableName,
    readableVersion,
    sourceLabel,
+   hasReservedTableSuffix,
+   tableNameParts,
+   tableNamesMeet,
 } from "../domain/table_name";
 import { getPersistStorageMode } from "../../../config";
 import {
@@ -95,19 +98,45 @@ export interface SelfTableNaming {
 }
 
 /**
- * A table an auto-run built under its readable name, in place of the table an
- * earlier run built for the same source under the name Publisher gave before
- * readable names. The old table is reclaimed once the run commits, only when
- * every guard holds (Reclaimer.reclaimRenamedTables).
+ * A table an auto-run built under a new name or in a new place, in place of
+ * the table an earlier run built for the same source (the same content
+ * address) on the same connection: its name changed, or its `storage=`
+ * destination did. Once the run commits, the old table is reclaimed when
+ * Publisher can prove it is its own, and is otherwise kept, and listed as
+ * kept when it sits at an author's `name=` (Reclaimer.reclaimRenamedTables).
  */
 export interface RenamedTable {
    sourceEntityId: string;
-   /** The earlier run's table: exactly the name Publisher derived for it then. */
+   /** The source the table is built for, which a kept table's warning names. */
+   sourceName?: string;
+   /** The earlier run's table. */
    previousName: string;
    /** The table this run builds instead. */
    physicalTableName: string;
    connectionName: string;
+   /** Where this run builds the table: its storage destination, if any. */
    storageDestinationName?: string;
+   /**
+    * Where the earlier table is, when that is not where this run builds:
+    * its storage destination, or none for the source's own database. Absent
+    * when the place is the same.
+    */
+   previousPlace?: { storageDestinationName?: string };
+}
+
+/**
+ * Whether two written names, in one place, may be one table: compared
+ * unquoted and case-folded, with {@link tableNamesMeet}'s container rule. The
+ * conservative answer, for deciding a table is NOT another: an over-wide
+ * match only keeps a table.
+ */
+export function mayBeOneTable(a: string, b: string): boolean {
+   const canon = (name: string) =>
+      name
+         .split(".")
+         .map((s) => s.replace(/["`[\]]/g, "").toLowerCase())
+         .join(".");
+   return tableNamesMeet(canon(a), canon(b));
 }
 
 /*
@@ -574,12 +603,6 @@ function tableNameDecision(
    previous: string | undefined;
    renaming: boolean;
    tableName: string;
-   /**
-    * A rollup's table an earlier run built under another readable name of
-    * this package's (its `name=` leaf changed), which this run renames:
-    * reclaimed once the run commits, as a pre-readable name is.
-    */
-   leafRenamed?: string;
 } {
    // Orchestrated builds use the host-supplied `physicalTableName`. A
    // storage build replaces its table atomically (`CREATE OR REPLACE` in
@@ -626,23 +649,6 @@ function tableNameDecision(
       )
          ? prior!.physicalTableName
          : fresh;
-   const leafRenamed =
-      naming &&
-      naming.ownedVersion === undefined &&
-      !!compiled.tables[persistSource.sourceID]?.rollup &&
-      sameDestination &&
-      !renaming &&
-      tableName === fresh &&
-      prior!.physicalTableName !== fresh &&
-      READABLE_TAIL.test(prior!.physicalTableName) &&
-      !takenByAnother(
-         persistSource,
-         destination,
-         prior!.physicalTableName,
-         sourceEntityId,
-      )
-         ? prior!.physicalTableName
-         : undefined;
    return {
       named,
       prior,
@@ -650,8 +656,102 @@ function tableNameDecision(
       previous,
       renaming,
       tableName,
-      ...(leafRenamed !== undefined ? { leafRenamed } : {}),
    };
+}
+
+/**
+ * The table an earlier run built for this source that the table this run
+ * builds (`built`, in `destination`) replaces, as a {@link RenamedTable}, or
+ * undefined when there is none or it may be the same table. The earlier
+ * table must be on the source's connection: a connection change is a new
+ * content address, and out of scope.
+ */
+function supersededTable(
+   prior: ManifestEntry | undefined,
+   persistSource: PersistSource,
+   sourceEntityId: string,
+   destination: string | undefined,
+   built: string,
+): RenamedTable | undefined {
+   if (!prior?.physicalTableName) return undefined;
+   if (prior.connectionName !== persistSource.connectionName) return undefined;
+   // The bare name a run built before package-owned names (the source's
+   // own name, unsuffixed), which another package on the same schema may
+   // have written since: not provably this package's, nor an author's
+   // name=, so neither reclaimed nor listed.
+   if (
+      !hasReservedTableSuffix(prior.physicalTableName) &&
+      mayBeOneTable(
+         tableNameParts(prior.physicalTableName).leaf,
+         persistSource.name,
+      )
+   ) {
+      return undefined;
+   }
+   const before = prior.storageDestinationName ?? undefined;
+   const moved = before !== destination;
+   if (!moved && mayBeOneTable(prior.physicalTableName, built)) {
+      return undefined;
+   }
+   return {
+      sourceEntityId,
+      sourceName: persistSource.name,
+      previousName: prior.physicalTableName,
+      physicalTableName: built,
+      connectionName: persistSource.connectionName,
+      ...(destination ? { storageDestinationName: destination } : {}),
+      ...(moved
+         ? {
+              previousPlace: before ? { storageDestinationName: before } : {},
+           }
+         : {}),
+   };
+}
+
+/**
+ * `renamed` less any old table this run writes or carries in the same place
+ * under a name that may be the same table: it is another source's now, or
+ * this source's own again, and never offered for a drop.
+ */
+function notWrittenThisRun(
+   renamed: RenamedTable[],
+   instructions: BuildInstruction[],
+   carried: Record<string, ManifestEntry>,
+   sources: ClearedSource[],
+): RenamedTable[] {
+   const connectionOf = new Map(
+      sources.map((s) => [s.sourceEntityId, s.persistSource.connectionName]),
+   );
+   const written = [
+      ...instructions.map((i) => ({
+         connectionName: connectionOf.get(i.sourceEntityId),
+         storageDestinationName: i.destination,
+         physicalTableName: i.physicalTableName,
+      })),
+      ...Object.values(carried).map((e) => ({
+         connectionName: e.connectionName,
+         storageDestinationName: e.storageDestinationName ?? undefined,
+         physicalTableName: e.physicalTableName,
+      })),
+   ];
+   return renamed.filter((t) => {
+      const where = previousDestinationOf(t);
+      return !written.some(
+         (w) =>
+            w.connectionName === t.connectionName &&
+            (w.storageDestinationName ?? undefined) === where &&
+            mayBeOneTable(w.physicalTableName, t.previousName),
+      );
+   });
+}
+
+/** The storage destination a {@link RenamedTable}'s earlier table is in, if any. */
+export function previousDestinationOf(
+   t: Pick<RenamedTable, "storageDestinationName" | "previousPlace">,
+): string | undefined {
+   return t.previousPlace
+      ? t.previousPlace.storageDestinationName
+      : t.storageDestinationName;
 }
 
 /**
@@ -742,24 +842,17 @@ export function deriveSelfInstructions(
       if (seen.has(sourceEntityId)) continue;
       seen.add(sourceEntityId);
 
-      const {
-         named,
-         prior,
-         sameDestination,
-         previous,
-         renaming,
-         tableName,
-         leafRenamed,
-      } = tableNameDecision(
-         compiled,
-         persistSource,
-         sourceEntityId,
-         destination,
-         priorEntries,
-         freshNames.get(sourceEntityId)!,
-         takenByAnother,
-         naming,
-      );
+      const { named, prior, sameDestination, previous, renaming, tableName } =
+         tableNameDecision(
+            compiled,
+            persistSource,
+            sourceEntityId,
+            destination,
+            priorEntries,
+            freshNames.get(sourceEntityId)!,
+            takenByAnother,
+            naming,
+         );
       if (naming && !named) {
          const key = tableKeyOf(
             persistSource.connectionName,
@@ -817,10 +910,10 @@ export function deriveSelfInstructions(
       // `name=` removed or changed, a v1 source moved to `#(materialize)`,
       // a table named before readable names, or the unsuffixed table a run
       // before package-owned names built, which another package on the same
-      // schema may have written since) is rebuilt under its name now; the
-      // old table stays with the runs that name it, and goes when they are
-      // deleted with their tables, or for a name Publisher gave it, once
-      // this run commits.
+      // schema may have written since) is rebuilt under its name now, and
+      // the old table is offered to the reclaim once this run commits
+      // (supersededTable), which drops it only when Publisher can prove it
+      // is its own.
       if (
          !deltaEligible &&
          !options.forceRefresh &&
@@ -842,15 +935,18 @@ export function deriveSelfInstructions(
          continue;
       }
 
-      if ((renaming && logicalName === tableName) || leafRenamed) {
-         renamed.push({
+      // The table this one replaces, decided once the run commits
+      // (Reclaimer.reclaimRenamedTables).
+      const superseded =
+         naming &&
+         supersededTable(
+            prior,
+            persistSource,
             sourceEntityId,
-            previousName: leafRenamed ?? previous!,
-            physicalTableName: tableName,
-            connectionName: persistSource.connectionName,
-            ...(destination ? { storageDestinationName: destination } : {}),
-         });
-      }
+            destination,
+            logicalName,
+         );
+      if (superseded) renamed.push(superseded);
       instructions.push(instruction);
    }
 
@@ -872,7 +968,14 @@ export function deriveSelfInstructions(
       throw allSourcesRefusedError(refusals);
    }
 
-   return { instructions, carried, refused, cleared, recheck, renamed };
+   return {
+      instructions,
+      carried,
+      refused,
+      cleared,
+      recheck,
+      renamed: notWrittenThisRun(renamed, instructions, carried, sources),
+   };
 }
 
 /** What {@link rebuildStaleUpstreams} reads. */

@@ -57,6 +57,7 @@ import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
 import { withRollupKeyRecords } from "./materialization/run/inline_uniqueness";
+import { keptTablesResolverFor } from "./materialization";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 import type {
@@ -1040,6 +1041,9 @@ export class EnvironmentStore
             environmentId,
             withRollupKeyRecords,
          ),
+      );
+      environment.setKeptTablesResolver(
+         keptTablesResolverFor(repository, environmentId),
       );
       this.attachHooks(environment, VERSION_HOOKS);
       environment.bindVersions(repository, environmentId, {

@@ -16,6 +16,7 @@ import type { RenamedTable } from "./run_instructions";
  */
 
 const OLD = "summary__p1a2b3c4d";
+const LEGACY_B = "legacy_b__p0b0b0b0b";
 const NEW = "pa__model__summary__p9f8e7d6c";
 
 const entry = (table: string, sourceEntityId = "a1"): ManifestEntry =>
@@ -144,10 +145,14 @@ describe("reclaiming a table a readable name replaced", () => {
       expect(r.records.get("now")?.[RENAMED_TABLES_KEY]).toBeUndefined();
    });
 
-   it("keeps it when the replacement did not commit under its new name (guard 2)", async () => {
+   it("keeps it while the run committed no table for its source (guard 2)", async () => {
       const old = run("old", { a1: entry(OLD) });
-      // The run committed the source elsewhere (a failed build, say).
-      const now = run("now", { a1: entry("other") }, { metadata: withRenamed });
+      // The run committed without the source (a failed build, say).
+      const now = run(
+         "now",
+         { b2: entry("b", "b2") },
+         { metadata: withRenamed },
+      );
       const r = await reclaim([old, now], "now");
       expect(r.dropped).toEqual([]);
       // Kept recorded: a later run's replacement may commit.
@@ -190,7 +195,7 @@ describe("reclaiming a table a readable name replaced", () => {
    });
 
    it("finishes a table an earlier run recorded and never dropped, and keeps one whose drop failed", async () => {
-      const old = run("old", { a1: entry(OLD), b2: entry("legacy_b", "b2") });
+      const old = run("old", { a1: entry(OLD), b2: entry(LEGACY_B, "b2") });
       // Committed, then the server stopped before its drops.
       const crashed = run(
          "crashed",
@@ -202,7 +207,7 @@ describe("reclaiming a table a readable name replaced", () => {
                   renamed,
                   {
                      sourceEntityId: "b2",
-                     previousName: "legacy_b",
+                     previousName: LEGACY_B,
                      physicalTableName: "readable_b",
                      connectionName: "warehouse",
                   },
@@ -215,15 +220,15 @@ describe("reclaiming a table a readable name replaced", () => {
          a1: entry(NEW),
          b2: entry("readable_b", "b2"),
       });
-      const r = await reclaim([old, crashed, next], "next", ["legacy_b"]);
-      expect(r.dropped.sort()).toEqual([OLD, "legacy_b"].sort());
+      const r = await reclaim([old, crashed, next], "next", [LEGACY_B]);
+      expect(r.dropped.sort()).toEqual([OLD, LEGACY_B].sort());
       expect(r.forgotten).toEqual([OLD]);
       // The failed drop stays recorded, for the next run to try.
       expect(
          (r.records.get("crashed")?.[RENAMED_TABLES_KEY] as RenamedTable[]).map(
             (t) => t.previousName,
          ),
-      ).toEqual(["legacy_b"]);
+      ).toEqual([LEGACY_B]);
    });
 
    it("does nothing for a run that did not commit", async () => {
