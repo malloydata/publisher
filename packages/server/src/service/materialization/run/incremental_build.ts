@@ -573,10 +573,13 @@ export async function applyIncrementalStep(params: {
          step: decimal
             ? {
                  mode: "seed",
-                 reasonCode: "decimal_does_not_fit",
+                 // The stored column's shape cannot hold the delta: no metric
+                 // label of its own, the reason names the decimal cause.
+                 reasonCode: "shape_mismatch",
                  reason:
                     "a delta value needs more digits than its stored DECIMAL " +
-                    "column holds, so it was rolled back rather than rounded",
+                    "column holds, so it was rolled back rather than rounded " +
+                    "and the table rebuilds at the wider scale",
               }
             : {
                  mode: "seed",

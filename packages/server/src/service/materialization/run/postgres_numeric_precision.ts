@@ -13,15 +13,23 @@
  * The build therefore reads each such column as Postgres's own text, which is
  * exact, stages the rows in the build session, and stores the column as the
  * DECIMAL(38, s) that holds every value it read: `s` the widest scale seen,
- * provided the widest integer part still fits in 38 digits. A column that does
- * not fit (or holds `NaN` / `Infinity`) is stored as that text, which the
- * serve side's read plan answers live and reports under
+ * trailing zeros dropped, provided the widest integer part still fits in 38
+ * digits. A column that does not fit (or holds `NaN` / `Infinity`) is stored as
+ * that text, which the serve side's read plan answers live and reports under
  * `storage-column-type-mismatch`, rather than rounded.
  *
  * Which columns: the ones the session describes as DOUBLE whose Postgres type
- * is `numeric`, read from a probe Postgres plans but does not run (a `LIMIT 0`
- * the probe left-joins to one row, so `pg_typeof` sees each column's type). A
- * `double precision` stays DOUBLE: live sums it as a float too.
+ * (a domain's base type) is `numeric`, read from a probe Postgres plans but
+ * does not run (a `LIMIT 0` the probe left-joins to one row, so `pg_typeof`
+ * sees each column's type). A `double precision` stays DOUBLE: live sums it as
+ * a float too.
+ *
+ * What it costs: every full Postgres build describes its passthrough (Postgres
+ * prepares the statement; it replaces the describe the declared-type cast
+ * made for a source with a `string` column), and runs the type probe when any
+ * column reads as DOUBLE. A build that has a numeric column to keep writes
+ * the whole result twice: once to the session's local stage (spilling to the
+ * build's temp directory), once to the destination. The warehouse is read once.
  */
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -31,6 +39,7 @@ import { quoteIdentifier } from "../../quoting";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
 import { errorCodeOf } from "./error_code";
+import { fromSubselect } from "../subselect";
 
 /** DuckDB's widest DECIMAL. */
 const DECIMAL_MAX_PRECISION = 38;
@@ -90,7 +99,9 @@ function statsSelect(column: string, index: number): string {
    const integerPart = `split_part(ltrim(${c}, '-'), '.', 1)`;
    return [
       `max(CASE WHEN ${finite} THEN length(ltrim(${integerPart}, '0')) END) AS i${index}`,
-      `max(CASE WHEN ${finite} THEN length(split_part(${c}, '.', 2)) END) AS s${index}`,
+      // Trailing zeros dropped: `2.50` needs scale 1, and a narrower scale
+      // leaves DuckDB's DECIMAL arithmetic more room.
+      `max(CASE WHEN ${finite} THEN length(rtrim(split_part(${c}, '.', 2), '0')) END) AS s${index}`,
       `count(*) FILTER (WHERE ${c} IS NOT NULL AND NOT ${finite}) AS n${index}`,
    ].join(", ");
 }
@@ -110,7 +121,7 @@ export function numericAsTextSQL(
       const c = quoteIdentifier(name, sourceDialect);
       return numeric.has(name) ? `${c}::text AS ${c}` : c;
    });
-   return `SELECT ${list.join(", ")} FROM (${innerSQL}) AS __numeric_text`;
+   return `SELECT ${list.join(", ")} ${fromSubselect(innerSQL, "__numeric_text")}`;
 }
 
 /**
@@ -149,11 +160,12 @@ export async function postgresNumericColumns(
          `SELECT ${doubles
             .map(
                (name, i) =>
-                  `pg_typeof(q.${quoteIdentifier(name, sourceDialect)})::text AS t${i}`,
+                  // A domain reads as its base type.
+                  `(SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text FROM pg_type WHERE oid = pg_typeof(q.${quoteIdentifier(name, sourceDialect)})) AS t${i}`,
             )
             .join(", ")} ` +
          `FROM (SELECT 1) AS one LEFT JOIN ` +
-         `(SELECT * FROM (${innerSQL}) AS b LIMIT 0) AS q ON true`;
+         `(SELECT * ${fromSubselect(innerSQL, "b")} LIMIT 0) AS q ON true`;
       const [types] = rowsOf(await session.runSQL(passthrough(probe)));
       const numeric = doubles.filter((_, i) => types?.[`t${i}`] === "numeric");
       return { columns, numeric, described };
@@ -287,7 +299,8 @@ export function guardDeltaDecimals(
       const integerDigits = decimal.precision - decimal.scale;
       const fits =
          `regexp_full_match(${c}, '^-?0*[0-9]{0,${integerDigits}}` +
-         `(\\.[0-9]{0,${decimal.scale}})?$')`;
+         // Trailing zeros are not digits the column must hold.
+         `(\\.[0-9]{0,${decimal.scale}}0*)?$')`;
       return [
          `CASE WHEN ${c} IS NULL THEN NULL WHEN ${fits} ` +
             `THEN CAST(${c} AS DECIMAL(${decimal.precision},${decimal.scale})) ` +
@@ -295,7 +308,7 @@ export function guardDeltaDecimals(
       ];
    });
    if (casts.length === 0) return selectSQL;
-   return `SELECT * REPLACE (${casts.join(", ")}) FROM (${selectSQL}) AS __delta_decimals`;
+   return `SELECT * REPLACE (${casts.join(", ")}) ${fromSubselect(selectSQL, "__delta_decimals")}`;
 }
 
 function nullableNumber(value: unknown): number | null {

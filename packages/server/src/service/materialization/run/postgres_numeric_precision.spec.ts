@@ -72,7 +72,7 @@ describe("numericAsTextSQL", () => {
             "postgres",
          ),
       ).toBe(
-         `SELECT "id", "a""b"::text AS "a""b", "Total"::text AS "Total" FROM (SELECT 1) AS __numeric_text`,
+         `SELECT "id", "a""b"::text AS "a""b", "Total"::text AS "Total" FROM (\nSELECT 1\n) AS __numeric_text`,
       );
    });
 });
@@ -114,14 +114,14 @@ describe("staging and guarding in DuckDB", () => {
       );
       expect(staged.storage).toEqual([
          { column: "u", decimal: "DECIMAL(38,1)", scale: 1 },
-         { column: "v", decimal: "DECIMAL(38,2)", scale: 2 },
+         { column: "v", decimal: "DECIMAL(38,1)", scale: 1 },
          { column: "n", text: true, reason: "non_finite" },
          { column: "z", decimal: "DECIMAL(38,0)", scale: 0 },
       ]);
       const [sum] = await rows(
          `SELECT sum(u)::varchar AS su, sum(v)::varchar AS sv, typeof(any_value(n)) AS tn FROM (${staged.selectSQL})`,
       );
-      expect(sum).toEqual({ su: "0.3", sv: "-9.50", tn: "VARCHAR" });
+      expect(sum).toEqual({ su: "0.3", sv: "-9.5", tn: "VARCHAR" });
       await staged.drop();
    });
 

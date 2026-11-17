@@ -39,7 +39,7 @@ import { pollFor, TERMINAL_STATUSES } from "./polling";
 const url = process.env.PUBLISHER_TEST_POSTGRES_URL;
 setDefaultTimeout(300_000);
 
-const COLUMNS = "id, g, u, big, m, e is u + m, w is u * 3";
+const COLUMNS = "id, g, u, big, m, e is u + m, w is u * 3, hs, tz, dm";
 
 const MODEL = [
    "##! experimental.persistence",
@@ -55,6 +55,8 @@ const MODEL = [
    '#@ persist name="t_incremental" storage="lake" refresh="incremental" watermark="id"',
    "source: incremental is t -> { select: id, u }",
    "source: live_incremental is t -> { select: id, u }",
+   '#(materialize) storage="lake" name="t_materialized"',
+   "source: materialized is t extend { primary_key: id }",
    "source: live_rolled is t extend {",
    "  measure: total is sum(u + m)",
    "}",
@@ -176,15 +178,20 @@ describe.skipIf(!url)(
          });
          // u: unconstrained; big: wider than DECIMAL(38); m: a DECIMAL
          // already; huge: no DECIMAL(38) holds 10^45.
+         await wh.runSQL(`CREATE DOMAIN amount AS numeric`);
+         // hs: a scale of 20, as Postgres's avg and division write;
+         // tz: trailing zeros; dm: a domain over numeric.
          await wh.runSQL(
             `CREATE TABLE t (id int, g text, u numeric, big numeric(50,10),
-               m numeric(10,2), huge numeric)`,
+               m numeric(10,2), huge numeric, hs numeric, tz numeric, dm amount)`,
          );
          await wh.runSQL(`INSERT INTO t VALUES
-            (1, 'a', 0.1, 0.1, 0.10, 1000000000000000000000000000000000000000000000.5),
-            (2, 'a', 0.2, 0.2, 0.20, 1),
-            (3, 'b', 1.005, 12345678901234567890.0123456789, 3.33, 2),
-            (4, 'b', NULL, NULL, NULL, NULL)`);
+            (1, 'a', 0.1, 0.1, 0.10, 1000000000000000000000000000000000000000000000.5,
+               1::numeric / 3, 2.50, 0.1),
+            (2, 'a', 0.2, 0.2, 0.20, 1, 2::numeric / 3, 1.100, 0.2),
+            (3, 'b', 1.005, 12345678901234567890.0123456789, 3.33, 2,
+               1234567.5::numeric / 7, 3.000, 1.25),
+            (4, 'b', NULL, NULL, NULL, NULL, NULL, NULL, NULL)`);
          const lake = tempDir("decimal-lake-");
          dirs.push(lake);
          const dir = tempDir("decimal-pkg-");
@@ -266,11 +273,17 @@ describe.skipIf(!url)(
          expect(of("e")).toEqual(["decimal(38,3)"]);
          expect(of("w")).toEqual(["decimal(38,3)"]);
          expect(of("huge")).toEqual(["varchar"]);
+         expect(of("hs")).toEqual(["decimal(38,20)"]);
+         // Trailing zeros are not digits the column must hold.
+         expect(of("tz")).toEqual(["decimal(38,1)"]);
+         // A domain is read as its base type.
+         expect(of("dm")).toEqual(["decimal(38,2)"]);
          // The rollup's partial is a numeric expression too.
          const partials = [...types.entries()].filter(
             ([key]) =>
                !key.startsWith("t_decimal") &&
                !key.startsWith("t_incremental") &&
+               !key.startsWith("t_materialized") &&
                !key.endsWith(".g"),
          );
          expect(partials.length).toBeGreaterThan(0);
@@ -284,7 +297,8 @@ describe.skipIf(!url)(
             query(
                `run: ${s} -> { group_by: g; aggregate:
                   su is u.sum(), au is u.avg(), sb is big.sum(), ab is big.avg(),
-                  se is e.sum(), ae is e.avg(), sw is w.sum(), sm is m.sum()
+                  se is e.sum(), ae is e.avg(), sw is w.sum(), sm is m.sum(),
+                  sh is hs.sum(), st is tz.sum(), sd is dm.sum(), ad is dm.avg()
                   order_by: g }`,
             );
          const live = await read("live");
@@ -301,6 +315,29 @@ describe.skipIf(!url)(
             query(`run: ${s} -> { select: id, huge; order_by: id }`);
          const live = await read("live_huge");
          const served = await read("persisted");
+         expect(served.servedBy).toBe("live");
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it("answers arithmetic past DECIMAL(38)'s digits live, equal to live", async () => {
+         // DECIMAL(38,20) * DECIMAL(38,20) needs scale 40, which DuckDB
+         // refuses: the stored answer degrades to live although the source
+         // declares no freshnessFallback.
+         const read = (s: string) =>
+            query(
+               `run: ${s} -> { group_by: g; aggregate: sq is sum(hs * hs); order_by: g }`,
+            );
+         const live = await read("live");
+         const served = await read("persisted");
+         expect(served.servedBy).not.toBe("materialized");
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it("answers a #(materialize) query reading the column no DECIMAL holds live, equal to live", async () => {
+         const read = (s: string) =>
+            query(`run: ${s} -> { select: id, huge; order_by: id }`);
+         const live = await read("live_huge");
+         const served = await read("materialized");
          expect(served.servedBy).toBe("live");
          expect(served.rows).toEqual(live.rows);
       });
