@@ -3403,7 +3403,17 @@ export class Environment {
                mz.hasBoundTableNameManifest() ||
                mz.hasStorageServeBindings()
             ) {
-               await loaded.reloadAllModels({});
+               // Never fails the run before it commits: its tables would
+               // go unrecorded. A copy that does not recompile keeps its
+               // colocated tables until it next loads, live (host-owned).
+               try {
+                  await loaded.reloadAllModels({});
+               } catch (error) {
+                  logger.warn(
+                     "Could not take a version a host built live; it serves live from its next load",
+                     { packageName, versionId, error: errMessage(error) },
+                  );
+               }
                mz.bind({ storage: {} });
             }
             mz.markServingLive();

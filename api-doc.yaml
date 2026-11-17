@@ -2005,8 +2005,8 @@ paths:
 
         A version is owned by the host from then on once a manifest it named, by this route or by
         a publish, has bound (one whose fetch fails marks nothing), or once a run it instructed
-        with `buildInstructions` has committed. The version's record keeps that across an unload
-        and a restart. A null `manifestLocation` then clears the binding and the version serves live:
+        with `buildInstructions` has run, even one whose commit failed. The version's record keeps
+        that across an unload and a restart. A null `manifestLocation` then clears the binding and the version serves live:
         this server never binds tables its own runs built for it, so a host can clear the binding
         before it drops the tables the manifest named. A reload or restart of that version keeps
         it live until the host binds a manifest again, and the version answers a local run without
@@ -4659,7 +4659,8 @@ components:
             Where the build manifest to bind is: a gs:// or s3:// URI, a
             file:// URL, or an absolute path on this server (a mounted volume).
             Once one binds, the version is the host's from then on, as it is
-            once a host's instructed run of it commits. Null, or
+            once a host's instructed run of it has run, even one whose
+            commit failed. Null, or
             leaving the field out, clears the binding: a version a host has
             bound then serves live, and stays live through a reload or a
             restart until a manifest is bound again, never serving the tables
