@@ -201,12 +201,62 @@ describe("the gate policy, frozen until the security review (plan question 14)",
 // `materialize colocated` and `pair colocated` rows with `gs=0`), and on the
 // same conditions to a `storage=` table: the `materialize storage` and
 // `pair storage` rows with `gs=0`, and every `persist storage` row (v1, which
-// reads no switch, as v1 colocated does not). The legs' `keeps served
+// reads no switch, as v1 colocated does not). The `persist colocated` rows are
+// plan's colocated `#@ persist` rule since the v1 cutover, decided here rather
+// than restated in plan; they add no table plan did not already admit. The legs' `keeps served
 // read=own*` rows with `gs=0` are the router's half: an answer reading only
 // G3 tables, colocated or `storage=` admitted past its own gate. A `storage=`
 // table plan did not admit still keeps an answer off G3 (`read=own_storage`).
 // prettier-ignore
 const FROZEN_TABLE_ROWS: readonly string[] = [
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=1 rr=1",
    "persist storage v1=0 gate=110 proven=- mz=0 gs=0 rr=0",
    "persist storage v1=0 gate=110 proven=- mz=1 gs=0 rr=0",
    "persist storage v1=0 gate=110 proven=- mz=0 gs=1 rr=0",
@@ -405,9 +455,27 @@ const FROZEN_TABLE_ROWS: readonly string[] = [
    "rollup storage v1=0 gate=110 proven=1 mz=1 gs=1 rr=1",
    "rollup storage v1=0 gate=111 proven=1 mz=0 gs=1 rr=1",
    "rollup storage v1=0 gate=111 proven=1 mz=1 gs=1 rr=1",
+   // G3 for a colocated rollup (maintainer decision, for consistency, ahead
+   // of the review, which covers it): with the switch off, a colocated
+   // rollup over a base whose gates are all its own (gate=110), each proven
+   // exact on the rollup (proven=1). No switch is read, as for v1's G3.
+   "rollup colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=0",
+   "rollup colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=0",
+   "rollup colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=1",
+   "rollup colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=1",
 ];
 // prettier-ignore
 const FROZEN_LEG_ROWS: readonly string[] = [
+   // G3 for a colocated rollup: the rollup leg past a gate with the switch
+   // off, kept only for an answer that read a colocated rollup.
+   "may rollup mz=0 gs=0 rr=0 g3=1",
+   "keeps rollup read=colocated mz=0 gs=0 rr=0 g3=1",
+   "may rollup mz=1 gs=0 rr=0 g3=1",
+   "keeps rollup read=colocated mz=1 gs=0 rr=0 g3=1",
+   "may rollup mz=0 gs=0 rr=1 g3=1",
+   "keeps rollup read=colocated mz=0 gs=0 rr=1 g3=1",
+   "may rollup mz=1 gs=0 rr=1 g3=1",
+   "keeps rollup read=colocated mz=1 gs=0 rr=1 g3=1",
    "may view mz=0 gs=1 rr=0 g3=0",
    "keeps view read=none mz=0 gs=1 rr=0 g3=0",
    "keeps view read=colocated mz=0 gs=1 rr=0 g3=0",

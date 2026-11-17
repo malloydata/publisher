@@ -85,7 +85,12 @@ function readTree(dir: string): Record<string, string> {
 function conformanceCases(): GoldenCase[] {
    const out: GoldenCase[] = [];
    for (const shape of SHAPES) {
-      for (const variant of shape.variants ?? VARIANTS) {
+      // The colocated `#(materialize)` variant is checked against live by the
+      // conformance specs; its plan and build text are the colocated v1
+      // variant's and the `materialize` variant's, so it adds no golden.
+      for (const variant of (shape.variants ?? VARIANTS).filter(
+         (v) => v !== "materialize_colocated",
+      )) {
          const entry = Object.keys(shape.files)[0];
          out.push({
             stem: `conformance/${slug(shape.name)}.${variant}`,

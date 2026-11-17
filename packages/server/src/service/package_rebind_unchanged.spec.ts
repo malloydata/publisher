@@ -39,6 +39,13 @@ describe("a rebind of the same manifest", () => {
    let pkg: Package;
    let reloads: ReturnType<typeof spyOn>;
    let copies: ReturnType<typeof spyOn>;
+   let offThread: ReturnType<typeof spyOn>;
+   /** The served copy's compiles: inline, and those a load worker took. */
+   const copyCount = () =>
+      copies.mock.calls.length +
+      offThread.mock.results.filter(
+         (r: { value: unknown }) => r.value !== undefined,
+      ).length;
    /** The colocated entry for `summary`, on `table`. */
    let manifest: (table: string) => FreshnessManifest;
 
@@ -74,11 +81,13 @@ describe("a rebind of the same manifest", () => {
       });
       reloads = spyOn(PackageLoadPool.prototype, "loadPackage");
       copies = spyOn(GeneratedFiles.prototype, "loadModel");
+      offThread = spyOn(PackageLoadPool.prototype, "compileServedCopy");
    });
 
    afterEach(async () => {
       reloads.mockRestore();
       copies.mockRestore();
+      offThread.mockRestore();
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
@@ -98,7 +107,7 @@ describe("a rebind of the same manifest", () => {
       );
       const [packageCompiles, copyCompiles] = [
          reloads.mock.calls.length,
-         copies.mock.calls.length,
+         copyCount(),
       ];
       expect(packageCompiles).toBe(1);
       // One served-copy compile for the reload: not one started, invalidated
@@ -114,9 +123,9 @@ describe("a rebind of the same manifest", () => {
          await settled();
       }
       expect(reloads.mock.calls.length).toBe(packageCompiles);
-      expect(copies.mock.calls.length).toBe(copyCompiles);
+      expect(copyCount()).toBe(copyCompiles);
       expect(pkg.getModel("m.malloy")).toBe(model);
-      expect(pkg.getBuildManifestEntries()).toEqual({
+      expect(pkg.materialization().getBuildManifestEntries()).toEqual({
          [Object.keys(manifest("x"))[0]]: expect.objectContaining({
             tableName: expect.stringContaining("summary_a"),
          }),
@@ -130,7 +139,7 @@ describe("a rebind of the same manifest", () => {
       ).toBe(true);
       await settled();
       expect(reloads.mock.calls.length).toBe(packageCompiles + 1);
-      expect(copies.mock.calls.length).toBe(copyCompiles + 1);
+      expect(copyCount()).toBe(copyCompiles + 1);
       expect(pkg.getModel("m.malloy")!.servedCopySourceIDs()).toEqual(
          new Set([expect.stringContaining("summary@")]),
       );
@@ -205,7 +214,7 @@ describe("a rebind of the same manifest", () => {
       seen = reloads.mock.calls.length;
       expect(await recompiled(manifest("summary_b"))).toBe(true);
       // A colocated bind with no reload moves what is bound.
-      pkg.bindColocatedServeManifest(manifest("summary_a"));
+      pkg.materialization().bind({ colocated: manifest("summary_a") });
       expect(await recompiled(manifest("summary_b"))).toBe(true);
    });
 
@@ -217,13 +226,13 @@ describe("a rebind of the same manifest", () => {
       // A connection edit marks the plan stale and queues its re-derivation:
       // a rebind meanwhile recompiles, as it did before.
       pkg.markBuildPlanStale(["duckdb"]);
-      expect(pkg.isBuildPlanStale()).toBe(true);
+      expect(pkg.materialization().isBuildPlanStale()).toBe(true);
       expect(await again()).toBe(true);
       // Still stale: the reload just made read the stale plan too.
       expect(await again()).toBe(true);
       // Re-derived: the plan that reload read is replaced, so recompile.
       expect(await pkg.refreshBuildPlan()).toBe(true);
-      expect(pkg.isBuildPlanStale()).toBe(false);
+      expect(pkg.materialization().isBuildPlanStale()).toBe(false);
       expect(await again()).toBe(true);
       expect(await again()).toBe(false);
    });
@@ -235,11 +244,9 @@ describe("a rebind of the same manifest", () => {
       // The edit is recorded; with the plan reported current and the same
       // object, only the edit itself tells the rebind to recompile.
       pkg.markBuildPlanStale(["duckdb"]);
-      const materialization = (
-         pkg as unknown as {
-            materialization: { isBuildPlanStale(): boolean };
-         }
-      ).materialization;
+      const materialization = pkg.materialization() as unknown as {
+         isBuildPlanStale(): boolean;
+      };
       const stale = spyOn(materialization, "isBuildPlanStale").mockReturnValue(
          false,
       );

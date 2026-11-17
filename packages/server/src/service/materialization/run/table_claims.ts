@@ -212,7 +212,7 @@ export class TableClaims {
          } catch (err) {
             // Deleted meanwhile: nothing of it is read any more.
             logger.debug("Could not mark a run's entries superseded", {
-               materializationId: m.id,
+               runId: m.id,
                error: errMessage(err),
             });
          }
@@ -285,7 +285,7 @@ export class TableClaims {
             } catch (err) {
                logger.warn(
                   "Could not retire a run's entry for a table it no longer holds",
-                  { materializationId: m.id, error: errMessage(err) },
+                  { runId: m.id, error: errMessage(err) },
                );
             }
          }

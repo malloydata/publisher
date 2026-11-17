@@ -5,7 +5,6 @@ import { unrecordedAudit } from "../../access_record";
 import { BuildRunFailedError } from "./build_failure_class";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import {
    BadRequestError,
@@ -17,9 +16,7 @@ import {
 import { MaterializationController } from "../../../controller/materialization.controller";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../../../storage/DatabaseInterface";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { Environment } from "../../environment";
 import type { EnvironmentStore } from "../../environment_store";
 import { MaterializationScheduler } from "./materialization_scheduler";
@@ -38,6 +35,11 @@ import {
 import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { parsePackageName, VersionRef } from "../../identity";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 // Materializations of published versions, end to end: real versions compiled
 // from real folders, real builds into a DuckDB file every version reaches (the
@@ -150,12 +152,11 @@ function newService(
    environment: Environment,
    collaborators: RunCollaboratorOverrides = {},
 ): MaterializationService {
-   const store = {
-      storageManager: { getRepository: () => repo },
-      getEnvironment: async () => environment,
-      getLoadedEnvironments: () => [environment],
-   } as unknown as EnvironmentStore;
-   const created = new MaterializationService(store, collaborators);
+   const created = serviceOverEnvironment(
+      () => repo,
+      () => environment,
+      collaborators,
+   );
    environment.setVersionArchivedHook((packageName, versionId) => {
       reclaims.push(
          created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),
@@ -302,20 +303,14 @@ beforeEach(async () => {
    restoreSettings = installSettings({
       env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
    }).restore;
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "materialization-versions-")),
-   );
-   envPath = path.join(root, "env");
+   ({ root, envPath, db, repo } = await openTempStorage(
+      "materialization-versions-",
+      {
+         id: ENV_ID,
+         name: ENV,
+      },
+   ));
    sourcesPath = path.join(root, "sources");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-      [ENV_ID, ENV, envPath],
-   );
-   repo = createDuckDBRepository(db);
    reclaims = [];
    env = await newEnvironment();
    service = newService(env);
@@ -325,8 +320,7 @@ afterEach(async () => {
    for (const environment of environments.splice(0)) {
       await environment.closeAllConnections().catch(() => undefined);
    }
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
    restoreSettings();
 });
 
@@ -617,16 +611,55 @@ describe('scope "version": each version builds and serves its own tables', () =>
             return write(...args);
          },
       );
-      const archiving = versions.setArchiveStatus(PKG, "1.0.0", "archive");
-      await writing;
-      const creating = service.createMaterialization(ENV, PKG, {
-         versionId: VersionRef.parse("1.0.0"),
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      unlock();
-      await archiving;
-      spy.mockRestore();
-      expect(await refusal(creating)).toEqual({
+      let isQueued = false;
+      let queued!: () => void;
+      const waiting = new Promise<void>((resolve) => (queued = resolve));
+      const lock = versions.withVersionLock.bind(versions);
+      let lockSpy: ReturnType<typeof spyOn> | undefined;
+      let refused: ReturnType<typeof refusal>;
+      try {
+         const archiving = versions.setArchiveStatus(PKG, "1.0.0", "archive");
+         await writing;
+         // The archive holds the lock, so the next to ask for it is the run.
+         // The write is let go only once the run waits there, so the refusal
+         // is the run's check under the lock, not its first look at the
+         // version.
+         lockSpy = spyOn(versions, "withVersionLock").mockImplementation(((
+            packageName,
+            versionId,
+            fn,
+         ) => {
+            const held = lock(packageName, versionId, fn);
+            isQueued = true;
+            queued();
+            return held;
+         }) as typeof versions.withVersionLock);
+         // Caught from the start: the refusal can land while the archive is
+         // still finishing.
+         refused = refusal(
+            service.createMaterialization(ENV, PKG, {
+               versionId: VersionRef.parse("1.0.0"),
+            }),
+         );
+         // A run that settles without queuing fails here, not by timing out.
+         await Promise.race([
+            waiting,
+            refused.then(() => {
+               if (!isQueued) {
+                  throw new Error(
+                     "run settled before queuing on the version lock",
+                  );
+               }
+            }),
+         ]);
+         unlock();
+         await archiving;
+      } finally {
+         unlock();
+         lockSpy?.mockRestore();
+         spy.mockRestore();
+      }
+      expect(await refused).toEqual({
          status: 410,
          reason: "VERSION_ARCHIVED",
       });
@@ -1632,4 +1665,207 @@ describe("the scheduler, per published version", () => {
       await sched.tick(now + 240_000);
       expect((await scheduledRuns()).map((m) => m.version)).toEqual(["1.0.0"]);
    });
+});
+
+describe("a run's own version, after its manifest commits", () => {
+   /** The version's loaded copy, read as a query would. */
+   async function loaded(versionId: string): Promise<Package> {
+      return env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse(versionId),
+      });
+   }
+
+   /**
+    * Count the version's reloads during `run`, and note its served revision
+    * as the run reaches MANIFEST_FILE_READY and once it has ended.
+    */
+   async function watch(
+      pkg: Package,
+      run: () => Promise<Materialization>,
+   ): Promise<{
+      run: Materialization;
+      reloads: number;
+      atReady: string | undefined;
+      after: string;
+   }> {
+      const reloads = spyOn(pkg, "reloadAllModels");
+      let atReady: string | undefined;
+      const update = repo.updateMaterializationFrom.bind(repo);
+      const ready = spyOn(repo, "updateMaterializationFrom").mockImplementation(
+         async (...args: Parameters<typeof repo.updateMaterializationFrom>) => {
+            const updated = await update(...args);
+            if (args[1].status === "MANIFEST_FILE_READY") {
+               atReady = pkg.getServedRevision();
+            }
+            return updated;
+         },
+      );
+      try {
+         const done = await run();
+         return {
+            run: done,
+            reloads: reloads.mock.calls.length,
+            atReady,
+            after: pkg.getServedRevision(),
+         };
+      } finally {
+         ready.mockRestore();
+         reloads.mockRestore();
+      }
+   }
+
+   for (const scope of ["version", "package"] as const) {
+      it(`is reloaded once, by its own load, and serves the same revision after (scope "${scope}")`, async () => {
+         await publish("1.0.0", 1, scope);
+         expect(await answerOf("1.0.0")).toBe(1);
+         const pkg = await loaded("1.0.0");
+
+         const first = await watch(pkg, () =>
+            build({ versionId: VersionRef.parse("1.0.0") }),
+         );
+         expect(first.run.status).toBe("MANIFEST_FILE_READY");
+         expect(first.run.metadata).toMatchObject({ autoLoad: "loaded" });
+         expect(first.reloads).toBe(1);
+         expect(first.atReady).toBeDefined();
+         expect(first.after).toBe(first.atReady!);
+
+         // A rebuild of the same tables: once again.
+         const again = await watch(pkg, () =>
+            build({
+               versionId: VersionRef.parse("1.0.0"),
+               forceRefresh: true,
+            }),
+         );
+         expect(again.run.status).toBe("MANIFEST_FILE_READY");
+         expect(again.reloads).toBe(1);
+         expect(again.after).toBe(again.atReady!);
+
+         // The answer is the built table's.
+         const table = scope === "version" ? TABLE_V1 : "summary";
+         await tamper(table, 101);
+         expect(await answerOf("1.0.0")).toBe(101);
+         expect(await loaded("1.0.0")).toBe(pkg);
+      });
+   }
+
+   it("is rebound when the store moved since its own load", async () => {
+      await publish("1.0.0", 1, "version");
+      expect(await answerOf("1.0.0")).toBe(1);
+      const built = await build({ versionId: VersionRef.parse("1.0.0") });
+      const pkg = await loaded("1.0.0");
+      const revision = pkg.getServedRevision();
+
+      // Another process commits newer entries for the version: its table moved.
+      await warehouseSQL("CREATE TABLE moved_summary AS SELECT 303 AS answer");
+      const entries = Object.fromEntries(
+         Object.entries(built.manifest!.entries ?? {}).map(([id, entry]) => [
+            id,
+            { ...entry, physicalTableName: "moved_summary" },
+         ]),
+      );
+      await repo.updateMaterialization(built.id, {
+         manifest: { ...built.manifest!, entries },
+      });
+
+      const reloads = spyOn(pkg, "reloadAllModels");
+      try {
+         await (
+            service as unknown as {
+               committer: {
+                  rebindOwnVersionIfMoved(
+                     environmentName: string,
+                     packageName: string,
+                     versionId: string,
+                  ): Promise<void>;
+               };
+            }
+         ).committer.rebindOwnVersionIfMoved(ENV, PKG, "1.0.0");
+         expect(reloads.mock.calls.length).toBe(1);
+      } finally {
+         reloads.mockRestore();
+      }
+      expect(pkg.getServedRevision()).not.toBe(revision);
+      expect(await answerOf("1.0.0")).toBe(303);
+   });
+});
+
+describe("what a run's load binds, read back from the store", () => {
+   it("reads as unmoved in the store's key order and shape, and moved when a table differs", async () => {
+      // So a rebind binds the stored tier.
+      const storageOn = installSettings({
+         env: {
+            PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+            PERSIST_STORAGE_MODE: "on",
+         },
+      });
+      try {
+         await readBack();
+      } finally {
+         storageOn.restore();
+      }
+   });
+
+   async function readBack(): Promise<void> {
+      await publish("1.0.0", 1, "version");
+      expect(await answerOf("1.0.0")).toBe(1);
+      const pkg = await env.getPackage(parsePackageName(PKG), false, {
+         versionId: VersionRef.parse("1.0.0"),
+      });
+      const keyUniqueness = {
+         keyColumn: "answer",
+         unique: true,
+         parentKeys: { base: true },
+      };
+      const stored = {
+         sourceEntityId: "rollup",
+         physicalTableName: "rollup_table",
+         connectionName: "warehouse",
+         storageDestinationName: "lake",
+      };
+      await env.loadRunManifest({
+         packageName: PKG,
+         versionId: "1.0.0",
+         colocated: {},
+         // As the committer passes them: every entry, the stored one with its key check.
+         storage: { rollup: { ...stored, keyUniqueness } as never },
+         commit: async () => {},
+      });
+      const reloads = spyOn(pkg, "reloadAllModels");
+      const bind = spyOn(pkg.materialization(), "bind");
+      const storageBinds = () =>
+         bind.mock.calls.filter(([update]) => update.storage !== undefined)
+            .length;
+      try {
+         // The store gives the same entry back with its keys in another order.
+         const reversed = (o: object) =>
+            Object.fromEntries(Object.entries(o).reverse());
+         const readBack = {
+            rollup: {
+               ...reversed(stored),
+               keyUniqueness: reversed({
+                  ...keyUniqueness,
+                  parentKeys: { base: true },
+               }),
+            } as never,
+         };
+         await env.rebindVersionFromStore(PKG, "1.0.0", async () => readBack, {
+            onlyIfMoved: true,
+         });
+         expect([reloads.mock.calls.length, storageBinds()]).toEqual([0, 0]);
+
+         // Another table at the same address: moved, so bound.
+         await env.rebindVersionFromStore(
+            PKG,
+            "1.0.0",
+            async () => ({
+               rollup: { ...stored, physicalTableName: "rollup_table_2" },
+            }),
+            { onlyIfMoved: true },
+         );
+         expect(storageBinds()).toBe(1);
+      } finally {
+         reloads.mockRestore();
+         bind.mockRestore();
+      }
+   }
 });

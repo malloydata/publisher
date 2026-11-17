@@ -41,7 +41,16 @@ Every leg reads tables through one pin (`domain/binding.ts`): the query
 pipeline pins the model's snapshot once, before routing, and passes it to each
 leg, the run and the path report. No module here reads the clock or holds
 bindings of its own; a leg's compile cache follows the snapshot's bindings by
-identity.
+identity. The served copy's is keyed instead on what its compile reads of the
+bindings it may read (everything but their freshness), so a rebind that moves
+only a table's data-as-of instant reuses the compiled copy, rebound to the
+pin's bindings.
+
+The served copy compiles each pass on the package-load worker when one is
+ready and idle (`package_load/served_copy_compile.ts`, through the host's
+`compileElsewhere`), and hydrates the compiled model here; with no worker free,
+or a job that fails, the pass compiles inline. The worker's compile is the
+inline one, so the copy, its gates and its answers are the same either way.
 
 ## Where things are added
 

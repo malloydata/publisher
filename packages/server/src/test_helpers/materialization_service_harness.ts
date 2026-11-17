@@ -5,6 +5,7 @@ import { afterEach, beforeEach } from "bun:test";
 import * as sinon from "sinon";
 import { ConnectionNotFoundError, DestinationNotFoundError } from "../errors";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
+import type { Environment } from "../service/environment";
 import type { EnvironmentStore } from "../service/environment_store";
 import {
    MaterializationService,
@@ -114,6 +115,36 @@ export function createMocks(
 }
 
 /**
+ * Another service over `mocks`' faked store, with `collaborators` replacing
+ * the steps a run takes.
+ */
+export function serviceWith(
+   mocks: Pick<ServiceMocks, "environmentStore">,
+   collaborators: RunCollaboratorOverrides,
+): MaterializationService {
+   return new MaterializationService(mocks.environmentStore, collaborators);
+}
+
+/**
+ * A MaterializationService over a real repository and environment, the way the
+ * server wires one, with the store answering every environment name with that
+ * environment. Both are read through thunks, so a spec that reopens either
+ * keeps the one service.
+ */
+export function serviceOverEnvironment(
+   repository: () => ResourceRepository,
+   environment: () => Environment,
+   collaborators: RunCollaboratorOverrides = {},
+): MaterializationService {
+   const store = {
+      storageManager: { getRepository: () => repository() },
+      getEnvironment: async () => environment(),
+      getLoadedEnvironments: () => [environment()],
+   } as unknown as EnvironmentStore;
+   return new MaterializationService(store, collaborators);
+}
+
+/**
  * A stub of the environment surface the build path depends on, with the two
  * lookups kept as disjoint as the real Environment keeps them: connection names
  * resolve only through `getApiConnection` and destination names only through
@@ -150,6 +181,7 @@ export function buildEnvironmentStub(opts: {
          return destination;
       }),
       getEnvironmentPath: () => opts.environmentPath ?? "/tmp/env",
+      getEnvironmentName: () => "env",
       ...UNVERSIONED_ENVIRONMENT,
    };
 }
@@ -164,6 +196,9 @@ export const UNVERSIONED_ENVIRONMENT = {
    getLoadedVersionIds: () => [],
    peekVersion: () => undefined,
    registerVersionBuild: () => () => undefined,
+   // Nothing configured is refused, and nothing is stale.
+   publishRefusedConfiguredPackage: async () => undefined,
+   getStaleCompileErrors: () => new Map<string, unknown>(),
 };
 
 /** Point environmentStore.getEnvironment at a package with the given overrides. */
@@ -179,6 +214,16 @@ export function setPackage(
       getMalloyConnection: async () => ({}),
       // No bound manifestLocation by default, so seedFromBoundManifest no-ops.
       getPackageMetadata: () => ({}),
+      getVersionId: () => undefined,
+      getMaterializationConfig: () => null,
+      whenBuildPlanCurrent: async () => undefined,
+      isBuildPlanUnavailable: () => false,
+      // No served copy, so a chained build recomputes its upstreams.
+      chainBuildText: () => ({
+         declined: "the test double has no served copy",
+      }),
+      // Binds no key check, so there is none to forget.
+      forgetKeyUniqueness: () => undefined,
       ...pkgOverrides,
    };
    (environmentStore.getEnvironment as sinon.SinonStub).resolves({

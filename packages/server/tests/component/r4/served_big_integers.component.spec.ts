@@ -19,7 +19,10 @@
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { strictRowDifference } from "../../../src/test_helpers/conformance/answer_difference";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    freshLoadPool,
    loadFixture,
@@ -33,6 +36,7 @@ import {
    type R4Fixture,
    type R4Scenario,
    type Row,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
@@ -302,9 +306,7 @@ for (const tier of tiers) {
          await cleanup?.();
       });
 
-      it("compiles the served copy with no problem", async () => {
-         expect(await fixture.servedCopyProblems()).toEqual([]);
-      });
+      itLeavesNoServedCopyProblem(() => fixture);
 
       for (const c of tier.cases) {
          it(c.name, async () => {
@@ -353,15 +355,9 @@ for (const tier of tiers) {
  */
 {
    describe("R4: a big-integer column no cast reads exactly is left out per query (served copy)", () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
-            },
-         }).restore;
          fixture = await buildScenario({
             files: {
                "m.malloy": `##! experimental { persistence }
@@ -386,7 +382,6 @@ source: s is base -> { select: * } extend {
          }
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 

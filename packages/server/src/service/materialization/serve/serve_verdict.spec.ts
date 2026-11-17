@@ -39,14 +39,61 @@ function facts(
       storageMode: "on",
       reachable: () => true,
       gated: () => false,
+      keepsGate: () => false,
       boundEntityIds: new Set(),
       boundStorageNames: new Set(),
       servedStorageNames: new Set(),
+      // The bind keeps every source, none is a #(materialize) source or a
+      // persisted result, and every deployment fact is unknown.
+      refusedAtBind: () => undefined,
+      materialize: () => undefined,
+      persistedViewOf: () => undefined,
+      destinationConfigured: () => undefined,
+      connectionCanHoldTable: () => undefined,
       ...overrides,
    };
 }
 
 describe("computeServeVerdicts", () => {
+   it("names each verdict's origin by the mechanism that declared it", () => {
+      const view = `ops__by_carrier__view@file:///pkg/m.malloy.persist-view.malloy`;
+      const query = `top__query@file:///pkg/m.malloy.persist-view.malloy`;
+      const sources: [string, PersistSourcePlan][] = [
+         plan("orders"),
+         plan("mat"),
+         [view, { ...plan("ops__by_carrier__view")[1], sourceID: view }],
+         [query, { ...plan("top__query")[1], sourceID: query }],
+         plan("roll", { origin: "preaggregate" }),
+      ];
+      const verdicts = computeServeVerdicts({
+         ...facts(sources, {
+            materialize: (id) => (id.startsWith("mat@") ? "serves" : undefined),
+            declaredMaterialize: (id) => id.startsWith("refused_mat@"),
+         }),
+         plan: {
+            graphs: [],
+            sources: Object.fromEntries(sources),
+            refusedSources: {
+               "refused_mat@file:///pkg/m.malloy": {
+                  name: "refused_mat",
+                  sourceID: "refused_mat@file:///pkg/m.malloy",
+                  tier: "colocated",
+                  reason: "access_filter",
+                  message: "gated",
+               },
+            },
+         } as never,
+      });
+      expect(verdicts.map((v) => [v.sourceName, v.origin])).toEqual([
+         ["orders", "persist"],
+         ["mat", "materialize"],
+         ["ops__by_carrier__view", "view"],
+         ["top__query", "query"],
+         ["roll", "preaggregate"],
+         ["refused_mat", "materialize"],
+      ]);
+   });
+
    it("says a colocated source serves once bound, and will serve before", () => {
       const [unbound] = computeServeVerdicts(facts([plan("orders")]));
       expect(unbound).toMatchObject({
@@ -119,7 +166,11 @@ describe("computeServeVerdicts", () => {
    });
 
    it("sends a gated stored source live, and keeps a gated colocated one", () => {
-      const gated = { gated: () => true };
+      // G3 with gated sources off: the policy keeps a colocated table's gate.
+      const gated = {
+         gated: () => true,
+         keepsGate: (_id: string, tier: string) => tier === "colocated",
+      };
       const [stored] = computeServeVerdicts(
          facts([plan("orders", STORAGE)], gated),
       );
@@ -136,7 +187,8 @@ describe("computeServeVerdicts", () => {
          gated: () => true,
          boundStorageNames: new Set(["orders", "other"]),
          servedStorageNames: new Set(["orders", "other"]),
-         storageKeepsOwnGate: (id: string) => id.startsWith("orders@"),
+         keepsGate: (id: string, tier: string) =>
+            tier === "colocated" || id.startsWith("orders@"),
       };
       const verdicts = computeServeVerdicts(
          facts([plan("orders", STORAGE), plan("other", STORAGE)], bound),
@@ -148,9 +200,11 @@ describe("computeServeVerdicts", () => {
    });
 
    it("serves a gated stored source when the served copy keeps its gates (R3), never a gated rollup", () => {
+      // Gated sources on: the served copy keeps every table's gate, and no
+      // rollup here was proven at plan.
       const keeps = {
          gated: () => true,
-         servedCopyKeepsGates: true,
+         keepsGate: (id: string) => !id.startsWith("orders_rollup"),
          boundStorageNames: new Set(["orders"]),
          servedStorageNames: new Set(["orders"]),
       };
@@ -186,8 +240,7 @@ describe("computeServeVerdicts", () => {
          computeServeVerdicts(
             facts([rollup], {
                gated: () => true,
-               servedCopyKeepsGates: true,
-               rollupKeepsGates: () => keeps,
+               keepsGate: () => keeps,
             }),
          )[0];
       expect(keeping(true)?.reason).not.toBe("row_level_gate");

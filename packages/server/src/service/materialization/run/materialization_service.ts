@@ -18,6 +18,7 @@ import {
    BadRequestError,
    BuildPlanUnavailableError,
    InvalidStateTransitionError,
+   MaterializationConflictError,
    MaterializationNotFoundError,
    PackageVersionError,
 } from "../../../errors";
@@ -85,6 +86,7 @@ import {
    type WarehouseReach,
    withChainBuildText,
 } from "./materialization_run_support";
+import type { QueryContext } from "../../query_metadata";
 import { packageOwner } from "./table_mark_sql";
 import { Reclaimer, RENAMED_TABLES_KEY } from "./reclaimer";
 import { RunLifecycle } from "./run_lifecycle";
@@ -98,6 +100,11 @@ import {
    runTriggerOf,
    withRunTelemetry,
 } from "./run_telemetry";
+import {
+   declaredFreshnessIndex,
+   pastDeclaredWindow,
+   stampDeclaredFreshness,
+} from "./freshness_stamp";
 import {
    deriveSelfInstructions,
    type RenamedTable,
@@ -229,6 +236,20 @@ interface RunScope {
    orchestrated: boolean;
    mode: MaterializationMode;
    startedAt: number;
+}
+
+/** The query context every statement of a run carries. */
+function runQueryContext(run: RunScope): QueryContext {
+   const { id, environmentName, packageName, opts } = run;
+   return {
+      queryClass: "materialize",
+      environment: environmentName,
+      package: packageName,
+      // The caller's trigger wins: it can express a publish.
+      trigger: opts.runContext?.trigger ?? opts.trigger?.toLowerCase(),
+      // Always set, so a run's statements group in query history.
+      runId: opts.runContext?.runId ?? id,
+   };
 }
 
 /** What a run's failure handling reads, set as the run goes. */
@@ -477,7 +498,7 @@ export class MaterializationService {
       // A configured package whose boot publish was refused is published
       // again first, so a run resolves the version that publish makes rather
       // than an unversioned slot that does not exist.
-      await environment.publishRefusedConfiguredPackage?.(
+      await environment.publishRefusedConfiguredPackage(
          packageName,
          versionId.requested(),
       );
@@ -681,7 +702,7 @@ export class MaterializationService {
       // runs; the run itself checks again.
       if (
          version === null &&
-         (environment.getStaleCompileErrors?.().has(packageName) ?? false)
+         environment.getStaleCompileErrors().has(packageName)
       ) {
          throw new BuildPlanUnavailableError(
             `Package ${packageName} serves an older model than its files: its last reload refused them. Fix the files and reload the package, then run again.`,
@@ -695,6 +716,22 @@ export class MaterializationService {
 
       const buildInstructions = options.buildInstructions;
       const orchestrated = buildInstructions !== undefined;
+      // A package or version bound to a host manifest serves the host's
+      // tables, and a run's own tables are never applied to it
+      // (Environment.loadRunManifest), so an auto-run would build tables it
+      // cannot serve. Refused before anything is built, as the scheduler
+      // skips it; a host building into tables it names (buildInstructions)
+      // is what such a package's runs are for.
+      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
+      if (!orchestrated && manifestLocation) {
+         const target =
+            version !== null
+               ? `Version ${version} of package ${packageName}`
+               : `Package ${packageName}`;
+         throw new MaterializationConflictError(
+            `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`,
+         );
+      }
       const versions = environment.getVersionService();
       const latest =
          version !== null && versions && !orchestrated && scope === "package"
@@ -715,11 +752,11 @@ export class MaterializationService {
       if (orchestrated) {
          // Validate against the plan the run will build from: a connection
          // edit re-derives it (build_plan_connection_refresh.spec.ts).
-         await pkg.whenBuildPlanCurrent?.();
+         await pkg.whenBuildPlanCurrent();
          // Never against a plan that failed to derive: after a failed
          // re-derivation the pre-edit plan is gone, and validating against
          // nothing would let stale ledger entries through to the build.
-         if (pkg.isBuildPlanUnavailable?.()) {
+         if (pkg.isBuildPlanUnavailable()) {
             throw new BuildPlanUnavailableError(
                `The build plan of package ${packageName} could not be derived, so the build instructions cannot be checked against it. Reload the package to derive it again.`,
             );
@@ -989,8 +1026,12 @@ export class MaterializationService {
          // rest of the run's sources.
          for (const refusal of Object.values(derived.refused)) {
             reportSourceRefused(
-               buildKindOf(compiled, refusal.sourceID),
-               refusal.tier === "storage" ? "storage" : "colocated",
+               {
+                  kind: buildKindOf(compiled, refusal.sourceID),
+                  tier: refusal.tier === "storage" ? "storage" : "colocated",
+                  sourceName: refusal.name,
+               },
+               refusal.reason,
             );
          }
 
@@ -999,7 +1040,7 @@ export class MaterializationService {
          // table is written, so a run that fails part-way never leaves a
          // check bound over rows it did not read. This run's own commit binds
          // what it checks.
-         pkg.forgetKeyUniqueness?.(
+         pkg.forgetKeyUniqueness(
             instructions.map((instruction) => instruction.sourceEntityId),
          );
 
@@ -1085,7 +1126,7 @@ export class MaterializationService {
       // replaces can be stale.
       const stale =
          versionId === undefined &&
-         (environment.getStaleCompileErrors?.().has(packageName) ?? false);
+         environment.getStaleCompileErrors().has(packageName);
       // The load gate's own text, so the run and the load agree.
       const invalid = runLoadGateText(compiled, pkg, {
          enforceCollisions: getPersistCollisionEnforce(),
@@ -1170,6 +1211,7 @@ export class MaterializationService {
             reader,
          );
          let recheck: Record<string, BuildInstruction>;
+         const freshness = declaredFreshnessIndex(pkg.getBuildPlan());
          ({
             instructions,
             carried,
@@ -1188,7 +1230,21 @@ export class MaterializationService {
                packagePath: pkg.getPackagePath(),
                ...(owned !== undefined ? { ownedVersion: owned } : {}),
             },
-            { forceRefresh: opts.forceRefresh ?? false },
+            {
+               forceRefresh: opts.forceRefresh ?? false,
+               pastWindow: (sourceEntityId, prior) =>
+                  pastDeclaredWindow(
+                     prior,
+                     freshness.factsAt(sourceEntityId),
+                     new Date(run.startedAt),
+                  ),
+               upstreams: {
+                  windowSecondsAt: (address) =>
+                     freshness.factsAt(address)?.freshnessWindowSeconds,
+                  upstreamsOf: (address) => freshness.upstreamsOf(address),
+                  at: new Date(run.startedAt),
+               },
+            },
          ));
          // A carried table at the author's `name=` is reused only while
          // it is still marked as this package's (table_ownership.ts).
@@ -1198,7 +1254,14 @@ export class MaterializationService {
                carried,
                instructions,
                packageOwner(environmentName, packageName),
-               tableSiteContext({ compiled, environment }),
+               tableSiteContext({
+                  compiled,
+                  environment,
+                  buildMetadata: {
+                     packageMaterialization: pkg.getMaterializationConfig(),
+                     context: runQueryContext(run),
+                  },
+               }),
             );
          }
       }
@@ -1291,8 +1354,7 @@ export class MaterializationService {
       derived: RunInstructions,
       incremental: IncrementalRunContext | undefined,
    ): Promise<InstructedBuildResult> {
-      const { id, environmentName, packageName, opts, signal, orchestrated } =
-         run;
+      const { id, packageName, opts, signal, orchestrated } = run;
       const { environmentId, environment, versionId, pkg, compiled } = target;
       const {
          instructions,
@@ -1321,22 +1383,22 @@ export class MaterializationService {
          buildMetadata: {
             // Optional: a lighter package surface resolves without a
             // package-level layer.
-            packageMaterialization: pkg.getMaterializationConfig?.() ?? null,
-            context: {
-               queryClass: "materialize",
-               environment: environmentName,
-               package: packageName,
-               // The caller's trigger wins: it can express a publish.
-               trigger: opts.runContext?.trigger ?? opts.trigger?.toLowerCase(),
-               // Always set, so a build's statements group in query history.
-               runId: opts.runContext?.runId ?? id,
-            },
+            packageMaterialization: pkg.getMaterializationConfig(),
+            context: runQueryContext(run),
          },
          incremental,
          priorRefusals: Object.values(derivedRefused),
          clearedTiers,
          hostInstructed: orchestrated,
          warehouseReach: opts.warehouseReach,
+         freshness: (() => {
+            const index = declaredFreshnessIndex(pkg.getBuildPlan());
+            return {
+               windowSecondsAt: (address: string) =>
+                  index.factsAt(address)?.freshnessWindowSeconds,
+               at: new Date(run.startedAt),
+            };
+         })(),
          // Auto-run only: Publisher owns every write to its tables, so it
          // can tell a joined table that has not changed since a check
          // passed. A host's tables are its own.
@@ -1421,9 +1483,20 @@ export class MaterializationService {
       const sourcesRefused =
          Object.keys(derivedRefused).length + instructedRefused;
       const durationMs = Date.now() - startedAt;
+      // A standalone run stamps its tables' declared freshness, as a host
+      // stamps the manifest it distributes; a host's run leaves it to the host.
+      const committedEntries = orchestrated
+         ? entries
+         : stampDeclaredFreshness(
+              entries,
+              declaredFreshnessIndex(pkg.getBuildPlan()),
+              new Set(Object.keys(carried)),
+              new Date(startedAt),
+              built.readFrom,
+           );
       const served = await this.collaborators.commitManifest(
          id,
-         entries,
+         committedEntries,
          failures,
          {
             // Recorded before any is dropped, so a crash between this
@@ -1474,7 +1547,7 @@ export class MaterializationService {
                  this.collaborators.autoLoadManifest(
                     environment,
                     packageName,
-                    entries,
+                    committedEntries,
                     versionId,
                     uniquenessChecks?.rollupKeys,
                     // A stop that landed during the load did not cut it

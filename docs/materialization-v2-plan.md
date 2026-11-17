@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Materialization v2: the implementation plan
 
-**Status: plan of record, as of 2026-11-15.** Phases 0 to 4 and the v1 cutover shipped in 0.13.0. Phase 5, the consistency and simplification pass, is under way as four pull requests (Phase 5 design, section 3): PRs 1 to 3 are merged (#1747, #1751, #1753) and PR 4 (#1779) is a draft. On 2026-11-15 the scope was narrowed: three features were removed (#1757, #1758, #1759), given-reading `where:` was narrowed (#1762), persisted named queries were added (#1763), the tables a standalone Publisher names itself got readable names (#1776), and the hosted table lifecycle was settled in part (Scope, below). The next release is held until PR 4 merges (decision 48). This plan covers how Publisher implements materialization v2: `#(materialize)`, `#(preaggregate)` and routed `#@ persist` views, built and served in Publisher alone, with no Malloy change. It is sequenced with the Publisher v1 plan ([#1563](https://github.com/malloydata/publisher/pull/1563), `docs/publisher-v1.md`): the path report's `/api/v1` form, the agent tools' `/api/v1` routes, and the consistency work that needs v1's Track B1 records (whole-run generations, upstream pinning, as-of reads, the control plane's promote and cleanup) are scheduled there, so this plan completes without waiting on v1. Requirement numbers (P, A, R, D, C, T) and scenario numbers (S) refer to the materialization v2 requirements and programming model; issue numbers without a repository are in Credible's tracker.
+**Status: plan of record, as of 2026-11-15.** Phases 0 to 4 and the v1 cutover shipped in 0.13.0. Phase 5, the consistency and simplification pass, landed as four pull requests (Phase 5 design, section 3), all merged (#1747, #1751, #1753, #1779), and shipped in 0.14.0; the distillation pass that followed it is merged in part (#1829, #1831, #1833). On 2026-11-15 the scope was narrowed: three features were removed (#1757, #1758, #1759), given-reading `where:` was narrowed (#1762), persisted named queries were added (#1763), the tables a standalone Publisher names itself got readable names (#1776), and the hosted table lifecycle was settled in part (Scope, below). The next release is held until PR 4 merges (decision 48). This plan covers how Publisher implements materialization v2: `#(materialize)`, `#(preaggregate)` and routed `#@ persist` views, built and served in Publisher alone, with no Malloy change. It is sequenced with the Publisher v1 plan ([#1563](https://github.com/malloydata/publisher/pull/1563), `docs/publisher-v1.md`): the path report's `/api/v1` form, the agent tools' `/api/v1` routes, and the consistency work that needs v1's Track B1 records (whole-run generations, upstream pinning, as-of reads, the control plane's promote and cleanup) are scheduled there, so this plan completes without waiting on v1. Requirement numbers (P, A, R, D, C, T) and scenario numbers (S) refer to the materialization v2 requirements and programming model; issue numbers without a repository are in Credible's tracker.
 
 ## Scope
 
@@ -59,7 +59,7 @@ Candidates from the coverage review, each a product call:
 
 Known gaps with no pull request yet: a Malloy upgrade re-addresses the tables that aggregate through joins (address drift), and the flags on the control-plane side.
 
-Also open: the rest of the hosted lifecycle redesign (Ownership), and the two parts of table naming #1776 left (question 17: rollup placement and a placement-only key). The rest of table naming is decided (decision 47).
+Also open: the rest of the hosted lifecycle redesign (Ownership). Table naming is decided (decision 47; question 17's rollup placement settled by one placement key, `name=`).
 
 ### Support matrix, in brief
 
@@ -241,7 +241,7 @@ The rest of the lifecycle redesign is open: in-place writes in hosted, ownership
 - Existing default-named tables are rebuilt once under the new name by the next auto-run, and the old table is dropped only through a guarded migration (five guards; a run's `renamedTables` record is retried by later runs, and every loaded slot is rebound first, `ensureBound`). Servers sharing a schema must upgrade together.
 - A second address on a name already taken in the run is not built and is refused with the new `RefusedSource.reason` `table_name_collision` (approved). Not a breaking change. Hosted and orchestrated runs are untouched: only self-instructed runs derive names.
 
-What is left open is question 17: rollup placement and a placement-only key.
+Question 17's last part, rollup placement and a placement-only key, is settled: a rollup is placed by its `name=` container (or its base's), and `namespace=` is deprecated.
 
 ## Joins
 
@@ -470,7 +470,7 @@ Order: 1 first; 2, 3 and 4 in parallel after it, since they are separate legs of
 
 ### Phase 5 design: consistency and simplification
 
-**Status: decided, in progress.** Proposed 2026-11-13 and decided over 2026-11-13 and 2026-11-14 (section 7). Steps 2a and 2h are done (#1740); the rest ship as four pull requests (decision 35; status in section 3), of which PRs 1 to 3 are merged (#1747, #1751, #1753) and PR 4 (#1779) is a draft. This is the audit and plan (step 1 of the quality pass). First measured on `main` at `95568293f` (#1701), refreshed at `c602d0807` (#1713), with the raw numbers kept outside the repo. Paths are under `packages/server/src/service/` unless they say otherwise.
+**Status: decided, in progress.** Proposed 2026-11-13 and decided over 2026-11-13 and 2026-11-14 (section 7). Steps 2a and 2h are done (#1740); the rest ship as four pull requests (decision 35; status in section 3), all four merged (#1747, #1751, #1753, #1779) and shipped in 0.14.0. This is the audit and plan (step 1 of the quality pass). First measured on `main` at `95568293f` (#1701), refreshed at `c602d0807` (#1713), with the raw numbers kept outside the repo. Paths are under `packages/server/src/service/` unless they say otherwise.
 
 #### 1. Audit summary
 
@@ -1006,9 +1006,9 @@ The rules for every pass: no external behavior change unless the step names it; 
 | #1764, #1766, #1772 | Package-relative error paths; the bind counter's `partial` outcome; an auto-run reports `MANIFEST_FILE_READY` only after its manifest is served (a failed load records `metadata.autoLoad: "failed"` and the CLI's `--wait` exits 2) | Merged |
 | #1769, #1774, #1780 | A package reads only its own files: imports, model files, notebooks, the manifest, the data probe, a data app's `public/`, skills, retrieval prompts and report writes | Merged |
 | #1770, #1778 | Test fixes; the CLI tests run in CI | Merged |
-| #1779, PR 4 | 2g.3, 2g.4, 2l, step 3, step 5 | Draft. Landed: the characterization (the DuckLake lifecycle, the colocated swap's failure paths and the colocated drop included), 2g.3, step 3 with its leftovers (the R4 hidden-field matrices, the `build_file_generator.spec` split), 2l (the capability half in `domain/dialect.ts`, the SQL half in `run/warehouse_sql.ts`), 2g.4 (the tier port with `build`, `drop` and `checkKey`; the collaborators by constructor) and the known-limitations rewrite. What 2g.3 and 2g.4 left is follow-ups 2m to 2p. Critical path: step 5, the exit gate (decision 49). The `buildScenario` merge is out of PR 4 (future work) |
+| #1779, PR 4 | 2g.3, 2g.4, 2l, step 3, step 5 | Merged 2026-11-15. Landed: the characterization (the DuckLake lifecycle, the colocated swap's failure paths and the colocated drop included), 2g.3, step 3 with its leftovers (the R4 hidden-field matrices, the `build_file_generator.spec` split), 2l (the capability half in `domain/dialect.ts`, the SQL half in `run/warehouse_sql.ts`), 2g.4 (the tier port with `build`, `drop` and `checkKey`; the collaborators by constructor) and the known-limitations rewrite. What 2g.3 and 2g.4 left is follow-ups 2m to 2p. Critical path: step 5, the exit gate (decision 49). The `buildScenario` merge is out of PR 4 (future work) |
 | In flight | A data-safety fix (branch `fix/shared-address-ownership-refusal`): a sibling sharing an address with a source refused for another package's ownership mark builds over that table | In progress; PR 4's DuckLake lifecycle spec pins today's behaviour and flips when it merges |
-| #1781 and in flight | `preaggregate-not-built` (#1781, open); v1 `#@ preaggregate` over a stored base on the v2 rollup path; coverage-gap tests; the load-versus-refused review (decisions 45 and 46) | In progress |
+| #1781 and in flight | `preaggregate-not-built` (#1781, merged 2026-11-15); v1 `#@ preaggregate` over a stored base on the v2 rollup path; coverage-gap tests; the load-versus-refused review (decisions 45 and 46) | In progress |
 | Release | A minor release, after PR 4 merges and the hammer passes in both modes | Held (decision 48) |
 | Follow-up | 2m to 2p: the run and serve read the plan as data (R8), the facade as the module's one door (R10), logging out of `plan/` and `serve/` (H5), and the tier port's split | After PR 4; each removes the allowlist entries tagged with it |
 | Follow-up | The `PUBLISHER_MATERIALIZE` off branches deleted | After the release that carries the flip |
@@ -1525,9 +1525,7 @@ Each comes with the answer this plan assumes; none blocks phases 0 to 2. Questio
     - **How the three fit together:** `name=` is the exact name where a stable name is possible and the prefix and container where it is not; a readable name covers every table a standalone Publisher names itself, and hosted tables take the control plane's generation names under the same prefix.
     - **BigQuery colocated builds with no default dataset:** not built today (`materialize-not-built`); a per-connection materialization dataset is recorded as future work (Scope, "Still under consideration").
 
-    Still open:
-    - **Rollup placement.** Whether `#(preaggregate)` rollups inherit their base's placement (its schema or container); today a rollup's `namespace=` is its container. *Proposed:* inherit, rather than adding `name=` to rollups.
-    - **A placement-only key.** Whether a key such as `schema=`, separate from `name=`, should exist on both annotations, for placement without naming.
+    - **Rollup placement, and a placement-only key (settled 2026-11-16, materialization distillation 7).** One placement key: a rollup takes `name=`, whose container places its table while its leaf stays Publisher's readable name; `#(preaggregate)` inherits its base's colocated `name=` container, as `#@ preaggregate` does; `namespace=` is deprecated, read for one release with a `deprecated-preaggregate-namespace` warning. No separate placement-only key.
 
 ## Known limitations, to revisit
 

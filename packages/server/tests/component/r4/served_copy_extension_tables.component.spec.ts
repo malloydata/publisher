@@ -22,13 +22,14 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    colocatedFiles,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const seedSql = [
@@ -167,13 +168,10 @@ function considered(
 }
 
 describe("R4: extension tables answer equal to live", () => {
-   let restore: () => void;
    let colocated: R4Fixture;
    let storage: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       colocated = await buildScenario({
          files: colocatedFiles({
             "m.malloy": chainModel(""),
@@ -192,7 +190,6 @@ describe("R4: extension tables answer equal to live", () => {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -236,17 +233,15 @@ describe("R4: extension tables answer equal to live", () => {
       ["storage=", () => storage],
    ] as const) {
       describe(label, () => {
-         it("leaves no served-copy problem", async () => {
-            expect(await fixture().servedCopyProblems()).toEqual([]);
-         });
+         itLeavesNoServedCopyProblem(fixture);
 
          for (const [name, malloy] of QUERIES) {
             it(name, async () => {
                const run = await fixture().run({ name, malloy });
                expect(run.servedVia).toBe("served_copy");
-               // A colocated table is the source's own warehouse: no storage hit.
+               // A colocated table is the source's own warehouse.
                expect(run.servedFrom).toBe(
-                  label === "colocated" ? null : "storage",
+                  label === "colocated" ? "database" : "storage",
                );
                expect(run.live.length).toBeGreaterThan(0);
                expect(rowDifference(run.live, run.served)).toBeUndefined();
@@ -350,12 +345,9 @@ source: ev_week is ev_recent extend {
   dimension: day_of is ts.day
 }
 `;
-   let restore: () => void;
    const fixtures: Record<string, R4Fixture> = {};
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       for (const [label, storage] of [
          ["colocated", ""],
          ["storage=", 'storage="lake" '],
@@ -375,7 +367,6 @@ source: ev_week is ev_recent extend {
       }
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

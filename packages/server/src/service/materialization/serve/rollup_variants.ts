@@ -39,8 +39,11 @@
  * - a fan-out grain dimension (A6) is fixed at every aggregating level, by a
  *   `group_by:` there or above, or a `where:` to one value
  *   (`GRAIN_TOO_COARSE`);
- * - it sets no `timezone:`, at any stage or in any nest (A5: the build
- *   truncated in the model's default time zone, `TIME_ZONE`);
+ * - a `timezone:` it sets, at any stage or in any nest, changes nothing it
+ *   reads from the rollup (A5: the build truncated and compared in the
+ *   model's default time zone): it reads no temporal field, directly or
+ *   through a dimension, measure or the base's `where:`, and nothing through
+ *   a join; else `TIME_ZONE`;
  * - its table is built and fresh, and the compiled SQL reads it.
  *
  * The queried source's name in that model may also carry what the query
@@ -63,8 +66,10 @@
  * redeclares the run target over the rollup IN AN OVERLAY OF ITS OWN
  * DECLARING FILE (`declaring_file_variant.ts`), so it keeps the author's
  * `sourceID` and carries the run target's entry-point gates as note lines.
- * With `materialize.gatedSources` on, the router lets the leg past a gated
- * entry point; a rollup then answers only when it was built for its gate
+ * With `materialize.gatedSources` on, or under G3 with it off for a colocated
+ * rollup (the gate policy, `domain/gate_policy.ts`), the router lets the leg
+ * past a gated entry point; a rollup then answers only when it was built for
+ * its gate
  * (`rollupGateEnforcedAtRead`) and the pre-proof holds (`proveGates`): the
  * variant's run target is the author's `sourceID`, its gates equal the live
  * entry point's (`sameGateSet`, the rule `govern()` re-proves with) and each
@@ -73,14 +78,17 @@
  * variant's own scope; a denial there is a defect, not a routing outcome. A
  * join branch (A7) carries no gate, so it declines past one.
  *
- * Rollups are offered coarsest first; the first that answers is used. A
+ * Rollups are offered in the plan's order, cheapest read first (coarsest,
+ * then colocated before `storage=`); the first that answers is used. A
  * `#(preaggregate)` rollup is read only with `materialize.enabled` on; a v1
  * `#@ preaggregate` one is read either way.
  */
 
 import { requireUnique, verdictOf, type KeyVerdict } from "../domain/key_check";
 import {
+   givenWhereCodes,
    primaryKeyOf,
+   queryTimezoneOf,
    recordedTimezoneOf,
    timezoneOf,
 } from "../../governance/ir/compiled_model";
@@ -131,6 +139,9 @@ import {
    emitMeasureExpr,
    generateRollupBuildFile,
    packageRelativeSourceID,
+   readsBuildCopy,
+   rollupBuildCopyName,
+   rollupBuildCopyText,
    rollupCompanionURLOf,
    viewNoteTexts,
 } from "../text/read_text";
@@ -160,7 +171,10 @@ import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
-import { bigIntegerReadOf, storedTypeServesAs } from "../stored_column_types";
+import {
+   storedColumnReadPlan,
+   storedTypeServesAs,
+} from "../stored_column_types";
 import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
 import { type Binding, type Pinned } from "../domain/binding";
@@ -188,7 +202,7 @@ interface RollupVariantHost {
     * destination there, through a joined source's rollup in the same one
     * (known limitation 26).
     */
-   joinRollupBasis?(pinned: Pinned): Promise<ServedCopyJoinBasis | undefined>;
+   joinRollupBasis(pinned: Pinned): Promise<ServedCopyJoinBasis | undefined>;
    /**
     * The rollups one source declares, as the planner reads them
     * (`plan/rollup_plan.ts`): passed in by the model, since serving never
@@ -303,6 +317,11 @@ interface RollupQuery {
     * adds to it.
     */
    extension?: { baseDef: unknown; delta?: SourceDelta };
+   /**
+    * Set when the query sets its own `timezone:`: every field path it reads,
+    * expanded (undefined when one could not be read), for `zoneDecline`.
+    */
+   zoned?: { usage: string[][] | undefined };
 }
 
 /** An extension's dimension, re-declared on the variant. */
@@ -482,13 +501,11 @@ export class RollupVariantServe {
          sourceName: localName,
       });
       // Anywhere in the query, a nest's own `timezone:` included: the build
-      // truncated the grain's times in the model's zone.
-      if (setsTimezone(prepared.query)) {
-         throw new LegDecline(
-            "rollup_time_zone",
-            "the query sets its own time zone, and the rollup was built in the model's",
-         );
-      }
+      // truncated the grain's times in the model's zone, so a zoned query is
+      // read from a rollup only where it reads no time (`zoneDecline`).
+      const zoned = setsTimezone(prepared.query)
+         ? { usage: queryFieldUsagePaths(prepared) }
+         : undefined;
       // The reason reported is the first rollup's that got past the grain
       // and measure check (the one closest to answering), else the first's.
       let first: LegDecline | undefined;
@@ -523,6 +540,7 @@ export class RollupVariantServe {
          views,
          rawSql: readsRawSql(prepared.query),
          ...(gates ? { gates } : {}),
+         ...(zoned ? { zoned } : {}),
          ...(extension ? { extension } : {}),
       };
       for (const plan of ownPlans) {
@@ -538,6 +556,11 @@ export class RollupVariantServe {
       // join branches, inside the rollup step.
       const usage = branches.length > 0 ? queryFieldUsagePaths(prepared) : [];
       for (const { branch, refusal } of branches) {
+         // Through a join, a zoned query is read live (A5).
+         if (zoned) {
+            first ??= zonedQueryDecline();
+            continue;
+         }
          // A join branch redeclares the author's source around the join, not
          // over its declaring file, so it carries no gate to prove: past an
          // entry-point gate it declines (CONTRACT).
@@ -994,7 +1017,7 @@ export class RollupVariantServe {
          );
       let basis: ServedCopyJoinBasis | undefined;
       try {
-         basis = await this.host.joinRollupBasis?.(pinned);
+         basis = await this.host.joinRollupBasis(pinned);
       } catch {
          basis = undefined;
       }
@@ -1195,6 +1218,22 @@ export class RollupVariantServe {
       if (coarse) throw coarse;
       const missing = coverageDecline(shape, measures);
       if (missing) throw missing;
+      if (query.zoned) {
+         const zone = zoneDecline(plan, query.struct, query.zoned.usage);
+         if (zone) throw zone;
+      }
+      // A rollup's re-applied `where:` is written on its base's own variant,
+      // in the base's file, where its givens are declared: a query on
+      // another source over the base is answered live.
+      if (
+         (plan.readTimeTerms ?? []).length > 0 &&
+         query.sourceID !== plan.baseSourceID
+      ) {
+         throw new LegDecline(
+            "rollup_grain_too_coarse",
+            "the query's source extends one whose `where:` reads a given, which only that source's own rollup re-applies",
+         );
+      }
       const table = this.tableOf(plan, args.pinned);
       if (!table) {
          throw this.noFreshTable(plan, args.pinned);
@@ -1264,6 +1303,7 @@ export class RollupVariantServe {
       // provable on this rollup before it is used, so `govern()`'s re-proof
       // (graft, bind guard, gate-set equality) denies only on a defect.
       if (query.gates) proveGates(plan, query, routed, variant.modelDef);
+      proveGivenTerms(query, routed, variant.modelDef);
       // The compiled SQL must read the table, never recompute the rollup.
       const readsTable = result.sql.includes(
          (table.virtualMap ? table.quotedPath : colocatedTable) ?? "\u0000",
@@ -1547,7 +1587,12 @@ export class RollupVariantServe {
       const modelFile = path.join(packagePath, modelPath);
       const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
       const reads = table.binding
-         ? storedRollupReads(plan, table.binding, this.host.modelDef())
+         ? storedRollupReads(
+              plan,
+              table.binding,
+              this.host.modelDef(),
+              declaredRollupColumns(this.host.catalog(), table.binding),
+           )
          : undefined;
       if (reads && "refusal" in reads) return { refusal: reads.refusal };
       const destinations = this.host.serveDestinationConfig();
@@ -1606,17 +1651,41 @@ export class RollupVariantServe {
          companion && declaringFile
             ? generateRollupBuildFile([plan], path.basename(declaringFile))
             : undefined;
-      if (!companion || !text) return { error: "no companion" };
+      if (!companion || !text || !declaringFile) {
+         return { error: "no companion" };
+      }
       overlay.set(companion.href, text);
       // The shared, checked blanking (persist_blanking.ts), read through
       // the package's own reader, as the build companion reads them.
       const blanked = await authorFiles.blanked(this.host.modelDef());
       if (!blanked) return { error: "a `#@` line could not be left out" };
       for (const [url, file] of blanked) overlay.set(url, file);
-      const built = `${plan.rollupSourceName}__built`;
-      const declaration = `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(queryModelURL, companion.href) ?? "")}
-source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, this.host.modelDef())}
-}
+      // The base's build copy, which the companion imports it from, made as
+      // the plan made it, so the build source's SQL (and its table) is one.
+      if (readsBuildCopy(plan)) {
+         const baseURL = pathToFileURL(declaringFile);
+         const made = rollupBuildCopyText(
+            blanked.get(overlayKey(baseURL)) ??
+               (await authorFiles.readIfAny(baseURL.href)) ??
+               "",
+            plan,
+            (plan.privateGrain ?? []).length > 0,
+         );
+         if (!("copy" in made)) return { error: made.reason };
+         overlay.set(
+            pathToFileURL(
+               path.join(
+                  path.dirname(declaringFile),
+                  rollupBuildCopyName(
+                     path.basename(declaringFile),
+                     plan.baseDeclaredName,
+                  ),
+               ),
+            ).href,
+            made.copy,
+         );
+      }
+      const declaration = `${colocatedRollupSource(plan, this.host.modelDef(), servedName, relativeImport(queryModelURL, companion.href))}
 ${sourceOverRollup(plan, use, servedName, "")}`;
       const modelText = queryModelText(
          this.host.modelDef(),
@@ -1732,14 +1801,13 @@ ${declaration}
          queryModelURL: ctx.queryModelURL,
          flags: flagLine(modelDef),
          declare: async ({
-            gates: authorGates,
+            gates,
             sourceName,
             copyName,
             declaringURL,
             addFile,
+            authorText,
          }) => {
-            // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
-            const gates = authorGates;
             // What the run target adds over the rollup's fields: an
             // extension's dimensions over the grain, and the views the
             // query reads, as the author wrote them.
@@ -1776,16 +1844,30 @@ ${gates}${over}`;
             if (!companion || !baseFile) return { error: "no companion" };
             const overlaid =
                overlayKey(pathToFileURL(baseFile)) === overlayKey(declaringURL);
-            const text = generateRollupBuildFile(
-               [plan],
-               overlaid ? copyName : path.basename(baseFile),
-            );
+            const importPath = overlaid ? copyName : path.basename(baseFile);
+            const text = generateRollupBuildFile([plan], importPath);
             if (!text) return { error: "no companion" };
             addFile(companion, text);
-            const built = `${plan.rollupSourceName}__built`;
-            return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(relativeImport(declaringURL, companion.href) ?? "")}
-source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, modelDef)}
-}
+            // The base's build copy, made as the plan made it, so the build
+            // source's SQL (and so its table) is the plan's.
+            if (readsBuildCopy(plan)) {
+               const made = rollupBuildCopyText(
+                  (await authorText(pathToFileURL(baseFile))) ?? "",
+                  plan,
+                  (plan.privateGrain ?? []).length > 0,
+               );
+               if (!("copy" in made)) return { error: made.reason };
+               addFile(
+                  pathToFileURL(
+                     path.join(
+                        path.dirname(baseFile),
+                        rollupBuildCopyName(importPath, plan.baseDeclaredName),
+                     ),
+                  ),
+                  made.copy,
+               );
+            }
+            return `${colocatedRollupSource(plan, modelDef, servedName, relativeImport(declaringURL, companion.href))}
 ${gates}${over}`;
          },
       });
@@ -2063,6 +2145,23 @@ async function variantAdditions(
    return { text, views: declared };
 }
 
+/**
+ * A colocated rollup's served source: its build source imported from the
+ * rollup companion (`from`, relative to the importing file), so the build
+ * manifest substitutes its table, extended with the rollup's merged measures.
+ */
+function colocatedRollupSource(
+   plan: RollupVariantPlan,
+   modelDef: unknown,
+   servedName: string,
+   from: string | undefined,
+): string {
+   const built = `${plan.rollupSourceName}__built`;
+   return `import { ${identifier(built)} is ${identifier(plan.rollupSourceName)} } from ${doubleQuotedString(from ?? "")}
+source: ${identifier(servedName)} is ${identifier(built)} extend {${rollupStatements(plan, modelDef)}
+}`;
+}
+
 /** The rollup's own `sourceID`, as its build companion declares it. */
 function rollupSourceID(plan: RollupVariantPlan): string | undefined {
    const declared = splitSourceID(plan.baseSourceID);
@@ -2089,9 +2188,13 @@ interface StoredRollupReads {
  * - a grain column whose dimension live types `timestamptz`, stored with its
  *   zone, is declared `timestamptz` (a `type:` would declare the stored
  *   type's `timestamp`);
+ * - a column stored as another type than its build source declares (a grain
+ *   dimension or any partial, whatever expression it aggregates) is read
+ *   through a faithful cast ({@link storedColumnReadPlan}), or is the
+ *   refusal;
  * - a big integer (a grain dimension, or the partial of a measure live types
  *   as a `bigint` number) is read through its native type
- *   ({@link bigIntegerReadOf}): a `type:` declares it only as a `number`,
+ *   ({@link storedColumnReadPlan}): a `type:` declares it only as a `number`,
  *   which Malloy reads through a JavaScript number and rounds above 2^53.
  *   One stored where no cast reads it exactly (a float, its digits already
  *   lost) is the refusal.
@@ -2100,6 +2203,11 @@ function storedRollupReads(
    plan: RollupVariantPlan,
    binding: Pick<Binding, "schema">,
    modelDef: unknown,
+   /**
+    * The columns the rollup's build source declares, by name: the type each
+    * stored column must serve as (`boundTableTypeFindings` reads the same).
+    */
+   declared: ReadonlyMap<string, string>,
 ): StoredRollupReads | { refusal: string } {
    const base = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
       | {
@@ -2116,17 +2224,35 @@ function storedRollupReads(
    const read = (
       column: StoredRollupReads["columns"][number],
       fieldName: string,
+      /** The type live gives the column, when it is checked; "" when not. */
+      liveType: string,
    ): string | undefined => {
       const storedColumn = stored.get(column.name);
       const field = fields.get(fieldName);
       if (storedColumn) {
-         const big = bigIntegerReadOf(field, storedColumn, {
-            dialect: base?.dialect,
-         });
-         if (big && !big.castTo) {
+         const plan = storedColumnReadPlan(
+            [storedColumn],
+            [{ name: column.name, type: liveType, field }],
+            { dialect: base?.dialect, queryTimezone: queryTimezoneOf(base) },
+         );
+         // A column whose stored type drifted from live's, with no faithful
+         // cast to read it back: never read as its stored type.
+         const [drifted] = plan.leftOut;
+         if (drifted) {
+            return `the stored \`${fieldName}\` (${drifted.storedType}) cannot be read as live's ${drifted.declaredType}`;
+         }
+         if (plan.refusals.length > 0) {
             return `the stored \`${fieldName}\` (${storedColumn.type}) cannot hold live's integer exactly`;
          }
-         if (big?.castTo) casts.set(column.name, { nativeCast: big.castTo });
+         const [read] = plan.casts;
+         if (read) {
+            casts.set(
+               column.name,
+               read.native
+                  ? { nativeCast: read.castTo }
+                  : { castTo: read.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
+            );
+         }
          if (
             column.kind === "dimension" &&
             field?.type === "timestamptz" &&
@@ -2141,14 +2267,22 @@ function storedRollupReads(
       return undefined;
    };
    for (const g of grainColumns(plan, modelDef)) {
-      const refusal = read({ ...g, kind: "dimension" }, g.name);
+      const refusal = read(
+         { ...g, kind: "dimension" },
+         g.name,
+         declared.get(g.name) ?? "",
+      );
       if (refusal) return { refusal };
    }
    for (const m of plan.rollupMeasures) {
       for (const p of m.partials) {
          const refusal =
             partialTypeRefusal(p, stored.get(p.column), m.name) ??
-            read({ name: p.column, notes: [], kind: "measure" }, m.name);
+            read(
+               { name: p.column, notes: [], kind: "measure" },
+               m.name,
+               declared.get(p.column) ?? "",
+            );
          if (refusal) return { refusal };
       }
    }
@@ -2156,9 +2290,28 @@ function storedRollupReads(
 }
 
 /**
+ * A `storage=` rollup's declared columns: its build source's, from the
+ * package's plan, matched by the table's content address (and its sourceID
+ * where several share it). Empty when the plan is not known: no column is
+ * then checked but a big integer's, as before.
+ */
+function declaredRollupColumns(
+   catalog: MaterializedTableCatalog | undefined,
+   binding: Pick<Binding, "virtualHandle" | "sourceIDs">,
+): ReadonlyMap<string, string> {
+   const atAddress = [...(catalog?.planned.values() ?? [])].filter(
+      (t) => t.sourceEntityId === binding.virtualHandle,
+   );
+   const table =
+      atAddress.find((t) => binding.sourceIDs?.includes(t.sourceID)) ??
+      atAddress[0];
+   return new Map((table?.columns ?? []).map((c) => [c.name, c.type]));
+}
+
+/**
  * Why a `sum` or `count` partial stored as a non-numeric type cannot merge,
- * or undefined. A `min` or `max` partial takes its argument's type, which the
- * merge's compile checks.
+ * or undefined. A `min` or `max` partial takes its argument's type, which
+ * {@link storedRollupReads} checks against the build source's declared one.
  */
 function partialTypeRefusal(
    partial: RollupVariantPlan["rollupMeasures"][number]["partials"][number],
@@ -2263,7 +2416,7 @@ function sourceOverRollup(
    if (use.kind === "base") {
       // malloy-text: variantAdditions emits names through identifier, and the author's own notes, expressions and view definitions (marked there)
       const extension = additions;
-      return `source: ${identifier(use.localName)} is ${identifier(servedName)}${internalPartials(plan)}${extension}`;
+      return `source: ${identifier(use.localName)} is ${identifier(servedName)}${internalPartials(plan)}${reappliedTerms(plan)}${extension}`;
    }
    const { join } = use.branch;
    const keyword = use.branch.relationship === "one" ? "join_one" : "join_many";
@@ -2346,7 +2499,21 @@ function internalPartials(plan: RollupVariantPlan): string {
    ]
       .map((n) => identifier(n))
       .join(", ");
-   return ` include { internal: ${hidden} public: * }`;
+   const priv = (plan.privateGrain ?? []).map((n) => identifier(n)).join(", ");
+   return ` include { internal: ${hidden}${priv ? ` private: ${priv}` : ""} public: * }`;
+}
+
+/**
+ * The base's given-reading `where:` terms, as the author wrote them, written
+ * again on the variant: the build left them out, so each caller's givens bind
+ * them over the rollup's groups, as live applies them over the base's rows.
+ */
+function reappliedTerms(plan: RollupVariantPlan): string {
+   const terms = plan.readTimeTerms ?? [];
+   // malloy-text: each term is the author's own `where:` text, verbatim
+   return terms.length > 0
+      ? ` extend {\n${terms.map((t) => `  where: ${t.code}`).join("\n")}\n}`
+      : "";
 }
 
 /**
@@ -2509,6 +2676,29 @@ function proveGates(
       for (const id of malloyIdentifiers(expr)) {
          if (fields.has(id) && !grain.has(id)) throw contractSkip();
       }
+   }
+}
+
+/**
+ * The pre-proof of the re-applied `where:` (R3 for given-reading terms): throw
+ * `CONTRACT` unless the variant's run target writes exactly the given-reading
+ * terms the live run target applies, by text ({@link givenWhereCodes}), the
+ * rule `govern()` re-proves on the routed compile. A rollup's build left them
+ * out, so a variant without them would answer with every caller's rows.
+ */
+function proveGivenTerms(
+   query: Pick<RollupQuery, "struct">,
+   routed: Awaited<ReturnType<typeof readPreparedQuery>>,
+   variantModelDef: ModelDef | undefined,
+): void {
+   const model = routed.modelDef ?? variantModelDef;
+   const struct = model
+      ? resolveStructRefSource(routed.structRef, model)
+      : undefined;
+   const live = givenWhereCodes(query.struct);
+   const written = struct ? givenWhereCodes(struct) : undefined;
+   if (!live || !written || live.join("\u0000") !== written.join("\u0000")) {
+      throw contractSkip();
    }
 }
 
@@ -2760,6 +2950,83 @@ export function joinCoverageDecline(
       );
    }
    return undefined;
+}
+
+/** A zoned query's decline: the rollup was built in the model's zone. */
+function zonedQueryDecline(): LegDecline {
+   return new LegDecline(
+      "rollup_time_zone",
+      "the query sets its own time zone and reads a time the rollup stored in the model's",
+   );
+}
+
+/** The temporal types, the only ones a query's `timezone:` reads differently. */
+const ZONED_TYPES = new Set(["date", "timestamp", "timestamptz"]);
+
+/** Every field path an expression reads (`node: "field"`), at any depth. */
+function fieldPathsIn(e: unknown, out: string[][] = [], depth = 0): string[][] {
+   if (depth > 64 || e === null || typeof e !== "object") return out;
+   if (Array.isArray(e)) {
+      for (const x of e) fieldPathsIn(x, out, depth + 1);
+      return out;
+   }
+   const n = e as { node?: unknown; path?: unknown };
+   if (
+      n.node === "field" &&
+      Array.isArray(n.path) &&
+      n.path.every((p) => typeof p === "string")
+   ) {
+      out.push(n.path as string[]);
+   }
+   for (const v of Object.values(e)) fieldPathsIn(v, out, depth + 1);
+   return out;
+}
+
+/**
+ * Why a query that sets its own `timezone:` is not read from `plan`, or
+ * undefined (A5). The build truncated and compared times in the model's
+ * zone, so the rollup answers a zoned query only when nothing it reads
+ * depends on a zone: no field path the query reads (expanded through its
+ * dimensions and measures), no stored partial and no `where:` of the base
+ * reads a temporal field, directly or through a computed dimension, nor
+ * anything through a join. Fails closed on usage that could not be read.
+ */
+function zoneDecline(
+   plan: RollupVariantPlan,
+   struct: object,
+   usage: readonly (readonly string[])[] | undefined,
+): LegDecline | undefined {
+   if (usage === undefined) return zonedQueryDecline();
+   const def = struct as { fields?: unknown[]; filterList?: unknown[] };
+   const fields = new Map(
+      (def.fields ?? []).map((f) => {
+         const field = f as { name?: unknown; as?: unknown };
+         return [String(field.as ?? field.name), f as object];
+      }),
+   );
+   const seen = new Set<string>();
+   const readsTime = (path: readonly string[]): boolean => {
+      const [name] = path;
+      // An empty path reads no field (`count()`).
+      if (name === undefined) return false;
+      if (path.length !== 1) return true;
+      if (seen.has(name)) return false;
+      seen.add(name);
+      const f = fields.get(name) as
+         | { type?: unknown; e?: unknown; join?: unknown }
+         | undefined;
+      if (!f) return false;
+      if (f.join !== undefined || ZONED_TYPES.has(String(f.type))) return true;
+      return fieldPathsIn(f.e).some(readsTime);
+   };
+   const stored = plan.rollupMeasures.flatMap((m) =>
+      m.partials.flatMap((p) => [p.leaf.joinPath, ...p.leaf.reads]),
+   );
+   const where = fieldPathsIn(def.filterList);
+   return [...usage, ...where].some(readsTime) ||
+      stored.some((p) => p.length > 0 && readsTime(p))
+      ? zonedQueryDecline()
+      : undefined;
 }
 
 /**

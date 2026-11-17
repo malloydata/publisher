@@ -14,6 +14,8 @@
  * Types only.
  */
 
+import type { DeclaredFreshness } from "./freshness";
+
 /** The aggregates whose partials merge. */
 export type MergeableAggregate = "sum" | "count" | "min" | "max";
 
@@ -103,6 +105,13 @@ export interface RollupPlan {
     */
    namespace?: string;
    /**
+    * The leaf of this grain's own `name=`: the readable prefix of the name
+    * Publisher gives its table (`<prefix>__p<hash>`), as a `name=` sets it
+    * under `scope: "version"`. Undefined: the readable name's own
+    * `<pkg>__<file>__<base>_by_<grain>`.
+    */
+   prefix?: string;
+   /**
     * The storage destination this rollup is built into and served from — this
     * grain's own `#@ preaggregate storage=`, and only ever that. Undefined for a
     * colocated rollup built into the base's own warehouse.
@@ -126,4 +135,12 @@ export interface RollupPlan {
     * compiler gave none.
     */
    baseSourceID?: string;
+   /**
+    * The rollup's source-level freshness: what its declarations say
+    * (`freshness.window=`, `freshness.fallback=` on `#(preaggregate)` or
+    * `#@ preaggregate`), per field over what its base's own declaration says.
+    * The model-file and package layers resolve under it as for any source
+    * (plan_layers.ts). Absent: neither declares any.
+    */
+   freshness?: DeclaredFreshness;
 }

@@ -22,6 +22,7 @@
 
 import { createHash } from "node:crypto";
 import { tableIdentity } from "../../versions/materialization_scope";
+import { recordKeyCheck } from "../../../materialization_metrics";
 import { isActiveRun } from "./materialization_run_support";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import type { KeyUniqueness, ManifestEntry } from "../domain/types";
@@ -471,6 +472,7 @@ export async function assertInlinedJoinsUnique(
       // A plan from a Publisher that did not compile the check: refuse rather
       // than build unchecked.
       if (!check.sql) {
+         recordKeyCheck("inline_join", "not_run");
          throw new InlinedJoinNotUniqueError(
             plan?.sourceName ?? "",
             check.join,
@@ -487,6 +489,7 @@ export async function assertInlinedJoinsUnique(
             ? ledger.heldPass(digest, stored)
             : undefined;
       if (ledger && digest && held) {
+         recordKeyCheck("inline_join", "reused");
          ledger.record(digest, held);
          ledger.outcome({
             sourceName: plan?.sourceName ?? "",
@@ -495,8 +498,15 @@ export async function assertInlinedJoinsUnique(
          });
          continue;
       }
-      const result = await connection.runSQL(sql);
+      let result;
+      try {
+         result = await connection.runSQL(sql);
+      } catch (err) {
+         recordKeyCheck("inline_join", "not_run");
+         throw err;
+      }
       if (result.rows.length > 0) {
+         recordKeyCheck("inline_join", "not_unique");
          throw new InlinedJoinNotUniqueError(
             plan?.sourceName ?? "",
             check.join,
@@ -505,6 +515,7 @@ export async function assertInlinedJoinsUnique(
             check.pairLevel,
          );
       }
+      recordKeyCheck("inline_join", "unique");
       if (ledger) {
          if (stored && digest) {
             ledger.record(digest, {

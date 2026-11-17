@@ -241,7 +241,8 @@ export function dataStylesForModel(
  * its whole subtree before the next (`ImportsAndTablesStep` in
  * `lang/parse-malloy`): a pre-order walk that lists a node's imports before
  * descending into them, reading each URL and descending into each file once.
- * This models Malloy's internals; the pool spec pins it against real loads.
+ * This models Malloy's internals; the pool and load-shapes specs pin it
+ * against real loads.
  */
 export function importReadOrder(tree: unknown): string[] {
    const order: string[] = [];

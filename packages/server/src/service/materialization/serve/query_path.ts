@@ -66,6 +66,12 @@ export interface PlannedTable {
     * the model side, so it is matched to its plan by name within its model.
     */
    modelPath?: string;
+   /**
+    * A rollup's columns as its build source declares them (Malloy types), the
+    * types its stored table is read back as: the build casts to them, and the
+    * rollup leg checks each stored column against them.
+    */
+   columns?: readonly { name: string; type: string }[];
 }
 
 /**
@@ -259,9 +265,10 @@ export interface QueryPathInput {
 }
 
 /**
- * Assemble the path report. Order in `considered` follows the order Publisher
- * tries the tiers: `storage=` tables, then colocated rollups, then colocated
- * `#@ persist` tables nearest first.
+ * Assemble the path report. `considered` lists `storage=` tables, then
+ * colocated rollups, then colocated tables nearest first: not the order the
+ * router tries the legs (`makeLegs`: persisted results, then rollups, then
+ * the served copy).
  */
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
@@ -392,6 +399,8 @@ function pathTally(): PathTally {
       servedBy = {
          kind: t.kind,
          ...(t.tableId ? { tableId: t.tableId } : {}),
+         // The wire names the colocated tier by where it lives.
+         tier: t.tier === "colocated" ? "database" : "storage",
          ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
       };
    };

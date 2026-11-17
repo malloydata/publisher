@@ -292,13 +292,20 @@ describe("annotation findings on a loaded package", () => {
   private measure: total is amount.sum()
 }
 `);
-         const [warning] = coded(pkg, "preaggregate-hidden-field");
+         const [warning] = coded(pkg, "preaggregate-not-built");
          expect(warning).toMatchObject({ severity: "warn" });
+         expect(
+            Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map((r) => [
+               r.name,
+               r.tier,
+               r.reason,
+            ]),
+         ).toEqual([["orders.total", "preaggregate", "hidden_field"]]);
          expect(
             await harness.collectCounter(
                "publisher_annotation_findings_total",
                {
-                  code: "preaggregate-hidden-field",
+                  code: "preaggregate-not-built",
                },
             ),
          ).toBe(1);
@@ -357,15 +364,16 @@ describe("annotation findings on a loaded package", () => {
                      expect(formatPublishRejections(pkg)).toBeUndefined();
                   }
                }
-               // #(preaggregate) never took a name=: an unknown key.
+               // A rollup's name= places and prefixes its table, so one with
+               // an empty table name is invalid.
                await fs.rm(path.join(envPath, "pkg"), {
                   recursive: true,
                   force: true,
                });
                const message = await loadError(
-                  `${RAW}source: sales is raw extend {\n  #(preaggregate) grain=["category"] name="r"\n  measure: total is amount.sum()\n}\n`,
+                  `${RAW}source: sales is raw extend {\n  #(preaggregate) grain=["category"] name="analytics."\n  measure: total is amount.sum()\n}\n`,
                );
-               expect(message).toContain("[preaggregate-unknown-key]");
+               expect(message).toContain("[preaggregate-invalid]");
             },
             { PERSIST_STORAGE_MODE: "on" },
          );
@@ -644,9 +652,9 @@ describe("the load failure for invalid materialization annotations", () => {
       );
       (
          materialization as unknown as {
-            annotationFindings: PackageAnnotationFinding[];
+            plan: { annotationFindings: PackageAnnotationFinding[] };
          }
-      ).annotationFindings = findings;
+      ).plan.annotationFindings = findings;
       return materialization.formatInvalidAnnotations();
    }
 

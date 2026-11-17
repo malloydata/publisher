@@ -63,6 +63,24 @@ The package loads. If the violation were fatal this step would fail outright.
 
 cites: does not publicly expose
 
+## Warns ph
+
+Under the one code every rollup refused alone carries; the build plan's
+`refusedSources` holds its reason (`hidden_field`).
+
+cites: preaggregate-not-built
+
+## Build refusals (pkg=ph)
+
+The refusal is a record in the plan like any other, keyed by the measure's path on its
+base.
+
+Expect:
+
+| source       | tier         | reason       |
+| ------------ | ------------ | ------------ |
+| orders.total | preaggregate | hidden_field |
+
 ## Query by category
 
 `total` is private, so the live path refuses it — which is the behaviour the rollup

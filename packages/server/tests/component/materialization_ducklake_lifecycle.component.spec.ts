@@ -54,7 +54,6 @@ import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { parsePackageName } from "../../src/service/identity";
 import * as dialects from "../../src/service/materialization/domain/dialect";
 import { backupSuffix } from "../../src/service/materialization/run/materialization_run_support";
@@ -72,6 +71,7 @@ import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -132,7 +132,7 @@ type Entry = {
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
-   servedBy: { kind: string; tableId?: string; via?: string };
+   servedBy: { kind: string; tableId?: string; tier?: string; via?: string };
 };
 
 describe.skipIf(process.platform === "win32")(
@@ -249,7 +249,7 @@ describe.skipIf(process.platform === "win32")(
                return serve;
             },
          }));
-         pkg.setServeDestinationConfig(() => config);
+         pkg.materialization().setServeDestinationConfig(() => config);
       }
 
       beforeAll(async () => {
@@ -366,11 +366,10 @@ describe.skipIf(process.platform === "win32")(
          await env.addPackage(PKG);
          pkg = await env.getPackage(parsePackageName(PKG), false);
          await reopenServe();
-         service = new MaterializationService({
-            storageManager: { getRepository: () => repo },
-            getEnvironment: async () => env,
-            getLoadedEnvironments: () => [env],
-         } as unknown as EnvironmentStore);
+         service = serviceOverEnvironment(
+            () => repo,
+            () => env,
+         );
       });
 
       afterAll(async () => {
@@ -884,7 +883,7 @@ class LakeFixture {
             return this.serve;
          },
       }));
-      this.pkg.setServeDestinationConfig(() => config);
+      this.pkg.materialization().setServeDestinationConfig(() => config);
    }
 
    async setUp(): Promise<void> {
@@ -1009,11 +1008,10 @@ class LakeFixture {
       await this.env.addPackage(PKG);
       this.pkg = await this.env.getPackage(parsePackageName(PKG), false);
       await this.reopenServe();
-      this.service = new MaterializationService({
-         storageManager: { getRepository: () => this.repo },
-         getEnvironment: async () => this.env,
-         getLoadedEnvironments: () => [this.env],
-      } as unknown as EnvironmentStore);
+      this.service = serviceOverEnvironment(
+         () => this.repo,
+         () => this.env,
+      );
    }
 
    async tearDown(): Promise<void> {
@@ -1381,12 +1379,10 @@ source: events is warehouse.sql("""
          // 6). Plan the package again on this thread, as a load the worker
          // left no plan for does.
          await (
-            lake.pkg as unknown as {
-               materialization: {
-                  applyLoadBuildPlan(plan: undefined): Promise<unknown>;
-               };
+            lake.pkg.materialization() as unknown as {
+               applyLoadBuildPlan(plan: undefined): Promise<unknown>;
             }
-         ).materialization.applyLoadBuildPlan(undefined);
+         ).applyLoadBuildPlan(undefined);
       });
       afterAll(async () => {
          await lake.tearDown();
@@ -1513,12 +1509,14 @@ source: events is warehouse.sql("""
          });
          expect(lake.attaches).toEqual([{ fn: "readWrite", dbName: LAKE }]);
          // No CTAS: the shape and emptiness probes on the lake table, the
-         // frontier through the passthrough, then the delta as one script.
+         // frontier through the passthrough, the delta's column types (a
+         // describe, which runs nothing), then the delta as one script.
          expect(lake.statements.map(statementShape)).toEqual([
             `DESCRIBE "lake"."${TABLE}"`,
             'SELECT column_name AS "column_name"',
             `SELECT 1 AS present FROM "lake"."${TABLE}" LIMIT 1`,
             'SELECT * FROM postgres_query(\'warehouse\', \'SELECT MAX("wm") AS "watermark_max" FROM (SELECT ',
+            "DESCRIBE (passthrough)",
             "BEGIN;",
             `DESCRIBE "lake"."${TABLE}"`,
             `SELECT count(*) AS n FROM "lake"."${TABLE}"`,
@@ -2223,11 +2221,13 @@ describe.skipIf(process.platform === "win32")(
          expect((await lake.ask(QUERIES.view)).servedBy).toEqual({
             kind: "view",
             tableId: entries.ops__by_cat__view.sourceEntityId,
+            tier: "storage",
          });
          for (const name of ["pairs", "parent", "child"] as const) {
             expect((await lake.ask(QUERIES[name])).servedBy).toEqual({
                kind: "materialized",
                tableId: entries[name].sourceEntityId,
+               tier: "storage",
                via: "served_copy",
             });
          }

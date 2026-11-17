@@ -258,7 +258,7 @@ async function recomputeIntoStorage(
       return isSameCatalog(sourceConnection, destinationConnection)
          ? await withStatementUsage(
               {
-                 environment: environment.getEnvironmentName?.() ?? "",
+                 environment: environment.getEnvironmentName(),
                  connection: destinationName,
                  surface: "build",
                  package: params.packageName ?? params.incremental?.packageName,
@@ -767,25 +767,6 @@ export class StorageBuildStrategy
       manifest.update(sourceEntityId, { tableName: physicalTableName });
 
       const durationMs = Math.round(performance.now() - startTime);
-      // Debug: the run's `materialization.build.finished` is the build's
-      // event, and the build histogram times it (a SKIP is not timed).
-      logger.debug(
-         result.refresh
-            ? `Refreshed materialized source ${persistSource.name} in storage`
-            : `Built materialized source ${persistSource.name} into storage`,
-         {
-            physicalTableName,
-            storageDestinationName: result.storageDestinationName,
-            columns: result.schema.length,
-            durationMs,
-            refresh: result.refresh?.refresh,
-            // The whole cost and the warehouse job ids, which the manifest has
-            // no room for. Null means nothing was reported, not free (see
-            // BuildReadCost).
-            readCost: result.readCost,
-         },
-      );
-
       return {
          sourceEntityId,
          sourceName: persistSource.name,
@@ -794,7 +775,7 @@ export class StorageBuildStrategy
          connectionName: persistSource.connectionName,
          storageDestinationName: result.storageDestinationName,
          schema: result.schema,
-         realization: instruction.realization,
+         realization: "COPY",
          rowCount: result.rowCount,
          // A refresh reports the APPLY's duration, not the session setup. A
          // SKIP reports null rather than skewing the series as a fast build.
@@ -931,7 +912,7 @@ export class StorageBuildStrategy
          // seconds are the store's, as a same-catalog build's are.
          const result = await withStatementUsage(
             {
-               environment: environment.getEnvironmentName?.() ?? "",
+               environment: environment.getEnvironmentName(),
                connection: destinationName,
                surface: "build",
                package: params.packageName ?? params.incremental?.packageName,

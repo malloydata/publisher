@@ -19,7 +19,7 @@
     "databricks": "'it\\'s \\\\ here'",
     "trino": "'it''s \\ here'",
     "presto": "'it''s \\ here'",
-    "mysql": "'it''s \\ here'",
+    "mysql": "'it''s \\\\ here'",
     "sqlserver": "N'it''s \\ here'",
     "unknown_dialect": "'it''s \\ here'"
   },
@@ -1458,7 +1458,7 @@
       "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders') AND table_schema = DATABASE() ORDER BY ordinal_position"
     ],
     "sqlserver": [
-      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders') ORDER BY ordinal_position"
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower(N'orders') ORDER BY ordinal_position"
     ],
     "unknown_dialect": [
       "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders') ORDER BY ordinal_position"
@@ -1472,13 +1472,13 @@
       "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"Sales Data\".\"orders''x\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum"
     ],
     "standardsql": [
-      "SELECT column_name, data_type FROM `Sales Data`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'orders''x' ORDER BY ordinal_position"
+      "SELECT column_name, data_type FROM `Sales Data`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 'orders\\'x' ORDER BY ordinal_position"
     ],
     "snowflake": [
       "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
     ],
     "databricks": [
-      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders\\'x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
     ],
     "trino": [
       "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
@@ -1490,7 +1490,7 @@
       "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
     ],
     "sqlserver": [
-      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower(N'orders''x') AND lower(table_schema) = lower(N'Sales Data') ORDER BY ordinal_position"
     ],
     "unknown_dialect": [
       "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM information_schema.columns WHERE lower(table_name) = lower('orders''x') AND lower(table_schema) = lower('Sales Data') ORDER BY ordinal_position"
@@ -1522,7 +1522,7 @@
       "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM `cat`.information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"
     ],
     "sqlserver": [
-      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"cat\".information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"cat\".information_schema.columns WHERE lower(table_name) = lower(N'Orders') AND lower(table_schema) = lower(N'sch') ORDER BY ordinal_position"
     ],
     "unknown_dialect": [
       "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"cat\".information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"

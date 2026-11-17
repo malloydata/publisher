@@ -47,7 +47,9 @@ const queryTimeoutGauge = lazyInstrument(() => {
  *   abort.
  * - A timeout followed by a rejection from `fn` throws
  *   {@link QueryTimeoutError} (504). If `fn` resolves after the timer fired,
- *   the result is returned: a completed query beats a 504. The counter ticks
+ *   the result is returned: a completed query beats a 504 (except a streamed
+ *   one, which can't tell a quiet end from an abort cut: see
+ *   `streamSqlWithBudget`). The counter ticks
  *   only when a 504 is thrown.
  * - Any other error is re-thrown unmodified.
  */

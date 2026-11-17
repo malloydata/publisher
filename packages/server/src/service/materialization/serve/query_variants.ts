@@ -40,18 +40,12 @@ import type {
    ModelMaterializer,
    QueryMaterializer,
 } from "@malloydata/malloy";
-import * as path from "path";
-import { fileURLToPath, pathToFileURL } from "url";
 import {
    readPreparedQuery,
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import { queryTimezoneOf } from "../../governance/ir/compiled_model";
-import {
-   doubleQuotedString,
-   identifier,
-   stringLiteral,
-} from "../../malloy_text";
+import { identifier } from "../../malloy_text";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { extractRunQueryCall, type RunQueryCall } from "../../query_text";
 import type { Binding, Pinned } from "../domain/binding";
@@ -61,16 +55,10 @@ import type {
    PersistedViewPlan,
 } from "../domain/table_plans";
 import type { BuildManifest } from "../domain/types";
-import {
-   generatePersistedResultFile,
-   persistedViewCompanionHref,
-   viewNoteTexts,
-} from "../text/read_text";
-import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import { servedCopyConfig } from "./served_copy_config";
-import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
+import { viewNoteTexts } from "../text/read_text";
 import {
    callerTextDecline,
+   compilePersistedResultVariant,
    type CompiledVariant,
    type PersistedViewServe,
    readStoredVariant,
@@ -78,8 +66,6 @@ import {
    resultKinds,
    type StageIR,
    stageShape,
-   storedColumnCasts,
-   VARIANT_FLAGS,
    type ViewAnswer,
    viewDeclaration,
    type ViewShape,
@@ -167,7 +153,7 @@ export class PersistedQueryServe {
          which === "bound" ? pinned.snapshot.bindings : pinned.fresh
       ).filter(
          (b) =>
-            b.kind === "view" &&
+            b.kind === "query" &&
             b.tier === "storage" &&
             (b.sourceIDs ?? []).some((id) => ids.has(id)),
       );
@@ -234,11 +220,11 @@ export class PersistedQueryServe {
    }): Promise<ViewAnswer> {
       this.compiledOver(args.pinned);
       const called = this.calledQuery(args.queryString);
-      if (!called) throw new LegDecline("view_missing_field");
+      if (!called) throw new LegDecline("query_missing_field");
       const { call, plan } = called;
       if (call.refined) {
          throw new LegDecline(
-            "view_missing_field",
+            "query_missing_field",
             `the query refines \`${call.query}\` (\`+ { … }\`), and the stored result holds only the query as written`,
          );
       }
@@ -268,7 +254,7 @@ export class PersistedQueryServe {
          | { type?: unknown; location?: { url?: unknown } }
          | undefined;
       const notTheQuery = new LegDecline(
-         "view_missing_field",
+         "query_missing_field",
          `the query does not call \`${call.query}\` as its file declares it`,
       );
       if (
@@ -300,14 +286,14 @@ export class PersistedQueryServe {
          if (result.resultExplore.name !== plan.queryName) throw notTheQuery;
       }
       const table = this.views.tableOf(plan, args.pinned, args.buildManifest);
-      if (!table.built) throw new LegDecline("view_not_built");
+      if (!table.built) throw new LegDecline("query_not_built");
       if (table.stale || (!table.virtualMap && !table.colocatedTable)) {
-         throw new LegDecline("view_stale");
+         throw new LegDecline("query_stale");
       }
       const variant = await this.compiledVariant(plan, table);
       if (variant.refusal) {
          throw new LegDecline(
-            "view_missing_field",
+            "query_missing_field",
             `the stored result cannot answer \`${call.query}\` with live's columns: ${variant.refusal}`,
          );
       }
@@ -373,86 +359,54 @@ export class PersistedQueryServe {
       if ("refusal" in query) return { refusal: query.refusal };
       // malloy-text: viewDeclaration's text, every value through identifier or noteSource
       const queryText = query.text;
-      const read = table.binding
-         ? storedColumnCasts(table.binding.schema, shape)
-         : { casts: new Map<string, ColumnCast>() };
-      if ("refusal" in read) return { refusal: read.refusal };
-      const { casts } = read;
-      // The run target's own time zone, as the view leg writes it: each
-      // truncation a read computes again, and a later stage, in live's zone.
-      const sourceTimezone = shape.sourceTimezone
-         ? `\n  timezone: ${stringLiteral(shape.sourceTimezone)}`
-         : "";
-      const modelPath = this.host.modelPath();
-      const modelFile = path.join(packagePath, modelPath);
-      const destinations = this.host.serveDestinationConfig();
-      const config =
-         table.binding && destinations
-            ? servedCopyConfig(
-                 packageConfig,
-                 destinations(),
-                 new Set([table.binding.destinationName]),
-              )
-            : packageConfig;
-      return compileDeclaringFileVariant({
+      return compilePersistedResultVariant({
          packagePath,
-         modelPath,
          packageConfig,
-         config,
          modelDef,
-         ...(plan.sourceID !== undefined
-            ? { sourceID: plan.sourceID }
-            : { declaringURL: plan.declaringURL }),
-         alsoRedeclared: [plan.queryName],
-         // An inline run target's generated source, which the query names by
-         // a bare reference the query model must resolve too.
-         ...(plan.sourceID === undefined
-            ? { alsoExported: [inlineTarget] }
-            : {}),
-         copySuffix: ".view-author.malloy",
-         queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
-         flags: VARIANT_FLAGS,
-         declare: ({ gates, copyName, declaringURL, addFile }) => {
-            const stored = `${plan.buildSourceName}__stored`;
-            let storedSource: string;
-            if (table.binding) {
-               const { typeText, timeframes } = storedTypedSource({
-                  columns: shape.columns,
-                  casts,
-                  binding: table.binding,
-                  typeName: `${plan.buildSourceName}__type`,
-                  stored,
-               });
-               // malloy-text: storedTypedSource's text, its restatements and the source's own zone
-               storedSource = `${typeText}${sourceTimezone || timeframes ? ` extend {${sourceTimezone}${timeframes}\n}` : ""}`;
-            } else {
-               // The companion over the copy, so its build SQL (and so its
-               // address) is the one the build plan computed.
-               const text = generatePersistedResultFile(
-                  this.host
-                     .planModelPersistedViews(modelDef)
-                     .plans.filter((p) => p.declaringURL === plan.declaringURL),
-                  this.plans().filter(
-                     (p) => p.declaringURL === plan.declaringURL,
-                  ),
-                  copyName,
-               );
-               if (!text) return { error: "no companion" };
-               const companion = persistedViewCompanionHref(declaringURL.href);
-               addFile(new URL(companion), text);
-               storedSource = `import { ${identifier(stored)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}`;
-            }
+         modelPath: this.host.modelPath(),
+         destinations: this.host.serveDestinationConfig(),
+         companionPlans: () => ({
+            views: this.host.planModelPersistedViews(modelDef).plans,
+            queries: this.plans(),
+         }),
+         plan,
+         table,
+         shape,
+         redeclare:
+            plan.sourceID !== undefined
+               ? { sourceID: plan.sourceID, alsoRedeclared: [plan.queryName] }
+               : {
+                    declaringURL: plan.declaringURL,
+                    alsoRedeclared: [plan.queryName],
+                    // An inline run target's generated source, which the
+                    // query names by a bare reference the query model must
+                    // resolve too.
+                    alsoExported: [inlineTarget],
+                 },
+         colocatedAlias: `${plan.buildSourceName}__stored`,
+         emit: (read) => {
             // malloy-text: the run target's own gate expressions, as the author wrote them, one per line (see gateLines)
-            const gateText = gates;
-            // A colocated table is read as built: the run target's own time
-            // zone goes on its redeclaration (a `storage=` read takes it on
-            // the stored source, beside the timeframes it truncates again).
-            const zone =
-               !table.binding && sourceTimezone
-                  ? ` extend {${sourceTimezone}\n}`
-                  : "";
+            const gates = read.gates;
+            // malloy-text: the run target's own `timezone:` statement, its zone through stringLiteral
+            const zone = read.sourceTimezone;
+            // The run target's own time zone: on the stored source beside the
+            // timeframes a `storage=` read truncates again, on the
+            // redeclaration for a colocated table, read as built.
+            let storedSource: string;
+            let redeclaredZone = "";
+            if ("typeText" in read.stored) {
+               // malloy-text: storedTypedSource's text, names through identifier
+               const typeText = read.stored.typeText;
+               // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
+               const timeframes = read.stored.timeframes;
+               storedSource = `${typeText}${zone || timeframes ? ` extend {${zone}${timeframes}\n}` : ""}`;
+            } else {
+               // malloy-text: the companion import, names through identifier and its file through doubleQuotedString
+               storedSource = read.stored.importLine;
+               if (zone) redeclaredZone = ` extend {${zone}\n}`;
+            }
             return `${storedSource}
-${gateText}source: ${identifier(target)} is ${identifier(stored)}${zone}
+${gates}source: ${identifier(target)} is ${identifier(read.stored.name)}${redeclaredZone}
 ${queryText}`;
          },
       });

@@ -30,7 +30,12 @@ import { storageTablePath } from "./storage_table_path";
 import type { BuildManifest, FreshnessManifest, ManifestEntry } from "./types";
 
 /** What a stored table holds, from the plan: never read off a name. */
-export type BindingKind = "persist" | "materialize" | "rollup" | "view";
+export type BindingKind =
+   | "persist"
+   | "materialize"
+   | "rollup"
+   | "view"
+   | "query";
 
 /** Where a stored table lives: the source's own warehouse, or a storage destination. */
 type BindingTier = "colocated" | "storage";

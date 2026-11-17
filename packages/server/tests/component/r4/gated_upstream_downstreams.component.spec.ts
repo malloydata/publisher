@@ -229,10 +229,12 @@ function expectedGateRefusals(): string[] {
          // a row filter over a dropped gate column classifies rejected; an
          // inherited row filter is refused colocated and stored, either way.
          if (s === "join" || g !== "az") {
-            out.push(`${g}_pc_${s}:colocated:authorize`);
-            out.push(`${g}_ps_${s}:storage:authorize`);
-            out.push(`${g}_mc_${s}:colocated:authorize`);
-            out.push(`${g}_ms_${s}:storage:authorize`);
+            // Named by the gate's kind: a row filter or a lock.
+            const reason = g === "az" ? "authorize" : "access_filter";
+            out.push(`${g}_pc_${s}:colocated:${reason}`);
+            out.push(`${g}_ps_${s}:storage:${reason}`);
+            out.push(`${g}_mc_${s}:colocated:${reason}`);
+            out.push(`${g}_ms_${s}:storage:${reason}`);
          }
          // The authorize-route lock is admitted on both tiers (it is decided
          // before any row is read), the switch off or on: G3.
@@ -300,9 +302,8 @@ for (const gated of [false, true]) {
          // A downstream that bakes the upstream's given into its build is
          // refused whatever the switch. An extension inherits the upstream's
          // given-reading `where:`, which only the upstream's own declaration
-         // re-applies at read: a v1 one is refused as
-         // `inherited_where_with_given`, a `#(materialize)` one at plan
-         // (`materialize-not-built`, no refusedSources entry); none is built.
+         // re-applies at read: each is refused as
+         // `inherited_where_with_given`; none is built.
          const built = fixture.built.map((b) => b.name);
          for (const v of Object.keys(STORED)) {
             for (const s of SHAPES) {
@@ -311,9 +312,7 @@ for (const gated of [false, true]) {
                if (s === "ext") {
                   expect([name, hit]).toEqual([
                      name,
-                     v.startsWith("p")
-                        ? `${name}:${v === "pc" ? "colocated" : "storage"}:inherited_where_with_given`
-                        : undefined,
+                     `${name}:${v.endsWith("c") ? "colocated" : "storage"}:inherited_where_with_given`,
                   ]);
                   expect([name, built.includes(name)]).toEqual([name, false]);
                } else expect(hit).toEndWith(":given_in_persisted_query");

@@ -54,8 +54,11 @@ import { keyedOverlay } from "../../overlay_key";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { packageFiles } from "../text/package_files";
-import { reachPersisted, SourceMap } from "../text/source_map";
-import { keepDeclarations } from "../text/declarations_kept";
+import { SourceMap } from "../text/source_map";
+import {
+   chainBuildFileSet,
+   withPersistenceFlag,
+} from "../text/chain_build_files";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { ManifestEntry } from "../domain/types";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
@@ -69,8 +72,8 @@ import {
    nativeTypeLookup,
    declaredColumnsOf,
    liveKeepsBigIntegers,
-   serveTypePlan,
-   storedColumnTypeMismatches,
+   storedColumnReadPlan,
+   storedTypeServesAs,
 } from "../stored_column_types";
 import { annotatedJoinedOutput } from "../../governance/ir/joined_field_output";
 import {
@@ -337,13 +340,31 @@ interface ServedCopyHost {
     * Absent, nothing is bound.
     */
    pinned?(): Pinned;
+   /**
+    * Compile one pass's files off this thread (the load worker) and hydrate
+    * the compiled model here, in a runtime over `config`. Resolves undefined
+    * when it cannot (no worker free now, or the job failed), and the pass
+    * compiles inline; rejects with the compile's failure as the inline
+    * compile throws it. Absent: every pass compiles inline.
+    */
+   compileElsewhere?(args: {
+      packagePath: string;
+      modelPath: string;
+      config: MalloyConfig;
+      /** The pass's files, by overlay key. */
+      files: ReadonlyMap<string, string>;
+   }): Promise<Awaited<ReturnType<CopyLoad>> | undefined>;
 }
 
 interface Compiled {
    key: string;
    /** The invalidation generation it was compiled under. */
    generation: number;
-   /** The snapshot bindings it was compiled over. */
+   /**
+    * The bindings it was compiled over: those it may read at the pin, by
+    * identity. A pin whose bindings differ only in what the compile does not
+    * read ({@link compileInputOf}) reuses it, rebound to those bindings.
+    */
    over: readonly Binding[];
    /**
     * The block every multi-path pair table is read for in this copy (see
@@ -552,9 +573,6 @@ export interface ServedCopyJoinBasis {
 /** How many declined queries one compiled copy remembers before starting over. */
 const DECLINED_LIMIT = 1000;
 
-/** The flag a model's `#@ persist` sources are planned under. */
-const PERSISTENCE_FLAG = /^\s*##!\s*experimental[^\n]*persistence/m;
-
 /**
  * Served copies whose compile failed on a re-root's own text, by the package
  * connections they compiled with, then by model, bindings and copy text: a
@@ -589,6 +607,72 @@ function rerootFailureKey(
    return `${packagePath}\0${modelPath}\0${hash.digest("hex")}`;
 }
 
+/**
+ * What a served copy's compile reads of a binding: everything but how fresh
+ * the table is (`freshAsOf`, its window and fallback, which decide only
+ * whether the pin reads it) and what the router reads of it beside the copy
+ * (`ownGateKept`, a rollup's key check). A field added to `Binding` is read
+ * here until it is listed, so a new input recompiles rather than reuses.
+ * Memoized per binding, which is replaced, never edited.
+ */
+const compileInputs = new WeakMap<Binding, string>();
+export function compileInputOf(b: Binding): string {
+   let input = compileInputs.get(b);
+   if (input === undefined) {
+      const {
+         freshAsOf: _freshAsOf,
+         freshnessWindowSeconds: _window,
+         freshnessFallback: _fallback,
+         ownGateKept: _gateKept,
+         rollupKey: _rollupKey,
+         ...read
+      } = b;
+      input = JSON.stringify(read);
+      compileInputs.set(b, input);
+   }
+   return input;
+}
+
+/** The compile key of the bindings a copy is compiled over, in any order. */
+function compileKeyOf(bindings: readonly Binding[]): string {
+   return bindings.map(compileInputOf).sort().join("\u0000");
+}
+
+/** Whether two binding lists are the same bindings, by identity, in order. */
+function sameBindings(a: readonly Binding[], b: readonly Binding[]): boolean {
+   return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/**
+ * `compiled` answering for `bindings`, whose compile key is its own: the same
+ * compile, with each binding it reports (re-rooted, aliased) replaced by the
+ * one of `bindings` that reads alike, so an answer reports the pin's
+ * freshness, never the compile's. Undefined when two of `bindings` read
+ * alike, since which is which cannot be told.
+ */
+function reboundTo(
+   compiled: Compiled,
+   bindings: readonly Binding[],
+): Compiled | undefined {
+   const byInput = new Map<string, Binding>();
+   for (const b of bindings) {
+      const input = compileInputOf(b);
+      if (byInput.has(input)) return undefined;
+      byInput.set(input, b);
+   }
+   const now = (b: Binding): Binding => byInput.get(compileInputOf(b)) ?? b;
+   const rerooted = compiled.rerooted.map(now);
+   return {
+      ...compiled,
+      over: bindings,
+      rerooted,
+      aliased: rerooted.map((b, i) => ({
+         ...b,
+         destinationName: compiled.aliased[i].destinationName,
+      })),
+   };
+}
+
 /** One model's served copy. */
 export class ServedCopyServe {
    private packagePath?: string;
@@ -606,13 +690,15 @@ export class ServedCopyServe {
       number,
       {
          key: string;
-         over: readonly Binding[];
          generation: number;
          promise: Promise<Compiled>;
       }
    >();
    /** Bumped on every invalidation, so a compile started before it is never kept. */
    private generation = 0;
+   /** Requests for a compiled copy so far, and the latest whose copy each lane keeps. */
+   private turns = 0;
+   private keptTurn = new Map<number, number>();
 
    constructor(private readonly host: ServedCopyHost) {}
 
@@ -823,15 +909,15 @@ export class ServedCopyServe {
    }
 
    /**
-    * {@link loadQuery} in one compiled copy: lane 0's first, then, for a query
-    * that reads another block of a multi-path pair table, that block's copy.
+    * The attempt every check reads: the caller's text loaded on the copy,
+    * its virtual map, and the memoized decline. Declines at once when the
+    * copy re-roots nothing, or already declined this text.
     */
-   private async answer(
+   private async beginAttempt(
       compiled: Compiled,
       queryString: string,
       givens: Record<string, unknown> | undefined,
-      pinned: Pinned,
-   ): Promise<Awaited<ReturnType<ServedCopyServe["loadQuery"]>>> {
+   ): Promise<AnswerAttempt & { materializer: ModelMaterializer }> {
       if (!compiled.materializer || compiled.rerooted.length === 0) {
          throw new LegDecline(
             compiled.problems.some(
@@ -885,14 +971,15 @@ export class ServedCopyServe {
             throw error;
          }
       };
+      const materializer = compiled.materializer;
       const virtualMap = buildVirtualMap(compiled.aliased);
-      await this.host.ensureSharedQueryModel?.(compiled.materializer);
-      const runnable = compiled.materializer.loadRestrictedQuery(queryString);
-      // The prepared query, read once, when a check below needs it. No check
+      await this.host.ensureSharedQueryModel?.(materializer);
+      const runnable = materializer.loadRestrictedQuery(queryString);
+      // The prepared query, read once, when a check needs it. No check
       // mutates it.
       let preparedRead: ReturnType<typeof readPreparedQuery> | undefined;
       const prepared = () => (preparedRead ??= readPreparedQuery(runnable));
-      const attempt: AnswerAttempt = {
+      return {
          compiled,
          queryString,
          givens,
@@ -901,49 +988,33 @@ export class ServedCopyServe {
          decline,
          compiling,
          prepared,
+         materializer,
       };
+   }
+
+   /**
+    * {@link loadQuery} in one compiled copy: lane 0's first, then, for a query
+    * that reads another block of a multi-path pair table, that block's copy.
+    *
+    * The checks run in a fixed order, and the first that declines names the
+    * decline code: a gate the copy cannot graft, an opted-out source, a query
+    * that reads no re-rooted table, the source's zone, the result's shape, a
+    * pair table's block, an aggregate over a record join, a pair table, the
+    * query's time zone, a zoned column.
+    */
+   private async answer(
+      compiled: Compiled,
+      queryString: string,
+      givens: Record<string, unknown> | undefined,
+      pinned: Pinned,
+   ): Promise<Awaited<ReturnType<ServedCopyServe["loadQuery"]>>> {
+      const attempt = await this.beginAttempt(compiled, queryString, givens);
+      const { runnable, virtualMap, prepared, decline } = attempt;
       await this.checkGateGraft(attempt);
       await checkOptOut(attempt);
-      // Compile eagerly so a query the copy cannot answer fails inside the
-      // router's attempt, not at run time past the fallback.
-      const sql = await compiling(() =>
-         runnable.getSQL({
-            virtualMap,
-            givens: givens as never,
-         }),
-      );
-      const tablesRead = compiled.rerooted.filter((b) =>
-         sqlReadsTable(sql, boundTablePath(b)),
-      );
-      if (tablesRead.length === 0) {
-         // The query reads no stored table: the served copy would only add
-         // work over live. Let the next candidate answer.
-         // A table on the queried source's chain that is not re-rooted was
-         // left unserved, with a package warning saying why.
-         decline(
-            "the query reads no re-rooted table",
-            "served_copy_not_served",
-         );
-      }
+      const { sql, tablesRead } = await readsRerootedTables(attempt);
       await checkSourceZone(attempt);
       await this.checkResultShape(attempt, tablesRead);
-      // A join answered from stored columns is a record, so an aggregate at
-      // its grain (`j.x.sum()`, `j.count()`, a measure that reads one) would
-      // be computed per row of the source instead of per joined row. Malloy
-      // marks each such aggregate where it needs a symmetric one; live's
-      // join answers those.
-      const inlined = new Set<string>();
-      // Each join the copy answers from a record of stored columns (an
-      // inlined join_one, or the inlined join_many of a pair table read
-      // flat), with its fields that carry annotations.
-      const annotated = new Map<string, ReadonlySet<string>>();
-      for (const b of tablesRead) {
-         for (const [join, fields] of compiled.inlinedJoins?.get(b.tablePath) ??
-            []) {
-            inlined.add(join);
-            annotated.set(join, fields);
-         }
-      }
       const pairsRead = await pairsReadPerTable(
          attempt,
          sql,
@@ -960,12 +1031,8 @@ export class ServedCopyServe {
             pinned,
          );
       }
-      for (const p of pairsRead) {
-         annotated.set(p.pair.join, p.annotatedChildFields);
-      }
       await checkRecordJoins({
-         inlined,
-         annotated,
+         ...recordJoinsRead(compiled, tablesRead, pairsRead),
          prepared,
          modelDef: compiled.modelDef,
          queryString,
@@ -982,7 +1049,7 @@ export class ServedCopyServe {
          gateTablesRead: tablesReadForGates(sql, compiled.rerooted, tablesRead),
          graftScope: {
             modelDef: compiled.modelDef as ModelDef,
-            materializer: compiled.materializer,
+            materializer: attempt.materializer,
             // Its own cache scope: a graft built on the served copy must never
             // be shared with one built on the author's model, and a new
             // compile (new bindings, a reload) starts afresh.
@@ -1274,41 +1341,49 @@ export class ServedCopyServe {
     * that block, and kept like lane 0 until the next invalidation.
     */
    private async ensureCompiled(pinned: Pinned, lane = 0): Promise<Compiled> {
+      // Each request's turn: a compile an older request awaited never
+      // replaces the copy a newer one kept.
+      const turn = ++this.turns;
+      const keep = (compiled: Compiled): void => {
+         if ((this.keptTurn.get(lane) ?? 0) > turn) return;
+         this.keptTurn.set(lane, turn);
+         this.compiledLanes.set(lane, compiled);
+      };
       const bindings = this.freshBindings(pinned);
-      const over = pinned.snapshot.bindings;
-      const key = [
-         ...bindings
-            .map(
-               (b) =>
-                  `${b.sourceName}@${isColocated(b) ? "colocated:" : ""}${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshnessFallback ?? ""}`,
-            )
-            .sort(),
-      ].join("|");
       const generation = this.generation;
       const current = this.compiledLanes.get(lane);
+      // The same bindings as the copy compiled over, by identity: no key to
+      // read (a query's usual case).
       if (
          current &&
-         current.key === key &&
-         current.over === over &&
-         current.generation === generation
+         current.generation === generation &&
+         sameBindings(current.over, bindings)
       ) {
+         // Kept again under this turn: an older request still compiling
+         // must not replace the copy this one answered from.
+         keep(current);
          return current;
+      }
+      const key = compileKeyOf(bindings);
+      if (current && current.key === key && current.generation === generation) {
+         const reused = reboundTo(current, bindings);
+         if (reused) {
+            keep(reused);
+            return reused;
+         }
       }
       let inFlight = this.inFlightLanes.get(lane);
       if (
          !inFlight ||
          inFlight.key !== key ||
-         inFlight.over !== over ||
          inFlight.generation !== generation
       ) {
          const started = {
             key,
-            over,
             generation,
             promise: this.compile(
                key,
                generation,
-               over,
                bindings,
                lane,
                pinned.asOf.getTime(),
@@ -1322,13 +1397,28 @@ export class ServedCopyServe {
          });
          inFlight = started;
       }
-      const compiled = await inFlight.promise;
+      const awaited = await inFlight.promise;
+      // A compile this pin joined over bindings that differ only in what the
+      // compile does not read answers with this pin's bindings.
+      const rebound = sameBindings(awaited.over, bindings)
+         ? awaited
+         : reboundTo(awaited, bindings);
+      // Two of this pin's bindings read alike, so which is which cannot be
+      // told: compile over them as they are.
+      const compiled =
+         rebound ??
+         (await this.compile(
+            key,
+            generation,
+            bindings,
+            lane,
+            pinned.asOf.getTime(),
+         ));
       // An invalidation while it compiled makes it stale: keep it only when
       // it is still the current generation's. A copy over another snapshot
-      // is kept too: the latest compile is what the warnings report.
-      if (compiled.generation === this.generation) {
-         this.compiledLanes.set(lane, compiled);
-      }
+      // is kept too, unless a later request kept its own: the latest
+      // request's copy is what the warnings report.
+      if (compiled.generation === this.generation) keep(compiled);
       return compiled;
    }
 
@@ -1701,7 +1791,7 @@ export class ServedCopyServe {
     * on its destination alone: each bound upstream re-rooted in the file
     * that declares it, as this served copy re-roots it ({@link
     * rerootCandidates}), and every declaration off the downstream's path
-    * blanked ({@link keepDeclarations}), so nothing compiled reads the
+    * blanked (`chainBuildFileSet`), so nothing compiled reads the
     * warehouse. Declines, with why, when an upstream does not re-root, the
     * downstream reaches past its re-rooted upstreams, or a file it reaches
     * cannot be read. Compiles nothing: the build compiles the files on its
@@ -1735,72 +1825,15 @@ export class ServedCopyServe {
                : "no stored upstream could be re-rooted",
          );
       }
-      const downstreamName = lift.sourceNameById.get(downstreamSourceID);
-      const location =
-         downstreamName === undefined
-            ? undefined
-            : lift.contents[downstreamName]?.location;
-      const declared =
-         location === undefined ? undefined : lift.liftText(location);
-      const name =
-         declared === undefined
-            ? undefined
-            : /^\s*(`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)/.exec(declared)?.[1];
-      if (!downstreamName || !location?.url || !location.range || !name) {
-         return why("the downstream's declaration could not be found");
-      }
-      // Everything the downstream reads, up to its stored upstreams: the
-      // re-rooted ones, and those that read one by name (a rename) and stay
-      // as written.
-      const stored = new Set(candidates.map((c) => c.reroot.sourceID));
-      const storedNames = new Set<string>();
-      for (const b of bindings) {
-         if (b.sourceIDs) for (const id of b.sourceIDs) stored.add(id);
-         else storedNames.add(b.sourceName);
-      }
-      const reached = reachPersisted(
+      const set = chainBuildFileSet({
          lift,
-         downstreamName,
-         (n, id) => stored.has(id) || storedNames.has(n),
-      );
-      if (reached.raw) {
-         return why(
-            `it reads ${reached.rawLeaves.join(", ")}, which no re-rooted upstream stands in for`,
-         );
-      }
-      const keep = new Map<string, { line: number; character: number }[]>();
-      const keepAt = (url: string | undefined, range: unknown) => {
-         const start = (
-            range as { start?: { line: number; character: number } }
-         )?.start;
-         if (!url || !start) return;
-         keep.set(url, [...(keep.get(url) ?? []), start]);
-      };
-      keepAt(location.url, location.range);
-      for (const visited of reached.visited) {
-         const at = lift.contents[visited]?.location;
-         keepAt(at?.url, at?.range);
-      }
-      for (const c of candidates) keepAt(c.reroot.url, c.reroot.range);
-      // Every file the downstream's file reaches by import, blanked: the
-      // imports the compile resolved, never text that only looks like one.
-      const importsOf = compiledImports(modelDef);
-      const blanked = new Map<string, string>();
-      const pending = [location.url];
-      while (pending.length > 0) {
-         const url = pending.pop()!;
-         if (blanked.has(url)) continue;
-         const text = lift.fileText(url);
-         const kept =
-            text === undefined
-               ? undefined
-               : keepDeclarations(text, keep.get(url) ?? []);
-         if (text === undefined || kept === undefined) {
-            return why(`a file it reaches could not be read (${url})`);
-         }
-         blanked.set(url, kept);
-         pending.push(...importsOf(url));
-      }
+         downstreamSourceID,
+         bindings,
+         reroots: candidates.map((c) => c.reroot),
+         importsOf: compiledImports(modelDef),
+      });
+      if ("declined" in set) return set;
+      const blanked = set.files;
       const copy = buildServedCopy(
          candidates.map((c) => c.reroot),
          (u) => blanked.get(u),
@@ -1821,24 +1854,15 @@ export class ServedCopyServe {
             end: span.declaration.end,
          })),
       );
-      const entry = files.get(location.url)!;
-      if (!PERSISTENCE_FLAG.test(entry)) {
-         const flag = "##! experimental.persistence\n";
-         files.set(location.url, `${flag}${entry}`);
-         for (const span of rerootedSpans) {
-            if (span.url !== location.url) continue;
-            span.start += flag.length;
-            span.end += flag.length;
-         }
-      }
+      withPersistenceFlag(files, set.entry, rerootedSpans);
       const aliased = candidates.map((c) => ({
          ...c.binding,
          destinationName: servedConnectionOf(c.binding),
       }));
       return {
          files,
-         entry: location.url,
-         downstreamName: name.startsWith("`") ? name.slice(1, -1) : name,
+         entry: set.entry,
+         downstreamName: set.downstreamName,
          connection: aliased[0].destinationName,
          virtualMap: buildVirtualMap(aliased),
          rerooted: candidates.map((c) => c.reroot.sourceName),
@@ -1959,12 +1983,12 @@ export class ServedCopyServe {
    private async compile(
       key: string,
       generation: number,
-      over: readonly Binding[],
       bindings: Binding[],
       lane = 0,
       /** The pin's time, which a remembered failure is held against. */
       asOf = 0,
    ): Promise<Compiled> {
+      const over = bindings;
       const problems: ServedCopyProblem[] = [];
       // Storage bindings reach here only with destinations (`usable`); a
       // copy of colocated tables alone needs none.
@@ -2012,8 +2036,9 @@ export class ServedCopyServe {
       // fields on; and one more each that keeps every inlined join as written
       // and drops the pair tables.
       const maxPasses = 3 * state.candidates.length + 3;
-      // Each pass is a full compile on the main thread: hand the loop a turn
-      // between them, so a long ladder does not hold it throughout.
+      // A pass compiled inline is a full compile on the main thread: hand
+      // the loop a turn between them, so a long ladder does not hold it
+      // throughout.
       const yielder = createEventLoopYielder();
       for (let pass = 0; pass <= maxPasses; pass++) {
          if (pass > 0) await yielder.maybeYield();
@@ -2078,22 +2103,7 @@ export class ServedCopyServe {
                   .map((b) => b.destinationName),
             ),
          );
-         const compiler = packageFiles(
-            packagePath,
-            this.host.modelPath(),
-            config,
-         );
-         const load = async (files: ReadonlyMap<string, string>) => {
-            const { runtime, materializer: m } =
-               await compiler.loadModel(files);
-            const model = await m.getModel();
-            return {
-               materializer: m,
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               def: modelDefOf(model as any),
-               runtime: runtime as unknown as GraftRuntime,
-            };
-         };
+         const load = this.passLoader(packagePath, config);
          const loaded = await this.loadCopy(state, copy, overlay, load, lift);
          if (loaded === "retry") continue;
          if (loaded === "failed") {
@@ -2148,6 +2158,34 @@ export class ServedCopyServe {
          rerooted: [],
          aliased: [],
          problems,
+      };
+   }
+
+   /**
+    * How a pass's files are compiled into a model: on the host's other
+    * thread when it takes them ({@link ServedCopyHost.compileElsewhere}),
+    * else here, as `packagePath`'s model over them with `config`'s
+    * connections.
+    */
+   private passLoader(packagePath: string, config: MalloyConfig): CopyLoad {
+      const modelPath = this.host.modelPath();
+      const compiler = packageFiles(packagePath, modelPath, config);
+      return async (files) => {
+         const elsewhere = await this.host.compileElsewhere?.({
+            packagePath,
+            modelPath,
+            config,
+            files: keyedOverlay(files),
+         });
+         if (elsewhere) return elsewhere;
+         const { runtime, materializer } = await compiler.loadModel(files);
+         const model = await materializer.getModel();
+         return {
+            materializer,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            def: modelDefOf(model as any),
+            runtime: runtime as unknown as GraftRuntime,
+         };
       };
    }
 
@@ -2859,10 +2897,37 @@ function materializedColumnsOf(
    );
    const columns: ServedColumn[] = [];
    const columnsLeftOut: string[] = [];
+   // A stored column whose type is not live's (the upstream column's type
+   // changed under the same content address, or the table was altered): read
+   // through a faithful cast, else left out so only a query reading it
+   // answers live, as a v1 table's is (v1ColumnsOf). Never declared as the
+   // stored type, which would answer a number as text.
+   const typePlan = materializedReadPlan(
+      plan.columns.flatMap((c) => {
+         const type = stored.get(c.column);
+         return c.join === undefined &&
+            c.column === c.dimension &&
+            type !== undefined
+            ? [{ name: c.column, type }]
+            : [];
+      }),
+      def,
+   );
+   const castTo = new Map(
+      typePlan.casts.map((c) => [
+         c.column,
+         c.castTo === "BOOLEAN" ? ("boolean" as const) : ("date" as const),
+      ]),
+   );
+   const leftOut = new Set(typePlan.leftOut.map((m) => m.column));
    for (const c of plan.columns) {
       // An inlined join's columns are read under the join's name
       // (inlinedJoinsOf, below), not as fields of the source.
       if (c.join !== undefined) continue;
+      if (leftOut.has(c.column)) {
+         columnsLeftOut.push(c.column);
+         continue;
+      }
       const type = stored.get(c.column);
       // A column live types as warehouse-native (a UUID) has no stored
       // spelling, so a colocated table's captured columns leave it out: it is
@@ -2890,12 +2955,14 @@ function materializedColumnsOf(
          fieldsByName.get(c.dimension),
          lineage.get(c.dimension),
       );
+      const cast = castTo.get(c.column);
       columns.push({
          name: c.column,
          type,
          ...(notes.length > 0 ? { notes } : {}),
          ...timeframeOf(c.dimension),
          ...(c.access ? { access: c.access } : {}),
+         ...(cast ? { castTo: cast } : {}),
          // A zoned timestamp whose field live types `timestamptz` is
          // declared as one, as a v1 table's is.
          ...((fieldsByName.get(c.dimension) as { type?: unknown })?.type ===
@@ -2922,18 +2989,18 @@ function materializedColumnsOf(
    // A joined big-integer field is read through its native type in the
    // record; one no cast reads exactly leaves the source to its
    // fallback (known limitation 12).
+   const readOptions = bigIntegerOptionsOf(def, binding);
    const joinedReads = joined.map((j) => {
       const fields = joinedFieldsAt(def.fields, [j.join]);
-      const reads = new Map<string, string | undefined>();
-      for (const c of j.columns) {
-         const read = bigIntegerReadOf(
-            fields.find((f) => fieldNameOf(f) === c.name),
-            { name: c.column, type: c.type },
-            bigIntegerOptionsOf(def, binding),
-         );
-         if (read) reads.set(c.name, read.castTo);
-      }
-      return reads;
+      return storedColumnReadPlan(
+         j.columns.map((c) => ({ name: c.column, type: c.type })),
+         j.columns.map((c) => ({
+            name: c.column,
+            type: "",
+            field: fields.find((f) => fieldNameOf(f) === c.name),
+         })),
+         readOptions,
+      );
    });
    // A joined field live types as a warehouse-native type has no
    // stored declaration that reads back as live's either.
@@ -2943,10 +3010,7 @@ function materializedColumnsOf(
          liveTypesAsNative(fields.find((f) => fieldNameOf(f) === c.name)),
       );
    });
-   if (
-      joinedNative ||
-      joinedReads.some((reads) => [...reads.values()].some((r) => !r))
-   ) {
+   if (joinedNative || joinedReads.some((plan) => plan.refusals.length > 0)) {
       problems.push({
          sourceName,
          sourceID: node.sourceID,
@@ -2957,11 +3021,60 @@ function materializedColumnsOf(
    inlinedJoins = joined.map((j, i) => ({
       ...j,
       columns: j.columns.map((c) => {
-         const nativeCast = joinedReads[i].get(c.name);
+         const nativeCast = joinedReads[i].casts.find(
+            (r) => r.column === c.column,
+         )?.castTo;
          return nativeCast ? { ...c, nativeCast } : c;
       }),
    }));
    return { columns, columnsLeftOut, inlinedJoins };
+}
+
+/**
+ * How a `#(materialize)` table's own stored columns read as the types live
+ * gives their fields ({@link storedColumnReadPlan}): each stored column named
+ * for a scalar field of the author's source, against that field's type, as
+ * the served copy's re-root ({@link materializedColumnsOf}) reads them. The
+ * `storage-column-type-mismatch` warning reports the same cast or live
+ * handling (`boundTableTypeFindings`).
+ */
+export function materializedReadPlan(
+   schema: readonly { name: string; type: string }[],
+   def: { fields?: unknown[] } | undefined,
+): ReturnType<typeof storedColumnReadPlan> {
+   const live = new Map<string, string>();
+   for (const f of (def?.fields ?? []) as {
+      name?: unknown;
+      as?: unknown;
+      type?: unknown;
+      join?: unknown;
+      expressionType?: unknown;
+   }[]) {
+      const name = f.as ?? f.name;
+      if (
+         typeof name !== "string" ||
+         typeof f.type !== "string" ||
+         f.join !== undefined ||
+         (f.expressionType !== undefined && f.expressionType !== "scalar")
+      ) {
+         continue;
+      }
+      live.set(name, f.type);
+   }
+   const own = schema.filter((c) => live.has(c.name));
+   return storedColumnReadPlan(
+      own,
+      own.map((c) => ({ name: c.name, type: live.get(c.name) as string })),
+      { queryTimezone: queryTimezoneOf(def) },
+   );
+}
+
+/** Whether a stored column of `storedType` does not serve as `field`'s live type. */
+function driftsFromLive(storedType: string, field: unknown): boolean {
+   const type = (field as { type?: unknown } | undefined)?.type;
+   return (
+      typeof type === "string" && storedTypeServesAs(storedType, type) === false
+   );
 }
 
 /**
@@ -2984,39 +3097,28 @@ function v1ColumnsOf(
    // live. A `storage=` table leaves out a column `except:` drops; a kept
    // `include` that hides one the table lacks is refused (`hiddenUnstored`)
    // and the source answers live.
-   const named = storedColumnsWithAccess(binding.schema, def.fields).map(
-      ({ name, type }) => ({ name, type }),
-   );
-   // A stored column no field of the source names is one its own
-   // `extend` block drops (`except:`, `accept:`) or an `include`
-   // re-hides under another name: it stays on the stored table so the
-   // author's text compiles and removes it again. Should
-   // the text not remove it, the access check below finds a public
-   // field the author's source lacks and leaves the source as written.
-   const narrowed = [
-      ...named,
-      ...unnamedStoredColumns(binding.schema, def.fields),
-   ];
-   const mismatches = storedColumnTypeMismatches(
+   // A stored column no field of the source names is one its own `extend`
+   // block drops (`except:`, `accept:`) or an `include` re-hides under
+   // another name: it stays on the stored table so the author's text
+   // compiles and removes it again. Should the text not remove it, the access
+   // check below finds a public field the author's source lacks and leaves
+   // the source as written.
+   const narrowed = v1StoredColumns(binding.schema, def.fields);
+   // A column the served copy cannot read as its declared type: cast on read
+   // when a cast is faithful, else left out so only a query reading it
+   // answers live.
+   const typePlan = storedColumnReadPlan(
       narrowed,
       declaredColumnsOf(def.fields),
+      { queryTimezone: queryTimezoneOf(def) },
    );
-   // A column the served copy cannot read as its declared type: cast
-   // on read when a cast is faithful, else left out so only a query
-   // reading it answers live.
-   const typePlan =
-      mismatches.length > 0
-         ? serveTypePlan(mismatches, {
-              queryTimezone: queryTimezoneOf(def),
-           })
-         : undefined;
    const castTo = new Map(
-      (typePlan?.casts ?? []).map((c) => [
+      typePlan.casts.map((c) => [
          c.column,
          c.castTo === "BOOLEAN" ? ("boolean" as const) : ("date" as const),
       ]),
    );
-   const leftOut = new Set((typePlan?.unservable ?? []).map((m) => m.column));
+   const leftOut = new Set(typePlan.leftOut.map((m) => m.column));
    columnsLeftOut = [...leftOut];
    // A nest of the persisted query a destination did not store (a lake
    // that cannot hold a repeated record): left out like a column no
@@ -3073,6 +3175,61 @@ function v1ColumnsOf(
       return undefined;
    }
    return { columns, columnsLeftOut };
+}
+
+/**
+ * The query's SQL on the copy, compiled eagerly so a query the copy cannot
+ * answer fails inside the router's attempt, not at run time past the
+ * fallback, and the re-rooted tables it reads. A query that reads none would
+ * only add work over live: declined, so the next candidate answers (a table
+ * on the queried source's chain that is not re-rooted carries a package
+ * warning saying why).
+ */
+async function readsRerootedTables(
+   attempt: AnswerAttempt,
+): Promise<{ sql: string; tablesRead: Binding[] }> {
+   const { compiled, runnable, virtualMap, givens, compiling } = attempt;
+   const sql = await compiling(() =>
+      runnable.getSQL({ virtualMap, givens: givens as never }),
+   );
+   const tablesRead = compiled.rerooted.filter((b) =>
+      sqlReadsTable(sql, boundTablePath(b)),
+   );
+   if (tablesRead.length === 0) {
+      attempt.decline(
+         "the query reads no re-rooted table",
+         "served_copy_not_served",
+      );
+   }
+   return { sql, tablesRead };
+}
+
+/**
+ * The joins an answer reads as a record of stored columns (an inlined
+ * join_one, or a pair table's join_many read flat), with each one's
+ * annotated fields: an aggregate at a record join's grain would be computed
+ * per row of the source, which live's join answers instead.
+ */
+function recordJoinsRead(
+   compiled: Compiled,
+   tablesRead: readonly Binding[],
+   pairsRead: Awaited<ReturnType<typeof pairsReadPerTable>>,
+): {
+   inlined: Set<string>;
+   annotated: Map<string, ReadonlySet<string>>;
+} {
+   const inlined = new Set<string>();
+   const annotated = new Map<string, ReadonlySet<string>>();
+   for (const b of tablesRead) {
+      for (const [join, fields] of compiled.inlinedJoins?.get(b.tablePath) ??
+         []) {
+         inlined.add(join);
+         annotated.set(join, fields);
+      }
+   }
+   for (const p of pairsRead)
+      annotated.set(p.pair.join, p.annotatedChildFields);
+   return { inlined, annotated };
 }
 
 /**
@@ -3811,7 +3968,12 @@ function pairRecordsOf(
          const big = bigRead(field, { name: c.column, type });
          // So does one live types as a warehouse-native type, which no
          // stored declaration reads back as.
-         if ((big && !big.castTo) || liveTypesAsNative(field)) {
+         // So does one stored as another type than live's.
+         if (
+            (big && !big.castTo) ||
+            liveTypesAsNative(field) ||
+            driftsFromLive(type, field)
+         ) {
             missing = true;
             continue;
          }
@@ -4200,6 +4362,9 @@ function inlinedJoinsOf(
          const type = stored.get(c.column);
          if (type === undefined) return undefined;
          const field = joinedFields.get(c.dimension);
+         // A record field has no cast to read it as live's type, so a
+         // drifted one leaves the source to its fallback.
+         if (driftsFromLive(type, field)) return undefined;
          const timeframe = field?.timeframe;
          const { notes, annotated } = joinedColumnNotes(
             field,
@@ -4286,6 +4451,24 @@ export function storedColumnsWithAccess(
       out.push({ name, type: c.type, ...(access ? { access } : {}) });
    }
    return out;
+}
+
+/**
+ * A v1 table's stored columns as its source reads them: each one a field
+ * names ({@link storedColumnsWithAccess}), then each one none names. The one
+ * list the served copy re-roots on and the type warning checks.
+ */
+export function v1StoredColumns(
+   schema: readonly { name: string; type: string }[],
+   fields: readonly unknown[] | undefined,
+): { name: string; type: string }[] {
+   return [
+      ...storedColumnsWithAccess(schema, fields).map(({ name, type }) => ({
+         name,
+         type,
+      })),
+      ...unnamedStoredColumns(schema, fields),
+   ];
 }
 
 /**

@@ -72,6 +72,8 @@ import {
 } from "../text/generated_files";
 import { SourceMap } from "../text/source_map";
 import type { Omission } from "../domain/omitted_sources";
+import type { RefusedReason } from "../domain/types";
+import { gateRefusalReason } from "../domain/gate_refusal";
 
 interface GeneratedPersistedViews {
    /** The views the companion declares. */
@@ -137,11 +139,14 @@ async function persistedViewRefusalReason(
    plan: PersistedViewPlan,
    modelDef: unknown,
    materializer: ModelMaterializer,
-): Promise<string | undefined> {
+): Promise<{ reason: string; refusal: RefusedReason } | undefined> {
    const node = SourceMap.of(modelDef).node(plan.sourceID);
    const localName = node?.name;
    if (!node || !localName) {
-      return "its source is not in this model's namespace";
+      return {
+         reason: "its source is not in this model's namespace",
+         refusal: "run_target_unsupported",
+      };
    }
    const def = node.def as {
       fields?: unknown;
@@ -158,34 +163,62 @@ async function persistedViewRefusalReason(
          ? (prepared.pipeline as StageLike[])
          : [];
    } catch (error) {
-      return `the view does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
+      return {
+         reason: `the view does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
+         refusal: "generated_build_failed",
+      };
    }
-   if (stages.length === 0) return "the view has no stage to store";
+   if (stages.length === 0)
+      return {
+         reason: "the view has no stage to store",
+         refusal: "no_stored_columns",
+      };
    if (pipelineReadsCurrentTime(def, stages)) {
-      return "its result reads the current time, so it differs per read";
+      return {
+         reason: "its result reads the current time, so it differs per read",
+         refusal: "current_time",
+      };
    }
    const last = stages[stages.length - 1];
-   if (
-      plan.storage !== undefined &&
-      (last.outputStruct?.fields ?? []).some(isNested)
-   ) {
-      return "its result nests, which a storage destination's table cannot declare yet; persist it without storage=";
+   // On either tier: the view leg never answers from a nested result (it
+   // cannot rebuild a nest's rows exactly), so a table built for one would
+   // never be read.
+   if ((last.outputStruct?.fields ?? []).some(isNested)) {
+      return {
+         reason:
+            "its result nests, which a persisted view cannot answer from its table: a nest's stored rows cannot be rebuilt exactly",
+         refusal: "nested_result",
+      };
    }
    const gates = collectEntryPointGates(node.def as never, modelDef as never);
    if (gates.length === 0) return undefined;
+   // Named by the gates' kind, as on every mechanism.
+   const gateRefusal = gateRefusalReason(gates.map((g) => g.route));
    if (gates.some((g) => !g.struct)) {
-      return "the gates of its source cannot be read";
+      return {
+         reason: "the gates of its source cannot be read",
+         refusal: gateRefusal,
+      };
    }
    const gatedWhy =
       "its source carries a row-level gate (#(access_filter) or #(authorize))";
    if (stages.length !== 1 || last.type !== "reduce") {
-      return `${gatedWhy}, which a multi-stage or non-grouping view's stored result cannot keep`;
+      return {
+         reason: `${gatedWhy}, which a multi-stage or non-grouping view's stored result cannot keep`,
+         refusal: gateRefusal,
+      };
    }
    if (last.limit !== undefined) {
-      return `${gatedWhy}, which a view with limit: cannot keep: its stored rows are limited across every caller`;
+      return {
+         reason: `${gatedWhy}, which a view with limit: cannot keep: its stored rows are limited across every caller`,
+         refusal: gateRefusal,
+      };
    }
    if (computesAcrossGroups(last)) {
-      return `${gatedWhy}, which a view computing across groups (all(), exclude(), calculate:) cannot keep`;
+      return {
+         reason: `${gatedWhy}, which a view computing across groups (all(), exclude(), calculate:) cannot keep`,
+         refusal: gateRefusal,
+      };
    }
    const grouped = groupedNames(last);
    for (const gate of gates) {
@@ -202,55 +235,68 @@ async function persistedViewRefusalReason(
          }>(probe, `persisted view gate on "${localName}"`, filterText);
          paths = (condition.refSummary?.fieldUsage ?? []).map((u) => u.path);
       } catch {
-         return `${gatedWhy} that could not be read against the view`;
+         return {
+            reason: `${gatedWhy} that could not be read against the view`,
+            refusal: gateRefusalReason([gate.route]),
+         };
       }
       for (const p of paths) {
          if (!Array.isArray(p) || p.length === 0) continue;
          if (p.length !== 1 || typeof p[0] !== "string" || !grouped.has(p[0])) {
-            return `the access filter of its source reads \`${p.join(".")}\`, which the view does not group by, so its stored rows could not be filtered per caller`;
+            return {
+               reason: `the access filter of its source reads \`${p.join(".")}\`, which the view does not group by, so its stored rows could not be filtered per caller`,
+               refusal: gateRefusalReason([gate.route]),
+            };
          }
       }
    }
    return undefined;
 }
 
-/** Whether `struct`, or any source it joins (at any depth), carries a gate. */
-function joinsAGate(
+/**
+ * The routes of the gates on any source `struct` joins (at any depth), empty
+ * when none carries one.
+ */
+function joinedGateRoutes(
    struct: unknown,
    modelDef: unknown,
    seen: Set<unknown> = new Set(),
-): boolean {
+): string[] {
+   const routes: string[] = [];
    const fields = (struct as { fields?: unknown[] })?.fields ?? [];
    for (const f of fields) {
       const field = f as { join?: unknown; fields?: unknown };
       if (field.join === undefined || seen.has(f)) continue;
       seen.add(f);
-      if (collectEntryPointGates(f as never, modelDef as never).length > 0) {
-         return true;
-      }
-      if (joinsAGate(f, modelDef, seen)) return true;
+      routes.push(
+         ...collectEntryPointGates(f as never, modelDef as never).map(
+            (g) => g.route,
+         ),
+         ...joinedGateRoutes(f, modelDef, seen),
+      );
    }
-   return false;
+   return routes;
 }
 
 /** The routes a row-level gate is written on. */
 const GATE_NOTE_ROUTES = new Set(["access_filter", "authorize"]);
 
 /**
- * Whether the source `sourceID` names carries a gate note its own statement
- * did not write: Malloy copies a base's notes onto an extension (`ops2 is ops
- * extend { … }`), where the gate walk reads them as the extension's own. A
- * note is another statement's when it sits in another file, or at the exact
- * position of a note another source carries.
+ * The routes of the gate notes the source `sourceID` names carries that its
+ * own statement did not write: Malloy copies a base's notes onto an
+ * extension (`ops2 is ops extend { … }`), where the gate walk reads them as
+ * the extension's own. A note is another statement's when it sits in another
+ * file, or at the exact position of a note another source carries. A source
+ * that cannot be found reads as one lock (fails closed).
  */
-function carriesInheritedGateNote(
+function inheritedGateNoteRoutes(
    sourceID: string,
    modelDef: unknown,
-): boolean {
+): string[] {
    const map = SourceMap.of(modelDef);
    const node = map.node(sourceID);
    const declaredIn = splitSourceID(sourceID)?.url;
-   if (!node) return true;
+   if (!node) return ["authorize"];
    const position = (n: AnnotationNote) =>
       n.at
          ? `${n.at.url}\u0000${n.at.range.start.line}\u0000${n.at.range.start.character}`
@@ -258,7 +304,7 @@ function carriesInheritedGateNote(
    const gateNotes = ownLevelNotes(
       (node.def as { annotations?: AnnotationsDef }).annotations,
    ).filter((n) => GATE_NOTE_ROUTES.has(routeOfNote(n.text) ?? ""));
-   if (gateNotes.length === 0) return false;
+   if (gateNotes.length === 0) return [];
    const elsewhere = new Set<string>();
    for (const other of map.nodes()) {
       if (other.sourceID === sourceID) continue;
@@ -269,10 +315,14 @@ function carriesInheritedGateNote(
          if (at !== undefined) elsewhere.add(at);
       }
    }
-   return gateNotes.some((n) => {
-      const at = position(n);
-      return at === undefined || n.at?.url !== declaredIn || elsewhere.has(at);
-   });
+   return gateNotes
+      .filter((n) => {
+         const at = position(n);
+         return (
+            at === undefined || n.at?.url !== declaredIn || elsewhere.has(at)
+         );
+      })
+      .map((n) => routeOfNote(n.text) ?? "authorize");
 }
 
 /**
@@ -294,7 +344,7 @@ async function persistedQueryRefusalReason(
    plan: PersistedQueryPlan,
    modelDef: unknown,
    materializer: ModelMaterializer,
-): Promise<string | undefined> {
+): Promise<{ reason: string; refusal: RefusedReason } | undefined> {
    let stages: StageLike[];
    let structRef: unknown;
    try {
@@ -306,45 +356,85 @@ async function persistedQueryRefusalReason(
          : [];
       structRef = prepared.structRef;
    } catch (error) {
-      return `the query does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
+      return {
+         reason: `the query does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
+         refusal: "generated_build_failed",
+      };
    }
-   if (stages.length === 0) return "the query has no stage to store";
+   if (stages.length === 0)
+      return {
+         reason: "the query has no stage to store",
+         refusal: "no_stored_columns",
+      };
    const node =
       plan.sourceID !== undefined
          ? SourceMap.of(modelDef).node(plan.sourceID)
          : undefined;
    if (plan.sourceID !== undefined && !node) {
-      return "its source is not in this model's namespace";
+      return {
+         reason: "its source is not in this model's namespace",
+         refusal: "run_target_unsupported",
+      };
    }
    const def = (node?.def ?? structRef) as {
       fields?: unknown;
       filterList?: unknown;
    };
-   if (!def || typeof def !== "object") return "its source cannot be read";
+   if (!def || typeof def !== "object")
+      return {
+         reason: "its source cannot be read",
+         refusal: "run_target_unsupported",
+      };
    if (pipelineReadsCurrentTime(def, stages)) {
-      return "its result reads the current time, so it differs per read";
+      return {
+         reason: "its result reads the current time, so it differs per read",
+         refusal: "current_time",
+      };
    }
    const last = stages[stages.length - 1];
    if ((last.outputStruct?.fields ?? []).some(isNested)) {
-      return "its result nests, which a persisted query cannot answer from its table yet";
+      return {
+         reason:
+            "its result nests, which a persisted query cannot answer from its table yet",
+         refusal: "nested_result",
+      };
    }
    // A gate anywhere the query reaches refuses it: a stored result is never
    // read past a gate (the gate policy has no row for a persisted query).
-   if (
-      collectEntryPointGates(
+   const gateRoutes = [
+      ...collectEntryPointGates(
          (node?.def ?? def) as never,
          modelDef as never,
          new Set(),
          // The entry point: an inherited gate reads as self-contained.
          true,
-      ).length > 0 ||
-      joinsAGate(node?.def ?? def, modelDef) ||
-      (plan.sourceID !== undefined &&
-         carriesInheritedGateNote(plan.sourceID, modelDef))
-   ) {
-      return GATED_QUERY_REASON;
+      ).map((g) => g.route),
+      ...joinedGateRoutes(node?.def ?? def, modelDef),
+      ...(plan.sourceID !== undefined
+         ? inheritedGateNoteRoutes(plan.sourceID, modelDef)
+         : []),
+   ];
+   if (gateRoutes.length > 0) {
+      // Named by the gates' kind, as on every mechanism.
+      return {
+         reason: GATED_QUERY_REASON,
+         refusal: gateRefusalReason(gateRoutes),
+      };
    }
    return undefined;
+}
+
+/** A planned query's refusal record. */
+function queryRefusalOf(
+   plan: PersistedQueryPlan,
+   refusal: { reason: string; refusal: RefusedReason },
+): PersistedQueryRefusal {
+   return {
+      queryName: plan.queryName,
+      ...refusal,
+      declaringURL: plan.declaringURL,
+      ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
+   };
 }
 
 /** Why a persisted query over a gated source is not built. */
@@ -391,7 +481,13 @@ export async function tryCompilePersistedViewCompanion(args: {
             args.materializer,
          );
          if (reason === undefined) plans.push(plan);
-         else refused.push({ ...plan, reason });
+         else {
+            refused.push({
+               ...plan,
+               reason: reason.reason,
+               outcome: { refused: reason.refusal },
+            });
+         }
       }
       const plannedQueries = planModelPersistedQueries(
          args.modelDef,
@@ -401,15 +497,18 @@ export async function tryCompilePersistedViewCompanion(args: {
       const viewNames = new Set(plans.map((p) => p.buildSourceName));
       const queries: PersistedQueryPlan[] = [];
       for (const plan of plannedQueries.plans) {
-         const reason = viewNames.has(plan.buildSourceName)
-            ? `its generated build source \`${plan.buildSourceName}\` collides with a persisted view's; rename one of them`
+         const refusal = viewNames.has(plan.buildSourceName)
+            ? {
+                 reason: `its generated build source \`${plan.buildSourceName}\` collides with a persisted view's; rename one of them`,
+                 refusal: "build_name_collision" as const,
+              }
             : await persistedQueryRefusalReason(
                  plan,
                  args.modelDef,
                  args.materializer,
               );
-         if (reason === undefined) queries.push(plan);
-         else refusedQueries.push({ queryName: plan.queryName, reason });
+         if (refusal === undefined) queries.push(plan);
+         else refusedQueries.push(queryRefusalOf(plan, refusal));
       }
       plannedNames = [
          ...plans.map((p) => p.buildSourceName),
@@ -427,9 +526,12 @@ export async function tryCompilePersistedViewCompanion(args: {
          // A stored base must never stand in for the rows a result reads.
          const reason =
             "a source-level `#@` line in its files could not be set aside, so its build would read a stored table";
-         for (const plan of plans) refused.push({ ...plan, reason });
+         const refusal = "generated_build_failed" as const;
+         for (const plan of plans) {
+            refused.push({ ...plan, reason, outcome: { refused: refusal } });
+         }
          for (const plan of queries) {
-            refusedQueries.push({ queryName: plan.queryName, reason });
+            refusedQueries.push(queryRefusalOf(plan, { reason, refusal }));
          }
          return { refused, refusedQueries };
       }

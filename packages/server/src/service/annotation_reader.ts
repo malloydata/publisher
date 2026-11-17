@@ -17,6 +17,10 @@
  */
 
 import {
+   freshnessWindowSeconds,
+   isFreshnessFallback,
+} from "./materialization/domain/freshness";
+import {
    payloadOf,
    routeOf,
    type Annotations,
@@ -24,6 +28,9 @@ import {
 } from "@malloydata/malloy";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
 import { parseBounded, parseRouteTag } from "./motly";
+import type { components } from "../api";
+
+type RefusedSource = components["schemas"]["RefusedSource"];
 
 /** Malloy's routing for one note: its route, `""` for a MOTLY tag, `undefined` when the prefix is malformed. */
 export function routeOfNote(text: string): string | undefined {
@@ -238,7 +245,6 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "persist",
    "name",
    "storage",
-   "realization",
    "refresh",
    "watermark",
    "merge_key",
@@ -248,6 +254,31 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
 
 /** The keys of a `freshness` group (`freshness.window=`, `freshness.fallback=`). */
 const FRESHNESS_KEYS: ReadonlySet<string> = new Set(["window", "fallback"]);
+
+/**
+ * Why a `freshness` group's values cannot be read, or undefined: a window
+ * that is not a whole number and a unit (`s`, `m`, `h`, `d`, `w`), or a
+ * fallback other than `live`, `stale_ok`, `fail`. The one grammar every
+ * mechanism reads (materialization/domain/freshness.ts).
+ */
+export function freshnessValueProblem(group: {
+   has(...path: string[]): boolean;
+   text(...path: string[]): string | undefined;
+}): string | undefined {
+   if (group.has("window")) {
+      const window = group.text("window");
+      if (
+         window === undefined ||
+         freshnessWindowSeconds(window) === undefined
+      ) {
+         return 'has a freshness.window= that is not a whole number and a unit (s, m, h, d or w), such as freshness.window="24h"';
+      }
+   }
+   if (group.has("fallback") && !isFreshnessFallback(group.text("fallback"))) {
+      return "has a freshness.fallback= that is not one of live, stale_ok, fail";
+   }
+   return undefined;
+}
 
 /** The pre-aggregation directive's keys, on the same `#@` route. */
 const PREAGGREGATE_KEYS: ReadonlySet<string> = new Set([
@@ -274,13 +305,17 @@ export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
 
 /**
  * `#(preaggregate)`'s keys (materialization v2, A1): the grain it stores a
- * measure at, and where (a `storage=` destination, or a `namespace=` in the
- * source's own warehouse). A closed set: any other key is malformed.
+ * measure at, where (a `storage=` destination, or a `name=` whose container
+ * places it in the source's own warehouse; `namespace=` is that container's
+ * deprecated spelling), and its `freshness` group, as on `#@ persist`. A
+ * closed set: any other key is malformed.
  */
 export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
    "grain",
    "storage",
+   "name",
    "namespace",
+   "freshness",
 ]);
 
 /**
@@ -293,6 +328,14 @@ const PARTITION_RETIRED =
    "remove it: partition= is not supported, and the stored table is written " +
    "unpartitioned. It was a layout choice only, so the cost is scan time; " +
    "what each caller sees is unchanged";
+
+/** The rewrite for a `sharing=` on a materialization route. */
+const SHARING_RETIRED =
+   "set materialization.scope in publisher.json; a source no longer chooses its own sharing";
+
+/** The rewrite for a `schedule=` on a materialization route. */
+const SCHEDULE_RETIRED =
+   "set materialization.schedule in publisher.json; a source no longer sets its own schedule";
 
 /**
  * The materialization v2 routes. Each is read only with the materialize switch
@@ -332,17 +375,21 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
       payload: "tag",
       keys: new Set([...PERSIST_KEYS, ...PREAGGREGATE_KEYS]),
       retiredKeys: {
-         sharing:
-            "set materialization.scope in publisher.json; a source no longer chooses its own sharing",
-         schedule:
-            "set materialization.schedule in publisher.json; a source no longer sets its own schedule",
+         sharing: SHARING_RETIRED,
+         schedule: SCHEDULE_RETIRED,
          partition: PARTITION_RETIRED,
+         realization:
+            "remove it: every table is built by CREATE TABLE AS SELECT",
       },
    },
    materialize: {
       payload: "tag",
       keys: MATERIALIZE_KEYS,
-      retiredKeys: { partition: PARTITION_RETIRED },
+      retiredKeys: {
+         sharing: SHARING_RETIRED,
+         schedule: SCHEDULE_RETIRED,
+         partition: PARTITION_RETIRED,
+      },
    },
    preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
    "!": { payload: "tag" },
@@ -380,6 +427,8 @@ export const PERSIST_INVALID_CODE = "persist-invalid";
 export const PREAGGREGATE_INVALID_CODE = "preaggregate-invalid";
 export const PERSIST_VIEW_INVALID_CODE = "persist-view-invalid";
 export const PERSIST_QUERY_INVALID_CODE = "persist-query-invalid";
+export const PERSIST_VIEW_UNPARSEABLE_CODE = "persist-view-unparseable";
+export const PERSIST_QUERY_UNPARSEABLE_CODE = "persist-query-unparseable";
 /** Two sources an author's `name=` puts on one table. */
 export const MATERIALIZATION_TABLE_COLLISION_CODE =
    "materialization-table-collision";
@@ -389,6 +438,16 @@ export const MATERIALIZATION_STORAGE_MODE_CODE = "materialization-storage-mode";
 export const MATERIALIZATION_NEAR_MISS_CODE = "materialization-near-miss";
 /** A valid `#@ persist` source Publisher refuses alone. */
 export const PERSIST_NOT_BUILT_CODE = "persist-not-built";
+/** A valid `#(materialize)` source Publisher refuses alone. */
+export const MATERIALIZE_NOT_BUILT_CODE = "materialize-not-built";
+/** A valid rollup, or one measure of it, Publisher refuses alone. */
+export const PREAGGREGATE_NOT_BUILT_CODE = "preaggregate-not-built";
+/**
+ * A rollup placed with `namespace=`, the deprecated spelling of its `name=`
+ * container: still read, for one release, with this warning.
+ */
+export const PREAGGREGATE_NAMESPACE_DEPRECATED_CODE =
+   "deprecated-preaggregate-namespace";
 /**
  * {@link PERSIST_NOT_BUILT_CODE}'s former name, still emitted beside it for
  * one release so a client switching on it keeps working; removed after.
@@ -514,6 +573,21 @@ export function readRouteTag(
               ? [tag.tag("freshness")]
               : [];
       for (const group of groups) {
+         // A value the publisher cannot read is invalid, on `#@ persist` as
+         // on every route that takes the group (`#(materialize)` and the
+         // rollup routes check theirs where they are planned).
+         if (route === "@" && group) {
+            const problem = freshnessValueProblem(group);
+            if (problem !== undefined) {
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: PERSIST_INVALID_CODE,
+                  message: `\`#@ persist\` ${problem}`,
+                  nested: true,
+               });
+            }
+         }
          for (const [key] of group?.entries() ?? []) {
             if (FRESHNESS_KEYS.has(key)) continue;
             const near = nearestKey(key, FRESHNESS_KEYS);
@@ -611,8 +685,23 @@ export function editDistance(a: string, b: string): number {
    return previous[b.length] ?? 0;
 }
 
-/** A finding as a package load carries it: which model it is in, when known. */
-export type PackageAnnotationFinding = AnnotationFinding & { model?: string };
+/**
+ * A finding as a package load carries it: which model it is in, when known,
+ * and, for a valid declaration that is not built (`unservable`), the
+ * refusal record the build plan lists it under (`refusedSources`).
+ */
+export type PackageAnnotationFinding = AnnotationFinding & {
+   model?: string;
+   refused?: RefusalKey;
+};
+
+/** Where a refused declaration sits in the build plan's `refusedSources`. */
+export interface RefusalKey {
+   sourceID: string;
+   name: string;
+   tier: RefusedSource["tier"];
+   reason: RefusedSource["reason"];
+}
 
 /**
  * A `#@` tag Malloy's build walk could not parse. Malloy drops the source from

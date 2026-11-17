@@ -28,6 +28,8 @@ import {
    type AnnotatableMeasure,
 } from "./preaggregation_annotation";
 import { classifyMeasureAdditivity } from "./preaggregation_classifier";
+import type { DeclaredFreshness } from "../domain/freshness";
+import { mergeRollupFreshness } from "./freshness_declaration";
 
 /**
  * Why a declaration is refused. Stable identifiers so callers can count and
@@ -48,8 +50,10 @@ export type PreaggregateViolationCode =
    | "unknown_key"
    | "unparseable"
    | "env_reference"
+   | "invalid_freshness"
    | "conflicting_namespace"
    | "conflicting_storage"
+   | "conflicting_freshness"
    | "namespace_with_storage"
    | "non_additive_measure"
    | "non_public_measure"
@@ -58,7 +62,6 @@ export type PreaggregateViolationCode =
    | "grain_dimension_is_measure"
    | "grain_dimension_is_view"
    | "grain_dimension_is_join"
-   | "grain_dimension_not_public"
    | "grain_path_through_join"
    | "grain_truncation_expression"
    | "truncation_on_non_temporal"
@@ -71,6 +74,8 @@ export interface PreaggregateViolation {
    sourceName: string;
    /** The field the annotation sits on, absent for a source-level annotation. */
    fieldName?: string;
+   /** The source's `sourceID`, when the compiled source carries one. */
+   sourceID?: string;
    /** Names the offending object and the fix; becomes user-facing error text. */
    message: string;
 }
@@ -238,13 +243,6 @@ function validateGrainDimension(
       );
    }
 
-   if (isAccessRestricted(field)) {
-      return violation(
-         "grain_dimension_not_public",
-         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which \`${sourceName}\` does not publicly expose. A rollup STORES its grain, and the stored table is served without the source's field visibility applying to it, so no rollup is built at this grain. Group by a public dimension, or expose \`${grainDimension}\` publicly.`,
-      );
-   }
-
    if (isView(field)) {
       return violation(
          "grain_dimension_is_view",
@@ -314,6 +312,7 @@ export function validateSourcePreaggregation(
    const grains: GrainPlacements = {
       namespaces: new Map(),
       storages: new Map(),
+      freshness: new Map(),
       text: new Map(),
    };
    for (const field of fields) {
@@ -362,6 +361,8 @@ export function validateSourcePreaggregation(
 interface GrainPlacements {
    namespaces: Map<string, Map<string, string>>;
    storages: Map<string, Map<string, string>>;
+   /** Each measure's freshness group at a grain, in field order. */
+   freshness: Map<string, { measure: string; freshness: DeclaredFreshness }[]>;
    text: Map<string, string>;
 }
 
@@ -481,6 +482,13 @@ function fieldViolations(
          grains.storages.set(key, placed);
          grains.text.set(key, grain.text);
       }
+      if (grain.freshness !== undefined && additivity.additive) {
+         const key = grain.dimensions.join("\u0000");
+         const declared = grains.freshness.get(key) ?? [];
+         declared.push({ measure: name, freshness: grain.freshness });
+         grains.freshness.set(key, declared);
+         grains.text.set(key, grain.text);
+      }
    }
 }
 
@@ -505,7 +513,7 @@ function grainPlacementViolations(
       violations.push({
          code: "conflicting_namespace",
          sourceName,
-         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different namespaces: ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`namespace=\`, or move one to a different grain.`,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different containers (\`name=\` or \`namespace=\`): ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`name=\` container, or move one to a different grain.`,
       });
    }
 
@@ -519,6 +527,22 @@ function grainPlacementViolations(
          code: "conflicting_storage",
          sourceName,
          message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different storage destinations: ${choices}. One grain is one rollup table, so it can only be built into one of them. Give every measure at this grain the same \`storage=\`, or move one to a different grain.`,
+      });
+   }
+
+   // And for freshness: one table has one window and one fallback.
+   for (const [key, declared] of grains.freshness) {
+      const merged = mergeRollupFreshness(declared.map((d) => d.freshness));
+      if (!("conflict" in merged)) continue;
+      const field = merged.conflict;
+      const choices = declared
+         .filter((d) => d.freshness[field] !== undefined)
+         .map((d) => `\`${d.freshness[field]}\` (on \`${d.measure}\`)`)
+         .join(", ");
+      violations.push({
+         code: "conflicting_freshness",
+         sourceName,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different \`freshness.${field}=\`: ${choices}. One grain is one rollup table, so it has one freshness. Give every measure at this grain the same \`freshness.${field}=\`, or move one to a different grain.`,
       });
    }
 
@@ -540,7 +564,7 @@ function grainPlacementViolations(
          violations.push({
             code: "namespace_with_storage",
             sourceName,
-            message: `The grain \`${grainText}\` on \`${sourceName}\` declares both \`namespace="${namespace}"\` (on \`${namespaceMeasure}\`) and \`storage=${destination}\` (on \`${storageMeasure}\`). A rollup built into a storage destination is placed by the destination, not by a namespace, so the two cannot both apply. Remove the \`namespace=\`, or remove the \`storage=\` to build this rollup alongside its base.`,
+            message: `The grain \`${grainText}\` on \`${sourceName}\` declares both the container \`${namespace}\` (\`name=\` or \`namespace=\`, on \`${namespaceMeasure}\`) and \`storage=${destination}\` (on \`${storageMeasure}\`). A rollup built into a storage destination is placed by the destination, not by a container, so the two cannot both apply. Remove the \`name=\`, or remove the \`storage=\` to build this rollup alongside its base.`,
          });
          continue;
       }
@@ -594,7 +618,12 @@ export function validateModelPreaggregation(
       }
       // Anything with a field list is worth scanning; a non-source object cannot
       // carry a measure, and scanning it costs one annotation parse.
-      violations.push(...validateSourcePreaggregation(name, source));
+      const sourceID = (source as { sourceID?: unknown }).sourceID;
+      violations.push(
+         ...validateSourcePreaggregation(name, source).map((v) =>
+            typeof sourceID === "string" ? { ...v, sourceID } : v,
+         ),
+      );
    }
    return violations;
 }

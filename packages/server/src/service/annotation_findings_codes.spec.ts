@@ -24,16 +24,16 @@ describe("Package.annotationFindingWarnings", () => {
          severity: "warn" as const,
       });
       const self = {
-         materialization: {
+         mz: {
             droppedPersistWarnings: () => [],
             annotationFindingWarnings: () => [],
+            findingRefusalWarnings: () => [],
             incrementalPolicyAdvisories: () => [
                warn(INCREMENTAL_NO_MERGE_KEY_CODE),
                warn(INCREMENTAL_SHARED_ADDRESS_CODE),
             ],
             persistencePolicyWarnings: () => [warn(PERSIST_NOT_BUILT_CODE)],
          },
-         preaggregateAccessWarnings: () => [],
          annotationNearMissWarnings: () => [],
       };
       const codes = Package.prototype.annotationFindingWarnings

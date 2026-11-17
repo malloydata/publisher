@@ -74,13 +74,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the top level",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -148,13 +149,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "through the nested rows",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -218,13 +220,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the top level",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -292,13 +295,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "through the nested rows",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

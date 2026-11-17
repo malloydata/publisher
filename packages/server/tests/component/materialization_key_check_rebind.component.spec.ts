@@ -33,7 +33,6 @@ import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { parsePackageName, VersionRef } from "../../src/service/identity";
 import { withRollupKeyRecords } from "../../src/service/materialization/run/inline_uniqueness";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
@@ -48,6 +47,7 @@ import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepositor
 import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -212,11 +212,10 @@ async function fixture(
          { sourceLocation: source, promotion: "on-publish" },
       );
    }
-   const service = new MaterializationService({
-      storageManager: { getRepository: () => repo },
-      getEnvironment: async () => env,
-      getLoadedEnvironments: () => [env],
-   } as unknown as EnvironmentStore);
+   const service = serviceOverEnvironment(
+      () => repo,
+      () => env,
+   );
 
    const pkg = () =>
       env.getPackage(

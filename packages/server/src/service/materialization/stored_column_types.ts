@@ -423,6 +423,66 @@ export function serveTypePlan(
    return { casts, unservable };
 }
 
+/** A declared column, with the author's field when its big-integer read is asked. */
+export interface DeclaredRead extends DeclaredColumn {
+   /** The compiled field: its `bigint` subtype decides a native read. */
+   field?: unknown;
+}
+
+/** How a stored table's columns read as their declared types. */
+interface StoredColumnReadPlan {
+   /** Every stored column whose type does not serve as declared. */
+   mismatches: StoredColumnTypeMismatch[];
+   /**
+    * Each column read through a cast: a faithful cast to its declared type
+    * ({@link serveTypePlan}) in schema order, then each big integer's native
+    * read (`native`, {@link bigIntegerReadOf}) in declared order.
+    */
+   casts: ReadCast[];
+   /** The mismatches no faithful cast reads as declared: left out, or refused. */
+   leftOut: StoredColumnTypeMismatch[];
+   /** The big integers stored where no cast keeps live's digits. */
+   refusals: { column: string; storedType: string }[];
+}
+
+/**
+ * The one read plan for a stored table: which columns are cast, which no
+ * cast reads as declared, and which big integers no read keeps exact. Every
+ * serve-side reader of a stored table (the served copy's v1 and
+ * `#(materialize)` columns, a persisted result, a rollup) and the type
+ * warning build it here, so they never disagree.
+ *
+ * A declared column's big-integer read is asked only when it carries its
+ * `field`; the stored column it reads is matched by exact name.
+ */
+export function storedColumnReadPlan(
+   schema: readonly { name: string; type: string }[],
+   declared: readonly DeclaredRead[],
+   options: BuildCastOptions & Partial<BigIntegerReadOptions> = {},
+): StoredColumnReadPlan {
+   const mismatches = storedColumnTypeMismatches(schema, declared);
+   const { casts, unservable } = serveTypePlan(mismatches, options);
+   const refusals: StoredColumnReadPlan["refusals"] = [];
+   const cast = new Set(casts.map((c) => c.column));
+   for (const d of declared) {
+      if (!("field" in d) || cast.has(d.name)) continue;
+      const stored = schema.find((s) => s.name === d.name);
+      if (!stored) continue;
+      const big = bigIntegerReadOf(d.field, stored, {
+         ...options,
+         dialect: options.dialect,
+      });
+      if (!big) continue;
+      if (big.castTo) {
+         casts.push({ column: d.name, castTo: big.castTo, native: true });
+         cast.add(d.name);
+      } else {
+         refusals.push({ column: d.name, storedType: stored.type });
+      }
+   }
+   return { mismatches, casts, leftOut: unservable, refusals };
+}
+
 /**
  * The stored columns a build source's compiled output declares, each in the
  * DuckDB spelling a serve binding's schema carries (`VARCHAR`, `BIGINT`,

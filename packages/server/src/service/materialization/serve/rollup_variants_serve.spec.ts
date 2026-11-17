@@ -182,18 +182,13 @@ describe("RollupVariantServe (colocated)", () => {
       });
    });
 
-   it("declines a query that sets its own time zone", async () => {
-      expect(
-         await outcomeOf(
-            attempt(
-               "run: orders -> { timezone: 'UTC'; group_by: category; aggregate: total }",
-            ),
-         ),
-      ).toMatchObject({
-         code: "rollup_time_zone",
-         detail:
-            "the query sets its own time zone, and the rollup was built in the model's",
-      });
+   it("answers a query that sets its own time zone and reads no time (A5)", async () => {
+      // Nothing it reads depends on a zone; one reading a stored truncation
+      // is declined `rollup_time_zone` (r4/rollup_gaps).
+      const answer = await attempt(
+         "run: orders -> { timezone: 'America/New_York'; group_by: category; aggregate: total }",
+      );
+      expect(answer.rollupSourceName).toBeDefined();
    });
 
    it("declines an extension that filters the rolled-up source's rows", async () => {

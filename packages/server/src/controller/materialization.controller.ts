@@ -12,6 +12,7 @@ import {
 import { MaterializationService } from "../service/materialization/run/materialization_service";
 import type { WarehouseReach } from "../service/materialization/run/materialization_run_support";
 import { VersionRef } from "../service/identity";
+import { isUsableTableName } from "../service/materialization";
 import { queryMetadataViolations } from "../service/query_metadata";
 
 /** The values `buildInstructions.warehouseReach` accepts (ms2data/service#6756). */
@@ -284,6 +285,10 @@ export class MaterializationController {
             );
          }
       }
+      assertUsableTableName(
+         ref.physicalTableName as string,
+         "Manifest reference",
+      );
       return {
          sourceEntityId: ref.sourceEntityId as string,
          physicalTableName: ref.physicalTableName as string,
@@ -305,7 +310,6 @@ export class MaterializationController {
          "sourceEntityId",
          "materializedTableId",
          "physicalTableName",
-         "realization",
       ] as const;
       for (const field of required) {
          if (typeof instruction[field] !== "string") {
@@ -314,7 +318,14 @@ export class MaterializationController {
             );
          }
       }
+      assertUsableTableName(
+         instruction.physicalTableName as string,
+         "Build instruction",
+      );
+      // Absent means COPY, the only realization built (SNAPSHOT is refused
+      // when the run reads its instructions).
       if (
+         instruction.realization !== undefined &&
          instruction.realization !== "COPY" &&
          instruction.realization !== "SNAPSHOT"
       ) {
@@ -338,7 +349,9 @@ export class MaterializationController {
                : undefined,
          materializedTableId: instruction.materializedTableId as string,
          physicalTableName: instruction.physicalTableName as string,
-         realization: instruction.realization,
+         ...(instruction.realization !== undefined
+            ? { realization: instruction.realization }
+            : {}),
          // The `storage=` destination. Must be carried through, or an
          // orchestrated build silently falls back to a colocated build.
          ...(typeof instruction.destination === "string"
@@ -378,6 +391,7 @@ export class MaterializationController {
             );
          }
       }
+      assertUsableTableName(entry.physicalTableName as string, "Ledger entry");
       if (entry.strategy !== "merge" && entry.strategy !== "range_replace") {
          throw new BadRequestError(
             "Ledger entry 'strategy' must be 'merge' or 'range_replace'",
@@ -479,6 +493,19 @@ export class MaterializationController {
          packageName,
          materializationId,
          options,
+      );
+   }
+}
+
+/**
+ * Refuse a host-supplied table name this server would not put in SQL, the
+ * same rule a bound manifest's names are held to (isUsableTableName), with
+ * a 400 that names the field.
+ */
+function assertUsableTableName(name: string, what: string): void {
+   if (!isUsableTableName(name)) {
+      throw new BadRequestError(
+         `${what} 'physicalTableName' must be a table path with no empty part, no backslash, and only whole quoted parts`,
       );
    }
 }

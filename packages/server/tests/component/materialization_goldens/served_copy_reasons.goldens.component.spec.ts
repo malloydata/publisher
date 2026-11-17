@@ -17,7 +17,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import * as fs from "fs";
+import * as path from "path";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -73,17 +75,19 @@ function authorDefs(
    ).modelDef.contents;
 }
 
-/** Retype one stored column of one source's binding, in place. */
-function retype(
-   fixture: R4Fixture,
-   source: string,
-   column: string,
-   type: string,
-): void {
-   const bound = fixture.bindings.filter((b) => b.sourceName === source);
-   expect(bound.map((b) => b.sourceName)).toEqual([source]);
-   (bound[0] as { schema: (typeof bound)[0]["schema"] }).schema =
-      bound[0].schema.map((c) => (c.name === column ? { ...c, type } : c));
+/**
+ * Edit a model file on disk after its compile, keeping every offset: the
+ * served copy reads the author's text from disk, so its copy of a source
+ * then differs from the compile of record, a stand-in for a re-root defect.
+ * (A stored column retyped away from live's type no longer reaches a
+ * compile: it is cast on read or left out.)
+ */
+function editModelText(fixture: R4Fixture, from: string, to: string): void {
+   expect(to.length).toBe(from.length);
+   const file = path.join(fixture.packagePath, "m.malloy");
+   const text = fs.readFileSync(file, "utf8");
+   expect(text.split(from).length).toBe(2);
+   fs.writeFileSync(file, text.replace(from, to));
 }
 
 const EVENTS_SEED = [
@@ -159,9 +163,10 @@ source: x is m extend {
          seedSql: EVENTS_SEED,
          materialize: true,
       },
-      // `m`'s own text does not read `amount`, so its re-root compiles; the
-      // refinement, kept as written, does not.
-      tamper: (f) => retype(f, "m", "amount", "VARCHAR"),
+      // `m`'s own text is untouched, so its re-root compiles; the
+      // refinement, kept as written, reads a field its text no longer names.
+      tamper: (f) =>
+         editModelText(f, "total is amount.sum()", "total is amouxt.sum()"),
       query: "run: m -> { group_by: org; aggregate: n }",
    },
    {
@@ -447,7 +452,8 @@ source: broken is events extend {
          seedSql: EVENTS_SEED,
          materialize: true,
       },
-      tamper: (f) => retype(f, "broken", "amount", "VARCHAR"),
+      tamper: (f) =>
+         editModelText(f, "total is amount.sum()", "total is amouxt.sum()"),
       query: "run: broken -> { group_by: org; aggregate: total }",
    },
 ];
@@ -457,16 +463,10 @@ function goldenPath(c: ReasonCase): string {
 }
 
 const claimed = new Set<string>();
-let restore: () => void;
 
-beforeAll(() => {
-   restore = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-   }).restore;
-});
+useMaterializationOn();
 
 afterAll(async () => {
-   restore();
    await disposeScenarios();
 });
 

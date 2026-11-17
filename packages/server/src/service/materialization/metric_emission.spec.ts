@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { Package } from "../package";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { DuckDBConnection as BuildSession } from "@malloydata/db-duckdb";
@@ -18,7 +19,11 @@ import { logger } from "../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../materialization_metrics";
 import type { MaterializationUpdate } from "../../storage/DatabaseInterface";
 import { tempBuildPlanPackages } from "../../test_helpers/incremental_test_harness";
-import { createMocks } from "../../test_helpers/materialization_service_harness";
+import {
+   createMocks,
+   serviceWith,
+   setPackage,
+} from "../../test_helpers/materialization_service_harness";
 import {
    fakeSource,
    makeMaterialization,
@@ -165,7 +170,7 @@ describe("publisher_materialization_eligibility_refused_total", () => {
 describe("a run's instruments", () => {
    /** A service whose build loop and commit are stubbed, as a run sees them. */
    function stubbedRun(ctx: ReturnType<typeof createMocks>) {
-      const service = new MaterializationService(ctx.environmentStore, {
+      const service = serviceWith(ctx, {
          executeInstructedBuild: sinon.stub().resolves({
             entries: {},
             failures: {},
@@ -189,7 +194,24 @@ describe("a run's instruments", () => {
          );
    }
 
-   it("publisher_materialization_run_duration_ms: one sample per run, by mode", async () => {
+   it("forgets the bound key checks of the tables a run is about to write, before it writes any", async () => {
+      const ctx = createMocks();
+      const forgotten: string[][] = [];
+      setPackage(ctx.environmentStore, {
+         getBuildPlan: () => null,
+         forgetKeyUniqueness: (ids: Iterable<string>) => {
+            forgotten.push([...ids]);
+         },
+      });
+      await stubbedRun(ctx)();
+      // A package that stopped implementing it would serve a check bound
+      // over rows this run rewrote (a refresh racing a rebind).
+      expect(forgotten).toHaveLength(1);
+      // The real package answers it, through its facade.
+      expect(typeof Package.prototype.forgetKeyUniqueness).toBe("function");
+   });
+
+   it("publisher_materialization_run_duration_ms: one sample per run, by mode and outcome", async () => {
       const ctx = createMocks();
       await stubbedRun(ctx)();
       expect(
@@ -206,7 +228,7 @@ describe("a run's instruments", () => {
          await harness.collectAttributes(
             "publisher_materialization_run_duration_ms",
          ),
-      ).toEqual([{ mode: "auto" }]);
+      ).toEqual([{ mode: "auto", outcome: "success" }]);
    });
 
    it("publisher_materialization_auto_load_total: once per commit, by the load's outcome", async () => {
@@ -276,6 +298,7 @@ describe("the build loop's instruments", () => {
          getApiConnection: () => {
             throw new Error("no connection config in this test");
          },
+         getEnvironmentName: () => "env",
          getEnvironmentPath: () => "/tmp/env",
       };
       return (

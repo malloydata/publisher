@@ -79,6 +79,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -149,6 +150,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -218,7 +220,8 @@
         },
         "servedBy": {
           "kind": "view",
-          "tableId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b"
+          "tableId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -288,6 +291,7 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

@@ -213,10 +213,7 @@ export async function computePackageBuildPlan(
    signal?: AbortSignal,
 ): Promise<BuildPlanOutcome> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
-   return deriveBuildPlanOutcome(
-      compiled,
-      pkg.getMaterializationConfig?.() ?? null,
-   );
+   return deriveBuildPlanOutcome(compiled, pkg.getMaterializationConfig());
 }
 
 /**
@@ -231,7 +228,7 @@ export function runLoadGateText(
 ): string {
    const derived = deriveBuildPlanOutcome(
       compiled,
-      pkg.getMaterializationConfig?.() ?? null,
+      pkg.getMaterializationConfig(),
    );
    return loadGateText(
       {
@@ -252,7 +249,7 @@ export function runLoadGateText(
  */
 function versionOwnsTables(pkg: BuildPlanPackage): boolean {
    return (
-      pkg.getPackageMetadata?.()?.scope === "version" &&
-      pkg.getVersionId?.() !== undefined
+      pkg.getPackageMetadata().scope === "version" &&
+      pkg.getVersionId() !== undefined
    );
 }

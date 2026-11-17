@@ -34,12 +34,10 @@ import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckd
 import { MalloyConfig } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { ownedTableComment } from "../../src/service/materialization/run/table_ownership";
@@ -50,12 +48,12 @@ import type {
    ResourceRepository,
 } from "../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { freshLoadPool } from "../../src/test_helpers/conformance/package_runner";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
+import { openTempStorage } from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -243,7 +241,7 @@ describe.skipIf(process.platform === "win32")(
                return serve;
             },
          }));
-         pkg.setServeDestinationConfig(() => config);
+         pkg.materialization().setServeDestinationConfig(() => config);
       }
 
       beforeAll(async () => {
@@ -255,26 +253,19 @@ describe.skipIf(process.platform === "win32")(
          // The package-load worker plans under the settings it was spawned
          // with: one spawned now plans the gated sources as the run does.
          await freshLoadPool();
-         root = fs.realpathSync(
-            fs.mkdtempSync(path.join(os.tmpdir(), "ducklake-shared-address-")),
-         );
+         const storage = await openTempStorage("ducklake-shared-address-", {
+            id: ENV_ID,
+            name: ENV,
+         });
+         ({ root, db, repo } = storage);
+         const { envPath } = storage;
          lakeDir = path.join(root, "lake");
          fs.mkdirSync(path.join(lakeDir, "data"), { recursive: true });
-         const envPath = path.join(root, "env");
-         fs.mkdirSync(envPath);
          writePackageFiles(
             path.join(envPath, PKG),
             { "m.malloy": MODEL },
             { manifest: { name: PKG, description: "fixture" } },
          );
-         db = new DuckDBConnection(":memory:");
-         await db.initialize();
-         await initializeSchema(db);
-         await db.run(
-            "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-            [ENV_ID, ENV, envPath],
-         );
-         repo = createDuckDBRepository(db);
 
          spies.push(
             spyOn(connection, "attachDuckLakeReadWrite").mockImplementation(
@@ -357,11 +348,10 @@ describe.skipIf(process.platform === "win32")(
          await env.addPackage(PKG);
          pkg = await env.getPackage(parsePackageName(PKG), false);
          await reopenServe();
-         service = new MaterializationService({
-            storageManager: { getRepository: () => repo },
-            getEnvironment: async () => env,
-            getLoadedEnvironments: () => [env],
-         } as unknown as EnvironmentStore);
+         service = serviceOverEnvironment(
+            () => repo,
+            () => env,
+         );
       });
 
       afterAll(async () => {

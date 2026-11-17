@@ -1284,12 +1284,11 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
    );
 
    it(
-      "plans no rollup over a gated base, and says why in a finding rather than a refusal",
+      "plans no rollup over a gated base, and says why in a refusal record",
       async () => {
-         // Rollups group away the gate column. The composite synthesized the
-         // rollup anyway and then refused it (tier preaggregate). The rollup
-         // leg never plans it: neither a source nor a refusal, and the
-         // package's finding says the measure is served live.
+         // Rollups group away the gate column, so the rollup leg never plans
+         // it: it is no source, and its refusal record says the measure is
+         // served live and why.
          const pkg =
             await packages.create(`##! experimental { persistence composite_sources givens }
 
@@ -1312,11 +1311,16 @@ source: orders is duckdb.sql("""
          const { plan, annotationFindings } =
             await computePackageBuildPlan(pkg);
 
-         // Nothing planned, so no plan at all.
          expect(Object.values(plan?.sources ?? {})).toEqual([]);
-         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
-         expect(annotationFindings.map((f) => f.code)).toContain(
-            "preaggregate-access-filter",
+         expect(
+            Object.values(plan?.refusedSources ?? {}).map((r) => [
+               r.name,
+               r.tier,
+               r.reason,
+            ]),
+         ).toEqual([["orders.total", "preaggregate", "access_filter"]]);
+         expect(annotationFindings.map((f) => f.code)).not.toContain(
+            "preaggregate-not-built",
          );
       },
       { timeout: 20000 },

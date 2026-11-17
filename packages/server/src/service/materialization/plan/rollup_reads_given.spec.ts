@@ -3,8 +3,10 @@
 
 /**
  * A `#(preaggregate)` rollup whose build reads a given is left out of the
- * build plan with a `preaggregate-reads-given` warning: its table would hold
- * one given value's rows, served to every caller. A rollup in the same model
+ * build plan with a `preaggregate-not-built` warning (reason
+ * `given_in_persisted_query`, as `#(materialize)` names a given-reading
+ * `where:` over a column its table does not keep): its table would hold one
+ * given value's rows, served to every caller. A rollup in the same model
  * that reads no given is still planned. Drives `Package.create` on the worker
  * path with PUBLISHER_MATERIALIZE on, as the package warnings specs do.
  */
@@ -76,12 +78,19 @@ describe("#(preaggregate) rollups whose build reads a given", () => {
 
    it("leaves the rollup out with a warning", () => {
       const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "preaggregate-reads-given",
+         (w) => w.code === "preaggregate-not-built",
       );
+      // Its where: reads `region`, which the grain does not keep, so it
+      // could not be re-applied to the rollup's rows per caller.
       expect(warnings.map((w) => [w.model, w.subject])).toEqual([
-         ["m.malloy", "scoped"],
+         ["m.malloy", "scoped.total"],
       ]);
-      expect(warnings[0].message).toContain("read a given");
+      expect(warnings[0].message).toContain("reads a given and `region`");
+      expect(
+         Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
+            (r) => r.reason,
+         ),
+      ).toEqual(["given_in_persisted_query"]);
       const planned = Object.values(pkg.getBuildPlan()?.sources ?? {}).map(
          (s) => s.name,
       );

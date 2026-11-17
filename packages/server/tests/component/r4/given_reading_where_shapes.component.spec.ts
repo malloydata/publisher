@@ -27,7 +27,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    freshLoadPool,
    loadFixture,
@@ -447,15 +447,12 @@ function answered(outcome: Outcome) {
 }
 
 describe("given-reading where: by where it is written, through a real package", () => {
-   let restore: () => void;
    let fixture: LoadedFixture;
    const live: Record<string, Outcome> = {};
    const zoneLive: Record<string, Record<string, unknown>[]> = {};
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       await freshLoadPool();
       const loaded = await loadFixture(files);
       for (const c of CASES) {
@@ -480,18 +477,16 @@ describe("given-reading where: by where it is written, through a real package", 
 
    afterAll(async () => {
       await fixture?.dispose();
-      restore();
       await freshLoadPool();
    });
 
    for (const c of CASES) {
       it(`${c.name}: ${c.path.kind}`, async () => {
-         const plans =
-            (
-               fixture.pkg as unknown as {
-                  materialization?: { materializePlans?: MaterializePlans };
-               }
-            ).materialization?.materializePlans ?? {};
+         const plans = (
+            fixture.pkg.materialization() as unknown as {
+               plan: { materializePlans: MaterializePlans };
+            }
+         ).plan.materializePlans;
          const plan = Object.entries(plans).find(
             ([id]) => nameOf(id) === c.source,
          )?.[1];
@@ -552,12 +547,11 @@ describe("given-reading where: by where it is written, through a real package", 
    }
 
    it("#(materialize) storage=, a zone-dependent dimension on a base: stored as built, a timezone: query answered live", async () => {
-      const plans =
-         (
-            fixture.pkg as unknown as {
-               materialization?: { materializePlans?: MaterializePlans };
-            }
-         ).materialization?.materializePlans ?? {};
+      const plans = (
+         fixture.pkg.materialization() as unknown as {
+            plan: { materializePlans: MaterializePlans };
+         }
+      ).plan.materializePlans;
       const plan = Object.entries(plans).find(
          ([id]) => nameOf(id) === "ms_zone",
       )?.[1];
@@ -740,16 +734,13 @@ const REVIEW: {
 ];
 
 describe("given-reading where: and caller-dependent dimensions: shapes a security review probed", () => {
-   let restore: () => void;
    let fixture: LoadedFixture;
    const live: Record<string, Outcome> = {};
    const callersOf = (perCaller: boolean) =>
       perCaller ? CALLERS.map((ORG) => ({ ORG })) : [undefined];
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       await freshLoadPool();
       const loaded = await loadFixture(reviewFiles);
       for (const c of REVIEW) {
@@ -766,7 +757,6 @@ describe("given-reading where: and caller-dependent dimensions: shapes a securit
 
    afterAll(async () => {
       await fixture?.dispose();
-      restore();
       await freshLoadPool();
    });
 

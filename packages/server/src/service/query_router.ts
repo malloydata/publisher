@@ -33,7 +33,11 @@ import {
    declineOfCode,
    type VariantSkipExplanation,
 } from "./materialization/domain/leg_decline";
-import { recordQueryRoute, type RouteReason } from "../materialization_metrics";
+import {
+   recordQueryRoute,
+   recordQueryRouteDuration,
+   type RouteReason,
+} from "../materialization_metrics";
 
 /**
  * The kinds of candidate, one per serving leg (`LegKind` in `serve/leg.ts`,
@@ -170,7 +174,15 @@ export async function routeQuery<Extra>(
     */
    { recordMetrics = true }: { recordMetrics?: boolean } = {},
 ): Promise<RouteDecision<Extra>> {
+   const startedAt = performance.now();
    const decision = await decideRoute(variants, blockedByGate);
+   // Timed only when a leg applied: otherwise there was nothing to choose.
+   if (variants.some((v) => v.applicable)) {
+      recordQueryRouteDuration(
+         performance.now() - startedAt,
+         decision.served === "variant" ? decision.kind : "live",
+      );
+   }
    if (recordMetrics) recordVariantRouting(decision.considered);
    return decision;
 }

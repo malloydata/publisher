@@ -12,6 +12,7 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
+import { freshnessOf } from "../domain/freshness";
 import type { PersistSource } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -346,6 +347,8 @@ function selfTableName(
    }
    const dot = written.lastIndexOf(".");
    const prefixed = hasAuthorTableName(compiled, persistSource);
+   // A rollup's `name=` leaf, which its build source does not carry.
+   const rollupPrefix = compiled.tables[persistSource.sourceID]?.rollup?.prefix;
    return readableTableName({
       identity: {
          environmentName: naming.environmentName,
@@ -358,7 +361,11 @@ function selfTableName(
       },
       label: labelOf(compiled, namer),
       ...(dot > 0 ? { container: written.slice(0, dot) } : {}),
-      ...(prefixed ? { prefix: written.slice(dot + 1) } : {}),
+      ...(prefixed
+         ? { prefix: written.slice(dot + 1) }
+         : rollupPrefix !== undefined
+           ? { prefix: rollupPrefix }
+           : {}),
       dialect: persistSource.dialectName,
       inDestination: !!destination,
    });
@@ -395,12 +402,22 @@ function keepsReadableName(
       return false;
    }
    const head = (leaf: string) => leaf.replace(READABLE_TAIL, "");
+   // A `name=` that sets the prefix (under `scope: version`, or a rollup's
+   // in any package) keeps the table's name only while the prefix is the
+   // same; a readable name's own prefix (with `__`) stands for none.
+   const rollup = compiled.tables[persistSource.sourceID]?.rollup;
+   const prefixed =
+      rollup?.prefix !== undefined ||
+      (!rollup && hasAuthorTableName(compiled, persistSource));
+   if (rollup && naming.ownedVersion === undefined) {
+      return prefixed
+         ? head(was.leaf) === head(now.leaf)
+         : head(was.leaf).includes("__");
+   }
    if (naming.ownedVersion !== undefined) {
       const version = `__${readableVersion(naming.ownedVersion)}`;
       if (!head(was.leaf).endsWith(version)) return false;
-      if (hasAuthorTableName(compiled, persistSource)) {
-         return head(was.leaf) === head(now.leaf);
-      }
+      if (prefixed) return head(was.leaf) === head(now.leaf);
       // A recorded name with no `__` before its version was a `name=`
       // prefix: the `name=` is gone, so the prefix changed.
       if (!head(was.leaf).slice(0, -version.length).includes("__")) {
@@ -557,6 +574,12 @@ function tableNameDecision(
    previous: string | undefined;
    renaming: boolean;
    tableName: string;
+   /**
+    * A rollup's table an earlier run built under another readable name of
+    * this package's (its `name=` leaf changed), which this run renames:
+    * reclaimed once the run commits, as a pre-readable name is.
+    */
+   leafRenamed?: string;
 } {
    // Orchestrated builds use the host-supplied `physicalTableName`. A
    // storage build replaces its table atomically (`CREATE OR REPLACE` in
@@ -603,7 +626,32 @@ function tableNameDecision(
       )
          ? prior!.physicalTableName
          : fresh;
-   return { named, prior, sameDestination, previous, renaming, tableName };
+   const leafRenamed =
+      naming &&
+      naming.ownedVersion === undefined &&
+      !!compiled.tables[persistSource.sourceID]?.rollup &&
+      sameDestination &&
+      !renaming &&
+      tableName === fresh &&
+      prior!.physicalTableName !== fresh &&
+      READABLE_TAIL.test(prior!.physicalTableName) &&
+      !takenByAnother(
+         persistSource,
+         destination,
+         prior!.physicalTableName,
+         sourceEntityId,
+      )
+         ? prior!.physicalTableName
+         : undefined;
+   return {
+      named,
+      prior,
+      sameDestination,
+      previous,
+      renaming,
+      tableName,
+      ...(leafRenamed !== undefined ? { leafRenamed } : {}),
+   };
 }
 
 /**
@@ -614,7 +662,9 @@ function tableNameDecision(
  *
  * An INCREMENTAL source is exempt from carry-forward: unchanged SQL says
  * nothing about whether its DATA moved, so carrying it would never reach its
- * delta. The ledger decides instead, and "nothing new" is a cheap skip.
+ * delta. The ledger decides instead, and "nothing new" is a cheap skip. So is
+ * a table past its declared freshness window (`pastWindow`): carried, it
+ * would stay past it until a host or a forced run rebuilt it.
  *
  * A source the eligibility gate refuses is returned in `refused`. It throws
  * instead when `sourceNames` targets it, or when every authored source the
@@ -637,9 +687,21 @@ export function deriveSelfInstructions(
    naming?: SelfTableNaming,
    /**
     * Rebuild every source (a scheduled fire, `forceRefresh`): nothing is
-    * carried. `priorEntries` still decide each table's name.
+    * carried. `priorEntries` still decide each table's name. `pastWindow`
+    * names a prior table past its declared freshness window, which is
+    * rebuilt rather than carried (freshness_stamp.ts); absent, none is.
     */
-   options: { forceRefresh?: boolean } = {},
+   options: {
+      forceRefresh?: boolean;
+      pastWindow?: (sourceEntityId: string, prior: ManifestEntry) => boolean;
+      /**
+       * What a rebuilt table with a declared window reads: a carried table
+       * it reads (through the plan's edges, transitively) whose age is
+       * unknown or past that window is rebuilt too (see
+       * {@link rebuildStaleUpstreams}).
+       */
+      upstreams?: StaleUpstreamRule;
+   } = {},
 ): {
    instructions: BuildInstruction[];
    carried: Record<string, ManifestEntry>;
@@ -671,6 +733,8 @@ export function deriveSelfInstructions(
       naming,
    );
    const seen = new Set<string>();
+   // The instruction that would rebuild each carried table.
+   const carriedInstructions = new Map<string, BuildInstruction>();
    // Readable names this run writes, by where they live, and whose.
    const derived = new Map<string, string>();
 
@@ -678,17 +742,24 @@ export function deriveSelfInstructions(
       if (seen.has(sourceEntityId)) continue;
       seen.add(sourceEntityId);
 
-      const { named, prior, sameDestination, previous, renaming, tableName } =
-         tableNameDecision(
-            compiled,
-            persistSource,
-            sourceEntityId,
-            destination,
-            priorEntries,
-            freshNames.get(sourceEntityId)!,
-            takenByAnother,
-            naming,
-         );
+      const {
+         named,
+         prior,
+         sameDestination,
+         previous,
+         renaming,
+         tableName,
+         leafRenamed,
+      } = tableNameDecision(
+         compiled,
+         persistSource,
+         sourceEntityId,
+         destination,
+         priorEntries,
+         freshNames.get(sourceEntityId)!,
+         takenByAnother,
+         naming,
+      );
       if (naming && !named) {
          const key = tableKeyOf(
             persistSource.connectionName,
@@ -754,6 +825,7 @@ export function deriveSelfInstructions(
          !deltaEligible &&
          !options.forceRefresh &&
          sameDestination &&
+         !options.pastWindow?.(sourceEntityId, prior!) &&
          samePath(
             prior!.physicalTableName,
             logicalName,
@@ -761,6 +833,7 @@ export function deriveSelfInstructions(
          )
       ) {
          carried[sourceEntityId] = prior!;
+         carriedInstructions.set(sourceEntityId, instruction);
          // A table at the author's `name=` may have been written by
          // another package since (or before the mark existed).
          if (named && prior!.physicalTableName === logicalName) {
@@ -769,16 +842,26 @@ export function deriveSelfInstructions(
          continue;
       }
 
-      if (renaming && logicalName === tableName) {
+      if ((renaming && logicalName === tableName) || leafRenamed) {
          renamed.push({
             sourceEntityId,
-            previousName: previous!,
+            previousName: leafRenamed ?? previous!,
             physicalTableName: tableName,
             connectionName: persistSource.connectionName,
             ...(destination ? { storageDestinationName: destination } : {}),
          });
       }
       instructions.push(instruction);
+   }
+
+   if (options.upstreams) {
+      rebuildStaleUpstreams(
+         instructions,
+         carried,
+         carriedInstructions,
+         recheck,
+         options.upstreams,
+      );
    }
 
    if (
@@ -790,6 +873,67 @@ export function deriveSelfInstructions(
    }
 
    return { instructions, carried, refused, cleared, recheck, renamed };
+}
+
+/** What {@link rebuildStaleUpstreams} reads. */
+interface StaleUpstreamRule {
+   windowSecondsAt(sourceEntityId: string): number | undefined;
+   /** The tables a table at `sourceEntityId` is built from (the plan's edges). */
+   upstreamsOf(sourceEntityId: string): readonly string[];
+   /** The run's start, which a carried table is aged at. */
+   at: Date;
+}
+
+/**
+ * Rebuild, rather than carry, each table a rebuilt table with a declared
+ * window reads (transitively) whose age is unknown or past that window at
+ * the run's start: a rebuilt table is anchored at the oldest table it read
+ * (freshness_stamp.ts), so a table read at an unknown or stale age would
+ * leave it stale on arrival, or claim fresh rows it does not hold. The
+ * narrowest window over a path decides. Moves each such table from
+ * `carried` (and `recheck`) to `instructions`.
+ */
+function rebuildStaleUpstreams(
+   instructions: BuildInstruction[],
+   carried: Record<string, ManifestEntry>,
+   carriedInstructions: ReadonlyMap<string, BuildInstruction>,
+   recheck: Record<string, BuildInstruction>,
+   rule: StaleUpstreamRule,
+): void {
+   const narrowest = new Map<string, number>();
+   const queue: [string, number][] = [];
+   const visit = (address: string, window: number) => {
+      const seen = narrowest.get(address);
+      if (seen !== undefined && seen <= window) return;
+      narrowest.set(address, window);
+      queue.push([address, window]);
+   };
+   for (const instruction of instructions) {
+      const window = rule.windowSecondsAt(instruction.sourceEntityId);
+      if (window !== undefined) visit(instruction.sourceEntityId, window);
+   }
+   while (queue.length > 0) {
+      const [address, window] = queue.pop()!;
+      for (const upstream of rule.upstreamsOf(address)) {
+         const prior = carried[upstream];
+         if (prior !== undefined) {
+            const stale =
+               prior.dataAsOf === undefined ||
+               freshnessOf(
+                  { dataAsOf: prior.dataAsOf, freshnessWindowSeconds: window },
+                  rule.at,
+               ) !== "fresh";
+            // A fresh carried table's own anchor already covers what it read.
+            if (!stale) continue;
+            const instruction = carriedInstructions.get(upstream);
+            if (instruction === undefined) continue;
+            delete carried[upstream];
+            delete recheck[upstream];
+            instructions.push(instruction);
+         }
+         visit(upstream, window);
+      }
+   }
 }
 
 /**

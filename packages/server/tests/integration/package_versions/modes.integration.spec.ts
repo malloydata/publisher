@@ -27,7 +27,11 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "versioning-modes-env";
@@ -389,6 +393,9 @@ describe("package versions across promotion modes and package kinds", () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
       scratch = await fs.mkdtemp(path.join(os.tmpdir(), "versioning-modes-"));
+      for (const name of [ENV_NAME, PLAIN_ENV]) {
+         await deleteLeftoverEnvironment(baseUrl, name);
+      }
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: json,

@@ -4,15 +4,16 @@
 import { Mutex } from "async-mutex";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../../storage/DatabaseInterface";
-import { initializeSchema } from "../../storage/duckdb/schema";
 import { VersionHost, VersionService } from "./version_service";
 import { VersionStore } from "./version_store";
 import { writePackageFiles } from "../../test_helpers/temp_package";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../test_helpers/temp_storage";
 
 // Two versions that differ only in build metadata (`1.0.0+a`, `1.0.0+b`) share
 // semver precedence, so neither is higher: the later PUBLISH is ordered first
@@ -102,24 +103,17 @@ const latest = async () =>
    (await repo.getPackageByName(ENV_ID, PKG))?.latestVersion ?? null;
 
 beforeEach(async () => {
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "version-build-metadata-")),
-   );
-   envPath = path.join(root, "env");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, 'env', ?, now(), now())",
-      [ENV_ID, envPath],
-   );
-   repo = createDuckDBRepository(db);
+   ({ root, envPath, db, repo } = await openTempStorage(
+      "version-build-metadata-",
+      {
+         id: ENV_ID,
+         name: "env",
+      },
+   ));
 });
 
 afterEach(async () => {
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
 });
 
 describe("versions equal in precedence, differing only in build metadata", () => {

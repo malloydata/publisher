@@ -73,6 +73,7 @@ import {
    answeredWith,
    type Answer,
    canDegradeToLive,
+   isStoredDecimalArithmeticError,
    liveFallbackAnswer,
    type Leg,
    runManifestOf,
@@ -618,12 +619,7 @@ export class ModelServing {
                authorRunnable: runnable,
             },
             pinned,
-            {
-               modelPath: this.host.modelPath,
-               // G3: a colocated table is read past a row-level gate (it
-               // never leaves the author's warehouse).
-               colocatedKeepsContracts: true,
-            },
+            { modelPath: this.host.modelPath },
          ),
          async () => {
             // Cheap short-circuit for gate-free models. Safe, unlike
@@ -690,18 +686,8 @@ export class ModelServing {
       const governor = this.host.governor;
       const compiledSource =
          await governor.resolveAuthorizeSourceFromRunnable(runnable);
-      const governRequest: GovernRequest = {
+      const governRequest = governRequestOf({
          givens,
-         bypassAuthorize,
-         boundary:
-            admitted.boundary === "deferred"
-               ? { compiledSource, query }
-               : undefined,
-         callerRegion: admitted.callerRegion,
-         recompile: (mm: ModelMaterializer) =>
-            mm.loadRestrictedQuery(queryString),
-         // The caller's OWN text, not the synthesized/injected `queryString`.
-         callerQueryText: query,
          ceiling: {
             audit: ctx.audit,
             source: () => compiledSource ?? sourceName,
@@ -719,11 +705,28 @@ export class ModelServing {
          // gate is re-proven there. Any other routed shape carries no
          // annotations and is never reached past a row-level gate (the
          // router's veto).
-         graftScope:
-            answer.leg === "live" ? undefined : answer.answer.graftScope,
-         routedPastEntryPointGate:
-            answer.leg !== "live" && answer.pastEntryPointGate,
-      };
+         graft: {
+            recompile: (mm: ModelMaterializer) =>
+               mm.loadRestrictedQuery(queryString),
+            graftScope:
+               answer.leg === "live" ? undefined : answer.answer.graftScope,
+         },
+         query: {
+            bypassAuthorize,
+            boundary:
+               admitted.boundary === "deferred"
+                  ? { compiledSource, query }
+                  : undefined,
+            callerRegion: admitted.callerRegion,
+            // The caller's OWN text, not the synthesized/injected `queryString`.
+            callerQueryText: query,
+            routedPastEntryPointGate:
+               answer.leg !== "live" && answer.pastEntryPointGate,
+            // A rollup's variant writes again the given-reading terms its
+            // build left out: re-proven on it.
+            reprovesGivenTerms: answer.leg === "rollup",
+         },
+      });
       const { runnable: governed, decision } = await governor.govern(
          governRequest,
          // The LIVE compile keeps the caller's joins; a routed one does not.
@@ -896,6 +899,8 @@ export class ModelServing {
          //  - only when the query actually routed to storage;
          //  - only per `bindingsAllowDegradeToLive` over the bindings that
          //    produced THIS shape (a sibling source must not decide);
+         //  - or for DECIMAL arithmetic past 38 digits, whatever the policy
+         //    (`isStoredDecimalArithmeticError`): the table is right;
          //  - never for a client error (bad given) or an abort;
          //  - the retry re-supplies the REAL givens, or the live source could
          //    serve unfiltered rows.
@@ -909,7 +914,9 @@ export class ModelServing {
             this.failQuery(ctx, governed, answer, error);
          }
          logger.warn(
-            "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
+            isStoredDecimalArithmeticError(error)
+               ? "Storage-served query's DECIMAL arithmetic exceeded 38 digits; falling back to live"
+               : "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
             {
                modelPath: this.host.modelPath,
                error: error instanceof Error ? error.message : String(error),
@@ -1609,9 +1616,17 @@ export class ModelServing {
               )
             : undefined;
       const { runnable, decision } = await governor.govern(
-         {
+         governRequestOf({
             givens,
-            ...(cell.modelMaterializer
+            ceiling: {
+               audit,
+               source: async (governed) =>
+                  (await governor.resolveAuthorizeSourceFromRunnable(
+                     governed,
+                  )) ?? extractRunTargetSourceName(cell.text),
+            },
+            // No materializer to recompile against: a row-level gate denies.
+            graft: cell.modelMaterializer
                ? {
                     recompile: ownScopeBinder
                        ? ownScopeBinder.recompile
@@ -1620,17 +1635,8 @@ export class ModelServing {
                     proveGraft: ownScopeBinder?.prove,
                     graftScope,
                  }
-               : // No materializer to recompile against, so a
-                 // row-level gate denies.
-                 { bypassAuthorize: false }),
-            ceiling: {
-               audit,
-               source: async (governed) =>
-                  (await governor.resolveAuthorizeSourceFromRunnable(
-                     governed,
-                  )) ?? extractRunTargetSourceName(cell.text),
-            },
-         },
+               : undefined,
+         }),
          { runnable: runnableToExecute },
       );
       return { runnable, decision, readGivenNames: cellReadGivenNames };
@@ -1717,5 +1723,37 @@ function statementUsage(
       metered: input.meteredConnection,
       environment: input.environment,
       package: packageName,
+   };
+}
+
+/**
+ * The one request `govern()` judges, for a routed query and a notebook cell
+ * alike: the caller's givens, the ceiling over the audit, and how a graft
+ * recompiles on the scope it lands on. A subject with nothing to recompile
+ * gives up the bypass, so a row-level gate denies; a query adds its boundary,
+ * its caller's text and region, and whether it was routed past a gate.
+ */
+function governRequestOf(r: {
+   givens: GovernRequest["givens"];
+   ceiling: NonNullable<GovernRequest["ceiling"]>;
+   graft:
+      | Pick<GovernRequest, "recompile" | "proveGraft" | "graftScope">
+      | undefined;
+   query?: Pick<
+      GovernRequest,
+      | "bypassAuthorize"
+      | "boundary"
+      | "callerRegion"
+      | "callerQueryText"
+      | "routedPastEntryPointGate"
+      | "reprovesGivenTerms"
+   >;
+}): GovernRequest {
+   return {
+      givens: r.givens,
+      ...r.query,
+      // Last, so nothing a query passes can lift the fail-closed default.
+      ...(r.graft ?? { bypassAuthorize: false }),
+      ceiling: r.ceiling,
    };
 }

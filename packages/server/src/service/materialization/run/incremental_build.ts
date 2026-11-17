@@ -68,6 +68,7 @@ import {
    type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
+import { isDecimalDeltaGuardFailure } from "./postgres_numeric_precision";
 import { capturedNativeSchema } from "./colocated_native_types";
 import type { IncrementalDeclaration } from "../domain/incremental";
 
@@ -564,15 +565,29 @@ export async function applyIncrementalStep(params: {
    } catch (err) {
       // A pair delta whose parent-row check failed was rolled back: rebuild
       // in full, which writes the flag over the whole table (fail safe).
-      if (!lineage.pair || !isPairGuardFailure(err)) throw err;
+      // A delta value its DECIMAL column cannot hold exactly was refused, not
+      // rounded: rebuild in full, which widens the column to hold it.
+      const decimal = isDecimalDeltaGuardFailure(err);
+      if (!decimal && (!lineage.pair || !isPairGuardFailure(err))) throw err;
       reportIncrementalStep({
-         step: {
-            mode: "seed",
-            reasonCode: "pair_parent_row",
-            reason:
-               "the delta would leave a parent without exactly one " +
-               "parent-row flag, so it was rolled back",
-         },
+         step: decimal
+            ? {
+                 mode: "seed",
+                 // The stored column's shape cannot hold the delta: no metric
+                 // label of its own, the reason names the decimal cause.
+                 reasonCode: "shape_mismatch",
+                 reason:
+                    "a delta value needs more digits than its stored DECIMAL " +
+                    "column holds, so it was rolled back rather than rounded " +
+                    "and the table rebuilds at the wider scale",
+              }
+            : {
+                 mode: "seed",
+                 reasonCode: "pair_parent_row",
+                 reason:
+                    "the delta would leave a parent without exactly one " +
+                    "parent-row flag, so it was rolled back",
+              },
          sourceName: params.sourceName,
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
@@ -816,7 +831,7 @@ export async function refreshOneSourceIncrementally(params: {
       materializedTableId: instruction.materializedTableId,
       physicalTableName: lineage.physicalTableName,
       connectionName: persistSource.connectionName,
-      realization: instruction.realization,
+      realization: "COPY",
       ...params.upstreamReuse,
       rowCount: null,
       buildDurationMs: outcome.durationMs ?? null,
