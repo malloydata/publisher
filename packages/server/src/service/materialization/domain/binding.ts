@@ -82,6 +82,13 @@ export interface Binding {
     */
    ownGateKept?: boolean;
    /**
+    * A database table's columns the bind found a DuckLake catalog holding as
+    * a DOUBLE (a 128-bit integer, `storedAsDouble`), each read as the DOUBLE
+    * it is: a row-level gate over one is not read from the table
+    * (`domain/gate_policy.ts`, `gateColumnTypes`). Set by the bind.
+    */
+   storedAsDouble?: string[];
+   /**
     * The storage destination the table lives in; for a colocated table, the
     * source's own connection.
     */

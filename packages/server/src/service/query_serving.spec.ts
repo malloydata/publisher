@@ -536,6 +536,20 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
             expect(
                await unread.keepsContractsFor!((await unread.attempt()).extra!),
             ).toBe(false);
+            // A database table on a DuckLake catalog that holds the gate's
+            // column as a DOUBLE (a 128-bit integer): live. Another column
+            // held so leaves the gate alone.
+            for (const [asDouble, keeps] of [
+               [["acct"], false],
+               [["total"], true],
+            ] as const) {
+               const lake = servedCandidate([
+                  { ...colocated, storedAsDouble: [...asDouble] },
+               ]);
+               expect(
+                  await lake.keepsContractsFor!((await lake.attempt()).extra!),
+               ).toBe(keeps);
+            }
             const unreadColocated = servedCandidate([colocated], runnable);
             expect(
                await unreadColocated.keepsContractsFor!(

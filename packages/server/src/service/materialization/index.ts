@@ -22,4 +22,3 @@ export { isUsableTableName } from "./run/manifest_loader";
 export { MaterializationScheduler } from "./run/materialization_scheduler";
 export type * from "./host";
 export type { SynthesizedRuntimeFactory } from "./text/generated_files";
-export { gateColumnTypes, gateReadNamesOfQuery } from "./serve/gate_reads";

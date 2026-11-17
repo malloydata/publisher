@@ -28,7 +28,10 @@ import {
    SERVING_GATE_CONTEXT,
    type TableRead,
 } from "./materialization/domain/gate_policy";
-import { gateColumnTypes, gateReadNamesOfQuery } from "./materialization";
+import {
+   gateColumnTypes,
+   gateReadNamesOfQuery,
+} from "./materialization/serve/gate_reads";
 import { logger } from "../logger";
 import { sourceChain } from "./materialization/text/source_map";
 import {
@@ -176,19 +179,34 @@ async function withGateColumnTypes(
    tables: readonly TableRead[],
    gateNames: () => Promise<Set<string> | undefined>,
 ): Promise<TableRead[]> {
-   if (!tables.some((t) => t.tier === "storage")) return [...tables];
+   const asDouble = (t: TableRead) =>
+      (t as Partial<Pick<Binding, "storedAsDouble">>).storedAsDouble ?? [];
+   if (!tables.some((t) => t.tier === "storage" || asDouble(t).length > 0)) {
+      return [...tables];
+   }
    const names = await gateNames();
-   return tables.map((t) =>
-      t.tier === "storage"
-         ? {
-              ...t,
-              gateColumnTypes: gateColumnTypes(
-                 names,
-                 (t as Partial<Pick<Binding, "schema">>).schema,
-              ),
-           }
-         : t,
-   );
+   return tables.map((t) => {
+      if (t.tier === "storage") {
+         return {
+            ...t,
+            gateColumnTypes: gateColumnTypes(
+               names,
+               (t as Partial<Pick<Binding, "schema">>).schema,
+            ),
+         };
+      }
+      // A database table: only a column its DuckLake catalog holds as a
+      // DOUBLE is inexact. Unlisted gates fail closed on such a table.
+      const doubles = asDouble(t);
+      if (doubles.length === 0) return t;
+      return {
+         ...t,
+         gateColumnTypes:
+            names === undefined
+               ? ["DOUBLE"]
+               : doubles.filter((c) => names.has(c)).map(() => "DOUBLE"),
+      };
+   });
 }
 
 /** The answer the router's decision describes, before anything runs. */
