@@ -18,6 +18,7 @@ import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
 import type { BuildPlanPackage } from "./domain/plan_input";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
+import type { KeptTable } from "./domain/types";
 import type {
    BuildPlan,
    FreshnessManifest,
@@ -33,14 +34,14 @@ interface MaterializationPackage extends BuildPlanPackage {
    getBuildPlan(): BuildPlan | null;
    /**
     * Resolves once the plan reflects the current connections (a connection
-    * edit re-derives it). Optional: a stand-in package's plan never moves.
+    * edit re-derives it).
     */
-   whenBuildPlanCurrent?(): Promise<void>;
+   whenBuildPlanCurrent(): Promise<void>;
    /**
     * Whether the plan could not be derived (at load, or re-derived after a
-    * connection edit). Optional, like whenBuildPlanCurrent.
+    * connection edit).
     */
-   isBuildPlanUnavailable?(): boolean;
+   isBuildPlanUnavailable(): boolean;
    getPackageMetadata(): {
       scope?: string | null;
       manifestLocation?: string | null;
@@ -50,18 +51,23 @@ interface MaterializationPackage extends BuildPlanPackage {
    persistencePolicyWarnings(): string[];
    /**
     * Drop the bound rollup key checks (known limitation 29) of the tables at
-    * these content addresses, which a run is about to write. Optional: a
-    * stand-in package binds none.
+    * these content addresses, which a run is about to write. Required, so a
+    * package that stops implementing it fails to compile rather than
+    * silently serving a check over rows the run rewrote.
     */
-   forgetKeyUniqueness?(sourceEntityIds: Iterable<string>): void;
+   forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void;
    /**
     * The text a chained `storage=` build compiles on its destination alone:
     * the request's downstream, with each stored upstream the request carries
     * re-rooted as the served copy re-roots it, from those entries alone and
-    * never the package's bound tables. Optional: a stand-in package has no
-    * served copy, and its chained builds recompute.
+    * never the package's bound tables.
     */
-   chainBuildText?(request: ChainBuildRequest): ChainBuildText;
+   chainBuildText(request: ChainBuildRequest): ChainBuildText;
+   /**
+    * The tables the newest auto-run of this package lists as kept after a
+    * rename, which its warnings name (`table-kept-after-rename`).
+    */
+   setKeptTables?(tables: readonly KeptTable[]): void;
 }
 
 /** The part of an environment's version registry a run consults. */
@@ -92,9 +98,8 @@ export interface MaterializationEnvironment {
    /**
     * Publish again a configured package whose boot publish was refused, so a
     * run resolves the version it makes (Environment.setConfiguredPublishRetry).
-    * Optional: a test double need not implement it.
     */
-   publishRefusedConfiguredPackage?(
+   publishRefusedConfiguredPackage(
       packageName: string,
       requestedVersion?: string,
    ): Promise<void>;
@@ -112,13 +117,20 @@ export interface MaterializationEnvironment {
    getLoadedPackages(): MaterializationPackage[];
    /**
     * Whether the package serves a model older than its files, because its
-    * last reload did not compile (a `stale: true` load error). Optional: a
-    * test double's packages are never stale.
+    * last reload did not compile (a `stale: true` load error).
     */
-   getStaleCompileErrors?(): ReadonlyMap<string, unknown>;
+   getStaleCompileErrors(): ReadonlyMap<string, unknown>;
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
 
    getVersionService(): MaterializationVersions | null;
+   /**
+    * Whether a host owns the package's binding: bound to a host manifest, or
+    * a version a host has bound (see Environment.isHostOwned). Such a
+    * package's tables are the host's to build and bind.
+    */
+   isHostOwned(pkg: MaterializationPackage): boolean;
+   /** A host's instructed run of the version committed (see isHostOwned). */
+   markVersionHostOwned(packageName: string, versionId: string): Promise<void>;
    peekVersion(
       packageName: string,
       versionId: string,

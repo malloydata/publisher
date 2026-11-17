@@ -136,40 +136,52 @@ const bothListening = (log: string) =>
    log.includes("Publisher server listening at") &&
    log.includes("MCP server listening at");
 
-/** Whether something accepts a TCP connection on 127.0.0.1:`port`. */
-function accepts(port: number): Promise<boolean> {
-   return new Promise((resolve) => {
-      const socket = net.connect({ port, host: "127.0.0.1" });
-      const done = (ok: boolean) => {
-         socket.destroy();
-         resolve(ok);
-      };
-      socket.setTimeout(1_000, () => done(false));
-      socket.once("connect", () => done(true));
-      socket.once("error", () => done(false));
-   });
+/**
+ * Whether an HTTP server answers on 127.0.0.1:`port`, with any status. A
+ * socket that only accepts (the spec's blocker, a port-picking probe) never
+ * answers, so a port that answers is held by an HTTP server, not merely bound.
+ *
+ * It asks for the liveness probe, which both listeners answer ahead of the
+ * rate limiter, so a spec that sets `PUBLISHER_RATE_LIMIT` keeps its whole
+ * budget. A probe of `/` counted against it: on a runner slow to log the
+ * listening lines, one landed before the spec's first request.
+ */
+async function answersHttp(port: number): Promise<boolean> {
+   try {
+      await fetch(`http://127.0.0.1:${port}/health/liveness`, {
+         signal: AbortSignal.timeout(1_000),
+         keepalive: false,
+      });
+      return true;
+   } catch {
+      return false;
+   }
 }
 
 /**
- * Resolves once `server` has exited or holds both its ports. The listening
- * lines and PUBLISHER_READY say so at the default log level, and the lines
- * also cover ports moved through `args` or `env`; a connection to both ports
- * covers a quieter LOG_LEVEL. A port lost to another process accepts a
- * connection too, but the server exits within milliseconds of failing to
- * bind, so connections must succeed on two polls in a row with the process
- * still up.
+ * Resolves once `server` has exited or holds both its ports. Each listening
+ * line is logged from its listener's bind callback, so both lines together
+ * prove both binds. A quieter LOG_LEVEL leaves them out; then both ports must
+ * answer HTTP on two polls in a row with the process still up.
+ *
+ * Neither signal may be a bare TCP connect or PUBLISHER_READY. A port lost to
+ * another process accepts a connection, and the server binds one port before
+ * its other listener's EADDRINUSE is handled; on a loaded runner that gap is
+ * long enough for two connect polls to pass against a server about to exit.
+ * PUBLISHER_READY marks the end of environment loading, which does not wait
+ * on either bind.
  */
 async function settled(server: SpawnedServer): Promise<void> {
-   let connectedPolls = 0;
+   let answeredPolls = 0;
    await pollUntil(
       async () => {
          if (server.exited()) return true;
          if (bothListening(server.output())) return true;
-         if (server.stderr().includes("PUBLISHER_READY")) return true;
          const both =
-            (await accepts(server.restPort)) && (await accepts(server.mcpPort));
-         connectedPolls = both && !server.exited() ? connectedPolls + 1 : 0;
-         return connectedPolls >= 2;
+            (await answersHttp(server.restPort)) &&
+            (await answersHttp(server.mcpPort));
+         answeredPolls = both && !server.exited() ? answeredPolls + 1 : 0;
+         return answeredPolls >= 2;
       },
       90_000,
       100,
@@ -331,7 +343,11 @@ function launch(
          const serving = await pollUntil(async () => {
             if (exited()) return true;
             try {
-               const res = await fetch(`${baseUrl}/api/v0/status`);
+               // Bounded per request: a socket that accepts and never answers
+               // would otherwise hold this poll, and the test, past timeoutMs.
+               const res = await fetch(`${baseUrl}/api/v0/status`, {
+                  signal: AbortSignal.timeout(5_000),
+               });
                if (!res.ok) return false;
                const body = (await res.json()) as {
                   operationalState?: string;

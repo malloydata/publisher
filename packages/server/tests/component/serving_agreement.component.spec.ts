@@ -6,6 +6,10 @@
 // source an `index.malloy` re-exports, an inherited `#@ preaggregate`, serving
 // after a connection edit, and the verdicts, path report, preview and package
 // warnings agreeing about one package.
+import {
+   castToDeclaredTypes,
+   wideIntegerColumns,
+} from "../../src/service/materialization/stored_column_types";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -96,7 +100,7 @@ source: orders is duckdb.sql("""
 
 /** Build every planned rollup (one table per address) and bind it colocated. */
 async function buildRollups(pkg: Package): Promise<string> {
-   const ids = [...pkg.getPreaggregateEntityIds()];
+   const ids = [...pkg.materialization().getPreaggregateEntityIds()];
    expect(ids).toHaveLength(1);
    const rollup = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
       (s) => s.sourceEntityId === ids[0],
@@ -108,9 +112,11 @@ async function buildRollups(pkg: Package): Promise<string> {
    await connection.runSQL(
       `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
    );
-   pkg.bindColocatedServeManifest({
-      [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
-   } as never);
+   pkg.materialization().bind({
+      colocated: {
+         [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
+      } as never,
+   });
    return ids[0];
 }
 
@@ -135,6 +141,7 @@ describe("a rollup on a source an index.malloy re-exports", () => {
          expect(JSON.stringify(result)).toContain("built_rollup");
          expect(result.path?.servedBy).toEqual({
             kind: "rollup",
+            tier: "database",
             tableId: rollupId,
          });
          expect(result.path?.considered).toEqual([
@@ -143,7 +150,8 @@ describe("a rollup on a source an index.malloy re-exports", () => {
       }
       // The verdict agrees with the path report.
       const verdicts = pkg
-         .getServeVerdicts()
+         .materialization()
+         .serveVerdicts()
          .filter((v) => v.origin === "preaggregate");
       expect(verdicts.length).toBeGreaterThan(0);
       expect(verdicts.every((v) => v.verdict === "serves")).toBe(true);
@@ -174,7 +182,7 @@ describe("a #@ preaggregate measure reused in a persisted query", () => {
       expect(pkg.getModel("index.malloy")?.preaggregateViolations()).toEqual(
          [],
       );
-      expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+      expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe("");
       expect(planEntry(pkg, "daily").origin).not.toBe("preaggregate");
    });
 
@@ -215,9 +223,11 @@ async function buildDaily(pkg: Package, table: string): Promise<string> {
       "duck",
    )) as DuckDBConnection;
    await connection.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
-   pkg.bindColocatedServeManifest({
-      [entry.sourceEntityId]: { tableName: table, connectionName: "duck" },
-   } as never);
+   pkg.materialization().bind({
+      colocated: {
+         [entry.sourceEntityId]: { tableName: table, connectionName: "duck" },
+      } as never,
+   });
    return entry.sourceEntityId;
 }
 
@@ -255,11 +265,15 @@ describe("serving after a connection edit and a rebuild", () => {
       expect(JSON.stringify(second)).toContain("built_after");
       expect(second.path?.servedBy).toEqual({
          kind: "materialized",
+         tier: "database",
          tableId: after,
          via: "served_copy",
       });
       expect(
-         pkg.getServeVerdicts().find((v) => v.sourceName === "daily"),
+         pkg
+            .materialization()
+            .serveVerdicts()
+            .find((v) => v.sourceName === "daily"),
       ).toMatchObject({ verdict: "serves" });
    });
 });
@@ -353,7 +367,21 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
       const table = `t_${entry.sourceEntityId.slice(0, 12)}`;
       const storage = entry.annotationFields?.storage;
       if (storage) {
-         await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
+         // As a real build stores a sum: a warehouse's numeric arrives as a
+         // DECIMAL, and a DuckDB-computed 128-bit integer is cast to
+         // DECIMAL(38,0), which a lake keeps exactly (P4-01).
+         const computed = await lake.runSQL(`DESCRIBE (${entry.sql})`);
+         const select = castToDeclaredTypes(entry.sql, [], {
+            exactIntegers: wideIntegerColumns(
+               (
+                  computed.rows as {
+                     column_name: string;
+                     column_type: string;
+                  }[]
+               ).map((r) => ({ name: r.column_name, type: r.column_type })),
+            ),
+         });
+         await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${select}`);
          const described = await lake.runSQL(`DESCRIBE ${table}`);
          stored[entry.sourceEntityId] = {
             sourceEntityId: entry.sourceEntityId,
@@ -377,8 +405,8 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
          };
       }
    }
-   pkg.bindColocatedServeManifest(colocated as never);
-   pkg.bindStorageServeBindings(stored as never);
+   pkg.materialization().bind({ colocated: colocated as never });
+   pkg.materialization().bind({ storage: stored as never });
 }
 
 describe("the verdicts, path report, preview and warnings agree on one package", () => {
@@ -396,11 +424,11 @@ describe("the verdicts, path report, preview and warnings agree on one package",
          "index.malloy": AGREEMENT_INDEX,
       });
       const { lake, config } = lakeDestination(rootDir);
-      pkg.setServeDestinationConfig(() => config);
+      pkg.materialization().setServeDestinationConfig(() => config);
       const preview = await pkg.previewServeVerdicts();
       await buildAll(pkg, lake);
 
-      const verdicts = pkg.getServeVerdicts();
+      const verdicts = pkg.materialization().serveVerdicts();
       const verdictOf = (name: string) => {
          const found = verdicts.filter(
             (v) => v.sourceName === name && v.origin === "persist",

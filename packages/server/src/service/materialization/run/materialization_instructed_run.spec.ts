@@ -1,9 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { BuildRunFailedError } from "./build_failure_class";
+import {
+   BuildRunFailedError,
+   failedRunManifestOf,
+} from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
@@ -55,6 +59,7 @@ describe("executeInstructedBuild", () => {
       strict = false,
       // The host instructed the run (orchestrated).
       hostInstructed = false,
+      signal: AbortSignal = new AbortController().signal,
    ): Promise<ExecuteResult> {
       // A stub BuildEnvironment. The `storage=` branch reads it, and so does the
       // per-source failure path, which redacts against the connection's CONFIG.
@@ -68,6 +73,7 @@ describe("executeInstructedBuild", () => {
             }
             return config;
          },
+         getEnvironmentName: () => "env",
          getEnvironmentPath: () => "/tmp/env",
       };
       return (
@@ -87,7 +93,7 @@ describe("executeInstructedBuild", () => {
          environment,
          instructions,
          seedEntries: seed,
-         signal: new AbortController().signal,
+         signal,
          strict,
          priorRefusals: [],
          hostInstructed,
@@ -197,6 +203,88 @@ describe("executeInstructedBuild", () => {
          updates,
          "a seed with no table name must not be bound into the build manifest",
       ).not.toContain("seedNameless");
+   });
+
+   it("P5-10: a run cancelled while its last CTAS reads settles cancelled, its staging dropped and never swapped in", async () => {
+      // The driver ignores the signal (DuckDB, Postgres): the CTAS finishes,
+      // and the build stops before the swap.
+      const run = new AbortController();
+      const statements: { sql: string; signal?: AbortSignal }[] = [];
+      const runSQL = sinon
+         .stub()
+         .callsFake(
+            async (sql: string, options?: { abortSignal?: AbortSignal }) => {
+               statements.push({
+                  sql: String(sql),
+                  signal: options?.abortSignal,
+               });
+               if (/CREATE TABLE .*slow_v1/.test(String(sql))) run.abort();
+               return { rows: [] };
+            },
+         );
+      const connection = {
+         runSQL,
+         fetchSchemaForTables: async () => ({ schemas: {}, errors: {} }),
+      } as unknown as MalloyConnection;
+      const good = fakeSource({
+         name: "good",
+         sourceEntityId: "bgoodaaaaaaaaaa",
+      });
+      const slow = fakeSource({
+         name: "slow",
+         sourceEntityId: "bslowssssssssss",
+      });
+      const compiled = {
+         builds: [
+            {
+               connectionName: "duckdb",
+               order: ["good", "slow"],
+               dependsOn: {},
+            },
+         ],
+         tables: persistTables({ good, slow }),
+         connectionDigests: { duckdb: "dig" },
+         connections: new Map([["duckdb", connection]]),
+      };
+      await expect(
+         callExecute(
+            compiled,
+            [
+               {
+                  sourceEntityId: "bgoodaaaaaaaaaa",
+                  materializedTableId: "mt-g",
+                  physicalTableName: "good_v1",
+                  realization: "COPY",
+               },
+               {
+                  sourceEntityId: "bslowssssssssss",
+                  materializedTableId: "mt-s",
+                  physicalTableName: "slow_v1",
+                  realization: "COPY",
+               },
+            ],
+            {},
+            undefined,
+            false,
+            false,
+            run.signal,
+         ),
+      ).rejects.toBeInstanceOf(BuildCancelledError);
+      const slowStatements = statements.filter((s) =>
+         s.sql.includes("slow_v1"),
+      );
+      // The CTAS carried the run's signal; nothing after it did.
+      const ctas = slowStatements.find((s) => s.sql.startsWith("CREATE TABLE"));
+      expect(ctas?.signal).toBe(run.signal);
+      expect(
+         slowStatements.filter((s) => s !== ctas && s.signal !== undefined),
+      ).toEqual([]);
+      // The staging table is dropped after the cancel, and nothing renames it
+      // onto the served name.
+      const after = slowStatements.slice(slowStatements.indexOf(ctas!) + 1);
+      expect(after.map((s) => s.sql)).toEqual([
+         expect.stringMatching(/^DROP TABLE IF EXISTS .*slow_v1/),
+      ]);
    });
 
    it("keeps healthy sources when one of several fails, and records why it failed", async () => {
@@ -1663,10 +1751,9 @@ describe("executeInstructedBuild", () => {
       });
    });
 
-   it("seeds unquoted when the upstream's connection is absent from the build (older CP / cross-connection)", async () => {
-      // No connectionName on the seed (an older control plane) -> bind verbatim,
-      // exactly the pre-change behavior. Non-case-folding engines are unaffected;
-      // a case-folding engine self-signals by failing the downstream CREATE.
+   it("seeds an upstream that names no connection quoted for the build's one dialect, never as given", async () => {
+      // No connectionName on the seed (an older control plane): quoted for the
+      // dialect every connection of the build shares.
       let seen:
          | {
               buildManifest?: {
@@ -1706,7 +1793,67 @@ describe("executeInstructedBuild", () => {
          { up: { sourceEntityId: "up", physicalTableName: "orders_base" } },
       );
 
-      expect(seen?.buildManifest?.entries?.up?.tableName).toBe("orders_base");
+      expect(seen?.buildManifest?.entries?.up?.tableName).toBe('"orders_base"');
+   });
+
+   it("does not seed an upstream with no dialect to quote it in", async () => {
+      // Named but absent, or unnamed over connections of two dialects: not
+      // bound, so a downstream reads it live.
+      let seen:
+         | {
+              buildManifest?: {
+                 entries?: Record<string, { tableName?: string }>;
+              };
+           }
+         | undefined;
+      const sf = {
+         runSQL: sinon.stub().resolves(),
+         dialectName: "snowflake",
+      } as unknown as MalloyConnection;
+      const pg = {
+         runSQL: sinon.stub().resolves(),
+         dialectName: "postgres",
+      } as unknown as MalloyConnection;
+      const down = fakeSource({
+         name: "down",
+         sourceEntityId: "bdownaaaaaaaaaa",
+         dialectName: "snowflake",
+         onGetSQL: (o) => {
+            seen = o as typeof seen;
+         },
+      });
+      const compiled = compiledWith(
+         { down },
+         [["down"]],
+         new Map([
+            ["duckdb", sf],
+            ["pg", pg],
+         ]),
+      );
+
+      await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bdownaaaaaaaaaa",
+               materializedTableId: "mt-d",
+               physicalTableName: "down_v1",
+               realization: "COPY",
+            },
+         ],
+         {
+            up: { sourceEntityId: "up", physicalTableName: "orders_base" },
+            gone: {
+               sourceEntityId: "gone",
+               physicalTableName: "gone_base",
+               connectionName: "elsewhere",
+            },
+         },
+      );
+
+      expect(seen?.buildManifest).toBeDefined();
+      expect(seen?.buildManifest?.entries?.up).toBeUndefined();
+      expect(seen?.buildManifest?.entries?.gone).toBeUndefined();
    });
 
    it("throws when an instructed build's connection is missing", async () => {
@@ -2097,6 +2244,7 @@ describe("executeInstructedBuild", () => {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          };
          const service = ctx.service.collaborators as unknown as {
@@ -2225,6 +2373,151 @@ describe("executeInstructedBuild", () => {
             ),
          ).rejects.toThrow(MaterializationEligibilityError);
          expect(runSQL.called).toBe(false);
+      });
+   });
+
+   // F-17: a run that built nothing settles FAILED with a manifest whose
+   // `failures` names each source's own reason, so a host attributes the
+   // failure per source rather than copying the run's error onto each.
+   describe("F-17: a run that built nothing carries each source's own failure", () => {
+      const row = (id: string, table: string): BuildInstruction => ({
+         sourceEntityId: id,
+         materializedTableId: `mt-${table}`,
+         physicalTableName: table,
+         realization: "COPY",
+      });
+
+      async function rejection(
+         compiled: unknown,
+         instructions: BuildInstruction[],
+      ): Promise<unknown> {
+         return callExecute(
+            compiled,
+            instructions,
+            {},
+            undefined,
+            false,
+            true,
+         ).then(
+            () => {
+               throw new Error("the run built something");
+            },
+            (err: unknown) => err,
+         );
+      }
+
+      it("P5-03: every instructed build fails: each source keeps its own reason and retryable, and no entry", async () => {
+         const runSQL = sinon.stub().callsFake(async (sql: string) => {
+            if (String(sql).includes("a_v1")) {
+               throw new Error('Parser Error: syntax error at or near "FORM"');
+            }
+            throw new Error("connect ECONNREFUSED 10.0.0.1:5432");
+         });
+         const a = fakeSource({
+            name: "a",
+            sourceEntityId: "baaaaaaaaaaaaaaa",
+         });
+         const b = fakeSource({
+            name: "b",
+            sourceEntityId: "bbbbbbbbbbbbbbbb",
+         });
+         const err = await rejection(
+            compiledWith(
+               { a, b },
+               [["a"], ["b"]],
+               new Map([["duckdb", { runSQL } as unknown as MalloyConnection]]),
+            ),
+            [row("baaaaaaaaaaaaaaa", "a_v1"), row("bbbbbbbbbbbbbbbb", "b_v1")],
+         );
+         // The whole run's answer stays as it was.
+         expect(err).toBeInstanceOf(BuildRunFailedError);
+         expect((err as BuildRunFailedError).retryable).toBe(true);
+         const failed = failedRunManifestOf(err);
+         expect(Object.keys(failed?.failures ?? {}).sort()).toEqual([
+            "baaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbb",
+         ]);
+         expect(failed?.failures["baaaaaaaaaaaaaaa"]).toMatchObject({
+            sourceName: "a",
+            materializedTableId: "mt-a_v1",
+            retryable: false,
+         });
+         expect(failed?.failures["baaaaaaaaaaaaaaa"].reason).toContain("FORM");
+         expect(failed?.failures["bbbbbbbbbbbbbbbb"]).toMatchObject({
+            sourceName: "b",
+            materializedTableId: "mt-b_v1",
+            retryable: true,
+         });
+         expect(failed?.failures["bbbbbbbbbbbbbbbb"].reason).toContain(
+            "ECONNREFUSED",
+         );
+         // A manifest of failures alone: the failed run names no table.
+         expect(failed).not.toHaveProperty("entries");
+      });
+
+      it("P6-07: every instructed source is refused by its own gate: each refusal is its own failure", async () => {
+         const runSQL = sinon.stub().resolves();
+         const gated = (name: string, sourceEntityId: string) =>
+            fakeSource({
+               name,
+               sourceEntityId,
+               sourceDef: { blockNotes: ["#(authorize) true"] },
+            });
+         const one = gated("one", "b1111111111111111");
+         const two = gated("two", "b2222222222222222");
+         const err = await rejection(
+            compiledWith(
+               { one, two },
+               [["one"], ["two"]],
+               new Map([["duckdb", { runSQL } as unknown as MalloyConnection]]),
+            ),
+            [
+               row("b1111111111111111", "one_v1"),
+               row("b2222222222222222", "two_v1"),
+            ],
+         );
+         expect(err).toBeInstanceOf(MaterializationEligibilityError);
+         expect(runSQL.called).toBe(false);
+         const failures = failedRunManifestOf(err)?.failures ?? {};
+         expect(Object.keys(failures).sort()).toEqual([
+            "b1111111111111111",
+            "b2222222222222222",
+         ]);
+         for (const [id, name] of [
+            ["b1111111111111111", "one"],
+            ["b2222222222222222", "two"],
+         ]) {
+            expect(failures[id]).toMatchObject({
+               sourceName: name,
+               refused: true,
+               retryable: false,
+            });
+         }
+      });
+
+      it("a run that built something carries no failed-run manifest", async () => {
+         const runSQL = sinon.stub().callsFake(async (sql: string) => {
+            if (String(sql).includes("b_v1")) throw new Error("boom");
+         });
+         const a = fakeSource({
+            name: "a",
+            sourceEntityId: "baaaaaaaaaaaaaaa",
+         });
+         const b = fakeSource({
+            name: "b",
+            sourceEntityId: "bbbbbbbbbbbbbbbb",
+         });
+         const result = await callExecute(
+            compiledWith(
+               { a, b },
+               [["a"], ["b"]],
+               new Map([["duckdb", { runSQL } as unknown as MalloyConnection]]),
+            ),
+            [row("baaaaaaaaaaaaaaa", "a_v1"), row("bbbbbbbbbbbbbbbb", "b_v1")],
+            {},
+         );
+         expect(Object.keys(result.failures)).toEqual(["bbbbbbbbbbbbbbbb"]);
+         expect(failedRunManifestOf(result)).toBeUndefined();
       });
    });
 });

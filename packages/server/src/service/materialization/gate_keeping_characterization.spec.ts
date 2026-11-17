@@ -215,17 +215,15 @@ async function loadRows(
          rows[s.name] = [`refused ${s.reason}`];
       }
       const verdicts = (
-         pkg as unknown as {
-            materialization: {
-               serveVerdicts(): {
-                  sourceName: string;
-                  tier: string;
-                  verdict: string;
-                  reason?: string;
-               }[];
-            };
+         pkg.materialization() as unknown as {
+            serveVerdicts(): {
+               sourceName: string;
+               tier: string;
+               verdict: string;
+               reason?: string;
+            }[];
          }
-      ).materialization.serveVerdicts();
+      ).serveVerdicts();
       for (const v of verdicts) {
          const key = v.sourceName;
          if (!rows[key]) continue;
@@ -233,12 +231,6 @@ async function loadRows(
             v.tier,
             v.reason ? `${v.verdict} ${v.reason}` : v.verdict,
          );
-      }
-      // A declaration planned nothing at all (not planned, not refused):
-      // the gate's warning says why.
-      for (const w of pkg.getPackageMetadata().warnings ?? []) {
-         if (w.code !== "preaggregate-access-filter") continue;
-         rows[`${w.subject}`] = ["not planned preaggregate-access-filter"];
       }
       return Object.fromEntries(
          Object.entries(rows)
@@ -267,12 +259,13 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       pair_sto: "planned | storage | not_built",
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll.total_sto": "not planned preaggregate-access-filter",
+      "roll.total_sto": "refused access_filter | colocated | live refused",
       roll__rollup__category_region__7617040b:
          "planned | colocated | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
       views__by_region_col__view: "planned | colocated | not_built",
-      views__by_region_sto__view: "refused authorize | storage | live refused",
+      views__by_region_sto__view:
+         "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize on, gated sources off": {
       mat_col: "planned | colocated | not_built",
@@ -281,22 +274,33 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       pair_sto: "planned | storage | not_built",
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll.total_col": "not planned preaggregate-access-filter",
-      "roll.total_sto": "not planned preaggregate-access-filter",
-      "roll_v1.v1_total": "not planned preaggregate-access-filter",
+      // G3 for a colocated rollup: the base's own gate, proven on its grain.
+      roll__rollup__category_region__7617040b:
+         "planned | colocated | not_built",
+      "roll.total_sto": "refused access_filter | colocated | live refused",
+      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
       views__by_region_col__view:
-         "refused authorize | colocated | live refused",
-      views__by_region_sto__view: "refused authorize | storage | live refused",
+         "refused access_filter | colocated | live refused",
+      views__by_region_sto__view:
+         "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources on": {
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources off": {
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll_v1.v1_total": "not planned preaggregate-access-filter",
+      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize on, gated sources on": {
       mat_col: "planned | colocated | not_built",
@@ -341,6 +345,10 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
          "planned | colocated | live row_level_gate",
       secure_persist_col: "planned | colocated | not_built",
       secure_persist_sto: "planned | storage | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize off, gated sources off": {
       persist_col: "planned | colocated | not_built",
@@ -349,6 +357,10 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
          "planned | colocated | live row_level_gate",
       secure_persist_col: "planned | colocated | not_built",
       secure_persist_sto: "planned | storage | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
 };
 
@@ -648,26 +660,6 @@ const ROUTER: Record<string, Record<string, string>> = {
          "served, a kept and another storage table": "used, past the gate",
          "served, no table": "used, past the gate",
       },
-   "materialize on, gated sources on, the colocated rule off": {
-      "view, colocated tables": "used, past the gate",
-      "view, storage tables": "used, past the gate",
-      "view, colocated and storage tables": "used, past the gate",
-      "view, storage tables kept past their own gate": "used, past the gate",
-      "view, a kept and another storage table": "used, past the gate",
-      "view, no table": "used, past the gate",
-      "rollup, colocated tables": "used, past the gate",
-      "rollup, storage tables": "used, past the gate",
-      "rollup, colocated and storage tables": "used, past the gate",
-      "rollup, storage tables kept past their own gate": "used, past the gate",
-      "rollup, a kept and another storage table": "used, past the gate",
-      "rollup, no table": "used, past the gate",
-      "served, colocated tables": "used, past the gate",
-      "served, storage tables": "used, past the gate",
-      "served, colocated and storage tables": "used, past the gate",
-      "served, storage tables kept past their own gate": "used, past the gate",
-      "served, a kept and another storage table": "used, past the gate",
-      "served, no table": "used, past the gate",
-   },
    "materialize on, gated sources off, the colocated rule on (as every model passes it)":
       {
          "view, colocated tables": "skipped row_level_gate",
@@ -677,13 +669,13 @@ const ROUTER: Record<string, Record<string, string>> = {
             "skipped row_level_gate",
          "view, a kept and another storage table": "skipped row_level_gate",
          "view, no table": "skipped row_level_gate",
-         "rollup, colocated tables": "skipped row_level_gate",
+         "rollup, colocated tables": "used, past the gate",
          "rollup, storage tables": "skipped row_level_gate",
-         "rollup, colocated and storage tables": "skipped row_level_gate",
+         "rollup, colocated and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
             "skipped row_level_gate",
          "rollup, a kept and another storage table": "skipped row_level_gate",
-         "rollup, no table": "skipped row_level_gate",
+         "rollup, no table": "used, past the gate",
          "served, colocated tables": "used, past the gate",
          "served, storage tables": "skipped row_level_gate",
          "served, colocated and storage tables": "skipped row_level_gate",
@@ -692,28 +684,6 @@ const ROUTER: Record<string, Record<string, string>> = {
          "served, a kept and another storage table": "skipped row_level_gate",
          "served, no table": "skipped row_level_gate",
       },
-   "materialize on, gated sources off, the colocated rule off": {
-      "view, colocated tables": "skipped row_level_gate",
-      "view, storage tables": "skipped row_level_gate",
-      "view, colocated and storage tables": "skipped row_level_gate",
-      "view, storage tables kept past their own gate": "skipped row_level_gate",
-      "view, a kept and another storage table": "skipped row_level_gate",
-      "view, no table": "skipped row_level_gate",
-      "rollup, colocated tables": "skipped row_level_gate",
-      "rollup, storage tables": "skipped row_level_gate",
-      "rollup, colocated and storage tables": "skipped row_level_gate",
-      "rollup, storage tables kept past their own gate":
-         "skipped row_level_gate",
-      "rollup, a kept and another storage table": "skipped row_level_gate",
-      "rollup, no table": "skipped row_level_gate",
-      "served, colocated tables": "skipped row_level_gate",
-      "served, storage tables": "skipped row_level_gate",
-      "served, colocated and storage tables": "skipped row_level_gate",
-      "served, storage tables kept past their own gate":
-         "skipped row_level_gate",
-      "served, a kept and another storage table": "skipped row_level_gate",
-      "served, no table": "skipped row_level_gate",
-   },
    "materialize off, gated sources on, the colocated rule on (as every model passes it)":
       {
          "view, colocated tables": "used, past the gate",
@@ -737,26 +707,6 @@ const ROUTER: Record<string, Record<string, string>> = {
          "served, a kept and another storage table": "used, past the gate",
          "served, no table": "used, past the gate",
       },
-   "materialize off, gated sources on, the colocated rule off": {
-      "view, colocated tables": "used, past the gate",
-      "view, storage tables": "used, past the gate",
-      "view, colocated and storage tables": "used, past the gate",
-      "view, storage tables kept past their own gate": "used, past the gate",
-      "view, a kept and another storage table": "used, past the gate",
-      "view, no table": "used, past the gate",
-      "rollup, colocated tables": "used, past the gate",
-      "rollup, storage tables": "used, past the gate",
-      "rollup, colocated and storage tables": "used, past the gate",
-      "rollup, storage tables kept past their own gate": "used, past the gate",
-      "rollup, a kept and another storage table": "used, past the gate",
-      "rollup, no table": "used, past the gate",
-      "served, colocated tables": "used, past the gate",
-      "served, storage tables": "used, past the gate",
-      "served, colocated and storage tables": "used, past the gate",
-      "served, storage tables kept past their own gate": "used, past the gate",
-      "served, a kept and another storage table": "used, past the gate",
-      "served, no table": "used, past the gate",
-   },
    "materialize off, gated sources off, the colocated rule on (as every model passes it)":
       {
          "view, colocated tables": "skipped row_level_gate",
@@ -766,13 +716,13 @@ const ROUTER: Record<string, Record<string, string>> = {
             "skipped row_level_gate",
          "view, a kept and another storage table": "skipped row_level_gate",
          "view, no table": "skipped row_level_gate",
-         "rollup, colocated tables": "skipped row_level_gate",
+         "rollup, colocated tables": "used, past the gate",
          "rollup, storage tables": "skipped row_level_gate",
-         "rollup, colocated and storage tables": "skipped row_level_gate",
+         "rollup, colocated and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
             "skipped row_level_gate",
          "rollup, a kept and another storage table": "skipped row_level_gate",
-         "rollup, no table": "skipped row_level_gate",
+         "rollup, no table": "used, past the gate",
          "served, colocated tables": "used, past the gate",
          "served, storage tables": "skipped row_level_gate",
          "served, colocated and storage tables": "skipped row_level_gate",
@@ -781,28 +731,6 @@ const ROUTER: Record<string, Record<string, string>> = {
          "served, a kept and another storage table": "skipped row_level_gate",
          "served, no table": "skipped row_level_gate",
       },
-   "materialize off, gated sources off, the colocated rule off": {
-      "view, colocated tables": "skipped row_level_gate",
-      "view, storage tables": "skipped row_level_gate",
-      "view, colocated and storage tables": "skipped row_level_gate",
-      "view, storage tables kept past their own gate": "skipped row_level_gate",
-      "view, a kept and another storage table": "skipped row_level_gate",
-      "view, no table": "skipped row_level_gate",
-      "rollup, colocated tables": "skipped row_level_gate",
-      "rollup, storage tables": "skipped row_level_gate",
-      "rollup, colocated and storage tables": "skipped row_level_gate",
-      "rollup, storage tables kept past their own gate":
-         "skipped row_level_gate",
-      "rollup, a kept and another storage table": "skipped row_level_gate",
-      "rollup, no table": "skipped row_level_gate",
-      "served, colocated tables": "skipped row_level_gate",
-      "served, storage tables": "skipped row_level_gate",
-      "served, colocated and storage tables": "skipped row_level_gate",
-      "served, storage tables kept past their own gate":
-         "skipped row_level_gate",
-      "served, a kept and another storage table": "skipped row_level_gate",
-      "served, no table": "skipped row_level_gate",
-   },
 };
 
 describe("gate keeping at the router, under an entry-point veto", () => {
@@ -813,12 +741,14 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tier: "colocated" | "storage";
       sourceName: string;
       tablePath: string;
+      schema: { name: string; type: string }[];
       ownGateKept?: boolean;
    } => ({
       kind: "materialize",
       tier,
       sourceName: `t_${tier}`,
       tablePath: `t_${tier}`,
+      schema: [{ name: "id", type: "BIGINT" }],
    });
    const reads: Record<string, ReturnType<typeof table>[]> = {
       "colocated tables": [table("colocated")],
@@ -836,6 +766,28 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       "no table": [],
    };
    const runnable = {} as never;
+   // The author's compile the router lists the gate's columns from: a source
+   // whose stored columns the gate reads none of, so every table's gate
+   // columns are exact and the rows below are the policy's by tier alone.
+   const authorRunnable = {
+      getPreparedQuery: async () => ({
+         _query: { structRef: "s" },
+         _modelDef: {
+            name: "m",
+            exports: [],
+            contents: {
+               s: {
+                  type: "table",
+                  name: "s",
+                  tablePath: "s",
+                  connection: "duckdb",
+                  dialect: "duckdb",
+                  fields: [{ name: "id", type: "number" }],
+               },
+            },
+         },
+      }),
+   } as never;
 
    function host(tables: ReturnType<typeof table>[]): Required<LegContext> {
       return {
@@ -869,65 +821,63 @@ describe("gate keeping at the router, under an entry-point veto", () => {
    }
 
    for (const s of SWITCHES) {
-      for (const colocatedKeepsContracts of [true, false]) {
-         const label = `${switchLabel(s)}, the colocated rule ${colocatedKeepsContracts ? "on (as every model passes it)" : "off"}`;
-         it(label, async () => {
-            const restore = installSettings({
-               env: {
-                  PUBLISHER_MATERIALIZE: String(s.materialize),
-                  PUBLISHER_MATERIALIZE_GATED_SOURCES: String(s.gatedSources),
-               },
-            }).restore;
-            try {
-               const rows: Record<string, string> = {};
-               for (const leg of ["view", "rollup", "served"] as const) {
-                  for (const [read, tables] of Object.entries(reads)) {
-                     const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
-                     const legs = host(tables);
-                     const candidates = variantsOf(
-                        makeLegs(pinned, {
-                           ...(leg === "served"
-                              ? { servedCopy: legs.servedCopy }
-                              : {}),
-                           ...(leg === "rollup"
-                              ? { rollupVariants: legs.rollupVariants }
-                              : {}),
-                           ...(leg === "view"
-                              ? { persistedViews: legs.persistedViews }
-                              : {}),
-                        }),
-                        {
-                           queryString: "run: s -> v",
-                           givens: undefined,
-                           authorRunnable: runnable,
-                        },
-                        pinned,
-                        { modelPath: "m.malloy", colocatedKeepsContracts },
-                     );
-                     const decision = await routeQuery(
-                        candidates,
-                        async () => "entry_point",
-                        { recordMetrics: false },
-                     );
-                     const c = decision.considered[0];
-                     // A use under the veto is a use past the gate, which is
-                     // what sends the answer to `govern()` to graft and prove.
-                     expect(
-                        decision.served === "variant" &&
-                           decision.pastEntryPointGate === true,
-                     ).toBe(c.outcome === "used");
-                     rows[`${leg}, ${read}`] =
-                        c.outcome === "used"
-                           ? "used, past the gate"
-                           : `skipped ${c.reason}`;
-                  }
+      const label = `${switchLabel(s)}, the colocated rule on (as every model passes it)`;
+      it(label, async () => {
+         const restore = installSettings({
+            env: {
+               PUBLISHER_MATERIALIZE: String(s.materialize),
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: String(s.gatedSources),
+            },
+         }).restore;
+         try {
+            const rows: Record<string, string> = {};
+            for (const leg of ["view", "rollup", "served"] as const) {
+               for (const [read, tables] of Object.entries(reads)) {
+                  const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+                  const legs = host(tables);
+                  const candidates = variantsOf(
+                     makeLegs(pinned, {
+                        ...(leg === "served"
+                           ? { servedCopy: legs.servedCopy }
+                           : {}),
+                        ...(leg === "rollup"
+                           ? { rollupVariants: legs.rollupVariants }
+                           : {}),
+                        ...(leg === "view"
+                           ? { persistedViews: legs.persistedViews }
+                           : {}),
+                     }),
+                     {
+                        queryString: "run: s -> v",
+                        givens: undefined,
+                        authorRunnable,
+                     },
+                     pinned,
+                     { modelPath: "m.malloy" },
+                  );
+                  const decision = await routeQuery(
+                     candidates,
+                     async () => "entry_point",
+                     { recordMetrics: false },
+                  );
+                  const c = decision.considered[0];
+                  // A use under the veto is a use past the gate, which is
+                  // what sends the answer to `govern()` to graft and prove.
+                  expect(
+                     decision.served === "variant" &&
+                        decision.pastEntryPointGate === true,
+                  ).toBe(c.outcome === "used");
+                  rows[`${leg}, ${read}`] =
+                     c.outcome === "used"
+                        ? "used, past the gate"
+                        : `skipped ${c.reason}`;
                }
-               if (DUMP) dumped[`router ${label}`] = rows;
-               else expect(rows).toEqual(ROUTER[label]);
-            } finally {
-               restore();
             }
-         });
-      }
+            if (DUMP) dumped[`router ${label}`] = rows;
+            else expect(rows).toEqual(ROUTER[label]);
+         } finally {
+            restore();
+         }
+      });
    }
 });

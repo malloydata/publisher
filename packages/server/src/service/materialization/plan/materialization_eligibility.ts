@@ -29,6 +29,11 @@ import { sourceDefOf } from "../../governance/ir/compiled_model";
 import type { PersistSource } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
 import { tableKeepsGates } from "../domain/gate_policy";
+import {
+   gateRefusalReason,
+   type GateRefusalReason,
+} from "../domain/gate_refusal";
+import { capabilitiesOf } from "../domain/dialect";
 import { MaterializationEligibilityError } from "../../../errors";
 import type { AnnotationNote } from "../../annotations";
 import { parseAuthorizeAnnotation } from "../../authorize";
@@ -165,7 +170,7 @@ export function assertMaterializationEligible(
 
    if (!options.gateEnforcedAtRead && referencesAuthorize(persistSource)) {
       throw new MaterializationEligibilityError({
-         reason: "authorize",
+         reason: gateReasonOf(persistSource),
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: it is protected by a gate — #(authorize) or ` +
@@ -353,22 +358,31 @@ export function assertColocatedPersistNotAuthorizeGated(
       });
    }
 
+   assertColocatedTablePlaceable(
+      persistSource,
+      sourceName,
+      origin,
+      annotationFields,
+   );
+
    // A given INSIDE the persisted query is frozen at its default and served to
    // every caller; one in the source's `filterList` is applied per caller at
    // read and is the documented form (docs/row-level-access.md). Only the first
    // is refused. No parameter equivalent exists: the compiler rejects a
    // parameter in a persisted source's own query.
    if (buildSubstitutesAGiven(persistSource)) {
-      // A rollup gets its own reason: the generic advice (move the given to the
-      // extend block) is where a rollup's given already is, since the rollup
-      // READING the source bakes it. And nothing else guards rollups: their
+      // A rollup gets its own message, under the one reason every mechanism
+      // gives a build that reads a given (`reads_given`): the
+      // generic advice (move the given to the extend block) is where a
+      // rollup's given already is, since the rollup READING the source bakes
+      // it. And nothing else guards rollups: their
       // bindings bypass `serveBindingsWithRefinements`, so there is no filter
       // re-emission and no fail-closed shape compile. If the rollup build ever
       // stripped its base's read-time terms, it would aggregate across every
       // caller and serve that to all of them.
       if (origin === "preaggregate") {
          throw new MaterializationEligibilityError({
-            reason: "preaggregate_over_dynamic_source",
+            reason: "reads_given",
             message:
                `Pre-aggregation rollup '${sourceName}' cannot be materialized: ` +
                `the source it rolls up is scoped by a given. Building the rollup ` +
@@ -382,7 +396,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       }
       const what = `Source '${sourceName}'`;
       throw new MaterializationEligibilityError({
-         reason: "given_in_persisted_query",
+         reason: "reads_given",
          message:
             `${what} cannot be materialized (colocated '#@ persist'): its ` +
             `persisted query references a given. A given the persisted query ` +
@@ -419,23 +433,36 @@ export function assertColocatedPersistNotAuthorizeGated(
 
    if (origin === "persist" && gateOutcome?.inheritedRowFilter) {
       throw new MaterializationEligibilityError({
-         reason: "authorize",
+         // An inherited row filter is a row filter.
+         reason: "access_filter",
          message: inheritedRowFilterRefusal(sourceName, "colocated"),
       });
    }
+   // G3, the gate policy's: the entry point's own gate compiles to a row
+   // filter and nothing else is reachable beneath it, so colocated serving
+   // grafts exactly what a live query would.
    if (
       origin === "persist" &&
-      gateOutcome?.classification === "row_level" &&
-      gateOutcome.attributed
+      tableKeepsGates(
+         {
+            kind: "persist",
+            tier: "colocated",
+            v1: true,
+            gate: {
+               rowLevel: gateOutcome?.classification === "row_level",
+               attributed: gateOutcome?.attributed === true,
+               // Refused above, with its own message.
+               inheritedRowFilter: false,
+            },
+         },
+         gateSwitches(),
+      )
    ) {
-      // Proven safe above: the entry point's own gate compiles to a row
-      // filter and nothing else is reachable beneath it, so colocated serving
-      // grafts exactly what a live query would.
       return;
    }
 
-   // Same "authorize" reason as the storage gate, different cause: this pass
-   // cannot prove the gate is the entry point's own row filter.
+   // Named by the gates' kind, as the storage gate is, different cause: this
+   // pass cannot prove the gate is the entry point's own row filter.
    const gated =
       origin === "preaggregate"
          ? `the source '${sourceName}' rolls up is protected by an ` +
@@ -474,13 +501,54 @@ export function assertColocatedPersistNotAuthorizeGated(
    // Generic message: this function cannot see WHY `gateOutcome` did not
    // clear the bar (missing, rejected, or a join-only gate).
    throw new MaterializationEligibilityError({
-      reason: "authorize",
+      reason: gateReasonOf(persistSource),
       message:
          `${what}: ${gated}. An authorize expression is evaluated per ` +
          `request; without a proven row-level, fully-attributed ` +
          `classification this pass cannot show the served artifact matches ` +
          `what a live query would enforce.` +
          `${alsoRollup} This is refused for safety. ${remedy}`,
+   });
+}
+
+/**
+ * A BigQuery table needs a dataset, and only a dotted `name=` gives a
+ * colocated one its container (a rollup's own, or its base's): without one the
+ * build fails on BigQuery's own error, so it is refused here, before any
+ * warehouse work, as a `#(materialize)` source is at its plan
+ * (`needs_qualified_name`), on every mechanism.
+ */
+function assertColocatedTablePlaceable(
+   persistSource: PersistSource,
+   sourceName: string,
+   origin: "persist" | "preaggregate",
+   annotationFields: Record<string, string>,
+): void {
+   if (
+      annotationFields.storage ||
+      !capabilitiesOf(persistSource.dialectName).needsQualifiedTable ||
+      annotationFields.name?.includes(".")
+   ) {
+      return;
+   }
+   throw new MaterializationEligibilityError({
+      reason: "needs_qualified_name",
+      message:
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}' cannot be built in ` +
+              `its base's warehouse: its connection ` +
+              `'${persistSource.connectionName}' is BigQuery, where a ` +
+              `table needs a dataset, and neither the rollup nor its base ` +
+              `names one. The measure serves live. Give the rollup a ` +
+              `name= whose container is a dataset ` +
+              `(name="analytics.orders_rollup"), or build it into a ` +
+              `storage destination with storage=.`
+            : `Source '${sourceName}' cannot be materialized (colocated): ` +
+              `its connection '${persistSource.connectionName}' is ` +
+              `BigQuery, where a table needs a dataset, and its name= ` +
+              `names none. The source serves live. Give it a ` +
+              `dataset-qualified name= (\`dataset.table\`), or build it ` +
+              `into a storage destination with storage=.`,
    });
 }
 
@@ -600,6 +668,59 @@ function walkForAuthorize(
       if (walkForAuthorize(value, seen, depth + 1)) return true;
    }
    return false;
+}
+
+/**
+ * The refusal reason for a source refused for the gates beneath it (crossing
+ * joins and inherits, as {@link referencesAuthorize} reads them), named by
+ * their kind ({@link gateRefusalReason}). A walk that fails reads as a lock.
+ */
+function gateReasonOf(persistSource: PersistSource): GateRefusalReason {
+   const routes = new Set<string>();
+   try {
+      walkForGateRoutes(sourceDefOf(persistSource), new WeakSet(), 0, routes);
+   } catch {
+      routes.add("authorize");
+   }
+   return gateRefusalReason(routes);
+}
+
+/** {@link walkForAuthorize}, collecting each gate note's route. */
+function walkForGateRoutes(
+   node: unknown,
+   seen: WeakSet<object>,
+   depth: number,
+   routes: Set<string>,
+): void {
+   if (depth > MAX_AUTHORIZE_WALK_DEPTH) {
+      throw new Error("authorize-usage walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return;
+   if (seen.has(node as object)) return;
+   seen.add(node as object);
+   if (Array.isArray(node)) {
+      for (const item of node) walkForGateRoutes(item, seen, depth + 1, routes);
+      return;
+   }
+   const record = node as Record<string, unknown>;
+   for (const key of ["blockNotes", "notes"]) {
+      const arr = record[key];
+      if (!Array.isArray(arr)) continue;
+      for (const n of arr) {
+         const text = noteText(n);
+         if (text === undefined) continue;
+         try {
+            const parsed = parseAuthorizeAnnotation(text);
+            if (parsed) routes.add(parsed.route);
+         } catch {
+            // A malformed gate still means a gate: fail closed to a lock.
+            routes.add("authorize");
+         }
+      }
+   }
+   for (const value of Object.values(record)) {
+      walkForGateRoutes(value, seen, depth + 1, routes);
+   }
 }
 
 /**
@@ -903,7 +1024,8 @@ export function assertTierEligible(
          )
       ) {
          throw new MaterializationEligibilityError({
-            reason: "authorize",
+            // An inherited row filter is a row filter.
+            reason: "access_filter",
             message: inheritedRowFilterRefusal(source.name, "storage"),
          });
       }
@@ -937,7 +1059,7 @@ export function assertTierEligible(
       !gateEnforcedAtRead(source.sourceID, plan)
    ) {
       throw new MaterializationEligibilityError({
-         reason: "authorize",
+         reason: gateReasonOf(source),
          message:
             `Source '${source.name}' cannot be materialized (colocated ` +
             `'#(materialize)'): it is protected by an #(authorize) or ` +
@@ -945,7 +1067,8 @@ export function assertTierEligible(
             `served copy, which keeps only the entry point's own row-level ` +
             `gate, and only with PUBLISHER_MATERIALIZE on. The source serves ` +
             `live. Turn that setting on, or use '#@ persist', whose colocated ` +
-            `table keeps the gate through Malloy's build manifest.`,
+            `table the served copy reads past the source's own row-level ` +
+            `gate under the same rule (G3) with that setting off.`,
       });
    }
    // A persisted view's or query's table over a gated source is read past
@@ -959,7 +1082,7 @@ export function assertTierEligible(
       referencesAuthorize(source)
    ) {
       throw new MaterializationEligibilityError({
-         reason: "authorize",
+         reason: gateReasonOf(source),
          message:
             `'${source.name}' cannot be materialized (colocated): the ` +
             `source it reads is protected by an #(authorize) or ` +
@@ -979,7 +1102,7 @@ export function assertTierEligible(
  * build and serve them until the next rebuild, while a live query reads `now`
  * again every time. Not built, and answered live. `now` in the source's own
  * extend block is re-applied at every read, so it is admitted. A rollup
- * (rollup_plan.ts, `preaggregate-current-time`) and a `#(materialize)` source
+ * (rollup_plan.ts, `preaggregate-not-built`, reason `current_time`) and a `#(materialize)` source
  * (materialize_plan.ts) are judged by their own planners.
  */
 export function assertBuildReadsNoCurrentTime(

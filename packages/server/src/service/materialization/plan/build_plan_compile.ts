@@ -27,6 +27,7 @@ import {
    type FinishedBuildPlan,
 } from "./build_plan";
 import { loadGateText } from "./load_gate_text";
+import { newCrossFileCompanions } from "./materialize_compile";
 import {
    joinOneKey,
    joinOneKeysOf,
@@ -82,6 +83,8 @@ export async function compilePackageBuildPlan(
    const keyCheckCompilers = new Map<string, KeyCheckCompiler>();
    const yielder = createEventLoopYielder();
 
+   // One compile of each cross-file parent's file for the whole plan.
+   const crossFileCompanions = newCrossFileCompanions();
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
       // notebooks: getModel() parses a model file as a flat model and throws on
@@ -134,6 +137,7 @@ export async function compilePackageBuildPlan(
          runtime,
          getRuntime: (overlay) => authorFiles.runtime(overlay),
          keyCheckCompilers,
+         crossFileCompanions,
       });
    }
 
@@ -213,10 +217,7 @@ export async function computePackageBuildPlan(
    signal?: AbortSignal,
 ): Promise<BuildPlanOutcome> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
-   return deriveBuildPlanOutcome(
-      compiled,
-      pkg.getMaterializationConfig?.() ?? null,
-   );
+   return deriveBuildPlanOutcome(compiled, pkg.getMaterializationConfig());
 }
 
 /**
@@ -231,7 +232,7 @@ export function runLoadGateText(
 ): string {
    const derived = deriveBuildPlanOutcome(
       compiled,
-      pkg.getMaterializationConfig?.() ?? null,
+      pkg.getMaterializationConfig(),
    );
    return loadGateText(
       {
@@ -252,7 +253,7 @@ export function runLoadGateText(
  */
 function versionOwnsTables(pkg: BuildPlanPackage): boolean {
    return (
-      pkg.getPackageMetadata?.()?.scope === "version" &&
-      pkg.getVersionId?.() !== undefined
+      pkg.getPackageMetadata().scope === "version" &&
+      pkg.getVersionId() !== undefined
    );
 }

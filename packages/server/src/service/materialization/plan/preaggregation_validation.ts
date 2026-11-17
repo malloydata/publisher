@@ -62,7 +62,6 @@ export type PreaggregateViolationCode =
    | "grain_dimension_is_measure"
    | "grain_dimension_is_view"
    | "grain_dimension_is_join"
-   | "grain_dimension_not_public"
    | "grain_path_through_join"
    | "grain_truncation_expression"
    | "truncation_on_non_temporal"
@@ -75,6 +74,8 @@ export interface PreaggregateViolation {
    sourceName: string;
    /** The field the annotation sits on, absent for a source-level annotation. */
    fieldName?: string;
+   /** The source's `sourceID`, when the compiled source carries one. */
+   sourceID?: string;
    /** Names the offending object and the fix; becomes user-facing error text. */
    message: string;
 }
@@ -239,13 +240,6 @@ function validateGrainDimension(
       return violation(
          "grain_truncation_expression",
          `Measure \`${measure}\` declares a grain of \`${grainDimension}\`. A grain may name only dimensions \`${sourceName}\` already declares, not a truncation written inline: a rollup built this way either answers untruncated queries from truncated rows, or is never used at all. Add \`dimension: ${suggested} is ${grainDimension}\` to \`${sourceName}\` and write \`grain="${suggested}"\`. Queries that group by \`${suggested}\`, or by a coarser truncation of it, will then be served by the rollup.`,
-      );
-   }
-
-   if (isAccessRestricted(field)) {
-      return violation(
-         "grain_dimension_not_public",
-         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which \`${sourceName}\` does not publicly expose. A rollup STORES its grain, and the stored table is served without the source's field visibility applying to it, so no rollup is built at this grain. Group by a public dimension, or expose \`${grainDimension}\` publicly.`,
       );
    }
 
@@ -519,7 +513,7 @@ function grainPlacementViolations(
       violations.push({
          code: "conflicting_namespace",
          sourceName,
-         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different namespaces: ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`namespace=\`, or move one to a different grain.`,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grains.text.get(key)}\` with different containers (\`name=\` or \`namespace=\`): ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`name=\` container, or move one to a different grain.`,
       });
    }
 
@@ -570,7 +564,7 @@ function grainPlacementViolations(
          violations.push({
             code: "namespace_with_storage",
             sourceName,
-            message: `The grain \`${grainText}\` on \`${sourceName}\` declares both \`namespace="${namespace}"\` (on \`${namespaceMeasure}\`) and \`storage=${destination}\` (on \`${storageMeasure}\`). A rollup built into a storage destination is placed by the destination, not by a namespace, so the two cannot both apply. Remove the \`namespace=\`, or remove the \`storage=\` to build this rollup alongside its base.`,
+            message: `The grain \`${grainText}\` on \`${sourceName}\` declares both the container \`${namespace}\` (\`name=\` or \`namespace=\`, on \`${namespaceMeasure}\`) and \`storage=${destination}\` (on \`${storageMeasure}\`). A rollup built into a storage destination is placed by the destination, not by a container, so the two cannot both apply. Remove the \`name=\`, or remove the \`storage=\` to build this rollup alongside its base.`,
          });
          continue;
       }
@@ -624,7 +618,12 @@ export function validateModelPreaggregation(
       }
       // Anything with a field list is worth scanning; a non-source object cannot
       // carry a measure, and scanning it costs one annotation parse.
-      violations.push(...validateSourcePreaggregation(name, source));
+      const sourceID = (source as { sourceID?: unknown }).sourceID;
+      violations.push(
+         ...validateSourcePreaggregation(name, source).map((v) =>
+            typeof sourceID === "string" ? { ...v, sourceID } : v,
+         ),
+      );
    }
    return violations;
 }

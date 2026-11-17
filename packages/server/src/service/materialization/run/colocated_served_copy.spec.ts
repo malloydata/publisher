@@ -3,7 +3,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { __setPackageLoadPoolForTests } from "../../../package_load/package_load_pool";
 import type {
@@ -11,18 +10,20 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { unrecordedAudit } from "../../access_record";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName, VersionRef } from "../../identity";
 import { QueryPrivileges } from "../../model_query_request";
 import type { Package } from "../../package";
 import { storageBindingResolverFor } from "../../versions/materialization_scope";
 import { MaterializationService } from "./materialization_service";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * Colocated `#(materialize)` through real builds and the real router (phase 3
@@ -261,20 +262,14 @@ for (const tier of TIERS)
             },
          }).restore;
          await __setPackageLoadPoolForTests(null);
-         root = fs.realpathSync(
-            fs.mkdtempSync(path.join(os.tmpdir(), "colocated-served-")),
-         );
-         envPath = path.join(root, "env");
+         ({ root, envPath, db, repo } = await openTempStorage(
+            "colocated-served-",
+            {
+               id: ENV_ID,
+               name: ENV,
+            },
+         ));
          sourcesPath = path.join(root, "sources");
-         fs.mkdirSync(envPath);
-         db = new DuckDBConnection(":memory:");
-         await db.initialize();
-         await initializeSchema(db);
-         await db.run(
-            "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-            [ENV_ID, ENV, envPath],
-         );
-         repo = createDuckDBRepository(db);
          env = await Environment.create(ENV, envPath, [tier.config as never]);
          env.bindVersions(repo, ENV_ID, {
             downloaderFor: (_packageName, location) => async (stagingPath) => {
@@ -297,11 +292,10 @@ for (const tier of TIERS)
             },
          });
          env.setStorageBindingResolver(storageBindingResolverFor(repo, ENV_ID));
-         service = new MaterializationService({
-            storageManager: { getRepository: () => repo },
-            getEnvironment: async () => env,
-            getLoadedEnvironments: () => [env],
-         } as unknown as EnvironmentStore);
+         service = serviceOverEnvironment(
+            () => repo,
+            () => env,
+         );
          if (tier.schema) {
             await sql(`DROP SCHEMA IF EXISTS ${tier.schema} CASCADE`);
             await sql(`CREATE SCHEMA ${tier.schema}`);
@@ -325,8 +319,7 @@ for (const tier of TIERS)
             );
          }
          await env.closeAllConnections().catch(() => undefined);
-         await db.close();
-         fs.rmSync(root, { recursive: true, force: true });
+         await disposeTempStorage({ db, root });
          modelOverride = undefined;
          restoreSettings();
          await __setPackageLoadPoolForTests(null);
@@ -359,10 +352,11 @@ for (const tier of TIERS)
          expect(served.path?.servedBy).toMatchObject({
             kind: "materialized",
             tableId: address,
+            tier: "database",
             via: "served_copy",
          });
-         // The source's own warehouse: no storage hit.
-         expect(served.servedFrom ?? null).toBeNull();
+         // The source's own warehouse: a colocated hit, not a storage one.
+         expect(served.servedFrom).toBe("database");
       }
 
       it(
@@ -378,7 +372,10 @@ for (const tier of TIERS)
                   .sort(),
             ).toEqual(built.map((name) => [name, undefined]));
             expect(
-               (await pkg()).getServeVerdicts().map((v) => v.verdict),
+               (await pkg())
+                  .materialization()
+                  .serveVerdicts()
+                  .map((v) => v.verdict),
             ).toEqual(built.map(() => "serves"));
             for (const source of built) await expectServedEqualsLive(source);
             // A query that reads no stored table, but names a result column

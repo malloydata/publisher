@@ -5,10 +5,11 @@
  * Centralized telemetry for materialization builds.
  *
  * Operators need to answer "are builds completing, how long do they take, and
- * where are they failing?" without grepping logs. The run counter carries
- * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`partial`|`failed`|`cancelled`);
- * the run-duration histogram carries `mode` so a dashboard can render auto-run
- * vs orchestrated build latency side by side.
+ * where are they failing?" without grepping logs. The run counter and the
+ * run-duration histogram both carry `mode` (`auto`|`orchestrated`) and
+ * `outcome` (`success`|`partial`|`failed`|`cancelled`), so a dashboard can
+ * render auto-run vs orchestrated latency side by side, and a failed run's
+ * time apart from a successful one's.
  *
  * Instruments are created lazily for the same reason as {@link ./query_cap_metrics}:
  * one created before `setGlobalMeterProvider` binds to a NoOp meter
@@ -24,7 +25,6 @@ import type { components } from "./api";
 import type {
    BindDeclineReason,
    ServedCopyProblemReason,
-   SourceDeclineReason,
 } from "./service/materialization/domain/source_decline";
 
 /**
@@ -47,6 +47,7 @@ export const BUILD_KINDS = [
    "persist",
    "rollup",
    "view",
+   "query",
    "pair",
 ] as const;
 export type BuildKind = (typeof BUILD_KINDS)[number];
@@ -140,10 +141,10 @@ export const ROUTE_LEGS = [
    "served",
    "live",
 ] as const;
-export type RouteLeg = (typeof ROUTE_LEGS)[number];
+type RouteLeg = (typeof ROUTE_LEGS)[number];
 /** `publisher_query_route_total{outcome}`. */
 export const ROUTE_OUTCOMES = ["used", "skipped", "fallback"] as const;
-export type RouteOutcome = (typeof ROUTE_OUTCOMES)[number];
+type RouteOutcome = (typeof ROUTE_OUTCOMES)[number];
 type SkipReason = components["schemas"]["SkipReason"];
 /**
  * `publisher_query_route_total{reason}`: `NONE` when used, else the public
@@ -171,7 +172,6 @@ void ROUTE_REASONS_COVER_SKIP_REASONS;
 
 /** `publisher_served_copy_bind_total{scope}`. */
 export const BIND_SCOPES = ["manifest", "source"] as const;
-export type BindScope = (typeof BIND_SCOPES)[number];
 /** `publisher_served_copy_bind_total{outcome}`, by scope. */
 export const BIND_OUTCOMES = [
    "success",
@@ -181,9 +181,45 @@ export const BIND_OUTCOMES = [
    "partial",
    "declined",
 ] as const;
-export type BindOutcome = (typeof BIND_OUTCOMES)[number];
-/** `publisher_served_copy_bind_total{reason}`: `none`, or a source decline (`domain/source_decline.ts`). */
-export type BindReason = "none" | SourceDeclineReason;
+/**
+ * Why a table was dropped (`publisher_materialization_drop_tables_total`):
+ * `delete`, a caller deleted a storage destination's table; `reclaim`,
+ * Publisher dropped a table on its own (a failed run's tables, a table a
+ * readable name replaced, an archived or deleted version's tables).
+ */
+export const DROP_OCCASIONS = ["delete", "reclaim"] as const;
+export type DropOccasion = (typeof DROP_OCCASIONS)[number];
+
+/**
+ * What a key check reads (`publisher_materialization_key_check_total{kind}`):
+ * `inline_join`, an inlined join_one's key, which fails the build when it
+ * repeats; `rollup`, a rollup's join_one key over its base's rows; `parent`, a
+ * query source's primary key beside a rollup; `pair_leaf`, a pair table's
+ * leaf key; `stored`, a stored table's primary key in its destination.
+ */
+export const KEY_CHECK_KINDS = [
+   "inline_join",
+   "rollup",
+   "parent",
+   "pair_leaf",
+   "stored",
+] as const;
+export type KeyCheckKind = (typeof KEY_CHECK_KINDS)[number];
+
+/**
+ * What a key check found: `unique`; `not_unique` (a value repeats, or is NULL
+ * where the check forbids it); `not_run` (it threw or could not run, so the
+ * key reads as unknown); `reused` (an inline join check skipped because a
+ * pass the run holds still describes the joined table).
+ */
+export const KEY_CHECK_OUTCOMES = [
+   "unique",
+   "not_unique",
+   "not_run",
+   "reused",
+] as const;
+type KeyCheckOutcome = (typeof KEY_CHECK_OUTCOMES)[number];
+
 /**
  * Which engine a table drop ran against (`publisher_materialization_drop_tables_total`):
  * the source's own warehouse (`in_warehouse`) or a DuckDB/DuckLake `storage=`
@@ -196,31 +232,12 @@ type StorageBuildEngine =
    | "in_warehouse"
    | "delta"
    | "delta_storage";
-/** Why a source was refused materialization into a storage destination. */
+/**
+ * Why a valid declaration is not built: its build plan refusal's reason
+ * (`RefusedSource.reason`).
+ */
 export type EligibilityRefusalReason =
-   | "free_parameter"
-   | "given"
-   | "given_in_persisted_query"
-   | "dynamic_projection"
-   | "dynamic_join"
-   | "dynamic_joined_where"
-   | "inherited_where_with_given"
-   // Retired with `partition=`: kept for records that carry them, never raised.
-   | "partition_without_storage"
-   | "partition_column_unknown"
-   | "partition_column_not_public"
-   | "merge_key_scope_unresolved"
-   | "preaggregate_over_dynamic_source"
-   | "authorize"
-   | "not_duckdb_portable"
-   | "public_surface_unknown"
-   | "read_only_dialect"
-   | "storage_source_unsupported"
-   | "env_reference"
-   | "rollup_name_collision"
-   | "empty_storage"
-   | "table_name_collision"
-   | "current_time";
+   components["schemas"]["RefusedSource"]["reason"];
 /**
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
@@ -253,12 +270,12 @@ const runCounter = lazyCounter(
 );
 const runDuration = lazyHistogram(
    "publisher_materialization_run_duration_ms",
-   "Wall-clock duration of a materialization build. Label: mode ('auto'|'orchestrated').",
+   "Wall-clock duration of a materialization build. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'partial'|'failed'|'cancelled').",
 );
 const buildCounter = lazyCounter(
    "publisher_materialization_build_total",
    "Source builds, one per source per run at its finish or failure. Labels: " +
-      "kind ('materialize'|'persist'|'rollup'|'view'|'pair'), tier " +
+      "kind ('materialize'|'persist'|'rollup'|'view'|'query'|'pair'), tier " +
       "('colocated'|'storage'), outcome ('built'|'reused'|'refused'|'failed'|" +
       "'cancelled'), failure_class ('none' unless outcome is 'failed'; then " +
       "'deterministic'|'transient'|'unclassified'|'billed_read_lost'). " +
@@ -364,7 +381,11 @@ const tableCollisionCounter = lazyCounter(
 );
 const dropTablesCounter = lazyCounter(
    "publisher_materialization_drop_tables_total",
-   "Physical tables dropped on delete. Label: outcome ('success'|'failure').",
+   "Physical tables dropped. Labels: outcome ('success'|'failure'), engine " +
+      "('in_warehouse'|'storage'), occasion ('delete' when a caller deleted " +
+      "the run or the table; 'reclaim' when Publisher dropped it on its own: " +
+      "a failed run's tables, a table a readable name replaced, an archived " +
+      "or deleted version's tables).",
 );
 const scheduledFireCounter = lazyCounter(
    "publisher_materialization_scheduled_fires_total",
@@ -381,6 +402,23 @@ const queryRouteCounter = lazyCounter(
       "SkipReason; 'RUN_FAILED' with 'fallback'). A leg that does not apply to " +
       "the query is not counted; 'live' is counted 'used' when it answered a " +
       "query the router counted a leg for.",
+);
+const queryRouteDuration = lazyHistogram(
+   "publisher_query_route_duration_ms",
+   "Wall-clock time the router spent choosing how to answer a query, for a " +
+      "query with at least one serving leg that applied: the row-level veto " +
+      "and each leg's compile, up to the leg chosen. Not the query's run. " +
+      "Label: leg ('view'|'query'|'rollup'|'served'|'live'), the one that " +
+      "answered.",
+);
+const keyCheckCounter = lazyCounter(
+   "publisher_materialization_key_check_total",
+   "Key checks a run made over the rows it read or wrote. Labels: kind " +
+      "('inline_join'|'rollup'|'parent'|'pair_leaf'|'stored'), outcome " +
+      "('unique'|'not_unique'|'not_run'|'reused'). An inline_join that is " +
+      "not_unique fails its build; every other not_unique or not_run leaves " +
+      "the key unknown or repeated, so queries that need it unique are " +
+      "answered live.",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -407,18 +445,12 @@ const attributionSkippedCounter = lazyCounter(
 );
 const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
-   "materialization-eligibility refusals, both tiers. Label: reason " +
-      "('free_parameter'|'given_in_persisted_query'|'dynamic_projection'|" +
-      "'dynamic_join'|'dynamic_joined_where'|'inherited_where_with_given'|" +
-      "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
-      "'authorize'|'not_duckdb_portable'|" +
-      "'public_surface_unknown'|'read_only_dialect'|" +
-      "'storage_source_unsupported'|'table_name_collision'|" +
-      "'current_time'). 'given' is retained on the enum for records " +
-      "that carry it and is no longer produced: where a given sits decides the " +
-      "outcome, so one reason covering every placement cannot be raised. The " +
-      "three 'partition_*' reasons are likewise retained and no longer produced: " +
-      "'partition=' is a retired key, refused at publish.",
+   "Valid materialization declarations that are not built (`#@ persist`, " +
+      "`#(materialize)`, a persisted view or query, a rollup), once per " +
+      "declaration per plan derivation, and the refusals only a run finds. " +
+      "Label: reason, the build plan refusal's `RefusedSource.reason` " +
+      "(api-doc.yaml lists the values and which are retained and no " +
+      "longer produced).",
 );
 const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",
@@ -470,7 +502,7 @@ export function recordMaterializationRun(
    durationMs: number,
 ): void {
    runCounter().add(1, { mode, outcome });
-   runDuration().record(durationMs, { mode });
+   runDuration().record(durationMs, { mode, outcome });
 }
 
 /**
@@ -705,12 +737,29 @@ export function recordManifestBindDegraded(): void {
    manifestBindDegradedCounter().add(1);
 }
 
-/** Record a best-effort physical-table drop on materialization delete. */
+/** Record a best-effort physical-table drop, and why it was dropped. */
 export function recordDropTables(
    outcome: "success" | "failure",
    engine: StorageBuildEngine,
+   occasion: DropOccasion,
 ): void {
-   dropTablesCounter().add(1, { outcome, engine });
+   dropTablesCounter().add(1, { outcome, engine, occasion });
+}
+
+/** Record one key check a run made, and what it found. */
+export function recordKeyCheck(
+   kind: KeyCheckKind,
+   outcome: KeyCheckOutcome,
+): void {
+   keyCheckCounter().add(1, { kind, outcome });
+}
+
+/** Record how long the router took to choose the leg that answered a query. */
+export function recordQueryRouteDuration(
+   durationMs: number,
+   leg: RouteLeg,
+): void {
+   queryRouteDuration().record(durationMs, { leg });
 }
 
 /**

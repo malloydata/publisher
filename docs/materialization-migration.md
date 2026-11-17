@@ -113,8 +113,8 @@ still build and serve.
 
 | Code | What it means | What to do |
 | --- | --- | --- |
-| `materialize-not-built` | Publisher cannot build this valid `#(materialize)` source; the message names why (a colocated BigQuery source with no dataset-qualified `name=`, a refused `inline=`, an incremental source on a dialect without a bounded range, and so on). Severity `warn`; it serves live. | Fix what it names, or keep the v1 form. |
-| `preaggregate-not-built` | Publisher cannot build this valid rollup (a read-only dialect, a table name another rollup holds, a base scoped by a given, a row-level gate on a v1 rollup's base, the `storage=` gate); the message names the base, the grain and why. Its measures serve live. A refusal with its own code, such as `preaggregate-access-filter` or `preaggregate-time-zone`, keeps it. | Fix what it names. |
+| `materialize-not-built` | Publisher cannot build this valid `#(materialize)` source; the message names why, and its record in the build plan's `refusedSources` carries the reason (a colocated BigQuery source with no dataset-qualified `name=`, a refused `inline=`, an incremental source on a dialect without a bounded range, and so on). Severity `warn`; it serves live. | Fix what it names, or keep the v1 form. |
+| `preaggregate-not-built` | Publisher cannot build this valid rollup (a read-only dialect, a table name another rollup holds, a base scoped by a given, a row-level gate on a v1 rollup's base, the `storage=` gate); the message names the base, the grain and why. Its measures serve live. Every rollup refused alone carries this code; the reason (`access_filter`, `time_zone`, `hidden_field` and the like) is on its record in the build plan's `refusedSources`. | Fix what it names. |
 | `materialize-unknown-key`, `materialize-unparseable` | The line cannot be read as written. The publish and the load fail. | Fix the key or the quoting. |
 | `materialize-retired-key` | The line carries a key that is no longer read, `partition=`. The publish and the load fail. | Remove the key. |
 | `materialize-invalid` | A value is wrong as written: an empty, non-text or `@env.` `storage=`, both `#(materialize)` and the source's own `#@ persist`, an `inline=` that is not a list of joins of the source, a carried key of the wrong shape, a list `watermark=` off an incremental pair table, an unsafe or reserved `name=`, an invalid incremental declaration. The publish and the load fail. | Fix the value it names. |
@@ -122,6 +122,7 @@ still build and serve.
 | `materialization-near-miss` | A misspelled route, such as `#(materialise)`. The publish and the load fail. | Fix the spelling. |
 | `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
 | `stored-native-schema-missing` | A colocated table is bound with no recorded warehouse type for a big-integer column (a table built before Publisher recorded them). On BigQuery the column is read as `INT64` and serves; elsewhere a query that reads it is answered live. | Run a full rebuild of the source; it records the types. |
+| `table-kept-after-rename` | A source's table was renamed or moved, and its old table is kept rather than dropped: it is at an author's exact `name=`, which Publisher never drops; in a storage destination that is no longer configured; or left by a `storage=` or tier move under the name the source is served under now, which may be the very table served. The newest run lists it in `metadata.keptTables`. | For an author's `name=`: once nothing reads it, check that no remaining run, of any version, names a table with that name in any place, then drop it yourself through its connection. For a destination no longer configured: if it was renamed rather than removed, the table may still be served under the new name, so check before dropping it. For a table left under the served name (`may_be_served`): it may be the table served now; check whether its place and the served one are one before doing anything with it. Publisher never drops it. To clear the warning, delete the runs that built it (a delete is record-only); the next auto-run stops listing it. On Snowflake and MySQL, where a run never takes a kept table as gone, that is also how to clear the warning for a table dropped by hand. See [the rename rule](materialization.md#the-rename-rule). |
 | `materialize-pair-full-refresh` | An incremental pair table rebuilds in full; the message names why. | Name a watermark field on each side of the join. |
 | `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize). |
 | `deprecated-preaggregate-annotation` | A measure still uses `#@ preaggregate`. | Rewrite it as `#(preaggregate)`. |
@@ -164,10 +165,11 @@ unchanged ([the served copy](materialization.md#the-served-copy-materialization-
   for example, is malformed rather than a default table: the publish and the load fail with
   `materialize-unknown-key`, naming the key it was likely meant to be, on every load path, a
   package already published included. A `#(materialize)` line that does not parse (`name="t` with
-  no closing quote) fails the same way, as `materialize-unparseable`. `partition=` is retired on
-  both forms: on `#(materialize)` it is `materialize-retired-key` (on `#@ persist`,
-  `persist-retired-key`), and the load fails until it is removed. v1's `realization=` has no v2
-  form. A misspelled route, such as `#(materialise)`, fails the load as
+  no closing quote) fails the same way, as `materialize-unparseable`. `partition=`, `sharing=` and
+  `schedule=` are retired on both forms: on `#(materialize)` each is `materialize-retired-key` (on
+  `#@ persist`, `persist-retired-key`), and the load fails until it is removed. `realization=` is
+  retired on `#@ persist` too (`persist-retired-key`; every table is built by CREATE TABLE AS
+  SELECT), and has no v2 form. A misspelled route, such as `#(materialise)`, fails the load as
   `materialization-near-miss`.
 
 ## What stays the same
@@ -311,8 +313,9 @@ dataset and its last segment takes the version's suffix, as in v1; a host-orches
 the name the host assigns, in that container. In neither case is a view made at `name=`, so a reader
 outside Malloy that needs one stable name reads it from an unversioned or `scope: "package"`
 package. Dropping `name=` instead moves the source to its readable name: it is rebuilt there, and
-the old table stays with the runs that built it until they are deleted with their tables
-(`dropTables=true`).
+the old table stays in place: deleting the runs that built it removes their records only, so drop
+the table yourself through its connection once no remaining run, of any version, names a table with
+that name in any place ([Dropping a run's tables](materialization.md#dropping-a-runs-tables)).
 
 ### A query-shaped source
 
@@ -564,7 +567,10 @@ source: sales is orders extend {
 }
 ```
 
-`namespace=` and `storage=` carry over unchanged (one or the other, never both). A query the rollup
+`storage=` carries over unchanged. `namespace="x"` is deprecated on both spellings: write
+`name="x.<table>"`, whose container places the table where `namespace=` did and whose leaf
+starts its name (`x.<table>__p<hash>`; one or the other of `name=` and `storage=`, never both). A `#(preaggregate)` with neither now takes its base's
+`name=` container, as `#@ preaggregate` always has. A query the rollup
 answers reports `servedBy.kind: "rollup"`. What differs from `#@ preaggregate`:
 
 - **Keys are closed.** `grain=[…]` is required. Any other key, a grain that is not a list of the
@@ -586,7 +592,7 @@ has the full list.
 ## What is not migrated
 
 - **`#@ persist` on a view** and **`#@ -persist`**: these are the v2 spellings already.
-- **`realization=`** has no v2 form; on `#(materialize)` it is `materialize-unknown-key`.
+- **`realization=`** is retired: on `#@ persist` it is `persist-retired-key`, and on `#(materialize)`, which never read it, `materialize-unknown-key`. Remove it; every table is built by CREATE TABLE AS SELECT.
 - **`partition=`** is retired on both forms, and fails the publish and the load; remove it.
 - **An incremental source on a DuckDB origin**: refused alone and answered live
   (`materialize-not-built`), as v1 refuses it (`persist-not-built`). Say `refresh="full"`.
@@ -603,7 +609,7 @@ source again (#1763). One case below can still differ from live when the data br
 | What you wrote | What happens | Plan |
 | --- | --- | --- |
 | `#(materialize)` over a base that declares a measure, view or join | Built, never read: `served-copy-not-served`, answered live. See [above](#a-base-with-measures-views-or-joins). | The served copy's call 2 |
-| A colocated `#(materialize)` on BigQuery with no dataset-qualified `name=` | Not built: `materialize-not-built` | — |
+| A colocated `#(materialize)` on BigQuery with no dataset-qualified `name=` | Not built: `materialize-not-built` (reason `needs_qualified_name`) | Not built either: `persist-not-built`, or `preaggregate-not-built` for a rollup, refused at plan with the same reason |
 | An extension table whose parent is in another file | Served, but built from the warehouse rather than over the parent's table, so its build scans the warehouse | P10 (same-file only) |
 | `inline=` on a path through a join_one | Not built: `materialize-not-built` | Row 9 |
 | A pair-table query that reads two blocks, or aggregates a middle level beside the leaf; an incremental refresh of a path or a multi-block table | Answered live; the table rebuilds in full (`materialize-pair-full-refresh`) | Row 9 |

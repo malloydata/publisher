@@ -325,6 +325,27 @@ describe("PersistedViewServe (storage=)", () => {
       ]);
    });
 
+   // P3-06..09: a table a Snowflake session stored with its aliases folded
+   // upper-case is matched by a unique case fold, as the served copy matches.
+   it("P3-08: answers from a stored table whose columns a warehouse upper-cased", async () => {
+      const binding = storedViewBinding(buildSourceID, {
+         schema: [
+            { name: "REGION", type: "VARCHAR" },
+            { name: "TOTAL", type: "DOUBLE" },
+         ],
+      });
+      const pinned = pinnedOf([binding]);
+      const query = "run: orders -> by_region";
+      const answer = await f.views.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned,
+         buildManifest: pinned.compilerManifest,
+      });
+      expect(answer.binding).toBe(binding);
+   });
+
    it("reports a binding stale past its window, and any binding stale with no destination to read it", () => {
       const old = storedViewBinding(buildSourceID, {
          schema,
@@ -400,5 +421,67 @@ describe("PersistedViewServe (storage=)", () => {
       expect(decline.callerDetail).toBe(
          "the stored result cannot answer `by_region` with live's columns: the stored `total` (VARCHAR) cannot be read as live's number",
       );
+   });
+});
+
+/**
+ * P4-03/04/05 (F-14): a host may instruct a view with no `storage=` into a
+ * storage destination (a database origin whose destination the control plane
+ * chose), and the run's manifest binds it as a storage table. The binding
+ * decides the tier, not the annotation: the view is read from it exactly as a
+ * `storage=` view's is, rather than looked for in the colocated manifest.
+ */
+describe("PersistedViewServe (a host-chosen destination, no storage=)", () => {
+   let f: PersistedResultFixture;
+   let buildSourceID: string;
+   const schema = [
+      { name: "region", type: "VARCHAR" },
+      { name: "total", type: "DOUBLE" },
+   ];
+   beforeAll(async () => {
+      f = await persistedResultFixture(MODEL, {
+         destinations: { lake: new DuckDBConnection("lake_f14", ":memory:") },
+         noBuildPlan: true,
+      });
+      buildSourceID = f.buildSourceIDOf("orders__by_region__view");
+   });
+   afterAll(async () => {
+      await f?.cleanup();
+   });
+
+   it("P4-04: reads a fresh storage binding through virtual() on its destination", () => {
+      const table = f.views.tableOf(
+         { buildSourceID },
+         pinnedOf([storedViewBinding(buildSourceID, { schema })]),
+         undefined,
+      );
+      expect(table.tier).toBe("storage");
+      expect([table.built, table.stale]).toEqual([true, false]);
+      expect(table.quotedPath).toBe('"main"."stored_view_t"');
+   });
+
+   it("P4-04: answers an exact call from the storage binding", async () => {
+      const binding = storedViewBinding(buildSourceID, { schema });
+      const pinned = pinnedOf([binding]);
+      const query = "run: orders -> by_region";
+      const answer = await f.views.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned,
+         buildManifest: pinned.compilerManifest,
+      });
+      expect(answer.binding).toBe(binding);
+      expect(answer.table.tier).toBe("storage");
+      const { sql } = await answer.runnable.getPreparedResult({
+         virtualMap: answer.virtualMap,
+      } as never);
+      expect(sql).toContain('"main"."stored_view_t"');
+   });
+
+   it("still reads the colocated manifest when no storage binding stores it", () => {
+      expect(
+         f.views.tableOf({ buildSourceID }, pinnedOf(), undefined).tier,
+      ).toBe("colocated");
    });
 });

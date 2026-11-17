@@ -8,7 +8,14 @@ import {
    type PersistedResultFixture,
 } from "../../../test_helpers/persisted_result_fixture";
 import type { Binding } from "../domain/binding";
-import { modelStorageTables, ownBindings } from "./storage_bindings";
+import type { BuildPlan } from "../domain/types";
+import type { MaterializePlan } from "../domain/table_plans";
+import {
+   boundTableTypeFindings,
+   databaseDriftFindings,
+   modelStorageTables,
+   ownBindings,
+} from "./storage_bindings";
 
 /**
  * What one model reads of a snapshot's `storage=` tables: the bindings of its
@@ -176,5 +183,302 @@ describe("ownBindings", () => {
       expect(
          ownBindings([own, other, rollup], f.modelDef, f.packagePath),
       ).toEqual({ kept: [own, rollup], shadowed: ["orders"] });
+   });
+});
+
+describe("boundTableTypeFindings", () => {
+   const plan = {
+      sources: {
+         "orders@m": {
+            name: "orders",
+            sourceEntityId: "vh",
+            modelPath: "m.malloy",
+            columns: [
+               { name: "id", type: "number" },
+               { name: "day", type: "date" },
+            ],
+         },
+         "r@m": {
+            name: "orders__rollup",
+            sourceEntityId: "vr",
+            modelPath: "m.malloy",
+            preaggregate: { baseSourceName: "orders", grainDimensions: ["k"] },
+            columns: [
+               { name: "k", type: "number" },
+               { name: "s__partial", type: "number" },
+            ],
+         },
+      },
+   } as unknown as BuildPlan;
+   const stored = [
+      { name: "id", type: "VARCHAR" },
+      { name: "day", type: "TIMESTAMP" },
+   ];
+
+   it("reads each kind's mismatches against its build source's columns", () => {
+      const findings = boundTableTypeFindings(
+         [
+            binding({ kind: "view", sourceIDs: ["orders@m"], schema: stored }),
+            binding({
+               kind: "rollup",
+               virtualHandle: "vr",
+               schema: [
+                  { name: "k", type: "VARCHAR" },
+                  { name: "s__partial", type: "VARCHAR" },
+               ],
+            }),
+            binding({ kind: "materialize", schema: stored }),
+         ],
+         plan,
+      );
+      expect(
+         findings.map((f) => ({
+            subject: f.subject,
+            kind: f.binding.kind,
+            handling: f.mismatches.map((m) => [m.column, m.handling]),
+         })),
+      ).toEqual([
+         // A persisted result casts what a faithful cast reads.
+         {
+            subject: "orders",
+            kind: "view",
+            handling: [
+               ["id", "live"],
+               ["day", "cast"],
+            ],
+         },
+         // A rollup and a `#(materialize)` table follow the same rule:
+         // neither reads a column as its stored type.
+         {
+            subject: "orders",
+            kind: "rollup",
+            handling: [
+               ["k", "live"],
+               ["s__partial", "live"],
+            ],
+         },
+         {
+            subject: "orders",
+            kind: "materialize",
+            handling: [
+               ["id", "live"],
+               ["day", "cast"],
+            ],
+         },
+      ]);
+   });
+
+   it("reports a castable column live where its reader cannot cast it: in a record, or under a query time zone", () => {
+      const tzPlan = {
+         sources: {
+            "orders@m": {
+               name: "orders",
+               sourceEntityId: "vh",
+               modelPath: "m.malloy",
+               columns: [
+                  { name: "day", type: "date" },
+                  { name: "c__on", type: "date" },
+                  { name: "flag", type: "boolean" },
+               ],
+            },
+         },
+      } as unknown as BuildPlan;
+      const schema = [
+         { name: "day", type: "TIMESTAMP WITH TIME ZONE" },
+         { name: "c__on", type: "TIMESTAMP" },
+         { name: "flag", type: "INTEGER" },
+      ];
+      const handling = (zone?: string) =>
+         boundTableTypeFindings(
+            [binding({ kind: "materialize", sourceIDs: ["orders@m"], schema })],
+            tzPlan,
+            {
+               queryTimezone: () => zone,
+               materializePlans: {
+                  "orders@m": {
+                     columns: [
+                        { column: "day", dimension: "day" },
+                        { column: "c__on", dimension: "on", join: "c" },
+                        { column: "flag", dimension: "flag" },
+                     ],
+                  } as unknown as MaterializePlan,
+               },
+            },
+         )[0].mismatches.map((m) => [m.column, m.handling]);
+      expect(handling()).toEqual([
+         ["day", "cast"],
+         ["c__on", "live"],
+         ["flag", "cast"],
+      ]);
+      expect(handling("America/New_York")).toEqual([
+         ["day", "live"],
+         ["c__on", "live"],
+         ["flag", "cast"],
+      ]);
+   });
+
+   it("leaves a `#@ persist` table to its model's check, and a colocated one alone", () => {
+      expect(
+         boundTableTypeFindings(
+            [
+               binding({ schema: stored }),
+               binding({
+                  kind: "materialize",
+                  tier: "colocated",
+                  schema: stored,
+               }),
+            ],
+            plan,
+         ),
+      ).toEqual([]);
+   });
+});
+
+describe("databaseDriftFindings", () => {
+   const plan = {
+      sources: {
+         "orders@m": {
+            name: "orders",
+            sourceEntityId: "vh",
+            modelPath: "m.malloy",
+            columns: [
+               { name: "id", type: "number" },
+               { name: "flag", type: "boolean" },
+               { name: "amt", type: "number" },
+               { name: "day", type: "date" },
+            ],
+         },
+         "r@m": {
+            name: "orders__rollup",
+            sourceEntityId: "vr",
+            modelPath: "m.malloy",
+            preaggregate: { baseSourceName: "orders", grainDimensions: ["k"] },
+            columns: [
+               { name: "k", type: "number" },
+               { name: "f", type: "boolean" },
+            ],
+         },
+      },
+   } as unknown as BuildPlan;
+
+   it("handles each moved column as the bind does, on every mechanism: cast or left out", () => {
+      const findings = databaseDriftFindings(
+         [
+            {
+               sourceEntityId: "vh",
+               columns: [
+                  // A faithful cast reads it.
+                  {
+                     column: "flag",
+                     builtType: "BOOLEAN",
+                     observedType: "INTEGER",
+                  },
+                  // None does: left out.
+                  {
+                     column: "amt",
+                     builtType: "DOUBLE",
+                     observedType: "VARCHAR",
+                  },
+                  // Gone: left out.
+                  {
+                     column: "day",
+                     builtType: "DATE",
+                     gone: true,
+                     leftOut: true,
+                  },
+                  // A zone gained off DuckDB: the bind leaves it out, though
+                  // the type alone would serve as declared.
+                  {
+                     column: "ts",
+                     builtType: "TIMESTAMP",
+                     observedType: "TIMESTAMP WITH TIME ZONE",
+                     leftOut: true,
+                  },
+                  // Now a type Malloy reads as no basic type: left out.
+                  { column: "m", builtType: "VARCHAR", leftOut: true },
+                  // Still a number: served as is, so not reported.
+                  {
+                     column: "id",
+                     builtType: "VARCHAR",
+                     observedType: "BIGINT",
+                  },
+               ],
+            },
+            {
+               sourceEntityId: "vr",
+               // A rollup, read by manifest substitution, by the same rule.
+               columns: [
+                  { column: "k", builtType: "BIGINT", observedType: "VARCHAR" },
+                  {
+                     column: "f",
+                     builtType: "BOOLEAN",
+                     observedType: "INTEGER",
+                  },
+               ],
+            },
+            // Not in the plan: nothing to name it by.
+            {
+               sourceEntityId: "other",
+               columns: [{ column: "x", builtType: "BIGINT" }],
+            },
+         ],
+         plan,
+         {},
+      );
+      expect(findings).toEqual([
+         {
+            sourceID: "orders@m",
+            sourceEntityId: "vh",
+            modelPath: "m.malloy",
+            subject: "orders",
+            mismatches: [
+               {
+                  column: "flag",
+                  declaredType: "boolean",
+                  storedType: "INTEGER",
+                  handling: "cast",
+               },
+               {
+                  column: "amt",
+                  declaredType: "number",
+                  storedType: "VARCHAR",
+                  handling: "live",
+               },
+               {
+                  column: "day",
+                  declaredType: "date",
+                  gone: true,
+                  handling: "live",
+               },
+               {
+                  column: "ts",
+                  declaredType: "timestamp",
+                  storedType: "TIMESTAMP WITH TIME ZONE",
+                  handling: "live",
+               },
+               { column: "m", declaredType: "string", handling: "live" },
+            ],
+         },
+         {
+            sourceID: "r@m",
+            sourceEntityId: "vr",
+            modelPath: "m.malloy",
+            subject: "orders",
+            mismatches: [
+               {
+                  column: "k",
+                  declaredType: "number",
+                  storedType: "VARCHAR",
+                  handling: "live",
+               },
+               {
+                  column: "f",
+                  declaredType: "boolean",
+                  storedType: "INTEGER",
+                  handling: "cast",
+               },
+            ],
+         },
+      ]);
    });
 });

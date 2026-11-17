@@ -99,6 +99,7 @@ import {
    type EligibilityRefusalReason,
 } from "../materialization_metrics";
 import { logger } from "../logger";
+import { installProcessSafetyHandlers } from "../process_safety";
 import type { SynthesizedRuntimeFactory } from "../service/materialization";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
@@ -111,9 +112,11 @@ import {
    emptyBuildPlanParts,
    finishBuildPlan,
    mergeBuildPlanParts,
+   newCrossFileCompanions,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanParts,
+   type CrossFileCompanions,
    type WirePackageMaterialization,
 } from "../service/materialization/plan/build_plan";
 import type {
@@ -136,6 +139,7 @@ import type {
    SerializedNotebookCell,
    WorkerBuildPlan,
    WorkerLogMessage,
+   WorkerUnhandledRejectionMessage,
 } from "./protocol";
 import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
@@ -149,6 +153,16 @@ if (!parentPort) {
 acceptBundledExperimentalDialects();
 
 const port = parentPort;
+
+// An unhandled rejection in a worker would otherwise end the thread. The main
+// thread logs and counts it (see WorkerUnhandledRejectionMessage).
+installProcessSafetyHandlers((report) => {
+   const msg: WorkerUnhandledRejectionMessage = {
+      type: "unhandled-rejection",
+      ...report,
+   };
+   port.postMessage(msg);
+});
 
 // ──────────────────────────────────────────────────────────────────────
 // RPC plumbing for worker → main calls
@@ -978,6 +992,11 @@ interface LoadContext {
    softDeadline: number;
    /** Each `.malloy` model's plan parts, when the request asked for a plan. */
    planParts?: Map<string, BuildPlanParts>;
+   /**
+    * The companions of cross-file parents' files, compiled once for the
+    * package's plan and shared by every model it collects.
+    */
+   crossFileCompanions?: CrossFileCompanions;
    /** Each model's position in the package's model order. */
    modelOrder: Map<string, number>;
    /** A model failed in a load that wants a plan, which fails anyway; stop the work. */
@@ -1272,6 +1291,8 @@ async function prepareForMainThread(
             malloyModel: model.model,
             runtime: model.runtime,
             getRuntime: companionRuntime,
+            crossFileCompanions: (load.crossFileCompanions ??=
+               newCrossFileCompanions()),
          });
          load.planParts?.set(modelPath, parts);
       } catch (error) {
@@ -1692,6 +1713,16 @@ async function runServedCopyJob(job: CompileServedCopyRequest): Promise<void> {
       port.postMessage(
          await jobContext.run(context, () => compileServedCopy(job)),
       );
+   } catch (error) {
+      // Answer the job in-band rather than leave it waiting for the job timeout.
+      const result: CompileServedCopyResult = {
+         type: "compile-served-copy-result",
+         requestId: job.requestId,
+         protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
+         error: serializeError(error),
+         compileDurationMs: 0,
+      };
+      port.postMessage(result);
    } finally {
       inFlightJobs.delete(job.requestId);
       maybeExit();

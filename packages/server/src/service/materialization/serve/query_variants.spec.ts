@@ -154,7 +154,7 @@ describe("PersistedQueryServe (colocated)", () => {
       const decline = await declineOf(
          attempt("run: q_region + { limit: 1 }", built),
       );
-      expect(decline.code).toBe("view_missing_field");
+      expect(decline.code).toBe("query_missing_field");
       expect(decline.callerDetail).toBe(
          "the query refines `q_region` (`+ { … }`), and the stored result holds only the query as written",
       );
@@ -177,7 +177,7 @@ describe("PersistedQueryServe (colocated)", () => {
 
    it("declines an unbuilt query as not built, and one missing from the query's manifest as stale", async () => {
       expect((await declineOf(attempt("run: q_region", {}))).code).toBe(
-         "view_not_built",
+         "query_not_built",
       );
       const pinned = pinnedOf([], built);
       const decline = await declineOf(
@@ -189,7 +189,7 @@ describe("PersistedQueryServe (colocated)", () => {
             buildManifest: { entries: {}, strict: false },
          }),
       );
-      expect(decline.code).toBe("view_stale");
+      expect(decline.code).toBe("query_stale");
    });
 
    it("declines a result whose stored rows cannot be regrouped into live's", async () => {
@@ -282,5 +282,52 @@ describe("PersistedQueryServe (storage=)", () => {
       expect(decline.callerDetail).toBe(
          "the stored result cannot answer `q_region` with live's columns: the stored `total` (VARCHAR) cannot be read as live's number",
       );
+   });
+});
+
+/**
+ * P4-05 (F-14): a persisted query with no `storage=` that a host instructed
+ * into a storage destination is read from its storage binding, which decides
+ * the tier, as a `storage=` query's is.
+ */
+describe("PersistedQueryServe (a host-chosen destination, no storage=)", () => {
+   let f: PersistedResultFixture;
+   let buildSourceID: string;
+   beforeAll(async () => {
+      f = await persistedResultFixture(
+         STORAGE_MODEL.replace(' storage="lake"', ""),
+         {
+            destinations: {
+               lake: new DuckDBConnection("lake_f14q", ":memory:"),
+            },
+            noBuildPlan: true,
+         },
+      );
+      buildSourceID = f.buildSourceIDOf("q_region__query");
+   });
+   afterAll(async () => {
+      await f?.cleanup();
+   });
+
+   it("P4-05: answers `run: q` from the storage binding through the destination", async () => {
+      const binding = storedViewBinding(buildSourceID, {
+         schema: [
+            { name: "region", type: "VARCHAR" },
+            { name: "total", type: "DOUBLE" },
+         ],
+      });
+      const pinned = pinnedOf([binding]);
+      const answer = await f.queries.attempt({
+         queryString: "run: q_region",
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery("run: q_region"),
+         pinned,
+         buildManifest: pinned.compilerManifest,
+      });
+      expect(answer.binding).toBe(binding);
+      const { sql } = await answer.runnable.getPreparedResult({
+         virtualMap: answer.virtualMap,
+      } as never);
+      expect(sql).toContain('"main"."stored_view_t"');
    });
 });

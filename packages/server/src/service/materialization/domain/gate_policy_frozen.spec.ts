@@ -131,21 +131,48 @@ function tableRows(): string[] {
 /** Every leg, switch setting and tables read the router lets past a gate. */
 function legRows(): string[] {
    const out: string[] = [];
+   // A `storage=` read carries the stored types of its gate columns, as the
+   // router lists them; exact unless the row's name says otherwise.
+   const exact = { gateColumnTypes: ["BIGINT", "VARCHAR"] };
    const reads = {
       none: [],
       colocated: [{ tier: "colocated" as const }],
-      storage: [{ tier: "storage" as const }],
-      mixed: [{ tier: "colocated" as const }, { tier: "storage" as const }],
+      storage: [{ tier: "storage" as const, ...exact }],
+      mixed: [
+         { tier: "colocated" as const },
+         { tier: "storage" as const, ...exact },
+      ],
       // A `storage=` table plan admitted past its own gate (G3), alone,
       // beside a colocated one, and beside one it did not admit.
-      own: [{ tier: "storage" as const, ownGateKept: true }],
+      own: [{ tier: "storage" as const, ownGateKept: true, ...exact }],
       own_colocated: [
          { tier: "colocated" as const },
-         { tier: "storage" as const, ownGateKept: true },
+         { tier: "storage" as const, ownGateKept: true, ...exact },
       ],
       own_storage: [
-         { tier: "storage" as const, ownGateKept: true },
-         { tier: "storage" as const },
+         { tier: "storage" as const, ownGateKept: true, ...exact },
+         { tier: "storage" as const, ...exact },
+      ],
+      // Question 14 (L2): a gate column stored as a float or a 128-bit
+      // integer, or one whose type was not listed, keeps no answer under any
+      // switch, on either tier.
+      own_inexact: [
+         {
+            tier: "storage" as const,
+            ownGateKept: true,
+            gateColumnTypes: ["DOUBLE"],
+         },
+      ],
+      own_hugeint: [
+         {
+            tier: "storage" as const,
+            ownGateKept: true,
+            gateColumnTypes: ["HUGEINT"],
+         },
+      ],
+      own_unlisted: [{ tier: "storage" as const, ownGateKept: true }],
+      colocated_inexact: [
+         { tier: "colocated" as const, gateColumnTypes: ["DOUBLE"] },
       ],
    };
    for (const leg of LEGS)
@@ -193,6 +220,32 @@ describe("the gate policy, frozen until the security review (plan question 14)",
       if (DUMP) dumpAndFail(`${DUMP}.legs.json`, legRows());
       expectFrozen(legRows(), FROZEN_LEG_ROWS);
    });
+
+   // F-14 (P4-03): a rollup with no `storage=` that a host instructed into a
+   // destination is read from its storage binding (storageLookupOf), and the
+   // rollup leg reports that binding as the table it read, so the answer is
+   // judged as a `storage=` rollup's: under G3 alone it keeps no gate, and
+   // the gated query is answered live. Not a row of its own: the
+   // binding's tier puts it in the `read=storage` rows above.
+   it("F-14: refuses, under G3, a rollup with no storage= read from a host's storage binding", () => {
+      const hostChosen = { tier: "storage" as const };
+      const g3Only: GateSwitches = {
+         materialize: true,
+         gatedSources: false,
+         gatedStorageRollupsReviewed: false,
+      };
+      expect(
+         answerKeepsGates("rollup", [hostChosen], g3Only, {
+            colocatedReadsKeepGates: true,
+         }),
+      ).toBe(false);
+      // The same rollup read colocated keeps its gates under G3.
+      expect(
+         answerKeepsGates("rollup", [{ tier: "colocated" }], g3Only, {
+            colocatedReadsKeepGates: true,
+         }),
+      ).toBe(true);
+   });
 });
 
 // Rows added outside the review, by maintainer decision, for consistency
@@ -201,12 +254,62 @@ describe("the gate policy, frozen until the security review (plan question 14)",
 // `materialize colocated` and `pair colocated` rows with `gs=0`), and on the
 // same conditions to a `storage=` table: the `materialize storage` and
 // `pair storage` rows with `gs=0`, and every `persist storage` row (v1, which
-// reads no switch, as v1 colocated does not). The legs' `keeps served
+// reads no switch, as v1 colocated does not). The `persist colocated` rows are
+// plan's colocated `#@ persist` rule since the v1 cutover, decided here rather
+// than restated in plan; they add no table plan did not already admit. The legs' `keeps served
 // read=own*` rows with `gs=0` are the router's half: an answer reading only
 // G3 tables, colocated or `storage=` admitted past its own gate. A `storage=`
 // table plan did not admit still keeps an answer off G3 (`read=own_storage`).
 // prettier-ignore
 const FROZEN_TABLE_ROWS: readonly string[] = [
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=- mz=0 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=- mz=1 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=0 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=0 mz=1 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=1 rr=0",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=0 gs=1 rr=1",
+   "persist colocated v1=0 gate=110 proven=1 mz=1 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=0 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=- mz=1 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=0 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=0 mz=1 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=0 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=1 rr=0",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=0 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=0 gs=1 rr=1",
+   "persist colocated v1=1 gate=110 proven=1 mz=1 gs=1 rr=1",
    "persist storage v1=0 gate=110 proven=- mz=0 gs=0 rr=0",
    "persist storage v1=0 gate=110 proven=- mz=1 gs=0 rr=0",
    "persist storage v1=0 gate=110 proven=- mz=0 gs=1 rr=0",
@@ -405,9 +508,27 @@ const FROZEN_TABLE_ROWS: readonly string[] = [
    "rollup storage v1=0 gate=110 proven=1 mz=1 gs=1 rr=1",
    "rollup storage v1=0 gate=111 proven=1 mz=0 gs=1 rr=1",
    "rollup storage v1=0 gate=111 proven=1 mz=1 gs=1 rr=1",
+   // G3 for a colocated rollup (maintainer decision, for consistency, ahead
+   // of the review, which covers it): with the switch off, a colocated
+   // rollup over a base whose gates are all its own (gate=110), each proven
+   // exact on the rollup (proven=1). No switch is read, as for v1's G3.
+   "rollup colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=0",
+   "rollup colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=0",
+   "rollup colocated v1=0 gate=110 proven=1 mz=0 gs=0 rr=1",
+   "rollup colocated v1=0 gate=110 proven=1 mz=1 gs=0 rr=1",
 ];
 // prettier-ignore
 const FROZEN_LEG_ROWS: readonly string[] = [
+   // G3 for a colocated rollup: the rollup leg past a gate with the switch
+   // off, kept only for an answer that read a colocated rollup.
+   "may rollup mz=0 gs=0 rr=0 g3=1",
+   "keeps rollup read=colocated mz=0 gs=0 rr=0 g3=1",
+   "may rollup mz=1 gs=0 rr=0 g3=1",
+   "keeps rollup read=colocated mz=1 gs=0 rr=0 g3=1",
+   "may rollup mz=0 gs=0 rr=1 g3=1",
+   "keeps rollup read=colocated mz=0 gs=0 rr=1 g3=1",
+   "may rollup mz=1 gs=0 rr=1 g3=1",
+   "keeps rollup read=colocated mz=1 gs=0 rr=1 g3=1",
    "may view mz=0 gs=1 rr=0 g3=0",
    "keeps view read=none mz=0 gs=1 rr=0 g3=0",
    "keeps view read=colocated mz=0 gs=1 rr=0 g3=0",

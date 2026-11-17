@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -75,7 +75,6 @@ source: gated is duckdb.table('orders_raw') extend {
 `;
 
 describe("R4: #(preaggregate) rollups build the partials their measures merge from", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    /** The colocated table of the rollup of `base` at `grain`. */
    const table = (base: string, grain: string[]) => {
@@ -87,10 +86,8 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
       return fixture.rollupTables[names[0] as string] as string;
    };
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": MODEL },
          seedSql,
@@ -99,7 +96,6 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -148,15 +144,14 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
       });
    }
 
-   it("builds nothing over a gated source, whose rollups no query reads yet (row 21)", () => {
-      // The grain keeps the gate's field, so A4 alone would build it; while a
-      // gated entry point skips every rollup, the table would cost a build
-      // for nothing.
+   it("builds a rollup over a source's own gate, its grain keeping the gate's field (G3)", () => {
+      // Read past the gate, which `govern()` grafts and re-proves on it, so
+      // its table is worth the build (r4/gated_rollup).
       expect(
          Object.keys(fixture.rollupTables).filter((n) =>
             n.startsWith("gated__rollup__"),
          ),
-      ).toEqual([]);
+      ).toHaveLength(1);
    });
 
    it("builds nothing for a source whose rows read the current time (S25b)", () => {

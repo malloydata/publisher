@@ -12,7 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -79,12 +79,9 @@ source: older is events extend {
 `;
 
 describe("R4: a rolling window served at a pinned clock answers equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -93,7 +90,6 @@ describe("R4: a rolling window served at a pinned clock answers equal to live", 
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

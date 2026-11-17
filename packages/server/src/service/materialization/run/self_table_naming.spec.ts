@@ -1,13 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import path from "path";
 import { pathToFileURL } from "url";
 import {
    compiledWith,
    fakeSource,
 } from "../../../test_helpers/materialization_test_fixtures";
+import { installSettings } from "../../../test_helpers/settings_env";
 import {
    packageTableSuffix,
    versionTableSuffix,
@@ -108,7 +109,10 @@ const compiled = (): CompiledBuildPlan =>
    );
 
 const ROLLUP = "orders__preagg__category__1a2b3c4d";
-const withRollup = (c: CompiledBuildPlan): CompiledBuildPlan => ({
+const withRollup = (
+   c: CompiledBuildPlan,
+   prefix?: string,
+): CompiledBuildPlan => ({
    ...c,
    tables: {
       ...c.tables,
@@ -118,6 +122,8 @@ const withRollup = (c: CompiledBuildPlan): CompiledBuildPlan => ({
          rollup: {
             baseSourceName: "orders",
             grainDimensions: ["category"],
+            namespace: "ns",
+            ...(prefix !== undefined ? { prefix } : {}),
          } as never,
          materialize: undefined,
       },
@@ -453,12 +459,14 @@ describe("a table named before readable names", () => {
       expect(r.renamed).toEqual([
          {
             sourceEntityId: "a1",
+            sourceName: "summary",
             previousName: `summary${LEGACY_PKG}`,
             physicalTableName: names(r).a1,
             connectionName: "duckdb",
          },
          {
             sourceEntityId: "a4",
+            sourceName: ROLLUP,
             previousName: `ns.orders__preagg__category__1a2b3c4d${LEGACY_PKG}`,
             physicalTableName: names(r).a4,
             connectionName: "duckdb",
@@ -479,7 +487,7 @@ describe("a table named before readable names", () => {
       ]);
    });
 
-   it("is not offered unless it is exactly the name Publisher gave it, in the same place", () => {
+   it("is offered wherever this package's records put it on the source's connection: the reclaim's guards decide", () => {
       const r = deriveSelfInstructions(
          compiled(),
          undefined,
@@ -498,16 +506,27 @@ describe("a table named before readable names", () => {
          undefined,
          PKG,
       );
-      expect(r.renamed).toEqual([]);
-      // An author's name= outside scope: version had no suffix to re-derive.
-      const named = deriveSelfInstructions(
+      // Another environment's suffix reads as a readable name of this
+      // package's, kept where it is; the table in another destination moves,
+      // and the old one is offered from its own place.
+      expect(r.carried.a1).toBeDefined();
+      expect(r.renamed.map((t) => [t.previousName, t.previousPlace])).toEqual([
+         [`qualified${LEGACY_PKG}`, { storageDestinationName: "lake" }],
+      ]);
+      // On another connection: another content address, never offered.
+      const elsewhere = deriveSelfInstructions(
          compiled(),
          undefined,
-         { a2: prior(`named_t${LEGACY_PKG}`, "a2") },
+         {
+            a1: {
+               ...prior(`summary${LEGACY_PKG}`, "a1"),
+               connectionName: "other",
+            } as ManifestEntry,
+         },
          undefined,
          PKG,
       );
-      expect(named.renamed).toEqual([]);
+      expect(elsewhere.renamed).toEqual([]);
    });
 
    describe("an incremental source", () => {
@@ -759,6 +778,63 @@ describe("a table built under a readable name", () => {
    });
 });
 
+describe("a rollup's name= leaf, the prefix of its readable name", () => {
+   const run = (prefix: string | undefined, recorded: string) =>
+      deriveSelfInstructions(
+         withRollup(compiled(), prefix),
+         undefined,
+         { a4: prior(recorded, "a4") },
+         undefined,
+         PKG,
+      );
+
+   it("names the table after the leaf, its container kept", () => {
+      const r = deriveSelfInstructions(
+         withRollup(compiled(), "orders_rollup"),
+         undefined,
+         {},
+         undefined,
+         PKG,
+      );
+      expect(names(r).a4).toMatch(/^ns\.orders_rollup__p[0-9a-f]{8}$/);
+   });
+
+   it("keeps the table's name while the leaf is the same, its file moved", () => {
+      const recorded = "ns.orders_rollup__p0123abcd";
+      const r = run("orders_rollup", recorded);
+      expect(r.carried.a4.physicalTableName).toBe(recorded);
+      expect(r.renamed).toEqual([]);
+   });
+
+   for (const [label, prefix, recorded, now] of [
+      [
+         "the leaf changed",
+         "orders_rollup",
+         "ns.old_rollup__p0123abcd",
+         /^ns\.orders_rollup__p/,
+      ],
+      [
+         "the leaf removed",
+         undefined,
+         "ns.orders_rollup__p0123abcd",
+         /^ns\.pa__sales__orders_by_category__p/,
+      ],
+      [
+         "namespace= changed to name=",
+         "orders_rollup",
+         "ns.pa__sales__orders_by_category__p0123abcd",
+         /^ns\.orders_rollup__p/,
+      ],
+   ] as const) {
+      it(`renames the table, rebuilt once, and offers the old one for reclaim: ${label}`, () => {
+         const r = run(prefix, recorded);
+         expect(names(r).a4).toMatch(now);
+         expect(r.carried.a4).toBeUndefined();
+         expect(r.renamed.map((t) => t.previousName)).toEqual([recorded]);
+      });
+   }
+});
+
 describe("a forced refresh (every scheduled fire)", () => {
    it("carries nothing, and still names each table from the run before", () => {
       const now = names(
@@ -853,5 +929,277 @@ describe("removing a name= under scope: version", () => {
          V120,
       );
       expect(names(r).a2).toMatch(/^pa__sales__named__v1_2_0__p[0-9a-f]{8}$/);
+   });
+});
+
+describe("the one rename rule: what an auto-run offers to the reclaim", () => {
+   /** What `r` offers: each old table, the new one, and where it was. */
+   const offered = (r: ReturnType<typeof deriveSelfInstructions>) =>
+      r.renamed.map((t) => ({
+         previousName: t.previousName,
+         physicalTableName: t.physicalTableName,
+         ...(t.previousPlace ? { previousPlace: t.previousPlace } : {}),
+      }));
+
+   it("under scope: version, a name= prefix changed", () => {
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a2: prior("old_t__v1_2_0__p0123abcd", "a2") },
+         undefined,
+         V120,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "old_t__v1_2_0__p0123abcd",
+            physicalTableName: expect.stringMatching(/^named_t__v1_2_0__p/),
+         },
+      ]);
+   });
+
+   it("under scope: version, a name= container changed", () => {
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a3: prior("staging.q_t__v1_2_0__p0123abcd", "a3") },
+         undefined,
+         V120,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "staging.q_t__v1_2_0__p0123abcd",
+            physicalTableName: expect.stringMatching(
+               /^analytics\.q_t__v1_2_0__p/,
+            ),
+         },
+      ]);
+   });
+
+   it("a readable-name table, when the author adds name=", () => {
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         { a3: prior("pa__sales__qualified__p0123abcd", "a3") },
+         undefined,
+         PKG,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "pa__sales__qualified__p0123abcd",
+            physicalTableName: "analytics.q_t",
+         },
+      ]);
+   });
+
+   it("a rollup moved to another container", () => {
+      const r = deriveSelfInstructions(
+         withRollup(compiled()),
+         undefined,
+         { a4: prior("old_ns.pa__sales__orders_by_category__p0123abcd", "a4") },
+         undefined,
+         PKG,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "old_ns.pa__sales__orders_by_category__p0123abcd",
+            physicalTableName: expect.stringMatching(
+               /^ns\.pa__sales__orders_by_category__p/,
+            ),
+         },
+      ]);
+   });
+
+   it("an exact name= changed or removed (the reclaim keeps and lists it)", () => {
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         {
+            a1: prior("summary_t", "a1"),
+            a2: prior("named_old", "a2"),
+         },
+         undefined,
+         PKG,
+      );
+      expect(offered(r)).toEqual([
+         {
+            previousName: "summary_t",
+            physicalTableName: expect.stringMatching(READABLE),
+         },
+         { previousName: "named_old", physicalTableName: "named_t" },
+      ]);
+   });
+
+   describe("a storage= destination changed", () => {
+      let restore: () => void;
+      beforeEach(() => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on" },
+         }).restore;
+      });
+      afterEach(() => restore());
+
+      const stored = (storage: string | undefined) =>
+         compiledWith(
+            {
+               s: fakeSource({
+                  name: "s",
+                  sourceEntityId: "a1",
+                  ...(storage ? { annotationFields: { storage } } : {}),
+               }),
+            },
+            [["s"]],
+         );
+
+      for (const [from, to] of [
+         ["lake", "lake2"],
+         ["lake", undefined],
+         [undefined, "lake"],
+      ] as const) {
+         it(`from ${from ?? "the source's own database"} to ${to ?? "the source's own database"}: offered from its old place`, () => {
+            const name = "pa__s__s__p0123abcd";
+            const r = deriveSelfInstructions(
+               stored(to),
+               undefined,
+               {
+                  a1: {
+                     ...prior(name, "a1"),
+                     ...(from ? { storageDestinationName: from } : {}),
+                  } as ManifestEntry,
+               },
+               undefined,
+               PKG,
+            );
+            expect(r.carried).toEqual({});
+            expect(r.renamed).toHaveLength(1);
+            expect(r.renamed[0]).toMatchObject({
+               previousName: name,
+               previousPlace: from ? { storageDestinationName: from } : {},
+               ...(to ? { storageDestinationName: to } : {}),
+            });
+         });
+      }
+   });
+
+   it("nothing for a table carried, an edit to the SQL, or a name another source now takes", () => {
+      const now = names(
+         deriveSelfInstructions(compiled(), undefined, {}, undefined, PKG),
+      );
+      const r = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         {
+            // Carried as it is.
+            a1: prior(now.a1, "a1"),
+            // Another content address (its SQL changed): no prior for a3.
+            zz: prior("pa__sales__qualified__p0123abcd", "zz"),
+            // Its old name is now a2's own name=.
+            a3: prior("named_t", "a3"),
+         },
+         undefined,
+         PKG,
+      );
+      expect(r.carried.a1).toBeDefined();
+      expect(r.renamed).toEqual([]);
+   });
+});
+
+describe("a persisted named query's table", () => {
+   const COMPANION = "file:///pkg/models/sales.malloy.persist-view.malloy";
+   /** `q`'s persisted query, a persisted view, and a source named `top`. */
+   const plan = (): CompiledBuildPlan => {
+      const ofCompanion = (name: string, sourceEntityId: string) => {
+         const source = fakeSource({ name, sourceEntityId });
+         (source as { sourceID: string }).sourceID = `${name}@${COMPANION}`;
+         return source;
+      };
+      return bySourceID(
+         compiledWith(
+            {
+               top__query: ofCompanion("top__query", "q1"),
+               orders__top__view: ofCompanion("orders__top__view", "v1"),
+               orders__top__query: ofCompanion("orders__top__query", "q2"),
+               top_query__query: ofCompanion("top_query__query", "q3"),
+               top: fakeSource({ name: "top", sourceEntityId: "s1" }),
+               // A plain source whose own name ends `__query` keeps it.
+               mine__query: fakeSource({
+                  name: "mine__query",
+                  sourceEntityId: "s2",
+               }),
+            },
+            [
+               [
+                  "top__query",
+                  "orders__top__view",
+                  "orders__top__query",
+                  "top_query__query",
+                  "top",
+                  "mine__query",
+               ],
+            ],
+         ),
+         {
+            [`top__query@${COMPANION}`]: "models/sales.malloy",
+            [`orders__top__view@${COMPANION}`]: "models/sales.malloy",
+            [`orders__top__query@${COMPANION}`]: "models/sales.malloy",
+            [`top_query__query@${COMPANION}`]: "models/sales.malloy",
+            top: "models/sales.malloy",
+            mine__query: "models/sales.malloy",
+         },
+      );
+   };
+   const run = (priors: Record<string, ManifestEntry> = {}) =>
+      deriveSelfInstructions(plan(), undefined, priors, undefined, PKG);
+
+   it("reads as the query, with no `_query`, as a persisted view's reads with no `_view`", () => {
+      const n = names(run());
+      expect(n.q1).toMatch(/^pa__sales__top__p[0-9a-f]{8}$/);
+      expect(n.v1).toMatch(/^pa__sales__orders_top__p[0-9a-f]{8}$/);
+      // A query whose own name ends `_query` keeps it.
+      expect(n.q3).toMatch(/^pa__sales__top_query__p[0-9a-f]{8}$/);
+      expect(n.s2).toMatch(/^pa__sales__mine_query__p[0-9a-f]{8}$/);
+   });
+
+   it("is never another's table when a source, a view and a query read alike: the hash is over the build source's name", () => {
+      const n = names(run());
+      // `top` (a source) and `top` (a query) read the same; so do the view
+      // `top` of `orders` and a query named `orders__top`.
+      expect(n.q1.replace(/__p[0-9a-f]{8}$/, "")).toBe(
+         n.s1.replace(/__p[0-9a-f]{8}$/, ""),
+      );
+      expect(n.q2.replace(/__p[0-9a-f]{8}$/, "")).toBe(
+         n.v1.replace(/__p[0-9a-f]{8}$/, ""),
+      );
+      expect(new Set(Object.values(n)).size).toBe(Object.keys(n).length);
+      const r = run();
+      expect(r.refused).toEqual({});
+      expect(r.instructions.map((i) => i.sourceEntityId).sort()).toEqual(
+         ["q1", "q2", "q3", "s1", "s2", "v1"].sort(),
+      );
+   });
+
+   it("built under its `_query` name before, is renamed, rebuilt once, and the old one offered for reclaim", () => {
+      const legacy = "pa__sales__top_query__p0123abcd";
+      const r = run({ q1: prior(legacy, "q1") });
+      expect(names(r).q1).toMatch(/^pa__sales__top__p[0-9a-f]{8}$/);
+      expect(r.carried.q1).toBeUndefined();
+      expect(r.renamed.map((t) => t.previousName)).toEqual([legacy]);
+      // Once: the next run carries the new name.
+      const next = run({ q1: prior(names(r).q1, "q1") });
+      expect(next.carried.q1).toBeDefined();
+      expect(next.renamed).toEqual([]);
+   });
+
+   it("keeps a name that ends `_query` because the query's own name does, and a source's", () => {
+      const r = run({
+         q3: prior("pa__old__top_query__p0123abcd", "q3"),
+         s2: prior("pa__old__mine_query__p0123abcd", "s2"),
+      });
+      expect(r.carried.q3?.physicalTableName).toBe(
+         "pa__old__top_query__p0123abcd",
+      );
+      expect(r.carried.s2?.physicalTableName).toBe(
+         "pa__old__mine_query__p0123abcd",
+      );
+      expect(r.renamed).toEqual([]);
    });
 });

@@ -3,7 +3,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../access_record";
 import type {
@@ -11,16 +10,18 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName } from "../../identity";
 import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { MaterializationService } from "./materialization_service";
 import { ownedTableComment, TABLE_OWNED_ELSEWHERE } from "./table_ownership";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * Two packages of one environment, on one shared warehouse connection, each
@@ -73,11 +74,13 @@ describe("two packages on one warehouse connection", () => {
       restoreSettings = installSettings({
          env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
       }).restore;
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "cross-package-tables-")),
-      );
-      envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
+      ({ root, envPath, db, repo } = await openTempStorage(
+         "cross-package-tables-",
+         {
+            id: ENV_ID,
+            name: ENV,
+         },
+      ));
       for (const pkg of ["pa", "pb"]) {
          writePackageFiles(
             path.join(envPath, pkg),
@@ -85,29 +88,18 @@ describe("two packages on one warehouse connection", () => {
             { manifest: { name: pkg, description: "fixture" } },
          );
       }
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage("pa");
       await env.addPackage("pb");
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore;
-      service = new MaterializationService(store);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    });
 
    afterEach(async () => {
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
    });
 
@@ -226,7 +218,7 @@ describe("two packages on one warehouse connection", () => {
       expect(await who("pa", "named")).toBe("pa-stored-named");
    });
 
-   it("deleting a run never drops a table another package has built at that name since", async () => {
+   it("deleting a run leaves a table another package has built at that name since", async () => {
       // pb builds `named_t` first; then the table is dropped outside
       // Publisher, and pa builds it.
       const b = await build("pb");
@@ -243,11 +235,8 @@ describe("two packages on one warehouse connection", () => {
       expect(failureReasons(b2).join(" ")).toContain(TABLE_OWNED_ELSEWHERE);
       expect(await who("pb", "named")).toBe("pb");
 
-      // Deleting pb's first run with its tables drops pb's own table and
-      // leaves pa's.
-      await service.deleteMaterialization(ENV, "pb", b.id, {
-         dropTables: true,
-      });
+      // Deleting pb's first run is record-only: pa's table stays.
+      await service.deleteMaterialization(ENV, "pb", b.id);
       expect(await tables()).toContain("named_t");
       expect(await who("pa", "named")).toBe("pa-stored-named");
    });

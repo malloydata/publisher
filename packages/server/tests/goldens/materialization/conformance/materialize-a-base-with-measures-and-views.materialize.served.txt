@@ -35,6 +35,7 @@ source: orders_m is __served_copy_alias_of_lake.virtual('3f4562aa4a00b1792d2a380
     id is id__stored::"HUGEINT"
     customer_id is customer_id__stored::"HUGEINT"
     order is order__stored::"HUGEINT"
+ primary_key: id } extend {
   # currency
   measure: total is amount.sum()
   measure: n is count()

@@ -25,7 +25,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    PackageMaterialization,
    type PackageMaterializationOwner,
@@ -172,20 +172,18 @@ async function expectParity(
 }
 
 describe("R4: a rolling window over a hidden dimension, served at a pinned clock", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
          materialize: true,
          clock: B,
       });
-      // A stand-in for a re-root bug: `broken`'s stored `amount` read back
-      // as a string, which its own `amount.sum()` cannot compile over.
+      // `broken`'s stored `amount` retyped to text: no cast reads it as
+      // live's number, so it is left out, and its own `amount.sum()` then
+      // cannot compile, which leaves the source to its fallback.
       // (`amount` is a 32-bit INTEGER in the seed: a BIGINT one would be a
       // big integer, which a text column is left out for per query instead,
       // known limitation 12.)
@@ -200,7 +198,6 @@ describe("R4: a rolling window over a hidden dimension, served at a pinned clock
          );
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -209,12 +206,12 @@ describe("R4: a rolling window over a hidden dimension, served at a pinned clock
       // `joiner` joins `w_private` from the origin connection, which a
       // stored `w_private` takes across connections: left out, as always.
       expect(problems.map((p) => [p.sourceName, p.reason])).toEqual([
-         ["broken", "reroot_not_compiled"],
+         ["broken", "column_types"],
          ["joiner", "cross_connection_join"],
       ]);
    });
 
-   it("answers the source whose re-root does not compile live, equal to live", async () => {
+   it("answers the source whose re-root is left out live, equal to live", async () => {
       const run = await fixture.run({
          name: "broken",
          malloy: "run: broken -> { group_by: org; aggregate: n, total }",
@@ -364,12 +361,9 @@ describe("R4: a rolling window over a hidden dimension, served at a pinned clock
  * on that join sends the reader to it.
  */
 describe("R4: containment's kept inlined join is reported beside a model-wide one", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental { access_modifiers }
@@ -410,7 +404,6 @@ source: yext is ysrc extend { measure: q is carriers.cc }
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -460,12 +453,9 @@ source: yext is ysrc extend { measure: q is carriers.cc }
  * re-root had dropped the author's.
  */
 describe("R4: a term kept as written that the served compile does not apply", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -497,7 +487,6 @@ describe("R4: a term kept as written that the served compile does not apply", ()
       expect(tampered).toBe(1);
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

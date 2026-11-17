@@ -8,7 +8,11 @@ import * as fsp from "fs/promises";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 import { recordConnectionsAsForTests } from "../../../src/service/connection_type";
 
@@ -50,6 +54,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "manifest-bind-"));
 
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
+      await deleteLeftoverEnvironment(baseUrl, PROJECT_NAME);
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },

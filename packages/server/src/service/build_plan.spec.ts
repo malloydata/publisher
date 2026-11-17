@@ -84,7 +84,9 @@ source: c is b -> { group_by: category; aggregate: t3 is t2.sum() }
    it("gives every source every table it reads, and an extension none", async () => {
       // The wire graphs are a host's only view of these edges, for a rerun's
       // upstream closure, freshness inheritance and lineage. `b -> a` sits
-      // below the first level, where a walk of roots alone loses it.
+      // below the first level, where a walk of roots alone loses it. `b`
+      // reads `a`, not `a_ext` (one target, one table): an edge names the
+      // source a definition reads, never every source of its target (P2-21).
       const { builds } = await buildsOf(CHAIN);
       const deps = Object.fromEntries(
          Object.entries(builds[0].dependsOn).map(([id, on]) => [
@@ -95,7 +97,7 @@ source: c is b -> { group_by: category; aggregate: t3 is t2.sum() }
       expect(deps).toEqual({
          a: [],
          a_ext: [],
-         b: ["a", "a_ext"],
+         b: ["a"],
          c: ["b"],
       });
    });
@@ -117,7 +119,7 @@ source: c is b -> { group_by: category; aggregate: t3 is t2.sum() }
                (n.dependsOn ?? []).map((d) => `${name(d)}>${name(n.sourceID)}`),
             ),
       );
-      expect(edges.sort()).toEqual(["a>b", "a_ext>b", "b>c"]);
+      expect(edges.sort()).toEqual(["a>b", "b>c"]);
    });
 
    it("builds a dependency two sources share once, before both", async () => {
@@ -958,7 +960,7 @@ source: mz_free(threshold::number) is base -> { aggregate: c is count() }
          const byName = Object.fromEntries(refused.map((r) => [r.name, r]));
          expect(byName.mz_given).toMatchObject({
             tier: "storage",
-            reason: "given_in_persisted_query",
+            reason: "reads_given",
          });
          expect(byName.mz_given.message).toMatch(/given/i);
          expect(byName.mz_free).toMatchObject({
@@ -997,7 +999,7 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
          expect(refused).toMatchObject({
             name: "mz_given",
             tier: "storage",
-            reason: "given_in_persisted_query",
+            reason: "reads_given",
          });
          // No SQL/content-address fields leak onto the refused entry — it is
          // a genuinely different wire shape, not `PersistSourcePlan` with two
@@ -1284,12 +1286,11 @@ source: orders is duckdb.sql("""SELECT * FROM (VALUES (10, 'A')) AS t(amount, ca
    );
 
    it(
-      "plans no rollup over a gated base, and says why in a finding rather than a refusal",
+      "plans no rollup over a gated base, and says why in a refusal record",
       async () => {
-         // Rollups group away the gate column. The composite synthesized the
-         // rollup anyway and then refused it (tier preaggregate). The rollup
-         // leg never plans it: neither a source nor a refusal, and the
-         // package's finding says the measure is served live.
+         // Rollups group away the gate column, so the rollup leg never plans
+         // it: it is no source, and its refusal record says the measure is
+         // served live and why.
          const pkg =
             await packages.create(`##! experimental { persistence composite_sources givens }
 
@@ -1312,11 +1313,16 @@ source: orders is duckdb.sql("""
          const { plan, annotationFindings } =
             await computePackageBuildPlan(pkg);
 
-         // Nothing planned, so no plan at all.
          expect(Object.values(plan?.sources ?? {})).toEqual([]);
-         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
-         expect(annotationFindings.map((f) => f.code)).toContain(
-            "preaggregate-access-filter",
+         expect(
+            Object.values(plan?.refusedSources ?? {}).map((r) => [
+               r.name,
+               r.tier,
+               r.reason,
+            ]),
+         ).toEqual([["orders.total", "preaggregate", "access_filter"]]);
+         expect(annotationFindings.map((f) => f.code)).not.toContain(
+            "preaggregate-not-built",
          );
       },
       { timeout: 20000 },

@@ -10,6 +10,8 @@
  * against the author's edits.
  */
 
+import { tierOf } from "./refusal_key";
+import type { RefusedReason } from "../domain/types";
 import {
    hiddenAccess,
    modelDefIfAny,
@@ -23,6 +25,7 @@ import {
    type ModelMaterializer,
 } from "@malloydata/malloy";
 import * as path from "path";
+import { identifier, stringLiteral } from "../../malloy_text";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import type { Omission } from "../domain/omitted_sources";
@@ -35,6 +38,8 @@ import {
    buildCopyDeclarationAt,
    buildCopyName,
    buildCopyText,
+   chainCopyName,
+   crossFileCopyTexts,
 } from "./materialize_build_copy";
 import {
    chainLevels,
@@ -52,11 +57,17 @@ import {
    type StoredColumnType,
 } from "./materialize_stored_chain";
 import {
+   chainsOver,
+   chainThroughFile,
+   chainWithinFile,
+   crossFileEntries,
    planModelMaterialize,
    type MaterializeRefusal,
 } from "./materialize_plan";
 import { splitSourceID, type MaterializePlan } from "../domain/table_plans";
 import type { TermUse } from "../domain/read_time_terms";
+import { SourceMap } from "../text/source_map";
+import { wholeImportsOf } from "../text/declaration_text";
 import {
    compileInMemory,
    companionOmissions,
@@ -93,6 +104,20 @@ interface GeneratedMaterialize {
     * table and is no build of its own.
     */
    generatedURLs: ReadonlySet<string>;
+   /**
+    * The text of every file generated beside the author's, by URL: what a
+    * compile that imports a generated build source needs (rollup_compile.ts,
+    * a rollup over a stored `#(materialize)` base), and the companions of the
+    * files an extension's parent is declared in (`buildsOver.crossFile`),
+    * which its build copies import.
+    */
+   files: ReadonlyMap<string, string>;
+   /**
+    * The author's sourceID of each generated build source this companion's
+    * builds may name, by the generated source's own sourceID: its own plans'
+    * and those of the companions it compiled over.
+    */
+   renames: ReadonlyMap<string, string>;
    /**
     * Each uniqueness check's compiler over a run's compiler manifest, by
     * {@link keyCheckCompilerKey}: compiled through the companion, which only
@@ -136,6 +161,24 @@ export async function tryCompileMaterializeCompanion(args: {
     * time zone. Absent: the IR walks alone decide.
     */
    probe?: ProbeCompiler;
+   /**
+    * The model files whose companions are being compiled up the stack, for
+    * a parent's companion compiled for an extension in another file: one
+    * already on it is not compiled again (an import cycle).
+    */
+   crossFileStack?: ReadonlySet<string>;
+   /**
+    * Each model file's companion as a cross-file parent's file, compiled
+    * once per package plan and shared by every file that imports it, and by
+    * the companions compiled for it in turn (see {@link crossFileParents}).
+    */
+   crossFileCompanions?: CrossFileCompanions;
+   /**
+    * The author model's source registry, with `contents` what a later
+    * model's cross-file walk reads of this one when it finds this model's
+    * companion in {@link crossFileCompanions}.
+    */
+   sourceRegistry?: unknown;
 }): Promise<{
    generated?: GeneratedMaterialize;
    refused: MaterializeRefusal[];
@@ -151,10 +194,56 @@ export async function tryCompileMaterializeCompanion(args: {
       const planned = await planWithProbes(args, modelFile);
       refused.push(...planned.refused);
       plannedIDs = planned.plans.map((p) => p.sourceID);
-      const compile = companionCompiler(args, modelFile, refused);
-      let round = await compile(planned.plans);
-      round = await unchainStoredChainsNotCompiling(round, compile, args);
+      const foreign = await crossFileParents(
+         planned.plans,
+         args,
+         modelFile,
+      ).catch((error: unknown): CrossFileParents => {
+         // Never a cost to the model's builds: its extensions build over
+         // the raw chain, as they did before.
+         logger.warn(
+            "A model's extension tables could not be chained on parents in other files; they build over the raw chain",
+            {
+               modelPath: args.modelPath,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+         return { plans: planned.plans, parents: new Map() };
+      });
+      const compile = companionCompiler(args, modelFile, refused, foreign);
+      let round = await compile(foreign.plans);
+      round = await unchainStoredChainsNotCompiling(
+         round,
+         compile,
+         args,
+         foreign,
+      );
       round = await withoutLeakedBuilds(round, compile, modelFile, refused);
+      round = await withCrossFileColumnsKept(round, compile, args, foreign);
+      // Shared with every later model that imports this one: its companion
+      // is not compiled again as a cross-file parent's.
+      if (
+         round.generated &&
+         args.crossFileCompanions &&
+         !args.crossFileCompanions.has(modelFile)
+      ) {
+         const generated = withStoredColumns(round.generated);
+         args.crossFileCompanions.set(
+            modelFile,
+            GeneratedFiles.over(args.getRuntime)
+               .read(pathToFileURL(modelFile))
+               .then((text) => ({
+                  generated,
+                  text,
+                  modelFile,
+                  modelDef: {
+                     contents: args.contents,
+                     sourceRegistry: args.sourceRegistry,
+                  } as unknown as ReturnType<typeof modelDefOf>,
+               }))
+               .catch(() => undefined),
+         );
+      }
       return round.generated
          ? { generated: withStoredColumns(round.generated), refused }
          : { refused };
@@ -232,6 +321,7 @@ function companionCompiler(
    args: CompanionArgs,
    modelFile: string,
    refused: MaterializeRefusal[],
+   foreign: CrossFileParents = NO_CROSS_FILE_PARENTS,
 ): CompanionCompile {
    // The text the author's model was compiled from, through the reader
    // the companion compiles with: a worker's file map or an overlay, not
@@ -260,6 +350,7 @@ function companionCompiler(
          readModelText,
          compileCopy,
          args.contents,
+         foreign.parents,
       );
       for (const r of out.refused) {
          if (r.sourceID !== undefined && refusedIDs.has(r.sourceID)) continue;
@@ -269,7 +360,7 @@ function companionCompiler(
       return out;
    };
    return (from) =>
-      compileContained(args, from, prepare, (refusal) => {
+      compileContained({ ...args, foreign }, from, prepare, (refusal) => {
          if (refusedIDs.has(refusal.sourceID as string)) return;
          refusedIDs.add(refusal.sourceID as string);
          refused.push(refusal);
@@ -286,9 +377,10 @@ async function unchainStoredChainsNotCompiling(
    round: CompanionRound,
    compile: CompanionCompile,
    args: CompanionArgs,
+   foreign: CrossFileParents = NO_CROSS_FILE_PARENTS,
 ): Promise<CompanionRound> {
    const unstored = round.generated
-      ? await storedChainsNotCompiling(round.generated)
+      ? await storedChainsNotCompiling(round.generated, foreign.parents)
       : new Map<string, string>();
    if (unstored.size === 0) return round;
    for (const [sourceID, error] of unstored) {
@@ -359,6 +451,17 @@ async function withoutLeakedBuilds(
       refused.push({
          sourceName: plan.sourceName,
          sourceID: plan.sourceID,
+         outcome: {
+            refused: {
+               reason:
+                  givenReadTerms(plan).length > 0
+                     ? "reads_given"
+                     : leftOutWindowTerms(plan.readTimeTerms).length > 0
+                       ? "current_time"
+                       : "no_stored_columns",
+               tier: tierOf(plan.persist.storage),
+            },
+         },
          reason:
             givenReadTerms(plan).length > 0 ||
             leftOutWindowTerms(plan.readTimeTerms).length > 0
@@ -458,6 +561,13 @@ interface BuildCopy {
    fileName: string;
    text: string;
    /**
+    * For an extension whose parent is in another file: the copy of that
+    * file re-rooted on the parent's build source, and a copy of each file
+    * the chain passes through on the way, by URL, each importing the next
+    * one's copy in the file's place ({@link crossFileCopyTexts}).
+    */
+   chainCopies?: { url: string; text: string }[];
+   /**
     * For a chained copy (P10): the declaration off the chain a place in the
     * copy lies in, if any, by sourceID and its range in the author's file
     * ({@link buildCopyDeclarationAt}).
@@ -474,6 +584,7 @@ async function compileCompanion(
       packagePath: string;
       modelPath: string;
       getRuntime: SynthesizedRuntimeFactory;
+      foreign?: CrossFileParents;
    },
    plans: MaterializePlan[],
    copies: ReadonlyMap<string, BuildCopy>,
@@ -504,12 +615,58 @@ async function compileCompanion(
       new Map([...used].map(([name, c]) => [name, c.fileName])),
    );
    if (!files) return undefined;
-   const text = files.entry;
+   // Each cross-file parent's build source, imported so the companion's
+   // build targets list it, as an in-file parent's level file is: the
+   // extension's build then orders after it and reads its table.
+   const own = new Set(plans.map((p) => p.buildSourceName));
+   const parentImports = new Map<string, string>();
+   for (const plan of plans) {
+      const over = plan.buildsOver;
+      const name = args.foreign?.parents.get(plan.sourceID)?.plan
+         .buildSourceName;
+      if (!over?.crossFile || !name || own.has(name)) continue;
+      let from: string;
+      try {
+         from = path
+            .relative(
+               path.dirname(modelFile),
+               fileURLToPath(over.crossFile.buildSourceURL),
+            )
+            .split(path.sep)
+            .join("/");
+      } catch {
+         continue;
+      }
+      parentImports.set(name, from);
+   }
+   const text = parentImports.size
+      ? files.entry.replace(
+           /^(##![^\n]*\n)/,
+           `$1${[...parentImports]
+              .map(
+                 ([name, from]) =>
+                    `import { ${identifier(name)} } from ${stringLiteral(from)}\n`,
+              )
+              .join("")}`,
+        )
+      : files.entry;
    const url = materializeCompanionURL(args.packagePath, args.modelPath);
    const overlay = new Map([[url.href, text]]);
    const dir = path.dirname(modelFile);
+   // The companions of the files a cross-file parent is declared in, which
+   // a build copy's re-rooted parent imports its build source from, at
+   // their own URLs: the same build sources there as in that file's own
+   // companion, so the parent's build source is the same build.
+   const renames = new Map<string, string>();
+   for (const plan of plans) {
+      const parent = args.foreign?.parents.get(plan.sourceID);
+      if (!plan.buildsOver?.crossFile || !parent) continue;
+      for (const [u, t] of parent.overlay) overlay.set(u, t);
+      for (const [from, to] of parent.renames) renames.set(from, to);
+   }
    for (const copy of used.values()) {
       overlay.set(pathToFileURL(path.join(dir, copy.fileName)).href, copy.text);
+      for (const c of copy.chainCopies ?? []) overlay.set(c.url, c.text);
    }
    for (const [name, level] of files.levels) {
       overlay.set(pathToFileURL(path.join(dir, name)).href, level);
@@ -518,10 +675,10 @@ async function compileCompanion(
       args.getRuntime,
    ).load(url, overlay);
    const copyOwners = new Map(
-      [...used].map(
-         ([sourceID, c]) =>
-            [pathToFileURL(path.join(dir, c.fileName)).href, sourceID] as const,
-      ),
+      [...used].flatMap(([sourceID, c]) => [
+         [pathToFileURL(path.join(dir, c.fileName)).href, sourceID] as const,
+         ...(c.chainCopies ?? []).map((f) => [f.url, sourceID] as const),
+      ]),
    );
    const model = await materializer.getModel().catch((error: unknown) => {
       throw new CompanionCompileError(error, overlay, copyOwners);
@@ -554,6 +711,12 @@ async function compileCompanion(
          );
       }
    }
+   const contents = modelDefOf(model).contents as Record<string, unknown>;
+   for (const plan of plans) {
+      const id = (contents[plan.buildSourceName] as { sourceID?: unknown })
+         ?.sourceID;
+      if (typeof id === "string") renames.set(id, plan.sourceID);
+   }
    return {
       plans,
       model,
@@ -561,6 +724,16 @@ async function compileCompanion(
       runtime,
       text,
       generatedURLs: new Set(overlay.keys()),
+      // The companion as another file's compile imports it: without the
+      // imports of its own cross-file parents' build sources, which only
+      // make them this companion's build targets. Imported again there, each
+      // would be reached twice per level of a chain, and a compile of a deep
+      // chain would read each file once per path to it.
+      files:
+         text === files.entry
+            ? overlay
+            : new Map([...overlay, [url.href, files.entry]]),
+      renames,
       checkCompilers,
       ...(used.size > 0
          ? {
@@ -584,6 +757,7 @@ async function compileCompanion(
  */
 async function storedChainsNotCompiling(
    generated: GeneratedMaterialize,
+   foreign: ReadonlyMap<string, CrossFileParent> = new Map(),
 ): Promise<Map<string, string>> {
    const out = new Map<string, string>();
    for (const plan of generated.plans) {
@@ -591,11 +765,15 @@ async function storedChainsNotCompiling(
       const chain = over?.overStored;
       const destination = plan.persist.storage;
       if (!over || !chain || destination === undefined) continue;
-      const parent = planOf(generated.plans, over.sourceID);
+      // A parent in another file is declared by that file's companion.
+      const across = over.crossFile ? foreign.get(plan.sourceID) : undefined;
+      const parent = over.crossFile
+         ? across?.plan
+         : planOf(generated.plans, over.sourceID);
       try {
          if (!parent) throw new Error("its parent is no longer planned");
          const columns = parentStoredColumns(
-            generated.model,
+            across ? across.model : generated.model,
             parent.buildSourceName,
          );
          const handle = "stand_in";
@@ -715,10 +893,13 @@ async function copyDeclaredBuilds(
    if (!generated.buildCopies?.size) return out;
    const dir = path.dirname(modelFile);
    const ownerByURL = new Map(
-      [...generated.buildCopies.keys()].map((name) => [
-         pathToFileURL(path.join(dir, copies.get(name)?.fileName ?? "")).href,
-         name,
-      ]),
+      [...generated.buildCopies.keys()].flatMap((name) => {
+         const copy = copies.get(name);
+         return [
+            [pathToFileURL(path.join(dir, copy?.fileName ?? "")).href, name],
+            ...(copy?.chainCopies ?? []).map((f) => [f.url, name]),
+         ] as [string, string][];
+      }),
    );
    const urlOf = (id: string) => splitSourceID(id)?.url;
    const targets = await generated.runtime.getBuildTargets(generated.model);
@@ -805,6 +986,8 @@ async function withBuildCopies(
    compileCopy: CopyCompiler,
    /** The author model's contents, to trace a chained copy's problems. */
    contents: Record<string, unknown> = {},
+   /** Each cross-file extension's parent, by the extension's sourceID. */
+   foreign: ReadonlyMap<string, CrossFileParent> = new Map(),
 ): Promise<{
    plans: MaterializePlan[];
    copies: Map<string, BuildCopy>;
@@ -839,6 +1022,7 @@ async function withBuildCopies(
       compileCopy,
       contents,
       copies,
+      foreign,
    };
    // Parents first: a stable sort by depth in the planned chains.
    const depth = chainLevels(plans);
@@ -858,6 +1042,12 @@ async function withBuildCopies(
             sourceName: copied.plan.sourceName,
             sourceID: copied.plan.sourceID,
             reason: copied.reason,
+            outcome: {
+               refused: {
+                  reason: copied.refusal,
+                  tier: tierOf(copied.plan.persist.storage),
+               },
+            },
          });
          continue;
       }
@@ -890,6 +1080,8 @@ interface CopyContext {
    compileCopy: CopyCompiler;
    contents: Record<string, unknown>;
    copies: Map<string, BuildCopy>;
+   /** Each cross-file extension's parent, by the extension's sourceID. */
+   foreign: ReadonlyMap<string, CrossFileParent>;
 }
 
 function hiddenColumnsOf(plan: MaterializePlan): MaterializePlan["columns"] {
@@ -916,7 +1108,7 @@ async function copiedPlan(
    levels: ReadonlyMap<string, number>,
 ): Promise<
    | { plan: MaterializePlan; level: number }
-   | { plan: MaterializePlan; reason: string }
+   | { plan: MaterializePlan; reason: string; refusal: RefusedReason }
 > {
    const { modelFile, modelFileName, text } = ctx;
    const declaredIn = original.declaration
@@ -943,16 +1135,22 @@ async function copiedPlan(
       givens,
       windowsOut,
    });
-   if (reason) return { plan, reason };
+   if (reason) return { plan, ...reason };
    const leftOut = given || windowsOut.length > 0;
-   const parent = plan.buildsOver
-      ? kept.get(plan.buildsOver.sourceID)
+   const foreign = plan.buildsOver?.crossFile
+      ? ctx.foreign.get(plan.sourceID)
       : undefined;
+   const parent = plan.buildsOver?.crossFile
+      ? foreign?.plan
+      : plan.buildsOver
+        ? kept.get(plan.buildsOver.sourceID)
+        : undefined;
    if (
       plan.buildsOver &&
       (!parent ||
          text === undefined ||
-         localPath(plan.buildsOver.declaration.url) !== modelFile)
+         localPath(plan.buildsOver.declaration.url) !==
+            (foreign ? foreign.modelFile : modelFile))
    ) {
       plan = withoutParent(plan);
    }
@@ -960,12 +1158,37 @@ async function copiedPlan(
    // destination over the parent's stored table, lifted as its build copy
    // is (P3); without it, the raw chain.
    if (plan.buildsOver && parent && plan.persist.storage !== undefined) {
-      const overStored = storedChainText(text as string, plan, parent, {
-         liftAccess,
-      });
+      const overStored =
+         foreign && !foreign.carriesAlike
+            ? undefined
+            : storedChainText(text as string, plan, parent, {
+                 liftAccess,
+                 ...(foreign
+                    ? {
+                         parentText: foreign.text,
+                         between: new Map(
+                            foreign.via.map((v) => [
+                               pathToFileURL(v.modelFile).href,
+                               v.text,
+                            ]),
+                         ),
+                      }
+                    : {}),
+              });
       plan = overStored
          ? { ...plan, buildsOver: { ...plan.buildsOver, overStored } }
          : withoutParent(plan);
+   }
+   if (plan.buildsOver?.crossFile && foreign) {
+      const made = crossFileCopy(plan, foreign, ctx, liftAccess);
+      if (made) {
+         ctx.copies.set(plan.sourceID, made);
+         return {
+            plan: given ? withGivenImports(plan, givens, modelFile) : plan,
+            level: 0,
+         };
+      }
+      plan = withoutParent(plan);
    }
    if (!leftOut && !plan.buildsOver && !liftAccess) return { plan, level: 0 };
    const parentLevel = parent ? (levels.get(parent.sourceID) ?? 0) : 0;
@@ -986,7 +1209,9 @@ async function copiedPlan(
       if (!leftOut && !liftAccess) return { plan, level: 0 };
       copy = buildCopyText(text as string, plan, undefined, { liftAccess });
    }
-   if ("reason" in copy) return { plan, reason: copy.reason };
+   if ("reason" in copy) {
+      return { plan, reason: copy.reason, refusal: "generated_build_failed" };
+   }
    const chain = chainOf(plan);
    const located = plan;
    ctx.copies.set(plan.sourceID, {
@@ -1083,36 +1308,48 @@ function copyRefusal(
       givens: { file: string | undefined }[];
       windowsOut: ReturnType<typeof leftOutWindowTerms>;
    },
-): string | undefined {
+): { reason: string; refusal: RefusedReason } | undefined {
    const { modelFile, text, unreadable } = ctx;
    const { declaredIn, given, givens, windowsOut } = facts;
    if (plan.columns.length === 0) {
-      return "the source has no dimension the build can store";
+      return {
+         reason: "the source has no dimension the build can store",
+         refusal: "no_stored_columns",
+      };
    }
    const stored = new Set(plan.columns.map((c) => c.column));
    const unstored = (plan.readTimeTerms ?? []).find(
       (t) => !t.columns.every((c) => stored.has(c)),
    );
    if (unstored) {
-      return (
-         `\`where: ${unstored.code}\` reads a field the build cannot ` +
-         "select (one private on a source this one extends, or hidden " +
-         "where the build copy cannot lift it), so it could not be " +
-         "re-applied over the table at read"
-      );
+      return {
+         reason:
+            `\`where: ${unstored.code}\` reads a field the build cannot ` +
+            "select (one private on a source this one extends, or hidden " +
+            "where the build copy cannot lift it), so it could not be " +
+            "re-applied over the table at read",
+         refusal:
+            unstored.kind === "given"
+               ? "given_where_over_unstored_field"
+               : "current_time",
+      };
    }
    if (given && (declaredIn !== modelFile || givens.some((g) => !g.file))) {
-      return (
-         "a `where:` reading a given can only be left out of the build " +
-         "for a source declared in a local model file, reading givens " +
-         "declared in local files"
-      );
+      return {
+         reason:
+            "a `where:` reading a given can only be left out of the build " +
+            "for a source declared in a local model file, reading givens " +
+            "declared in local files",
+         refusal: "reads_given",
+      };
    }
    if (given && text === undefined) {
-      return (
-         "the model file could not be read to leave its given-reading " +
-         `\`where:\` out of the build: ${unreadable}`
-      );
+      return {
+         reason:
+            "the model file could not be read to leave its given-reading " +
+            `\`where:\` out of the build: ${unreadable}`,
+         refusal: "reads_given",
+      };
    }
    // An upper-bound current-time term (option A): taken out of the copy
    // wherever this file writes it, the source's own or a base's.
@@ -1120,18 +1357,22 @@ function copyRefusal(
       t.at.some((use) => localPath(use.url) !== modelFile),
    );
    if (elsewhere) {
-      return (
-         `\`where: ${elsewhere.code}\` keeps rows older than a moving ` +
-         "cut-off and is written in another file than this source's " +
-         "model, so the build cannot leave it out. Write it in this " +
-         "file, or materialize the source in the file that writes it"
-      );
+      return {
+         reason:
+            `\`where: ${elsewhere.code}\` keeps rows older than a moving ` +
+            "cut-off and is written in another file than this source's " +
+            "model, so the build cannot leave it out. Write it in this " +
+            "file, or materialize the source in the file that writes it",
+         refusal: "current_time",
+      };
    }
    if (windowsOut.length > 0 && text === undefined) {
-      return (
-         "the model file could not be read to leave its `where:` keeping " +
-         `rows older than a moving cut-off out of the build: ${unreadable}`
-      );
+      return {
+         reason:
+            "the model file could not be read to leave its `where:` keeping " +
+            `rows older than a moving cut-off out of the build: ${unreadable}`,
+         refusal: "current_time",
+      };
    }
    return undefined;
 }
@@ -1415,6 +1656,12 @@ function nextRound(
       ctx.refuse({
          sourceName: plan.sourceName,
          sourceID: plan.sourceID,
+         outcome: {
+            refused: {
+               reason: "generated_build_failed",
+               tier: tierOf(plan.persist.storage),
+            },
+         },
          reason:
             "its generated build did not compile, so it is not built " +
             `(a Publisher bug; please report it): ${firstProblem(error)}`,
@@ -1431,4 +1678,534 @@ function nextRound(
       return plans.map(withoutParent);
    }
    throw error.error;
+}
+
+/**
+ * The parent of an extension table declared in another file (P10 across
+ * files), as that file's own companion plans it.
+ */
+interface CrossFileParent {
+   /** The parent's plan, as its own file's companion finally has it. */
+   plan: MaterializePlan;
+   /** The parent's model file, as an absolute path. */
+   modelFile: string;
+   /** That file's text as the compile reads it. */
+   text: string;
+   /** Every file that companion compiled over, by URL. */
+   overlay: ReadonlyMap<string, string>;
+   /** That companion's {@link GeneratedMaterialize.renames}. */
+   renames: ReadonlyMap<string, string>;
+   /** That companion's model, which declares the parent's build source. */
+   model: MalloyModel;
+   /**
+    * The files the chain passes through between the extension's and the
+    * parent's (`buildsOver.crossFile.via`), the extension's side first: each
+    * one's path, text and compiled contents.
+    */
+   via: {
+      modelFile: string;
+      text: string;
+      contents?: Record<string, unknown>;
+   }[];
+   /**
+    * Whether the chain's declarations read every name alike when carried out
+    * of their files into one text (a `storage=` build's, {@link
+    * storedChainText}): each file imports the next whole, and no file on the
+    * chain names another's chain source otherwise ({@link carriesAlike}).
+    */
+   carriesAlike: boolean;
+}
+
+/**
+ * A model file's companion, compiled as a cross-file parent's file, or a
+ * file a chain passes through; `generated` is absent when it plans nothing.
+ */
+interface CrossFileCompanion {
+   generated?: GeneratedMaterialize;
+   text: string;
+   modelFile: string;
+   modelDef: ReturnType<typeof modelDefOf>;
+}
+
+/**
+ * {@link CrossFileCompanion}s by model file, for one package plan. Made by
+ * the plan's caller ({@link newCrossFileCompanions}) and passed to every
+ * model's companion compile.
+ */
+export type CrossFileCompanions = Map<
+   string,
+   Promise<CrossFileCompanion | undefined>
+>;
+
+/** An empty {@link CrossFileCompanions}, for one package plan. */
+export function newCrossFileCompanions(): CrossFileCompanions {
+   return new Map();
+}
+
+/** The plans, each cross-file extension with its parent set, and the parents. */
+interface CrossFileParents {
+   plans: MaterializePlan[];
+   /** By the extension's sourceID. */
+   parents: ReadonlyMap<string, CrossFileParent>;
+}
+
+const NO_CROSS_FILE_PARENTS: CrossFileParents = {
+   plans: [],
+   parents: new Map(),
+};
+
+/**
+ * `plans` with `buildsOver` set on each extension table whose nearest
+ * materialized ancestor is declared in another local file of the package
+ * ({@link crossFileAncestors}), when that file's own companion plans the
+ * ancestor and the pair may chain ({@link chainsOver}); with each such
+ * parent. The parent's companion is compiled here, as its own model's plan
+ * compiles it (the same text at the same URLs, so its build source is the
+ * same build), and never twice up one stack of files.
+ *
+ * Any failure leaves the extension building over the raw chain, from the
+ * warehouse, as it did before: the same rows.
+ */
+async function crossFileParents(
+   plans: MaterializePlan[],
+   args: CompanionArgs,
+   modelFile: string,
+): Promise<CrossFileParents> {
+   const candidates = crossFileEntries(plans, args.contents);
+   if (candidates.length === 0) return { plans, parents: new Map() };
+   const stack = new Set([...(args.crossFileStack ?? []), modelFile]);
+   const files = GeneratedFiles.over(args.getRuntime);
+   const companions = args.crossFileCompanions ?? new Map();
+   const companionOf = (file: string) => {
+      let found = companions.get(file);
+      if (!found) {
+         found = (async () => {
+            const relative = path.relative(args.packagePath, file);
+            if (
+               stack.has(file) ||
+               relative === "" ||
+               relative.startsWith("..") ||
+               path.isAbsolute(relative)
+            ) {
+               return undefined;
+            }
+            const url = pathToFileURL(file);
+            const { model, materializer } = await files.compile(url);
+            const def = modelDefOf(model);
+            const { generated } = await tryCompileMaterializeCompanion({
+               packagePath: args.packagePath,
+               modelPath: relative.split(path.sep).join("/"),
+               contents: (def.contents ?? {}) as Record<string, unknown>,
+               givens: (def.givens ?? {}) as Record<string, unknown>,
+               getRuntime: args.getRuntime,
+               ...(args.probe ? { probe: materializer } : {}),
+               crossFileStack: stack,
+               crossFileCompanions: companions,
+            });
+            // A file that plans nothing is kept too: a chain may pass
+            // through it to a parent in a file beyond.
+            return {
+               ...(generated ? { generated } : {}),
+               text: await files.read(url),
+               modelFile: file,
+               modelDef: def,
+            };
+         })().catch((error: unknown) => {
+            logger.warn(
+               "An extension table's parent in another file could not be planned here; it builds over the raw chain",
+               {
+                  modelPath: args.modelPath,
+                  parentFile: path.relative(args.packagePath, file),
+                  error: error instanceof Error ? error.message : String(error),
+               },
+            );
+            return undefined;
+         });
+         companions.set(file, found);
+      }
+      return found;
+   };
+   const parents = new Map<string, CrossFileParent>();
+   const chained = new Map<string, MaterializePlan>();
+   let ownText: Promise<string | undefined> | undefined;
+   const readOwnText = () =>
+      (ownText ??= files.read(pathToFileURL(modelFile)).catch(() => undefined));
+   for (const { plan, entry, path: below } of candidates) {
+      // The chain enters `file` at `entryID`. A file that plans no parent on
+      // it and declares no `#(materialize)` there is passed through: the
+      // walk goes on into the file it is built on, each companion compiled
+      // once for the package plan (`companions`), so a deep chain costs one
+      // compile per file.
+      let file = localPath(entry.url);
+      let entryID = entry.sourceID;
+      let pathBelow = below;
+      const via: CrossFileParent["via"] = [];
+      for (let hops = 0; file !== undefined && hops < 64; hops++) {
+         const companion = await companionOf(file);
+         if (!companion) break;
+         const found = chainOver(plan, companion, entryID, pathBelow, via);
+         if (found === "stop") break;
+         if (found) {
+            chained.set(plan.sourceID, found.plan);
+            parents.set(plan.sourceID, {
+               ...found.parent,
+               carriesAlike: carriesAlike(
+                  { modelFile, text: await readOwnText() },
+                  args.contents,
+                  plan.sourceID,
+                  via,
+                  found.parent,
+                  companion.modelDef,
+               ),
+            });
+            break;
+         }
+         const through = chainThroughFile(
+            companion.modelDef as {
+               contents?: unknown;
+               sourceRegistry?: unknown;
+            },
+            entryID,
+         );
+         // A file between that declares `#(materialize)` on the chain, planned
+         // or refused, is no pass-through: the extension builds from the
+         // warehouse.
+         if (through.declares || !through.next) break;
+         const next = localPath(through.next.url);
+         if (next === undefined || next === file) break;
+         via.push({
+            modelFile: file,
+            text: companion.text,
+            contents: (
+               companion.modelDef as { contents?: Record<string, unknown> }
+            ).contents,
+         });
+         pathBelow = [...through.declarations, ...pathBelow];
+         entryID = through.next.sourceID;
+         file = next;
+      }
+   }
+   return {
+      plans: plans.map((p) => chained.get(p.sourceID) ?? p),
+      parents,
+   };
+}
+
+/**
+ * The parent the chain entering `companion`'s file at `entryID` builds over
+ * there: the nearest source on the chain that file's own companion plans
+ * ({@link chainWithinFile}; that file's compile, not this one's, tells its
+ * own `#(materialize)` from one it shares with its base), with the
+ * extension's plan given its `buildsOver`. `"stop"` when that source may not
+ * be chained on ({@link chainsOver}) or its build source cannot be found;
+ * undefined when the file plans no source on the chain.
+ */
+function chainOver(
+   plan: MaterializePlan,
+   companion: CrossFileCompanion,
+   entryID: string,
+   below: TermUse[],
+   via: CrossFileParent["via"],
+):
+   | { plan: MaterializePlan; parent: Omit<CrossFileParent, "carriesAlike"> }
+   | "stop"
+   | undefined {
+   const generated = companion.generated;
+   if (!generated) return undefined;
+   for (const candidate of chainWithinFile(
+      companion.modelDef as { contents?: unknown; sourceRegistry?: unknown },
+      entryID,
+   )) {
+      const parent = generated.plans.find(
+         (p: MaterializePlan) => p.sourceID === candidate.sourceID,
+      );
+      if (!parent) continue;
+      if (!chainsOver(plan, parent)) return "stop";
+      const buildSourceID = (
+         modelDefOf(generated.model).contents?.[parent.buildSourceName] as
+            | { sourceID?: unknown }
+            | undefined
+      )?.sourceID;
+      const buildSourceURL =
+         typeof buildSourceID === "string"
+            ? splitSourceID(buildSourceID)?.url
+            : undefined;
+      if (buildSourceURL === undefined) return "stop";
+      return {
+         plan: {
+            ...plan,
+            buildsOver: {
+               sourceID: parent.sourceID,
+               sourceName: parent.sourceName,
+               declaration: candidate.declaration,
+               path: [...candidate.path, ...below],
+               crossFile: {
+                  modelFile: companion.modelFile,
+                  buildSourceURL,
+                  ...(via.length > 0
+                     ? { via: via.map((v) => v.modelFile) }
+                     : {}),
+               },
+            },
+         },
+         parent: {
+            plan: parent,
+            modelFile: companion.modelFile,
+            text: companion.text,
+            overlay: generated.files,
+            renames: generated.renames,
+            model: generated.model,
+            via: [...via],
+         },
+      };
+   }
+   return undefined;
+}
+
+/**
+ * Whether the declarations on a cross-file chain read every name alike when
+ * carried out of their files into one text, as a `storage=` build compiles
+ * them ({@link storedChainText}), the rule a served copy's kept blocks keep
+ * across files: each file on the chain imports the next one whole (a
+ * selective import may leave a name out for the importing file to declare
+ * itself), and no file on the chain binds the name of a chain source declared
+ * in another file to any other source. Otherwise a carried declaration could
+ * read, in the one text, a source its own file never meant.
+ */
+function carriesAlike(
+   own: { modelFile: string; text: string | undefined },
+   ownContents: Record<string, unknown>,
+   extensionID: string,
+   via: CrossFileParent["via"],
+   parent: Omit<CrossFileParent, "carriesAlike">,
+   parentDef: unknown,
+): boolean {
+   const parentContents = (parentDef as { contents?: Record<string, unknown> })
+      ?.contents;
+   const chainFiles = [
+      { modelFile: own.modelFile, text: own.text, contents: ownContents },
+      ...via,
+      {
+         modelFile: parent.modelFile,
+         text: parent.text,
+         contents: parentContents,
+      },
+   ];
+   for (let k = 0; k + 1 < chainFiles.length; k++) {
+      const from = chainFiles[k];
+      if (from.text === undefined) return false;
+      const whole = wholeImportsOf(
+         from.text,
+         pathToFileURL(from.modelFile).href,
+      );
+      const next = pathToFileURL(chainFiles[k + 1].modelFile).href;
+      if (!whole?.includes(next)) return false;
+   }
+   // The chain's sources, by file: the extension's own file's from the
+   // extension down to where it leaves the file, and the parent's and each
+   // file between's from the plan's path.
+   const chainIDs = new Set<string>([parent.plan.sourceID]);
+   const map = SourceMap.of({ contents: ownContents });
+   let node = map.node(extensionID);
+   for (let hops = 0; node && hops < 64; hops++) {
+      chainIDs.add(node.sourceID);
+      const base = node.base;
+      if (!base || base.hop === "query" || base.sourceID === undefined) break;
+      chainIDs.add(base.sourceID);
+      node = map.node(base.sourceID);
+   }
+   for (const file of chainFiles) {
+      const href = pathToFileURL(file.modelFile).href;
+      for (const id of chainIDs) {
+         const split = splitSourceID(id);
+         if (!split || split.url === href) continue;
+         const bound = (
+            file.contents?.[split.name] as { sourceID?: unknown } | undefined
+         )?.sourceID;
+         if (bound !== undefined && bound !== id) return false;
+      }
+   }
+   return true;
+}
+
+/**
+ * A cross-file extension's build copy ({@link crossFileCopyTexts}): its own
+ * file with its own edits and its `import`s of the parent's file pointed at
+ * the parent's file re-rooted on the parent's build source; undefined when
+ * it cannot be written, and the extension builds over the raw chain.
+ */
+function crossFileCopy(
+   plan: MaterializePlan,
+   parent: CrossFileParent,
+   ctx: CopyContext,
+   liftAccess: boolean,
+): BuildCopy | undefined {
+   const over = plan.buildsOver;
+   if (!over?.crossFile || ctx.text === undefined) return undefined;
+   const posix = (from: string, to: string) => {
+      const relative = path.relative(from, to).split(path.sep).join("/");
+      return relative.startsWith(".") ? relative : `./${relative}`;
+   };
+   let buildSourceFile: string;
+   try {
+      buildSourceFile = fileURLToPath(over.crossFile.buildSourceURL);
+   } catch {
+      return undefined;
+   }
+   // Each file on the chain past the extension's, and its copy beside it:
+   // the files between, then the parent's.
+   const copyOf = new Map<string, string>(
+      [...parent.via.map((v) => v.modelFile), parent.modelFile].map((file) => [
+         pathToFileURL(file).href,
+         path.join(
+            path.dirname(file),
+            chainCopyName(
+               path.basename(file),
+               ctx.modelFileName,
+               ctx.copies.size,
+            ),
+         ),
+      ]),
+   );
+   // An import, written in `fromFile`, of a file on the chain points at
+   // that file's copy instead.
+   const importOf = (fromFile: string) => (written: string) => {
+      let href: string;
+      try {
+         href = new URL(written, pathToFileURL(fromFile)).href;
+      } catch {
+         return undefined;
+      }
+      const copy = copyOf.get(href);
+      return copy === undefined
+         ? undefined
+         : posix(path.dirname(fromFile), copy);
+   };
+   const parentDir = path.dirname(parent.modelFile);
+   const made = crossFileCopyTexts({
+      text: ctx.text,
+      parentText: parent.text,
+      plan,
+      parent: parent.plan,
+      buildSourceFrom: posix(parentDir, buildSourceFile),
+      importOf: importOf(ctx.modelFile),
+      between: parent.via.map((v) => ({
+         text: v.text,
+         importOf: importOf(v.modelFile),
+      })),
+      liftAccess,
+   });
+   if ("reason" in made) {
+      logger.warn(
+         "An extension table's build copy could not read its parent in another file re-rooted; it builds over the raw chain",
+         { sourceName: plan.sourceName, reason: made.reason },
+      );
+      return undefined;
+   }
+   const urlOf = (file: string) =>
+      pathToFileURL(copyOf.get(pathToFileURL(file).href)!).href;
+   return {
+      fileName: buildCopyName(ctx.modelFileName, ctx.copies.size),
+      text: made.copy,
+      chainCopies: [
+         ...parent.via.map((v, k) => ({
+            url: urlOf(v.modelFile),
+            text: made.betweenCopies[k],
+         })),
+         { url: urlOf(parent.modelFile), text: made.parentCopy },
+      ],
+   };
+}
+
+/**
+ * The round with every cross-file extension whose build over its parent's
+ * build source does not keep the columns, and each column's type, its build
+ * over the raw chain has, built over the raw chain instead: compared field by
+ * field with the author's compiled source, or, for a column of an inlined
+ * join, with the companion compiled once more without those parents. A re-rooted
+ * parent changes where the rows are read from, never which columns the
+ * extension stores; the compiler, not the rewrite, is what says so.
+ */
+async function withCrossFileColumnsKept(
+   round: CompanionRound,
+   compile: CompanionCompile,
+   args: CompanionArgs,
+   foreign: CrossFileParents,
+): Promise<CompanionRound> {
+   const chained = round.plans.filter((p) => p.buildsOver?.crossFile);
+   if (!round.generated || chained.length === 0) return round;
+   // The raw chain's shape: each stored column as the author's compiled
+   // source types its field, which is what the build over the raw chain
+   // selects. Compiled again over the raw chain only where that cannot be
+   // read (a column of an inlined join).
+   const authored = (p: MaterializePlan) => {
+      if (p.columns.some((c) => c.join !== undefined)) return undefined;
+      const def = Object.values(args.contents).find(
+         (d) => (d as { sourceID?: unknown } | null)?.sourceID === p.sourceID,
+      ) as
+         | { fields?: { name?: unknown; as?: unknown; type?: unknown }[] }
+         | undefined;
+      const types = new Map(
+         (def?.fields ?? []).map((f) => [String(f.as ?? f.name), f.type]),
+      );
+      const out: [string, string][] = [];
+      for (const c of p.columns) {
+         const type = types.get(c.dimension);
+         if (typeof type !== "string") return undefined;
+         out.push([c.column, type]);
+      }
+      return JSON.stringify(out);
+   };
+   let raw: CompanionRound | undefined;
+   const rawShape = async (p: MaterializePlan) => {
+      const fromAuthor = authored(p);
+      if (fromAuthor !== undefined) return fromAuthor;
+      raw ??= await companionCompiler(
+         args,
+         path.resolve(args.packagePath, args.modelPath),
+         [],
+      )(
+         foreign.plans.map((q) =>
+            q.buildsOver?.crossFile ? withoutParent(q) : q,
+         ),
+      );
+      return shape(raw.generated, p.buildSourceName);
+   };
+   const shape = (
+      generated: GeneratedMaterialize | undefined,
+      name: string,
+   ) => {
+      const def = (
+         generated
+            ? modelDefIfAny(
+                 generated.model as unknown as {
+                    _modelDef?: { contents?: Record<string, unknown> };
+                 },
+              )?.contents?.[name]
+            : undefined
+      ) as
+         | { fields?: { name?: unknown; as?: unknown; type?: unknown }[] }
+         | undefined;
+      return def?.fields
+         ? JSON.stringify(
+              def.fields.map((f) => [String(f.as ?? f.name), String(f.type)]),
+           )
+         : undefined;
+   };
+   const differ: MaterializePlan[] = [];
+   for (const p of chained) {
+      const kept = shape(round.generated, p.buildSourceName);
+      if (kept === undefined || kept !== (await rawShape(p))) differ.push(p);
+   }
+   if (differ.length === 0) return round;
+   for (const plan of differ) {
+      logger.warn(
+         "An extension table over its parent in another file does not keep its columns over the parent's build source; it builds over the raw chain",
+         { modelPath: args.modelPath, sourceName: plan.sourceName },
+      );
+   }
+   const ids = new Set(differ.map((p) => p.sourceID));
+   return compile(
+      round.plans.map((p) => (ids.has(p.sourceID) ? withoutParent(p) : p)),
+   );
 }

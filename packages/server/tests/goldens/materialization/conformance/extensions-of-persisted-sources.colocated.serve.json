@@ -78,13 +78,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension with a where:",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -148,13 +149,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension of an extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -218,13 +220,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a query-shaped source over an extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -294,13 +297,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension in another file",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -364,13 +368,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension joining a warehouse source",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -434,13 +439,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension with a where:",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -504,13 +510,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension of an extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -574,13 +581,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a query-shaped source over an extension",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -650,13 +658,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension in another file",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -720,13 +729,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "175f2f43939e80ff617d5364d7ab308c4eb085496735fa2e2a87fc98d9c331ad",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension joining a warehouse source",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

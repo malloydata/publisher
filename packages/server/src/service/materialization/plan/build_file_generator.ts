@@ -41,14 +41,13 @@
  * an `except:`ed field. The served copy writes the modifiers again, so a
  * caller cannot select a stored hidden column.
  *
- * The table: named after the author's source (`src`), or the declaration's
- * `name=`. `src__mat` is only the generated build source's internal name in
- * the companion model. Without a `name=`, a `storage=` source's table defaults
- * to the source's own name (the destination is Publisher's, and the existing
- * collision checks refuse two sources on one table). A colocated source (no
- * `storage=`) is built into its own warehouse and needs a `name=`
- * ({@link COLOCATED_NEEDS_NAME}): its default could be the very table it
- * reads. The served copy re-roots it on that table, on its own connection,
+ * The table: the declaration's `name=`, or, without one, a readable name of
+ * Publisher's own, `<package>__<file>__<source>__p<8 hex>` (with `__v<version>`
+ * under `scope: "version"`), on either tier: in a `storage=` destination and
+ * in the source's own database alike, never the table the source reads.
+ * `src__mat` is only the generated build source's internal name in the
+ * companion model. In the source's own database only BigQuery, where a table
+ * needs a dataset, needs a `name=` that names one (`needs_qualified_name`). The served copy re-roots it on that table, on its own connection,
  * as it re-roots a `storage=` source on its destination, and a v1 colocated
  * `#@ persist` table the same way
  * (`tests/component/r4/served_copy_colocated.component.spec.ts`). Only a
@@ -215,6 +214,13 @@
  * before it chains. An extension that does not chain, or whose chained build
  * does not compile, builds over the raw chain: the same rows, from the
  * warehouse.
+ *
+ * Across files, an extension whose parent another file declares (and its
+ * file imports directly) builds over the parent's build source too: its
+ * build copy imports a copy of the parent's file with the parent re-rooted,
+ * and the companion compiles the parent file's own companion beside it, so
+ * the parent's build source is the same build (`materialize_compile.ts`,
+ * `crossFileParents`).
  *
  * A declaration that is not built is reported as a package warning
  * (`materialize-not-built`), so an author sees why, and the source serves live.
@@ -752,14 +758,17 @@ export function chainLevels(
 /**
  * `plans` with every `buildsOver` whose parent is no longer planned removed,
  * to a fixpoint: a parent refused after planning leaves its extension to
- * build over the raw chain.
+ * build over the raw chain. A parent in another file is planned by that
+ * file's companion, so its extension keeps it.
  */
 export function settledChains(
    plans: readonly MaterializePlan[],
 ): MaterializePlan[] {
    const ids = new Set(plans.map((p) => p.sourceID));
    return plans.map((p) =>
-      p.buildsOver && !ids.has(p.buildsOver.sourceID) ? withoutParent(p) : p,
+      p.buildsOver && !p.buildsOver.crossFile && !ids.has(p.buildsOver.sourceID)
+         ? withoutParent(p)
+         : p,
    );
 }
 

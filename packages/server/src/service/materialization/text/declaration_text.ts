@@ -16,7 +16,8 @@
  * Pure: a reader that cannot place a declaration returns undefined.
  */
 
-import { identifier } from "../../malloy_text";
+import { identifier, stringLiteral } from "../../malloy_text";
+import type { GivenReadTerm, TermUse } from "../domain/read_time_terms";
 import {
    isName,
    lexAll,
@@ -696,4 +697,150 @@ export function dropExceptItems(
    if (edits.length === 0) return { text, dropped };
    const out = applyEdits(text, edits);
    return out === undefined ? undefined : { text: out, dropped };
+}
+
+/** Why a given-reading term cannot be taken out: it is not found as written. */
+export const TERM_NOT_FOUND =
+   "a `where:` reading a given could not be found as written in the " +
+   "source's declaration, so it cannot be left out of the build";
+
+/**
+ * Each term's span in `text`, or why one cannot be taken out.
+ *
+ * A term is found as its verbatim text (`code`) at the one occurrence inside
+ * the declaration that covers every place the compiler says it reads a field
+ * or a given, so the same text in a comment, a string, another term or
+ * another source never matches; none, or more than one, is refused.
+ *
+ * The occurrence must also lie in the declaration's trailing `extend { … }`
+ * run, read with the re-root rewriter's own reader ({@link declarationSpans}):
+ * that run is the only text the served copy keeps, so a term written anywhere
+ * else (a parenthesised head, an inline `extend` in the base) would be built
+ * out of the table and then never re-applied. The served copy refuses such a
+ * source at read too (`read_terms_not_kept`); refusing it here means its
+ * table is never built for nothing.
+ */
+export function termSpans(
+   text: string,
+   plan: { declaration?: TermUse },
+   terms: readonly GivenReadTerm[],
+): { spans: { start: number; end: number }[] } | { reason: string } {
+   const declaration = plan.declaration;
+   if (!declaration) return { reason: TERM_NOT_FOUND };
+   const from = offsetOf(text, declaration.range.start);
+   const to = offsetOf(text, declaration.range.end);
+   if (from < 0 || to < from) return { reason: TERM_NOT_FOUND };
+   const extendStart = declarationSpans(text.slice(from, to))?.extendStart;
+   const run = extendStart === undefined ? undefined : from + extendStart;
+   const spans: { start: number; end: number }[] = [];
+   for (const term of terms) {
+      const uses = term.at.map((use) => ({
+         start: offsetOf(text, use.range.start),
+         end: offsetOf(text, use.range.end),
+      }));
+      if (uses.some((u) => u.start < 0 || u.end < u.start)) {
+         return { reason: TERM_NOT_FOUND };
+      }
+      const matches: number[] = [];
+      for (
+         let at = text.indexOf(term.code, from);
+         at >= 0 && at + term.code.length <= to;
+         at = text.indexOf(term.code, at + 1)
+      ) {
+         const end = at + term.code.length;
+         if (uses.every((u) => u.start >= at && u.end <= end)) matches.push(at);
+      }
+      if (matches.length !== 1) return { reason: TERM_NOT_FOUND };
+      const span = { start: matches[0], end: matches[0] + term.code.length };
+      if (spans.some((s) => s.start < span.end && span.start < s.end)) {
+         return { reason: TERM_NOT_FOUND };
+      }
+      if (run === undefined || span.start < run) {
+         return {
+            reason:
+               `\`where: ${term.code}\` reads a given and is not in the ` +
+               "trailing `extend { … }` of this source, " +
+               "the only part of a declaration the served copy keeps, so it " +
+               "could not be re-applied at read. Write it in a trailing " +
+               "`extend`",
+         };
+      }
+      spans.push(span);
+   }
+   return { spans };
+}
+
+/**
+ * The edits that point each top-level `import` of `text` at another path:
+ * the path string of every `import` statement whose path `importOf` answers
+ * for. Undefined when the text does not lex, or an import's path is written
+ * with an escape, which is never guessed at.
+ */
+export function importRewrites(
+   text: string,
+   importOf: (written: string) => string | undefined,
+): TextEdit[] | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const edits: TextEdit[] = [];
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.kind !== "word" || t.text !== "import" || t.depth !== 0) continue;
+      // The path is the statement's first string at the top level: right
+      // after `import`, or after `{ … } from`.
+      let j = k + 1;
+      while (
+         j < tokens.length &&
+         !(tokens[j].depth === 0 && /^["']/.test(tokens[j].text))
+      ) {
+         if (tokens[j].depth === 0 && tokens[j].kind === "word") {
+            if (tokens[j].text !== "from") break;
+         }
+         j++;
+      }
+      const literal = tokens[j];
+      if (!literal || literal.depth !== 0 || !/^["']/.test(literal.text)) {
+         continue;
+      }
+      const body = literal.text.slice(1, -1);
+      if (body.includes("\\")) return undefined;
+      const to = importOf(body);
+      if (to === undefined) continue;
+      edits.push({
+         start: literal.start,
+         end: literal.end,
+         insert: stringLiteral(to),
+      });
+   }
+   return edits;
+}
+
+/**
+ * The files `text` (the file at `url`) imports whole (`import "<file>"`), as
+ * resolved URLs; a selective import (`import { a } from "<file>"`) is not one.
+ * Undefined when the text does not lex or an import's path cannot be read.
+ */
+export function wholeImportsOf(
+   text: string,
+   url: string,
+): string[] | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const out: string[] = [];
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.kind !== "word" || t.text !== "import" || t.depth !== 0) continue;
+      const literal = tokens[k + 1];
+      // A selective import opens with `{`; only a path right after `import`
+      // is a whole one.
+      if (!literal || !/^["']/.test(literal.text)) continue;
+      const body = literal.text.slice(1, -1);
+      if (body.includes("\\")) return undefined;
+      try {
+         out.push(new URL(body, url).href);
+      } catch {
+         return undefined;
+      }
+   }
+   return out;
 }

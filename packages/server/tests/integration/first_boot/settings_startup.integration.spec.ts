@@ -53,6 +53,8 @@ describe("settings at startup", () => {
       while (flagMcpPort === flagPort) flagMcpPort = await getFreePort();
       server = await spawnServer({
          args: ["--port", String(flagPort), "--mcp_port", String(flagMcpPort)],
+         // "Settings given" is info, whatever LOG_LEVEL the shell exports.
+         env: { LOG_LEVEL: "info" },
       });
 
       const line = await waitForReady();

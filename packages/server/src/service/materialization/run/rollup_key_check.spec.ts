@@ -13,7 +13,7 @@
  */
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import {
    makeMaterialization,
@@ -21,7 +21,7 @@ import {
    sourcesIn,
    targetsIn,
 } from "../../../test_helpers/materialization_test_fixtures";
-import { installSettings } from "../../../test_helpers/settings_env";
+import { useMaterializationOn } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { RollupVariantPlan } from "../domain/table_plans";
@@ -58,14 +58,8 @@ import * as path from "node:path";
 import { storageDestinationRoot } from "../../connection_config";
 
 const packages = tempBuildPlanPackages();
-let restore: () => void;
-beforeEach(() => {
-   restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
-   }).restore;
-});
+useMaterializationOn({ each: true });
 afterEach(async () => {
-   restore();
    await packages.cleanup();
 });
 
@@ -129,6 +123,7 @@ async function scenario(model: string) {
       getStorageDestination: () => {
          throw new Error("no storage in this spec");
       },
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
    const storage: Parameters<typeof buildSource>[1] = async () => {
@@ -136,6 +131,7 @@ async function scenario(model: string) {
    };
    const build = new InstructedBuild({
       buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -453,6 +449,7 @@ async function storedScenario(
    const environment = {
       getApiConnection: () => ({ name: "duckdb", type: "duckdb" }),
       getStorageDestination: () => ({ name: "lake", type: "duckdb" }),
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
    // The stored rows: the base's, so a duplicate in it reaches the table.
@@ -484,6 +481,7 @@ async function storedScenario(
    };
    const build = new InstructedBuild({
       buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -710,6 +708,7 @@ describe("a colocated rollup over a base that is itself stored", () => {
             getStorageDestination: () => {
                throw new Error("no storage in this spec");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => pkg.getPackagePath(),
          } as unknown as BuildEnvironment;
          const storage: Parameters<typeof buildSource>[1] = async () => {
@@ -717,6 +716,7 @@ describe("a colocated rollup over a base that is itself stored", () => {
          };
          const build = new InstructedBuild({
             buildOneSource: (options) => buildSource(options, storage),
+            tableNotOwned: async () => undefined,
             reclaimStorageTablesFromFailedRun: async () => {},
          });
          const run = (
@@ -1156,7 +1156,7 @@ describe("the rollup key record, bound for serving", () => {
          models: () => new Map(),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "ra@m": {
                name: "crew_a__rollup",
@@ -1351,10 +1351,10 @@ describe("the rollup key record, bound for serving", () => {
          },
       });
       expect(
-         materialization.materializedTableCatalog().bound.a?.keyUniqueness,
+         materialization.verdicts.tableCatalog().bound.a?.keyUniqueness,
       ).toEqual({ keyColumn: "k", unique: true });
       materialization.forgetKeyUniqueness(["a"]);
-      const bound = materialization.materializedTableCatalog().bound;
+      const bound = materialization.verdicts.tableCatalog().bound;
       expect(bound.a).toEqual({ tableName: "r_t" });
       expect(bound.b?.keyUniqueness?.unique).toBe(false);
    });
@@ -1374,7 +1374,7 @@ describe("the rollup key record, bound for serving", () => {
             measures: ["crew_size"],
          },
       });
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "r1@m": rollup("a", "crew"),
             "r2@m": rollup("b", "crew_ok"),
@@ -1409,7 +1409,7 @@ describe("the rollup key record, bound for serving", () => {
          models: () => new Map(),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "r1@m": {
                name: "segments__rollup",

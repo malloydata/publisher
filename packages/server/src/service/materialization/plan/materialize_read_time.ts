@@ -26,10 +26,8 @@ import {
 import type {
    MaterializeColumn,
    MaterializeGivenDeclaration,
-   MaterializePlan,
 } from "../domain/table_plans";
 import { offsetOf } from "../text/malloy_lexer";
-import { declarationSpans } from "../text/declaration_text";
 
 /**
  * Why a given-reading `where:` written anywhere but the materialized source's
@@ -88,7 +86,14 @@ export function readTimeTermsOf(
         declaration?: TermUse;
         givenDeclarations?: MaterializeGivenDeclaration[];
      }
-   | { ok: false; reason: string } {
+   | {
+        ok: false;
+        reason: string;
+        refusal:
+           | "inherited_where_with_given"
+           | "reads_given"
+           | "given_where_over_unstored_field";
+     } {
    const located = classified.flatMap(({ dependsOn }) =>
       dependsOn.kind === "given"
          ? [
@@ -112,13 +117,18 @@ export function readTimeTermsOf(
          return {
             ok: false,
             reason: `${shown} reads a given that could not be read back, so it cannot be left out of the build`,
+            refusal: "reads_given",
          };
       }
       // Only its own declaration's: the served copy keeps no base's text, so
       // an inherited term (from a base in this file or another, or a
       // materialized parent) could not be re-applied at read.
       if (!withinDeclaration(term.at, declaration)) {
-         return { ok: false, reason: givenWhereNotOwnReason(shown) };
+         return {
+            ok: false,
+            reason: givenWhereNotOwnReason(shown),
+            refusal: "inherited_where_with_given",
+         };
       }
       if (
          term.columns.length === 0 ||
@@ -130,6 +140,7 @@ export function readTimeTermsOf(
                `${shown} reads a given and a field the table does not store ` +
                `(only dimensions of this source are stored), so it ` +
                `could not be re-applied over the table at read`,
+            refusal: "given_where_over_unstored_field",
          };
       }
       // The generated `where:` reads each given by the name the author wrote,
@@ -146,6 +157,7 @@ export function readTimeTermsOf(
          return {
             ok: false,
             reason: `${shown} reads a given whose declaration could not be read back, so the build cannot re-write the term`,
+            refusal: "reads_given",
          };
       }
       for (const d of declared as { name: string; url: string }[]) {
@@ -181,9 +193,10 @@ function givenDeclarationOf(
       : undefined;
 }
 
-export const NOT_FOUND =
-   "a `where:` reading a given could not be found as written in the " +
-   "source's declaration, so it cannot be left out of the build";
+export {
+   TERM_NOT_FOUND as NOT_FOUND,
+   termSpans,
+} from "../text/declaration_text";
 
 export const WINDOW_NOT_FOUND =
    "a `where:` keeping rows older than a moving cut-off could not be found " +
@@ -219,70 +232,4 @@ export function writtenSpan(
    }
    if (matches.length !== 1) return undefined;
    return { start: matches[0], end: matches[0] + term.code.length };
-}
-
-/**
- * Each term's span in `text`, or why one cannot be taken out.
- *
- * A term is found as its verbatim text (`code`) at the one occurrence inside
- * the declaration that covers every place the compiler says it reads a field
- * or a given, so the same text in a comment, a string, another term or
- * another source never matches; none, or more than one, is refused.
- *
- * The occurrence must also lie in the declaration's trailing `extend { … }`
- * run, read with the re-root rewriter's own reader ({@link declarationSpans}):
- * that run is the only text the served copy keeps, so a term written anywhere
- * else (a parenthesised head, an inline `extend` in the base) would be built
- * out of the table and then never re-applied. The served copy refuses such a
- * source at read too (`read_terms_not_kept`); refusing it here means its
- * table is never built for nothing.
- */
-export function termSpans(
-   text: string,
-   plan: MaterializePlan,
-   terms: readonly GivenReadTerm[],
-): { spans: { start: number; end: number }[] } | { reason: string } {
-   const declaration = plan.declaration;
-   if (!declaration) return { reason: NOT_FOUND };
-   const from = offsetOf(text, declaration.range.start);
-   const to = offsetOf(text, declaration.range.end);
-   if (from < 0 || to < from) return { reason: NOT_FOUND };
-   const extendStart = declarationSpans(text.slice(from, to))?.extendStart;
-   const run = extendStart === undefined ? undefined : from + extendStart;
-   const spans: { start: number; end: number }[] = [];
-   for (const term of terms) {
-      const uses = term.at.map((use) => ({
-         start: offsetOf(text, use.range.start),
-         end: offsetOf(text, use.range.end),
-      }));
-      if (uses.some((u) => u.start < 0 || u.end < u.start)) {
-         return { reason: NOT_FOUND };
-      }
-      const matches: number[] = [];
-      for (
-         let at = text.indexOf(term.code, from);
-         at >= 0 && at + term.code.length <= to;
-         at = text.indexOf(term.code, at + 1)
-      ) {
-         const end = at + term.code.length;
-         if (uses.every((u) => u.start >= at && u.end <= end)) matches.push(at);
-      }
-      if (matches.length !== 1) return { reason: NOT_FOUND };
-      const span = { start: matches[0], end: matches[0] + term.code.length };
-      if (spans.some((s) => s.start < span.end && span.start < s.end)) {
-         return { reason: NOT_FOUND };
-      }
-      if (run === undefined || span.start < run) {
-         return {
-            reason:
-               `\`where: ${term.code}\` reads a given and is not in the ` +
-               "trailing `extend { … }` of this source, " +
-               "the only part of a declaration the served copy keeps, so it " +
-               "could not be re-applied at read. Write it in a trailing " +
-               "`extend`",
-         };
-      }
-      spans.push(span);
-   }
-   return { spans };
 }

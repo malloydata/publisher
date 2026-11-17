@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -104,4 +105,28 @@ export function installVariables(
    return () => {
       Settings.install(previous);
    };
+}
+
+/** The settings that turn materialization on, `storage=` destinations included. */
+export const MATERIALIZATION_ON = {
+   PERSIST_STORAGE_MODE: "on",
+   PUBLISHER_MATERIALIZE: "true",
+} as const;
+
+/**
+ * Install {@link MATERIALIZATION_ON} for the enclosing `describe` (or the file,
+ * at top level), and restore the previous settings after it. Call it before
+ * the hooks that build: hooks run in the order they are registered, and a
+ * load worker reads its settings once, when it spawns. `each` installs them
+ * around every test instead.
+ */
+export function useMaterializationOn(options: { each?: boolean } = {}): void {
+   let restore: (() => void) | undefined;
+   (options.each ? beforeEach : beforeAll)(() => {
+      restore = installSettings({ env: { ...MATERIALIZATION_ON } }).restore;
+   });
+   (options.each ? afterEach : afterAll)(() => {
+      restore?.();
+      restore = undefined;
+   });
 }

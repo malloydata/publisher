@@ -125,7 +125,7 @@ describe("a rebind of the same manifest", () => {
       expect(reloads.mock.calls.length).toBe(packageCompiles);
       expect(copyCount()).toBe(copyCompiles);
       expect(pkg.getModel("m.malloy")).toBe(model);
-      expect(pkg.getBuildManifestEntries()).toEqual({
+      expect(pkg.materialization().getBuildManifestEntries()).toEqual({
          [Object.keys(manifest("x"))[0]]: expect.objectContaining({
             tableName: expect.stringContaining("summary_a"),
          }),
@@ -214,7 +214,7 @@ describe("a rebind of the same manifest", () => {
       seen = reloads.mock.calls.length;
       expect(await recompiled(manifest("summary_b"))).toBe(true);
       // A colocated bind with no reload moves what is bound.
-      pkg.bindColocatedServeManifest(manifest("summary_a"));
+      pkg.materialization().bind({ colocated: manifest("summary_a") });
       expect(await recompiled(manifest("summary_b"))).toBe(true);
    });
 
@@ -226,13 +226,13 @@ describe("a rebind of the same manifest", () => {
       // A connection edit marks the plan stale and queues its re-derivation:
       // a rebind meanwhile recompiles, as it did before.
       pkg.markBuildPlanStale(["duckdb"]);
-      expect(pkg.isBuildPlanStale()).toBe(true);
+      expect(pkg.materialization().isBuildPlanStale()).toBe(true);
       expect(await again()).toBe(true);
       // Still stale: the reload just made read the stale plan too.
       expect(await again()).toBe(true);
       // Re-derived: the plan that reload read is replaced, so recompile.
       expect(await pkg.refreshBuildPlan()).toBe(true);
-      expect(pkg.isBuildPlanStale()).toBe(false);
+      expect(pkg.materialization().isBuildPlanStale()).toBe(false);
       expect(await again()).toBe(true);
       expect(await again()).toBe(false);
    });
@@ -244,11 +244,9 @@ describe("a rebind of the same manifest", () => {
       // The edit is recorded; with the plan reported current and the same
       // object, only the edit itself tells the rebind to recompile.
       pkg.markBuildPlanStale(["duckdb"]);
-      const materialization = (
-         pkg as unknown as {
-            materialization: { isBuildPlanStale(): boolean };
-         }
-      ).materialization;
+      const materialization = pkg.materialization() as unknown as {
+         isBuildPlanStale(): boolean;
+      };
       const stale = spyOn(materialization, "isBuildPlanStale").mockReturnValue(
          false,
       );

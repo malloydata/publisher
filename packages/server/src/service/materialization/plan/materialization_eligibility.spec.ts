@@ -527,11 +527,9 @@ source: mixed is raw -> { select: * } extend {
       ]);
    });
 
-   it("refuses a rollup over a caller-scoped source on its own named grounds", async () => {
-      // The outcome does not change — such a rollup already refused, as a
-      // `given_in_persisted_query`. Two things do. The reason names the rollup
-      // case, so it survives a change to the one it used to ride on; and the
-      // advice is followable. The old message told the author to move the given
+   it("refuses a rollup over a caller-scoped source with followable advice", async () => {
+      // Under the one reason every mechanism gives a build that reads a given,
+      // with a rollup's own advice. The old message told the author to move the given
       // into the source's extend block, where for a rollup it ALREADY is: it is
       // the rollup READING the source that applies that `where:` and bakes the
       // value.
@@ -556,7 +554,9 @@ source: scoped__preagg__category is scoped -> {
       } catch (caught) {
          err = caught as MaterializationEligibilityError;
       }
-      expect(err?.reason).toBe("preaggregate_over_dynamic_source");
+      // The one reason every mechanism gives a build that reads a given;
+      // `preaggregate_over_dynamic_source` is retained, no longer produced.
+      expect(err?.reason).toBe("reads_given");
       // Not the advice that leads nowhere.
       expect(err?.message).not.toContain("extend block");
       expect(err?.message).toContain("no read-time re-application");
@@ -713,7 +713,7 @@ source: by_category is orders -> {
                   assertTierEligible(source, true, inputs(source.sourceID)),
                ),
             );
-            expect(refused.reason).toBe("authorize");
+            expect(refused.reason).toBe("access_filter");
          }
       });
 
@@ -739,7 +739,7 @@ source: by_category is orders -> {
             const refused = withEnv(R3_ON, () =>
                refusal(() => assertTierEligible(source, true, plan)),
             );
-            expect(refused.reason).toBe("authorize");
+            expect(refused.reason).toBe("access_filter");
          }
       });
 
@@ -812,14 +812,14 @@ source: by_category is orders -> {
                refusal(() => assertTierEligible(source, false, inputs(id))),
             );
             expect(refused).toBeInstanceOf(MaterializationEligibilityError);
-            expect(refused.reason).toBe("authorize");
+            expect(refused.reason).toBe("access_filter");
             expect(refused.message).toContain("(colocated '#(materialize)')");
             expect(refused.message).toContain("PUBLISHER_MATERIALIZE on");
             expect(refused.message).toContain("'#@ persist'");
          }
       });
 
-      it("builds the same gated source colocated as a #@ persist, whose gate Malloy's build manifest keeps", async () => {
+      it("builds the same gated source colocated as a #@ persist, whose own gate the served copy keeps (G3)", async () => {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          withEnv(
@@ -867,7 +867,7 @@ source: by_category is orders -> {
                const refused = withEnv(env, () =>
                   refusal(() => assertTierEligible(source, true, plan)),
                );
-               expect(refused.reason).toBe("authorize");
+               expect(refused.reason).toBe("access_filter");
             }
             const inherited = withEnv(env, () =>
                refusal(() =>
@@ -999,7 +999,7 @@ source: by_category is orders -> {
          const refused = withEnv(R3_ON, () =>
             refusal(() => assertTierEligible(source, true, plan)),
          );
-         expect(refused.reason).toBe("authorize");
+         expect(refused.reason).toBe("access_filter");
          expect(refused.message).toContain(
             "reads an #(access_filter) row-level gate from a source it derives from",
          );
@@ -1022,7 +1022,7 @@ source: by_category is orders -> {
             },
             () => refusal(() => assertTierEligible(view, false, plan)),
          );
-         expect(off.reason).toBe("authorize");
+         expect(off.reason).toBe("access_filter");
          expect(off.message).toContain("PUBLISHER_MATERIALIZE_GATED_SOURCES");
          withEnv(R3_ON, () => assertTierEligible(view, false, plan));
          // A v1 source of the same shape is the colocated tier check's, as

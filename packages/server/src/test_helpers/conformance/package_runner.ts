@@ -193,9 +193,12 @@ export interface LoadedFixture {
    /**
     * Bind the built tables again under the settings installed now, and settle
     * every model's served copy: the bindings a switch read at bind (the v1
-    * cutover's colocated tables) follow it.
+    * cutover's colocated tables) follow it. With `observe`, the database
+    * tables are bound as a server binds them, read as their warehouse holds
+    * them now (`readDatabaseColumns`), so a table altered after its build is
+    * bound with its drift.
     */
-   rebind(): Promise<void>;
+   rebind(options?: { observe?: boolean }): Promise<void>;
    run(
       modelPath: string,
       query: string,
@@ -284,12 +287,12 @@ export async function loadFixture(
    lakeConfig.wrapConnections(
       () => new FixedConnectionMap(new Map([[LAKE, lake]]), LAKE),
    );
-   pkg.setServeDestinationConfig(() => lakeConfig);
+   pkg.materialization().setServeDestinationConfig(() => lakeConfig);
    // The environment configures no destinations of its own (the lake is wired
    // straight to the package above), so its deployment facts would call `lake`
    // unconfigured and every unbuilt `storage=` source `destination_missing`
    // (P13). Report what this fixture actually wires.
-   pkg.setDeploymentFacts({
+   pkg.materialization().setDeploymentFacts({
       destinationNames: () => [LAKE],
       connectionCanHoldTable: () => undefined,
    });
@@ -369,11 +372,20 @@ export async function loadFixture(
             tables,
             buildErrors,
             stored,
-            async rebind() {
+            async rebind(options: { observe?: boolean } = {}) {
                // Empty first, so the package derives every binding afresh.
-               pkg.bindColocatedServeManifest({});
-               pkg.bindColocatedServeManifest(colocated as never);
-               pkg.bindStorageServeBindings(stored as never);
+               pkg.materialization().bind({ colocated: {} });
+               pkg.materialization().bind({
+                  colocated: colocated as never,
+                  ...(options.observe
+                     ? {
+                          observed: await pkg
+                             .materialization()
+                             .readDatabaseColumns(colocated as never),
+                       }
+                     : {}),
+               });
+               pkg.materialization().bind({ storage: stored as never });
                await settle();
             },
             warnings: (pkg.getPackageMetadata().warnings ?? []).map((w) => ({
@@ -382,7 +394,8 @@ export async function loadFixture(
                message: (w as { message?: string }).message,
             })),
             verdicts: pkg
-               .getServeVerdicts()
+               .materialization()
+               .serveVerdicts()
                .filter((v) => v.origin !== "preaggregate")
                .map(
                   (v) =>
@@ -548,12 +561,11 @@ async function buildAll(
    // A pair table's leaf key check, run on the source's connection once its
    // table is written and bound beside it, as an auto-run records it (known
    // limitation 40). The package's own plans hold the check's compiled SQL.
-   const materializePlans =
-      (
-         pkg as unknown as {
-            materialization?: { materializePlans?: Record<string, unknown> };
-         }
-      ).materialization?.materializePlans ?? {};
+   const materializePlans = (
+      pkg.materialization() as unknown as {
+         plan: { materializePlans: Record<string, unknown> };
+      }
+   ).plan.materializePlans;
    const leafKeys = async (
       sourceID: string,
       warehouse: DuckDBConnection,
@@ -575,7 +587,7 @@ async function buildAll(
       // self-instructed run (only reachable under the collision opt-out), so
       // neither is built: read off the plan the run compiles.
       const shared =
-         pkg.persistenceCollisionWarnings().length > 0
+         pkg.materialization().persistenceCollisionWarnings().length > 0
             ? sharedTables(
                  await compilePackageBuildPlan(pkg, undefined, {
                     keepIncrementalUnbuildable: true,
@@ -696,8 +708,8 @@ async function buildAll(
    } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
    }
-   pkg.bindColocatedServeManifest(colocated as never);
-   pkg.bindStorageServeBindings(stored as never);
+   pkg.materialization().bind({ colocated: colocated as never });
+   pkg.materialization().bind({ storage: stored as never });
    return { built, buildErrors, colocated, stored };
 }
 

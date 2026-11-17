@@ -7,10 +7,15 @@
  * and the per-tier eligibility records the serve side requires.
  */
 
+import { refusalKey, tierOf } from "./refusal_key";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
-import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import {
+   readableSegment,
+   tableNameParts,
+   tableNamesMeet,
+} from "../domain/table_name";
 import type { PersistSource } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errMessage } from "../../../utils";
@@ -31,8 +36,13 @@ import {
 } from "./materialization_eligibility";
 import {
    MATERIALIZATION_TABLE_COLLISION_CODE,
+   MATERIALIZE_INVALID_CODE,
+   PERSIST_INVALID_CODE,
+   PERSIST_QUERY_INVALID_CODE,
+   PERSIST_VIEW_INVALID_CODE,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
+import { MATERIALIZE_ROUTE } from "./build_file_generator";
 import type { SourceBuild } from "../domain/compiled_build_plan";
 import { materializeRefusalFinding } from "./materialize_plan";
 import {
@@ -332,6 +342,12 @@ export function refuseCollidingMaterialize<
             `overwrite the other and one source would read the other's rows; ` +
             `give each source a distinct name=`;
          const model = compiled.tables[member.sourceID]?.modelPath ?? "";
+         const tier = tierOf(
+            destination ===
+               compiled.tables[member.sourceID]?.source.connectionName
+               ? undefined
+               : destination,
+         );
          // An author's names collide: invalid, unless the deployment opts
          // out (PERSIST_COLLISION_ENFORCE=false, applied where the package
          // loads), which refuses each source alone. A `#@ persist` partner is
@@ -344,7 +360,10 @@ export function refuseCollidingMaterialize<
                        sourceName: compiled.tables[member.sourceID].source.name,
                        sourceID: member.sourceID,
                        reason,
-                       malformedCode: MATERIALIZATION_TABLE_COLLISION_CODE,
+                       outcome: {
+                          malformed: MATERIALIZATION_TABLE_COLLISION_CODE,
+                          whenRelaxed: { reason: "table_name_collision", tier },
+                       },
                     },
                     model,
                  )
@@ -355,6 +374,12 @@ export function refuseCollidingMaterialize<
                     message: `${collisionSubjectOf(member.sourceID, compiled.tables[member.sourceID].source.name)} is invalid: ${reason}.`,
                     subject: compiled.tables[member.sourceID].source.name,
                     model,
+                    refused: refusalKey(
+                       member.sourceID,
+                       compiled.tables[member.sourceID].source.name,
+                       "table_name_collision",
+                       tier,
+                    ),
                  },
          );
       }
@@ -365,6 +390,99 @@ export function refuseCollidingMaterialize<
       [...refused.values()],
       new Set(refused.keys()),
    );
+}
+
+/**
+ * The compiled plan less every source whose `name=` the readable name would
+ * rewrite, each a `malformed` finding under its route's `-invalid` code,
+ * which fails the publish and the load. Only in a published version of a
+ * `scope: "version"` package (`versionScoped`), where a `name=`'s leaf starts
+ * the readable name rather than naming the table: it is written there as the
+ * author wrote it, lowercased, and one the name would otherwise change (a
+ * space, punctuation, a leading digit, `__`) is refused rather than changed
+ * without notice, as a rollup's `name=` leaf is in any package
+ * (preaggregation_namespace.ts). Elsewhere a `name=` is the table's exact
+ * name and is not rewritten.
+ */
+export function refuseRewrittenNames<
+   T extends EligibilityPlan & {
+      builds: SourceBuild[];
+      annotationFindings?: PackageAnnotationFinding[];
+   },
+>(compiled: T): T {
+   if (!compiled.versionScoped) return compiled;
+   const findings: PackageAnnotationFinding[] = [];
+   const drop = new Set<string>();
+   for (const [sourceID, table] of Object.entries(compiled.tables)) {
+      // A rollup's `name=` leaf is checked where it is read
+      // (preaggregation_namespace.ts); a pair table's `name=` is its
+      // `#(materialize)`'s, so it is checked here.
+      if (table.kind === "rollup") continue;
+      if (table.materialize?.nameDefaulted) continue;
+      const name = deriveAnnotationFields(table.source).name?.trim();
+      if (!name) continue;
+      const leaf = name.slice(name.lastIndexOf(".") + 1);
+      const readable = readableSegment(leaf);
+      if (readable === leaf.toLowerCase()) continue;
+      const sourceName = table.materialize?.sourceName ?? table.source.name;
+      const author = authorNameOf(sourceID, sourceName);
+      const view = /^view (.+) of (.+)$/.exec(author);
+      const query = /^query (.+)$/.exec(author);
+      const [who, subject, code] = table.materialize
+         ? [
+              `#(materialize) on source "${sourceName}"`,
+              sourceName,
+              MATERIALIZE_INVALID_CODE,
+           ]
+         : view
+           ? [
+                // malloy-text: names quoted in a finding's message, not generated Malloy
+                `#@ persist on view "${view[1]}" of source "${view[2]}"`,
+                `${view[2]} -> ${view[1]}`,
+                PERSIST_VIEW_INVALID_CODE,
+             ]
+           : query
+             ? [
+                  // malloy-text: names quoted in a finding's message, not generated Malloy
+                  `#@ persist on query "${query[1]}"`,
+                  query[1],
+                  PERSIST_QUERY_INVALID_CODE,
+               ]
+             : [
+                  // malloy-text: names quoted in a finding's message, not generated Malloy
+                  `#@ persist on source "${sourceName}"`,
+                  sourceName,
+                  PERSIST_INVALID_CODE,
+               ];
+      // One finding per mistake: a `name=` an earlier check already found
+      // invalid (an unquoted identifier path, say) is not reported again.
+      const model = table.modelPath ?? "";
+      if (
+         (compiled.annotationFindings ?? []).some(
+            (f) =>
+               f.tier === "malformed" &&
+               f.subject === subject &&
+               (f.model ?? "") === model,
+         )
+      ) {
+         continue;
+      }
+      findings.push({
+         route: table.materialize ? MATERIALIZE_ROUTE : "@",
+         tier: "malformed",
+         code,
+         message:
+            `${who} is invalid: its name="${name}" starts its table's name ` +
+            `in this version of a scope: "version" package, which would ` +
+            `write "${leaf}" as "${readable}"; use letters, digits and single ` +
+            `underscores, starting with a letter (it is lowercased in the ` +
+            `table's name).`,
+         subject,
+         model,
+      });
+      drop.add(sourceID);
+   }
+   return withoutSources(compiled, findings, drop);
 }
 
 /**

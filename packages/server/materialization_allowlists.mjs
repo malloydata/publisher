@@ -93,6 +93,7 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/model_serving.ts -> service/materialization/serve/served_copy_serve":
       "2n",
    "service/model.ts -> service/materialization/serve/leg": "2n",
+   "service/query_serving.ts -> service/materialization/serve/gate_reads": "2n",
    "service/query_serving.ts -> service/materialization/serve/leg": "2n",
    "service/query_serving.ts -> service/materialization/serve/query_path": "2n",
    "service/query_serving.ts -> service/materialization/serve/rollup_variants":
@@ -150,7 +151,7 @@ export const RATCHET_DIALECT_LITERALS = {
    // DialectName, CURRENT_SCHEMA_SQL's two keys and type, DuckDB's own
    // literal in duckdbNameMatch, and Snowflake's in its query-tag and cost
    // statements.
-   "service/materialization/run/warehouse_sql.ts": { count: 25, step: "table" },
+   "service/materialization/run/warehouse_sql.ts": { count: 22, step: "table" },
    // READ_ONLY_DIALECTS: a capability kept as a deny-list, so an unknown
    // dialect is not refused.
    "service/materialization/plan/materialization_eligibility.ts": {

@@ -68,6 +68,7 @@ import {
    type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
+import { isDecimalDeltaGuardFailure } from "./postgres_numeric_precision";
 import { capturedNativeSchema } from "./colocated_native_types";
 import type { IncrementalDeclaration } from "../domain/incremental";
 
@@ -560,19 +561,38 @@ export async function applyIncrementalStep(params: {
    // together (see deltaScript). A failure leaves the table and the boundary
    // as they were; the next run recomputes the same range.
    try {
-      await applyDeltaScript(target.runner, target.dialect, step.statements);
+      await applyDeltaScript(
+         target.runner,
+         target.dialect,
+         step.statements,
+         target.abortSignal,
+      );
    } catch (err) {
       // A pair delta whose parent-row check failed was rolled back: rebuild
       // in full, which writes the flag over the whole table (fail safe).
-      if (!lineage.pair || !isPairGuardFailure(err)) throw err;
+      // A delta value its DECIMAL column cannot hold exactly was refused, not
+      // rounded: rebuild in full, which widens the column to hold it.
+      const decimal = isDecimalDeltaGuardFailure(err);
+      if (!decimal && (!lineage.pair || !isPairGuardFailure(err))) throw err;
       reportIncrementalStep({
-         step: {
-            mode: "seed",
-            reasonCode: "pair_parent_row",
-            reason:
-               "the delta would leave a parent without exactly one " +
-               "parent-row flag, so it was rolled back",
-         },
+         step: decimal
+            ? {
+                 mode: "seed",
+                 // The stored column's shape cannot hold the delta: no metric
+                 // label of its own, the reason names the decimal cause.
+                 reasonCode: "shape_mismatch",
+                 reason:
+                    "a delta value needs more digits than its stored DECIMAL " +
+                    "column holds, so it was rolled back rather than rounded " +
+                    "and the table rebuilds at the wider scale",
+              }
+            : {
+                 mode: "seed",
+                 reasonCode: "pair_parent_row",
+                 reason:
+                    "the delta would leave a parent without exactly one " +
+                    "parent-row flag, so it was rolled back",
+              },
          sourceName: params.sourceName,
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
@@ -816,7 +836,7 @@ export async function refreshOneSourceIncrementally(params: {
       materializedTableId: instruction.materializedTableId,
       physicalTableName: lineage.physicalTableName,
       connectionName: persistSource.connectionName,
-      realization: instruction.realization,
+      realization: "COPY",
       ...params.upstreamReuse,
       rowCount: null,
       buildDurationMs: outcome.durationMs ?? null,
@@ -853,19 +873,21 @@ export function storageRefreshFor(params: {
    const { context, lineage, persistSource, instruction } = params;
    return {
       plan: async ({ session, sourceType, handle, quotedTablePath }) => {
-         const { target, readCost } = storageDeltaTarget({
-            session,
-            sourceType,
-            handle,
-            destinationName: params.destinationName,
-            destinationSchema: params.destinationSchema,
-            physicalTableName: params.physicalTableName,
-            quotedTablePath,
-            lineage,
-            persistSource,
-            buildSQL: params.buildSQL,
-            queryMetadata: params.queryMetadata,
-         });
+         const { target, readCost, numericColumnsStoredAsDouble } =
+            storageDeltaTarget({
+               session,
+               sourceType,
+               handle,
+               destinationName: params.destinationName,
+               destinationSchema: params.destinationSchema,
+               physicalTableName: params.physicalTableName,
+               quotedTablePath,
+               lineage,
+               persistSource,
+               buildSQL: params.buildSQL,
+               queryMetadata: params.queryMetadata,
+            });
+         const reseeding = instruction.reseed || context.forceRefresh;
          // A table an older build typed (incremental_recast.spec.ts): a delta
          // only INSERTs into the columns it has, so only a re-seed's CTAS casts
          // them.
@@ -874,6 +896,10 @@ export function storageRefreshFor(params: {
             quotedTablePath,
             persistSource,
          );
+         // A Postgres numeric a build before the decimal-precision fix stored
+         // as DOUBLE, which serves float sums until the table is seeded again
+         // (postgres_numeric_precision.ts); a seed now stores it exactly.
+         const doubles = reseeding ? [] : await numericColumnsStoredAsDouble();
          // The stored table's columns, under the names the delta's SQL
          // emits them (a renamed field's column under its own name), so a
          // delta of a source with a `rename:` matches the table.
@@ -885,17 +911,34 @@ export function storageRefreshFor(params: {
             columns: deriveColumns(persistSource).map((c) =>
                toStored(String(c.name)),
             ),
-            reseed: instruction.reseed || recast.length > 0,
+            reseed:
+               instruction.reseed || recast.length > 0 || doubles.length > 0,
          });
-         if (
-            recast.length > 0 &&
-            step.mode === "seed" &&
-            step.reasonCode === "forced" &&
-            !instruction.reseed &&
-            !context.forceRefresh
-         ) {
+         const recastOnly =
+            step.mode === "seed" && step.reasonCode === "forced" && !reseeding;
+         if (recastOnly && doubles.length > 0) {
+            // No metric label of its own: the stored column's shape cannot
+            // hold the source's exact values, as a decimal delta that does
+            // not fit re-seeds, and the reason names the cause.
             step = {
-               ...step,
+               mode: "seed",
+               reasonCode: "shape_mismatch",
+               reason:
+                  `the stored table holds the Postgres numeric ${doubles
+                     .map((c) => `\`${c}\``)
+                     .join(", ")} as DOUBLE, which serves float sums ` +
+                  `where live is exact; a rebuild stores it as DECIMAL, ` +
+                  `and a delta cannot change a column's type`,
+            };
+            logger.info("Re-seeding to store Postgres numerics exactly", {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               sourceName: persistSource.name,
+               columns: doubles,
+            });
+         } else if (recastOnly && recast.length > 0) {
+            step = {
+               mode: "seed",
+               reasonCode: "forced",
                reason:
                   `the stored table holds ${recast
                      .map((m) => `\`${m.column}\` as ${m.storedType}`)

@@ -10,24 +10,18 @@
           "deals_alias@<hammer>/frp/frp.malloy": [],
           "pipeline_now@<hammer>/frp/frp.malloy": [],
           "w@<hammer>/frp/frp.malloy": [
-            "deals@<hammer>/frp/frp.malloy",
-            "pipeline_now@<hammer>/frp/frp.malloy",
-            "deals_alias@<hammer>/frp/frp.malloy"
+            "deals@<hammer>/frp/frp.malloy"
           ],
           "x@<hammer>/frp/frp.malloy": [
             "deals@<hammer>/frp/frp.malloy",
-            "pipeline_now@<hammer>/frp/frp.malloy",
-            "deals_alias@<hammer>/frp/frp.malloy"
+            "pipeline_now@<hammer>/frp/frp.malloy"
           ],
           "y@<hammer>/frp/frp.malloy": [
             "deals@<hammer>/frp/frp.malloy",
-            "pipeline_now@<hammer>/frp/frp.malloy",
             "deals_alias@<hammer>/frp/frp.malloy"
           ],
           "z@<hammer>/frp/frp.malloy": [
-            "deals@<hammer>/frp/frp.malloy",
-            "pipeline_now@<hammer>/frp/frp.malloy",
-            "deals_alias@<hammer>/frp/frp.malloy"
+            "deals@<hammer>/frp/frp.malloy"
           ]
         },
         "order": [
@@ -115,32 +109,26 @@
             {
               "dependsOn": [
                 "deals@<hammer>/frp/frp.malloy",
-                "pipeline_now@<hammer>/frp/frp.malloy",
-                "deals_alias@<hammer>/frp/frp.malloy"
+                "pipeline_now@<hammer>/frp/frp.malloy"
               ],
               "sourceID": "x@<hammer>/frp/frp.malloy"
             },
             {
               "dependsOn": [
                 "deals@<hammer>/frp/frp.malloy",
-                "pipeline_now@<hammer>/frp/frp.malloy",
                 "deals_alias@<hammer>/frp/frp.malloy"
               ],
               "sourceID": "y@<hammer>/frp/frp.malloy"
             },
             {
               "dependsOn": [
-                "deals@<hammer>/frp/frp.malloy",
-                "pipeline_now@<hammer>/frp/frp.malloy",
-                "deals_alias@<hammer>/frp/frp.malloy"
+                "deals@<hammer>/frp/frp.malloy"
               ],
               "sourceID": "z@<hammer>/frp/frp.malloy"
             },
             {
               "dependsOn": [
-                "deals@<hammer>/frp/frp.malloy",
-                "pipeline_now@<hammer>/frp/frp.malloy",
-                "deals_alias@<hammer>/frp/frp.malloy"
+                "deals@<hammer>/frp/frp.malloy"
               ],
               "sourceID": "w@<hammer>/frp/frp.malloy"
             }

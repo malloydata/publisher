@@ -48,7 +48,26 @@ function standInBigQuery(name: string): Connection {
             { name: "n", type: "INT64", mode: "NULLABLE" },
          ],
       }),
-      runSQL: async () => ({ rows: [], totalRows: 0 }),
+      // The bind's catalog read of the stored table's columns, as BigQuery
+      // types them; every other statement returns nothing.
+      runSQL: async (sql: string) =>
+         sql.includes("INFORMATION_SCHEMA.COLUMNS")
+            ? {
+                 rows: [
+                    {
+                       table_name: "by_k_table",
+                       column_name: "k",
+                       data_type: "STRING",
+                    },
+                    {
+                       table_name: "by_k_table",
+                       column_name: "total",
+                       data_type: "INT64",
+                    },
+                 ],
+                 totalRows: 2,
+              }
+            : { rows: [], totalRows: 0 },
    });
    return connection;
 }
@@ -58,7 +77,7 @@ const modelOn = (
    sql: string,
 ) => `##! experimental { persistence }
 
-#@ persist name="by_k"
+#@ persist name="scratch.by_k"
 source: by_k is ${connection}.sql("${sql}") -> {
   group_by: k
   aggregate: total is n.sum()
@@ -100,6 +119,16 @@ async function bindWithoutNativeSchema(
    const sources = Object.values(pkg.getBuildPlan()?.sources ?? {});
    expect(sources.map((s) => s.name)).toEqual(["by_k"]);
    const [source] = sources;
+   // The stored table, for the bind to read its columns: on DuckDB it is
+   // created on the source's connection; the BigQuery stand-in answers the
+   // catalog read itself.
+   if (source.connectionName === "duckdb") {
+      const duckdb = await pkg.getMalloyConnection("duckdb");
+      await duckdb.runSQL("CREATE SCHEMA IF NOT EXISTS scratch");
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE scratch.by_k_table AS SELECT 'a' AS k, CAST(1 AS BIGINT) AS total",
+      );
+   }
    await pkg.reloadAllModels({
       [source.sourceEntityId]: {
          tableName: "scratch.by_k_table",

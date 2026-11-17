@@ -21,9 +21,11 @@ import { Annotations } from "@malloydata/malloy";
 import {
    byCodepoint,
    PERSIST_QUERY_INVALID_CODE,
+   PERSIST_QUERY_UNPARSEABLE_CODE,
    persistAnnotationFindings,
    routeOfNote,
    type PackageAnnotationFinding,
+   type RefusalKey,
 } from "../../annotation_reader";
 import { ownLevelNotes, type AnnotationNote } from "../../annotations";
 import { declares, readNotes, readNotesIfAny } from "./declaration";
@@ -165,25 +167,44 @@ export const INCREMENTAL_KEYS = ["watermark", "merge_key"] as const;
 
 /**
  * Why a persisted query's `#@ persist` declaration is invalid, beyond its
- * keys ({@link persistQueryKeyFindings}): a line that does not parse or reads
- * `@env.`, an incremental key (a query's result is rebuilt whole), a
- * `storage=` that names nothing, or an unusable `name=`. Empty when valid.
+ * keys ({@link persistQueryKeyFindings}), each with its code: a line that does
+ * not parse, one that reads `@env.`, an incremental declaration (a query's
+ * result is rebuilt whole, so `refresh="incremental"` and the incremental
+ * keys are refused alike), a `storage=` that names nothing, or an unusable
+ * `name=`. Empty when valid.
  */
-export function persistQueryProblems(query: DeclaredPersistQuery): string[] {
+export function persistQueryProblems(
+   query: DeclaredPersistQuery,
+): { problem: string; code: string }[] {
    if (query.unparseable !== undefined) {
-      return [`its \`#@\` line does not parse (${query.unparseable})`];
+      return [
+         {
+            problem: `its \`#@\` line does not parse (${query.unparseable})`,
+            code: PERSIST_QUERY_UNPARSEABLE_CODE,
+         },
+      ];
    }
+   const invalid = (problem: string) => ({
+      problem,
+      code: PERSIST_QUERY_INVALID_CODE,
+   });
    const problems = persistDeclarationProblems(
       new Annotations({ blockNotes: query.notes }),
    );
-   if (problems.length > 0) return problems;
+   if (problems.length > 0) return problems.map(invalid);
    const tag = readNotesIfAny(query.notes, "@");
-   const incremental = INCREMENTAL_KEYS.filter(
-      (k) => tag?.has("persist", k) || tag?.has(k),
-   );
+   const incremental = [
+      ...(tag?.text("persist", "refresh") === "incremental" ||
+      tag?.text("refresh") === "incremental"
+         ? ['refresh="incremental"']
+         : []),
+      ...INCREMENTAL_KEYS.filter((k) => tag?.has("persist", k) || tag?.has(k)),
+   ];
    return incremental.length > 0
       ? [
-           `a query's result is rebuilt whole, so it takes no incremental key (${incremental.join(", ")})`,
+           invalid(
+              `a query's result is rebuilt whole, so it takes no incremental key (${incremental.join(", ")})`,
+           ),
         ]
       : [];
 }
@@ -193,10 +214,10 @@ export function persistQueryInvalidFindings(
    query: DeclaredPersistQuery,
    model: string,
 ): PackageAnnotationFinding[] {
-   return persistQueryProblems(query).map((problem) => ({
+   return persistQueryProblems(query).map(({ problem, code }) => ({
       route: "@",
       tier: "malformed",
-      code: PERSIST_QUERY_INVALID_CODE,
+      code,
       message: `#@ persist on query "${query.name}" is invalid: ${problem}`,
       subject: query.name,
       model,
@@ -214,11 +235,13 @@ function workaround(name: string): string {
 
 /**
  * A persisted query that is not built, as a package finding (unservable: the
- * query is answered live). `reason` says why; absent, the feature is off.
+ * query is answered live) carrying its refusal record. `reason` says why;
+ * absent, the feature is off.
  */
 export function persistQueryNotBuiltFinding(
    name: string,
    model: string,
+   refused: RefusalKey,
    reason?: string,
 ): PackageAnnotationFinding {
    return {
@@ -234,5 +257,6 @@ export function persistQueryNotBuiltFinding(
               `answered live: ${reason}. ${workaround(name)}`,
       subject: name,
       model,
+      refused,
    };
 }

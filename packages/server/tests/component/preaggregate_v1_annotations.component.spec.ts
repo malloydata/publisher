@@ -151,7 +151,7 @@ describe("a v1 #@ preaggregate rollup's annotations", () => {
          expect(withoutOwnLine(unbuilt.notes)).toEqual(truth[i].notes);
       }
 
-      const ids = [...pkg.getPreaggregateEntityIds()];
+      const ids = [...pkg.materialization().getPreaggregateEntityIds()];
       expect(ids).toHaveLength(1);
       const rollup = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
          (s) => s.sourceEntityId === ids[0],
@@ -163,9 +163,11 @@ describe("a v1 #@ preaggregate rollup's annotations", () => {
       await connection.runSQL(
          `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
       );
-      pkg.bindColocatedServeManifest({
-         [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
-      } as never);
+      pkg.materialization().bind({
+         colocated: {
+            [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
+         } as never,
+      });
 
       for (let i = 0; i < queries.length; i++) {
          const served = await run(pkg, "model.malloy", queries[i]);

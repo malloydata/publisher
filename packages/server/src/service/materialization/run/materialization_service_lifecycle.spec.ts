@@ -25,9 +25,9 @@ import {
 import {
    createMocks,
    setPackage,
+   serviceWith,
 } from "../../../test_helpers/materialization_service_harness";
 import {
-   MaterializationService,
    type RunBuildOptions,
    type RunCollaborators,
 } from "./materialization_service";
@@ -220,7 +220,7 @@ describe("MaterializationService", () => {
             makeMaterialization({ status: "PENDING" }),
          );
          const runBuild = sinon.stub().resolves();
-         const service = new MaterializationService(ctx.environmentStore, {
+         const service = serviceWith(ctx, {
             runBuild,
          });
 
@@ -327,7 +327,7 @@ describe("MaterializationService", () => {
                makeMaterialization({ status: "PENDING" }),
             );
             const runBuild = sinon.stub().resolves();
-            return new MaterializationService(ctx.environmentStore, {
+            return serviceWith(ctx, {
                runBuild,
             }).createMaterialization("my-env", "pkg", {
                buildInstructions: [options.instruction ?? makeInstruction()],
@@ -539,7 +539,7 @@ describe("runBuild (branch behavior)", () => {
          commitManifest: sinon.stub().resolves(),
          autoLoadManifest: sinon.stub().resolves(),
       };
-      const service = new MaterializationService(ctx.environmentStore, {
+      const service = serviceWith(ctx, {
          ...stubs,
          ...extra,
       });
@@ -1325,10 +1325,10 @@ describe("runInBackground (terminal recording)", () => {
          expect(errorStub.calledOnce).toBe(true);
          const [message, meta] = errorStub.firstCall.args as unknown as [
             string,
-            { materializationId: string; code: string; stack?: string },
+            { runId: string; code: string; stack?: string },
          ];
          expect(message).toBe("Materialization run failed");
-         expect(meta.materializationId).toBe("bg-4");
+         expect(meta.runId).toBe("bg-4");
          expect(meta.code).toBe("XX000");
          // The stack's frames locate the throw; its message line, which can
          // quote SQL, is left off (it is on the run's record).
@@ -1477,6 +1477,34 @@ describe("runInBackground (terminal recording)", () => {
             recorded.error,
             "the persisted record must not carry it either",
          ).not.toContain("hunter2");
+      } finally {
+         errorStub.restore();
+      }
+   });
+});
+
+describe("P6-21: a run's record names no storage path", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   it("redacts a storage URL from a whole-run failure's recorded error", async () => {
+      const errorStub = sinon.stub(logger, "error");
+      try {
+         const service = ctx.service as unknown as {
+            runInBackground: (id: string, run: () => Promise<void>) => void;
+         };
+         service.runInBackground("bg-storage", async () => {
+            throw new Error(
+               "HTTP GET error on 'https://storage.googleapis.com/bkt/org_1/db_2/t.parquet' (HTTP 500)",
+            );
+         });
+         for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+         const recorded = ctx.repository.updateMaterialization.firstCall
+            .args[1] as { error?: string };
+         expect(recorded.error).toContain("<storage path>");
+         expect(recorded.error).not.toMatch(/googleapis|bkt|org_1/);
       } finally {
          errorStub.restore();
       }

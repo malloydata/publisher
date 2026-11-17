@@ -231,6 +231,9 @@ const MZ_ENTRY = "service/materialization";
 const MZ_FACADE = new Set([
    "service/materialization/index.ts",
    "service/materialization/package_materialization.ts",
+   "service/materialization/package_warnings.ts",
+   "service/materialization/plan_lifecycle.ts",
+   "service/materialization/serve_verdicts.ts",
 ]);
 const MZ_SHARED_LEAVES = new Set([
    "service/materialization/host.ts",
@@ -720,5 +723,11 @@ export default [
             },
          ],
       },
+   },
+   {
+      // Bun's `use…` fixtures register before/after hooks, not React state, so
+      // a spec may call them at a file's top level.
+      files: ["src/**/*.spec.ts", "tests/**/*.ts"],
+      rules: { "react-hooks/rules-of-hooks": "off" },
    },
 ];

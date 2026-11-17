@@ -2,7 +2,9 @@
   "bind": {
     "buildErrors": {},
     "built": [],
-    "verdicts": [],
+    "verdicts": [
+      "daily_orders:live:refused"
+    ],
     "warnings": [
       {
         "code": "persist-not-built",

@@ -468,20 +468,17 @@ window is the job of a caller that assigns physical names per build and
 distributes serve bindings (the orchestrated build path), not of the auto-run
 server.
 
-A materialization record can be reclaimed by deleting it with `dropTables=true` —
-a destination-aware drop (Publisher only ever drops a table name it recorded
-building, never a catalog scan):
+Deleting a materialization record is record-only: the table it built stays in
+the destination. Drop it yourself afterwards, once no remaining run of any
+version names a table with that name, in any place
+([Dropping a run's tables](materialization.md#dropping-a-runs-tables)):
 
 ```bash
 # delete a materialization (find its id in the list)
 curl -s -X DELETE \
-  "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/<ID>?dropTables=true" \
+  "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/<ID>" \
   -o /dev/null -w "HTTP %{http_code}\n"
 # -> HTTP 204
-```
-
-```
-info: Dropped materialized storage table on delete { physicalTableName: "daily_orders", storageDestinationName: "lake" }
 ```
 
 ---
@@ -515,8 +512,8 @@ view or join its base declares, say) is left as written and serves live, and its
 verdict says why.
 
 Each answer's path report says which happened: an answer read from the lake
-carries `servedBy` with `via: "served_copy"`, and a live answer carries no
-`servedFrom`.
+carries `servedBy` with `via: "served_copy"` and `servedFrom: "storage"`, and
+a live answer carries no `servedFrom`.
 
 Fallback means turning the feature on can never make a query wrong — at worst it
 serves live, exactly as it would with the feature off.
@@ -684,7 +681,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
   "reasons": [
     {
       "name": "secret_rollup",
-      "reason": "given_in_persisted_query",
+      "reason": "reads_given",
       "message": "Source 'secret_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read."
     }
   ]
@@ -821,8 +818,9 @@ Everything you need is on the package status and the logs:
     was unreachable, kept distinct from the shape limits so a store outage is not
     read as an un-carriable query.
   - `malloy_model_query_duration` tags a routed query with
-    `served_from=storage`, or `served_from=live_fallback` when a run-time store
-    failure degraded it to live (so a fallback never counts as a storage hit).
+    `served_from=storage` or `served_from=database` by the tier that answered,
+    or `served_from=live_fallback` when a run-time store failure degraded it to
+    live (so a fallback never counts as a storage hit).
     Note this attribute follows `QueryResult.servedFrom`'s vocabulary, not the
     counter's directly above it — so `served_from=live_fallback` and
     `outcome=live_fallback` are different events despite sitting two bullets

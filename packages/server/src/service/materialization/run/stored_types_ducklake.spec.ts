@@ -94,6 +94,105 @@ describe("a declared-type cast on a DuckLake build", () => {
    }, 120000);
 });
 
+// P4-01: DuckLake writes a 128-bit integer to Parquet as a DOUBLE. A build
+// that computes one in DuckDB (no passthrough) stores it as DECIMAL(38,0),
+// which keeps every digit; past 38 digits the cast fails and the build stores
+// the 128-bit type, which the serve side answers live.
+describe("a DuckDB-computed 128-bit integer on a DuckLake build (P4-01)", () => {
+   it("is stored as DECIMAL(38,0), every digit kept", async () => {
+      const conn = await lake();
+      const schema = await createTableWithDeclaredTypes(
+         conn,
+         "lake.t",
+         `SELECT k, SUM(v) AS total FROM (VALUES
+            ('a', 4530000000000225186::BIGINT), ('a', 1::BIGINT)
+          ) AS w(k, v) GROUP BY k`,
+         {
+            columns: [
+               { name: "k", type: "string" },
+               { name: "total", type: "number" },
+            ],
+         },
+      );
+      expect(schema).toEqual([
+         { name: "k", type: "VARCHAR" },
+         { name: "total", type: "DECIMAL(38,0)" },
+      ]);
+      const stored = await conn.runSQL(
+         "SELECT total::VARCHAR AS total FROM lake.t",
+      );
+      expect(stored.rows).toEqual([{ total: "4530000000000225187" }]);
+   }, 120000);
+
+   it("past 38 digits, keeps the other columns' declared casts", async () => {
+      const conn = await lake();
+      const schema = await createTableWithDeclaredTypes(
+         conn,
+         "lake.t",
+         "SELECT 150000000000000000000000000000000000001::HUGEINT AS h, 1 AS flag",
+         {
+            columns: [
+               { name: "h", type: "number" },
+               { name: "flag", type: "boolean" },
+            ],
+         },
+      );
+      expect(schema).toEqual([
+         { name: "h", type: "HUGEINT" },
+         { name: "flag", type: "BOOLEAN" },
+      ]);
+   }, 120000);
+
+   it("past 38 digits, stores the 128-bit type it computed", async () => {
+      const conn = await lake();
+      const schema = await createTableWithDeclaredTypes(
+         conn,
+         "lake.t",
+         "SELECT 150000000000000000000000000000000000001::HUGEINT AS h",
+         { columns: [{ name: "h", type: "number" }] },
+      );
+      expect(schema).toEqual([{ name: "h", type: "HUGEINT" }]);
+   }, 120000);
+
+   it("leaves a passthrough's columns as they arrive", async () => {
+      const conn = await lake();
+      const schema = await createTableWithDeclaredTypes(
+         conn,
+         "lake.t",
+         "SELECT 1::HUGEINT AS h",
+         { columns: [{ name: "h", type: "number" }] },
+         { sourceType: "bigquery" },
+      );
+      expect(schema).toEqual([{ name: "h", type: "HUGEINT" }]);
+   }, 120000);
+});
+
+// P3-06..09: a warehouse that folds Malloy's quoted aliases (Snowflake with
+// QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE) returns them upper-cased; the build
+// stores each under the name its build source declares.
+describe("a column the warehouse returned case-folded (P3-06..09)", () => {
+   it("is stored under its declared name", async () => {
+      const conn = await lake();
+      const schema = await createTableWithDeclaredTypes(
+         conn,
+         "lake.t",
+         `SELECT 'east' AS "REGION", 2 AS "VIEWS__PARTIAL", 3 AS "Other"`,
+         {
+            columns: [
+               { name: "region", type: "string" },
+               { name: "views__partial", type: "number" },
+            ],
+         },
+         { sourceType: "snowflake" },
+      );
+      expect(schema.map((c) => c.name)).toEqual([
+         "region",
+         "views__partial",
+         "Other",
+      ]);
+   }, 120000);
+});
+
 describe("a delta into a table the build cast", () => {
    const range = {
       start: { malloyType: "date", value: "2026-02-01" },

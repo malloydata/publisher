@@ -87,6 +87,21 @@ interface JoinRollupRefusal {
    callerDetail: string;
 }
 
+/** Test seam: let a join branch reach a given-reading rollup (see refusalOf). */
+let givenTermJoinsForTests = false;
+
+/**
+ * For specs only: skip the join branch's refusal of a rollup that re-applies
+ * a given-reading `where:`, so a spec proves `govern()` denies the answer.
+ * Returns the restore.
+ */
+export function allowGivenTermJoinsForTests(): () => void {
+   givenTermJoinsForTests = true;
+   return () => {
+      givenTermJoinsForTests = false;
+   };
+}
+
 /**
  * The branches a join of the query's source offers: the join's rollups,
  * each with why it cannot be used, if it cannot. `sourceFilterReads` holds
@@ -169,6 +184,16 @@ function refusalOf(
       return refuse(
          "rollup_contract",
          `\`${name}\` joins a source with a gate of its own, which its rollup does not carry`,
+      );
+   }
+   // A `where:` re-applied per caller on the rollup's own variant: through a
+   // join no variant of it is declared, so its rows would be every caller's.
+   // `govern()` denies such an answer too (the second layer), which only the
+   // test seam lets a spec reach.
+   if ((plan.readTimeTerms ?? []).length > 0 && !givenTermJoinsForTests) {
+      return refuse(
+         "rollup_count_semantics",
+         `\`${name}\`'s rollup re-applies a \`where:\` that reads a given, which a join to it does not carry`,
       );
    }
    if (

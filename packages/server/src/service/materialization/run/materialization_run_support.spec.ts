@@ -835,6 +835,7 @@ describe("withChainBuildText", () => {
    it("asks the package for the text while it is current", () => {
       const scoped = withChainBuildText({} as never, {
          chainBuildText: () => text,
+         getPackagePath: () => "/pkg",
       }) as { chainBuildText(r: unknown): unknown };
       expect(scoped.chainBuildText(request)).toBe(text);
    });
@@ -845,6 +846,7 @@ describe("withChainBuildText", () => {
       const scoped = withChainBuildText(
          {} as never,
          {
+            getPackagePath: () => "/pkg",
             chainBuildText: () => {
                asked++;
                return text;

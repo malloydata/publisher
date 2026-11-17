@@ -112,7 +112,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "builds an extension in another destination than its parent, an incremental one, and one in another file, over the raw chain",
+      "builds an extension in another destination than its parent and an incremental one over the raw chain, and one in another file over its parent's build source",
       async () => {
          const c = await compiled({
             "m.malloy": `${BASE}
@@ -131,11 +131,20 @@ source: other_ext is orders extend { dimension: n is 1 }
 `,
          });
          for (const p of generatedPlans(c)) {
-            expect([p.sourceName, p.buildsOver]).toEqual([
+            expect([p.sourceName, p.buildsOver?.sourceName]).toEqual([
                p.sourceName,
-               undefined,
+               p.sourceName === "other_ext" ? "orders" : undefined,
             ]);
          }
+         // Across files (P10): imported from a copy of `m.malloy` with the
+         // parent re-rooted on its build source.
+         const other = generatedPlans(c).find(
+            (p) => p.sourceName === "other_ext",
+         )!;
+         expect(other.buildsOver?.crossFile?.modelFile).toMatch(/m\.malloy$/);
+         expect(other.buildsOver?.overStored?.declarations).toContain(
+            "orders is orders__mat",
+         );
          expect(
             generatedPlans(c)
                .map((p) => p.sourceName)
@@ -926,6 +935,9 @@ source: orders is orders_raw -> { select: * }
             sourceName: "empty",
             sourceID: "empty@file:///pkg/m.malloy",
             reason: "the source has no dimension to store",
+            outcome: {
+               refused: { reason: "no_stored_columns", tier: "colocated" },
+            },
          },
       ]);
    });
@@ -961,11 +973,13 @@ source: orders is orders_raw -> { select: * }
       expect(reason('#(materialize) storage="a\n')).toContain("does not parse");
       // Both are malformed, which fails the load: a value of the wrong shape
       // (materialize-invalid) and a line that does not parse.
-      expect(
-         refusal('#(materialize) storage=["a", "b"]\n')?.malformedCode,
-      ).toBe("materialize-invalid");
+      expect(refusal('#(materialize) storage=["a", "b"]\n')?.outcome).toEqual({
+         malformed: "materialize-invalid",
+      });
       const unparseable = refusal('#(materialize) storage="a\n');
-      expect(unparseable?.malformedCode).toBe("materialize-unparseable");
+      expect(unparseable?.outcome).toEqual({
+         malformed: "materialize-unparseable",
+      });
       expect(materializeRefusalFinding(unparseable!, "m.malloy")).toMatchObject(
          { tier: "malformed", code: "materialize-unparseable" },
       );

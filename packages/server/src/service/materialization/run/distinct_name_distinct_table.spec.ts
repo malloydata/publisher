@@ -321,7 +321,13 @@ describe("one table per stored projection", () => {
             ),
          ),
       );
-      expect(built.map(([a]) => a)).toEqual([ADDRESS]);
+      // Twins in two tiers (P2-21): the stored one moves to an address of its
+      // own, the colocated `b` keeps the one it had.
+      expect(built).toHaveLength(2);
+      const colocated = built.find(([, t]) => t.includes("__b__"));
+      const stored = built.find(([, t]) => t.includes("__a__"));
+      expect(colocated?.[0]).toBe(ADDRESS);
+      expect(stored?.[0]).not.toBe(ADDRESS);
    });
 
    it("keeps one projection on one table, at the address it had", () => {

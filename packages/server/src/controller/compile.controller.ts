@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { redactStorageUrls } from "../pg_helpers";
 import type { GivenValue } from "@malloydata/malloy";
 import { BadRequestError } from "../errors";
 import type { PackageLookup } from "../service/environment_ports";
@@ -128,7 +129,13 @@ export class CompileController {
 
       return {
          status: hasErrors ? "error" : "success",
-         problems: problems,
+         // A diagnostic can quote the driver's text, a storage URL with it:
+         // never a bucket or storage path in an answer (REST and MCP).
+         problems: problems.map((p) =>
+            typeof p.message === "string"
+               ? { ...p, message: redactStorageUrls(p.message) }
+               : p,
+         ),
          ...(sql !== undefined && { sql }),
          // DEPRECATED: `document.kind`, the layout in the old vocabulary, which
          // existing callers of this route read.

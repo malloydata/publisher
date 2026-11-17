@@ -133,7 +133,7 @@ const MISTAKES: Mistake[] = [
          persist: ['#@ persist { nmae="t" }', "persist-unknown-key"],
          materialize: [
             '#(materialize) freshness.windw="1h"',
-            "materialize-invalid",
+            "materialize-unknown-key",
          ],
          preaggregate: [
             '#(preaggregate) grain=["category"] freshness.windw="1h"',
@@ -160,8 +160,8 @@ const MISTAKES: Mistake[] = [
             '#@ preaggregate grain="category',
             "preaggregate-unparseable",
          ],
-         view: ['#@ persist name="t', "persist-view-invalid"],
-         query: ['#@ persist name="t', "persist-query-invalid"],
+         view: ['#@ persist name="t', "persist-view-unparseable"],
+         query: ['#@ persist name="t', "persist-query-unparseable"],
       },
    },
    {
@@ -193,14 +193,15 @@ const MISTAKES: Mistake[] = [
             '#(materialize) name="t__p0123abcd"',
             "materialize-invalid",
          ],
-         // A rollup takes no name=: it is an unknown key there.
+         // A rollup's name= leaf starts its table's name, which Publisher
+         // ends with its own hash: a leaf already ending so is invalid.
          preaggregate: [
             '#(preaggregate) grain=["category"] name="t__p0123abcd"',
-            "preaggregate-unknown-key",
+            "preaggregate-invalid",
          ],
          v1Preaggregate: [
             '#@ preaggregate grain="category" name="t__p0123abcd"',
-            "preaggregate-unknown-key",
+            "preaggregate-invalid",
          ],
          view: ['#@ persist name="t__p0123abcd"', "persist-view-invalid"],
          query: ['#@ persist name="t__p0123abcd"', "persist-query-invalid"],
@@ -208,16 +209,75 @@ const MISTAKES: Mistake[] = [
    },
 ];
 
+/**
+ * Mistakes only some routes can make, each with the one code it fails with:
+ * a key one route retired, a `name=` the DDL cannot take, and an
+ * incremental refresh on a result that is rebuilt whole.
+ */
+const ROUTE_MISTAKES: [
+   route: string,
+   name: string,
+   line: string,
+   code: string,
+][] = [
+   [
+      "persist",
+      "a retired realization=",
+      '#@ persist name="t" realization="COPY"',
+      "persist-retired-key",
+   ],
+   [
+      "view",
+      "a retired realization=",
+      '#@ persist realization="COPY"',
+      "persist-retired-key",
+   ],
+   [
+      "materialize",
+      "a retired sharing=",
+      '#(materialize) sharing="package"',
+      "materialize-retired-key",
+   ],
+   [
+      "materialize",
+      "a retired schedule=",
+      '#(materialize) schedule="0 * * * *"',
+      "materialize-retired-key",
+   ],
+   [
+      "persist",
+      "an unsafe name=",
+      '#@ persist name="t; drop"',
+      "persist-invalid",
+   ],
+   ["persist", "an unquoted name=", "#@ persist name=t", "persist-invalid"],
+   [
+      "query",
+      'a lone refresh="incremental"',
+      '#@ persist refresh="incremental"',
+      "persist-query-invalid",
+   ],
+];
+
 /** Every (mistake, route) pair, with a package name of its own. */
-const CASES = MISTAKES.flatMap((mistake, m) =>
-   Object.entries(mistake.lines).map(([route, [line, code]], r) => ({
-      label: `${mistake.name} on ${ROUTES[route].name}`,
+const CASES = [
+   ...MISTAKES.flatMap((mistake, m) =>
+      Object.entries(mistake.lines).map(([route, [line, code]], r) => ({
+         label: `${mistake.name} on ${ROUTES[route].name}`,
+         route,
+         pkg: `case${m}x${r}`,
+         model: ROUTES[route].model(line),
+         code,
+      })),
+   ),
+   ...ROUTE_MISTAKES.map(([route, name, line, code], i) => ({
+      label: `${name} on ${ROUTES[route].name}`,
       route,
-      pkg: `case${m}x${r}`,
+      pkg: `route${i}`,
       model: ROUTES[route].model(line),
       code,
    })),
-);
+];
 
 /** A package each route loads cleanly with: the same shape, no annotation. */
 const GOOD = (route: string) => ROUTES[route].model("");
@@ -263,6 +323,31 @@ describe("the load-versus-refused policy", () => {
    const settings = installSettings({ env: { PUBLISHER_MATERIALIZE: "true" } });
    usePackageLoadPool();
    afterAll(() => settings.restore());
+
+   it(
+      "names every name= mistake in every file, beside the package's other invalid annotations",
+      async () => {
+         const envPath = path.join(root, "env");
+         writePackageFiles(
+            path.join(envPath, "names"),
+            {
+               "a.malloy": ROUTES.persist.model("#@ persist name=bare"),
+               "b.malloy": ROUTES.persist.model('#@ persist name="t; drop"'),
+               "c.malloy": ROUTES.persist.model('#@ persist nmae="t"'),
+            },
+            { manifest: { name: "names", description: "fixture" } },
+         );
+         const env = await Environment.create("testEnv", envPath, []);
+         const error = await failure(() => env.addPackage("names"));
+         const lines = error.message.split("\n");
+         expect(lines.filter((l) => l.startsWith("a.malloy:"))).toHaveLength(1);
+         expect(lines.filter((l) => l.startsWith("b.malloy:"))).toHaveLength(1);
+         expect(lines.some((l) => l.endsWith("[persist-unknown-key]"))).toBe(
+            true,
+         );
+      },
+      { timeout: 60000 },
+   );
 
    describe("the same mistake fails the load the same way on every annotation", () => {
       it(
@@ -389,7 +474,11 @@ describe("the load-versus-refused policy", () => {
          ],
       ];
       const rows: [string, string][] = [
-         ...CASES.map((c) => [c.label, c.model] as [string, string]),
+         // A table name is also checked on the raw text before the models
+         // compile (assertPersistNamesQuoted), which a run does not re-read.
+         ...CASES.filter((c) => !/ name=$/.test(c.label.split(" on ")[0])).map(
+            (c) => [c.label, c.model] as [string, string],
+         ),
          ...NEAR_MISSES,
       ];
       for (const [label, model] of rows) {
@@ -460,7 +549,7 @@ source: orders is ${ROWS} extend {
 }
 `);
             const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-               (w) => w.code === "preaggregate-join-level",
+               (w) => w.code === "preaggregate-not-built",
             );
             expect(warnings.map((w) => [w.subject, w.severity])).toEqual([
                ["orders", "warn"],

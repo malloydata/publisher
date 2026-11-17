@@ -231,13 +231,13 @@ describe("the materialization v2 routes", () => {
       );
    });
 
-   it("registers #(preaggregate) with A1's keys: grain, storage, namespace, and freshness", () => {
+   it("registers #(preaggregate) with its keys: grain, storage, name (and the deprecated namespace), and freshness", () => {
       expect(PUBLISHER_ROUTES["preaggregate"]).toMatchObject({
          payload: "tag",
       });
       expect(
          [...(PUBLISHER_ROUTES["preaggregate"]?.keys ?? [])].sort(),
-      ).toEqual(["freshness", "grain", "namespace", "storage"]);
+      ).toEqual(["freshness", "grain", "name", "namespace", "storage"]);
       expect([...MATERIALIZE_V2_ROUTES].sort()).toEqual([
          "materialize",
          "preaggregate",

@@ -19,13 +19,13 @@ import {
    MaterializationConflictError,
    MaterializationNotFoundError,
 } from "../../../errors";
-import { classifyRunFailure } from "./build_failure_class";
+import { classifyRunFailure, failedRunManifestOf } from "./build_failure_class";
 import { logger } from "../../../logger";
 import {
    MaterializationMode,
    recordMaterializationRun,
 } from "../../../materialization_metrics";
-import { redactPgSecrets } from "../../../pg_helpers";
+import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 import {
    Materialization,
    MaterializationUpdate,
@@ -90,11 +90,12 @@ export class RunLifecycle {
             `Cannot transition to ${next}: materialization ${id} changed while it was written`,
          );
       }
-      // Terminal transitions log at info; the MANIFEST_ROWS_READY hop at debug.
-      logger[TERMINAL.has(next) ? "info" : "debug"](
-         "Materialization transition",
-         { materializationId: id, packageName: updated?.packageName, to: next },
-      );
+      // Debug: `materialization.run.finished` is the run's terminal event.
+      logger.debug("Materialization transition", {
+         runId: id,
+         packageName: updated?.packageName,
+         to: next,
+      });
       return updated;
    }
 
@@ -153,15 +154,22 @@ export class RunLifecycle {
             // Per-source failures arrive already redacted. A whole-run throw has
             // no connection to redact against but can still echo a DSN, so
             // redactPgSecrets (which needs none) is the floor for log and record.
-            const message = redactPgSecrets(errMessage(err));
+            // No storage path (a bucket, an organization's data path) on the
+            // record either: it is read back by callers.
+            const message = redactStorageUrls(redactPgSecrets(errMessage(err)));
             const cancelled = abortController.signal.aborted;
             const next = cancelled ? "CANCELLED" : "FAILED";
             const code = errorCodeOf(err);
             // Whether retrying the run could help, for a consumer that
-            // decides on retries: a failed run commits no manifest, so no
-            // per-source `failures` carry it. Omitted when unclassified, and
+            // decides on retries. A run that built nothing also records each
+            // source's own answer, in its manifest's `failures`; any other
+            // failed run commits no manifest. Omitted when unclassified, and
             // for a cancel, which was asked for.
             const retryable = cancelled ? undefined : classifyRunFailure(err);
+            // Publisher never serves or binds it: every reader that binds or
+            // reuses a run counts MANIFEST_FILE_READY runs only. A host may
+            // still bind the sources it reused, from its own records.
+            const failed = cancelled ? undefined : failedRunManifestOf(err);
             const extra: Record<string, unknown> = {
                ...(retryable !== undefined
                   ? { errorRetryable: retryable }
@@ -183,12 +191,12 @@ export class RunLifecycle {
                if (runFailureReported(err)) return;
                if (cancelled) {
                   logger.info("Materialization run cancelled", {
-                     materializationId: id,
+                     runId: id,
                      code,
                   });
                } else {
                   logger.error("Materialization run failed", {
-                     materializationId: id,
+                     runId: id,
                      code,
                      stack: stackFrames(err),
                   });
@@ -207,7 +215,7 @@ export class RunLifecycle {
                   } catch (readErr) {
                      logger.warn(
                         "Could not read a run's record; recording its status without its metadata",
-                        { materializationId: id, error: errMessage(readErr) },
+                        { runId: id, error: errMessage(readErr) },
                      );
                   }
                }
@@ -223,6 +231,17 @@ export class RunLifecycle {
                         completedAt: new Date(),
                         error: cancelled ? "Cancelled" : message,
                         ...(metadata ? { metadata } : {}),
+                        ...(failed
+                           ? {
+                                // No `builtAt`: nothing was built. The
+                                // run's `completedAt` says when it ended.
+                                manifest: {
+                                   entries: {},
+                                   failures: failed.failures,
+                                   strict: false,
+                                },
+                             }
+                           : {}),
                      },
                      statusesInto(next),
                   );
@@ -237,7 +256,7 @@ export class RunLifecycle {
                         ? "Materialization run threw after its status was recorded; keeping it"
                         : "Materialization run threw after its record was deleted",
                      {
-                        materializationId: id,
+                        runId: id,
                         ...(now ? { status: now.status } : {}),
                         code,
                         stack: stackFrames(err),
@@ -247,7 +266,7 @@ export class RunLifecycle {
             } catch (transitionErr) {
                report();
                logger.error("Failed to record materialization failure", {
-                  materializationId: id,
+                  runId: id,
                   code,
                   transitionError: errMessage(transitionErr),
                });
@@ -260,12 +279,6 @@ export class RunLifecycle {
    }
 }
 
-const TERMINAL: ReadonlySet<MaterializationStatus> = new Set([
-   "MANIFEST_FILE_READY",
-   "FAILED",
-   "CANCELLED",
-]);
-
 /** The statuses `VALID_TRANSITIONS` admits a move to `next` from. */
 function statusesInto(next: MaterializationStatus): MaterializationStatus[] {
    return (Object.keys(VALID_TRANSITIONS) as MaterializationStatus[]).filter(
@@ -275,7 +288,9 @@ function statusesInto(next: MaterializationStatus): MaterializationStatus[] {
 
 /**
  * Whether `err` is the build loop's own answer to the cancel (it checks the
- * signal between sources), rather than a failure the cancel raced.
+ * signal between sources and after the last, before any whole-run failure is
+ * judged, so a cancelled run always ends in this error), rather than a
+ * failure the cancel raced.
  */
 function isOwnCancellation(err: unknown): boolean {
    return err instanceof BuildCancelledError;

@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -71,12 +71,9 @@ source: flights_wide is duckdb.table('flights') extend {
 `;
 
 describe("R4: joins through the served copy answer equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -84,7 +81,6 @@ describe("R4: joins through the served copy answer equal to live", () => {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -165,19 +161,15 @@ source: fl is duckdb.table('flights') -> { select: * } extend {
 `;
 
 describe("R4: a reference join across connections in the path report", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": persistModel },
          seedSql,
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -220,14 +212,8 @@ const crossOrigin = {
 // whenever it compiles, so the retry's read refuses nothing new; this pins
 // that it refuses nothing clean either.
 describe("R4: a served-copy answer retried live", () => {
-   let restore: () => void;
-   beforeAll(() => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
-   });
+   useMaterializationOn();
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -315,16 +301,12 @@ source: carriers_copy is duckdb.table('carriers') -> { select: * } extend {
 };
 
 describe("R4: an index that exports a source whose join is left out", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({ files: exportedFiles, seedSql });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

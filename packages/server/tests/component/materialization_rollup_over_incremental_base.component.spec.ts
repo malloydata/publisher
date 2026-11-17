@@ -12,10 +12,8 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { __setPackageLoadPoolForTests } from "../../src/package_load/package_load_pool";
@@ -24,10 +22,13 @@ import type {
    ResourceRepository,
 } from "../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -151,24 +152,18 @@ describe.skipIf(!POSTGRES_URL)(
       beforeEach(async () => {
          restore = installSettings({ env: {} }).restore;
          await __setPackageLoadPoolForTests(null);
-         root = fs.realpathSync(
-            fs.mkdtempSync(path.join(os.tmpdir(), "rollup-inc-base-")),
-         );
-         envPath = path.join(root, "env");
-         fs.mkdirSync(envPath);
+         ({ root, envPath, db, repo } = await openTempStorage(
+            "rollup-inc-base-",
+            {
+               id: ENV_ID,
+               name: ENV,
+            },
+         ));
          writePackageFiles(
             path.join(envPath, PKG),
             { "m.malloy": modelOf("region") },
             { manifest: { name: PKG, description: "fixture" } },
          );
-         db = new DuckDBConnection(":memory:");
-         await db.initialize();
-         await initializeSchema(db);
-         await db.run(
-            "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-            [ENV_ID, ENV, envPath],
-         );
-         repo = createDuckDBRepository(db);
          env = await Environment.create(ENV, envPath, [
             {
                name: "warehouse",
@@ -184,11 +179,10 @@ describe.skipIf(!POSTGRES_URL)(
            ('west', 5.5, TIMESTAMP '2026-02-01 00:00:00')
          ) AS t(region, amt, d)`);
          await env.addPackage(PKG);
-         service = new MaterializationService({
-            storageManager: { getRepository: () => repo },
-            getEnvironment: async () => env,
-            getLoadedEnvironments: () => [env],
-         } as unknown as EnvironmentStore);
+         service = serviceOverEnvironment(
+            () => repo,
+            () => env,
+         );
       });
 
       afterEach(async () => {
@@ -196,8 +190,7 @@ describe.skipIf(!POSTGRES_URL)(
             () => undefined,
          );
          await env.closeAllConnections().catch(() => undefined);
-         await db.close();
-         fs.rmSync(root, { recursive: true, force: true });
+         await disposeTempStorage({ db, root });
          restore();
          await __setPackageLoadPoolForTests(null);
       });

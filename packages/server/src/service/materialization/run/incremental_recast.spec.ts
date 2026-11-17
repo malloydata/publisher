@@ -8,9 +8,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { openTempDuckDB } from "../../../test_helpers/temp_storage";
 import { logger } from "../../../logger";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { plannedSources } from "../plan/build_plan";
@@ -29,8 +27,8 @@ import {
 describe("columnsARebuildWouldRecast", () => {
    // File-backed: db-duckdb shares one in-memory instance between connections,
    // where another file's `ev` may already exist.
-   const dbDir = mkdtempSync(join(tmpdir(), "recast-"));
-   const duckdb = new DuckDBConnection("duckdb", join(dbDir, "recast.duckdb"));
+   const temp = openTempDuckDB("recast-", "duckdb", { file: "recast.duckdb" });
+   const duckdb = temp.connection;
    let source: Awaited<ReturnType<typeof compile>>;
 
    async function compile(model: string) {
@@ -62,10 +60,7 @@ source: t is duckdb.table('ev') -> {
 `);
    });
 
-   afterAll(async () => {
-      await duckdb.close();
-      rmSync(dbDir, { recursive: true, force: true });
-   });
+   afterAll(() => temp.dispose());
 
    it("names the columns an older build stored as another type", async () => {
       await duckdb.runSQL(
@@ -99,11 +94,10 @@ source: t is duckdb.table('ev') -> {
 describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
    // File-backed: db-duckdb shares one in-memory instance between
    // connections, so an attach here would outlive this file.
-   const dir = mkdtempSync(join(tmpdir(), "recast-refresh-"));
-   const destination = new DuckDBConnection(
-      "recast_probe",
-      join(dir, "probe.duckdb"),
-   );
+   const temp = openTempDuckDB("recast-refresh-", "recast_probe", {
+      file: "probe.duckdb",
+   });
+   const destination = temp.connection;
    const TABLE = '"lake"."orders__g000__abc"';
    const LINEAGE: IncrementalLineage = {
       physicalTableName: "orders__g000__abc",
@@ -123,8 +117,7 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
    });
    afterAll(async () => {
       await destination.runSQL("DETACH lake");
-      await destination.close();
-      rmSync(dir, { recursive: true, force: true });
+      await temp.dispose();
    });
 
    /**
@@ -172,6 +165,10 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
       const issued: string[] = [];
       const s = {
          runSQL: async (sql: string) => {
+            // The warehouse's own column types: none read as DOUBLE.
+            if (sql.startsWith("DESCRIBE") && sql.includes("postgres_query")) {
+               return { rows: [] };
+            }
             if (sql.startsWith("DESCRIBE")) return destination.runSQL(sql);
             issued.push(sql);
             if (sql.includes("duckdb_columns()")) {

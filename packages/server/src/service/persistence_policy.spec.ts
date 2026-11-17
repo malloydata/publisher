@@ -450,7 +450,9 @@ source: a is duckdb.sql("SELECT 1 as x")
 #@ persist name="s2.t"
 source: b is duckdb.sql("SELECT 2 as y")
 `);
-         expect(pkg.persistenceCollisionWarnings()).toEqual([]);
+         expect(pkg.materialization().persistenceCollisionWarnings()).toEqual(
+            [],
+         );
       },
       { timeout: 30000 },
    );
@@ -463,7 +465,9 @@ source: b is duckdb.sql("SELECT 2 as y")
          });
          try {
             const pkg = await loadPackage(COLLIDING_MODEL);
-            expect(pkg.persistenceCollisionWarnings()).toHaveLength(1);
+            expect(
+               pkg.materialization().persistenceCollisionWarnings(),
+            ).toHaveLength(1);
             const collision = (pkg.getPackageMetadata().warnings ?? []).find(
                (w) =>
                   w.message?.includes("resolve to the same materialized table"),
@@ -487,7 +491,9 @@ source: b is duckdb.sql("SELECT 2 as y")
       "does not warn when the same name= targets different destinations",
       async () => {
          const pkg = await loadPackage(SAME_NAME_DIFF_DEST_MODEL);
-         expect(pkg.persistenceCollisionWarnings()).toEqual([]);
+         expect(pkg.materialization().persistenceCollisionWarnings()).toEqual(
+            [],
+         );
          const warnings = pkg.getPackageMetadata().warnings ?? [];
          expect(
             warnings.some((w) =>
@@ -502,7 +508,9 @@ source: b is duckdb.sql("SELECT 2 as y")
       "does not warn for a plain package with distinct persist names",
       async () => {
          const pkg = await loadPackage(PLAIN_MODEL);
-         expect(pkg.persistenceCollisionWarnings()).toEqual([]);
+         expect(pkg.materialization().persistenceCollisionWarnings()).toEqual(
+            [],
+         );
       },
       { timeout: 30000 },
    );

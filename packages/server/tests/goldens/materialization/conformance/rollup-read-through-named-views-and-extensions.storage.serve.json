@@ -88,7 +88,8 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -163,7 +164,8 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -232,7 +234,8 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -307,7 +310,8 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -382,7 +386,8 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -457,7 +462,8 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -526,7 +532,8 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -601,7 +608,8 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "storage"
         },
         "warnings": []
       },

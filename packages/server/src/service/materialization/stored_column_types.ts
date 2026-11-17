@@ -9,8 +9,8 @@
  *   the declared type whatever the warehouse returned ({@link
  *   BUILD_CAST_TARGETS}, {@link storageBuildCasts}).
  * - What a stored column is declared as when served: one declaration rule
- *   ({@link storedMalloyType}, {@link storedMalloyTypeFor}, {@link
- *   storedTypeText}), and per column a verdict: declared as its stored type,
+ *   ({@link storedMalloyType}, {@link storedMalloyTypeFor}), and per
+ *   column a verdict: declared as its stored type,
  *   read through a faithful cast ({@link serveTypePlan}), read as its native
  *   type (a big integer, {@link bigIntegerReads}), or left out, so a query
  *   reading it answers live and every other query is served.
@@ -184,18 +184,36 @@ export function declaredColumnsOf(
 }
 
 /**
- * The declared columns of a persist source being built, or none when its field
- * list cannot be read (the build then runs uncast, as it did before, and the
- * serve-side check still guards the result).
+ * The declared columns of a persist source being built, each under the name
+ * its build's SELECT outputs it as, or none when its field list cannot be read
+ * (the build then runs uncast, as it did before, and the serve-side check
+ * still guards the result).
+ *
+ * A field a trailing `extend` renames (`rename: kind is sub`) is the query's
+ * `sub` column under another name: the SELECT, and so the stored table,
+ * hold `sub`, and the serve side renames it again. Its definition keeps the
+ * output name (`name`) beside the new one (`as`), so the column is declared
+ * as `sub`. A dimension the `extend` computes is no column of the SELECT;
+ * the explore's intrinsic fields already leave it out.
  */
 export function persistSourceDeclaredColumns(persistSource: {
    _explore: { intrinsicFields: readonly unknown[] };
 }): DeclaredColumn[] {
    try {
       return declaredColumnsOf(
-         exploreOf(persistSource).intrinsicFields.filter((f) =>
-            (f as { isAtomicField?: () => boolean }).isAtomicField?.(),
-         ),
+         exploreOf(persistSource).intrinsicFields.flatMap((f) => {
+            const field = f as {
+               isAtomicField?: () => boolean;
+               name?: unknown;
+               type?: unknown;
+               fieldTypeDef?: { name?: unknown };
+            };
+            if (!field.isAtomicField?.()) return [];
+            const def = field.fieldTypeDef;
+            const output =
+               typeof def?.name === "string" ? def.name : field.name;
+            return [{ name: output, type: field.type }];
+         }),
       );
    } catch {
       return [];
@@ -221,12 +239,21 @@ export function castToDeclaredTypes(
    declared: readonly DeclaredColumn[],
    options: BuildCastOptions = {},
 ): string {
+   const cast = new Set<string>();
    const casts = declared.flatMap((d) => {
       const target = buildCastTarget(d.type, options);
       if (!target) return [];
+      cast.add(d.name.toLowerCase());
       const column = quoteIdentifier(d.name, STORAGE_DIALECT);
       return [`CAST(${column} AS ${target}) AS ${column}`];
    });
+   for (const name of options.exactIntegers ?? []) {
+      if (cast.has(name.toLowerCase())) continue;
+      const column = quoteIdentifier(name, STORAGE_DIALECT);
+      casts.push(
+         `CAST(${column} AS ${EXACT_INTEGER_STORAGE_TYPE}) AS ${column}`,
+      );
+   }
    if (casts.length === 0) return selectSQL;
    return `SELECT * REPLACE (${casts.join(", ")}) ${fromSubselect(selectSQL, "__declared_types")}`;
 }
@@ -262,6 +289,31 @@ export interface BuildCastOptions {
     * could store the day before. The serve side decides such a column instead.
     */
    queryTimezone?: string;
+   /**
+    * Output columns the build computed in DuckDB as a 128-bit integer
+    * ({@link wideIntegerColumns}): each is stored as `DECIMAL(38,0)`, which
+    * DuckLake's Parquet keeps exactly, where it would store the 128-bit type
+    * as a DOUBLE ({@link ducklakeStoresAsDouble}).
+    */
+   exactIntegers?: readonly string[];
+}
+
+/** The type a 128-bit integer column is stored as, every digit kept. */
+const EXACT_INTEGER_STORAGE_TYPE = "DECIMAL(38,0)";
+
+/**
+ * The columns of a described SELECT that DuckLake would store as a DOUBLE: a
+ * 128-bit integer, such as DuckDB's sum of BIGINTs. A build stores each as
+ * {@link EXACT_INTEGER_STORAGE_TYPE}; a value past 38 digits fails that cast,
+ * and the build stores the warehouse's types instead
+ * ({@link isCastConversionError}), which the serve side answers live.
+ */
+export function wideIntegerColumns(
+   described: readonly { name?: string; type?: string }[],
+): string[] {
+   return described.flatMap((c) =>
+      c.name && c.type && ducklakeStoresAsDouble(c.type) ? [c.name] : [],
+   );
 }
 
 /** The DuckDB type a declared Malloy type is cast to at build, or undefined. */
@@ -421,6 +473,149 @@ export function serveTypePlan(
       }
    }
    return { casts, unservable };
+}
+
+/**
+ * How one database table's column that moved since its build is read now,
+ * the rule every reader of a database table and its warning share
+ * ({@link serveTypePlan}): `left_out` when the bind left it out (gone, a
+ * type Malloy reads as no basic type, a timestamp that gained or lost its
+ * zone off DuckDB) or no faithful cast reads its type as declared; `cast`
+ * (to a DuckDB type, `BOOLEAN` or `DATE`) where one does; else `as_is`, a
+ * type that still reads as declared.
+ */
+type DriftedColumnRead =
+   | { read: "as_is" }
+   | { read: "cast"; castTo: string }
+   | { read: "left_out" };
+
+export function driftedColumnRead(
+   column: { column: string; observedType?: string; leftOut?: true },
+   declaredType: string,
+   options: BuildCastOptions = {},
+): DriftedColumnRead {
+   if (column.leftOut || !column.observedType) return { read: "left_out" };
+   const [cast] = serveTypePlan(
+      [
+         {
+            column: column.column,
+            storedType: column.observedType,
+            declaredType,
+         },
+      ],
+      options,
+   ).casts;
+   if (cast) return { read: "cast", castTo: cast.castTo };
+   return storedTypeServesAs(column.observedType, declaredType) !== false
+      ? { read: "as_is" }
+      : { read: "left_out" };
+}
+
+/**
+ * The Malloy type a moved column must read as: its build source's declared
+ * one, else the one its build wrote.
+ */
+export function driftDeclaredType(
+   declared: readonly { name?: string; type?: string }[] | undefined,
+   column: string,
+   builtType: string,
+): string {
+   return (
+      declared?.find((c) => c.name === column)?.type ??
+      storedMalloyType(builtType) ??
+      builtType
+   );
+}
+
+/** A declared column, with the author's field when its big-integer read is asked. */
+export interface DeclaredRead extends DeclaredColumn {
+   /** The compiled field: its `bigint` subtype decides a native read. */
+   field?: unknown;
+}
+
+/** How a stored table's columns read as their declared types. */
+interface StoredColumnReadPlan {
+   /** Every stored column whose type does not serve as declared. */
+   mismatches: StoredColumnTypeMismatch[];
+   /**
+    * Each column read through a cast: a faithful cast to its declared type
+    * ({@link serveTypePlan}) in schema order, then each big integer's native
+    * read (`native`, {@link bigIntegerReadOf}) in declared order.
+    */
+   casts: ReadCast[];
+   /** The mismatches no faithful cast reads as declared: left out, or refused. */
+   leftOut: StoredColumnTypeMismatch[];
+   /** The big integers stored where no cast keeps live's digits. */
+   refusals: { column: string; storedType: string }[];
+}
+
+/**
+ * The one read plan for a stored table: which columns are cast, which no
+ * cast reads as declared, and which big integers no read keeps exact. Every
+ * serve-side reader of a stored table (the served copy's v1 and
+ * `#(materialize)` columns, a persisted result, a rollup) and the type
+ * warning build it here, so they never disagree.
+ *
+ * A declared column's big-integer read is asked only when it carries its
+ * `field`; the stored column it reads is matched by exact name.
+ */
+export function storedColumnReadPlan(
+   schema: readonly { name: string; type: string }[],
+   declared: readonly DeclaredRead[],
+   options: BuildCastOptions &
+      Partial<BigIntegerReadOptions> & {
+         /**
+          * The table is in DuckLake (a `storage=` destination): a 128-bit
+          * integer column holds a DOUBLE's digits
+          * ({@link ducklakeStoresAsDouble}), so it is left out whatever its
+          * field's type, never read or re-aggregated.
+          */
+         ducklake?: boolean;
+      } = {},
+): StoredColumnReadPlan {
+   const lossy: StoredColumnTypeMismatch[] = [];
+   if (options.ducklake) {
+      for (const column of schema) {
+         if (!ducklakeStoresAsDouble(column.type)) continue;
+         const d = declaredFor(column.name, declared);
+         if (d) {
+            lossy.push({
+               column: d.name,
+               storedType: column.type,
+               declaredType: d.type || "number",
+            });
+         }
+      }
+   }
+   const lost = new Set(lossy.map((m) => m.column));
+   const mismatches = storedColumnTypeMismatches(schema, declared).filter(
+      (m) => !lost.has(m.column),
+   );
+   const { casts, unservable } = serveTypePlan(mismatches, options);
+   const refusals: StoredColumnReadPlan["refusals"] = [];
+   const cast = new Set(casts.map((c) => c.column));
+   for (const d of declared) {
+      if (!("field" in d) || cast.has(d.name) || lost.has(d.name)) continue;
+      const stored = schema.find((s) => s.name === d.name);
+      if (!stored) continue;
+      const big = bigIntegerReadOf(d.field, stored, {
+         ...options,
+         dialect: options.dialect,
+      });
+      if (!big) continue;
+      if (big.castTo) {
+         casts.push({ column: d.name, castTo: big.castTo, native: true });
+         cast.add(d.name);
+      } else {
+         refusals.push({ column: d.name, storedType: stored.type });
+      }
+   }
+   return {
+      mismatches: [...lossy, ...mismatches],
+      casts,
+      leftOut: [...lossy, ...unservable],
+      refusals,
+   };
 }
 
 /**
@@ -617,10 +812,12 @@ const HUGEINT_EXACT =
  * read through the warehouse's own bigint type, on live's own data path,
  * which rounds where live rounds and gives the field live's `bigint` subtype.
  *
- * - A `storage=` table (`colocated` false) is in DuckDB and its schema is
- *   what DESCRIBE reported: an integer column, or a DECIMAL with no scale, is
- *   read as HUGEINT (UHUGEINT as itself), which holds every value exactly;
- *   one stored as a float has lost digits already and is left out.
+ * - A `storage=` table (`colocated` false) is in a DuckLake destination and
+ *   its schema is what DESCRIBE reported: a 64-bit or narrower integer
+ *   column, or a DECIMAL with no scale, is read as HUGEINT, which holds every
+ *   value exactly; one stored as a float has lost digits already, and so has
+ *   a 128-bit integer, which DuckLake writes to Parquet as a DOUBLE
+ *   ({@link ducklakeStoresAsDouble}): both are left out.
  * - A colocated table is in the source's own warehouse, and its column can
  *   be wider than any type Malloy names for a `bigint` number (Postgres
  *   stores a sum of BIGINTs as `numeric`, SQL Server's `decimal(38,0)` is
@@ -643,18 +840,51 @@ export function bigIntegerReads(
    // rounds exactly where live rounds. A `storage=` table is read in DuckDB,
    // which keeps every digit: cast there only when live does too.
    if (!options.colocated && !liveKeepsBigIntegers(options.dialect)) return [];
+   // How a field is matched to its stored column depends on how the table
+   // stores it. A v1 query-shaped table stores each column under its
+   // query's output name: a field a trailing `extend` renames (`rename:
+   // amount is total`) is stored as `total`, and that name is its own
+   // whatever another field is now called, so the output name is matched
+   // first, then a field the `extend` computes, and only then a renamed
+   // field's new name. A `#(materialize)` table stores the source after its
+   // renames, under each field's own name (`as`, else `name`), matched
+   // first; the output name only where no field goes by it.
    const byName = new Map<string, unknown>();
    const declared: DeclaredColumn[] = [];
-   for (const f of fields ?? []) {
-      const { name, as, type } = (f ?? {}) as {
+   const fieldOf = (f: unknown) =>
+      (f ?? {}) as {
          name?: unknown;
          as?: unknown;
          type?: unknown;
+         e?: unknown;
       };
-      const key = typeof as === "string" ? as : name;
-      if (typeof key !== "string" || typeof type !== "string") continue;
+   const claim = (key: unknown, f: unknown) => {
+      const { type } = fieldOf(f);
+      if (typeof key !== "string" || typeof type !== "string") return;
+      if (byName.has(key)) return;
       byName.set(key, f);
       declared.push({ name: key, type });
+   };
+   const ownName = (f: unknown) => {
+      const { name, as } = fieldOf(f);
+      return typeof as === "string" ? as : name;
+   };
+   if (options.storesOutputNames) {
+      for (const f of fields ?? []) {
+         if (fieldOf(f).e === undefined) claim(fieldOf(f).name, f);
+      }
+      for (const f of fields ?? []) {
+         if (fieldOf(f).e !== undefined) claim(ownName(f), f);
+      }
+      for (const f of fields ?? []) {
+         const { as, e } = fieldOf(f);
+         if (e === undefined && typeof as === "string") claim(as, f);
+      }
+   } else {
+      for (const f of fields ?? []) claim(ownName(f), f);
+      for (const f of fields ?? []) {
+         if (typeof fieldOf(f).as === "string") claim(fieldOf(f).name, f);
+      }
    }
    const out: BigIntegerRead[] = [];
    for (const column of schema) {
@@ -696,6 +926,14 @@ export interface BigIntegerReadOptions {
     * names it, as its build captured it, or undefined when it did not.
     */
    nativeTypeOf?: (column: string) => string | undefined;
+   /**
+    * The table stores each column under its query's output name, before the
+    * source's trailing `extend` renames it: a v1 query-shaped (or
+    * refinement-rooted) table. A `#(materialize)` table stores the source
+    * after its renames, under each field's own name. Decides which name a
+    * stored column is matched to a field by first ({@link bigIntegerReads}).
+    */
+   storesOutputNames?: boolean;
 }
 
 /**
@@ -765,11 +1003,41 @@ function isBigIntegerField(field: unknown): boolean {
    return f.type === "number" && f.numberType === "bigint";
 }
 
-/** The DuckDB type a stored column is read as to keep every digit, or none. */
+/**
+ * The DuckDB type a `storage=` column is read as to keep every digit, or none.
+ *
+ * A storage destination is a DuckLake catalog, and DuckLake (DuckDB 1.5)
+ * writes a 128-bit integer column (`HUGEINT`, `UHUGEINT`) to Parquet as a
+ * DOUBLE while its catalog still reports the 128-bit type, so a value past
+ * 2^53 comes back rounded (4530000000000225187 as 4530000000000225280). Only
+ * rows still inlined in the catalog keep every digit, and a reader cannot
+ * tell which it has, so such a column has no exact read: left out, so only a
+ * query reading it is answered live ({@link ducklakeStoresAsDouble}).
+ */
 function duckdbBigIntegerCast(storedType: string): string | undefined {
    const base = storedType.trim().toUpperCase();
-   if (base === "UHUGEINT") return "UHUGEINT";
+   if (ducklakeStoresAsDouble(base)) return undefined;
    return HUGEINT_EXACT.test(base) ? "HUGEINT" : undefined;
+}
+
+/**
+ * Whether DuckLake stores a column of this type, as its catalog reports it,
+ * as a DOUBLE in its Parquet files: a 128-bit integer, which Parquet has no
+ * type for. Measured on DuckDB 1.5.5 with ducklake; a plain DuckDB table
+ * keeps every digit of the same column, and a `DECIMAL(38,0)` keeps them in
+ * DuckLake too.
+ */
+export function ducklakeStoresAsDouble(storedType: string): boolean {
+   return /^(HUGEINT|INT128|UHUGEINT)$/i.test(storedType.trim());
+}
+
+/**
+ * Whether a stored column of this type holds a 128-bit integer anywhere,
+ * a list's element or a struct's field included: each such leaf DuckLake
+ * holds as a DOUBLE too.
+ */
+export function holdsDucklakeDouble(storedType: string): boolean {
+   return /\b(HUGEINT|INT128|UHUGEINT)\b/i.test(storedType);
 }
 
 /**
@@ -1058,17 +1326,6 @@ export function declarableColumns(
 /** `name TYPE, …` for an error or log line: names and types, never values. */
 
 /**
- * The Malloy type a stored column is declared as in the `type:`: the one rule
- * every stored table's declaration follows ({@link storedMalloyType}). A
- * column it cannot declare is left out before a declaration is written, so
- * the `json` here is never reached by one that compiles: Malloy refuses it in
- * a `type:`, which fails that copy and leaves the source to its fallback.
- */
-export function storedTypeText(stored: string): string {
-   return storedMalloyType(stored) ?? "json";
-}
-
-/**
  * A wire entry's captured `schema` as a bound entry carries it: only columns
  * with both a name and a type, and undefined when none is left.
  */
@@ -1118,4 +1375,49 @@ export function previewNativeSchema(
       ...binding,
       nativeSchema: binding.schema.map((c) => ({ name: c.name, type })),
    };
+}
+
+/**
+ * The stored columns to rename to the name the build source declares: each
+ * whose name matches no declared name exactly and exactly one by a case fold,
+ * when no other stored column folds to it. A warehouse that folds quoted
+ * identifiers (Snowflake with `QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE`)
+ * returns Malloy's lower-case aliases upper-cased; stored under the declared
+ * names, every reader finds them by exact name, as live does (P3-06..09).
+ */
+export function canonicalRenames(
+   stored: readonly { name?: string }[],
+   declared: readonly string[],
+): { from: string; to: string }[] {
+   const exact = new Set(declared);
+   const fold = (n: string) => n.toLowerCase();
+   const names = stored.flatMap((c) => (c.name ? [c.name] : []));
+   const storedFolds = new Map<string, number>();
+   for (const name of names) {
+      storedFolds.set(fold(name), (storedFolds.get(fold(name)) ?? 0) + 1);
+   }
+   return names.flatMap((name) => {
+      if (exact.has(name) || storedFolds.get(fold(name)) !== 1) return [];
+      const matches = declared.filter((d) => fold(d) === fold(name));
+      return matches.length === 1 ? [{ from: name, to: matches[0] }] : [];
+   });
+}
+
+/**
+ * A stored schema with each column named as `names` spells it where it
+ * matches only by a unique case fold ({@link canonicalRenames}): what a
+ * reader matching by exact name reads, for a table stored before its build
+ * renamed such columns. DuckDB resolves a column name case-insensitively, so
+ * the renamed name still reads the stored column.
+ */
+export function canonicalStoredSchema<C extends { name: string }>(
+   schema: readonly C[],
+   names: readonly string[],
+): C[] {
+   const renamed = new Map(
+      canonicalRenames(schema, names).map((r) => [r.from, r.to]),
+   );
+   return schema.map((c) =>
+      renamed.has(c.name) ? { ...c, name: renamed.get(c.name)! } : c,
+   );
 }

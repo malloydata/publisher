@@ -25,7 +25,10 @@ import { Environment } from "./environment";
 import type { Package } from "./package";
 import { parsePackageName } from "./identity";
 import { writePackageFiles } from "../test_helpers/temp_package";
-import { installSettings } from "../test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../test_helpers/settings_env";
 import { tempBuildPlanPackages } from "../test_helpers/incremental_test_harness";
 import { usePackageLoadPool } from "../test_helpers/temp_package";
 import { compilePackageBuildPlan } from "./materialization/plan/build_plan_compile";
@@ -44,13 +47,7 @@ const buildPlanPackages = tempBuildPlanPackages();
 
 // The switch is on for the whole file, set before this file's load worker
 // starts: a worker keeps the settings it started with.
-let fileSettings: (() => void) | undefined;
-beforeAll(() => {
-   fileSettings = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
-   }).restore;
-});
-afterAll(() => fileSettings?.());
+useMaterializationOn();
 
 let rootDir: string;
 let envPath: string;
@@ -198,8 +195,13 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
          expect(rollups(pkg)).toEqual([]);
          const warning = pkg
             .annotationFindingWarnings()
-            .find((w) => w.code === "preaggregate-join-level");
+            .find((w) => w.code === "preaggregate-not-built");
          expect(warning?.severity).toBe("warn");
+         expect(
+            Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
+               (r) => r.reason,
+            ),
+         ).toEqual(["join_level"]);
          expect(formatPublishRejections(pkg)).toBeUndefined();
       },
       { timeout: 60000 },

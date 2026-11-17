@@ -86,7 +86,46 @@ describe("the gate policy's rows", () => {
       );
    });
 
-   it("keeps a v1 storage= table's own row-level gate under G3, whatever the switches, and nothing else of v1", () => {
+   it("keeps a colocated rollup's own proven base gate with the switch off (G3), and no other", () => {
+      const OFF_ALL: GateSwitches = {
+         materialize: false,
+         gatedSources: false,
+         gatedStorageRollupsReviewed: false,
+      };
+      const own = {
+         rowLevel: true,
+         attributed: true,
+         inheritedRowFilter: false,
+      };
+      const rollup = (t: Partial<GatedTable>) =>
+         table({ kind: "rollup", gate: own, baseGateProven: true, ...t });
+      for (const sw of [OFF_ALL, { ...OFF_ALL, materialize: true }]) {
+         expect(tableKeepsGates(rollup({ tier: "colocated" }), sw)).toBe(true);
+         // In a storage destination: awaits its review.
+         expect(tableKeepsGates(rollup({ tier: "storage" }), sw)).toBe(false);
+         // An inherited gate, or one not proven on the grain.
+         expect(
+            tableKeepsGates(
+               rollup({
+                  tier: "colocated",
+                  gate: { ...own, attributed: false, inheritedRowFilter: true },
+               }),
+               sw,
+            ),
+         ).toBe(false);
+         expect(
+            tableKeepsGates(
+               rollup({ tier: "colocated", baseGateProven: false }),
+               sw,
+            ),
+         ).toBe(false);
+         expect(
+            tableKeepsGates(rollup({ tier: "colocated", v1: true }), sw),
+         ).toBe(false);
+      }
+   });
+
+   it("keeps a v1 table's own row-level gate under G3 on either tier, whatever the switches, and nothing else of v1", () => {
       const persist = (t: Partial<GatedTable>) =>
          table({ kind: "persist", v1: true, ...t });
       const NONE: GateSwitches = {
@@ -96,8 +135,7 @@ describe("the gate policy's rows", () => {
       };
       for (const s of [ON, NONE]) {
          expect(tableKeepsGates(persist({ tier: "storage" }), s)).toBe(true);
-         // A colocated one is plan's colocated tier check's to decide.
-         expect(tableKeepsGates(persist({ tier: "colocated" }), s)).toBe(false);
+         expect(tableKeepsGates(persist({ tier: "colocated" }), s)).toBe(true);
          for (const gate of [
             { ...OWN_GATE, rowLevel: false },
             { ...OWN_GATE, attributed: false },
@@ -125,7 +163,13 @@ describe("the gate policy at the router", () => {
    const NO_G3 = { colocatedReadsKeepGates: false };
    const OFF = { ...ON, gatedSources: false };
    const colocated = [{ tier: "colocated" as const }];
-   const mixed = [{ tier: "colocated" as const }, { tier: "storage" as const }];
+   // A `storage=` read carries its gate columns' stored types, as the router
+   // lists them.
+   const exact = { gateColumnTypes: ["BIGINT"] };
+   const mixed = [
+      { tier: "colocated" as const },
+      { tier: "storage" as const, ...exact },
+   ];
 
    it("lets every leg past a gate under the gated-sources switch", () => {
       for (const leg of ["view", "rollup", "served"] as const) {
@@ -135,21 +179,24 @@ describe("the gate policy at the router", () => {
       }
    });
 
-   it("lets only the served copy past without it, for an answer reading only colocated tables (G3)", () => {
+   it("lets the served copy and the rollup leg past without it, for an answer reading only colocated tables (G3)", () => {
       expect(legMayPassGate("view", OFF, G3)).toBe(false);
-      expect(legMayPassGate("rollup", OFF, G3)).toBe(false);
+      expect(legMayPassGate("rollup", OFF, G3)).toBe(true);
       expect(legMayPassGate("served", OFF, G3)).toBe(true);
       expect(answerKeepsGates("served", colocated, OFF, G3)).toBe(true);
       expect(answerKeepsGates("served", mixed, OFF, G3)).toBe(false);
       expect(answerKeepsGates("served", [], OFF, G3)).toBe(false);
-      expect(answerKeepsGates("rollup", colocated, OFF, G3)).toBe(false);
+      expect(answerKeepsGates("rollup", colocated, OFF, G3)).toBe(true);
+      expect(answerKeepsGates("rollup", mixed, OFF, G3)).toBe(false);
+      expect(answerKeepsGates("rollup", [], OFF, G3)).toBe(false);
+      expect(legMayPassGate("rollup", OFF, NO_G3)).toBe(false);
       expect(legMayPassGate("served", OFF, NO_G3)).toBe(false);
       expect(answerKeepsGates("served", colocated, OFF, NO_G3)).toBe(false);
    });
 
    it("counts a storage= table admitted past its own gate as a G3 table, and no other storage= table", () => {
-      const own = { tier: "storage" as const, ownGateKept: true };
-      const other = { tier: "storage" as const };
+      const own = { tier: "storage" as const, ownGateKept: true, ...exact };
+      const other = { tier: "storage" as const, ...exact };
       expect(answerKeepsGates("served", [own], OFF, G3)).toBe(true);
       expect(answerKeepsGates("served", [own, ...colocated], OFF, G3)).toBe(
          true,
@@ -160,6 +207,54 @@ describe("the gate policy at the router", () => {
       expect(answerKeepsGates("served", [own], OFF, NO_G3)).toBe(false);
       expect(answerKeepsGates("view", [own], OFF, G3)).toBe(false);
       expect(answerKeepsGates("rollup", [own], OFF, G3)).toBe(false);
+   });
+
+   it("L2: keeps no answer whose gate column is stored inexactly, under any switch", () => {
+      const own = (gateColumnTypes?: string[]) => ({
+         tier: "storage" as const,
+         ownGateKept: true,
+         ...(gateColumnTypes ? { gateColumnTypes } : {}),
+      });
+      for (const inexact of [
+         ["DOUBLE"],
+         ["BIGINT", "FLOAT"],
+         ["REAL"],
+         ["HUGEINT"],
+         ["UHUGEINT"],
+         ["STRUCT(acct DOUBLE, region VARCHAR)"],
+      ]) {
+         for (const sw of [ON, OFF]) {
+            expect(answerKeepsGates("served", [own(inexact)], sw, G3)).toBe(
+               false,
+            );
+         }
+         expect(answerKeepsGates("rollup", [own(inexact)], ON, G3)).toBe(false);
+         expect(answerKeepsGates("view", [own(inexact)], ON, G3)).toBe(false);
+         expect(
+            answerKeepsGates(
+               "served",
+               [{ tier: "colocated", gateColumnTypes: inexact }],
+               ON,
+               G3,
+            ),
+         ).toBe(false);
+      }
+      // Types that could not be listed: a storage= table keeps nothing, a
+      // database table (built in the source's own types) keeps its gate.
+      expect(answerKeepsGates("served", [own()], OFF, G3)).toBe(false);
+      expect(answerKeepsGates("served", [own()], ON, G3)).toBe(false);
+      expect(answerKeepsGates("served", colocated, OFF, G3)).toBe(true);
+      // Exact types keep it, as before.
+      for (const exactTypes of [
+         ["BIGINT"],
+         ["DECIMAL(38,0)"],
+         ["VARCHAR", "DATE", "TIMESTAMP"],
+         [],
+      ]) {
+         expect(answerKeepsGates("served", [own(exactTypes)], OFF, G3)).toBe(
+            true,
+         );
+      }
    });
 
    it("fails closed on a leg with no row", () => {
@@ -190,20 +285,19 @@ describe("the gate policy's rows at their edges", () => {
       }
    });
 
-   it("keeps a persist table's gate only on the storage tier and only its own row-level gate (G3), under every switch", () => {
+   it("keeps a persist table's gate on either tier, and only its own row-level gate (G3), under every switch", () => {
       const all: GateSwitches = {
          materialize: true,
          gatedSources: true,
          gatedStorageRollupsReviewed: true,
       };
       for (const v1 of [true, false]) {
-         // A colocated v1 table is the colocated tier check's to decide.
          expect(
             tableKeepsGates(
                table({ kind: "persist", v1, tier: "colocated" }),
                all,
             ),
-         ).toBe(false);
+         ).toBe(true);
          expect(
             tableKeepsGates(
                table({ kind: "persist", v1, tier: "storage" }),

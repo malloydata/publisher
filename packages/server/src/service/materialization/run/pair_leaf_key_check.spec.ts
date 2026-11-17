@@ -95,6 +95,7 @@ async function scenario() {
       getStorageDestination: () => {
          throw new Error("no storage in this spec");
       },
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
    const storage: Parameters<typeof buildSource>[1] = async () => {
@@ -102,6 +103,7 @@ async function scenario() {
    };
    const build = new InstructedBuild({
       buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -223,6 +225,7 @@ describe("a pair table's leaf key check, on a build", () => {
                   name: s.source.name,
                   sourceEntityId: s.address,
                   connectionName: "duckdb",
+                  dialect: "duckdb",
                },
             },
             materializePlans: materializePlansIn(s.compiled) ?? {},
@@ -265,29 +268,36 @@ describe("a pair table's leaf key check, on a build", () => {
    // that fails part-way, or a rewrite that brings a NULL or repeated leaf
    // key, never leaves a pass bound over rows it did not check.
    it("is forgotten on the models' colocated bindings when a run is about to write the table", () => {
-      const model = {};
+      const model = {
+         setServedCopyContext: () => {},
+         prepareServedCopy: async () => {},
+         persistedViewBuilds: () => [],
+         servedCopyProblems: () => [],
+         storedColumnTypeMismatches: () => [],
+      };
       const materialization = new PackageMaterialization({
          models: () => new Map([["m.malloy", model]]),
          packageName: () => "pkg",
          packagePath: () => "/nowhere",
          malloyConfig: () => undefined,
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "flights@m": {
                name: "flights",
                sourceEntityId: "a",
                connectionName: "duckdb",
+               dialect: "duckdb",
             },
          },
       } as never;
-      materialization.materializePlans = {
+      materialization.plan.materializePlans = {
          "flights@m": {
             persist: {},
             storedColumns: [{ name: "id", type: "number" }],
          } as unknown as MaterializePlan,
       };
-      materialization.colocatedSourceEligibility = {
+      materialization.plan.colocatedSourceEligibility = {
          eligibleEntityIds: new Set(["a"]),
       } as never;
       const bound = (): Binding | undefined =>
@@ -306,7 +316,7 @@ describe("a pair table's leaf key check, on a build", () => {
       });
       expect(bound()?.primaryKeys).toEqual({ "segs@m": true });
       materialization.forgetKeyUniqueness(["a"]);
-      expect(bound()?.tablePath).toBe("flights_pairs");
+      expect(bound()?.tablePath).toBe('"flights_pairs"');
       expect(bound()?.primaryKeys).toBeUndefined();
       // A later bind that holds the record again pushes it.
       materialization.bind({

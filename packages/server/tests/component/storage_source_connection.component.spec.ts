@@ -111,8 +111,10 @@ describe("a storage= source on an environment DuckDB connection", () => {
          ),
       ).toEqual([]);
       expect(
-         pkg.getServeVerdicts().find((v) => v.sourceName === "by_region")
-            ?.verdict,
+         pkg
+            .materialization()
+            .serveVerdicts()
+            .find((v) => v.sourceName === "by_region")?.verdict,
       ).toBe("live");
    });
 });

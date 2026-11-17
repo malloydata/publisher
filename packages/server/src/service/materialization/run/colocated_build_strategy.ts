@@ -9,6 +9,7 @@
  * text, which differs by dialect, is warehouse_sql.ts's.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "./error_code";
@@ -125,6 +126,7 @@ export class ColocatedTier
          runOptions,
          incrementalRefresh,
          replacesView,
+         signal,
       } = request;
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -154,11 +156,17 @@ export class ColocatedTier
       // Undefined on backends that do not report one.
       let buildCostBytes: number | undefined;
       try {
+         // A run cancelled before its read starts reads nothing; a driver
+         // that honours the signal cancels the read in flight.
+         if (signal?.aborted) throw new BuildCancelledError();
          const ctas = await connection.runSQL(
             `CREATE TABLE ${quotedStaging} AS (${buildSQL})`,
-            runOptions,
+            signal ? { ...runOptions, abortSignal: signal } : runOptions,
          );
          buildCostBytes = ctas?.runStats?.queryCostBytes;
+         // Cancelled while it read (a driver that ignores the signal): the
+         // staging table is dropped and never swapped into place.
+         if (signal?.aborted) throw new BuildCancelledError();
       } catch (err) {
          await dropStagingAfterFailure({
             connection,
@@ -186,12 +194,6 @@ export class ColocatedTier
       manifest.update(sourceEntityId, { tableName: quotedPhysical });
 
       const durationMs = Math.round(performance.now() - startTime);
-      // Debug: the run's `materialization.build.finished` is the build's event.
-      logger.debug(`Built materialized source ${persistSource.name}`, {
-         physicalTableName,
-         durationMs,
-      });
-
       // A colocated `#@ persist` table is bound on the served copy with the
       // columns its build wrote, captured here as a `storage=` build captures
       // them (the v1 cutover's G1).
@@ -232,7 +234,7 @@ export class ColocatedTier
          materializedTableId: instruction.materializedTableId,
          physicalTableName,
          connectionName: persistSource.connectionName,
-         realization: instruction.realization,
+         realization: "COPY",
          ...ledgerFields(incrementalRefresh?.lineage, seededThrough),
          // Reported for any incremental source that rebuilt, so a full rebuild
          // is distinguishable from a delta.

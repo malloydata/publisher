@@ -88,13 +88,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a named view",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -163,13 +164,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a view refined from another",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -232,13 +234,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "an extension, by a grain dimension",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -307,13 +310,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "an extension, by its own dimension over the grain",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -382,13 +386,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a named view",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -457,13 +462,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a view refined from another",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -526,13 +532,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "an extension, by a grain dimension",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -601,13 +608,14 @@
         },
         "servedBy": {
           "kind": "rollup",
-          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
+          "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "an extension, by its own dimension over the grain",
       "servedBy": "rollup",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

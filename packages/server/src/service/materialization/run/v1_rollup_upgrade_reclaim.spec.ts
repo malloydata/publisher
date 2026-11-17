@@ -5,9 +5,9 @@
  * Upgrading straight to the release that retires the v1 cutover's switch
  * (6g) from one that ran it `off`: a v1 `#@ preaggregate` rollup that release
  * built as `__preagg__` is not this release's, so this release answers live
- * until its first build makes its rollup table, and the old table is
- * reclaimed by the general run reclaim (deleting the old run with its
- * tables), which replaced the cutover's own rebuild-and-GC spec.
+ * until its first build makes its rollup table. Deleting the old run is
+ * record-only: the old table is left for the operator to drop through the
+ * connection, and serving never reads it again.
  *
  * The old run cannot be built here (its builder is gone), so it is the
  * record that release left: a settled run whose manifest names the
@@ -16,8 +16,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../access_record";
 import { __setPackageLoadPoolForTests } from "../../../package_load/package_load_pool";
@@ -26,16 +24,18 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName } from "../../identity";
 import { splitManifestEntries } from "./manifest_loader";
 import { MaterializationService } from "./materialization_service";
 import { ownedTableComment } from "./table_ownership";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -82,38 +82,28 @@ describe("a v1 rollup table from a release that ran the cutover off, after the u
          },
       }).restore;
       await __setPackageLoadPoolForTests(null);
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "v1-rollup-upgrade-")),
-      );
-      const envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
+      const storage = await openTempStorage("v1-rollup-upgrade-", {
+         id: ENV_ID,
+         name: ENV,
+      });
+      ({ root, db, repo } = storage);
+      const { envPath } = storage;
       writePackageFiles(
          path.join(envPath, "pa"),
          { "model.malloy": MODEL },
          { manifest: { name: "pa", description: "fixture" } },
       );
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage("pa");
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore;
-      service = new MaterializationService(store);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    });
 
    afterEach(async () => {
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
       await __setPackageLoadPoolForTests(null);
    });
@@ -202,7 +192,7 @@ describe("a v1 rollup table from a release that ran the cutover off, after the u
       });
    }
 
-   it("answers live until its first build, then from its own rollup table, and drops the old table with the old run", async () => {
+   it("answers live until its first build, then from its own rollup table, and deleting the old run leaves the old table", async () => {
       const before = await olderRelease();
       // Its manifest bound, as a restart or a host binds it: not this
       // release's table, so live.
@@ -227,23 +217,10 @@ describe("a v1 rollup table from a release that ran the cutover off, after the u
       ).not.toContainEqual(expect.stringContaining("__preagg__"));
       expect(await ask()).toEqual({ rows: LIVE, servedBy: "rollup" });
 
-      await service.deleteMaterialization(ENV, "pa", before.id, {
-         dropTables: true,
-      });
-      expect(await tables()).not.toContain(OLD_TABLE);
+      // Record-only: the old table stays until the operator drops it.
+      await service.deleteMaterialization(ENV, "pa", before.id);
+      expect(await tables()).toContain(OLD_TABLE);
       expect(await tables()).toContain(rollup[0]);
       expect(await ask()).toEqual({ rows: LIVE, servedBy: "rollup" });
-   });
-
-   it("never drops the old table when another package has marked it since", async () => {
-      const before = await olderRelease();
-      await build();
-      await sql(
-         `COMMENT ON TABLE ${OLD_TABLE} IS '${ownedTableComment(`${ENV}/other`)}'`,
-      );
-      await service.deleteMaterialization(ENV, "pa", before.id, {
-         dropTables: true,
-      });
-      expect(await tables()).toContain(OLD_TABLE);
    });
 });

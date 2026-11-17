@@ -14,7 +14,11 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { writePackageFiles } from "../../../src/test_helpers/temp_package";
 
 const ENV_NAME = "package-versions-router-env";
@@ -76,6 +80,7 @@ describe("versions routes", () => {
       );
       env = await startRestE2E();
       baseUrl = env.baseUrl;
+      await deleteLeftoverEnvironment(baseUrl, ENV_NAME);
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "content-type": "application/json" },

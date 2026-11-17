@@ -79,13 +79,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in a.malloy",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -149,13 +150,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in b.malloy",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -219,13 +221,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in a.malloy",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -289,13 +292,14 @@
         "servedBy": {
           "kind": "materialized",
           "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in b.malloy",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

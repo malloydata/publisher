@@ -105,6 +105,13 @@ export interface RollupPlan {
     */
    namespace?: string;
    /**
+    * The leaf of this grain's own `name=`: the readable prefix of the name
+    * Publisher gives its table (`<prefix>__p<hash>`), as a `name=` sets it
+    * under `scope: "version"`. Undefined: the readable name's own
+    * `<pkg>__<file>__<base>_by_<grain>`.
+    */
+   prefix?: string;
+   /**
     * The storage destination this rollup is built into and served from — this
     * grain's own `#@ preaggregate storage=`, and only ever that. Undefined for a
     * colocated rollup built into the base's own warehouse.

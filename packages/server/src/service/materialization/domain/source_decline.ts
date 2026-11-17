@@ -21,6 +21,8 @@ const SOURCE_DECLINES = {
    build_plan_unavailable: { stage: "bind" },
    refused: { stage: "bind" },
    missing_table: { stage: "bind" },
+   // A manifest entry's table name its dialect cannot read or quote.
+   unquotable_name: { stage: "bind" },
    // The served copy's compile (`serve/served_copy_serve.ts`).
    compile_failed: { stage: "served_copy" },
    cross_connection_unbuilt: { stage: "served_copy" },
@@ -44,7 +46,7 @@ const SOURCE_DECLINES = {
 >;
 
 /** Why a source entry is not served. */
-export type SourceDeclineReason = keyof typeof SOURCE_DECLINES;
+type SourceDeclineReason = keyof typeof SOURCE_DECLINES;
 
 type DeclinedAt<S extends "bind" | "served_copy"> = {
    [R in SourceDeclineReason]: (typeof SOURCE_DECLINES)[R]["stage"] extends S
