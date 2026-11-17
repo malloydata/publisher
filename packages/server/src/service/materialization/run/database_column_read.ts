@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The bind's read of each bound colocated table's columns, as its warehouse
- * holds them now ({@link observedColocatedColumns}), so a column altered
+ * The bind's read of each bound database table's columns, as its warehouse
+ * holds them now ({@link observedDatabaseColumns}), so a column altered
  * outside a build is read with the type the table holds
  * (`serve/bind.ts`, `applyObservedColumns`).
  *
@@ -45,7 +45,7 @@ type ReadConnection = Pick<Connection, "runSQL" | "dialectName">;
  * Each entry's columns as its warehouse holds them now, by sourceEntityId,
  * or why they could not be read. Every entry gets an answer.
  */
-export async function observedColocatedColumns(args: {
+export async function observedDatabaseColumns(args: {
    entries: FreshnessManifest;
    /** The connection each entry's table lives on, by sourceEntityId. */
    connectionNameOf: (sourceEntityId: string) => string | undefined;

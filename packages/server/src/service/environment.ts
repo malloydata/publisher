@@ -2250,7 +2250,7 @@ export class Environment {
                colocated: tableNameManifest,
                observed: await pkg
                   .materialization()
-                  .readColocatedColumns(tableNameManifest),
+                  .readDatabaseColumns(tableNameManifest),
             });
          }
          if (

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * End to end, through the real package and environment: a colocated table
+ * End to end, through the real package and environment: a database table
  * built by a real run, then altered in its warehouse (`ALTER TABLE`), is read
  * with the type it holds once the package binds again
  * (`Package.reloadAllModels`, the path a run's commit, a manifest bind and a
@@ -230,7 +230,7 @@ const tiers: {
 ];
 
 for (const tier of tiers) {
-   describe(`a colocated table altered after its build is read as it now is, through the real bind (${tier.label})`, () => {
+   describe(`a database table altered after its build is read as it now is, through the real bind (${tier.label})`, () => {
       let restore: () => void;
       let f: Fixture;
       let drop: (() => Promise<void>) | undefined;

@@ -10,7 +10,7 @@
  *
  * The drift is made after the build with a real `ALTER TABLE`. A colocated
  * table's types are then read from its warehouse as a package's bind reads
- * them (`observeColocatedColumns`), for each colocated mechanism:
+ * them (`observeDatabaseColumns`), for each colocated mechanism:
  * `#(materialize)`, `#@ persist` and a rollup. A `storage=` table's binding
  * carries its schema from the run that bound it, so its schema is altered
  * with it, as a run that bound the altered table would.
@@ -87,7 +87,7 @@ source: ${name} is ev extend {
       servedFrom: "database",
    },
    {
-      label: "#@ persist colocated",
+      label: "#@ persist database",
       model: (name: string, measure: string) =>
          `#@ persist
 source: ${name} is ev -> { select: * } extend {
@@ -221,7 +221,7 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
             }
          } else {
             // A colocated table's types, read from its warehouse at bind.
-            const observed = await fixture.observeColocatedColumns();
+            const observed = await fixture.observeDatabaseColumns();
             expect(observed.unread).toEqual([]);
             // One drift per table (the two sources may share one).
             expect(observed.drifted.length).toBeGreaterThan(0);
@@ -359,7 +359,7 @@ source: flights_wide is duckdb.table('flights') extend {
    }
 });
 
-describe("R4 (rollup colocated): a rollup table whose column types drifted", () => {
+describe("R4 (rollup database): a rollup table whose column types drifted", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
@@ -400,7 +400,7 @@ source: ev is duckdb.table('ev') extend {
          }
       }
       expect(altered.length).toBe(1);
-      const observed = await fixture.observeColocatedColumns();
+      const observed = await fixture.observeDatabaseColumns();
       expect(observed.unread).toEqual([]);
       expect(observed.drifted).toEqual([
          expect.objectContaining({
@@ -443,7 +443,7 @@ const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
 const PG_SCHEMA = "r4_observed_drift";
 
 describe.skipIf(!POSTGRES_URL)(
-   "R4 (#(materialize) colocated, Postgres): a table altered after its build",
+   "R4 (#(materialize) database, Postgres): a table altered after its build",
    () => {
       let restore: () => void;
       let fixture: R4Fixture;
@@ -487,7 +487,7 @@ source: drift is ev extend {
          await pg.runSQL(
             `ALTER TABLE ${table} ALTER COLUMN flag TYPE INTEGER USING flag::int`,
          );
-         const observed = await fixture.observeColocatedColumns();
+         const observed = await fixture.observeDatabaseColumns();
          expect(observed.unread).toEqual([]);
          expect(observed.drifted).toEqual([
             expect.objectContaining({

@@ -164,13 +164,31 @@ async function storeTables(pkg: Package): Promise<void> {
    // The tables exist only now, after the version bound them: that bind
    // could not read them, so they answer live until the facade's retry reads
    // them (no rebind here: the retry is what is proven).
+   const unreadWarnings = () =>
+      (pkg.getPackageMetadata().warnings ?? []).filter(
+         (w) => w.code === "database-table-unread",
+      );
+   // While a table is unread, the package says so, and that a retry is due.
+   if (pkg.materialization().hasUnreadDatabaseTables()) {
+      const [warning] = unreadWarnings();
+      expect(warning?.severity).toBe("warn");
+      // Named by its source when the plan knows the table's address (an
+      // unversioned package's host table here is another definition's).
+      if (warning?.subject !== undefined) {
+         expect(warning.subject).toBe("summary");
+      }
+      expect(warning.message).toContain("does not exist");
+      expect(warning.message).toContain("A retry is pending.");
+   }
    const deadline = Date.now() + 15_000;
-   while (pkg.materialization().hasUnreadColocatedTables()) {
+   while (pkg.materialization().hasUnreadDatabaseTables()) {
       if (Date.now() > deadline) {
          throw new Error("the unread tables were never read again");
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
    }
+   // Read: the warning clears.
+   expect(unreadWarnings()).toEqual([]);
 }
 
 const entryFor = (

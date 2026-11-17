@@ -7,7 +7,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { capturedColocatedSchema } from "./colocated_build_strategy";
-import { observedColocatedColumns } from "./colocated_column_read";
+import { observedDatabaseColumns } from "./database_column_read";
 
 /**
  * The bind's read of each colocated table's columns from its warehouse:
@@ -15,7 +15,7 @@ import { observedColocatedColumns } from "./colocated_column_read";
  * capture spells it, bounded by a timeout, and fail safe (`unread`) when a
  * table cannot be read.
  */
-describe("observedColocatedColumns on DuckDB", () => {
+describe("observedDatabaseColumns on DuckDB", () => {
    let connection: DuckDBConnection;
    /** Every statement DuckDB ran, counted. */
    let statements: string[];
@@ -59,7 +59,7 @@ describe("observedColocatedColumns on DuckDB", () => {
          sourceName: "a",
       });
       statements.length = 0;
-      const observed = await observedColocatedColumns({
+      const observed = await observedDatabaseColumns({
          entries: {
             ida: { tableName: "a" },
             idb: { tableName: '"b"' },
@@ -82,7 +82,7 @@ describe("observedColocatedColumns on DuckDB", () => {
    });
 
    it("reads a quoted name holding a dot and a doubled quote", async () => {
-      const observed = await observedColocatedColumns({
+      const observed = await observedDatabaseColumns({
          entries: { q: { tableName: '"my.schema"."t""q"' } },
          connectionNameOf: () => "duckdb",
          connection: async () => connection,
@@ -95,7 +95,7 @@ describe("observedColocatedColumns on DuckDB", () => {
 
    it("reads the table as it is now", async () => {
       const read = () =>
-         observedColocatedColumns({
+         observedDatabaseColumns({
             entries: { idc: { tableName: "c" } },
             connectionNameOf: () => "duckdb",
             connection: async () => connection,
@@ -112,7 +112,7 @@ describe("observedColocatedColumns on DuckDB", () => {
    });
 
    it("a table that cannot be read, or whose connection or name is unusable, is unread", async () => {
-      const observed = await observedColocatedColumns({
+      const observed = await observedDatabaseColumns({
          entries: {
             gone: { tableName: "no_such_table" },
             nowhere: { tableName: "a" },
@@ -171,12 +171,12 @@ const TEN = Object.fromEntries(
    Array.from({ length: 10 }, (_, i) => [`id${i}`, { tableName: `sch.t${i}` }]),
 );
 
-describe("observedColocatedColumns: batched, bounded, timed out", () => {
+describe("observedDatabaseColumns: batched, bounded, timed out", () => {
    it("reads ten Postgres tables in one query, each answered by its key", async () => {
       const r = recording("postgres", () => [
          { key: "id3", name: "n", type: "bigint", attnum: 1 },
       ]);
-      const observed = await observedColocatedColumns({
+      const observed = await observedDatabaseColumns({
          entries: TEN,
          connectionNameOf: () => "pg",
          connection: async () => r.connection,
@@ -195,7 +195,7 @@ describe("observedColocatedColumns: batched, bounded, timed out", () => {
    it("reads ten tables of one schema in one information_schema query, and one per other schema", async () => {
       for (const dialect of ["snowflake", "trino", "mysql", "databricks"]) {
          const r = recording(dialect);
-         await observedColocatedColumns({
+         await observedDatabaseColumns({
             entries: {
                ...TEN,
                other: { tableName: "cat.other.t" },
@@ -206,7 +206,7 @@ describe("observedColocatedColumns: batched, bounded, timed out", () => {
          expect(r.statements).toHaveLength(2);
       }
       const bq = recording("standardsql");
-      await observedColocatedColumns({
+      await observedDatabaseColumns({
          entries: { ...TEN, other: { tableName: "ds2.t" } },
          connectionNameOf: () => "w",
          connection: async () => bq.connection,
@@ -217,7 +217,7 @@ describe("observedColocatedColumns: batched, bounded, timed out", () => {
 
    it("reads a BigQuery path in one pair of backticks as its parts", async () => {
       const bq = recording("standardsql");
-      await observedColocatedColumns({
+      await observedDatabaseColumns({
          entries: { p: { tableName: "`proj.ds.t`" } },
          connectionNameOf: () => "w",
          connection: async () => bq.connection,
@@ -229,7 +229,7 @@ describe("observedColocatedColumns: batched, bounded, timed out", () => {
 
    it("runs DuckDB's per-table reads at most four at a time", async () => {
       const r = recording("duckdb", () => [], 20);
-      await observedColocatedColumns({
+      await observedDatabaseColumns({
          entries: TEN,
          connectionNameOf: () => "d",
          connection: async () => r.connection,
@@ -241,7 +241,7 @@ describe("observedColocatedColumns: batched, bounded, timed out", () => {
    it("reads a table whose query outlives the timeout as unread", async () => {
       const r = recording("postgres", () => [], 200);
       const started = Date.now();
-      const observed = await observedColocatedColumns({
+      const observed = await observedDatabaseColumns({
          entries: { slow: { tableName: "sch.t" } },
          connectionNameOf: () => "pg",
          connection: async () => r.connection,
@@ -270,7 +270,7 @@ describe("observedColocatedColumns: batched, bounded, timed out", () => {
             DATA_TYPE: "TEXT",
          },
       ]);
-      const observed = await observedColocatedColumns({
+      const observed = await observedDatabaseColumns({
          entries: { t: { tableName: "t" } },
          connectionNameOf: () => "w",
          connection: async () => r.connection,
