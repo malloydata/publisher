@@ -1492,6 +1492,7 @@ export class ServedCopyServe {
          fieldsByName,
          timeframeOf,
          problems,
+         storesOutputNames: !plan,
       };
       if (plan) {
          const stored = materializedColumnsOf(subject, plan);
@@ -1645,6 +1646,7 @@ export class ServedCopyServe {
          def.fields,
          def,
          binding,
+         subject.storesOutputNames,
          this.host.readsStoredIntegers,
       );
       columns = columns.flatMap((c) => {
@@ -2945,6 +2947,12 @@ interface RerootSubject {
    /** The timeframe a truncation carries, to restore on the field. */
    timeframeOf(name: string): { timeframe?: string };
    problems: ServedCopyProblem[];
+   /**
+    * The table stores each column under its query's output name (a v1
+    * table, no `#(materialize)` plan), not under the field's own name
+    * after its renames (`BigIntegerReadOptions.storesOutputNames`).
+    */
+   storesOutputNames: boolean;
 }
 
 /**
@@ -4375,14 +4383,17 @@ function bigIntegerReadsOf(
    fields: readonly unknown[] | undefined,
    def: unknown,
    binding: Binding,
+   /** The table stores its query's output names (a v1 table). */
+   storesOutputNames: boolean,
    /** A build reads the stored column in SQL, where no digit is lost. */
    asStored?: boolean,
 ): Map<string, string | undefined> {
    if (asStored) return new Map();
    return new Map(
-      bigIntegerReads(columns, fields, bigIntegerOptionsOf(def, binding)).map(
-         (r) => [r.column, r.castTo] as const,
-      ),
+      bigIntegerReads(columns, fields, {
+         ...bigIntegerOptionsOf(def, binding),
+         storesOutputNames,
+      }).map((r) => [r.column, r.castTo] as const),
    );
 }
 

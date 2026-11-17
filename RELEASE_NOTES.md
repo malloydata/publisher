@@ -23,11 +23,13 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — a rename that reuses or swaps names reads the right stored column
 
-**Fixed: a persisted source whose trailing `extend` renames a column to a name another column had was served wrong.** A `#@ persist` source's table stores each column under its query's output name, and serving renames it again. Two cases read the wrong stored column:
-- **Swap:** a rename that swaps two names (`rename: tmp is total; rename: total is n; rename: n is tmp`) served `n` and `total` from each other's columns.
-- **Reuse:** a renamed `BIGINT` sum whose old name another field took (`rename: total2 is total; rename: total is n`, or a dimension named `total`) was served rounded past 2^53.
+**Fixed: a persisted source whose trailing `extend` renames a column to a name another column had could be served wrong values, and rows its gate hides.** A `#@ persist` source's table stores each column under its query's output name, and serving renames it again. When the renames swap or chain names (`rename: tmp is total; rename: total is n; rename: n is tmp`), serving read each renamed field from another field's stored column. That covers query-shaped sources and those declared by refinement of a table. Two consequences:
+- **Wrong values:** the answers were wrong.
+- **Rows a gate hides:** when a renamed column was the one a row-level gate (`#(access_filter)`) or a gated extension filters on, served answers included rows the gate hides from that caller.
 
-Both are now read from their own stored columns, with every digit, on the `storage=` tier and in the source's own database. **Who was affected:** `#@ persist` sources with such renames; other renames were served correctly. **How to tell:** a served answer that differed from live for those fields now equals it.
+A renamed `BIGINT` sum whose old name another field took (`rename: total2 is total; rename: total is n`, or a dimension named `total`) was also served rounded past 2^53.
+
+Each field is now read from its own stored column, with every digit, on the `storage=` tier and in the source's own database; `#(materialize)` sources, whose tables store each field under its own name, keep reading them that way. **Who was affected:** `#@ persist` sources whose renames swap, chain or reuse names; other renames were served correctly. **How to tell:** a served answer for such a source that differed from live now equals it.
 
 ## [Unreleased] — exact DuckLake integers, managed-origin and Snowflake rollups serve, failed-run manifest, twin addresses, partial-column serve
 

@@ -788,13 +788,15 @@ export function bigIntegerReads(
    // rounds exactly where live rounds. A `storage=` table is read in DuckDB,
    // which keeps every digit: cast there only when live does too.
    if (!options.colocated && !liveKeepsBigIntegers(options.dialect)) return [];
-   // Each stored column is a field's output name: a field a trailing
-   // `extend` renames (`rename: amount is total`) is stored as `total`, and
-   // that name is its own whatever another field is now called. So a column
-   // is matched to the field whose output name it is first; a field the
-   // `extend` computes (stored by a `#(materialize)` build under its name),
-   // and then a renamed field's new name, only where no output name claims
-   // the column.
+   // How a field is matched to its stored column depends on how the table
+   // stores it. A v1 query-shaped table stores each column under its
+   // query's output name: a field a trailing `extend` renames (`rename:
+   // amount is total`) is stored as `total`, and that name is its own
+   // whatever another field is now called, so the output name is matched
+   // first, then a field the `extend` computes, and only then a renamed
+   // field's new name. A `#(materialize)` table stores the source after its
+   // renames, under each field's own name (`as`, else `name`), matched
+   // first; the output name only where no field goes by it.
    const byName = new Map<string, unknown>();
    const declared: DeclaredColumn[] = [];
    const fieldOf = (f: unknown) =>
@@ -811,16 +813,26 @@ export function bigIntegerReads(
       byName.set(key, f);
       declared.push({ name: key, type });
    };
-   for (const f of fields ?? []) {
-      if (fieldOf(f).e === undefined) claim(fieldOf(f).name, f);
-   }
-   for (const f of fields ?? []) {
-      const { name, as, e } = fieldOf(f);
-      if (e !== undefined) claim(typeof as === "string" ? as : name, f);
-   }
-   for (const f of fields ?? []) {
-      const { as, e } = fieldOf(f);
-      if (e === undefined && typeof as === "string") claim(as, f);
+   const ownName = (f: unknown) => {
+      const { name, as } = fieldOf(f);
+      return typeof as === "string" ? as : name;
+   };
+   if (options.storesOutputNames) {
+      for (const f of fields ?? []) {
+         if (fieldOf(f).e === undefined) claim(fieldOf(f).name, f);
+      }
+      for (const f of fields ?? []) {
+         if (fieldOf(f).e !== undefined) claim(ownName(f), f);
+      }
+      for (const f of fields ?? []) {
+         const { as, e } = fieldOf(f);
+         if (e === undefined && typeof as === "string") claim(as, f);
+      }
+   } else {
+      for (const f of fields ?? []) claim(ownName(f), f);
+      for (const f of fields ?? []) {
+         if (typeof fieldOf(f).as === "string") claim(fieldOf(f).name, f);
+      }
    }
    const out: BigIntegerRead[] = [];
    for (const column of schema) {
@@ -862,6 +874,14 @@ export interface BigIntegerReadOptions {
     * names it, as its build captured it, or undefined when it did not.
     */
    nativeTypeOf?: (column: string) => string | undefined;
+   /**
+    * The table stores each column under its query's output name, before the
+    * source's trailing `extend` renames it: a v1 query-shaped (or
+    * refinement-rooted) table. A `#(materialize)` table stores the source
+    * after its renames, under each field's own name. Decides which name a
+    * stored column is matched to a field by first ({@link bigIntegerReads}).
+    */
+   storesOutputNames?: boolean;
 }
 
 /**
