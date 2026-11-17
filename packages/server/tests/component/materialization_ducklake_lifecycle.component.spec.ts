@@ -1509,12 +1509,14 @@ source: events is warehouse.sql("""
          });
          expect(lake.attaches).toEqual([{ fn: "readWrite", dbName: LAKE }]);
          // No CTAS: the shape and emptiness probes on the lake table, the
-         // frontier through the passthrough, then the delta as one script.
+         // frontier through the passthrough, the delta's column types (a
+         // describe, which runs nothing), then the delta as one script.
          expect(lake.statements.map(statementShape)).toEqual([
             `DESCRIBE "lake"."${TABLE}"`,
             'SELECT column_name AS "column_name"',
             `SELECT 1 AS present FROM "lake"."${TABLE}" LIMIT 1`,
             'SELECT * FROM postgres_query(\'warehouse\', \'SELECT MAX("wm") AS "watermark_max" FROM (SELECT ',
+            "DESCRIBE (passthrough)",
             "BEGIN;",
             `DESCRIBE "lake"."${TABLE}"`,
             `SELECT count(*) AS n FROM "lake"."${TABLE}"`,
