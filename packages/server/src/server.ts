@@ -7,7 +7,11 @@
 import { assertSupportedNodeVersion } from "./node_version_check";
 import { printHelpIfAsked } from "./cli_args";
 import { Settings, SettingsError } from "./settings";
-import { initFailedLine, redactSignedUrlParams } from "./pg_helpers";
+import {
+   initFailedLine,
+   redactPgSecrets,
+   redactSignedUrlParams,
+} from "./pg_helpers";
 
 // Exits non-zero on an unsupported Node before argument parsing, storage init
 // or any listener; otherwise the failure surfaces only as an unexplained 500
@@ -35,7 +39,7 @@ if (failures.length > 0) {
    }
    const message = new SettingsError(failures).message;
    process.stderr.write(
-      `${redactSignedUrlParams(message)}\n${initFailedLine(message)}`,
+      `${redactSignedUrlParams(redactPgSecrets(message))}\n${initFailedLine(message)}`,
    );
    process.exit(1);
 }

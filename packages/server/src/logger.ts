@@ -10,101 +10,228 @@ import {
 import { AxiosError } from "axios";
 import { RequestHandler } from "express";
 import winston from "winston";
-import { redactSignedUrlParams } from "./pg_helpers";
+import { redactPgSecrets, redactSignedUrlParams } from "./pg_helpers";
 
 const isTelemetryEnabled = Boolean(externalEnv("OTEL_EXPORTER_OTLP_ENDPOINT"));
 
+/** Past this depth a value is logged as `[Depth]`, so no line can overflow the stack. */
+const MAX_MASK_DEPTH = 1000;
+
+/** What a value that cannot be read safely is logged as. */
+const UNREADABLE = "[Unreadable]";
+
 /**
- * `value` with every string in it, at any depth, passed through
- * `redactSignedUrlParams`: a signed URL's signature, credential or token
- * never reaches the log, from any line (a driver's error a package load, a
- * publish or a request quotes).
+ * Whether a string can hold anything {@link maskedString} masks: every signed
+ * URL parameter has an `=` (or an encoded one, `%…3D`), S3's echo a `<`, a
+ * Postgres password `password=` or a URI's `://`. One scan, so the strings of
+ * an ordinary line cost nothing more.
+ */
+const MAY_HOLD_SECRET = /[=%<]|:\/\//;
+
+/**
+ * `s` with a signed URL's signature, credential or token and a Postgres
+ * password masked.
+ */
+function maskedString(s: string): string {
+   if (!MAY_HOLD_SECRET.test(s)) return s;
+   const signed = redactSignedUrlParams(s);
+   return /:\/\/|password/i.test(signed) ? redactPgSecrets(signed) : signed;
+}
+
+/** `value` as a masked string, for one that cannot be walked. Never throws. */
+function maskedFallback(value: unknown): string {
+   try {
+      return maskedString(String(value));
+   } catch {
+      return UNREADABLE;
+   }
+}
+
+/** One walk: the values being walked now, and the copies a cycle reached. */
+interface Walk {
+   walking: Set<object>;
+   /** A value's copy, made when a cycle reaches back to it while it is walked. */
+   cycleCopies?: Map<object, unknown[] | Record<string, unknown>>;
+}
+
+/**
+ * `value` with every string in it masked (a signed URL's secrets and a
+ * Postgres password; {@link maskedString}), for a log line:
  *
- * - A plain object, an array and an Error are copied, never altered, so a
- *   caller's object is left as it was. Each is copied once, before its
- *   contents are walked, so a cycle reaches the copy, never the original's
- *   unmasked strings.
- * - An Error stays an Error of its own class, with its message, stack and
- *   every other own field (`cause`, `code`, …) masked.
- * - Binary data (a Buffer, a typed array, an ArrayBuffer) holds no text a
- *   format prints and is passed through unwalked.
- * - Any other object (a Date, a class instance) is passed through unless an
- *   own field changes, then copied as a plain object.
+ * - The original is returned when nothing in it changes; otherwise a copy, so
+ *   a caller's object is never altered. A cycle reads the copy.
+ * - An Error is logged as a plain object of its name, message, stack and own
+ *   fields (`cause`, `code`, …), each masked and enumerable, so a nested
+ *   Error prints its message. Its class's own methods (`toJSON`, getters)
+ *   are not called.
+ * - Another object with a `toJSON` (a URL, say), except a Date, is logged as
+ *   what its `toJSON` returns, masked.
+ * - Binary data (a Buffer, a typed array, an ArrayBuffer) is passed through
+ *   unwalked.
+ * - Past {@link MAX_MASK_DEPTH} levels a value is logged as `[Depth]`.
+ * - Never throws: a value that cannot be read (a revoked proxy, a throwing
+ *   getter) is logged as its masked `String()`.
  *
  * Exported for its spec.
  */
 export function maskedForLog(value: unknown): unknown {
-   return masked(value, new WeakMap());
+   return masked(value, { walking: new Set() }, 0);
 }
 
-function masked(value: unknown, seen: WeakMap<object, unknown>): unknown {
-   if (typeof value === "string") return redactSignedUrlParams(value);
+function masked(value: unknown, walk: Walk, depth: number): unknown {
+   if (typeof value === "string") return maskedString(value);
    if (value === null || typeof value !== "object") return value;
-   if (seen.has(value)) return seen.get(value);
-   if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
-   if (value instanceof Error) {
-      const copy = Object.create(Object.getPrototypeOf(value)) as Error;
-      seen.set(value, copy);
-      for (const key of Object.getOwnPropertyNames(value)) {
-         const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
-         Object.defineProperty(copy, key, {
-            ...descriptor,
-            ...("value" in descriptor
-               ? { value: masked(descriptor.value, seen) }
-               : {}),
-         });
+   if (walk.walking.has(value)) {
+      // A cycle back to a value still being walked reads its copy.
+      walk.cycleCopies ??= new Map();
+      let copy = walk.cycleCopies.get(value);
+      if (!copy) {
+         copy = Array.isArray(value) ? [] : {};
+         walk.cycleCopies.set(value, copy);
       }
       return copy;
    }
-   if (Array.isArray(value)) {
-      const copy: unknown[] = [];
-      seen.set(value, copy);
-      for (const item of value) copy.push(masked(item, seen));
-      return copy;
-   }
-   const proto = Object.getPrototypeOf(value);
-   if (proto === Object.prototype || proto === null) {
-      const copy: Record<string, unknown> = {};
-      seen.set(value, copy);
-      for (const [key, v] of Object.entries(value)) copy[key] = masked(v, seen);
-      return copy;
-   }
-   // A Date, a class instance: itself unless an own field changes.
-   seen.set(value, value);
-   let copy: Record<string, unknown> | undefined;
-   for (const [key, v] of Object.entries(value)) {
-      const m = masked(v, seen);
-      if (m !== v) {
-         copy ??= { ...(value as Record<string, unknown>) };
-         copy[key] = m;
+   if (depth >= MAX_MASK_DEPTH) return "[Depth]";
+   try {
+      if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+         return value;
       }
+      if (value instanceof Error) return maskedError(value, walk, depth);
+      if (value instanceof Date) return value;
+      const toJSON = (value as { toJSON?: unknown }).toJSON;
+      if (typeof toJSON === "function") {
+         return masked(toJSON.call(value), walk, depth + 1);
+      }
+      return maskedFields(value, walk, depth);
+   } catch {
+      return maskedFallback(value);
    }
-   if (copy) seen.set(value, copy);
-   return copy ?? value;
 }
 
 /**
- * The format step that masks every line's strings ({@link maskedForLog}):
- * each enumerable field, and `message` and `stack` themselves, which a whole
- * Error logged as the entry (`logger.error(err)`) holds non-enumerable.
+ * An array's items or an object's own enumerable fields, masked: the original
+ * when none changes and no cycle reached it, else a copy (a plain object for
+ * a class instance).
+ */
+function maskedFields(value: object, walk: Walk, depth: number): unknown {
+   walk.walking.add(value);
+   let out: unknown[] | undefined;
+   let keys: string[] | undefined;
+   try {
+      if (Array.isArray(value)) {
+         for (let i = 0; i < value.length; i++) {
+            const v: unknown = value[i];
+            const m = masked(v, walk, depth + 1);
+            if (m !== v && !out) out = value.slice(0, i);
+            out?.push(m);
+         }
+      } else {
+         keys = Object.keys(value);
+         const record = value as Record<string, unknown>;
+         for (let i = 0; i < keys.length; i++) {
+            const v = record[keys[i]];
+            const m = masked(v, walk, depth + 1);
+            if (m !== v && !out) {
+               out = keys.slice(0, i).map((k) => record[k]);
+            }
+            out?.push(m);
+         }
+      }
+   } finally {
+      walk.walking.delete(value);
+   }
+   const forced = walk.cycleCopies?.get(value);
+   if (!out && !forced) return value;
+   if (Array.isArray(value)) {
+      const copy = (forced as unknown[] | undefined) ?? [];
+      copy.push(...(out ?? value));
+      return copy;
+   }
+   const record = value as Record<string, unknown>;
+   const copy =
+      (forced as Record<string, unknown> | undefined) ??
+      (Object.getPrototypeOf(value) === null ? Object.create(null) : {});
+   keys!.forEach((key, i) => (copy[key] = out ? out[i] : record[key]));
+   return copy;
+}
+
+/**
+ * An Error as a plain object: its name, message and stack, then every other
+ * own field (`cause`, `code`, …), each masked and enumerable. A field that
+ * cannot be read is logged as {@link UNREADABLE}.
+ */
+function maskedError(
+   error: Error,
+   walk: Walk,
+   depth: number,
+): Record<string, unknown> {
+   walk.walking.add(error);
+   const copy: Record<string, unknown> = {};
+   const read = (key: string): unknown => {
+      try {
+         return masked(
+            (error as unknown as Record<string, unknown>)[key],
+            walk,
+            depth + 1,
+         );
+      } catch {
+         return UNREADABLE;
+      }
+   };
+   try {
+      copy.name = read("name");
+      copy.message = read("message");
+      copy.stack = read("stack");
+      for (const key of Object.getOwnPropertyNames(error)) {
+         if (key === "name" || key === "message" || key === "stack") continue;
+         copy[key] = read(key);
+      }
+   } finally {
+      walk.walking.delete(error);
+   }
+   // A cycle through the Error (a cause pointing back) read its copy.
+   const forced = walk.cycleCopies?.get(error) as
+      | Record<string, unknown>
+      | undefined;
+   return forced ? Object.assign(forced, copy) : copy;
+}
+
+/**
+ * The format step that masks every line ({@link maskedForLog}). It builds a
+ * fresh entry, so a caller's object (an Error logged as the whole entry,
+ * `logger.error(err)`) is never altered: each enumerable field masked, and
+ * `message` and `stack`, which such an Error holds non-enumerable, masked and
+ * carried. Never throws.
  */
 const maskSignedUrlSecrets = winston.format((info) => {
-   const seen = new WeakMap<object, unknown>();
-   for (const key of Object.keys(info)) {
-      info[key] = masked(info[key], seen);
+   const out: Record<string | symbol, unknown> = {};
+   for (const symbol of Object.getOwnPropertySymbols(info)) {
+      out[symbol] = (info as unknown as Record<symbol, unknown>)[symbol];
    }
-   for (const key of ["message", "stack"] as const) {
-      const v = (info as Record<string, unknown>)[key];
-      if (typeof v === "string") {
-         Object.defineProperty(info, key, {
-            value: redactSignedUrlParams(v),
-            writable: true,
-            configurable: true,
-            enumerable: Object.prototype.propertyIsEnumerable.call(info, key),
-         });
+   const walk: Walk = { walking: new Set() };
+   let keys: string[];
+   try {
+      keys = Object.keys(info);
+   } catch {
+      keys = [];
+   }
+   for (const key of keys) {
+      try {
+         out[key] = masked((info as Record<string, unknown>)[key], walk, 0);
+      } catch {
+         out[key] = UNREADABLE;
       }
    }
-   return info;
+   for (const key of ["message", "stack"]) {
+      if (Object.prototype.hasOwnProperty.call(out, key)) continue;
+      try {
+         const v = (info as Record<string, unknown>)[key];
+         if (v !== undefined) out[key] = masked(v, walk, 0);
+      } catch {
+         out[key] = UNREADABLE;
+      }
+   }
+   return out as typeof info;
 });
 
 /**
@@ -128,12 +255,58 @@ export function publisherLogFormat(json: boolean): winston.Logform.Format {
         );
 }
 
-export const logger = winston.createLogger({
-   // An unknown level is the default, debug, with a startup warning.
-   level: settings.get("logging.level"),
-   format: publisherLogFormat(isTelemetryEnabled),
-   transports: [new winston.transports.Console()],
-});
+export const logger = guardedEntries(
+   winston.createLogger({
+      // An unknown level is the default, debug, with a startup warning.
+      level: settings.get("logging.level"),
+      format: publisherLogFormat(isTelemetryEnabled),
+      transports: [new winston.transports.Console()],
+   }),
+);
+
+/**
+ * `log` with each level method (`logger.error(err)`, `logger.warn(obj)`)
+ * handed a fresh entry when called with one object: winston writes the level
+ * onto the object it is given, which would alter a caller's Error and throws
+ * on a frozen one. The fresh entry carries the object's own fields and its
+ * `message` and `stack`; the format step masks them. Exported for its spec.
+ */
+export function guardedEntries(log: winston.Logger): winston.Logger {
+   for (const level of Object.keys(log.levels)) {
+      const method = (log as unknown as Record<string, unknown>)[level];
+      if (typeof method !== "function") continue;
+      (log as unknown as Record<string, unknown>)[level] = function (
+         this: winston.Logger,
+         ...args: unknown[]
+      ) {
+         if (
+            args.length === 1 &&
+            args[0] !== null &&
+            typeof args[0] === "object"
+         ) {
+            args = [freshEntry(args[0])];
+         }
+         return method.apply(this, args);
+      };
+   }
+   return log;
+}
+
+/** A plain copy of `entry` for winston to write the level onto. Never throws. */
+function freshEntry(entry: object): Record<string, unknown> {
+   try {
+      const out: Record<string, unknown> = { ...entry };
+      for (const key of ["message", "stack"]) {
+         if (!(key in out)) {
+            const v = (entry as Record<string, unknown>)[key];
+            if (v !== undefined) out[key] = v;
+         }
+      }
+      return out;
+   } catch {
+      return { message: maskedFallback(entry) };
+   }
+}
 
 /**
  * The 32-hex trace ID from a W3C `traceparent`
