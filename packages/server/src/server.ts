@@ -40,6 +40,9 @@ if (failures.length > 0) {
 }
 
 const { logger } = await import("./logger");
+// A dependency's unhandled rejection is logged, not fatal; see the function.
+const { installProcessSafetyHandlers } = await import("./process_safety");
+installProcessSafetyHandlers();
 for (const warning of loaded.warnings) {
    logger.warn(warning.message);
 }
