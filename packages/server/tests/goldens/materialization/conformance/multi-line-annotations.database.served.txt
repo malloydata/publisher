@@ -8,7 +8,7 @@ type: annotated__served is {
    #(doc) "The order's region"
    # label="Region"
    region::string,
-   order_month::date,
+   order_month::timestamp,
    # currency
    total::number
 }
@@ -23,7 +23,7 @@ source: annotated is duckdb.virtual('e6445a23f015408d62c8f05d74c67fb93f6c6445d24
   private rename:
     order_month__stored is order_month
   dimension:
-    order_month is order_month__stored.month
+    order_month is (order_month__stored::"DATE").month
   #(doc) "Total over every row"
   # currency
   # number="#,##0.00"

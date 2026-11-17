@@ -4,9 +4,9 @@
 ##! experimental { persistence }
 ##! experimental { virtual_source }
 type: monthly__served is {
-   order_month::date,
+   order_month::timestamp,
    created_hour::timestamp,
-   order_week::date,
+   order_week::timestamp,
    region::string,
    total::number,
    # percent
@@ -23,9 +23,9 @@ source: monthly is duckdb.virtual('513e827245f13473e04bf62e6047e330cedd1e27f39aa
     order_week__stored is order_week
   dimension:
     #(doc) "Calendar month of the order"
-    order_month is order_month__stored.month
+    order_month is (order_month__stored::"DATE").month
     created_hour is created_hour__stored.hour
-    order_week is order_week__stored.week
+    order_week is (order_week__stored::"DATE").week
   #(doc) "Share of all orders' amount"
   # percent
   measure: share is total.sum() / all(total.sum())
