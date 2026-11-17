@@ -218,8 +218,8 @@ export function installDuckDBInstanceSharing(): void {
    // (config.ts, getDuckDBThreads). The shareable-mode `:memory:` primary
    // passes through here too.
    // Every instance also opens under the open-time lockdown
-   // (duckdb_lockdown.ts): persistent secrets and the global S3 configuration
-   // off before anything can use them.
+   // (duckdb_lockdown.ts): persistent secrets off before anything can use
+   // them, as a lock taken later requires.
    proto.buildInstanceOptions = function (
       this: DuckDBConnectionInternals,
       opts?: unknown,

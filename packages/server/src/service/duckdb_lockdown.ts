@@ -19,8 +19,8 @@
  *   only `setupSQL` (which the sandbox refuses) gets the same confinement
  *   spelled as options: an allowlist, external access off, then its
  *   `setupSQL`, then the lock. Windows has no sandboxed policy (Malloy refuses
- *   it off POSIX), so the sandbox falls back to `"local"` there: no network,
- *   no lock-free configuration, but no directory confinement either.
+ *   it off POSIX), so the sandbox falls back to `"local"` there: no network
+ *   and a locked configuration, but no directory confinement.
  *
  * - **Networked readers** ({@link networkedDuckDBOptions},
  *   {@link lockDownDuckDBSession}). DuckLake catalogs, attached databases,
@@ -46,7 +46,8 @@
  * `lockConfiguration`; a networked instance carries a private temp directory
  * named by a digest of its tier and its setup, so a locked instance is only
  * ever joined by a connection whose setup it already holds, and instances
- * with different allowlists or policies never share.
+ * with different allowlists or policies never share. (`setupSQL` stays out of
+ * that digest: each connection runs its own, on a locked instance too.)
  */
 
 import { DuckDBConnection as DuckDBConnectionClass } from "@malloydata/db-duckdb";
@@ -367,7 +368,7 @@ function isTrue(value: unknown): boolean {
 const lockedInstances = new WeakSet<object>();
 
 /** The native instance `connection` is on, once it is opened or joined. */
-function instanceOf(connection: unknown): object | undefined {
+export function duckDBInstanceOf(connection: unknown): object | undefined {
    const shareKey = (connection as { shareKey?: string }).shareKey;
    if (!shareKey) return undefined;
    return DuckDBConnectionClass.activeDBs[shareKey]?.instance as
@@ -377,13 +378,13 @@ function instanceOf(connection: unknown): object | undefined {
 
 /** Record that `connection`'s instance is locked. */
 export function markInstanceLocked(connection: unknown): void {
-   const instance = instanceOf(connection);
+   const instance = duckDBInstanceOf(connection);
    if (instance) lockedInstances.add(instance);
 }
 
 /** Whether `connection`'s instance is known to be locked. */
 export function isInstanceLocked(connection: unknown): boolean {
-   const instance = instanceOf(connection);
+   const instance = duckDBInstanceOf(connection);
    return instance !== undefined && lockedInstances.has(instance);
 }
 

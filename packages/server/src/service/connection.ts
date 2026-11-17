@@ -102,6 +102,7 @@ import {
    azureAllowPrefix,
    clearAmbientS3Settings,
    cloudStorageAllowPrefixes,
+   duckDBInstanceOf,
    isConfigurationFrozen,
    isLockedByOptions,
    lockDownDuckDBSession,
@@ -2417,13 +2418,18 @@ async function attachCloudStorage(
       credentials.provider === "credential_chain" &&
       typeof renewable.setStorageSecretRenewer === "function"
    ) {
-      renewable.setStorageSecretRenewer(async () => {
+      const renewOn = async (target: DuckDBConnection) => {
          // Replaced in place on the live connection; no in-flight query is
          // disturbed.
-         await connection.runSQL(
+         await target.runSQL(
             buildCloudStorageSecretSQL(secretName, credentials),
          );
-      });
+      };
+      renewable.setStorageSecretRenewer(() => renewOn(connection));
+      // The secret is the instance's: a later connection joining the locked
+      // instance, which runs no attach of its own, renews it the same way.
+      const instance = duckDBInstanceOf(connection);
+      if (instance) instanceSecretRenewers.set(instance, renewOn);
    }
 
    if (scope === undefined) {
@@ -3348,6 +3354,12 @@ function isDuckDBConnection(
 /** Managed DuckLake connections that set their search path on a locked instance. */
 const managedSearchPathSet = new WeakSet<Connection>();
 
+/** Each instance's storage-secret renewer, for connections that join it. */
+const instanceSecretRenewers = new WeakMap<
+   object,
+   (target: DuckDBConnection) => Promise<void>
+>();
+
 /** Environment config builds so far, numbering each one's generation. */
 let environmentConfigGenerations = 0;
 
@@ -3489,15 +3501,23 @@ export function buildEnvironmentMalloyConfig(
                   if (metadata.apiConnection.managed === true) {
                      await setManagedSearchPath(connection, name!);
                   }
-               } else if (
-                  frozen &&
-                  metadata.apiConnection.managed === true &&
-                  !managedSearchPathSet.has(connection)
-               ) {
-                  // The search path is per session, and allowed after the
-                  // lock: a connection joining the locked instance sets its own.
-                  await setManagedSearchPath(connection, name!);
+               } else if (frozen && !managedSearchPathSet.has(connection)) {
                   managedSearchPathSet.add(connection);
+                  // A connection joining the locked instance renews the
+                  // instance's storage secret as the attaching one did.
+                  const renew = instanceSecretRenewers.get(
+                     duckDBInstanceOf(connection) ?? {},
+                  );
+                  if (renew) {
+                     connection.setStorageSecretRenewer(() =>
+                        renew(connection),
+                     );
+                  }
+                  // The search path is per session, and allowed after the
+                  // lock: a joining connection sets its own.
+                  if (metadata.apiConnection.managed === true) {
+                     await setManagedSearchPath(connection, name!);
+                  }
                }
                return connection;
             }
