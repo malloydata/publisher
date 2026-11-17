@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { allowGatedStorageRollupsForTests } from "../../../config";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { materializationFixture } from "../../../test_helpers/materialization_fixture";
@@ -392,7 +391,7 @@ source: orders is gated -> { select: * } extend {
       ).toEqual([undefined]);
    });
 
-   it("plans none in a storage destination, whose gate awaits its review", async () => {
+   it("plans one in a storage destination over the base's own gate (P3/P4)", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
 given: REGION :: string is 'x'
@@ -402,8 +401,11 @@ source: orders is ${ROWS} extend {
   measure: total is amount.sum()
 }`,
       });
-      expect(plans).toEqual([]);
-      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
+      expect(refused).toEqual([]);
+      expect(plans.map((p) => [p.storage, p.baseGateOwn])).toEqual([
+         ["lake", true],
+      ]);
+      expect(rollupGateEnforcedAtRead(plans[0])).toBe(true);
    });
 });
 
@@ -798,19 +800,11 @@ source: orders is ${ROWS} extend {
       expect(rollupGateEnforcedAtRead(plans[0])).toBe(true);
    });
 
-   it("leaves out a storage= rollup over a gated base until the managed-tier review (question 14)", async () => {
+   it("plans a storage= rollup over a gated base on the colocated terms (P3/P4)", async () => {
       const { plans, refused } = await plan(placed(' storage="lake"'));
-      expect(plans).toEqual([]);
-      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
-      expect(refused[0]?.message).toContain("storage destination");
-      const allow = allowGatedStorageRollupsForTests();
-      try {
-         const reviewed = await plan(placed(' storage="lake"'));
-         expect(reviewed.plans).toHaveLength(1);
-         expect(rollupGateEnforcedAtRead(reviewed.plans[0])).toBe(true);
-      } finally {
-         allow();
-      }
+      expect(refused).toEqual([]);
+      expect(plans).toHaveLength(1);
+      expect(rollupGateEnforcedAtRead(plans[0])).toBe(true);
    });
 
    it("never reads a v1 plan or an ungated rollup past a gate", async () => {

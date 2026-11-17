@@ -2883,9 +2883,7 @@ function checkCoverage(
  */
 function planSwitches(): string {
    const s = gateSwitches();
-   return [s.materialize, s.gatedSources, s.gatedStorageRollupsReviewed].join(
-      "/",
-   );
+   return [s.materialize, s.gatedSources].join("/");
 }
 
 /**

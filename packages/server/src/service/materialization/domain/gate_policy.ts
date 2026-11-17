@@ -41,7 +41,10 @@
  * sign-off: a rollup, on either tier, keeps a base gate set made only of
  * `#(authorize)` locks reading no row field, own or inherited (`lockOnly`),
  * and the rollup leg keeps an answer on any tier whose entry point's gates
- * read no column (`gatesReadNoColumn`).
+ * read no column (`gatesReadNoColumn`). Also pending it: a `storage=`
+ * rollup keeps its base's gates on the same terms as a colocated one, its
+ * own under G3 and any proven one under the switch, read only when its gate
+ * columns are stored exactly and in no other zone.
  * `gate_policy_frozen.spec.ts` enumerates every row this file allows and
  * fails on any change, naming the review.
  */
@@ -52,21 +55,12 @@ export interface GateSwitches {
    readonly materialize: boolean;
    /** `materialize.gatedSources` (`PUBLISHER_MATERIALIZE_GATED_SOURCES`). */
    readonly gatedSources: boolean;
-   /**
-    * Whether a `storage=` rollup over a gated base may be read past its gate:
-    * not until the managed-tier review, which covers `#(materialize)` tables
-    * and is proposed to cover rollups too (a stored rollup puts tenant-keyed
-    * aggregates in a storage destination). No setting turns it on; only a
-    * test does.
-    */
-   readonly gatedStorageRollupsReviewed: boolean;
 }
 
 /** Every switch gate keeping reads, one entry per field of {@link GateSwitches}. */
 export const GATE_SWITCH_KEYS = {
    materialize: true,
    gatedSources: true,
-   gatedStorageRollupsReviewed: true,
 } as const satisfies Record<keyof GateSwitches, true>;
 
 /** What a stored table holds, every kind the policy has a row for. */
@@ -137,15 +131,17 @@ const ROWS: Record<GateKind, Row> = {
    // switch, on either tier under G3.
    materialize: (t, s) => materializedKeepsGates(t, s),
    pair: (t, s) => materializedKeepsGates(t, s),
-   // A `#(preaggregate)` rollup's variant redeclares its base with its gates,
-   // proven on the rollup; colocated under the gated-sources switch, in a
-   // storage destination only once that is reviewed, a v1 `#@ preaggregate`
-   // line read as one alike. A rollup no variant was planned for keeps
-   // none.
+   // A `#(preaggregate)` rollup's variant redeclares its base with its gates
+   // in an overlay of its declaring file, on either tier, proven on the
+   // rollup; under the gated-sources switch, any gate so proven. A v1
+   // `#@ preaggregate` line read as one alike. A rollup no variant was
+   // planned for keeps none.
    //
-   // G3 for a colocated rollup, with the switch off: its base's own gates,
-   // each proven exact on the rollup (every field a grain dimension), as a
-   // stored source keeps its own row-level gate.
+   // G3 for a rollup on either tier, with the switch off: its base's own
+   // gates, each proven exact on the rollup (every field a grain dimension),
+   // as a stored source keeps its own row-level gate. At read, a `storage=`
+   // rollup's gate columns must also be stored exactly and read in no other
+   // zone (`answerKeepsGates`, the router's zone checks).
    //
    // A base whose every gate is a lock reading no row field, own or
    // inherited, on either tier and either switch setting: the lock decides
@@ -154,10 +150,7 @@ const ROWS: Record<GateKind, Row> = {
    rollup: (t, s) =>
       !t.v1 &&
       t.baseGateProven === true &&
-      (t.gate?.lockOnly === true ||
-         (s.gatedSources
-            ? t.tier === "colocated" || s.gatedStorageRollupsReviewed
-            : t.tier === "colocated" && ownRowLevelGate(t))),
+      (t.gate?.lockOnly === true || s.gatedSources || ownRowLevelGate(t)),
    // A persisted view's gate is decided at the router, per leg.
    view: () => false,
 };
@@ -229,7 +222,8 @@ export interface TableRead {
    readonly tier: GateTier;
    /**
     * A `storage=` table plan admitted past its source's own row-level gate
-    * under G3 (`Binding.ownGateKept`). Absent reads false: fail closed.
+    * under G3 (`Binding.ownGateKept`), or a `storage=` rollup admitted past
+    * its base's gates. Absent reads false: fail closed.
     */
    readonly ownGateKept?: boolean;
    /**
@@ -287,10 +281,16 @@ function g3Table(t: TableRead): boolean {
 
 /**
  * Whether a table a rollup answer read keeps the gates under G3: a colocated
- * one, or any one when the entry point's gates read no column (locks only).
+ * one, a `storage=` one plan admitted past its base's own gates
+ * (`ownGateKept`), or any one when the entry point's gates read no column
+ * (locks only).
  */
 function g3RollupTable(t: TableRead): boolean {
-   return t.tier === "colocated" || t.gatesReadNoColumn === true;
+   return (
+      t.tier === "colocated" ||
+      t.ownGateKept === true ||
+      t.gatesReadNoColumn === true
+   );
 }
 
 /**
@@ -322,9 +322,9 @@ export function legMayPassGate(
  * inexactly ({@link gateColumnsExact}), under any switch. Otherwise always
  * under the gated-sources switch; under G3 alone, only when it read at least
  * one table and every one is a G3 table: for the served copy, colocated or
- * `storage=` admitted past its own gate; for the rollup leg, colocated, or
- * any tier when the entry point's gates are locks reading no column (a
- * `storage=` rollup past a row filter awaits its review).
+ * `storage=` admitted past its own gate; for the rollup leg, colocated,
+ * `storage=` admitted past its base's own gates, or any tier when the entry
+ * point's gates are locks reading no column.
  */
 export function answerKeepsGates(
    leg: GateLeg,
@@ -334,16 +334,6 @@ export function answerKeepsGates(
 ): boolean {
    if (!legMayPassGate(leg, s, ctx)) return false;
    if (!tablesRead.every(gateColumnsExact)) return false;
-   // A `storage=` rollup is read past a gate that reads a column only once
-   // its review allows it, under either switch: a lock-only entry point
-   // aside, its rows are not filtered past a row filter before then.
-   if (
-      leg === "rollup" &&
-      !s.gatedStorageRollupsReviewed &&
-      !tablesRead.every(g3RollupTable)
-   ) {
-      return false;
-   }
    if (s.gatedSources) return true;
    if (!ctx.colocatedReadsKeepGates || tablesRead.length === 0) return false;
    if (leg === "served") return tablesRead.every(g3Table);

@@ -21,6 +21,20 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a `storage=` rollup reads past a row-level gate
+
+**Changed: a `#(preaggregate)` rollup in a `storage=` destination is built and read past its base's row-level gate, on the same terms as a colocated one.**
+- With `PUBLISHER_MATERIALIZE_GATED_SOURCES` off (G3), the gate must be the base's own.
+- With the switch on, any gate proven on the grain is accepted, inherited ones included.
+
+As on the colocated tier, the queried source is redeclared over the rollup in its own declaring file with its gates. The gate is grafted and re-proven there, so each caller gets live's rows, and a caller the gate refuses is refused as live refuses them.
+
+A `storage=` rollup answers past a gate only when every column the gate reads is a grain dimension stored exactly. A binary float, a 128-bit integer, or a `TIMESTAMP WITH TIME ZONE` does not qualify: the destination compares a zoned timestamp in its own session's zone. Nor does a column the rollup cannot be shown to hold. A query that sets its own `timezone:` and reads a time the gate compares answers live, as on the colocated tier.
+
+The test-only seam that stood in for this review (`allowGatedStorageRollupsForTests`) is removed. It was never a setting. The interim tightening in "a rollup reads past a lock its base inherits" is replaced by these rules.
+
+**How to tell:** a gated base's `storage=` rollup no longer reports `preaggregate-not-built` for its gate, and its queries report the rollup in their path report. A query over a zoned or inexact gate column reports `row_level_gate` and answers live.
+
 ## [Unreleased] — a rollup reads past a lock its base inherits
 
 **Changed: a `#(preaggregate)` rollup over a base gated only by `#(authorize)` locks is built and read past them, on both tiers.** A lock that reads only givens and literals (`#(authorize) 'admin' = $ROLE`, `false`, or `true` re-opening a locked base) admits or refuses the whole query, and it is decided on the live source for every query, so pre-grouped rows cannot change its outcome. Such a rollup was built only when the lock was written on the base's own statement and the rollup was colocated. It is now built and read when the base inherits the lock from a source it extends, at any depth or from another file, and in a `storage=` destination, with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on or off. A caller the lock admits gets live's rows from the rollup; a caller it refuses, or one missing the given, is refused exactly as live refuses them. A base whose gates include any row filter (`#(access_filter)`) is unchanged, and so is a `storage=` rollup whose base has a `where:` of its own that reads a given, since that `where:` is applied per caller like a row filter.

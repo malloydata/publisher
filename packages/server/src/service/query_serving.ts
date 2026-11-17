@@ -139,17 +139,22 @@ export function variantsOf(
          keepsContracts:
             gateLeg !== undefined &&
             legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
-         keepsContractsFor: async (answer: LegAnswer) =>
-            gateLeg !== undefined &&
-            answerKeepsGates(
+         keepsContractsFor: async (answer: LegAnswer) => {
+            if (gateLeg === undefined) return false;
+            const tables = await withGateColumnTypes(
+               answer.gateTablesRead ?? answer.tablesRead ?? [],
+               gateReadsOnce,
+            );
+            if (gateLeg === "rollup" && readsZonedGateColumn(tables)) {
+               return false;
+            }
+            return answerKeepsGates(
                gateLeg,
-               await withGateColumnTypes(
-                  answer.gateTablesRead ?? answer.tablesRead ?? [],
-                  gateReadsOnce,
-               ),
+               tables,
                switches,
                SERVING_GATE_CONTEXT,
-            ),
+            );
+         },
          attempt: async () => {
             const answer = await leg.attempt(facts, pinned);
             if (leg.kind === "served") {
@@ -170,6 +175,25 @@ export function variantsOf(
          onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
       };
    });
+}
+
+/** A stored type that carries a zone: compared in the reading session's zone. */
+const ZONED_STORED_TYPE = /\b(TIMESTAMP\s+WITH\s+TIME\s+ZONE|TIMESTAMPTZ)\b/i;
+
+/**
+ * Whether a `storage=` rollup an answer read holds a gate column with a zone
+ * (the zone checks' family, with a query's own `timezone:`): the destination
+ * compares it in its session's zone, not the warehouse's, so a gate over it
+ * may admit other rows than live's. Such an answer is not kept, and the query
+ * answers live. A gate column whose types are not listed is judged by the
+ * exactness rule, which keeps no `storage=` table for it.
+ */
+function readsZonedGateColumn(tables: readonly TableRead[]): boolean {
+   return tables.some(
+      (t) =>
+         t.tier === "storage" &&
+         (t.gateColumnTypes ?? []).some((type) => ZONED_STORED_TYPE.test(type)),
+   );
 }
 
 /**

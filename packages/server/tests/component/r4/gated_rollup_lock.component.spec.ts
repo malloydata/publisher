@@ -358,9 +358,14 @@ for (const placement of ["colocated", "storage"] as const) {
             }
          });
 
-         it("builds a lock beside a given-reading where: only colocated, and answers every caller as live does", async () => {
+         it("builds a lock beside a given-reading where: as its gates allow, and answers every caller as live does", async () => {
             const refused = fixture.rollupRefusals.map((r) => r.sourceName);
             const colocated = placement === "colocated";
+            // This harness binds no `storage=` table as plan-admitted
+            // (`ownGateKept`), so with the switch off a `storage=` answer
+            // past a column-reading gate is live here;
+            // storage_rollup_gates.component.spec.ts takes the bind.
+            const fromRollup = colocated || gatedSources;
             for (const [source, malloy, admitted, refusedCallers] of [
                [
                   "lw",
@@ -381,16 +386,21 @@ for (const placement of ["colocated", "storage"] as const) {
                   [{ ROLE: "viewer", REGION: "east" }, ADMIN],
                ],
             ] as const) {
-               expect(refused.includes(source)).toBe(!colocated);
+               // `lw`'s lock is its own (G3 on either tier); `inh_w`'s is
+               // inherited and, beside its `where:`, not lock-only on
+               // `storage=`, so it is built there only with the switch on.
+               expect(refused.includes(source)).toBe(
+                  source === "inh_w" && !colocated && !gatedSources,
+               );
                for (const givens of admitted) {
                   const run = await fixture.run({
                      name: `${source} ${JSON.stringify(givens)}`,
                      malloy,
                      givens,
-                     expectLive: !colocated,
+                     expectLive: !fromRollup,
                   });
                   expect(rowDifference(run.live, run.served)).toBeUndefined();
-                  if (colocated) expect(run.servedBy?.kind).toBe("rollup");
+                  if (fromRollup) expect(run.servedBy?.kind).toBe("rollup");
                   else expectLive(run);
                }
                for (const givens of refusedCallers) {
@@ -410,12 +420,13 @@ for (const placement of ["colocated", "storage"] as const) {
                   malloy:
                      "run: lock_and_filter -> { group_by: category; aggregate: total }",
                   givens,
-                  // With the switch on, a colocated rollup keeps an inherited
-                  // gate (row 1); elsewhere this base is not lock-only.
-                  expectLive: !(gatedSources && placement === "colocated"),
+                  // With the switch on, a rollup on either tier keeps an
+                  // inherited gate (row 1, and P3/P4 on `storage=`);
+                  // with it off this base is not lock-only.
+                  expectLive: !gatedSources,
                });
                expect(rowDifference(run.live, run.served)).toBeUndefined();
-               if (!(gatedSources && placement === "colocated")) {
+               if (!gatedSources) {
                   expectLive(run);
                }
             }
@@ -454,9 +465,13 @@ for (const placement of ["colocated", "storage"] as const) {
             }
          });
 
-         it("reads a storage= rollup past a row filter on a grain field only as the colocated tier does: never before its review", async () => {
+         it("reads a rollup past an extension's row filter on a grain field when it keeps the gate", async () => {
             for (const cat of ["A", "B", "Z"]) {
-               const servedFromRollup = placement === "colocated";
+               // Colocated always; `storage=` with the switch on. With it
+               // off, a `storage=` answer is kept only for a table the bind
+               // marks, which this harness does not run.
+               const servedFromRollup =
+                  placement === "colocated" || gatedSources;
                const run = await fixture.run({
                   name: `inh1_by_cat ${cat}`,
                   malloy:
