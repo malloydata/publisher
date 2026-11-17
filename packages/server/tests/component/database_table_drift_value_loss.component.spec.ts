@@ -50,6 +50,7 @@ const TENANT = 9007199254740992;
 
 const MODEL = `##! experimental { persistence givens }
 given: TENANT :: number
+given: ORG :: number
 source: raw is warehouse.sql("""
   SELECT * FROM (VALUES
     ('a', CAST(9.4 AS DECIMAL(10,1)), CAST(9007199254740993 AS DECIMAL(20,0))),
@@ -76,6 +77,40 @@ source: rolled is raw extend {
   #(preaggregate) grain=["cat", "big"]
   measure: rn is count()
 }
+
+source: mat_raw is warehouse.sql("""
+  SELECT * FROM (VALUES
+    ('a', CAST(9.4 AS DECIMAL(10,1))),
+    ('b', CAST(2.5 AS DECIMAL(10,1)))
+  ) AS t(cat, amt)
+""")
+
+source: wmat_raw is warehouse.sql("""
+  SELECT * FROM (VALUES ('a', CAST(1 AS INTEGER)), ('b', CAST(2 AS INTEGER))) AS t(cat, n)
+""")
+
+source: gmat_raw is warehouse.sql("""
+  SELECT * FROM (VALUES
+    ('a', CAST(10.0 AS DECIMAL(10,1))),
+    ('b', CAST(10.4 AS DECIMAL(10,1)))
+  ) AS t(cat, org)
+""")
+
+#(materialize)
+source: mat is mat_raw extend {
+  measure: m is amt.max()
+}
+
+#(materialize)
+source: wmat is wmat_raw extend {
+  measure: s is n.sum()
+}
+
+#(access_filter) org = $ORG
+#(materialize)
+source: gmat is gmat_raw extend {
+  measure: c is count()
+}
 `;
 
 const QUERIES: Record<string, { query: string; givens?: object }> = {
@@ -92,6 +127,16 @@ const QUERIES: Record<string, { query: string; givens?: object }> = {
    },
    rollup_count: {
       query: "run: rolled -> { group_by: cat; aggregate: rn; order_by: cat }",
+   },
+   mat_narrow: {
+      query: "run: mat -> { group_by: cat; aggregate: m; order_by: cat }",
+   },
+   mat_widen: {
+      query: "run: wmat -> { group_by: cat; aggregate: s; order_by: cat }",
+   },
+   gmat: {
+      query: "run: gmat -> { group_by: cat; aggregate: c; order_by: cat }",
+      givens: { ORG: 10 },
    },
 };
 
@@ -284,6 +329,23 @@ function scenario(bigTo: "DOUBLE" | "VARCHAR") {
                );
             }
          }
+         // The served copy's tables: `amt` rounded, `n` widened, and the
+         // gate column `org` rounded so tenants 10.0 and 10.4 both read 10.
+         if (columns.length === 2 && columns.includes("amt")) {
+            await warehouse.runSQL(
+               `ALTER TABLE ${table} ALTER "amt" TYPE DECIMAL(10,0)`,
+            );
+         }
+         if (columns.length === 2 && columns.includes("n")) {
+            await warehouse.runSQL(
+               `ALTER TABLE ${table} ALTER "n" TYPE BIGINT`,
+            );
+         }
+         if (columns.includes("org")) {
+            await warehouse.runSQL(
+               `ALTER TABLE ${table} ALTER "org" TYPE DECIMAL(10,0)`,
+            );
+         }
          if (columns.includes("big")) {
             await warehouse.runSQL(
                `ALTER TABLE ${table} ALTER "big" TYPE ${bigTo}`,
@@ -350,6 +412,42 @@ describe("C1, H1, M1: a value-losing move inside one type is left out, a widenin
       expect(after.kind).toBe("rollup");
       expect(after.tier).toBe("database");
       expect(after.servedFrom).toBe("database");
+   });
+});
+
+describe("the served copy of a #(materialize) table: a narrowing is left out, a widening read as it is", () => {
+   const s = scenario("DOUBLE");
+
+   it("served each from its table, equal to live, before the alter", () => {
+      for (const name of ["mat_narrow", "mat_widen", "gmat"]) {
+         expect({ name, rows: s.before[name].rows }).toEqual({
+            name,
+            rows: s.live[name].rows,
+         });
+         expect({ name, kind: s.before[name].kind }).not.toEqual({
+            name,
+            kind: "live",
+         });
+      }
+   });
+
+   it("a column rounded to DECIMAL(10,0): answers live's 9.4, not 9", async () => {
+      const after = await s.ask("mat_narrow");
+      expect(after.rows).toEqual(s.live.mat_narrow.rows);
+      expect(after.kind).toBe("live");
+   });
+
+   it("a gate column rounded so two tenants read alike: answers live, the caller's own tenant only", async () => {
+      const after = await s.ask("gmat");
+      expect(after.error).toBeUndefined();
+      expect(after.rows).toEqual(s.live.gmat.rows);
+      expect(after.rows).toEqual([{ cat: "a", c: 1 }]);
+   });
+
+   it("a column widened from INTEGER to BIGINT: still served, equal to live", async () => {
+      const after = await s.ask("mat_widen");
+      expect(after.rows).toEqual(s.live.mat_widen.rows);
+      expect(after.kind).not.toBe("live");
    });
 });
 

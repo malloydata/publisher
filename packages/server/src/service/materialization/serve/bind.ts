@@ -1012,9 +1012,12 @@ type ColumnDrift =
  *   alike;
  * - a 128-bit integer in a DuckLake table (`storedAsDouble`): `retype`, as
  *   the DOUBLE its Parquet files hold;
- * - another Malloy type, or the same one with another native type (a
- *   `bigint` altered to `numeric(10,2)`): `retype`, read through the one
- *   stored-column read plan with the type it holds now;
+ * - the same Malloy type with another native type: `retype` (read as it
+ *   is now) only when the move loses nothing (`losslessWidening`: a
+ *   `bigint` altered to `numeric(22,2)`), else `drop` (a `bigint` altered
+ *   to `numeric(10,2)`, DECIMAL(10,1) to DECIMAL(10,0));
+ * - another Malloy type: `retype`, read through the one stored-column read
+ *   plan with the type it holds now (a faithful cast, or left out);
  * - otherwise `none`.
  */
 function columnDrift(
@@ -1062,6 +1065,23 @@ function columnDrift(
             : {}),
          report: { ...report, storedAsDouble: true },
       };
+   }
+   // A move inside one Malloy type is read as it is only when it loses
+   // nothing (a lossless widening); any other (DECIMAL(10,1) to
+   // DECIMAL(10,0), a big integer into a decimal too narrow for its digits)
+   // may have rounded what the table holds, so the column is left out. A
+   // move across types goes to the read plan, which casts it faithfully or
+   // leaves it out.
+   const spelledMoved = normalizedType(now.type) !== normalizedType(built.type);
+   if (
+      typeFamily(now.type) === typeFamily(built.type) &&
+      (nativeMoved || spelledMoved) &&
+      !losslessWidening(
+         nativeMoved ? builtNative! : built.type,
+         nativeMoved ? now.nativeType! : now.type,
+      )
+   ) {
+      return { kind: "drop", report: dropped };
    }
    if (typeFamily(now.type) !== typeFamily(built.type) || nativeMoved) {
       return {

@@ -614,15 +614,16 @@ a restart, or a rebind from the store) reads every bound database table's column
 one catalog query per schema or dataset (`information_schema.columns`), one for every Postgres
 table, and DuckDB's in-process `DESCRIBE` per table, at most four at once, each bounded by 15
 seconds. A column whose type has changed since the build (an `ALTER TABLE` outside Publisher),
-including a big integer altered to a decimal, and on any warehouse but DuckDB a timestamp that
+including a big integer altered to a decimal (read with its new type only when the decimal holds
+all its digits), and on any warehouse but DuckDB a timestamp that
 gained or lost its time zone, a column that is gone, and a type Malloy reads as no basic type (an
 array, for example), is taken as above, by the same rule on every mechanism: it is read through a
 faithful cast or left out, so only a query that reads it is answered live. A `#@ persist` or
 `#(materialize)` table is read through its served copy. A rollup, persisted view or persisted query,
 read by Malloy's build-manifest substitution while its table is as built, is read once altered
 through a typed source over the columns its table holds now, on the source's own connection, as a
-`storage=` table is read, with one stricter rule: a column whose type moved inside one Malloy type
-is read as it is only when the move loses nothing (a wider integer, a decimal with no fewer integer
+`storage=` table is read. On every mechanism, served copy included, a column whose type moved inside
+one Malloy type is read as it is only when the move loses nothing (a wider integer, a decimal with no fewer integer
 or fraction digits, an integer into a decimal that holds all its digits, FLOAT to DOUBLE, a longer
 text); any other such move (DECIMAL(10,1) to DECIMAL(10,0), a BIGINT past 2^53 to DOUBLE) may have
 rounded what the table holds, so the column is left out. A rollup keeps serving every query that
@@ -634,7 +635,7 @@ raises the same `storage-column-type-mismatch` package warning, one per table an
 the table was altered outside a build and whether the column is cast or answered live, and counts
 in the same
 `publisher_storage_column_type_mismatch_total{stage="serve"}`, once per bind. A column that is gone
-is reported too; one whose new type still reads as its declared type is not. Rebuilding the table
+is reported too; one moved by a widening that loses nothing is not. Rebuilding the table
 clears it. The log line has the same code and names each changed column. A table
 whose columns cannot be read at the bind (missing, unreadable, or slower than the bound) is answered
 live, with a `database-table-unread` package warning that names the table, a fixed reason (the

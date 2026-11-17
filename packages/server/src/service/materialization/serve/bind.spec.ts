@@ -749,9 +749,9 @@ describe("applyObservedColumns", () => {
                "addr1",
                {
                   columns: [
-                     { name: "id", type: "BIGINT" },
-                     // A number of another width: the same Malloy type.
-                     { name: "amt", type: "BIGINT" },
+                     // A wider integer: a widening that loses nothing.
+                     { name: "id", type: "HUGEINT" },
+                     { name: "amt", type: "DOUBLE" },
                      { name: "d", type: "DATE" },
                   ],
                },
@@ -925,7 +925,7 @@ describe("applyObservedColumns", () => {
                   columns: [
                      { name: "flag", type: "INTEGER" },
                      { name: "d2", type: "TIMESTAMP" },
-                     { name: "n", type: "DECIMAL(10,2)" },
+                     { name: "n", type: "DECIMAL(22,2)" },
                      { name: "amt", type: "VARCHAR" },
                      { name: "other", type: "VARCHAR" },
                   ],
@@ -950,7 +950,7 @@ describe("applyObservedColumns", () => {
                columns: [
                   { name: "flag", type: "INTEGER", moved: true },
                   { name: "d2", type: "TIMESTAMP", moved: true },
-                  { name: "n", type: "DECIMAL(10,2)" },
+                  { name: "n", type: "DECIMAL(22,2)" },
                   { name: "amt", type: "VARCHAR", moved: true },
                   { name: "other", type: "VARCHAR" },
                ],
@@ -1107,42 +1107,59 @@ describe("applyObservedColumns", () => {
       ]);
    });
 
-   it("re-reads a big integer altered to a decimal: retyped, and cast to the type it holds now", () => {
-      const big: Binding = {
-         ...binding,
-         schema: [{ name: "n", type: "BIGINT" }],
-         nativeSchema: [{ name: "n", type: "bigint" }],
-      };
-      const out = applyObservedColumns({
-         entries: {
-            addr1: {
-               tableName: "orders_t",
-               schema: [{ name: "n", type: "BIGINT" }],
-               nativeSchema: [{ name: "n", type: "bigint" }],
-            },
-         },
-         bindings: [big],
-         observed: new Map([
-            [
-               "addr1",
-               {
-                  dialect: "postgres",
-                  columns: [
-                     { name: "n", type: "DOUBLE", nativeType: "numeric(10,2)" },
-                  ],
+   // A big integer altered to a decimal is read with its new type only when
+   // the decimal holds all its digits; a narrower one may have rounded it.
+   for (const [native, served] of [
+      ["numeric(22,2)", true],
+      ["numeric(10,2)", false],
+   ] as const) {
+      it(`a big integer altered to ${native}: ${served ? "retyped, and cast to the type it holds now" : "left out"}`, () => {
+         const big: Binding = {
+            ...binding,
+            schema: [{ name: "n", type: "BIGINT" }],
+            nativeSchema: [{ name: "n", type: "bigint" }],
+         };
+         const out = applyObservedColumns({
+            entries: {
+               addr1: {
+                  tableName: "orders_t",
+                  schema: [{ name: "n", type: "BIGINT" }],
+                  nativeSchema: [{ name: "n", type: "bigint" }],
                },
-            ],
-         ]),
+            },
+            bindings: [big],
+            observed: new Map([
+               [
+                  "addr1",
+                  {
+                     dialect: "postgres",
+                     columns: [
+                        { name: "n", type: "DOUBLE", nativeType: native },
+                     ],
+                  },
+               ],
+            ]),
+         });
+         if (served) {
+            // Never cast to the bigint it was built as: that truncates a
+            // fraction.
+            expect(out.bindings[0].schema).toEqual([
+               { name: "n", type: "DOUBLE" },
+            ]);
+            expect(out.bindings[0].nativeSchema).toEqual([
+               { name: "n", type: native },
+            ]);
+         } else {
+            expect(out.bindings[0].schema).toEqual([]);
+         }
+         expect(out.drifted.map((d) => d.columns.map((c) => c.column))).toEqual(
+            [["n"]],
+         );
+         expect(out.drifted[0].columns[0].leftOut).toBe(
+            served ? undefined : true,
+         );
       });
-      // Never cast to the bigint it was built as: that truncates a fraction.
-      expect(out.bindings[0].schema).toEqual([{ name: "n", type: "DOUBLE" }]);
-      expect(out.bindings[0].nativeSchema).toEqual([
-         { name: "n", type: "numeric(10,2)" },
-      ]);
-      expect(out.drifted.map((d) => d.columns.map((c) => c.column))).toEqual([
-         ["n"],
-      ]);
-   });
+   }
 
    it("leaves out a timestamp whose zone changed, unless the session is DuckDB's UTC", () => {
       const ts: Binding = {
