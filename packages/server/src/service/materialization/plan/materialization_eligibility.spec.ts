@@ -713,7 +713,7 @@ source: by_category is orders -> {
                   assertTierEligible(source, true, inputs(source.sourceID)),
                ),
             );
-            expect(refused.reason).toBe("authorize");
+            expect(refused.reason).toBe("access_filter");
          }
       });
 
@@ -739,7 +739,7 @@ source: by_category is orders -> {
             const refused = withEnv(R3_ON, () =>
                refusal(() => assertTierEligible(source, true, plan)),
             );
-            expect(refused.reason).toBe("authorize");
+            expect(refused.reason).toBe("access_filter");
          }
       });
 
@@ -812,14 +812,14 @@ source: by_category is orders -> {
                refusal(() => assertTierEligible(source, false, inputs(id))),
             );
             expect(refused).toBeInstanceOf(MaterializationEligibilityError);
-            expect(refused.reason).toBe("authorize");
+            expect(refused.reason).toBe("access_filter");
             expect(refused.message).toContain("(colocated '#(materialize)')");
             expect(refused.message).toContain("PUBLISHER_MATERIALIZE on");
             expect(refused.message).toContain("'#@ persist'");
          }
       });
 
-      it("builds the same gated source colocated as a #@ persist, whose gate Malloy's build manifest keeps", async () => {
+      it("builds the same gated source colocated as a #@ persist, whose own gate the served copy keeps (G3)", async () => {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          withEnv(
@@ -867,7 +867,7 @@ source: by_category is orders -> {
                const refused = withEnv(env, () =>
                   refusal(() => assertTierEligible(source, true, plan)),
                );
-               expect(refused.reason).toBe("authorize");
+               expect(refused.reason).toBe("access_filter");
             }
             const inherited = withEnv(env, () =>
                refusal(() =>
@@ -999,7 +999,7 @@ source: by_category is orders -> {
          const refused = withEnv(R3_ON, () =>
             refusal(() => assertTierEligible(source, true, plan)),
          );
-         expect(refused.reason).toBe("authorize");
+         expect(refused.reason).toBe("access_filter");
          expect(refused.message).toContain(
             "reads an #(access_filter) row-level gate from a source it derives from",
          );
@@ -1022,7 +1022,7 @@ source: by_category is orders -> {
             },
             () => refusal(() => assertTierEligible(view, false, plan)),
          );
-         expect(off.reason).toBe("authorize");
+         expect(off.reason).toBe("access_filter");
          expect(off.message).toContain("PUBLISHER_MATERIALIZE_GATED_SOURCES");
          withEnv(R3_ON, () => assertTierEligible(view, false, plan));
          // A v1 source of the same shape is the colocated tier check's, as

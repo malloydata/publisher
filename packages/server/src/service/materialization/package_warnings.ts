@@ -25,7 +25,11 @@ import { preaggregateGateLines, refusalCodeOf } from "./plan/load_gate_text";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
 import type { MaterializePlan } from "./domain/table_plans";
-import type { BuildPlan, FreshnessManifest } from "./domain/types";
+import type {
+   BuildPlan,
+   FreshnessManifest,
+   UnreadReason,
+} from "./domain/types";
 import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
@@ -267,7 +271,14 @@ export function storageWarnings(
  * compile, a join it moved across connections reads a source that is not
  * stored, or a source could not be re-rooted. Those sources answer live.
  */
-export function servedCopyWarnings(models: Models): ApiPackageWarning[] {
+export function servedCopyWarnings(
+   models: Models,
+   /**
+    * Whether a source's declaration takes `inline=`, by sourceID: only a
+    * `#(materialize)` one does. Absent, every source is advised to inline.
+    */
+   takesInline?: (sourceID: string) => boolean,
+): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    for (const [modelPath, model] of models) {
       const problems = model.servedCopyProblems() ?? [];
@@ -288,6 +299,9 @@ export function servedCopyWarnings(models: Models): ApiPackageWarning[] {
             message: servedCopyProblemMessage(
                p,
                keptInline.has(`${p.sourceName}\u0000${p.join}`),
+               p.sourceID === undefined || !takesInline
+                  ? true
+                  : takesInline(p.sourceID),
             ),
          });
          // The coded warning the compile of record's own check raises.
@@ -536,6 +550,8 @@ function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
 function servedCopyProblemMessage(
    problem: ServedCopyProblem,
    inlinedButKept = false,
+   /** Whether the source's declaration takes `inline=` (a `#(materialize)` one). */
+   takesInline = true,
 ): string {
    const { reason, join } = problem;
    switch (reason) {
@@ -585,8 +601,11 @@ function servedCopyProblemMessage(
                ? "fix what keeps the inlined join from being answered from its stored columns (the warning on " +
                  "this join says what), materialize the joined source into the same destination, or keep this " +
                  "source colocated."
-               : "inline the join (inline=), materialize the joined source into the same destination, or keep " +
-                 "this source colocated.")
+               : takesInline
+                 ? "inline the join (inline=), materialize the joined source into the same destination, or keep " +
+                   "this source colocated."
+                 : // `#@ persist` takes no `inline=`.
+                   "materialize the joined source into the same destination, or keep this source colocated.")
          );
       case "inline_join_kept":
          return (
@@ -605,4 +624,59 @@ function servedCopyProblemMessage(
             [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
          );
    }
+}
+
+/** The code of the warning for a bound database table the bind could not read. */
+export const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
+
+/** What a `database-table-unread` warning says of each reason. */
+const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {
+   connection_failed: "its connection could not be opened",
+   timed_out: "the catalog read timed out",
+   catalog_query_failed: "the catalog query failed",
+   not_found: "it was not found in its database's catalog",
+   ambiguous: "its name matches more than one table",
+   unparseable: "its name does not name a table the catalog can read",
+   not_read: "it was not read at this bind",
+};
+
+/**
+ * One warning per bound database table whose columns the bind could not read
+ * (`database-table-unread`): its sources answer live until a read succeeds.
+ * The reason is a fixed class, never the driver's text (the log has that).
+ * Named by the table, and by the source a query names (a rollup's base), in
+ * the model that declares it.
+ */
+export function databaseTableUnreadWarnings(
+   unread: readonly {
+      sourceEntityId: string;
+      reason: UnreadReason;
+      tableName?: string;
+   }[],
+   plan: BuildPlan | null,
+   retryPending: boolean,
+): ApiPackageWarning[] {
+   const warnings: ApiPackageWarning[] = [];
+   const sources = Object.values(plan?.sources ?? {});
+   for (const { sourceEntityId, reason, tableName } of unread) {
+      const source = sources.find((s) => s.sourceEntityId === sourceEntityId);
+      const name = source?.preaggregate?.baseSourceName ?? source?.name;
+      const table = source?.preaggregate
+         ? `The rollup \`${source.name}\``
+         : tableName
+           ? `The table \`${tableName}\``
+           : "A table";
+      warnings.push({
+         ...(source?.modelPath ? { model: source.modelPath } : {}),
+         ...(name ? { subject: name } : {}),
+         code: DATABASE_TABLE_UNREAD_CODE,
+         severity: "warn",
+         message:
+            `${table}${name ? ` of \`${name}\`` : ""} could not be read in its database when it was bound (${UNREAD_REASON_TEXT[reason]}), so its queries are answered live. ` +
+            (retryPending
+               ? "A retry is pending."
+               : "It is read again at the next bind or manifest poll."),
+      });
+   }
+   return warnings;
 }

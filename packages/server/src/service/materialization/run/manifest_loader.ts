@@ -14,6 +14,7 @@
  */
 
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
+import { tablePathParts } from "../../quoting";
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import * as fs from "fs/promises";
@@ -112,6 +113,21 @@ export async function fetchManifestEntries(
 }
 
 /**
+ * Whether a table name a host or the run store supplies (a manifest entry,
+ * a build instruction, a reference, a ledger entry) is one this server puts
+ * in SQL: no backslash anywhere, and a path that parses into parts, none
+ * empty ({@link tablePathParts}), quoted or not. A quoted name has real
+ * writers: an author's own `manifestLocation` manifest, whose entries no
+ * `name=` rule checks, and the manifests of Publisher v0.0.229 to v0.2.4.
+ * The control plane never sends one. The one predicate for the build route
+ * and the bind.
+ */
+export function isUsableTableName(name: string): boolean {
+   if (name.includes("\\")) return false;
+   return tablePathParts(name, "") !== undefined;
+}
+
+/**
  * Split a manifest entry map by tier into {@link FetchedManifest}. A colocated
  * entry's wire `physicalTableName` becomes the runtime's `tableName`, keeping
  * the freshness fields (gated per query) and `connectionName` (for
@@ -150,6 +166,19 @@ export function splitManifestEntries(
                source,
                sourceEntityId,
             });
+         }
+         continue;
+      }
+      // A name this server would not put in SQL (isUsableTableName): a
+      // backslash, quotes that do not form whole quoted parts, or an empty
+      // part. A quoted name that parses (an author's own manifestLocation
+      // manifest, or a legacy one) is kept.
+      if (!isUsableTableName(physicalTableName)) {
+         if (!quiet) {
+            logger.warn(
+               "Manifest entry names a table this server cannot read safely (a backslash, quotes that do not parse, or an empty part); skipping, so its source answers live",
+               { source, sourceEntityId },
+            );
          }
          continue;
       }

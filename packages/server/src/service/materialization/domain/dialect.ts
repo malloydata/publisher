@@ -125,6 +125,13 @@ export interface Capabilities {
     */
    foldsTableNameCase: boolean;
    /**
+    * Publisher's sessions on it run in UTC, so a stored timestamp reads alike
+    * with or without its zone: a column altered from one to the other after
+    * its build is no drift (DuckDB). Elsewhere the session's zone is the
+    * warehouse's, which Publisher cannot see.
+    */
+   utcSessions: boolean;
+   /**
     * The longest leaf a table Publisher names itself may have
     * (`domain/table_name.ts`): its identifier limit less the 13 characters a
     * build appends for its staging and aside copies, capped at 120 for
@@ -161,6 +168,7 @@ const NONE: Capabilities = Object.freeze({
    castsToIntegerType: false,
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
+   utcSessions: false,
    leafBudget: 50,
    passthroughNumericAsDouble: false,
 });
@@ -179,6 +187,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       driverKeepsBigIntegers: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
+      utcSessions: true,
       leafBudget: 120,
    }),
    postgres: Object.freeze({

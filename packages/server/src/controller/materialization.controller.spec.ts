@@ -93,6 +93,75 @@ describe("MaterializationController.createMaterialization validation", () => {
       });
    });
 
+   describe("a host-supplied physicalTableName, held to the bind's rule", () => {
+      const source = (physicalTableName: string) => ({
+         sourceEntityId: "b1",
+         materializedTableId: "mt-1",
+         physicalTableName,
+      });
+      const ledger = (physicalTableName: string) => ({
+         connectionName: "c",
+         physicalTableName,
+         coveredThrough: "1",
+         coveredThroughType: "number",
+         watermark: "w",
+         strategy: "merge",
+         sourceEntityId: "b1",
+      });
+      const bodies: [string, (name: string) => Record<string, unknown>][] = [
+         [
+            "Build instruction",
+            (n) => ({ buildInstructions: { sources: [source(n)] } }),
+         ],
+         [
+            "Manifest reference",
+            (n) => ({
+               buildInstructions: {
+                  sources: [source("ok_v1")],
+                  referenceManifest: [
+                     { sourceEntityId: "b0", physicalTableName: n },
+                  ],
+               },
+            }),
+         ],
+         [
+            "Ledger entry",
+            (n) => ({
+               buildInstructions: {
+                  sources: [source("ok_v1")],
+                  ledger: [ledger(n)],
+               },
+            }),
+         ],
+      ];
+      for (const [what, body] of bodies) {
+         for (const bad of [
+            "t\\'; DROP TABLE x --",
+            '"s.t',
+            'a"b.t',
+            "a..b",
+            ".t",
+         ]) {
+            it(`refuses ${what} ${JSON.stringify(bad)} with a 400 naming the field`, async () => {
+               const { controller } = build();
+               const err = await controller
+                  .createMaterialization("env", "pkg", body(bad))
+                  .catch((e) => e);
+               expect(err).toBeInstanceOf(BadRequestError);
+               expect(String(err.message)).toContain(
+                  `${what} 'physicalTableName'`,
+               );
+            });
+         }
+         for (const good of ["s.orders_v1", '"My Schema"."T x"']) {
+            it(`accepts ${what} ${JSON.stringify(good)}`, async () => {
+               const { controller } = build();
+               await controller.createMaterialization("env", "pkg", body(good));
+            });
+         }
+      }
+   });
+
    it("treats null buildInstructions as absent (auto-run)", async () => {
       expect(await parse({ buildInstructions: null })).toEqual({});
    });
