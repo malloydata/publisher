@@ -58,7 +58,7 @@ for (const gated of [true, false]) {
          await __setPackageLoadPoolForTests(pool);
          restore = installSettings({
             env: {
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: gated ? "true" : "false",
             },
          }).restore;

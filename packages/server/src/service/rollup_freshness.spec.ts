@@ -28,7 +28,7 @@ beforeEach(async () => {
    envPath = path.join(rootDir, "env");
    await fs.mkdir(envPath, { recursive: true });
    restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true" },
+      env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
    }).restore;
 });
 

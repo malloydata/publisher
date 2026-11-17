@@ -19,7 +19,7 @@ This is the guarantee, on a stored source: identity wins over position.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.ivm_orders
 

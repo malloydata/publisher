@@ -27,7 +27,7 @@ caller, and served from the tier.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.f1_orders
 

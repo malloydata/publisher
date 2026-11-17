@@ -11,7 +11,7 @@
 // step executor), so the lib/ + orchestrator layer is unchanged.
 //
 // Section grammar (ASCII-friendly, human-authored):
-//   ## Publisher [<name>]               [body: `- PERSIST_STORAGE_MODE: on`, plus any
+//   ## Publisher [<name>]               [body: `- PUBLISHER_PERSIST_STORAGE_MODE: on`, plus any
 //                                       `- SOME_ENV: value` bullets passed as extra env]  -> (re)start
 //                                       the publisher at that mode; following steps inherit it
 //   ## Data <conn>.<table>              + a GFM table (headers `name:type`)  -> seed
@@ -498,7 +498,7 @@ const SIDE_EFFECT_ONLY_STEPS = new Set([
 /**
  * Candidate body keys in a section: a lowercase `word:` at the start of a line.
  * Fenced code blocks are skipped (Malloy's `group_by:` is not a body key), as are
- * blockquotes, table rows, and bullets (`- PERSIST_STORAGE_MODE: on` is publisher
+ * blockquotes, table rows, and bullets (`- PUBLISHER_PERSIST_STORAGE_MODE: on` is publisher
  * env, and `expect binding: …` has a space before the colon so it never matches).
  * Prose is excluded in practice by the lowercase-first-word rule.
  */
@@ -607,7 +607,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
    const dataSeeds: { conn: string; table: string; data: Table }[] = [];
    const connectionDecls: ConnectionDecl[] = [];
 
-   // PERSIST_STORAGE_MODE is a server-level setting fixed at process start — you
+   // PUBLISHER_PERSIST_STORAGE_MODE is a server-level setting fixed at process start — you
    // change it by RESTARTING the publisher, not per request. So it is not a
    // per-action attribute: a `## Publisher` section (re)starts the publisher at a
    // declared mode, and every subsequent step runs against that publisher until
@@ -1150,7 +1150,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             // Re-publish a package through the POST /packages endpoint (the
             // author-in-the-loop gate), distinct from `## Publish` (a build). With
             // `(refused)` it asserts the publish is rejected (e.g. a collision
-            // under PERSIST_COLLISION_ENFORCE) and cites the reason.
+            // under PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED) and cites the reason.
             steps.push({
                kind: "republish",
                pub,
@@ -1366,29 +1366,32 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
 }
 
 /**
- * The publisher's `PERSIST_STORAGE_MODE` from a `## Publisher` section body.
- * Accepts a `- PERSIST_STORAGE_MODE: on` bullet, a `KEY: value` line, or a
- * `| PERSIST_STORAGE_MODE | on |` table row — whatever reads cleanest.
+ * The publisher's `PUBLISHER_PERSIST_STORAGE_MODE` from a `## Publisher` section body.
+ * Accepts a `- PUBLISHER_PERSIST_STORAGE_MODE: on` bullet, a `KEY: value` line, or a
+ * `| PUBLISHER_PERSIST_STORAGE_MODE | on |` table row — whatever reads cleanest.
  */
 function extractPublisherMode(body: string[]): PersistStorageMode | undefined {
    const m = body
       .join("\n")
-      .match(/PERSIST_STORAGE_MODE\s*[:|]?\s*\|?\s*(off|write-only|on)\b/i);
+      .match(
+         /PUBLISHER_PERSIST_STORAGE_MODE\s*[:|]?\s*\|?\s*(off|write-only|on)\b/i,
+      );
    return m ? (m[1].toLowerCase() as PersistStorageMode) : undefined;
 }
 
 /**
  * Extra environment variables from a `## Publisher` body — every
  * `- KEY: value` (or `KEY: value`) bullet whose key is a SCREAMING_SNAKE env name,
- * EXCEPT `PERSIST_STORAGE_MODE` (which is the mode, handled separately). Lets a
+ * EXCEPT `PUBLISHER_PERSIST_STORAGE_MODE` (which is the mode, handled separately). Lets a
  * scenario boot a publisher with a deployment flag fixed at process start, e.g.
- * `- PERSIST_COLLISION_ENFORCE: true`.
+ * `- PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: true`.
  */
 function extractPublisherEnv(body: string[]): Record<string, string> {
    const env: Record<string, string> = {};
    for (const raw of body) {
       const m = raw.match(/^\s*-?\s*([A-Z][A-Z0-9_]*)\s*[:=]\s*(.+?)\s*$/);
-      if (m && m[1] !== "PERSIST_STORAGE_MODE") env[m[1]] = m[2].trim();
+      if (m && m[1] !== "PUBLISHER_PERSIST_STORAGE_MODE")
+         env[m[1]] = m[2].trim();
    }
    return env;
 }
@@ -3158,7 +3161,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                // Make <name> the active publisher, (re)starting it at this mode.
                // usePublisher boots it (or restarts on a mode change), so the
                // narrative shows each mode as a distinct publisher process — which
-               // is what changing PERSIST_STORAGE_MODE actually requires — and a
+               // is what changing PUBLISHER_PERSIST_STORAGE_MODE actually requires — and a
                // named publisher is addressable for a multi-publisher scenario.
                activeName = step.name ?? "default";
                activeMode = step.mode;
@@ -3214,7 +3217,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             case "republish": {
                // POST /packages to re-publish through the author-in-the-loop gate
                // (addPackage), which — unlike startup/reload — is strict: under
-               // PERSIST_COLLISION_ENFORCE a colliding package is rejected here.
+               // PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED a colliding package is rejected here.
                const rest = await serverFor(step.pub, step.env);
                const res = await rest.addPackage(step.pkg);
                if (step.refused) {

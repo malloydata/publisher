@@ -25,7 +25,7 @@ the status `warnings` array.
 Neither source is served from the shared table, which holds whichever build ran
 last: queries on both are answered live.
 
-Rejecting a *publish* of a colliding package (the default; `PERSIST_COLLISION_ENFORCE=false`
+Rejecting a *publish* of a colliding package (the default; `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`
 opts out) is covered by `collision-enforce-refuses-publish`.
 
 ## Publisher
@@ -33,8 +33,8 @@ opts out) is covered by `collision-enforce-refuses-publish`.
 The harness publishes the package, and a colliding publish is refused by
 default, so this publisher opts out to reach the load-time warning.
 
-- PERSIST_STORAGE_MODE: on
-- PERSIST_COLLISION_ENFORCE: false
+- PUBLISHER_PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: false
 
 ## Data orders_pg.col_orders
 

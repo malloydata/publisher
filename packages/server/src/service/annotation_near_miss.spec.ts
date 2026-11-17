@@ -19,7 +19,7 @@ import { MATERIALIZATION_NEAR_MISS_CODE } from "./annotation_reader";
 import { nearMissLogMessages } from "./compile_source";
 import { withSettings } from "../test_helpers/settings_env";
 
-const MATERIALIZE_ON = { env: { PUBLISHER_MATERIALIZE: "true" } };
+const MATERIALIZE_ON = { env: { PUBLISHER_MATERIALIZE_ENABLED: "true" } };
 
 function scan(text: string) {
    return annotationNearMisses([{ text }]);
@@ -151,7 +151,7 @@ describe("annotationNearMisses", () => {
    });
 
    it("with the materialize switch off, reads the v2 spellings as before they were registered", () => {
-      withSettings({ env: { PUBLISHER_MATERIALIZE: "false" } }, () => {
+      withSettings({ env: { PUBLISHER_MATERIALIZE_ENABLED: "false" } }, () => {
          // `#(preaggregate)` does nothing off; `#@ preaggregate` works.
          const [finding] = scan('#(preaggregate) grain=["a"]');
          expect(finding?.message).toContain("did you mean `#@ preaggregate`?");

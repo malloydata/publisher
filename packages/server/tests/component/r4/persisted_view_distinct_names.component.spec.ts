@@ -116,7 +116,7 @@ describe("colocated persisted views and queries of one build, each under its own
 
    beforeAll(async () => {
       restore = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true" },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
       }).restore;
       await freshLoadPool();
       loader = await loadFixture({ "m.malloy": MODEL });

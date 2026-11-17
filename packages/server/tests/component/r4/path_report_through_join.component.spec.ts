@@ -34,9 +34,9 @@ describe("the path report names the queried source's table through a join", () =
    let dispose: () => Promise<void>;
 
    beforeAll(async () => {
-      // The default: the v1 cutover on, PUBLISHER_MATERIALIZE unset.
+      // The default: the v1 cutover on, PUBLISHER_MATERIALIZE_ENABLED unset.
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       }).restore;
       await freshLoadPool();
       const shape = SHAPES.find((s) => s.name === SHAPE)!;

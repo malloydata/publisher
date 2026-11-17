@@ -194,7 +194,7 @@ describe.serial("search_database_schema (E2E Integration)", () => {
       });
       expect(result.isError).not.toBe(true);
       const payload = payloadOf(result);
-      // The integration environment sets no EMBEDDING_API_KEY, so the tool must
+      // The integration environment sets no PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY, so the tool must
       // rank lexically rather than failing or reporting semantic.
       expect(payload.ranking).toBe("lexical");
       expect(Array.isArray(payload.tables)).toBe(true);

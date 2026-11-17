@@ -32,7 +32,7 @@ has created yet.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Destination tables (dest=fresh)
 

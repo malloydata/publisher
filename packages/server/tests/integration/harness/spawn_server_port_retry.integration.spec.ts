@@ -154,12 +154,12 @@ describe("spawnServer on a port taken before the server bound it", () => {
    });
 });
 
-describe("spawnServer under a quiet LOG_LEVEL", () => {
+describe("spawnServer under a quiet PUBLISHER_LOGGING_LEVEL", () => {
    it("returns once the server holds its ports, without the listening lines", async () => {
       const started = Date.now();
       const server = await spawnServer({
          config,
-         env: { LOG_LEVEL: "error" },
+         env: { PUBLISHER_LOGGING_LEVEL: "error" },
       });
       cleanups.push(() => server.stop());
       const elapsed = Date.now() - started;

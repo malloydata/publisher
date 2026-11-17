@@ -50,10 +50,10 @@ describe("servingApiEnabled and adminApiEnabled", () => {
       const child = Bun.spawn(["bun", SERVER_ENTRY], {
          env: {
             ...process.env,
-            SERVER_ROOT: root,
+            PUBLISHER_ROOT: root,
             PUBLISHER_PORT: String(ports.main),
-            MCP_PORT: String(ports.mcp),
-            PUBLISHER_NO_MCP_CONFIG: "true",
+            PUBLISHER_MCP_PORT: String(ports.mcp),
+            PUBLISHER_MCP_CONFIG_FILE_ENABLED: "false",
             ...env,
          },
          stdout: "pipe",
@@ -151,16 +151,16 @@ describe("servingApiEnabled and adminApiEnabled", () => {
       expect(await answers(`http://127.0.0.1:${ports.main}/health`)).toBeNull();
    });
 
-   it("refuses a flag that is not a boolean", async () => {
+   it("refuses a value in the file that is no boolean", async () => {
       const { child } = await boot(
          {},
-         JSON.stringify({ adminApiEnabled: "no", environments: [] }),
+         JSON.stringify({ adminApiEnabled: "maybe", environments: [] }),
       );
       const { code, output } = await exitOf(child);
       expect(code).not.toBe(0);
       expect(output).toContain("adminApiEnabled from ");
       expect(output).toContain(
-         'expected true or false as a JSON boolean, or a ${VAR} reference to one, got "no"',
+         'expected a boolean (true/false, 1/0, yes/no or on/off), got "maybe"',
       );
    });
 });

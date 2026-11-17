@@ -27,7 +27,7 @@ concrete relation, and Malloy forces the argument to be supplied.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.f2_orders
 

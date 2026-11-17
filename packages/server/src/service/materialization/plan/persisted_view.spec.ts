@@ -4,7 +4,7 @@
 /**
  * `#@ persist` on a view (materialization v2, phase 4, P14): which views are
  * planned, the generated companion's text, and what the package's build plan
- * holds, warns about and leaves alone with PUBLISHER_MATERIALIZE on and off.
+ * holds, warns about and leaves alone with PUBLISHER_MATERIALIZE_ENABLED on and off.
  */
 
 import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
@@ -33,7 +33,7 @@ const packages = planPackages({
 
 function enable(on: boolean, gated = false) {
    packages.settings({
-      PUBLISHER_MATERIALIZE: on ? "true" : "false",
+      PUBLISHER_MATERIALIZE_ENABLED: on ? "true" : "false",
       PUBLISHER_MATERIALIZE_GATED_SOURCES: gated ? "true" : "false",
    });
 }
@@ -130,12 +130,12 @@ source: ops_ext is ops extend { where: carrier = 'aa' }
       expect(viewFindings(c)).toEqual([]);
    });
 
-   it("plans nothing with PUBLISHER_MATERIALIZE off, and warns that the view is not built", async () => {
+   it("plans nothing with PUBLISHER_MATERIALIZE_ENABLED off, and warns that the view is not built", async () => {
       enable(false);
       const c = await compiled(model);
       expect(viewSources(c)).toEqual([]);
       expect(viewFindings(c)).toEqual([
-         '#@ persist on view "by_carrier" of source "ops" is not built, so the view is served live: persisted views are built only with PUBLISHER_MATERIALIZE on.',
+         '#@ persist on view "by_carrier" of source "ops" is not built, so the view is served live: persisted views are built only with PUBLISHER_MATERIALIZE_ENABLED on.',
       ]);
       const [finding] = (c.annotationFindings ?? []).filter(
          (f) => f.code === PERSIST_VIEW_NOT_BUILT,
@@ -144,7 +144,7 @@ source: ops_ext is ops extend { where: carrier = 'aa' }
       expect(invalidFindings(c)).toEqual([]);
    });
 
-   it("with PUBLISHER_MATERIALIZE off, an invalid line still fails the load", async () => {
+   it("with PUBLISHER_MATERIALIZE_ENABLED off, an invalid line still fails the load", async () => {
       enable(false);
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {

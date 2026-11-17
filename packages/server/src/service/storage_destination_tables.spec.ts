@@ -118,7 +118,7 @@ describe("storage destination tables (plain DuckDB destination)", () => {
 });
 
 // A DuckLake destination reaches S3 through the host's credential chain, which
-// `S3_CREDENTIAL_CHAIN_POLICY=destinations-only` permits for the operator's
+// `PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN=destinations-only` permits for the operator's
 // destinations and refuses for tenant connections. These sessions attach the
 // destination directly, so each must declare which of the two it is. The catalog
 // is unreachable, so the DuckLake ATTACH is answered as a success and each
@@ -162,7 +162,7 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
    beforeEach(() => {
       for (const key of ENV_KEYS) saved[key] = process.env[key];
       restoreSettings = installSettings({
-         env: { S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" },
+         env: { PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "destinations-only" },
       }).restore;
       process.env.AWS_ACCESS_KEY_ID = "AKIAFAKE";
       process.env.AWS_SECRET_ACCESS_KEY = "fakesecret";

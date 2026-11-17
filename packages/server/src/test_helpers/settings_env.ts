@@ -109,8 +109,8 @@ export function installVariables(
 
 /** The settings that turn materialization on, `storage=` destinations included. */
 export const MATERIALIZATION_ON = {
-   PERSIST_STORAGE_MODE: "on",
-   PUBLISHER_MATERIALIZE: "true",
+   PUBLISHER_PERSIST_STORAGE_MODE: "on",
+   PUBLISHER_MATERIALIZE_ENABLED: "true",
 } as const;
 
 /**

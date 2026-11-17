@@ -20,7 +20,7 @@ the colocated write/read mismatch for a pre-quoted name was open.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.cq_orders
 

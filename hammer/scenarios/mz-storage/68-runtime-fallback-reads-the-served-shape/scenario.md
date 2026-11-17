@@ -32,7 +32,7 @@ it says otherwise, so the query is recomputed live.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.rfs_orders
 

@@ -876,112 +876,6 @@ describe("Config Environment Variable Substitution", () => {
 });
 
 // TODO: Remove this during projects cleanup
-describe("Config legacy 'projects' key back-compat", () => {
-   const testServerRoot = path.join(process.cwd(), "test-temp-legacy-config");
-   const configPath = path.join(testServerRoot, PUBLISHER_CONFIG_NAME);
-
-   beforeEach(() => {
-      if (!fs.existsSync(testServerRoot)) {
-         fs.mkdirSync(testServerRoot, { recursive: true });
-      }
-   });
-
-   afterEach(() => {
-      if (fs.existsSync(configPath)) {
-         fs.unlinkSync(configPath);
-      }
-      if (fs.existsSync(testServerRoot)) {
-         fs.rmdirSync(testServerRoot, { recursive: true });
-      }
-   });
-
-   it("reads from legacy 'projects' key when 'environments' is absent", async () => {
-      // Pre-rename on-disk shape: top-level key is `projects`, not
-      // `environments`. Without back-compat this silently parses as empty.
-      const legacyConfig = {
-         frozenConfig: false,
-         projects: [
-            {
-               name: "legacy-env",
-               packages: [
-                  {
-                     name: "p1",
-                     location: "./packages/p1",
-                  },
-               ],
-            },
-         ],
-      };
-
-      fs.writeFileSync(configPath, JSON.stringify(legacyConfig, null, 2));
-
-      // Spy on logger.warn so we can assert the deprecation message fired.
-      const { logger } = await import("./logger");
-      const originalWarn = logger.warn;
-      const warnings: string[] = [];
-      logger.warn = ((msg: unknown, ..._rest: unknown[]) => {
-         warnings.push(typeof msg === "string" ? msg : String(msg));
-         return logger;
-      }) as typeof logger.warn;
-
-      try {
-         const result = getPublisherConfig(testServerRoot);
-
-         expect(result.environments.length).toBe(1);
-         expect(result.environments[0].name).toBe("legacy-env");
-         expect(result.environments[0].packages[0].name).toBe("p1");
-
-         expect(
-            warnings.some((w) => w.includes('uses deprecated "projects" key')),
-         ).toBe(true);
-      } finally {
-         logger.warn = originalWarn;
-      }
-   });
-
-   it("prefers the new 'environments' key when both are present", async () => {
-      const config = {
-         frozenConfig: false,
-         environments: [
-            {
-               name: "new-env",
-               packages: [{ name: "p1", location: "./packages/p1" }],
-            },
-         ],
-         projects: [
-            {
-               name: "should-be-ignored",
-               packages: [{ name: "p2", location: "./packages/p2" }],
-            },
-         ],
-      };
-
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-
-      const { logger } = await import("./logger");
-      const originalWarn = logger.warn;
-      const warnings: string[] = [];
-      logger.warn = ((msg: unknown, ..._rest: unknown[]) => {
-         warnings.push(typeof msg === "string" ? msg : String(msg));
-         return logger;
-      }) as typeof logger.warn;
-
-      try {
-         const result = getPublisherConfig(testServerRoot);
-
-         expect(result.environments.length).toBe(1);
-         expect(result.environments[0].name).toBe("new-env");
-
-         // No deprecation warning should fire when `environments` is present.
-         expect(
-            warnings.some((w) => w.includes('uses deprecated "projects" key')),
-         ).toBe(false);
-      } finally {
-         logger.warn = originalWarn;
-      }
-   });
-});
-
 describe("getProcessedPublisherConfig credential logging", () => {
    const testServerRoot = path.join(
       process.cwd(),
@@ -1190,7 +1084,7 @@ describe("Config path resolution (--config and bundled default)", () => {
    });
 
    it("does NOT fall back to the bundled default when opt-in flag is unset (programmatic construction)", () => {
-      // No PUBLISHER_USE_BUNDLED_DEFAULT, no PUBLISHER_CONFIG_PATH, no
+      // No PUBLISHER_USE_BUNDLED_DEFAULT, no PUBLISHER_CONFIG, no
       // file in emptyServerRoot — result should be the original empty
       // shape, preserving prior behavior for embeds and tests.
       const result = withSettings({}, () =>
@@ -1199,7 +1093,7 @@ describe("Config path resolution (--config and bundled default)", () => {
       expect(result.environments).toEqual([]);
    });
 
-   it("honors PUBLISHER_CONFIG_PATH (set by --config) over the server root", () => {
+   it("honors PUBLISHER_CONFIG (set by --config) over the server root", () => {
       const customConfig = {
          frozenConfig: false,
          environments: [
@@ -1209,7 +1103,7 @@ describe("Config path resolution (--config and bundled default)", () => {
       fs.writeFileSync(customConfigPath, JSON.stringify(customConfig));
 
       const result = withSettings(
-         { env: { PUBLISHER_CONFIG_PATH: customConfigPath } },
+         { env: { PUBLISHER_CONFIG: customConfigPath } },
          () => getPublisherConfig(emptyServerRoot),
       );
       expect(result.environments[0].name).toBe("custom-env");
@@ -1221,7 +1115,7 @@ describe("Config path resolution (--config and bundled default)", () => {
       const result = withSettings(
          {
             env: {
-               PUBLISHER_CONFIG_PATH: path.join(
+               PUBLISHER_CONFIG: path.join(
                   process.cwd(),
                   "does-not-exist.json",
                ),
@@ -1239,13 +1133,13 @@ describe("getMemoryGovernorConfig", () => {
    const governor = (env: Record<string, string>) =>
       withSettings({ env }, () => getMemoryGovernorConfig());
 
-   it("returns null when PUBLISHER_MAX_MEMORY_BYTES is unset", () => {
+   it("returns null when PUBLISHER_MEMORY_MAX_BYTES is unset", () => {
       expect(governor({})).toBeNull();
    });
 
-   it("parses defaults when only PUBLISHER_MAX_MEMORY_BYTES is set", () => {
+   it("parses defaults when only PUBLISHER_MEMORY_MAX_BYTES is set", () => {
       const cfg = governor({
-         PUBLISHER_MAX_MEMORY_BYTES: String(2 * 1024 * 1024 * 1024),
+         PUBLISHER_MEMORY_MAX_BYTES: String(2 * 1024 * 1024 * 1024),
       });
       expect(cfg).not.toBeNull();
       expect(cfg!.maxMemoryBytes).toBe(2 * 1024 * 1024 * 1024);
@@ -1255,11 +1149,11 @@ describe("getMemoryGovernorConfig", () => {
 
    it("honours fraction and interval overrides", () => {
       const cfg = governor({
-         PUBLISHER_MAX_MEMORY_BYTES: "1000000000",
+         PUBLISHER_MEMORY_MAX_BYTES: "1000000000",
          PUBLISHER_MEMORY_HIGH_WATER_FRACTION: "0.85",
          PUBLISHER_MEMORY_LOW_WATER_FRACTION: "0.7",
          PUBLISHER_MEMORY_CHECK_INTERVAL_MS: "10000",
-         PUBLISHER_MEMORY_BACKPRESSURE: "false",
+         PUBLISHER_MEMORY_BACKPRESSURE_ENABLED: "false",
       });
       expect(cfg).not.toBeNull();
       expect(cfg!.highWaterFraction).toBe(0.85);
@@ -1268,18 +1162,18 @@ describe("getMemoryGovernorConfig", () => {
       expect(cfg!.backpressureEnabled).toBe(false);
    });
 
-   it("treats PUBLISHER_MAX_MEMORY_BYTES=0 as disabled (returns null)", () => {
-      expect(governor({ PUBLISHER_MAX_MEMORY_BYTES: "0" })).toBeNull();
+   it("treats PUBLISHER_MEMORY_MAX_BYTES=0 as disabled (returns null)", () => {
+      expect(governor({ PUBLISHER_MEMORY_MAX_BYTES: "0" })).toBeNull();
    });
 
-   it("rejects a negative PUBLISHER_MAX_MEMORY_BYTES", () => {
-      expect(() => governor({ PUBLISHER_MAX_MEMORY_BYTES: "-1" })).toThrow();
+   it("rejects a negative PUBLISHER_MEMORY_MAX_BYTES", () => {
+      expect(() => governor({ PUBLISHER_MEMORY_MAX_BYTES: "-1" })).toThrow();
    });
 
    it("rejects low >= high", () => {
       expect(() =>
          governor({
-            PUBLISHER_MAX_MEMORY_BYTES: "1000000000",
+            PUBLISHER_MEMORY_MAX_BYTES: "1000000000",
             PUBLISHER_MEMORY_HIGH_WATER_FRACTION: "0.7",
             PUBLISHER_MEMORY_LOW_WATER_FRACTION: "0.8",
          }),
@@ -1289,7 +1183,7 @@ describe("getMemoryGovernorConfig", () => {
    it("rejects an out-of-range fraction", () => {
       expect(() =>
          governor({
-            PUBLISHER_MAX_MEMORY_BYTES: "1000000000",
+            PUBLISHER_MEMORY_MAX_BYTES: "1000000000",
             PUBLISHER_MEMORY_HIGH_WATER_FRACTION: "1.5",
          }),
       ).toThrow();
@@ -1298,7 +1192,7 @@ describe("getMemoryGovernorConfig", () => {
    it("rejects a check interval below the safety floor", () => {
       expect(() =>
          governor({
-            PUBLISHER_MAX_MEMORY_BYTES: "1000000000",
+            PUBLISHER_MEMORY_MAX_BYTES: "1000000000",
             PUBLISHER_MEMORY_CHECK_INTERVAL_MS: "10",
          }),
       ).toThrow();
@@ -1320,7 +1214,7 @@ const readWith = <T>(
 
 describe("getMaxQueryRows", () => {
    const rows = (value?: string) =>
-      readWith("PUBLISHER_MAX_QUERY_ROWS", value, getMaxQueryRows);
+      readWith("PUBLISHER_QUERY_MAX_ROWS", value, getMaxQueryRows);
 
    it("returns DEFAULT_MAX_QUERY_ROWS when the env var is unset", () => {
       expect(rows()).toBe(DEFAULT_MAX_QUERY_ROWS);
@@ -1353,7 +1247,11 @@ describe("getMaxQueryRows", () => {
 
 describe("getMaxResponseBytes", () => {
    const bytes = (value?: string) =>
-      readWith("PUBLISHER_MAX_RESPONSE_BYTES", value, getMaxResponseBytes);
+      readWith(
+         "PUBLISHER_QUERY_MAX_RESPONSE_BYTES",
+         value,
+         getMaxResponseBytes,
+      );
 
    it("returns DEFAULT_MAX_RESPONSE_BYTES when the env var is unset", () => {
       expect(bytes()).toBe(DEFAULT_MAX_RESPONSE_BYTES);
@@ -1387,7 +1285,7 @@ describe("getMaxResponseBytes", () => {
 describe("getDefaultQueryRowLimit", () => {
    const limit = (value?: string) =>
       readWith(
-         "PUBLISHER_DEFAULT_QUERY_ROW_LIMIT",
+         "PUBLISHER_QUERY_DEFAULT_ROW_LIMIT",
          value,
          getDefaultQueryRowLimit,
       );
@@ -1453,7 +1351,7 @@ describe("getQueryTimeoutMs", () => {
 describe("getMaxConcurrentQueries", () => {
    const concurrent = (value?: string) =>
       readWith(
-         "PUBLISHER_MAX_CONCURRENT_QUERIES",
+         "PUBLISHER_QUERY_MAX_CONCURRENT",
          value,
          getMaxConcurrentQueries,
       );
@@ -1542,12 +1440,12 @@ describe("getPublisherConfigDir", () => {
       expect(anchorWith({})).toBe(testRoot);
    });
 
-   it("follows PUBLISHER_CONFIG_PATH to a config outside the server root", () => {
+   it("follows PUBLISHER_CONFIG to a config outside the server root", () => {
       // The --config case: a relative package location must anchor next to
       // the config that declares it, not at whatever cwd the server booted in.
       const configPath = path.join(elsewhere, PUBLISHER_CONFIG_NAME);
       fs.writeFileSync(configPath, JSON.stringify({ environments: [] }));
-      expect(anchorWith({ PUBLISHER_CONFIG_PATH: configPath })).toBe(elsewhere);
+      expect(anchorWith({ PUBLISHER_CONFIG: configPath })).toBe(elsewhere);
    });
 
    it("returns null when no config resolves, so callers fall back to the server root", () => {
@@ -1565,7 +1463,7 @@ describe("getPublisherConfigDir", () => {
          path.join(elsewhere, PUBLISHER_CONFIG_NAME),
          JSON.stringify({ environments: [] }),
       );
-      const anchor = anchorWith({ PUBLISHER_CONFIG_PATH: rel });
+      const anchor = anchorWith({ PUBLISHER_CONFIG: rel });
       expect(anchor).not.toBeNull();
       expect(path.isAbsolute(anchor as string)).toBe(true);
       expect(anchor).toBe(elsewhere);
@@ -1575,7 +1473,7 @@ describe("getPublisherConfigDir", () => {
       // existsSync is true for a directory, so without a file check the anchor
       // would silently become that directory's PARENT, for a config that never
       // loads (getPublisherConfig catches the read error and returns empty).
-      expect(anchorWith({ PUBLISHER_CONFIG_PATH: elsewhere })).toBeNull();
+      expect(anchorWith({ PUBLISHER_CONFIG: elsewhere })).toBeNull();
    });
 
    it("returns null for the bundled default rather than anchoring inside the install", () => {
@@ -1587,13 +1485,17 @@ describe("getPublisherConfigDir", () => {
    });
 });
 
-describe("PERSIST_COLLISION_ENFORCE", () => {
+describe("PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED", () => {
    // The flag decides whether a persist-target collision blocks a publish, so
    // mis-parsing it leaves the check warn-only — failing open in exactly the
    // direction it exists to prevent. An ad-hoc `=== "true"` did that for `1`,
    // `yes` and `on`.
    const enforce = (value?: string) =>
-      readWith("PERSIST_COLLISION_ENFORCE", value, getPersistCollisionEnforce);
+      readWith(
+         "PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED",
+         value,
+         getPersistCollisionEnforce,
+      );
 
    it("enforces by default, when unset or empty", () => {
       expect(enforce()).toBe(true);
@@ -1614,15 +1516,15 @@ describe("PERSIST_COLLISION_ENFORCE", () => {
 
    it("throws on a value that is neither, rather than guessing", () => {
       expect(() => enforce("enabled")).toThrow(
-         'persist.collisionEnforcementEnabled from PERSIST_COLLISION_ENFORCE: expected a boolean (true/false, 1/0, yes/no or on/off), got "enabled"',
+         'persist.collisionEnforcementEnabled from PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: expected a boolean (true/false, 1/0, yes/no or on/off), got "enabled"',
       );
    });
 });
 
-describe("EMBEDDING_MIN_SIMILARITY", () => {
+describe("PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY", () => {
    // The floor is a property of the embedding model, not of Publisher:
    // cosine similarity is not calibrated across models, so an operator
-   // pointing EMBEDDING_API_BASE at a different endpoint needs to retune it
+   // pointing PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL at a different endpoint needs to retune it
    // without a rebuild. It is an env var rather than a publisher.config.json
    // field because picking up a config change needs --init, which wipes
    // publisher_data and the embedding cache with it -- a full paid re-embed
@@ -1632,17 +1534,17 @@ describe("EMBEDDING_MIN_SIMILARITY", () => {
       withSettings(
          {
             env: {
-               EMBEDDING_API_KEY: "test-key",
+               PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "test-key",
                ...(value === undefined
                   ? {}
-                  : { EMBEDDING_MIN_SIMILARITY: value }),
+                  : { PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY: value }),
             },
          },
          () => getEmbeddingConfig(),
       );
    /** The message a floor outside [0, 1), or not a number, fails with. */
    const invalid = (value: string) =>
-      `retrieval.embedding.minSimilarity from EMBEDDING_MIN_SIMILARITY: expected a number of at least 0 and less than 1, got "${value}"`;
+      `retrieval.embedding.minSimilarity from PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY: expected a number of at least 0 and less than 1, got "${value}"`;
 
    it("defaults to 0.20, the hosted pipeline's min_score", () => {
       expect(config()?.minSimilarity).toBe(DEFAULT_EMBEDDING_MIN_SIMILARITY);

@@ -98,8 +98,8 @@ for (const kind of ["join_one", "pair"] as const) {
             it(label, async () => {
                const { restore } = installSettings({
                   env: {
-                     PERSIST_STORAGE_MODE: colocated ? "off" : "on",
-                     PUBLISHER_MATERIALIZE: "true",
+                     PUBLISHER_PERSIST_STORAGE_MODE: colocated ? "off" : "on",
+                     PUBLISHER_MATERIALIZE_ENABLED: "true",
                   },
                });
                try {

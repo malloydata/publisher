@@ -44,7 +44,7 @@
 
 /** The deployment switches gate keeping reads, as one value. */
 export interface GateSwitches {
-   /** `materialize.enabled` (`PUBLISHER_MATERIALIZE`). */
+   /** `materialize.enabled` (`PUBLISHER_MATERIALIZE_ENABLED`). */
    readonly materialize: boolean;
    /** `materialize.gatedSources` (`PUBLISHER_MATERIALIZE_GATED_SOURCES`). */
    readonly gatedSources: boolean;

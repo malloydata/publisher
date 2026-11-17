@@ -62,12 +62,15 @@ describe("getServerApiSettings", () => {
       });
    });
 
-   it("refuses a flag that is not a boolean, rather than reading it as on", () => {
+   it("reads a string in the file as a boolean, and refuses one that is no boolean", () => {
+      expect(apisFrom('{"adminApiEnabled": "false"}', {})).toMatchObject({
+         adminApiEnabled: false,
+      });
       expectRefusal(
-         '{"adminApiEnabled": "false"}',
+         '{"adminApiEnabled": "maybe"}',
          {},
          (file) =>
-            `adminApiEnabled from ${file}: expected true or false as a JSON boolean, or a \${VAR} reference to one, got "false"`,
+            `adminApiEnabled from ${file}: expected a boolean (true/false, 1/0, yes/no or on/off), got "maybe"`,
       );
    });
 

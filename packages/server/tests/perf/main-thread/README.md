@@ -55,7 +55,7 @@ bun tests/perf/main-thread/storm.ts --dist dist --fixtures /tmp/mtr-fx/fixtures.
 ## What one storm does
 
 `storm.ts` starts one built server under `bun`, as the image runs it, with
-package versioning on, `PUBLISHER_MATERIALIZE=true` (dev's setting, where the
+package versioning on, `PUBLISHER_MATERIALIZE_ENABLED=true` (dev's setting, where the
 bind path regressed), four load workers and the memory governor ticking every
 2 s. It preloads `probe.ts` on the server's main thread (below).
 

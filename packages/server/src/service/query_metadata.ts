@@ -353,7 +353,7 @@ function sanitizeValue(value: string): string {
  *
  * Never throws — metadata must not be the reason a query or a build fails —
  * with one precondition: `getQueryMetadataMode()` rejects an unrecognized
- * `PUBLISHER_QUERY_METADATA`, and it is the boot probe in `server.ts` that
+ * `PUBLISHER_QUERY_METADATA_ENABLED`, and it is the boot probe in `server.ts` that
  * turns that into a startup failure rather than a per-query one. A host that
  * embeds this module without that probe owes itself the same check.
  *
@@ -367,7 +367,7 @@ function sanitizeValue(value: string): string {
  * caller's `team` label degrades attribution), then enforced properties, and
  * only then context (losing `class` or `query_id` breaks it).
  *
- * Returns no metadata at all when `PUBLISHER_QUERY_METADATA=off`, which is the
+ * Returns no metadata at all when `PUBLISHER_QUERY_METADATA_ENABLED=off`, which is the
  * escape hatch for a deployment that does not want the publisher touching the
  * statements it sends.
  */

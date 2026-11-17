@@ -54,21 +54,21 @@ export function normalizeModelPath(p: string): string {
 
 /**
  * Row limit for a Malloy model query that carries no `LIMIT` of its own
- * (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`). A default, not a ceiling: the hard
+ * (`PUBLISHER_QUERY_DEFAULT_ROW_LIMIT`). A default, not a ceiling: the hard
  * ceiling is {@link DEFAULT_MAX_QUERY_ROWS}. Conservative because UIs mostly
  * render tabular previews.
  */
 export const DEFAULT_QUERY_ROW_LIMIT = 1000;
 /**
  * Hard row ceiling for one query response before a 413
- * (`PUBLISHER_MAX_QUERY_ROWS`). 100k narrow rows is tens of MB buffered plus
+ * (`PUBLISHER_QUERY_MAX_ROWS`). 100k narrow rows is tens of MB buffered plus
  * a same-order JSON copy; wide rows are bounded by
  * {@link DEFAULT_MAX_RESPONSE_BYTES}.
  */
 export const DEFAULT_MAX_QUERY_ROWS = 100_000;
 /**
  * Maximum JSON-serialized size of an ad-hoc connection SQL response before a
- * 413 (`PUBLISHER_MAX_RESPONSE_BYTES`). This is the real memory bound, since
+ * 413 (`PUBLISHER_QUERY_MAX_RESPONSE_BYTES`). This is the real memory bound, since
  * one wide column defeats a row cap. Enforced only on a `StreamingConnection`:
  * a non-streaming driver has already buffered the whole result.
  */
@@ -95,7 +95,7 @@ export const MAX_CONCURRENT_DRY_RUNS = 2;
 export const DEFAULT_QUERY_TIMEOUT_MS = 300_000;
 /**
  * Concurrent query requests per pod; excess requests get a 503 so the load
- * balancer can shed load (`PUBLISHER_MAX_CONCURRENT_QUERIES`; `0` disables).
+ * balancer can shed load (`PUBLISHER_QUERY_MAX_CONCURRENT`; `0` disables).
  * Bounds aggregate memory at ~32x {@link DEFAULT_MAX_RESPONSE_BYTES}.
  */
 export const DEFAULT_MAX_CONCURRENT_QUERIES = 32;

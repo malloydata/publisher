@@ -21,7 +21,7 @@ materializes, and a model keeps it only for its own source of that name.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Model shadow/report.malloy
 

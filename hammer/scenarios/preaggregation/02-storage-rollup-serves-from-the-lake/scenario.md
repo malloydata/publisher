@@ -35,7 +35,7 @@ is fresh. Either one alone would pass while the other was broken.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.ps_orders
 

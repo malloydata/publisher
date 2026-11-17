@@ -41,7 +41,7 @@ REST (`--init` wipes the store; a plain restart keeps the old model).
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.shp_orders
 

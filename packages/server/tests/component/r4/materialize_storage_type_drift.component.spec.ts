@@ -185,7 +185,10 @@ for (const tier of TIERS) {
       let fixture: R4Fixture;
       beforeAll(async () => {
          restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+            env: {
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
+            },
          }).restore;
          fixture = await buildScenario({
             files: {
@@ -296,7 +299,10 @@ describe("R4 (storage=): a #(materialize) table whose inlined join's column type
    let fixture: R4Fixture;
    beforeAll(async () => {
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         env: {
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
+         },
       }).restore;
       fixture = await buildScenario({
          files: {
@@ -364,7 +370,10 @@ describe("R4 (rollup database): a rollup table whose column types drifted", () =
    let fixture: R4Fixture;
    beforeAll(async () => {
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         env: {
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
+         },
       }).restore;
       fixture = await buildScenario({
          files: {
@@ -450,7 +459,10 @@ describe.skipIf(!POSTGRES_URL)(
       let pg: PostgresConnection;
       beforeAll(async () => {
          restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
+            env: {
+               PUBLISHER_PERSIST_STORAGE_MODE: "off",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
+            },
          }).restore;
          pg = new PostgresConnection({
             name: "pg",

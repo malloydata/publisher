@@ -1049,12 +1049,12 @@ describe("executeInstructedBuild", () => {
       );
    }
 
-   it("warns, and still builds, when two definitions collide on one table and PERSIST_COLLISION_ENFORCE=false", async () => {
+   it("warns, and still builds, when two definitions collide on one table and PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false", async () => {
       // The opt-out, matching the load/publish collision gate: a deployment
       // that keeps a package with a latent collision keeps its rebuilds.
       const warn = sinon.stub(logger, "warn");
       const { restore } = installSettings({
-         env: { PERSIST_COLLISION_ENFORCE: "false" },
+         env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false" },
       });
       try {
          const runSQL = sinon.stub().resolves();
@@ -1177,7 +1177,7 @@ describe("executeInstructedBuild", () => {
       resetMaterializationTelemetryForTesting();
       const warn = sinon.stub(logger, "warn");
       const { restore } = installSettings({
-         env: { PERSIST_COLLISION_ENFORCE: "false" },
+         env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false" },
       });
       try {
          await collidingBuild(sinon.stub().resolves());
@@ -1201,13 +1201,13 @@ describe("executeInstructedBuild", () => {
       }
    });
 
-   it("refuses that collision by default (PERSIST_COLLISION_ENFORCE), before any write", async () => {
+   it("refuses that collision by default (PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED), before any write", async () => {
       // The refusal is the whole point of the flag, so it has to land before the
       // first CTAS: a mid-loop throw would leave the pair's first table already
       // replaced, and nothing puts the overwritten rows back — the failure path
       // reclaims storage tables only, and a reclaim cannot restore data.
       const { restore } = installSettings({
-         env: { PERSIST_COLLISION_ENFORCE: "true" },
+         env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "true" },
       });
       const runSQL = sinon.stub().resolves();
       try {
@@ -1420,7 +1420,7 @@ describe("executeInstructedBuild", () => {
             new Map([["duckdb", connection]]),
          );
          const { restore } = installSettings({
-            env: { PERSIST_STORAGE_MODE: opts.mode ?? "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: opts.mode ?? "on" },
          });
          try {
             const result = await callExecute(

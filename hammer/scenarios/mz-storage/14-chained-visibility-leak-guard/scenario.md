@@ -25,7 +25,7 @@ upstream's materialized table — where the downstream hides a column with
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.chv_orders
 

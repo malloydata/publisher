@@ -33,13 +33,13 @@ const mz = materializationFixture();
 let restoreSettings: (() => void) | undefined;
 
 /**
- * Install PERSIST_STORAGE_MODE=`mode` for this test, before its model is built;
+ * Install PUBLISHER_PERSIST_STORAGE_MODE=`mode` for this test, before its model is built;
  * every other setting is at its default.
  */
 function setStorageMode(mode: string): void {
    restoreSettings?.();
    restoreSettings = installSettings({
-      env: { PERSIST_STORAGE_MODE: mode },
+      env: { PUBLISHER_PERSIST_STORAGE_MODE: mode },
    }).restore;
 }
 

@@ -30,7 +30,7 @@ the same row. That split is exactly the skew `recomputed` warns of.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.sjs_orders
 

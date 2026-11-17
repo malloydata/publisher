@@ -116,7 +116,7 @@ error handling. Guide: [html-data-apps.md](html-data-apps.md). Try
 - Given-scoped filtering and query caps apply as usual, because the page asks the same endpoints every
   other surface asks. **`#(access_filter)` is the exception, and it follows from the author-code property
   rather than from the endpoint:** because the page controls its own requests, it can send
-  `x-publisher-bypass-authorize` carrying the configured `PUBLISHER_BYPASS_AUTHORIZE_SECRET` and skip gate
+  `x-publisher-bypass-authorize` carrying the configured `PUBLISHER_AUTHORIZE_BYPASS_SECRET` and skip gate
   evaluation, on any deployment that has set that secret and does not strip the header at its edge
   ([authorize.md](authorize.md#authorize-bypass-for-trusted-data-management-callers),
   [authorize-bypass-deployment.md](authorize-bypass-deployment.md)). Sending a custom header takes

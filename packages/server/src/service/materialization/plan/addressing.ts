@@ -325,7 +325,7 @@ export function compilerBuildId(
  * The storage destination folded into `source`'s address, or undefined: the
  * destination it declares with `storage=`, when
  * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` is on and
- * `PERSIST_STORAGE_MODE` is not `off` (off, `storage=` is inert and the source
+ * `PUBLISHER_PERSIST_STORAGE_MODE` is not `off` (off, `storage=` is inert and the source
  * builds colocated). Undefined for every colocated source, so turning the
  * switch on moves no colocated address (P12).
  */

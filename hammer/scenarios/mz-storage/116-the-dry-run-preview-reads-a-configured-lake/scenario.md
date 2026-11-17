@@ -25,7 +25,7 @@ throwaway copy of the package that nothing is bound to, so the source itself rea
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.pv_orders
 

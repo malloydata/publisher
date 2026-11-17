@@ -25,8 +25,8 @@ not from the warehouse.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
-- PUBLISHER_MATERIALIZE: true
+- PUBLISHER_PERSIST_STORAGE_MODE: on
+- PUBLISHER_MATERIALIZE_ENABLED: true
 
 ## Data orders_pg.mzx_orders
 

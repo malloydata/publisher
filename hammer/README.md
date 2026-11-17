@@ -312,7 +312,7 @@ bun hammer/run.ts --tags orchestration
 [`.github/workflows/hammer-nightly.yml`](../.github/workflows/hammer-nightly.yml)
 runs the whole suite every night and on demand (`workflow_dispatch`, which takes
 an optional `scenarios` filter). It is not a pull-request check. Two legs run
-side by side, one with `PUBLISHER_MATERIALIZE=true` and one with `false`; the
+side by side, one with `PUBLISHER_MATERIALIZE_ENABLED=true` and one with `false`; the
 harness passes the variable through to every publisher it starts. Each leg uses
 the runner's own Docker for the Postgres container, builds the server in a step
 of its own (`build:server-only`), checks every scenario parses with `--list`,

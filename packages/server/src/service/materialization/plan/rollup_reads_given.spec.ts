@@ -8,7 +8,7 @@
  * `where:` over a column its table does not keep): its table would hold one
  * given value's rows, served to every caller. A rollup in the same model
  * that reads no given is still planned. Drives `Package.create` on the worker
- * path with PUBLISHER_MATERIALIZE on, as the package warnings specs do.
+ * path with PUBLISHER_MATERIALIZE_ENABLED on, as the package warnings specs do.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
@@ -51,7 +51,7 @@ describe("#(preaggregate) rollups whose build reads a given", () => {
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
       restore = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true" },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
       }).restore;
       tempDir = writeTempPackage(
          {},

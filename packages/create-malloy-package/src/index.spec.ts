@@ -83,8 +83,8 @@ function offeredCommands(output: string): string[] {
       .filter(
          // The busy-port remedy is printed as a copy-pasteable command too, but
          // it is not the offered boot: it only applies when the default ports
-         // are taken. Its --mcp_port flag is what distinguishes it.
-         (line) => !line.includes("--mcp_port"),
+         // are taken. Its --mcp-port flag is what distinguishes it.
+         (line) => !line.includes("--mcp-port"),
       );
 }
 
@@ -285,7 +285,7 @@ describe("formatSuccess: which boot command is offered", () => {
       // defect, appearing in the message whose whole job is to explain a decline.
       writeForeignPackageJson({
          start:
-            "npx -y @malloy-publisher/server --server_root . " +
+            "npx -y @malloy-publisher/server --root . " +
             "--config ./publisher.config.json --host 127.0.0.1 " +
             "--watch-env default --port 9999",
       });
@@ -346,7 +346,7 @@ describe("formatSuccess: which boot command is offered", () => {
 describe("formatSuccess: the busy-port remedy", () => {
    test("offers the alternate ports and the .mcp.json edit that follows", () => {
       const output = formatSuccess(runHere());
-      expect(output).toContain("--port 4100 --mcp_port 4140");
+      expect(output).toContain("--port 4100 --mcp-port 4140");
       expect(output).toContain(".mcp.json");
       // Conditional, not a claim about this machine.
       expect(output).toContain(`If port 4000 is taken`);
@@ -371,13 +371,13 @@ describe("formatSuccess: the busy-port remedy", () => {
       const remedy = output
          .split("\n")
          .map((line) => line.trim())
-         .find((line) => line.includes("--mcp_port"));
+         .find((line) => line.includes("--mcp-port"));
       expect(remedy).toBeDefined();
       // The reset boot with ports appended, not the plain start boot: on 4100
       // without --init, Publisher serves its persisted package list and the
       // package this run created is registered, reported, and never mounted.
       expect(remedy).toContain("npm run reset");
-      expect(remedy).toContain("--port 4100 --mcp_port 4140");
+      expect(remedy).toContain("--port 4100 --mcp-port 4140");
       // The reset guidance already explains the workspace lock at length, so
       // this branch must not say it a second time four lines later.
       expect(output.split("the lock is on the").length - 1).toBe(1);
@@ -870,7 +870,7 @@ describe("formatSuccess: a setup-only run over a config that already has package
 describe("formatSuccess: a start script that boots Publisher onto the network", () => {
    test("says why it was not adopted, and names the address", () => {
       const script =
-         "npx -y @malloy-publisher/server --server_root . " +
+         "npx -y @malloy-publisher/server --root . " +
          "--config ./publisher.config.json --host 0.0.0.0 --watch-env default";
       fs.writeFileSync(
          path.join(tmp, "package.json"),
@@ -904,7 +904,7 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
       // swallows the rest. shellTokens models quoting and nothing else, so
       // these have to be declined up front rather than parsed, and a declined
       // script is one whose binding is unknown, which warns.
-      const script = `npx -y @malloy-publisher/server@0.0.231 --server_root . --config ./publisher.config.json ${tail}`;
+      const script = `npx -y @malloy-publisher/server@0.0.231 --root . --config ./publisher.config.json ${tail}`;
       fs.writeFileSync(
          path.join(tmp, "package.json"),
          JSON.stringify({ name: "app", scripts: { start: script } }, null, 2) +
@@ -933,7 +933,7 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
       // it printed `npm start` as the way to boot this workspace, and wrote that
       // into AGENTS.md, over a command that cannot run.
       const script =
-         "npx -y @malloy-publisher/server@0.0.231 --server_root . " +
+         "npx -y @malloy-publisher/server@0.0.231 --root . " +
          '--config ./publisher.config.json --host 127.0.0.1 --watch-env "default';
       fs.writeFileSync(
          path.join(tmp, "package.json"),
@@ -959,7 +959,7 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
    });
 
    test("a --host swallowed as another flag's value still warns", () => {
-      // The server walks argv positionally, so `--server_root` with its own
+      // The server walks argv positionally, so `--root` with its own
       // value missing consumes `--host` as that value and never sets a host at
       // all: the bind falls back to 0.0.0.0. Reading the script as text instead
       // reports 127.0.0.1 and calls it private, which is the one mistake this
@@ -967,7 +967,7 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
       const script =
          "npx -y @malloy-publisher/server@0.0.231 " +
          "--config ./publisher.config.json --watch-env default " +
-         "--server_root --host 127.0.0.1";
+         "--root --host 127.0.0.1";
       fs.writeFileSync(
          path.join(tmp, "package.json"),
          JSON.stringify({ name: "app", scripts: { start: script } }, null, 2) +
@@ -992,7 +992,7 @@ describe("formatSuccess: a start script that boots Publisher onto the network", 
       // established would contradict the flag this code just parsed, in the one
       // paragraph that exists to be trusted about binding.
       const script =
-         "npx -y @malloy-publisher/server@0.0.231 --server_root . " +
+         "npx -y @malloy-publisher/server@0.0.231 --root . " +
          "--config ./publisher.config.json --host 127.0.0.1 " +
          "--watch-env default --port 4100";
       fs.writeFileSync(
@@ -1463,7 +1463,7 @@ describe("formatSuccess: a package.json this run could not read", () => {
  */
 describe("formatSuccess: a start script writing --host=<address>", () => {
    const script =
-      "npx -y @malloy-publisher/server --server_root . " +
+      "npx -y @malloy-publisher/server --root . " +
       "--config ./publisher.config.json --host=127.0.0.1 --watch-env default";
 
    test("npm start is not offered, and the exposure is named", () => {
@@ -1501,7 +1501,7 @@ describe("formatSuccess: a start script writing --host=<address>", () => {
  */
 describe("formatSuccess: a reset script that cannot reset", () => {
    const LOOPBACK_BOOT =
-      "npx -y @malloy-publisher/server --server_root . " +
+      "npx -y @malloy-publisher/server --root . " +
       "--config ./publisher.config.json --host 127.0.0.1 --watch-env default";
 
    test("the declined reset script is named, with the reason", () => {
@@ -1572,7 +1572,7 @@ describe("formatSuccess: the ports it prints are the ports its boot binds", () =
       };
       return {
          publisher: read("--port", DEFAULT_PUBLISHER_PORT),
-         mcp: read("--mcp_port", DEFAULT_MCP_PORT),
+         mcp: read("--mcp-port", DEFAULT_MCP_PORT),
       };
    }
 
@@ -1640,22 +1640,22 @@ describe("formatSuccess: the ports it prints are the ports its boot binds", () =
    }
 
    const OUR_SHAPE =
-      `npx -y @malloy-publisher/server --server_root . ` +
+      `npx -y @malloy-publisher/server --root . ` +
       `--config ./publisher.config.json --host 127.0.0.1 --watch-env default`;
 
    const cases: { label: string; start: string }[] = [
       {
          label: "the port pair the briefing hands the reader",
-         start: `${OUR_SHAPE} --port 4100 --mcp_port 4140`,
+         start: `${OUR_SHAPE} --port 4100 --mcp-port 4140`,
       },
       {
          label: "a port pair nothing here would guess",
-         start: `${OUR_SHAPE} --port 5311 --mcp_port 5312`,
+         start: `${OUR_SHAPE} --port 5311 --mcp-port 5312`,
       },
       { label: "only the REST port moved", start: `${OUR_SHAPE} --port 4100` },
       {
          label: "only the MCP port moved",
-         start: `${OUR_SHAPE} --mcp_port 4140`,
+         start: `${OUR_SHAPE} --mcp-port 4140`,
       },
    ];
 
@@ -1692,7 +1692,7 @@ describe("formatSuccess: the ports it prints are the ports its boot binds", () =
       expect(result.hasStartScript).toBe(true);
       const output = formatSuccess(result);
       writeForeignPackageJson({
-         start: `${OUR_SHAPE} --port 4100 --mcp_port 4140`,
+         start: `${OUR_SHAPE} --port 4100 --mcp-port 4140`,
       });
       expect(() => expectPrintedPortsMatchTheBoot(output)).toThrow();
    });

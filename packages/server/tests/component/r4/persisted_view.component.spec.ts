@@ -3,7 +3,7 @@
 
 /**
  * R4 for `#@ persist` on a view (materialization v2, phase 4, P14): with
- * PUBLISHER_MATERIALIZE on, a persisted view's table answers a query only
+ * PUBLISHER_MATERIALIZE_ENABLED on, a persisted view's table answers a query only
  * when the query calls that view exactly or starts from it, and then its
  * answer equals live. A refinement, a nest, a hand-written look-alike and a
  * call on an extension are answered live, the path report saying why.
@@ -244,8 +244,8 @@ for (const gatedSwitch of [true, false]) {
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: gatedSwitch
                   ? "true"
                   : "false",
@@ -342,8 +342,8 @@ describe("R4: a persisted view on an extension with an inherited lock and its ow
    beforeAll(async () => {
       restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
          },
       }).restore;
@@ -504,8 +504,8 @@ for (const gatedSwitch of [true, false]) {
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: gatedSwitch
                   ? "true"
                   : "false",

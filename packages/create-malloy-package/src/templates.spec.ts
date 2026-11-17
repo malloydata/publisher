@@ -129,7 +129,7 @@ describe("AGENTS.md: a workspace whose package.json is someone else's", () => {
    test("mixes: an npm start that is ours, a reset that is not", () => {
       writePackageJson({
          start:
-            `npx -y @malloy-publisher/server --server_root . ` +
+            `npx -y @malloy-publisher/server --root . ` +
             `--config ./publisher.config.json --host 127.0.0.1 ` +
             `--watch-env default`,
          reset: "./wipe-db.sh",
@@ -185,7 +185,7 @@ describe("AGENTS.md: the bind address", () => {
    test("tells the reader to read --host rather than asserting loopback", () => {
       writePackageJson({
          start:
-            `npx -y @malloy-publisher/server --server_root . ` +
+            `npx -y @malloy-publisher/server --root . ` +
             `--config ./publisher.config.json --host 0.0.0.0 ` +
             `--watch-env default`,
       });

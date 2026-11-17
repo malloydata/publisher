@@ -15,7 +15,7 @@ materialized table instead of re-scanning the warehouse.
 This walkthrough takes you end to end on your own machine: register a warehouse
 source and a DuckLake you create, materialize a rollup into it, and query it —
 watching each step through the server's status and logs. It also shows the
-`PERSIST_STORAGE_MODE` deployment switch and the safety behaviors (fallback,
+`PUBLISHER_PERSIST_STORAGE_MODE` deployment switch and the safety behaviors (fallback,
 eligibility refusals) so you can see exactly what the feature does and doesn't
 do. Every step here was run against a real server; the outputs shown are real.
 
@@ -89,11 +89,11 @@ mkdir -p /tmp/publisher-tutorial-lake     # local DuckLake data directory
 
 ## 2. Start the server (feature off — the safe default)
 
-`PERSIST_STORAGE_MODE` is off by default. We'll turn it up in stages; changing
+`PUBLISHER_PERSIST_STORAGE_MODE` is off by default. We'll turn it up in stages; changing
 it means restarting the server (it's read at startup).
 
 ```bash
-PERSIST_STORAGE_MODE=off bun run start        # REST :4000, MCP :4040
+PUBLISHER_PERSIST_STORAGE_MODE=off bun run start        # REST :4000, MCP :4040
 curl -s http://localhost:4000/api/v0/status | jq -r .operationalState   # -> "serving"
 ```
 
@@ -216,7 +216,7 @@ Because the server is in `off` mode, the persist plan compiles but the
     {
       "model": "orders.malloy",
       "target": "daily_orders",
-      "message": "declares storage=\"lake\" but PERSIST_STORAGE_MODE is off; the annotation is ignored and the source is served live from its own warehouse."
+      "message": "declares storage=\"lake\" but PUBLISHER_PERSIST_STORAGE_MODE is off; the annotation is ignored and the source is served live from its own warehouse."
     }
   ]
 }
@@ -241,7 +241,7 @@ lands in DuckLake) but the serve path still runs live. Connections and the
 package persist across the restart.
 
 ```bash
-PERSIST_STORAGE_MODE=write-only bun run start
+PUBLISHER_PERSIST_STORAGE_MODE=write-only bun run start
 ```
 
 Trigger an auto-run build (the publisher plans and builds every persist source):
@@ -355,7 +355,7 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/pers
 Restart in `on`, then rebuild so the running server binds the serve path:
 
 ```bash
-PERSIST_STORAGE_MODE=on bun run start
+PUBLISHER_PERSIST_STORAGE_MODE=on bun run start
 
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations \
   -H 'content-type: application/json' -d '{"forceRefresh": true}' >/dev/null
@@ -831,7 +831,7 @@ Everything you need is on the package status and the logs:
     The attribute is absent for a query that never routed, so an `off`
     deployment's histogram is unchanged.
 
-`PERSIST_STORAGE_MODE` (`off` default | `write-only` | `on`) is read at startup;
+`PUBLISHER_PERSIST_STORAGE_MODE` (`off` default | `write-only` | `on`) is read at startup;
 change it by restarting. It's a kill switch: moving it **down** never fails a
 loaded package — a `storage=` source just reverts to serving live and shows up
 as a warning.

@@ -31,7 +31,7 @@ value and no default`), so this needs the default to exist.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.gpq_rows
 

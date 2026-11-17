@@ -49,7 +49,7 @@
  * either tier (the view leg cannot rebuild a nest's rows exactly), and a
  * gated source whose gate the view's result cannot keep (question 3).
  *
- * Behind `PUBLISHER_MATERIALIZE`. Every name in the generated text goes
+ * Behind `PUBLISHER_MATERIALIZE_ENABLED`. Every name in the generated text goes
  * through `malloy_text`; the author's own `#@` line is copied verbatim.
  *
  * `#@ persist` on a top-level `query:` (read in `persisted_query.ts`) is

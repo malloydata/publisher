@@ -297,7 +297,7 @@ describe("classifyToolError", () => {
       expect(
          advice(
             new PayloadTooLargeError(
-               "Query response exceeded 50000000 bytes (was 306326576). Project fewer columns, add a LIMIT, or raise PUBLISHER_MAX_RESPONSE_BYTES.",
+               "Query response exceeded 50000000 bytes (was 306326576). Project fewer columns, add a LIMIT, or raise PUBLISHER_QUERY_MAX_RESPONSE_BYTES.",
             ),
          ),
       ).toContain("raise the configured cap");

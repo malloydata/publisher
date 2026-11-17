@@ -366,8 +366,7 @@ ENV NODE_ENV=production
 # Pass -e PUBLISHER_MCP_CONFIG_FILE_ENABLED=true to opt back in. Note the same
 # effect is reachable by accident: `docker run -e PUBLISHER_MCP_CONFIG_FILE_ENABLED`
 # with no value, or a Compose `environment:` entry with none, deletes this ENV
-# when the host does not have the variable, which re-enables the write. The
-# image uses the current names, so a plain boot logs no deprecation warning.
+# when the host does not have the variable, which re-enables the write.
 ENV PUBLISHER_MCP_CONFIG_FILE_ENABLED=false
 ENV PATH="/home/bun/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 # Set rather than left to USER, which derives HOME from /etc/passwd: run as

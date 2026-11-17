@@ -503,11 +503,10 @@ describe("assembleEnvironmentConnections — publisher", () => {
          }
       });
 
-      it("refuses a value its old reading took as off and every other boolean reads as on", () => {
+      it("reads 1 as on, as every boolean setting does", () => {
          installEnv({ PUBLISHER_ALLOW_PROXY_CONNECTIONS: "1" });
-         expect(() => assembleEnvironmentConnections([validBase])).toThrow(
-            "PUBLISHER_ALLOW_PROXY_CONNECTIONS=1 is refused",
-         );
+         const { pojo } = assembleEnvironmentConnections([validBase]);
+         expect(pojo.connections["analytics"].is).toBe("publisher");
       });
 
       it("gate fires before the connectionUri shape check", () => {
@@ -1596,11 +1595,11 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
       expect(rejected.map((r) => r.name)).toEqual(["bad"]);
    });
 
-   describe("under S3_CREDENTIAL_CHAIN_POLICY=destinations-only", () => {
+   describe("under PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN=destinations-only", () => {
       let restoreSettings: () => void;
       beforeEach(() => {
          restoreSettings = installSettings({
-            env: { S3_CREDENTIAL_CHAIN_POLICY: "destinations-only" },
+            env: { PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN: "destinations-only" },
          }).restore;
       });
       afterEach(() => restoreSettings());
@@ -1687,16 +1686,16 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
       );
    });
 
-   it("refuses setupSQL when EXTENSION_FETCH_POLICY is local-only, even when allowed", () => {
+   it("refuses setupSQL when PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY is local-only, even when allowed", () => {
       installEnv({
-         EXTENSION_FETCH_POLICY: "local-only",
+         PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "local-only",
          PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
       });
 
       expect(() =>
          assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
       ).toThrow(
-         /setupSQL is not allowed on DuckDB connection "my_duckdb" when EXTENSION_FETCH_POLICY is "local-only"/i,
+         /setupSQL is not allowed on DuckDB connection "my_duckdb" when PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY is "local-only"/i,
       );
    });
 

@@ -158,7 +158,7 @@ export interface R4Scenario {
    /**
     * Build the generated `#(materialize)` sources (`<src>__mat`, in the
     * companion model) instead of the author's `#@ persist` sources, and hand
-    * the model their plans, as a package with PUBLISHER_MATERIALIZE on does.
+    * the model their plans, as a package with PUBLISHER_MATERIALIZE_ENABLED on does.
     */
    materialize?: boolean;
    /**
@@ -186,7 +186,7 @@ export interface R4Scenario {
     * Also build the generated `#(preaggregate)` rollups (the rollup companion
     * beside the entry model): a `storage=` rollup into the destination, a
     * colocated one into the scenario's own database under the build
-    * manifest, as a package with PUBLISHER_MATERIALIZE on does.
+    * manifest, as a package with PUBLISHER_MATERIALIZE_ENABLED on does.
     */
    preaggregate?: boolean;
    /**
@@ -207,7 +207,7 @@ export interface R4Scenario {
    pairLeafKeyChecks?: boolean;
    /**
     * Also build the generated `#@ persist` view sources (`<src>__<view>__view`,
-    * in the persisted-view companion), as a package with PUBLISHER_MATERIALIZE
+    * in the persisted-view companion), as a package with PUBLISHER_MATERIALIZE_ENABLED
     * on does. Their refusals are on {@link R4Fixture.viewRefusals}.
     */
    persistedViews?: boolean;

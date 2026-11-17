@@ -131,7 +131,7 @@ const MCP_QUERY_OPTIONS: QueryTransportOptions = {
    // MCP sends no #(authorize) bypass, ever.
    honorBypassAuthorize: false,
    // Shares the HTTP routes' slot pool so an agent loop cannot bypass
-   // PUBLISHER_MAX_CONCURRENT_QUERIES; the label separates MCP load on the
+   // PUBLISHER_QUERY_MAX_CONCURRENT; the label separates MCP load on the
    // dashboard. Taken after the model resolves.
    querySlotLabel: "mcp:executeQuery",
    // The two call modes differ only in which arguments carry the query.

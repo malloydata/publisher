@@ -22,7 +22,7 @@ Establish what the package persists today and how it is governed.
   malloy-pub schedule view --environment <env> --package <pkg>
   ```
 
-  This prints the cron (or `none`, meaning on-demand only), the persist **scope** (`package` = artifacts reused across versions; `version` = per published version), and whether a freshness policy is set. It also says when a control plane manages the package (`manifestLocation` set): leave that package's cadence alone, the control plane refreshes it. And remember the standalone scheduler only runs with `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` set; a cron on a server without it is inert.
+  This prints the cron (or `none`, meaning on-demand only), the persist **scope** (`package` = artifacts reused across versions; `version` = per published version), and whether a freshness policy is set. It also says when a control plane manages the package (`manifestLocation` set): leave that package's cadence alone, the control plane refreshes it. And remember the standalone scheduler only runs with `PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED` set; a cron on a server without it is inert.
 
 ## Step 2: Read the materialization history
 

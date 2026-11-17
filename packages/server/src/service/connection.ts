@@ -288,7 +288,7 @@ export async function applySessionResourceLimits(
  * Auto-load stays on so locally-present extensions lazy-load. Implicit
  * auto-install is turned off when `alwaysDisableAutoinstall` is set (the
  * DuckLake tier needs only its curated set) or under
- * `EXTENSION_FETCH_POLICY=local-only` (air-gapped: no session may reach the
+ * `PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY=local-only` (air-gapped: no session may reach the
  * network). Under `on-demand` a generic session keeps DuckDB's defaults.
  *
  * Called for every Publisher-owned session (lookup funnel, package sandbox,
@@ -321,7 +321,7 @@ export async function applyExtensionSessionSettings(
       if (policy === "local-only") {
          throw new Error(
             `Failed to disable DuckDB implicit extension auto-install under ` +
-               `EXTENSION_FETCH_POLICY=local-only; refusing to open a session that ` +
+               `PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY=local-only; refusing to open a session that ` +
                `could still fetch from the network. Underlying error: ${detail}`,
          );
       }
@@ -371,10 +371,10 @@ export async function installAndLoadExtension(
          });
          throw new Error(
             `DuckDB extension '${extensionName}' is not available locally and ` +
-               `EXTENSION_FETCH_POLICY=local-only forbids fetching it. Bake the ` +
+               `PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY=local-only forbids fetching it. Bake the ` +
                `'${extensionName}' extension into the image (or a pre-populated ` +
                `~/.duckdb/extensions directory), or set ` +
-               `EXTENSION_FETCH_POLICY=on-demand to allow fetching missing ` +
+               `PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY=on-demand to allow fetching missing ` +
                `extensions on first use. Underlying LOAD error: ${detail}`,
          );
       }

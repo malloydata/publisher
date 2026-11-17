@@ -6,13 +6,13 @@ SPDX-License-Identifier: MIT
 # Moving from v1 materialization to `#(materialize)` and `#(preaggregate)`
 
 > **On by default.** `#(materialize)` and `#(preaggregate)` are materialization v2's annotations.
-> Publisher reads them with `PUBLISHER_MATERIALIZE` on (`materialize.enabled`), which is the
+> Publisher reads them with `PUBLISHER_MATERIALIZE_ENABLED` on (`materialize.enabled`), which is the
 > default; the setting is removed one release after that default ships
 > ([the plan](materialization-v2-plan.md), decision 9). With the switch set `false`,
 > Publisher ignores both and answers the source live: a `#(materialize)` source gets no warning and
 > no serve verdict, and a `#(preaggregate)` line is an `annotation-near-miss` warning. A `#(materialize)`
 > source is served from its own warehouse or from a `storage=` destination,
-> which also needs `PERSIST_STORAGE_MODE=on`. Nothing on this page is required: every v1 annotation keeps working as
+> which also needs `PUBLISHER_PERSIST_STORAGE_MODE=on`. Nothing on this page is required: every v1 annotation keeps working as
 > [materialization.md](materialization.md) describes it, with the switch on or off.
 
 This page is the recipe for moving a package from v1 materialization (`#@ persist`,
@@ -49,7 +49,7 @@ no future in v2:
 It follows the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x,
 refused at 1.0.0, and the reader removed in 1.1. Its warning, `deprecated-preaggregate-annotation`,
 comes one per measure that declares `#@ preaggregate`, naming the source (`subject`) and the file
-that declares it (`model`). Today it shows only with `PUBLISHER_MATERIALIZE` on, where
+that declares it (`model`). Today it shows only with `PUBLISHER_MATERIALIZE_ENABLED` on, where
 `#(preaggregate)` is read, built and served; it starts for everyone in the release that ships v2's
 annotations. A source that extends or imports an annotated one is not reported again. The warning
 does not change what the package builds or serves: `#@ preaggregate` keeps working, and its rollups
@@ -58,12 +58,12 @@ still build and serve.
 ## The recipe
 
 1. **Run a server with the switch on**, somewhere other than production:
-   `PUBLISHER_MATERIALIZE` on (the default; do not set it `false`), and for a `storage=` source also `PERSIST_STORAGE_MODE=on` with the
+   `PUBLISHER_MATERIALIZE_ENABLED` on (the default; do not set it `false`), and for a `storage=` source also `PUBLISHER_PERSIST_STORAGE_MODE=on` with the
    storage destination it names configured
    ([storage destinations](connections.md#storage-destinations)). A colocated `#(materialize)`
    needs no storage tier. Both are read at startup. A server with the switch off ignores every v2 annotation, and says nothing
    about a `#(materialize)` it ignores, so check this first: a server with it off lists
-   `materialize.enabled=false from PUBLISHER_MATERIALIZE` among the settings its startup log says it was given.
+   `materialize.enabled=false from PUBLISHER_MATERIALIZE_ENABLED` among the settings its startup log says it was given.
 2. **Find the v1 annotations.** `grep -rn -e '#@ *persist' -e '#@ *preaggregate' --include='*.malloy' .`
    lists them. Leave `#@ -persist` lines and `#@ persist` on views as they are.
 3. **Rewrite each one** by the sections below. Move a source at a time if the package is large: v1
@@ -118,7 +118,7 @@ still build and serve.
 | `materialize-unknown-key`, `materialize-unparseable` | The line cannot be read as written. The publish and the load fail. | Fix the key or the quoting. |
 | `materialize-retired-key` | The line carries a key that is no longer read, `partition=`. The publish and the load fail. | Remove the key. |
 | `materialize-invalid` | A value is wrong as written: an empty, non-text or `@env.` `storage=`, both `#(materialize)` and the source's own `#@ persist`, an `inline=` that is not a list of joins of the source, a carried key of the wrong shape, a list `watermark=` off an incremental pair table, an unsafe or reserved `name=`, an invalid incremental declaration. The publish and the load fail. | Fix the value it names. |
-| `materialization-table-collision` | Two different sources' `name=` puts them on one table in one destination (a source with no `name=` takes a readable name of its own, so it never collides). The publish and the load fail, unless `PERSIST_COLLISION_ENFORCE=false`, which refuses both alone as `materialize-not-built`. | Give each source its own `name=`. |
+| `materialization-table-collision` | Two different sources' `name=` puts them on one table in one destination (a source with no `name=` takes a readable name of its own, so it never collides). The publish and the load fail, unless `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`, which refuses both alone as `materialize-not-built`. | Give each source its own `name=`. |
 | `materialization-near-miss` | A misspelled route, such as `#(materialise)`. The publish and the load fail. | Fix the spelling. |
 | `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
 | `stored-native-schema-missing` | A colocated table is bound with no recorded warehouse type for a big-integer column (a table built before Publisher recorded them). On BigQuery the column is read as `INT64` and serves; elsewhere a query that reads it is answered live. | Run a full rebuild of the source; it records the types. |
@@ -197,7 +197,7 @@ unchanged ([the served copy](materialization.md#the-served-copy-materialization-
 
 ### `storage=`: build into a destination and serve from it
 
-**Works**, with `PERSIST_STORAGE_MODE=on`. When a query is answered from the table, the path
+**Works**, with `PUBLISHER_PERSIST_STORAGE_MODE=on`. When a query is answered from the table, the path
 report's `servedBy` carries `via: "served_copy"`.
 
 ```malloy
@@ -269,7 +269,7 @@ measures, views and joins, and has a table of its own
 
 ### Colocated: build into the source's own warehouse
 
-**Works**, with `PUBLISHER_MATERIALIZE` only: no storage tier. A `#(materialize)` source without
+**Works**, with `PUBLISHER_MATERIALIZE_ENABLED` only: no storage tier. A `#(materialize)` source without
 `storage=` is built into its own warehouse, and the served copy answers it from that table on the
 source's own connection, with everything it does for `storage=` (stored computed dimensions,
 `inline=`, private and internal fields, terms re-applied at read, extension tables, gates). A column
@@ -495,7 +495,7 @@ the givens from a verified identity
 
 ### `#@ persist` on a view
 
-**No rewrite.** `#@ persist` on a view is the v2 spelling too. With `PUBLISHER_MATERIALIZE` on, the
+**No rewrite.** `#@ persist` on a view is the v2 spelling too. With `PUBLISHER_MATERIALIZE_ENABLED` on, the
 view's result is built and answers a query only when the query calls the view exactly
 (`run: sales -> by_category`) or starts from it; the path report reads `servedBy.kind: "view"`.
 With the switch off, Publisher does not build it.
@@ -545,7 +545,7 @@ source: east_fresh is east_orders extend { dimension: region_upper is upper(regi
 
 ### `#@ preaggregate`
 
-**Works, and deprecated.** With `PUBLISHER_MATERIALIZE` on, write `#(preaggregate)` on the measure;
+**Works, and deprecated.** With `PUBLISHER_MATERIALIZE_ENABLED` on, write `#(preaggregate)` on the measure;
 `#@ preaggregate` keeps working, with a deprecation warning while the switch is on. The grain is a
 list, and each line is still one rollup, so a measure with two grains keeps two lines:
 
@@ -655,7 +655,7 @@ it. The build plan, the manifest and reuse all key on it.
   incremental source re-seeds. A table at a `name=` is rebuilt in place, and so is a default-named
   table (its readable name in Publisher's own builds). Host-orchestrated builds are not checked or
   renamed: a table the host instructed under a generational name is the host's to reclaim.
-- **Set the switch the same on every worker.** `PUBLISHER_MATERIALIZE` and
+- **Set the switch the same on every worker.** `PUBLISHER_MATERIALIZE_ENABLED` and
   `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` are read at startup. Workers that disagree plan
   different sources or compute different addresses for one source.
 - **Read warning codes as open strings.** This page names `deprecated-preaggregate-annotation`

@@ -17,48 +17,6 @@ export interface Resolving {
 }
 
 /**
- * How today's names are read where that differs from the setting's type. Step 1
- * of the configuration design kept these so no value changed meaning; from step
- * 3 a value this reading and the common reader disagree on fails startup, and a
- * value both read the same way still works. They go with today's names.
- */
-export interface TodayReading {
-   /**
-    * How a boolean's variable is read today:
-    * - `exactly-true`: on only for the exact text `true`; anything else is off.
-    * - `true-or-1`: on only for `true` or `1`.
-    * - `on-off`: only `on` or `off`, any case; anything else fails.
-    */
-   reads?: "exactly-true" | "true-or-1" | "on-off";
-   /**
-    * How a value in the file is read today:
-    * - `truthy`: JavaScript truthiness, so the string `"false"` is on.
-    * - `boolean-or-reference`: a JSON boolean, or a `${VAR}` whose value is
-    *   one; a literal string fails.
-    * - `json-boolean`: a JSON boolean only.
-    */
-   file?: "truthy" | "boolean-or-reference" | "json-boolean";
-}
-
-/**
- * Today's names for a setting, read with a deprecation warning where the
- * design renamed them, and removed in the release after step 3's.
- */
-export interface Aliases {
-   env?: readonly string[];
-   /**
-    * Flags. A boolean's flag takes no value: `--no-x` sets it off and any other
-    * name sets it on. Every other flag takes the next argument.
-    */
-   flags?: readonly string[];
-   /** Today's paths in publisher.config.json, where the setting is read from the file today. */
-   file?: readonly string[];
-   /** The variable says the opposite of the setting (`PUBLISHER_NO_MCP_CONFIG`). */
-   negated?: true;
-   today?: TodayReading;
-}
-
-/**
  * The configuration design's exceptions: `structured` settings are file-only
  * as a whole, `launch` settings decide which file is read (or must not come
  * from one), and every other setting is `server`.
@@ -88,7 +46,6 @@ export interface Setting<K extends string = string, T = unknown> {
     * `(set)`, as it does a secret. An access key id, say.
     */
    readonly masked?: true;
-   readonly aliases: Aliases;
    /** Carries the value type for `settings.get`; never set. */
    readonly valueType?: { value: T };
 }
@@ -104,7 +61,6 @@ interface Entry<K extends string, T> {
    secret?: boolean;
    noFlag?: true;
    masked?: true;
-   aliases?: Aliases;
 }
 
 /** One setting, in the configuration design's shape. */
@@ -133,11 +89,10 @@ export function setting<K extends string, T>(
       secret: entry.secret ?? false,
       ...(entry.noFlag ? { noFlag: true as const } : {}),
       ...(entry.masked ? { masked: true as const } : {}),
-      aliases: entry.aliases ?? {},
    };
 }
 
-/** `mcp.port` -> `PUBLISHER_MCP_PORT`: the variable step 2 reads. */
+/** `mcp.port` -> `PUBLISHER_MCP_PORT`: the setting's variable. */
 export function derivedEnvName(key: string): string {
    return `PUBLISHER_${key
       .replace(/\./g, "_")
@@ -145,7 +100,7 @@ export function derivedEnvName(key: string): string {
       .toUpperCase()}`;
 }
 
-/** `mcp.port` -> `--mcp-port`: the flag step 2 reads. */
+/** `mcp.port` -> `--mcp-port`: the setting's flag. */
 export function derivedFlagName(key: string): string {
    return `--${key
       .replace(/\./g, "-")

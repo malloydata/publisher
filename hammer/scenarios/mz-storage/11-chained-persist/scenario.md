@@ -17,7 +17,7 @@ warehouse). Both then serve from storage.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.ch_orders
 

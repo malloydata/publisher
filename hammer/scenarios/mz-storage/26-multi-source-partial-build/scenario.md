@@ -18,7 +18,7 @@ built source stays stale (snapshot) while the unbuilt one reflects the mutation.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.mspb_orders
 

@@ -37,7 +37,7 @@ this scenario is what would still be red.
 
 Build into the lake, serve live.
 
-- PERSIST_STORAGE_MODE: write-only
+- PUBLISHER_PERSIST_STORAGE_MODE: write-only
 
 ## Data orders_pg.cwos_orders
 

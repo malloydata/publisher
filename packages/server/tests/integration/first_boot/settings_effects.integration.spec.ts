@@ -112,7 +112,7 @@ describe("settings in a running server", () => {
 
       it("lets a listed origin read MCP responses", async () => {
          const server = await boot({
-            env: { MCP_CORS_ORIGINS: "https://a.example" },
+            env: { PUBLISHER_MCP_CORS_ORIGINS: "https://a.example" },
          });
          const res = await preflight(server, "https://a.example");
          expect(res.headers.get("access-control-allow-origin")).toBe(
@@ -121,7 +121,9 @@ describe("settings in a running server", () => {
       });
 
       it("lets no origin read them when the list is empty", async () => {
-         const server = await boot({ env: { MCP_CORS_ORIGINS: "," } });
+         const server = await boot({
+            env: { PUBLISHER_MCP_CORS_ORIGINS: "," },
+         });
          const res = await preflight(server, "https://a.example");
          expect(res.headers.get("access-control-allow-origin")).toBeNull();
       });
@@ -138,13 +140,14 @@ describe("settings in a running server", () => {
          expect(body.frozenConfig).toBe(true);
       });
 
-      it('refuses the string "false", which used to freeze the server', async () => {
-         const stderr = await refused({
+      it('reads the string "false" as off, where it used to freeze the server', async () => {
+         const server = await boot({
             config: { frozenConfig: "false", environments: [] },
          });
-         expect(stderr).toContain('"frozenConfig": "false"');
-         expect(stderr).toContain("is refused");
-         expect(stderr).toContain("PUBLISHER_INIT_FAILED");
+         const body = (await (
+            await fetch(`${server.baseUrl}/api/v0/status`)
+         ).json()) as { frozenConfig: boolean };
+         expect(body.frozenConfig).toBe(false);
       });
    });
 
@@ -205,9 +208,12 @@ describe("settings in a running server", () => {
 
    describe("packageInlineFields", () => {
       it("is logged at startup, in any case", async () => {
-         // An info line, whatever LOG_LEVEL the shell exports.
+         // An info line, whatever PUBLISHER_LOGGING_LEVEL the shell exports.
          const server = await boot({
-            env: { PUBLISHER_PACKAGE_INLINE_FIELDS: "Off", LOG_LEVEL: "info" },
+            env: {
+               PUBLISHER_PACKAGE_INLINE_FIELDS: "Off",
+               PUBLISHER_LOGGING_LEVEL: "info",
+            },
          });
          expect(server.output()).toContain(
             "Package inline fields (PUBLISHER_PACKAGE_INLINE_FIELDS): off",
@@ -256,8 +262,8 @@ describe("settings in a running server", () => {
                name: "callers",
                location: pkg.dir,
             }),
-            // The access record is info, whatever LOG_LEVEL the shell exports.
-            env: { LOG_LEVEL: "info", ...env },
+            // The access record is info, whatever PUBLISHER_LOGGING_LEVEL the shell exports.
+            env: { PUBLISHER_LOGGING_LEVEL: "info", ...env },
          });
          await server.waitUntilServing();
          const res = await fetch(
@@ -318,13 +324,17 @@ describe("settings in a running server", () => {
 
    describe("logging.level", () => {
       it("leaves out what is below the level", async () => {
-         const server = await boot({ env: { LOG_LEVEL: "warn" } });
+         const server = await boot({
+            env: { PUBLISHER_LOGGING_LEVEL: "warn" },
+         });
          expect(server.output()).not.toContain("Publisher server listening at");
       });
 
       it("refuses to start on a level it does not know", async () => {
-         expect(await refused({ env: { LOG_LEVEL: "loud" } })).toContain(
-            'logging.level from LOG_LEVEL: expected one of "error", "warn", "info", "verbose", "debug" or "silly", got "loud"',
+         expect(
+            await refused({ env: { PUBLISHER_LOGGING_LEVEL: "loud" } }),
+         ).toContain(
+            'logging.level from PUBLISHER_LOGGING_LEVEL: expected one of "error", "warn", "info", "verbose", "debug" or "silly", got "loud"',
          );
       });
    });
@@ -335,7 +345,7 @@ describe("settings in a running server", () => {
          cleanups.push(cwd.cleanup);
          await boot({
             cwd: cwd.dir,
-            env: { PUBLISHER_NO_MCP_CONFIG: undefined },
+            env: { PUBLISHER_MCP_CONFIG_FILE_ENABLED: undefined },
          });
          expect(
             await pollUntil(
@@ -348,15 +358,26 @@ describe("settings in a running server", () => {
 
       it("refuses to start on a value that is not a boolean", async () => {
          expect(
-            await refused({ env: { PUBLISHER_NO_MCP_CONFIG: "maybe" } }),
-         ).toContain("mcp.configFileEnabled from PUBLISHER_NO_MCP_CONFIG");
+            await refused({
+               env: { PUBLISHER_MCP_CONFIG_FILE_ENABLED: "maybe" },
+            }),
+         ).toContain(
+            "mcp.configFileEnabled from PUBLISHER_MCP_CONFIG_FILE_ENABLED",
+         );
       });
    });
 
    describe("initializeStorage", () => {
-      it("refuses INITIALIZE_STORAGE=1, which was off where every other boolean reads it as on", async () => {
-         expect(await refused({ env: { INITIALIZE_STORAGE: "1" } })).toContain(
-            "INITIALIZE_STORAGE=1 is refused: it has always been read as off here",
+      it("reads PUBLISHER_INITIALIZE_STORAGE=1 as on, where it used to be off", async () => {
+         // The settings line is info, whatever level the shell exports.
+         const server = await boot({
+            env: {
+               PUBLISHER_INITIALIZE_STORAGE: "1",
+               PUBLISHER_LOGGING_LEVEL: "info",
+            },
+         });
+         expect(server.output()).toContain(
+            "initializeStorage=true from PUBLISHER_INITIALIZE_STORAGE",
          );
       });
    });

@@ -18,7 +18,7 @@ tier follows the source DAG across an `import` boundary, not just within one fil
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Model xm/agg.malloy
 

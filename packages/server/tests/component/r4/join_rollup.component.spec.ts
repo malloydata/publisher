@@ -3,7 +3,7 @@
 
 /**
  * R4 for join-to-rollup (materialization v2, phase 4, A7): with
- * PUBLISHER_MATERIALIZE on, a query on a source that reads a joined source's
+ * PUBLISHER_MATERIALIZE_ENABLED on, a query on a source that reads a joined source's
  * measures is answered from the joined source's `#(preaggregate)` rollup,
  * read at its grain through the re-pointed join, and equals live; a query
  * the rollup cannot reproduce is answered live with the path report's

@@ -22,7 +22,7 @@ Two things this scenario deliberately fixes-and-pins together:
   in-memory (set only by a build's auto-load), so a restart silently reverted a
   materialized source to serving live. `rebindServeBindingsFromLocalStore` now
   re-derives it on load for colocated too, not just `storage=`.
-- **Colocated is independent of `PERSIST_STORAGE_MODE`.** Colocated is the v0 path
+- **Colocated is independent of `PUBLISHER_PERSIST_STORAGE_MODE`.** Colocated is the v0 path
   and is not gated by the storage kill switch, so this runs with the tier **off**
   (the default). Restart-survival for colocated holds even when the external tier
   is off — proving the colocated rebind is not behind the storage gate.
@@ -33,7 +33,7 @@ serves the pre-mutation value (**stale**); a live serve would show the mutation
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: off
+- PUBLISHER_PERSIST_STORAGE_MODE: off
 
 ## Data orders_pg.cs_orders
 

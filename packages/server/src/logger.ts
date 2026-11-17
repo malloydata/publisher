@@ -52,7 +52,7 @@ function extractTraceIdFromTraceparent(
    return undefined;
 }
 
-const DISABLE_RESPONSE_LOGGING = !settings.get("logging.responseBodiesEnabled");
+const RESPONSE_BODIES_ENABLED = settings.get("logging.responseBodiesEnabled");
 
 /** `1234.5` -> `"1.23s"`, `12.3` -> `"12.30ms"`. */
 export function formatDuration(durationMs: number): string {
@@ -211,7 +211,7 @@ export const loggerMiddleware: RequestHandler = (req, res, next) => {
       // values, and a response's result rows, pass through: kept to debug.
       if (logger.isDebugEnabled()) {
          logMetadata.payload = boundedForLog(redactSensitive(req.body));
-         if (!DISABLE_RESPONSE_LOGGING) {
+         if (RESPONSE_BODIES_ENABLED) {
             logMetadata.response = boundedForLog(
                redactSensitive(res.locals.body),
             );

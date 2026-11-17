@@ -133,7 +133,7 @@ describe("a colocated rollup over a colocated #(materialize) base", () => {
       settings: Record<string, string> = {},
    ): Promise<void> {
       restore = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true", ...settings },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "true", ...settings },
       }).restore;
       // The package-load worker reads its settings when it starts.
       await __setPackageLoadPoolForTests(null);

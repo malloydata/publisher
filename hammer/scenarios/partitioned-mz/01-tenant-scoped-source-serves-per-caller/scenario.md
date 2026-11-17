@@ -28,7 +28,7 @@ block was never in the artifact at all.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.tsp_orders
 

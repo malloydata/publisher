@@ -41,7 +41,7 @@ describe("a run's statements at a table's site", () => {
    let restore: () => void;
    beforeAll(() => {
       restore = installSettings({
-         env: { PUBLISHER_QUERY_METADATA: "on" },
+         env: { PUBLISHER_QUERY_METADATA_ENABLED: "on" },
       }).restore;
    });
    afterAll(() => restore());

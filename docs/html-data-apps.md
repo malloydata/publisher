@@ -100,7 +100,7 @@ cat > /tmp/publisher-demo/publisher.config.json <<'JSON'
 }
 JSON
 
-SERVER_ROOT=/tmp/publisher-demo \
+PUBLISHER_ROOT=/tmp/publisher-demo \
   bun run packages/server/src/server.ts --watch-env demo
 ```
 
@@ -332,7 +332,7 @@ check the browser console first -- it names `frame-ancestors`.
 
 ## Live reload
 
-When the server runs with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`),
+When the server runs with `--watch-env <env>` (or `PUBLISHER_WATCH_ENVIRONMENTS=<env>`),
 Publisher mounts that environment's local-directory packages in place and watches
 them. Editing a `.malloy` file recompiles the package; editing a file under
 `public/` refreshes any open page. The runtime subscribes to a server-sent-events

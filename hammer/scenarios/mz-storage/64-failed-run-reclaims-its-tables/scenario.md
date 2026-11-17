@@ -32,7 +32,7 @@ fails because its caller-assigned name points at a schema nobody provisioned.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.prt_orders
 

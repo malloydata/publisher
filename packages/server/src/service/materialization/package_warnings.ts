@@ -218,7 +218,7 @@ export function persistRefusalWarnings(
 
 /**
  * Warnings for `storage=` sources the serve path is not honoring, per
- * PERSIST_STORAGE_MODE: `off` ignores the annotation, `write-only` builds but
+ * PUBLISHER_PERSIST_STORAGE_MODE: `off` ignores the annotation, `write-only` builds but
  * does not route. `on` warns nothing.
  */
 export function storageWarnings(
@@ -240,20 +240,20 @@ export function storageWarnings(
          : "";
       const message = rollup
          ? mode === "off"
-            ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
+            ? `${at}storage="${storage}", but PUBLISHER_PERSIST_STORAGE_MODE is off, so ` +
               `the rollup is not built. Queries that would have used it are ` +
               `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
               `but unaccelerated.`
             : `${at}storage="${storage}", and the rollup is built, but ` +
-              `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
+              `PUBLISHER_PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
               `route to it. Queries are answered from ` +
               `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
          : mode === "off"
-           ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
+           ? `declares storage="${storage}" but PUBLISHER_PERSIST_STORAGE_MODE is off; ` +
              `the annotation is ignored and the source is served live from ` +
              `its own warehouse.`
            : `is materialized into storage "${storage}" but ` +
-             `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
+             `PUBLISHER_PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
              `routed to the materialized table (served live).`;
       warnings.push({
          model: source.modelPath ?? "",

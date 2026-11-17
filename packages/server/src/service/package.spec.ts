@@ -118,7 +118,7 @@ describe("service/package", () => {
             // referencing an unbaked extension could silently fetch from the
             // CDN. Uses a spy (not a stub) so real DuckDB runs the pragma.
             restoreSettings = installSettings({
-               env: { EXTENSION_FETCH_POLICY: "local-only" },
+               env: { PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY: "local-only" },
             }).restore;
             const spy = sinon.spy(DuckDBConnection.prototype, "runSQL");
             await Package.create(

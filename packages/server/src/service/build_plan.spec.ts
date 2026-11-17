@@ -465,7 +465,7 @@ describe("resolvePackageConnections", () => {
 describe("deriveBuildPlan", () => {
    it("reports a join to a given-scoped persisted source as joinedTerms, apart from strippedTerms", async () => {
       const { restore } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       try {
          const { connections } = duckdbTestConnections();

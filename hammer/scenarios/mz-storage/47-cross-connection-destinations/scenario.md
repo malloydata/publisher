@@ -22,7 +22,7 @@ A second DuckLake destination, separate catalog + storage from `lake`.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.xc_orders
 

@@ -682,7 +682,7 @@ describe("#(preaggregate) over a gated source with gated sources on (row 1)", ()
    beforeEach(() => {
       restore = installSettings({
          env: {
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
          },
       }).restore;

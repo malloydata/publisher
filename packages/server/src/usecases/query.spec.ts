@@ -294,7 +294,7 @@ describe("QueryUseCase", () => {
 
    it("takes the slot only when given a label, and holds it through present", async () => {
       await withSettings(
-         { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "4" } },
+         { env: { PUBLISHER_QUERY_MAX_CONCURRENT: "4" } },
          async () => {
             const before = getActiveQueryCount();
             const heldWithout = await useCaseOver().run(COMMAND, REST, () =>
@@ -314,7 +314,7 @@ describe("QueryUseCase", () => {
 
    it("records a failure to present as the request's outcome and releases the slot", async () => {
       await withSettings(
-         { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "4" } },
+         { env: { PUBLISHER_QUERY_MAX_CONCURRENT: "4" } },
          async () => {
             const before = getActiveQueryCount();
             const err = await useCaseOver()

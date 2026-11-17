@@ -292,7 +292,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
       it(`is tried past the gate with gated sources ${on ? "on" : "off (G3)"}, and keeps it off only for a colocated rollup`, () => {
          const { restore } = installSettings({
             env: {
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: on ? "true" : "false",
             },
          });
@@ -393,7 +393,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
    const withG3 = async <T>(run: () => Promise<T>): Promise<T> => {
       const { restore } = installSettings({
          env: {
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
          },
       });

@@ -81,7 +81,7 @@ nothing to a response, so the answering agent sees what it would without the
 flag. The line has no per-target ranked results; attribution reads each call's
 rankedSummary, copied at capture, and does not read this line yet.
 
-A server started without EMBEDDING_API_KEY has no provider (`lexical`): it
+A server started without PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY has no provider (`lexical`): it
 ranks get_context with the lexical matcher, and the start line says so. A retrieval number from it is not comparable with a
 semantic run.
 """
@@ -181,7 +181,7 @@ def watch_note(watch_env: str | None, seed: bool) -> str | None:
 
     An environment is mounted in place only when it is first loaded from the
     config, so on a preserved root a package already published stays a
-    version: the flag sets PUBLISHER_WATCH and changes nothing an edit
+    version: the flag sets PUBLISHER_WATCH_ENVIRONMENTS and changes nothing an edit
     reaches.
     """
     if not watch_env or seed:
@@ -330,8 +330,8 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
 def server_cmd(server: pathlib.Path, root: pathlib.Path, port: int,
                mcp_port: int, seed: bool) -> list[str]:
     """The argv for one Publisher, with `--init` only when seeding."""
-    cmd = ["node", str(server), "--server_root", str(root),
-           "--port", str(port), "--mcp_port", str(mcp_port)]
+    cmd = ["node", str(server), "--root", str(root),
+           "--port", str(port), "--mcp-port", str(mcp_port)]
     return [*cmd, "--init"] if seed else cmd
 
 
@@ -434,9 +434,9 @@ def restore_config(root: pathlib.Path, previous: str | None) -> None:
 
 def retrieval_note(env: dict[str, str]) -> str | None:
     """The warning for a server that will rank lexically, or None."""
-    if (env.get("EMBEDDING_API_KEY") or "").strip():
+    if (env.get("PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY") or "").strip():
         return None
-    return ("  ! no EMBEDDING_API_KEY: this server ranks get_context lexically, "
+    return ("  ! no PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: this server ranks get_context lexically, "
             "so a run against it measures the lexical matcher. Its retrieval "
             "numbers are not comparable with a semantic run")
 
@@ -452,7 +452,7 @@ def warm_by_default(role: str, opted_out: bool, env: dict[str, str]) -> bool:
     `retrieval_note` says so.
     """
     return (role == "model" and not opted_out
-            and bool((env.get("EMBEDDING_API_KEY") or "").strip()))
+            and bool((env.get("PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY") or "").strip()))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -475,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--allow-proxy", action="store_true")
     ap.add_argument("--trace-retrieval", action="store_true")
     ap.add_argument("--watch-env", metavar="ENV",
-                    help="serve ENV in watch mode (PUBLISHER_WATCH): its local "
+                    help="serve ENV in watch mode (PUBLISHER_WATCH_ENVIRONMENTS): its local "
                          "packages are mounted in place, so an edit is read on "
                          "reload, which eval-improve needs. Without it each "
                          "package is a published version, which no edit "
@@ -496,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
                          "--environment and --package")
     ap.add_argument("--no-warm-retrieval", action="store_true",
                     help="with --role model: skip the warm-up that is on by "
-                         "default when EMBEDDING_API_KEY is set")
+                         "default when PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY is set")
     ap.add_argument("--environment", help="environment to warm (--warm-retrieval)")
     ap.add_argument("--package", help="package to warm (--warm-retrieval)")
     ap.add_argument("--stop", action="store_true",
@@ -584,13 +584,13 @@ def main(argv: list[str] | None = None) -> int:
     root.mkdir(parents=True, exist_ok=True)
     changed, previous = (write_config(root, role_config(cfg, a.role))
                          if cfg is not None else (False, None))
-    env = {**os.environ, "SERVER_ROOT": str(root)}
+    env = {**os.environ, "PUBLISHER_ROOT": str(root)}
     if a.allow_proxy:
         env["PUBLISHER_ALLOW_PROXY_CONNECTIONS"] = "true"
     if a.trace_retrieval:
         env["PUBLISHER_MCP_TRACE"] = "retrieval"
     if a.watch_env:
-        env["PUBLISHER_WATCH"] = a.watch_env
+        env["PUBLISHER_WATCH_ENVIRONMENTS"] = a.watch_env
     seed, why = init_decision(root, a.reinit, changed)
     print(why)
     stale_watch = watch_note(a.watch_env, seed)

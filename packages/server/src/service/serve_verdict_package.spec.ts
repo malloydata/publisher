@@ -162,7 +162,7 @@ source: secure_orders is orders -> { select: * }
 
       it("sends a stored source live when every published entry point over it is gated", async () => {
          restoreSettings = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          }).restore;
          loaded = await loadTempPackage({
             "orders.malloy": GATED,
@@ -179,7 +179,7 @@ source: secure_orders is orders -> { select: * }
 
       it("serves it under G3 when the gated entry point shares its table, as an extension that inherits the annotation does", async () => {
          restoreSettings = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          }).restore;
          // `secure_orders` inherits `#@ persist` and stores into the same
          // table under its own lock: plan admits that table past it.
@@ -200,7 +200,7 @@ source: secure_orders is orders -> { select: * }
 
       it("sends it live when the only entry point is a named query over a gated source written inline", async () => {
          restoreSettings = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          }).restore;
          // The query's run target extends the gated source in place, so it
          // has no name of its own: its gate is the one it inherits, as the
@@ -223,7 +223,7 @@ export { by_one }
 
       it("serves it when an ungated entry point reaches it too", async () => {
          restoreSettings = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          }).restore;
          // Nothing curated: `orders` itself is queryable, with no gate.
          loaded = await loadTempPackage({ "orders.malloy": GATED });
@@ -297,9 +297,9 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
       expect(verdicts.staging.verdict).toBe("not_built");
    });
 
-   it("serves nothing from storage while PERSIST_STORAGE_MODE is off", async () => {
+   it("serves nothing from storage while PUBLISHER_PERSIST_STORAGE_MODE is off", async () => {
       restoreSettings = installSettings({
-         env: { PERSIST_STORAGE_MODE: "off" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "off" },
       }).restore;
       loaded = await loadTempPackage({
          "orders.malloy": ORDERS.replace(

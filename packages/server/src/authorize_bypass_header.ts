@@ -22,7 +22,7 @@ export const BYPASS_AUTHORIZE_HEADER = "x-publisher-bypass-authorize";
  * Env var holding the shared secret a bypass request must present in
  * {@link BYPASS_AUTHORIZE_HEADER}. Unset means the bypass is unavailable.
  */
-export const BYPASS_AUTHORIZE_SECRET_ENV = "PUBLISHER_BYPASS_AUTHORIZE_SECRET";
+export const BYPASS_AUTHORIZE_SECRET_ENV = "PUBLISHER_AUTHORIZE_BYPASS_SECRET";
 
 /**
  * Minimal structural type the reader needs from an HTTP request. Narrower than

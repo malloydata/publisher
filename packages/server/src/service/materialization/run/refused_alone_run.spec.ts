@@ -180,11 +180,11 @@ describe("a run beside a source refused alone", () => {
       expect(await tables()).toEqual([]);
    });
 
-   it("under PERSIST_COLLISION_ENFORCE=false, builds neither source an author's name= puts on one table, and the rest", async () => {
+   it("under PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false, builds neither source an author's name= puts on one table, and the rest", async () => {
       const { restore } = installSettings({
          env: {
             PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-            PERSIST_COLLISION_ENFORCE: "false",
+            PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false",
          },
       });
       try {

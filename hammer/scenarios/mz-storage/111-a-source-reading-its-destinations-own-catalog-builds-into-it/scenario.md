@@ -29,7 +29,7 @@ no SQL its author wrote runs on a read-write lake session. So a persist over
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Operator lake
 

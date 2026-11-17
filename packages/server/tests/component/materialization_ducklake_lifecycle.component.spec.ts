@@ -255,7 +255,7 @@ describe.skipIf(process.platform === "win32")(
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
                // The `warehouse` DuckDB connection needs a setupSQL or an
                // attached database to be valid; a no-op setupSQL is enough.
                PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
@@ -889,7 +889,7 @@ class LakeFixture {
    async setUp(): Promise<void> {
       this.restore = installSettings({
          env: {
-            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
             PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
             ...this.settings,
          },
@@ -2279,7 +2279,7 @@ source: sb_sales is sb_raw extend {
 }
 `,
          }),
-         { PUBLISHER_MATERIALIZE: "true" },
+         { PUBLISHER_MATERIALIZE_ENABLED: "true" },
       );
       beforeAll(() => lake.setUp());
       afterAll(() => lake.tearDown());

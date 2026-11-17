@@ -81,26 +81,29 @@ describe("versionPromotion setting", () => {
    });
 });
 
-// PERSIST_STORAGE_MODE: blank is off, case is ignored, and a typo throws.
-describe("PERSIST_STORAGE_MODE", () => {
+// PUBLISHER_PERSIST_STORAGE_MODE: blank is off, case is ignored, and a typo throws.
+describe("PUBLISHER_PERSIST_STORAGE_MODE", () => {
    it("defaults to off when unset or blank", () => {
       withSettings({}, () => expect(getPersistStorageMode()).toBe("off"));
-      withSettings({ env: { PERSIST_STORAGE_MODE: "  " } }, () =>
+      withSettings({ env: { PUBLISHER_PERSIST_STORAGE_MODE: "  " } }, () =>
          expect(getPersistStorageMode()).toBe("off"),
       );
    });
 
    it("ignores case and surrounding space", () => {
-      withSettings({ env: { PERSIST_STORAGE_MODE: " Write-Only " } }, () =>
-         expect(getPersistStorageMode()).toBe("write-only"),
+      withSettings(
+         { env: { PUBLISHER_PERSIST_STORAGE_MODE: " Write-Only " } },
+         () => expect(getPersistStorageMode()).toBe("write-only"),
       );
    });
 
    it("refuses a value outside the set", () => {
-      withSettings({ env: { PERSIST_STORAGE_MODE: "read-only" } }, () =>
-         expect(() => getPersistStorageMode()).toThrow(
-            'persist.storageMode from PERSIST_STORAGE_MODE: expected one of "off", "write-only" or "on", got "read-only"',
-         ),
+      withSettings(
+         { env: { PUBLISHER_PERSIST_STORAGE_MODE: "read-only" } },
+         () =>
+            expect(() => getPersistStorageMode()).toThrow(
+               'persist.storageMode from PUBLISHER_PERSIST_STORAGE_MODE: expected one of "off", "write-only" or "on", got "read-only"',
+            ),
       );
    });
 });

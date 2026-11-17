@@ -26,7 +26,7 @@ the same grain and only adds fields, does not.)
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.xpn_orders
 

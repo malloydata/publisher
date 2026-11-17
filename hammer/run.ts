@@ -479,7 +479,7 @@ async function main(): Promise<void> {
    }
    // Execution ORDER is a performance lever, not a semantic one: per-scenario
    // isolation means scenarios cannot influence each other, so they are free to
-   // reorder. PERSIST_STORAGE_MODE is fixed at publisher start, so every switch
+   // reorder. PUBLISHER_PERSIST_STORAGE_MODE is fixed at publisher start, so every switch
    // costs a full server boot (~2.3s), and boots are the single largest line item
    // in a run. Interleaved by directory number, ~6 non-`on` scenarios among 53
    // `on` ones cost TWELVE boots — each excursion pays to leave and to come back,

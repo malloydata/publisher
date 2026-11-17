@@ -110,7 +110,7 @@ describe("deriveSelfInstructions", () => {
 
    it("instructs a storage rollup over a storage= base beside the base, each to its own table", () => {
       const { restore } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       try {
          const compiled = compiledWith(
@@ -165,7 +165,7 @@ describe("deriveSelfInstructions", () => {
 
    it("self-assigns the name= verbatim for a storage= source, exactly as a colocated build", () => {
       const { restore } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       try {
          const compiled = compiledWith(
@@ -301,7 +301,7 @@ describe("deriveSelfInstructions", () => {
 
       it("still refuses a storage= authorize-gated source via the existing path, unchanged", () => {
          restoreSettings = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          }).restore;
          const storageGated = fakeSource({
             name: "s1",
@@ -370,7 +370,7 @@ describe("deriveSelfInstructions", () => {
 
       it("records a refused storage= source under the storage tier", () => {
          const { restore } = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          });
          try {
             const compiled = compiledWith(

@@ -635,7 +635,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
 
    function withMode<T>(mode: string, fn: () => T): T {
       const { restore } = installSettings({
-         env: { PERSIST_STORAGE_MODE: mode },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: mode },
       });
       try {
          return fn();

@@ -652,7 +652,7 @@ source: by_category is orders -> {
 
    describe("a gate enforced at read (R3)", () => {
       const R3_ON = {
-         PUBLISHER_MATERIALIZE: "true",
+         PUBLISHER_MATERIALIZE_ENABLED: "true",
          PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
       };
       const withEnv = <T>(env: Record<string, string>, run: () => T): T => {
@@ -687,7 +687,7 @@ source: by_category is orders -> {
          for (const env of [
             R3_ON,
             {
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
          ]) {
@@ -699,11 +699,11 @@ source: by_category is orders -> {
             // A `#(materialize)` plan is v2's: without v2's switch it keeps
             // no gate, whatever the gated switch says.
             {
-               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_ENABLED: "false",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
             },
             {
-               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_ENABLED: "false",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
          ];
@@ -747,7 +747,7 @@ source: by_category is orders -> {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          const G3_ONLY = {
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
          };
          expect(
@@ -791,8 +791,9 @@ source: by_category is orders -> {
             );
          }
          expect(
-            withEnv({ ...G3_ONLY, PUBLISHER_MATERIALIZE: "false" }, () =>
-               gateEnforcedAtRead(id, inputs(id)),
+            withEnv(
+               { ...G3_ONLY, PUBLISHER_MATERIALIZE_ENABLED: "false" },
+               () => gateEnforcedAtRead(id, inputs(id)),
             ),
          ).toBe(false);
       });
@@ -802,7 +803,7 @@ source: by_category is orders -> {
          const id = source.sourceID;
          for (const gated of ["true", "false"]) {
             const env = {
-               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_ENABLED: "false",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: gated,
             };
             expect(withEnv(env, () => gateEnforcedAtRead(id, inputs(id)))).toBe(
@@ -814,7 +815,9 @@ source: by_category is orders -> {
             expect(refused).toBeInstanceOf(MaterializationEligibilityError);
             expect(refused.reason).toBe("access_filter");
             expect(refused.message).toContain("(colocated '#(materialize)')");
-            expect(refused.message).toContain("PUBLISHER_MATERIALIZE on");
+            expect(refused.message).toContain(
+               "PUBLISHER_MATERIALIZE_ENABLED on",
+            );
             expect(refused.message).toContain("'#@ persist'");
          }
       });
@@ -824,7 +827,7 @@ source: by_category is orders -> {
          const id = source.sourceID;
          withEnv(
             {
-               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_ENABLED: "false",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
             () =>
@@ -840,11 +843,11 @@ source: by_category is orders -> {
          for (const env of [
             R3_ON,
             {
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
             {
-               PUBLISHER_MATERIALIZE: "false",
+               PUBLISHER_MATERIALIZE_ENABLED: "false",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
          ]) {
@@ -907,7 +910,7 @@ source: by_category is orders -> {
          const source = (await persistSources(gatedModel)).by_category;
          const id = source.sourceID;
          const G3_ONLY = {
-            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
             PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
          };
          const plan = {
@@ -960,7 +963,7 @@ source: by_category is orders -> {
          for (const env of [
             R3_ON,
             {
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
          ]) {
@@ -1017,7 +1020,7 @@ source: by_category is orders -> {
          const plan = inputs(view.sourceID, undefined, false);
          const off = withEnv(
             {
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
             () => refusal(() => assertTierEligible(view, false, plan)),
@@ -1029,7 +1032,7 @@ source: by_category is orders -> {
          // before: admitted with the switch off.
          withEnv(
             {
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
             },
             () =>

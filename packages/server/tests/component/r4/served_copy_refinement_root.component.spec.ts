@@ -23,7 +23,7 @@ const QUERY =
 
 async function servedAndLive(raw: string) {
    const restore = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on" },
+      env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
    }).restore;
    await freshLoadPool();
    const loader = await loadFixture({

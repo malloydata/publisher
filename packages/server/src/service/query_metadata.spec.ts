@@ -30,7 +30,7 @@ function installEnv(env: Record<string, string>): void {
 // The feature ships dark, so every test of the resolution logic has to turn it
 // on. The tests that assert the default and what `off` does install their own.
 beforeEach(() => {
-   installEnv({ PUBLISHER_QUERY_METADATA: "on" });
+   installEnv({ PUBLISHER_QUERY_METADATA_ENABLED: "on" });
 });
 
 afterEach(() => {
@@ -375,8 +375,8 @@ describe("mergeQueryMetadata", () => {
       ).toEqual({ drops: [] });
    });
 
-   it("attaches nothing when PUBLISHER_QUERY_METADATA=off", () => {
-      installEnv({ PUBLISHER_QUERY_METADATA: "off" });
+   it("attaches nothing when PUBLISHER_QUERY_METADATA_ENABLED=off", () => {
+      installEnv({ PUBLISHER_QUERY_METADATA_ENABLED: "off" });
       expect(
          mergeQueryMetadata({
             request: { team: "finance" },

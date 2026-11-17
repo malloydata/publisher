@@ -29,7 +29,7 @@ and then recomputes anyway. Read them as a pair.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.ss_orders
 

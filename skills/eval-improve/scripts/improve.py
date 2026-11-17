@@ -421,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="the model's git checkout. Default: [model] repo in "
                          "eval.toml")
     ap.add_argument("--server-root", type=pathlib.Path, default=None,
-                    help="Publisher SERVER_ROOT; only needed without watch "
+                    help="Publisher PUBLISHER_ROOT; only needed without watch "
                          "mode. Each accepted edit is rsynced onto the copy "
                          "this root serves and reloaded, which works only "
                          "with versioning off: a root serving published "

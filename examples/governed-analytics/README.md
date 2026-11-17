@@ -61,7 +61,7 @@ cat > /tmp/gov-demo/publisher.config.json <<'JSON'
 }
 JSON
 
-SERVER_ROOT=/tmp/gov-demo bun run packages/server/src/server.ts --watch-env demo
+PUBLISHER_ROOT=/tmp/gov-demo bun run packages/server/src/server.ts --watch-env demo
 ```
 
 That serves it under the `demo` environment instead — swap `examples` for `demo`

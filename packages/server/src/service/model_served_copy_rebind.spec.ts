@@ -118,7 +118,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       ).length;
    beforeEach(() => {
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       }).restore;
       compiles = spyOn(GeneratedFiles.prototype, "loadModel");
       offThread = spyOn(PackageLoadPool.prototype, "compileServedCopy");
@@ -350,7 +350,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       // A storage binding the tier cannot serve (storage mode off) is none.
       restore?.();
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "off" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "off" },
       }).restore;
       model.setServeBindings([BINDING]);
       await model.prepareServedCopy();
@@ -492,7 +492,7 @@ describe("a served copy whose pass on the load worker fails as a job", () => {
    let previous: PackageLoadPool | null;
    beforeEach(() => {
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       }).restore;
       previous = currentPackageLoadPool();
    });

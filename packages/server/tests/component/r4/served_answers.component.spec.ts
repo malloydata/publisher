@@ -500,13 +500,15 @@ source: summary is orders_raw -> {
          await fixture.dispose();
       }
    });
-   describe("one name= on two sources, under PERSIST_COLLISION_ENFORCE=false", () => {
+   describe("one name= on two sources, under PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false", () => {
       // By default the package fails to load
       // (`materialization-table-collision`, materialization_load_policy.spec.ts);
       // under the operator's opt-out each is refused alone and answers live.
       beforeAll(async () => {
          restore();
-         restore = withSwitch("on", { PERSIST_COLLISION_ENFORCE: "false" });
+         restore = withSwitch("on", {
+            PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false",
+         });
          await freshLoadPool();
       });
       afterAll(async () => {

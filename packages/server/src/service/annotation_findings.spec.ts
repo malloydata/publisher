@@ -111,7 +111,7 @@ async function withMaterialize<T>(
    env: Record<string, string> = {},
 ): Promise<T> {
    const { restore } = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", ...env },
+      env: { PUBLISHER_MATERIALIZE_ENABLED: "true", ...env },
    });
    // The load worker reads its settings when it starts.
    await __setPackageLoadPoolForTests(new PackageLoadPool(1));
@@ -375,7 +375,7 @@ describe("annotation findings on a loaded package", () => {
                );
                expect(message).toContain("[preaggregate-invalid]");
             },
-            { PERSIST_STORAGE_MODE: "on" },
+            { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          );
       },
       { timeout: 60000 },
@@ -408,7 +408,7 @@ describe("annotation findings on a loaded package", () => {
                   expect(formatPublishRejections(pkg)).toBeUndefined();
                }
             },
-            { PUBLISHER_MATERIALIZE: "false" },
+            { PUBLISHER_MATERIALIZE_ENABLED: "false" },
          );
       },
       { timeout: 60000 },
@@ -439,7 +439,7 @@ source: v2 is raw extend { where: amount > 0 }
    );
 
    it(
-      "under PERSIST_COLLISION_ENFORCE=false, plans neither side, each refused under its own code",
+      "under PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false, plans neither side, each refused under its own code",
       async () => {
          await withMaterialize(
             async () => {
@@ -454,7 +454,7 @@ source: v2 is raw extend { where: amount > 0 }
                   coded(pkg, "materialize-not-built").map((w) => w.subject),
                ).toEqual(["v2"]);
             },
-            { PERSIST_COLLISION_ENFORCE: "false" },
+            { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false" },
          );
       },
       { timeout: 30000 },
@@ -604,14 +604,14 @@ source: other is raw extend { where: amount < 0 }
                   await version.getMalloyConfig().shutdown("close");
                }
             },
-            { PERSIST_STORAGE_MODE: "on" },
+            { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          );
       },
       { timeout: 60000 },
    );
 
    it(
-      "with PERSIST_COLLISION_ENFORCE=false, the colliding sources are refused alone and the package loads",
+      "with PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false, the colliding sources are refused alone and the package loads",
       async () => {
          await withMaterialize(
             async () => {
@@ -635,7 +635,7 @@ source: other is raw extend { where: amount < 0 }
                   [],
                );
             },
-            { PERSIST_COLLISION_ENFORCE: "false" },
+            { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false" },
          );
       },
       { timeout: 60000 },

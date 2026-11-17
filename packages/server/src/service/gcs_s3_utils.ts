@@ -207,7 +207,7 @@ export function validateS3ProviderShape(
       ) {
          throw new Error(
             `S3 provider 'credential_chain' is not permitted for: ${connectionName}` +
-               ` (S3_CREDENTIAL_CHAIN_POLICY=${policy}). It resolves the host's own` +
+               ` (PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN=${policy}). It resolves the host's own` +
                ` credentials; supply an accessKeyId and secretAccessKey instead.`,
          );
       }

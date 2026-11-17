@@ -21,7 +21,7 @@ rebuild with forceRefresh → the query shows the NEW numbers.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.sk_orders
 

@@ -352,7 +352,7 @@ export function resolveInstruction(
  * only, and even a reclaimed one cannot restore the rows it overwrote.
  *
  * Not host-only: collisions are always warn-only at load whatever
- * PERSIST_COLLISION_ENFORCE says (see loadPackage), so a package with a
+ * PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED says (see loadPackage), so a package with a
  * model-declared collision can still reach this build. Refused unless that
  * setting is `false` (it is on by default).
  */
@@ -488,7 +488,7 @@ export function assertInstructedDestinationWritable(
       throw new BadRequestError(
          `Source '${persistSource.name}' was instructed to build into ` +
             `storage destination '${instruction.destination}', but ` +
-            `PERSIST_STORAGE_MODE is off, so no destination can be ` +
+            `PUBLISHER_PERSIST_STORAGE_MODE is off, so no destination can be ` +
             `written. Refusing rather than building the table into the ` +
             `source warehouse instead.`,
       );

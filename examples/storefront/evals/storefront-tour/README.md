@@ -124,7 +124,7 @@ other serves the truth package, the raw tables the answer key is derived
 from, so it must never be a server the answerer can reach.
 
 ```bash
-export EMBEDDING_API_KEY=...          # optional; without it retrieval is keyword matching
+export PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY=...          # optional; without it retrieval is keyword matching
 python3 $EVAL serve model --set $SET  # :4811 / :4812
 python3 $EVAL serve truth --set $SET  # :4881 / :4882
 ```

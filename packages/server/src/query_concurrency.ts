@@ -33,7 +33,7 @@ export function meterQuerySlots(pool: QuerySlots): void {
 
 const queryConcurrencyRejections = lazyCounter(
    "publisher_query_concurrency_rejections_total",
-   "Queries rejected with 503 because the per-pod PUBLISHER_MAX_CONCURRENT_QUERIES cap was reached",
+   "Queries rejected with 503 because the per-pod PUBLISHER_QUERY_MAX_CONCURRENT cap was reached",
 );
 
 const queryConcurrencyGauges = lazyInstrument(() => {
@@ -52,7 +52,7 @@ const queryConcurrencyGauges = lazyInstrument(() => {
    // scrape so an env-var change shows immediately.
    const maxSlots = meter.createObservableGauge("publisher_query_max_slots", {
       description:
-         "Current effective PUBLISHER_MAX_CONCURRENT_QUERIES (0 = disabled)",
+         "Current effective PUBLISHER_QUERY_MAX_CONCURRENT (0 = disabled)",
    });
    maxSlots.addCallback((observation) => {
       try {
@@ -123,11 +123,11 @@ export class QuerySlots {
             limit,
          });
          logger.warn(
-            `Rejecting query: ${this.#active}/${limit} slots in use (PUBLISHER_MAX_CONCURRENT_QUERIES).`,
+            `Rejecting query: ${this.#active}/${limit} slots in use (PUBLISHER_QUERY_MAX_CONCURRENT).`,
             { route: routeLabel },
          );
          throw new ServiceUnavailableError(
-            `Publisher pod is at its maximum concurrent query cap (${limit}). Retry after in-flight queries complete, or raise PUBLISHER_MAX_CONCURRENT_QUERIES.`,
+            `Publisher pod is at its maximum concurrent query cap (${limit}). Retry after in-flight queries complete, or raise PUBLISHER_QUERY_MAX_CONCURRENT.`,
          );
       }
 

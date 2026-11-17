@@ -26,7 +26,9 @@ const ADDRESS = "bshared7078storage";
 
 let restore: () => void;
 beforeEach(() => {
-   restore = installSettings({ env: { PERSIST_STORAGE_MODE: "on" } }).restore;
+   restore = installSettings({
+      env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
+   }).restore;
 });
 afterEach(() => restore());
 

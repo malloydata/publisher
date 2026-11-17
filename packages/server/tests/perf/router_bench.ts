@@ -158,8 +158,8 @@ function served(
 async function main() {
    const restore = installSettings({
       env: {
-         PERSIST_STORAGE_MODE: "on",
-         ...(ROLLUP ? { PUBLISHER_MATERIALIZE: "true" } : {}),
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         ...(ROLLUP ? { PUBLISHER_MATERIALIZE_ENABLED: "true" } : {}),
       },
    }).restore;
    const level = logger.level;

@@ -75,7 +75,7 @@ async function setupE2ETestEnvironmentInternal(
    // The server runs in this process, so it starts with this process's
    // variables, as a server process started here would, and then the suite's.
    // On top of them, the server root is packages/server, where
-   // publisher.config.json is, and INITIALIZE_STORAGE makes initialization
+   // publisher.config.json is, and PUBLISHER_INITIALIZE_STORAGE makes initialization
    // clone/download the packages from GitHub. Kept until cleanup, since the
    // server reads settings as it runs.
    const env: Record<string, string> = processEnv();
@@ -86,13 +86,13 @@ async function setupE2ETestEnvironmentInternal(
    const { restore: restoreSettings } = installSettings({
       env: {
          ...env,
-         SERVER_ROOT: serverPackageDir,
-         INITIALIZE_STORAGE: "true",
+         PUBLISHER_ROOT: serverPackageDir,
+         PUBLISHER_INITIALIZE_STORAGE: "true",
       },
       cwd: process.cwd(),
    });
    console.log(
-      `[E2E Test Setup] Installed settings with SERVER_ROOT=${serverPackageDir} INITIALIZE_STORAGE=true`,
+      `[E2E Test Setup] Installed settings with PUBLISHER_ROOT=${serverPackageDir} PUBLISHER_INITIALIZE_STORAGE=true`,
    );
    try {
       return await startServerAndClient(restoreSettings);

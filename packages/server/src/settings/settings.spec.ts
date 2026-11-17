@@ -13,6 +13,8 @@ import {
    Settings,
    type SettingKey,
 } from ".";
+import { REMOVED_VARIABLES, removedVariableWarnings } from "./removed";
+import { namesOf } from "./settings";
 import {
    BooleanType,
    EnumType,
@@ -20,9 +22,6 @@ import {
    ListType,
    NumberType,
 } from "./types";
-
-/** A key, for the settings that need one to be read at all. */
-const KEY = { EMBEDDING_API_KEY: "sk-test" };
 
 /**
  * The variable the configuration design (docs/configuration-design.md, "The
@@ -163,6 +162,9 @@ const DESIGN_FLAGS: Partial<Record<SettingKey, string>> = {
    versionPromotion: "--version-promotion",
 };
 
+/** The variables step 3 removed, each now read by nothing. */
+const REMOVED = Object.keys(REMOVED_VARIABLES);
+
 const named = REGISTRY.filter((entry) => entry.kind !== "structured");
 
 describe("the registry", () => {
@@ -181,7 +183,7 @@ describe("the registry", () => {
       expect(new Set(keys).size).toBe(keys.length);
    });
 
-   it("derives no variable or flag twice, and none that is another setting's alias", () => {
+   it("derives no variable or flag twice", () => {
       const owners = new Map<string, string>();
       const claim = (name: string, key: string) => {
          const owner = owners.get(name);
@@ -192,30 +194,26 @@ describe("the registry", () => {
          owners.set(name, key);
       };
       for (const entry of named) {
-         for (const alias of [
-            ...(entry.aliases.env ?? []),
-            ...(entry.aliases.flags ?? []),
-         ]) {
-            claim(alias, entry.key);
+         const names = namesOf(entry);
+         for (const name of [...names.env, ...names.flags]) {
+            claim(name, entry.key);
          }
-      }
-      for (const entry of named) {
-         claim(derivedEnvName(entry.key), entry.key);
-         claim(derivedFlagName(entry.key), entry.key);
       }
    });
 
    it("gives a secret no flag, a launch setting no file key, and a structured one only a file key", () => {
       for (const entry of REGISTRY) {
+         const names = namesOf(entry);
          if (entry.secret || entry.noFlag) {
-            expect(entry.aliases.flags ?? []).toEqual([]);
+            expect(names.flags, entry.key).toEqual([]);
          }
          if (entry.kind === "launch") {
-            expect(entry.aliases.file ?? []).toEqual([]);
+            expect(names.file, entry.key).toEqual([]);
          }
          if (entry.kind === "structured") {
-            expect(entry.aliases.env ?? []).toEqual([]);
-            expect(entry.aliases.flags ?? []).toEqual([]);
+            expect(names.env, entry.key).toEqual([]);
+            expect(names.flags, entry.key).toEqual([]);
+            expect(names.file, entry.key).toEqual([entry.key]);
          }
       }
    });
@@ -229,16 +227,34 @@ describe("the registry", () => {
       }
    });
 
-   it("reads every variable it names, and only those, when nothing else is set", () => {
-      // With the aliases gone, today's names must change nothing: no code
-      // outside the registry reads one.
-      const stripped = REGISTRY.map((entry) => ({ ...entry, aliases: {} }));
-      // Today's names the design renamed; an unchanged one is a current name.
-      const variables = named.flatMap((entry) =>
-         (entry.aliases.env ?? []).filter(
-            (name) => name !== derivedEnvName(entry.key),
-         ),
-      );
+   it("names a registered setting for every removed variable, and none a current name", () => {
+      const current = new Set(named.flatMap((entry) => namesOf(entry).env));
+      for (const [name, { key }] of Object.entries(REMOVED_VARIABLES)) {
+         expect(
+            REGISTRY.some((entry) => entry.key === key),
+            name,
+         ).toBe(true);
+         expect(current.has(name), name).toBe(false);
+      }
+   });
+
+   it("warns about each removed variable that is set, naming the one that replaced it", () => {
+      expect(
+         removedVariableWarnings({
+            MCP_PORT: "4141",
+            DISABLE_RESPONSE_LOGGING: "true",
+            LOG_LEVEL: " ",
+            PUBLISHER_MCP_PORT: "4242",
+         }),
+      ).toEqual([
+         "MCP_PORT is set, but this release no longer reads it: set PUBLISHER_MCP_PORT (mcp.port) instead.",
+         "DISABLE_RESPONSE_LOGGING is set, but this release no longer reads it: set PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED (logging.responseBodiesEnabled) instead, which says the opposite.",
+      ]);
+   });
+
+   it("reads none of the variables step 3 removed", () => {
+      // No code outside the registry reads one: setting each changes no
+      // setting.
       const saved = { ...process.env };
       const observe = () =>
          Object.fromEntries(
@@ -251,27 +267,26 @@ describe("the registry", () => {
             }),
          );
       const install = (env: Record<string, string | undefined>) =>
-         Settings.install(
-            Settings.load({ env, cwd: "/nonexistent", registry: stripped }),
-         );
-      // The baseline is this process's own variables without today's names,
-      // so the comparison isolates them: a derived name the runner sets for
-      // every suite (bunfig.toml preloads PUBLISHER_PACKAGE_VERSIONING=on) is
-      // in both loads.
+         Settings.install(Settings.load({ env, cwd: "/nonexistent" }));
+      // The baseline is this process's own variables without the removed
+      // names, so the comparison isolates them: a derived name the runner
+      // sets for every suite (bunfig.toml preloads
+      // PUBLISHER_PACKAGE_VERSIONING=on) is in both loads.
       const previous = install(
          Object.fromEntries(
             Object.entries(process.env).filter(
-               ([name]) => !variables.includes(name),
+               ([name]) => !REMOVED.includes(name),
             ),
          ),
       );
       try {
          const quiet = observe();
-         for (const name of variables) process.env[name] = "1";
+         for (const name of REMOVED) process.env[name] = "1";
          install({ ...process.env });
          expect(observe()).toEqual(quiet);
+         expect(Settings.current().errors()).toEqual([]);
       } finally {
-         for (const name of variables) {
+         for (const name of REMOVED) {
             if (name in saved) process.env[name] = saved[name];
             else delete process.env[name];
          }
@@ -302,13 +317,13 @@ describe("settings.get", () => {
    });
 
    it("throws a value's error when the setting is read, naming where it came from", () => {
-      withSettings({ env: { PUBLISHER_MAX_QUERY_ROWS: "-1" } }, () => {
+      withSettings({ env: { PUBLISHER_QUERY_MAX_ROWS: "-1" } }, () => {
          expect(() => settings.get("query.maxRows")).toThrow(
-            'query.maxRows from PUBLISHER_MAX_QUERY_ROWS: expected an integer of at least 0, got "-1"',
+            'query.maxRows from PUBLISHER_QUERY_MAX_ROWS: expected an integer of at least 0, got "-1"',
          );
          expect(settings.source("query.maxRows")).toEqual({
             kind: "env",
-            name: "PUBLISHER_MAX_QUERY_ROWS",
+            name: "PUBLISHER_QUERY_MAX_ROWS",
          });
       });
    });
@@ -377,8 +392,6 @@ describe("defaults that depend on another setting", () => {
       expect(bundled({})).toBe(true);
       expect(bundled({ argv: ["--config", "/x.json"] })).toBe(false);
       expect(bundled({ env: { PUBLISHER_ROOT: "/x" } })).toBe(false);
-      // Step 1 counted only the flags; from step 2 the variable counts too.
-      expect(bundled({ env: { SERVER_ROOT: "/x" } })).toBe(false);
       expect(withSettings({}, () => settings.get("useBundledDefault"))).toBe(
          false,
       );
@@ -397,7 +410,15 @@ describe("flags", () => {
 
    it("refuses a flag it does not know, naming the nearest", () => {
       const errors = Settings.load({
-         argv: ["--mcp_prot", "5000", "--server-root", "/x", "--help"],
+         argv: [
+            "--mcp_prot",
+            "5000",
+            "--server-root",
+            "/x",
+            "--mcp_port",
+            "4040",
+            "--help",
+         ],
          env: {},
          cwd: "/nonexistent",
       })
@@ -406,18 +427,19 @@ describe("flags", () => {
       expect(errors).toEqual([
          "Unknown flag --mcp_prot. Did you mean --mcp-port?",
          "Unknown flag --server-root.",
+         "Unknown flag --mcp_port. Did you mean --mcp-port?",
       ]);
    });
 
    it("refuses a flag given without its value", () => {
       const errors = Settings.load({
-         argv: ["--admin_port"],
+         argv: ["--admin-port"],
          env: {},
          cwd: "/nonexistent",
       })
          .errors()
          .map((error) => error.message);
-      expect(errors).toEqual(["--admin_port has no value after it."]);
+      expect(errors).toEqual(["--admin-port has no value after it."]);
    });
 
    it("lets the last of a repeated flag win, except --watch-env, which adds", () => {
@@ -443,7 +465,13 @@ describe("flags", () => {
 
    it("sets a boolean with its flag alone, and off with --no-", () => {
       withSettings(
-         { argv: ["--init", "--no-mcp-config", "--no-serving-api-enabled"] },
+         {
+            argv: [
+               "--init",
+               "--no-mcp-config-file-enabled",
+               "--no-serving-api-enabled",
+            ],
+         },
          () => {
             expect(settings.get("initializeStorage")).toBe(true);
             expect(settings.get("mcp.configFileEnabled")).toBe(false);
@@ -458,7 +486,7 @@ describe("worker threads", () => {
 
    it("get the same values, sources and errors as the thread that started them", () => {
       const parent = Settings.load({
-         env: { PUBLISHER_MAX_QUERY_ROWS: "-1", MCP_PORT: "4141" },
+         env: { PUBLISHER_QUERY_MAX_ROWS: "-1", PUBLISHER_MCP_PORT: "4141" },
          argv: ["--host", "10.0.0.1"],
          cwd: "/nonexistent",
       });
@@ -480,13 +508,7 @@ describe("worker threads", () => {
    });
 });
 
-describe("step 1's rules, refused from step 3", () => {
-   const warningsFor = (input: Parameters<typeof withSettings>[0]) =>
-      withSettings(input, () =>
-         Settings.current()
-            .warnings.filter((warning) => warning.kind !== "deprecated")
-            .map((warning) => warning.message),
-      );
+describe("what fails startup", () => {
    /** Startup's errors, with the config file's path shown as `<file>`. */
    const errorsFor = (input: Parameters<typeof withSettings>[0]) =>
       withSettings(input, ({ serverRoot }) =>
@@ -500,25 +522,7 @@ describe("step 1's rules, refused from step 3", () => {
             ),
       );
 
-   it("refuses a boolean the readers disagree on, and says how to write it", () => {
-      expect(errorsFor({ env: { INITIALIZE_STORAGE: "1" } })).toEqual([
-         'initializeStorage: INITIALIZE_STORAGE=1 is refused: it has always been read as off here, but every other boolean setting reads "1" as on. Write true or false.',
-      ]);
-      // A value both readers read the same way still works under today's name.
-      withSettings({ env: { INITIALIZE_STORAGE: "true" } }, () => {
-         expect(settings.get("initializeStorage")).toBe(true);
-         expect(Settings.current().errors()).toEqual([]);
-      });
-   });
-
-   it("refuses a negated variable's disagreement in the variable's own words", () => {
-      const [message] = errorsFor({ env: { DISABLE_RESPONSE_LOGGING: "yes" } });
-      expect(message).toContain(
-         "DISABLE_RESPONSE_LOGGING=yes is refused: it has always been read as off here",
-      );
-   });
-
-   it("fails a value no boolean reader accepts", () => {
+   it("fails a value that is no boolean", () => {
       withSettings(
          { env: { PUBLISHER_ALLOW_PROXY_CONNECTIONS: "enabled" } },
          () => {
@@ -531,15 +535,17 @@ describe("step 1's rules, refused from step 3", () => {
 
    it("lists every bad value of one startup", () => {
       const errors = withSettings(
-         { env: { MCP_PORT: "40a0", PUBLISHER_MAX_QUERY_ROWS: "-1" } },
+         {
+            env: { PUBLISHER_MCP_PORT: "40a0", PUBLISHER_QUERY_MAX_ROWS: "-1" },
+         },
          () =>
             Settings.current()
                .errors()
                .map((error) => error.message),
       );
       expect(errors).toEqual([
-         'mcp.port from MCP_PORT: expected an integer from 0 to 65535, got "40a0"',
-         'query.maxRows from PUBLISHER_MAX_QUERY_ROWS: expected an integer of at least 0, got "-1"',
+         'mcp.port from PUBLISHER_MCP_PORT: expected an integer from 0 to 65535, got "40a0"',
+         'query.maxRows from PUBLISHER_QUERY_MAX_ROWS: expected an integer of at least 0, got "-1"',
       ]);
    });
 
@@ -552,12 +558,15 @@ describe("step 1's rules, refused from step 3", () => {
                mcp: { includeHiddenFiles: true },
                environments: [],
                retrieval: {},
+               // The old name of "environments", which step 3 removed.
+               projects: [],
             },
          }),
       ).toEqual([
          '<file> has "adminApiEnable", which no setting reads. Did you mean "adminApiEnabled"?',
          '<file> has "query.maxRow", which no setting reads. Did you mean "query.maxRows"?',
          '<file> has "mcp.includeHiddenFiles", which no setting reads. Did you mean "mcp.includeHiddenFilesAndSources"?',
+         '<file> has "projects", which no setting reads.',
       ]);
    });
 
@@ -571,125 +580,11 @@ describe("step 1's rules, refused from step 3", () => {
       const input = {
          file: { theme: { anything: 1 }, retrieval: { indexing: {} } },
       };
-      expect(warningsFor(input)).toEqual([]);
       expect(errorsFor(input)).toEqual([]);
    });
 });
 
-/**
- * Every setting, under each name it is read from today: a value its type
- * reads (the happy case) and one it does not (the sad case). The contract
- * table pins what each case means; these make sure no name is left out.
- */
-describe("every setting, under each of its names", () => {
-   const named = REGISTRY.filter((entry) => entry.kind !== "structured");
-
-   /** A value each type reads, and one it does not, as a variable spells them. */
-   function samples(entry: (typeof REGISTRY)[number]): {
-      good: string;
-      value: unknown;
-      bad?: string;
-   } {
-      const type = entry.type;
-      const today = entry.aliases.today?.reads;
-      if (type instanceof BooleanType) {
-         const good = today === "on-off" ? "on" : "true";
-         return {
-            good,
-            value: entry.aliases.negated ? false : true,
-            bad: "enabled",
-         };
-      }
-      if (type instanceof IntegerType) {
-         const n = [5000, 1000, 100, 10, 2, 1, 0].find((v) => type.allows(v))!;
-         return { good: String(n), value: n, bad: "many" };
-      }
-      if (type instanceof NumberType) {
-         return { good: "0.5", value: 0.5, bad: "half" };
-      }
-      if (type instanceof EnumType) {
-         const v = type.values[type.values.length - 1];
-         return { good: v, value: v, bad: "no-such-value" };
-      }
-      if (type instanceof ListType) return { good: "a,b", value: ["a", "b"] };
-      // Any text is a string; a string has no sad case as a variable.
-      return { good: "x", value: "x" };
-   }
-
-   for (const entry of named) {
-      const key = entry.key as SettingKey;
-      const { good, value, bad } = samples(entry);
-      for (const name of entry.aliases.env ?? []) {
-         it(`${key} reads ${name}`, () => {
-            withSettings({ env: { [name]: good } }, () => {
-               expect(settings.get(key) as unknown).toEqual(value);
-               expect(settings.source(key)).toEqual({ kind: "env", name });
-            });
-         });
-         if (bad === undefined) continue;
-         it(`${key} refuses a bad ${name}`, () => {
-            withSettings({ env: { [name]: bad } }, () => {
-               const current = Settings.current();
-               expect(() => settings.get(key)).toThrow(`${key} from ${name}`);
-               expect(current.errors().length).toBe(1);
-            });
-         });
-      }
-      for (const flag of entry.aliases.flags ?? []) {
-         const isSwitch = entry.type instanceof BooleanType;
-         it(`${key} reads ${flag}`, () => {
-            withSettings({ argv: isSwitch ? [flag] : [flag, good] }, () => {
-               expect(settings.get(key) as unknown).toEqual(
-                  isSwitch ? !flag.startsWith("--no-") : value,
-               );
-               expect(settings.source(key)).toEqual({
-                  kind: "flag",
-                  name: flag,
-               });
-            });
-         });
-         if (isSwitch || bad === undefined) continue;
-         it(`${key} refuses a bad ${flag}`, () => {
-            withSettings({ argv: [flag, bad] }, () => {
-               expect(() => settings.get(key)).toThrow(`${key} from ${flag}`);
-            });
-         });
-      }
-      for (const filePath of entry.aliases.file ?? []) {
-         const isBoolean = entry.type instanceof BooleanType;
-         const nest = (leaf: unknown) => {
-            const file: Record<string, unknown> = {};
-            let node = file;
-            const parts = filePath.split(".");
-            for (const part of parts.slice(0, -1)) {
-               node = (node[part] = {}) as Record<string, unknown>;
-            }
-            node[parts[parts.length - 1]] = leaf;
-            return file;
-         };
-         const json = isBoolean
-            ? true
-            : entry.type instanceof IntegerType
-              ? value
-              : good;
-         it(`${key} reads "${filePath}" in the file`, () => {
-            withSettings({ env: KEY, file: nest(json) }, () => {
-               expect(settings.get(key) as unknown).toEqual(
-                  isBoolean ? true : value,
-               );
-               expect(settings.source(key).kind).toBe("file");
-            });
-         });
-         it(`${key} refuses an object as "${filePath}" in the file`, () => {
-            withSettings({ env: KEY, file: nest({ not: "a value" }) }, () => {
-               expect(() => settings.get(key)).toThrow(key);
-            });
-         });
-      }
-   }
-});
-
-describe("step 2: the derived names", () => {
+describe("the derived names", () => {
    /** A value each type reads, as a variable or flag and as the file holds it. */
    function sample(entry: (typeof REGISTRY)[number]): {
       raw: string;
@@ -883,85 +778,12 @@ describe("step 2: the derived names", () => {
       );
    });
 
-   it("still reads an old name, with one deprecation warning naming the new one", () => {
-      withSettings(
-         { env: { MCP_PORT: "4141" }, argv: ["--mcp_port", "4141"] },
-         () => {
-            expect(settings.get("mcp.port")).toBe(4141);
-            const current = Settings.current();
-            expect(
-               current.warnings
-                  .filter((warning) => warning.kind === "deprecated")
-                  .map((warning) => warning.message),
-            ).toEqual([
-               "--mcp_port is deprecated: use --mcp-port instead (mcp.port). A later release stops reading it.",
-               "MCP_PORT is deprecated: set PUBLISHER_MCP_PORT instead (mcp.port). A later release stops reading it.",
-            ]);
-            expect(current.deprecatedNames).toEqual(["--mcp_port", "MCP_PORT"]);
-         },
-      );
-   });
-
-   it("keeps the short flags the design keeps, without a warning", () => {
+   it("keeps the short flags the design keeps", () => {
       withSettings({ argv: ["--init", "--watch-env", "e"] }, () => {
          expect(settings.get("initializeStorage")).toBe(true);
          expect(settings.get("watchEnvironments")).toEqual(["e"]);
-         expect(Settings.current().deprecatedNames).toEqual([]);
+         expect(Settings.current().errors()).toEqual([]);
       });
-   });
-
-   it("fails a setting given different values under an old and a new name, compared after parsing", () => {
-      withSettings(
-         { env: { MCP_PORT: "4141", PUBLISHER_MCP_PORT: "4242" } },
-         () => {
-            expect(() => settings.get("mcp.port")).toThrow(
-               "mcp.port is given different values under its old and new names: MCP_PORT (4141) and PUBLISHER_MCP_PORT (4242). Remove the old one.",
-            );
-         },
-      );
-      // A negated old name agrees with the positive new one.
-      withSettings(
-         {
-            env: {
-               PUBLISHER_NO_MCP_CONFIG: "1",
-               PUBLISHER_MCP_CONFIG_FILE_ENABLED: "false",
-            },
-         },
-         () => expect(settings.get("mcp.configFileEnabled")).toBe(false),
-      );
-      withSettings(
-         {
-            env: {
-               PUBLISHER_NO_MCP_CONFIG: "1",
-               PUBLISHER_MCP_CONFIG_FILE_ENABLED: "true",
-            },
-         },
-         () =>
-            expect(() => settings.get("mcp.configFileEnabled")).toThrow(
-               "given different values",
-            ),
-      );
-   });
-
-   it("never shows a secret in a conflict", () => {
-      withSettings(
-         {
-            env: {
-               EMBEDDING_API_KEY: "sk-old",
-               PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "sk-new",
-            },
-         },
-         () => {
-            let message = "";
-            try {
-               settings.get("retrieval.embedding.apiKey");
-            } catch (error) {
-               message = (error as Error).message;
-            }
-            expect(message).toContain("given different values");
-            expect(message).not.toContain("sk-");
-         },
-      );
    });
 
    it("fails a literal secret in the file, and reads one given as a ${VAR}", () => {
@@ -1004,74 +826,6 @@ describe("step 2: the derived names", () => {
          expect(() => settings.get("retrieval.llm.apiKey")).toThrow(
             "${NOPE} is not set",
          ),
-      );
-   });
-
-   it("collects a conflict on a launch setting rather than throwing out of the load", () => {
-      // The image's CMD passes --server_root; an operator sets the new variable.
-      const loaded = Settings.load({
-         argv: ["--server_root", "/publisher"],
-         env: { PUBLISHER_ROOT: "/data" },
-         cwd: "/nonexistent",
-      });
-      expect(loaded.errors().map((error) => error.message)).toEqual([
-         'root is given different values under its old and new names: --server_root ("/publisher") and PUBLISHER_ROOT ("/data"). Remove the old one.',
-      ]);
-      expect(loaded.configPath).toBeUndefined();
-      const config = Settings.load({
-         argv: [],
-         env: { PUBLISHER_CONFIG_PATH: "/a.json", PUBLISHER_CONFIG: "/b.json" },
-         cwd: "/nonexistent",
-      });
-      expect(config.errors()).toHaveLength(1);
-      expect(config.errors()[0].message).toContain(
-         "config is given different values",
-      );
-   });
-
-   it("compares a list's repeated flags as the list they build, and an unordered list as a set", () => {
-      withSettings(
-         {
-            env: { PUBLISHER_WATCH: "a,b" },
-            argv: ["--watch-env", "a", "--watch-env", "b"],
-         },
-         () => expect(settings.get("watchEnvironments")).toEqual(["a", "b"]),
-      );
-      // Only the first environment auto-reloads, so order matters there.
-      withSettings(
-         {
-            env: { PUBLISHER_WATCH: "a,b" },
-            argv: ["--watch-env", "b", "--watch-env", "a"],
-         },
-         () =>
-            expect(() => settings.get("watchEnvironments")).toThrow(
-               'PUBLISHER_WATCH (["a","b"]) and --watch-env (["b","a"])',
-            ),
-      );
-      withSettings(
-         {
-            env: {
-               MCP_CORS_ORIGINS: "https://a.test,https://b.test",
-               PUBLISHER_MCP_CORS_ORIGINS: "https://b.test,https://a.test",
-            },
-         },
-         () =>
-            expect(settings.get("mcp.corsOrigins")).toEqual([
-               "https://b.test",
-               "https://a.test",
-            ]),
-      );
-      withSettings(
-         {
-            env: {
-               MCP_CORS_ORIGINS: "https://a.test",
-               PUBLISHER_MCP_CORS_ORIGINS: "https://b.test",
-            },
-         },
-         () =>
-            expect(() => settings.get("mcp.corsOrigins")).toThrow(
-               "given different values",
-            ),
       );
    });
 

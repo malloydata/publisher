@@ -371,7 +371,7 @@ export class EnvironmentStore
    };
 
    /**
-    * Environments (from `PUBLISHER_WATCH`) whose package directories under
+    * Environments (from `PUBLISHER_WATCH_ENVIRONMENTS`) whose package directories under
     * `publisher_data/<env>/` are symlinks to the local sources rather than
     * copies, so source edits live-reload. The default copy keeps source and
     * served package decoupled. Remote locations always copy.

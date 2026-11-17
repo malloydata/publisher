@@ -24,7 +24,7 @@ const PROJECT_NAME = "sched-wiring-project";
 const PACKAGE_NAME = "persist-schedule-test";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
 
-const ENABLE = "PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER";
+const ENABLE = "PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED";
 const INTERVAL = "PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS";
 
 // The other scheduler tests hand-construct MaterializationScheduler and call

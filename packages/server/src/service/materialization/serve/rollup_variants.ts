@@ -2820,7 +2820,7 @@ function checkCoverage(
 
 /**
  * The switches {@link planSourceRollups} reads, as a memo key: `#(preaggregate)`
- * with `PUBLISHER_MATERIALIZE` (`readsPreaggregateDeclarations`), and whether a gated base's rollup
+ * with `PUBLISHER_MATERIALIZE_ENABLED` (`readsPreaggregateDeclarations`), and whether a gated base's rollup
  * is read.
  */
 function planSwitches(): string {

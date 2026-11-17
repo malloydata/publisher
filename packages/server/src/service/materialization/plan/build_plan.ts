@@ -1181,7 +1181,7 @@ function collectPersistQueryFindings(
 }
 
 /**
- * With PUBLISHER_MATERIALIZE off, the findings on the `#@ persist` views a
+ * With PUBLISHER_MATERIALIZE_ENABLED off, the findings on the `#@ persist` views a
  * model file DECLARES, read from the declarations alone (nothing is
  * compiled): an invalid line (one that does not parse, a misspelled or
  * retired key, an incremental key, `@env.`) fails the load, as with the
@@ -1207,7 +1207,8 @@ function collectPersistViewFindingsSwitchedOff(
       },
    );
    const off = {
-      reason: "persisted views are built only with PUBLISHER_MATERIALIZE on",
+      reason:
+         "persisted views are built only with PUBLISHER_MATERIALIZE_ENABLED on",
       outcome: { refused: "materialization_off" as const },
    };
    for (const refusal of planned.refused) {
@@ -1304,7 +1305,7 @@ type CollectArgs = Parameters<typeof collectModelBuildPlan>[1];
 
 /**
  * The tables a model's generated companions plan: `#(materialize)` sources
- * and `#@ persist` views behind PUBLISHER_MATERIALIZE (off, nothing here
+ * and `#@ persist` views behind PUBLISHER_MATERIALIZE_ENABLED (off, nothing here
  * runs and the plan is exactly what it was), and rollups. Before the v1
  * walk's early returns: the author's model needs no persistence flag, since
  * each generated companion carries it.
@@ -1343,7 +1344,7 @@ async function collectGeneratedTables(
       );
    }
    // `#@ persist` on a named query: its key findings always, and, with
-   // PUBLISHER_MATERIALIZE off, the warning that it is not built. A query
+   // PUBLISHER_MATERIALIZE_ENABLED off, the warning that it is not built. A query
    // needs no persistence flag.
    collectPersistQueryFindings(parts, {
       modelPath,
@@ -1381,7 +1382,7 @@ async function collectGeneratedTables(
       });
    }
    // Rollups: v1 `#@ preaggregate` lines are read as their declarations, and
-   // `#(preaggregate)` with PUBLISHER_MATERIALIZE. A model declaring only rollups needs no
+   // `#(preaggregate)` with PUBLISHER_MATERIALIZE_ENABLED. A model declaring only rollups needs no
    // persistence flag.
    await collectGeneratedRollups(parts, {
       modelPath,

@@ -11,7 +11,7 @@ Publisher is a microservice: it runs locally with your own permissions, or insid
 
 Every server setting is one entry in the settings registry, `packages/server/src/settings/registry/`. That covers each environment variable, command-line flag and `publisher.config.json` key. Read a setting with `settings.get("<key>")`. Never read `process.env`, `process.argv` or the config file for one: ESLint fails a `process.env` read anywhere in `packages/server/src` outside `src/settings`, the specs and the test helpers.
 
-- **The key gives every name.** The variable is `PUBLISHER_` plus the key in upper snake case. The flag is `--` plus the key in kebab case, and a boolean also gets `--no-` to turn it off. The file key is the key. Don't choose a name by hand. `aliases` is only for a name that has already shipped in a release: it keeps working, deprecated, with a warning.
+- **The key gives every name.** The variable is `PUBLISHER_` plus the key in upper snake case. The flag is `--` plus the key in kebab case, and a boolean also gets `--no-` to turn it off. The file key is the key. Don't choose a name by hand. The registry keeps no old names, so renaming a setting that has shipped breaks every deployment that sets it.
 - **Launch settings** (`kind: "launch"`: `root`, `config`, `useBundledDefault`, `initializeStorage`, `watchEnvironments`) decide which file is read, so they are a variable and a flag only. One found in the file fails startup.
 - **A secret** (`secret: true`) has no flag and is never logged. In the file it must be a whole `${VAR}` reference.
 - **A structured setting** (`kind: "structured"`, the `retrieval` block) is validated as a whole, and each of its leaves is also a setting with its own variable and flag.

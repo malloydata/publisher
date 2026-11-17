@@ -327,7 +327,7 @@ describe("MCP execute_query writes exactly one record", () => {
 
    it("on a refusal at the concurrency cap", async () => {
       await withSettings(
-         { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "1" } },
+         { env: { PUBLISHER_QUERY_MAX_CONCURRENT: "1" } },
          async () => {
             const held = slots.tryAcquire("test");
             try {
@@ -501,7 +501,7 @@ describe("a request refused before its controller runs still writes one record",
       });
    const atCap = (run: () => Promise<void>) =>
       withSettings(
-         { env: { PUBLISHER_MAX_CONCURRENT_QUERIES: "1" } },
+         { env: { PUBLISHER_QUERY_MAX_CONCURRENT: "1" } },
          async () => {
             const held = slots.tryAcquire("test");
             try {
@@ -686,7 +686,7 @@ describe("raw SQL writes exactly one record, as ungated", () => {
 
    it("when it is refused", async () => {
       await withSettings(
-         { env: { PUBLISHER_MAX_QUERY_ROWS: "1" } },
+         { env: { PUBLISHER_QUERY_MAX_ROWS: "1" } },
          async () => {
             const controller = controllerOver(
                sinon

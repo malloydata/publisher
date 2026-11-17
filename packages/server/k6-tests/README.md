@@ -20,8 +20,8 @@ bun install
 **Important:** Before running tests, ensure the publisher server is running with the following environment variables to limit log output:
 
 ```bash
-DISABLE_RESPONSE_LOGGING=true
-LOG_LEVEL=info  # or LOG_LEVEL=warn
+PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED=false
+PUBLISHER_LOGGING_LEVEL=info  # or PUBLISHER_LOGGING_LEVEL=warn
 ```
 
 Start the server before running any k6 tests.

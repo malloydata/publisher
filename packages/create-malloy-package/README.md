@@ -211,7 +211,7 @@ need not carry `--init` at all, so use the printed `npx @malloy-publisher/server
 command with `--init` on the end instead. `--init` is deliberately not part of `start`,
 because it also clears runtime
 state (materialized tables, saved theme) on every boot. If you moved the ports, pass
-them here too (`npm run reset -- --port <p> --mcp_port <m>`); see "Ports and network
+them here too (`npm run reset -- --port <p> --mcp-port <m>`); see "Ports and network
 exposure" below.
 
 **Stop the running server before you reset.** A workspace holds one DuckDB database and
@@ -265,10 +265,10 @@ curl -s http://localhost:4000/api/v0/environments/default/packages
 ## Ports and network exposure
 
 The server listens on 4000 (web UI and REST) and 4040 (MCP), Publisher's defaults.
-Pass `--port` and `--mcp_port` to move them, with npm's `--` separator in front:
+Pass `--port` and `--mcp-port` to move them, with npm's `--` separator in front:
 
 ```bash
-npm start -- --port 4100 --mcp_port 4140
+npm start -- --port 4100 --mcp-port 4140
 ```
 
 The flags belong to that one boot and nothing remembers them, so every later boot needs
@@ -276,7 +276,7 @@ them again, `npm run reset` included. A bare `npm run reset` goes back to 4000 a
 and collides with whatever was in the way the first time:
 
 ```bash
-npm run reset -- --port 4100 --mcp_port 4140
+npm run reset -- --port 4100 --mcp-port 4140
 ```
 
 4100 and 4140 are a guess at a free pair, not a checked answer. Run the readiness check
@@ -309,8 +309,8 @@ your data. To expose it deliberately, change `--host` in the `start` script to `
 All of that describes the script this tool writes. In a directory that already had a
 `package.json`, the scaffolder leaves it alone (see "Running it again"), so `npm start`
 runs whatever `start` was already there, binding wherever that command says. The same
-goes for everything else on this page that reads off a flag: `--port` and `--mcp_port`
-decide the URLs, `--server_root` and `--config` decide which workspace is served at
+goes for everything else on this page that reads off a flag: `--port` and `--mcp-port`
+decide the URLs, `--root` and `--config` decide which workspace is served at
 all, and `--watch-env` decides whether an edit on disk is picked up at all: without it
 the package is served as a published version, which a reload does not change.
 Read them out of the command you are about to run rather than off this page.

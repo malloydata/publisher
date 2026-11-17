@@ -768,7 +768,7 @@ that carries it. Against a Publisher older than the correction, the SDK offers n
 ones.
 
 **Downloading the rows.** The dialog shows the first 200 rows. Its **Download CSV** runs the same query with no
-`limit:`, so the server's own row cap (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, 1000 by default) is the only bound,
+`limit:`, so the server's own row cap (`PUBLISHER_QUERY_DEFAULT_ROW_LIMIT`, 1000 by default) is the only bound,
 and saves the result as `<source>_rows_<values>.csv`. When the file reaches that cap, the file name ends
 `_first_<N>_rows_server_limit` and the button's tooltip says there may be more. The response has no
 truncation flag, so a result of exactly the cap is labelled the same way. A failed download says why
@@ -1276,7 +1276,7 @@ The panel holds no credentials and fetches nothing itself. Its reads (the report
 filter suggestions) go back through the host as calls to `report_api`, an app-only tool that answers them
 through the same controllers as the REST routes. A report therefore runs in a panel under the same
 `#(authorize)` gates, row filters, givens and access record as in the Console, for the caller the MCP request
-carries. Its script loads from the REST server, at `MCP_APP_ORIGIN` (default `http://localhost:{port}`); set it
+carries. Its script loads from the REST server, at `PUBLISHER_MCP_APP_ORIGIN` (default `http://localhost:{port}`); set it
 to the address a host's browser reaches that server at. The panel offers no CSV download, which a sandboxed
 frame cannot start; the Console does.
 

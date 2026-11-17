@@ -20,7 +20,7 @@ succeed, not refuse itself as "missing `daily`".
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.pex_orders
 

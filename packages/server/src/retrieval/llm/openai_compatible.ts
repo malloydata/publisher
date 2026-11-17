@@ -94,7 +94,7 @@ export class OpenAiCompatibleChat implements RawChat {
          signal: req.signal,
          timeoutMs: req.timeoutMs,
          secrets: [this.apiKey],
-         authHint: "LLM_API_KEY",
+         authHint: "PUBLISHER_RETRIEVAL_LLM_API_KEY",
          what: "Chat request",
       })) as OpenAiChatReply;
 
@@ -144,7 +144,7 @@ export function openAiEmbedChunk(args: {
          signal,
          timeoutMs,
          secrets: [args.apiKey],
-         authHint: "EMBEDDING_API_KEY",
+         authHint: "PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY",
          what: "Embedding request",
       })) as { data?: { index?: number; embedding?: unknown }[] } | null;
       const data = json?.data;

@@ -32,7 +32,7 @@ A DuckDB source connection, declared via the `## Connection` handler.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Model dk.malloy
 

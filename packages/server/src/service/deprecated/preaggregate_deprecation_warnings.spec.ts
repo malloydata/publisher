@@ -5,7 +5,7 @@
 // (refused at 1.0.0, removed in 1.1).
 
 /**
- * With materialization v2 switched on (`PUBLISHER_MATERIALIZE`), a package
+ * With materialization v2 switched on (`PUBLISHER_MATERIALIZE_ENABLED`), a package
  * gets one coded warning per measure that declares `#@ preaggregate` (whose
  * v2 spelling, `#(preaggregate)`, is read there). Off, it gets none, but
  * usage is still counted. `#@ -persist` is Malloy core's opt-out and is not
@@ -105,7 +105,7 @@ describe("deprecation warnings for #@ preaggregate, and none for #@ -persist", (
    async function load(materialize: boolean): Promise<Package> {
       restore?.();
       restore = installSettings({
-         env: { PUBLISHER_MATERIALIZE: materialize ? "true" : "false" },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: materialize ? "true" : "false" },
       }).restore;
       const config = new MalloyConfig({ connections: {} });
       config.wrapConnections(

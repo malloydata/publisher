@@ -42,7 +42,7 @@ export function withQueryMetadataOn(): void {
    let restore: (() => void) | undefined;
    beforeEach(() => {
       restore = installSettings({
-         env: { PUBLISHER_QUERY_METADATA: "on" },
+         env: { PUBLISHER_QUERY_METADATA_ENABLED: "on" },
       }).restore;
    });
    afterEach(() => {

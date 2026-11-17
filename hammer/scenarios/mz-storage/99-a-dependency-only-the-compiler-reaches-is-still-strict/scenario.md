@@ -24,7 +24,7 @@ recomputes and the entry says which upstream and why.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.dcr_orders
 

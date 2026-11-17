@@ -205,7 +205,7 @@ describe("deleteMaterialization", () => {
 
       it("re-derives storage bindings from the next-latest materialization (on)", async () => {
          const { restore } = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          });
          try {
             const { storageSpy, colocatedSpy } = setupEnv();
@@ -232,7 +232,7 @@ describe("deleteMaterialization", () => {
       });
 
       it("re-derives colocated bindings regardless of tier mode (off)", async () => {
-         // PERSIST_STORAGE_MODE unset ⇒ off. Colocated is the v0 path, not gated
+         // PUBLISHER_PERSIST_STORAGE_MODE unset ⇒ off. Colocated is the v0 path, not gated
          // by the storage kill switch, so it is still re-derived; storage is not.
          const { storageSpy, colocatedSpy } = setupEnv();
          ctx.repository.listMaterializations.resolves([
@@ -254,7 +254,7 @@ describe("deleteMaterialization", () => {
 
       it("clears both tiers' bindings when no successful materialization remains (on)", async () => {
          const { restore } = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on" },
+            env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          });
          try {
             const { storageSpy, colocatedSpy } = setupEnv();

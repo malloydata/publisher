@@ -178,33 +178,33 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 |---|---|---|---|
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST API port. |
 | `PUBLISHER_HOST` | `--host <h>` | `0.0.0.0` | REST bind address, and the fallback for MCP. |
-| `MCP_HOST` | `--mcp_host <h>` | `127.0.0.1` | MCP bind address. Takes precedence over `PUBLISHER_HOST`. |
-| `MCP_CORS_ORIGINS` | | (none) | Comma-separated origins allowed cross-origin access to MCP; `*` allows any. Unset means none. |
-| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP API port. |
-| `PUBLISHER_MCP_CONFIG_FILE_ENABLED` | `--mcp-config-file-enabled`, `--no-mcp-config-file-enabled` | `false` **in this image** | Whether the server writes a `.mcp.json` into its working directory on startup. That file exists so an AI agent opened in that directory finds the server; nothing starts an agent session inside the container, and the git-working-tree guard that would normally cover `/publisher` cannot fire because `.dockerignore` excludes `.git`. Left on, every boot would create a file there, which matters if you bind-mount a project directory at `/publisher`. Pass `-e PUBLISHER_MCP_CONFIG_FILE_ENABLED=true` to turn it back on. Images before this one set the deprecated `PUBLISHER_NO_MCP_CONFIG=1` instead, so `-e PUBLISHER_NO_MCP_CONFIG=` no longer turns it on, and `-e PUBLISHER_NO_MCP_CONFIG=0` now fails startup, since it disagrees with the image's own value. Note this is one of the env vars the image sets for you: `docker run -e PUBLISHER_MCP_CONFIG_FILE_ENABLED` (no `=`) and a Compose `environment:` entry with no value both *delete* it when the host does not have it set, which re-enables the write. |
-| `PUBLISHER_ROOT` | `--root <path>` | `.` (cwd) at the server level; `/publisher` by the bundled CMD | Directory the server treats as its working dir. The image's CMD passes `--root /publisher` explicitly so the zero-arg `npx` bundled-default trigger doesn't fire inside the container. A flag wins over a variable, so to use another directory, override CMD rather than set `PUBLISHER_ROOT`; the deprecated `SERVER_ROOT` set to anything but `/publisher` fails startup, since it disagrees with the CMD's `--root`. If you override CMD with your own entrypoint, pass `--root` or set `PUBLISHER_ROOT` yourself to keep this behaviour. |
-| `PUBLISHER_CONFIG_PATH` | `--config <path>` | unset | Absolute path to a `publisher.config.json`. Wins over `<PUBLISHER_ROOT>/publisher.config.json`. Use this if you want to mount your config somewhere other than `/publisher/`. |
-| `INITIALIZE_STORAGE` | `--init` | `false` | Wipes `publisher_data/` and re-syncs it from the config on boot. A first boot with empty storage loads the config automatically, so set this only to reset state or resync after the on-disk config has drifted from `publisher_data/`. Re-initializing discards any state there that isn't reproducible from the config. See [configuration.md](../../docs/configuration.md#environment-variables--cli-flags). |
-| `SHUTDOWN_DRAIN_DURATION_SECONDS` | `--shutdown_drain_duration_seconds <s>` | `0` | On SIGTERM, how long to keep serving requests (readiness flips to not-ready immediately) before closing server sockets. Set this to your typical request duration to avoid 502s from K8s rolling deploys. |
-| `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `--shutdown_graceful_close_timeout_seconds <s>` | `0` | Additional grace period after server close before `process.exit`. |
+| `PUBLISHER_MCP_HOST` | `--mcp-host <h>` | `127.0.0.1` | MCP bind address. Takes precedence over `PUBLISHER_HOST`. |
+| `PUBLISHER_MCP_CORS_ORIGINS` | | (none) | Comma-separated origins allowed cross-origin access to MCP; `*` allows any. Unset means none. |
+| `PUBLISHER_MCP_PORT` | `--mcp-port <n>` | `4040` | MCP API port. |
+| `PUBLISHER_MCP_CONFIG_FILE_ENABLED` | `--mcp-config-file-enabled`, `--no-mcp-config-file-enabled` | `false` **in this image** | Whether the server writes a `.mcp.json` into its working directory on startup. That file exists so an AI agent opened in that directory finds the server; nothing starts an agent session inside the container, and the git-working-tree guard that would normally cover `/publisher` cannot fire because `.dockerignore` excludes `.git`. Left on, every boot would create a file there, which matters if you bind-mount a project directory at `/publisher`. Pass `-e PUBLISHER_MCP_CONFIG_FILE_ENABLED=true` to turn it back on. Older images set `PUBLISHER_NO_MCP_CONFIG=1` instead, a name this one no longer reads. Note this is one of the env vars the image sets for you: `docker run -e PUBLISHER_MCP_CONFIG_FILE_ENABLED` (no `=`) and a Compose `environment:` entry with no value both *delete* it when the host does not have it set, which re-enables the write. |
+| `PUBLISHER_ROOT` | `--root <path>` | `.` (cwd) at the server level; `/publisher` by the bundled CMD | Directory the server treats as its working dir. The image's CMD passes `--root /publisher` explicitly so the zero-arg `npx` bundled-default trigger doesn't fire inside the container. A flag wins over a variable, so to use another directory, override CMD rather than set `PUBLISHER_ROOT`. If you override CMD with your own entrypoint, pass `--root` or set `PUBLISHER_ROOT` yourself to keep this behaviour. |
+| `PUBLISHER_CONFIG` | `--config <path>` | unset | Absolute path to a `publisher.config.json`. Wins over `<PUBLISHER_ROOT>/publisher.config.json`. Use this if you want to mount your config somewhere other than `/publisher/`. |
+| `PUBLISHER_INITIALIZE_STORAGE` | `--init` | `false` | Wipes `publisher_data/` and re-syncs it from the config on boot. A first boot with empty storage loads the config automatically, so set this only to reset state or resync after the on-disk config has drifted from `publisher_data/`. Re-initializing discards any state there that isn't reproducible from the config. See [configuration.md](../../docs/configuration.md#environment-variables--cli-flags). |
+| `PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS` | `--shutdown-drain-duration-seconds <s>` | `0` | On SIGTERM, how long to keep serving requests (readiness flips to not-ready immediately) before closing server sockets. Set this to your typical request duration to avoid 502s from K8s rolling deploys. |
+| `PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `--shutdown-graceful-close-timeout-seconds <s>` | `0` | Additional grace period after server close before `process.exit`. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | — | unset | Path inside the container to a GCP service-account JSON. Required for BigQuery-backed environments. Personal user credentials don't work inside the container — use a service account. |
-| `PUBLISHER_MAX_MEMORY_BYTES` | — | unset (disabled) | Resident-set-size (RSS) cap in bytes. When set, the in-process **memory governor** polls RSS on `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` and rejects new package loads and new queries with **HTTP 503** once RSS crosses the high-water mark. Designed to keep the pod under its k8s `resources.limits.memory` instead of getting OOM-killed. Set this to roughly `0.7 × resources.limits.memory` so the back-pressure band has headroom for traffic spikes and per-request DuckDB scratch. |
-| `PUBLISHER_MEMORY_HIGH_WATER_FRACTION` | — | `0.8` | Fraction of `PUBLISHER_MAX_MEMORY_BYTES` at which back-pressure activates. Must be in `(0, 1)` and strictly greater than the low-water fraction. |
+| `PUBLISHER_MEMORY_MAX_BYTES` | — | unset (disabled) | Resident-set-size (RSS) cap in bytes. When set, the in-process **memory governor** polls RSS on `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` and rejects new package loads and new queries with **HTTP 503** once RSS crosses the high-water mark. Designed to keep the pod under its k8s `resources.limits.memory` instead of getting OOM-killed. Set this to roughly `0.7 × resources.limits.memory` so the back-pressure band has headroom for traffic spikes and per-request DuckDB scratch. |
+| `PUBLISHER_MEMORY_HIGH_WATER_FRACTION` | — | `0.8` | Fraction of `PUBLISHER_MEMORY_MAX_BYTES` at which back-pressure activates. Must be in `(0, 1)` and strictly greater than the low-water fraction. |
 | `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | — | `0.7` | Fraction at which back-pressure clears. The gap between low and high gives hysteresis so the governor doesn't flap on every GC cycle. |
 | `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` | — | `5000` | How often the governor samples RSS. Minimum `100`. Smaller values catch spikes faster but burn a few extra microseconds per tick. |
-| `PUBLISHER_MEMORY_BACKPRESSURE` | — | `true` | When `false`, the governor still samples RSS and emits metrics but never flips the back-pressure flag. Useful for a monitoring-only rollout before enabling the 503 behaviour. |
-| `EMBEDDING_API_KEY` | — | _unset_ | Turns on embedding closeness in `get_context`'s search; sent as a bearer token to the embedding endpoint. Unset: `get_context` ranks by keyword and stored values only. Entity names, annotation text, and query strings are sent to the endpoint when enabled; see "How get_context searches" in `docs/configuration.md`. |
-| `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name. |
-| `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API. |
-| `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter; omitted when unset. |
+| `PUBLISHER_MEMORY_BACKPRESSURE_ENABLED` | — | `true` | When `false`, the governor still samples RSS and emits metrics but never flips the back-pressure flag. Useful for a monitoring-only rollout before enabling the 503 behaviour. |
+| `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` | — | _unset_ | Turns on embedding closeness in `get_context`'s search; sent as a bearer token to the embedding endpoint. Unset: `get_context` ranks by keyword and stored values only. Entity names, annotation text, and query strings are sent to the endpoint when enabled; see "How get_context searches" in `docs/configuration.md`. |
+| `PUBLISHER_RETRIEVAL_EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name. |
+| `PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API. |
+| `PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter; omitted when unset. |
 
 ### Kubernetes: turn off service links
 
-Kubernetes gives every pod a `<SERVICE>_PORT=tcp://<ip>:<port>` variable, and a few more, for each Service in its namespace, unless the pod spec sets `enableServiceLinks: false`. Several of those names are Publisher settings: a Service named `publisher` sets `PUBLISHER_PORT`, one named `publisher-mcp` sets `PUBLISHER_MCP_PORT`, `publisher-admin` sets `PUBLISHER_ADMIN_PORT`, and `mcp` sets the deprecated `MCP_PORT`. A port set to `tcp://…` fails startup, with a message naming the Service. Set `enableServiceLinks: false` on the Publisher pod, or name the Services something else.
+Kubernetes gives every pod a `<SERVICE>_PORT=tcp://<ip>:<port>` variable, and a few more, for each Service in its namespace, unless the pod spec sets `enableServiceLinks: false`. Several of those names are Publisher settings: a Service named `publisher` sets `PUBLISHER_PORT`, one named `publisher-mcp` sets `PUBLISHER_MCP_PORT`, and `publisher-admin` sets `PUBLISHER_ADMIN_PORT`. A port set to `tcp://…` fails startup, with a message naming the Service. Set `enableServiceLinks: false` on the Publisher pod, or name the Services something else.
 
 ### Memory governor
 
-When `PUBLISHER_MAX_MEMORY_BYTES` is unset, the governor is **disabled** and the server's behaviour is identical to prior versions. When it's set, the governor:
+When `PUBLISHER_MEMORY_MAX_BYTES` is unset, the governor is **disabled** and the server's behaviour is identical to prior versions. When it's set, the governor:
 
 - Periodically samples `process.memoryUsage().rss`.
 - Once RSS crosses the high-water mark, **any code path that would allocate a new package into memory returns HTTP 503**, and new queries are rejected the same way. The package gate sits at the single choke point inside `Environment.getPackage` / `Environment.addPackage`, so it covers every controller that touches a not-yet-loaded package — including lazy loads on cache miss from `ModelController`, `ConnectionController`, `QueryController`, `DatabaseController`, etc. — not just the explicit `POST /packages` and `?reload=true` paths.
@@ -233,16 +233,16 @@ resources:
   limits:
     memory: 4Gi
 env:
-  - name: PUBLISHER_MAX_MEMORY_BYTES
+  - name: PUBLISHER_MEMORY_MAX_BYTES
     # 2.8Gi — back-pressure activates at ~2.24Gi, clears at ~1.96Gi,
     # leaving ~1.2Gi of headroom under the 4Gi k8s hard limit for
     # in-flight DuckDB scratch and JS heap spikes.
     value: "3006477107"
-  - name: PUBLISHER_MEMORY_BACKPRESSURE
+  - name: PUBLISHER_MEMORY_BACKPRESSURE_ENABLED
     value: "true"
 ```
 
-If you want a soft-launch where the governor reports but doesn't act, deploy first with `PUBLISHER_MEMORY_BACKPRESSURE=false`, watch the `publisher_process_rss_bytes` series for a week, then enable.
+If you want a soft-launch where the governor reports but doesn't act, deploy first with `PUBLISHER_MEMORY_BACKPRESSURE_ENABLED=false`, watch the `publisher_process_rss_bytes` series for a week, then enable.
 
 ## BigQuery credentials
 

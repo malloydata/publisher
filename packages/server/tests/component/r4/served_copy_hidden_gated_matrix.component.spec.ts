@@ -739,8 +739,8 @@ for (const scenario of scenarios) {
          beforeAll(async () => {
             restore = installSettings({
                env: {
-                  PERSIST_STORAGE_MODE: "on",
-                  PUBLISHER_MATERIALIZE: "true",
+                  PUBLISHER_PERSIST_STORAGE_MODE: "on",
+                  PUBLISHER_MATERIALIZE_ENABLED: "true",
                   ...(gated
                      ? { PUBLISHER_MATERIALIZE_GATED_SOURCES: "true" }
                      : {}),

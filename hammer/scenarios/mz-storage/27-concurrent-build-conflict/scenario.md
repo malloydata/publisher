@@ -18,7 +18,7 @@ before it finishes and assert the conflict, then `## Await` the first.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.cbc_orders
 

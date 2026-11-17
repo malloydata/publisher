@@ -196,7 +196,7 @@ describe("configured packages with package versioning on", () => {
 
    it("loads a watched environment's packages in place, with no versions", async () => {
       env.PUBLISHER_PACKAGE_VERSIONING = "on";
-      env.PUBLISHER_WATCH = ENV;
+      env.PUBLISHER_WATCH_ENVIRONMENTS = ENV;
       configure([{ name: "sales", location: source("sales", "1.0.0") }]);
 
       const s = await openStore();

@@ -27,7 +27,7 @@ and says `reused`.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: true
 
 ## Data orders_pg.ppu_orders

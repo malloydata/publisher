@@ -153,7 +153,7 @@ describe("v1 #@ persist over now, through a real package", () => {
 
    beforeAll(async () => {
       restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       }).restore;
       await freshLoadPool();
       movingAt = Math.ceil((Date.now() + LEAD_MS) / 1000) * 1000;

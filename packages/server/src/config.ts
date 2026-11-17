@@ -60,7 +60,7 @@ const BUNDLED_DEFAULT_CONFIG_PATH = path.join(
  * Decide which `publisher.config.json` to read.
  *
  * Precedence:
- *   1. the `config` setting (`--config <path>`, `PUBLISHER_CONFIG_PATH`)
+ *   1. the `config` setting (`--config <path>`, `PUBLISHER_CONFIG`)
  *   2. `<serverRoot>/publisher.config.json`
  *   3. The bundled default, ONLY when `useBundledDefault` is on (a zero-flag
  *      CLI run), so programmatic callers get no surprise filesystem fallback.
@@ -448,25 +448,8 @@ function embeddingValue<K extends EmbeddingFileKey>(
 }
 
 /**
- * A Google or Vertex embedding key: from a flag, a current variable
- * (`PUBLISHER_RETRIEVAL_EMBEDDING_*`) or the file, never from `EMBEDDING_MODEL`,
- * `EMBEDDING_API_BASE` or `EMBEDDING_DIMENSIONS`. Those were only ever the
- * OpenAI-compatible provider's, and a leftover `EMBEDDING_API_BASE` would send
- * the Google key, and the text embedded, to that endpoint.
- */
-function googleEmbeddingValue<K extends EmbeddingFileKey>(
-   key: K,
-): SettingValue<K> | undefined {
-   if (!fromOldVariable(key)) return settings.get(key);
-   const file = settings
-      .shadowed(key)
-      .find((shadowed) => shadowed.source.kind === "file");
-   return file?.value as SettingValue<K> | undefined;
-}
-
-/**
  * Embedding-provider settings for semantic `get_context` retrieval, or `null`
- * when disabled (no `EMBEDDING_API_KEY`), leaving lexical ranking.
+ * when disabled (no `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY`), leaving lexical ranking.
  *
  * An ambient key such as `OPENAI_API_KEY` is deliberately NOT read: this
  * sends entity names, `#(doc)` text and queries to the endpoint, and that
@@ -502,7 +485,7 @@ export const getEmbeddingConfig = (
       new URL(baseUrl);
    } catch {
       throw new Error(
-         `Invalid value for EMBEDDING_API_BASE: expected a URL, got "${rawBase}"`,
+         `Invalid retrieval.embedding.baseUrl from ${describeSource(settings.source("retrieval.embedding.baseUrl"))}: expected a URL, got "${rawBase}"`,
       );
    }
 
@@ -536,8 +519,8 @@ function embeddingMinSimilarity(): number {
 /**
  * The embedding provider settings in force, for every provider, or `null`
  * when the feature is off. On iff the provider is named and has what it needs
- * (a key in `EMBEDDING_API_KEY`, or the provider is Ollama or Vertex, which
- * need none), or, with no provider named, `EMBEDDING_API_KEY` is set.
+ * (a key in `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY`, or the provider is Ollama or Vertex, which
+ * need none), or, with no provider named, `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` is set.
  */
 export function getEmbeddingSettings(
    file?: RetrievalEmbeddingConfig,
@@ -548,13 +531,13 @@ export function getEmbeddingSettings(
    if (provider === "google" || provider === "vertex") {
       const apiKey = settings.get("retrieval.embedding.apiKey") || undefined;
       if (provider === "google" && !apiKey) return null;
-      const model = googleEmbeddingValue("retrieval.embedding.model");
+      const model = settings.get("retrieval.embedding.model");
       if (!model) return null;
       return {
          provider,
          model,
-         dimensions: googleEmbeddingValue("retrieval.embedding.dimensions"),
-         baseUrl: googleEmbeddingValue("retrieval.embedding.baseUrl"),
+         dimensions: settings.get("retrieval.embedding.dimensions"),
+         baseUrl: settings.get("retrieval.embedding.baseUrl"),
          projectId: file?.projectId,
          location: file?.location,
          // Vertex authenticates with Application Default Credentials.
@@ -598,7 +581,7 @@ const hostOf = (url: string): string => {
  * What the startup log should say about the embedding settings that would
  * otherwise act silently:
  *
- * - a provider that needs a key is named but `EMBEDDING_API_KEY` is unset, so
+ * - a provider that needs a key is named but `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` is unset, so
  *   semantic search is off.
  * - a variable or flag overrides a different value in the file, and a changed
  *   model or dimensions re-embeds every package.
@@ -621,8 +604,8 @@ export function embeddingStartupNotices(
       notices.push({
          level: "warn",
          message:
-            `retrieval.embedding names provider "${provider}" but EMBEDDING_API_KEY is not set, so semantic search is off and get_context ranks lexically. ` +
-            `Fix: set EMBEDDING_API_KEY in the server's environment.`,
+            `retrieval.embedding names provider "${provider}" but PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY is not set, so semantic search is off and get_context ranks lexically. ` +
+            `Fix: set PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY in the server's environment.`,
       });
    }
    const reembeds =
@@ -677,7 +660,7 @@ function overriddenFileValue(
 
 /**
  * The LLM settings in force, or `null` when every LLM feature is off. On iff
- * `retrieval.llm.provider` is set and either `LLM_API_KEY` is present or the
+ * `retrieval.llm.provider` is set and either `PUBLISHER_RETRIEVAL_LLM_API_KEY` is present or the
  * provider needs none (Ollama, Vertex). The key is a variable, or in the file
  * one `${VAR}` reference, never a literal. An ambient `OPENAI_API_KEY`-style variable is not read,
  * for the reason {@link getEmbeddingConfig} gives.
@@ -717,7 +700,7 @@ export function operatorLlmConfigured(): boolean {
  * Whether `search_database_schema` may send a connection's table and
  * column names to the configured embedding provider. Off unless set.
  *
- * A second switch on top of `EMBEDDING_API_KEY` because it authorises a
+ * A second switch on top of `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` because it authorises a
  * different disclosure: that key covers the operator's own model text, while
  * a warehouse's table and column names are the customer's. Off, schema search
  * ranks lexically with no network.
@@ -760,7 +743,7 @@ export const getMaterializationSchedulerConfig =
    };
 
 /**
- * Row cap on ad-hoc connection SQL (`PUBLISHER_MAX_QUERY_ROWS`, default
+ * Row cap on ad-hoc connection SQL (`PUBLISHER_QUERY_MAX_ROWS`, default
  * {@link DEFAULT_MAX_QUERY_ROWS}). `0` disables it, leaving only the byte cap.
  * Like every getter here, throws on malformed input so a manifest typo fails
  * loudly instead of silently changing the bound.
@@ -769,7 +752,7 @@ export const getMaxQueryRows = (): number => settings.get("query.maxRows");
 
 /**
  * Byte cap on ad-hoc connection SQL responses from a `StreamingConnection`
- * (`PUBLISHER_MAX_RESPONSE_BYTES`, default {@link DEFAULT_MAX_RESPONSE_BYTES}).
+ * (`PUBLISHER_QUERY_MAX_RESPONSE_BYTES`, default {@link DEFAULT_MAX_RESPONSE_BYTES}).
  * `0` disables it, leaving only the row cap.
  */
 export const getMaxResponseBytes = (): number =>
@@ -777,10 +760,10 @@ export const getMaxResponseBytes = (): number =>
 
 /**
  * Default row limit for a Malloy model query that carries no `LIMIT` of its
- * own (`PUBLISHER_DEFAULT_QUERY_ROW_LIMIT`, default
+ * own (`PUBLISHER_QUERY_DEFAULT_ROW_LIMIT`, default
  * {@link DEFAULT_QUERY_ROW_LIMIT}). `0` is rejected: "return zero rows" would
  * silently break every report, and the operator likely meant
- * `PUBLISHER_MAX_QUERY_ROWS=0`.
+ * `PUBLISHER_QUERY_MAX_ROWS=0`.
  */
 export const getDefaultQueryRowLimit = (): number =>
    settings.get("query.defaultRowLimit");
@@ -793,7 +776,7 @@ export const getQueryTimeoutMs = (): number => settings.get("query.timeoutMs");
 
 /**
  * Per-process inbound query concurrency cap
- * (`PUBLISHER_MAX_CONCURRENT_QUERIES`, default
+ * (`PUBLISHER_QUERY_MAX_CONCURRENT`, default
  * {@link DEFAULT_MAX_CONCURRENT_QUERIES}). `0` disables it, for deployments
  * with concurrency control upstream.
  */
@@ -816,7 +799,7 @@ export const getPostgresPoolMax = (): number =>
 export type ExtensionFetchPolicy = "on-demand" | "local-only";
 
 /**
- * The DuckDB extension-fetch policy from `EXTENSION_FETCH_POLICY` (default
+ * The DuckDB extension-fetch policy from `PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY` (default
  * `on-demand`).
  *
  * - `on-demand`: `INSTALL` a missing extension on first use, fetching it from
@@ -856,7 +839,7 @@ export type S3CredentialChainPolicy = "any" | "destinations-only" | "off";
 export type ConnectionOrigin = "connection" | "storage-destination";
 
 /**
- * Resolve the S3 credential-chain policy from `S3_CREDENTIAL_CHAIN_POLICY`; falls
+ * Resolve the S3 credential-chain policy from `PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN`; falls
  * back to `any` when unset or empty.
  *
  * `credential_chain` makes DuckDB act as the HOST (an EKS pod's IRSA role, an
@@ -877,7 +860,7 @@ export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy =>
 
 /**
  * The three `#@ persist storage=<conn>` deployment modes, read from
- * `PERSIST_STORAGE_MODE`. A runtime kill switch: flipping DOWN must never fail
+ * `PUBLISHER_PERSIST_STORAGE_MODE`. A runtime kill switch: flipping DOWN must never fail
  * an already-loaded package, only change how `storage=` is honored.
  *
  *  - `off` (default): `storage=` is inert; sources build and serve in their own
@@ -892,7 +875,7 @@ export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy =>
 export type PersistStorageMode = "off" | "write-only" | "on";
 
 /**
- * The `storage=` deployment mode from `PERSIST_STORAGE_MODE` (default `off`).
+ * The `storage=` deployment mode from `PUBLISHER_PERSIST_STORAGE_MODE` (default `off`).
  * Case-insensitive; throws on an unrecognized value.
  */
 export const getPersistStorageMode = (): PersistStorageMode =>
@@ -909,7 +892,7 @@ export const getPersistAddressIncludesDestination = (): boolean =>
 
 /**
  * Whether materialization v2 is on: `#(materialize)` and `#(preaggregate)` read,
- * built and served, from `PUBLISHER_MATERIALIZE` (default `true`). `false`
+ * built and served, from `PUBLISHER_MATERIALIZE_ENABLED` (default `true`). `false`
  * opts out, and the build plan is exactly what it was without it. The setting
  * is removed one release after this default ships.
  */
@@ -959,7 +942,7 @@ export const gateSwitches = (): GateSwitches => ({
  * Whether a within-package persist-target COLLISION (two distinct persist
  * sources resolving to the same physical table in the same destination) fails
  * the publish and the load (and refuses a build), from
- * `PERSIST_COLLISION_ENFORCE` (default `true`). `false` opts out of both, for
+ * `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED` (default `true`). `false` opts out of both, for
  * a deployment whose existing packages carry a latent collision it cannot fix
  * yet: the colliding sources are then refused alone, and still never served
  * from the shared table (`sharedTables`).
@@ -969,7 +952,7 @@ export const getPersistCollisionEnforce = (): boolean =>
 
 /**
  * Which origins may read a cross-origin response from the MCP endpoint, from
- * `MCP_CORS_ORIGINS` (comma-separated; `*` allows any).
+ * `PUBLISHER_MCP_CORS_ORIGINS` (comma-separated; `*` allows any).
  *
  * Returns the value for `cors`'s `origin` option. The default, `false`, sends
  * no `Access-Control-Allow-Origin`: the safe choice for an unauthenticated
@@ -984,7 +967,7 @@ export const getMcpCorsOrigins = (): string[] | boolean | string => {
 
 /**
  * Whether the publisher attaches per-query metadata at all, from
- * `PUBLISHER_QUERY_METADATA` (default `off`).
+ * `PUBLISHER_QUERY_METADATA_ENABLED` (default `off`).
  *
  * Off by default because it touches EVERY statement: without a native tag
  * facility the bag rides as a leading SQL comment, visible in query logs. And
@@ -1147,22 +1130,6 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
 
    const processedConfig = processConfigValue(rawConfig);
 
-   // The deprecated top-level `projects` key is still accepted, with a
-   // warning, so an old config does not silently parse as empty.
-   if (
-      processedConfig &&
-      typeof processedConfig === "object" &&
-      !("environments" in processedConfig) &&
-      "projects" in processedConfig
-   ) {
-      logger.warn(
-         `${PUBLISHER_CONFIG_NAME} uses deprecated "projects" key; rename to "environments".`,
-      );
-      (processedConfig as Record<string, unknown>).environments = (
-         processedConfig as Record<string, unknown>
-      ).projects;
-   }
-
    if (
       processedConfig &&
       typeof processedConfig === "object" &&
@@ -1286,43 +1253,18 @@ const RETRIEVAL_LEAVES = REGISTRY.filter(
       !entry.secret,
 );
 
-/** Whether a setting's value came from one of today's variables, not its derived one. */
-function fromOldVariable(key: SettingKey): boolean {
-   const source = settings.source(key);
-   return (
-      source.kind === "env" &&
-      (REGISTRY.find((entry) => entry.key === key)?.aliases.env ?? []).includes(
-         source.name,
-      )
-   );
-}
-
-/** The leaves a Google or Vertex embedding provider takes from the file or a current name only. */
-const OPENAI_COMPATIBLE_LEAVES: readonly string[] = [
-   "retrieval.embedding.model",
-   "retrieval.embedding.baseUrl",
-   "retrieval.embedding.dimensions",
-];
-
 /**
  * The `retrieval` block as one object from every source: the file's block,
  * with each leaf a flag or variable gives laid over it, by the one precedence.
- * A leaf that is null in the file is unset, as for every setting. A Google or
- * Vertex embedding provider takes no leaf from `EMBEDDING_MODEL`,
- * `EMBEDDING_API_BASE` or `EMBEDDING_DIMENSIONS` (see
- * {@link googleEmbeddingValue}); those are returned as `ignored`. A section
+ * A leaf that is null in the file is unset, as for every setting. A section
  * left empty, and a block left empty, are absent, so the example config's
  * block of unset leaves is no block. Undefined when neither the file nor a
  * flag or variable gives any of it.
  */
-export function assembleRetrieval(file: unknown): {
-   block: unknown;
-   ignored: ReadonlySet<string>;
-} {
-   const ignored = new Set<string>();
+export function assembleRetrieval(file: unknown): unknown {
    // Not an object: the parser says so, naming the file's value.
    if (file !== undefined && file !== null && !isPlainObject(file)) {
-      return { block: file, ignored };
+      return file;
    }
    const block = (file ? structuredClone(file) : {}) as Record<string, unknown>;
    // Every leaf, the keys included: null is unset for each.
@@ -1341,24 +1283,11 @@ export function assembleRetrieval(file: unknown): {
       }
    }
    let overlaid = false;
-   // The provider first: it decides which variables the others may come from.
-   const ordered = [...RETRIEVAL_LEAVES].sort(
-      (a, b) =>
-         Number(!a.key.endsWith(".provider")) -
-         Number(!b.key.endsWith(".provider")),
-   );
-   for (const leaf of ordered) {
+   for (const leaf of RETRIEVAL_LEAVES) {
       const key = leaf.key as SettingKey;
       const kind = settings.source(key).kind;
       if (kind !== "flag" && kind !== "env") continue;
       const pathInBlock = leaf.key.split(".").slice(1);
-      if (OPENAI_COMPATIBLE_LEAVES.includes(leaf.key) && fromOldVariable(key)) {
-         const provider = nodeAt(block, ["embedding"])?.provider;
-         if (provider === "google" || provider === "vertex") {
-            ignored.add(leaf.key);
-            continue;
-         }
-      }
       const parent = nodeAt(block, pathInBlock.slice(0, -1), true);
       // A section the file holds as something other than an object is the
       // parser's to refuse, with the file's value.
@@ -1366,10 +1295,8 @@ export function assembleRetrieval(file: unknown): {
       parent[pathInBlock[pathInBlock.length - 1]] = settings.get(key);
       overlaid = true;
    }
-   if (!overlaid && Object.keys(block).length === 0) {
-      return { block: undefined, ignored };
-   }
-   return { block, ignored };
+   if (!overlaid && Object.keys(block).length === 0) return undefined;
+   return block;
 }
 
 /**
@@ -1379,7 +1306,7 @@ export function assembleRetrieval(file: unknown): {
  * switched `provider` is found beside the file's other fields.
  */
 function retrievalInForce(file: unknown): RetrievalConfig | undefined {
-   const { block, ignored } = assembleRetrieval(file);
+   const block = assembleRetrieval(file);
    try {
       return parseRetrievalConfig(block);
    } catch (error) {
@@ -1395,16 +1322,13 @@ function retrievalInForce(file: unknown): RetrievalConfig | undefined {
             settings.isSet(leaf.key as SettingKey),
       );
       if (cited.length === 0) throw error;
-      const given = cited.map((leaf) => {
-         const from = describeSource(settings.source(leaf.key as SettingKey));
-         return ignored.has(leaf.key)
-            ? `${leaf.key} from ${from}, which a google or vertex provider does not read`
-            : `${leaf.key} from ${from}`;
-      });
+      const given = cited.map(
+         (leaf) =>
+            `${leaf.key} from ${describeSource(settings.source(leaf.key as SettingKey))}`,
+      );
       // The variables and flags among them that the block reads: they stay
       // set when the file is moved aside.
       const outside = cited
-         .filter((leaf) => !ignored.has(leaf.key))
          .map((leaf) => settings.source(leaf.key as SettingKey))
          .filter((source) => source.kind === "env" || source.kind === "flag")
          .map(describeSource);

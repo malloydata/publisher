@@ -2213,7 +2213,7 @@ export class Environment {
     * Both tiers come from the same manifest ({@link splitManifestEntries}):
     *  - colocated → {@link Package.bindColocatedServeManifest}, a per-query
     *    override with no recompile; restored regardless of
-    *    `PERSIST_STORAGE_MODE`, which does not gate a plain `#@ persist`.
+    *    `PUBLISHER_PERSIST_STORAGE_MODE`, which does not gate a plain `#@ persist`.
     *  - storage= → {@link Package.bindStorageServeBindings}; only when the
     *    storage tier is not `off`.
     *
@@ -2289,7 +2289,7 @@ export class Environment {
          reason,
       });
       throw new PackageAdmissionRefusedError(
-         `Publisher is under memory pressure and cannot ${reason} (package "${packageName}", environment "${this.environmentName}"). Retry after the server's memory usage drops below the low-water mark (PUBLISHER_MEMORY_LOW_WATER_FRACTION of PUBLISHER_MAX_MEMORY_BYTES), or raise PUBLISHER_MAX_MEMORY_BYTES if you have headroom.`,
+         `Publisher is under memory pressure and cannot ${reason} (package "${packageName}", environment "${this.environmentName}"). Retry after the server's memory usage drops below the low-water mark (PUBLISHER_MEMORY_LOW_WATER_FRACTION of PUBLISHER_MEMORY_MAX_BYTES), or raise PUBLISHER_MEMORY_MAX_BYTES if you have headroom.`,
       );
    }
 
@@ -2305,7 +2305,7 @@ export class Environment {
          environment: this.environmentName,
       });
       throw new ServiceUnavailableError(
-         `Publisher is under memory pressure and cannot accept new queries (environment "${this.environmentName}"). Retry after the server's memory usage drops below the low-water mark (PUBLISHER_MEMORY_LOW_WATER_FRACTION of PUBLISHER_MAX_MEMORY_BYTES), or raise PUBLISHER_MAX_MEMORY_BYTES if you have headroom.`,
+         `Publisher is under memory pressure and cannot accept new queries (environment "${this.environmentName}"). Retry after the server's memory usage drops below the low-water mark (PUBLISHER_MEMORY_LOW_WATER_FRACTION of PUBLISHER_MEMORY_MAX_BYTES), or raise PUBLISHER_MEMORY_MAX_BYTES if you have headroom.`,
       );
    }
 

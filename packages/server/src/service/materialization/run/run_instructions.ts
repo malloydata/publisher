@@ -159,7 +159,7 @@ function gateSources(
 
          // A source that DECLARES `storage=` must never silently downgrade
          // to a colocated CTAS into its own warehouse when
-         // PERSIST_STORAGE_MODE=off: the author did not ask for that, and
+         // PUBLISHER_PERSIST_STORAGE_MODE=off: the author did not ask for that, and
          // production grants read-only warehouse access. It serves LIVE and
          // Package.storageWarnings reports it. A plain `#@ persist` is
          // unaffected; colocated is its intent.
@@ -191,7 +191,7 @@ function gateSources(
             );
             // Two sources an author's name= puts on one table: refused
             // alone, never built, so neither overwrites the other (only
-            // reachable under PERSIST_COLLISION_ENFORCE=false; otherwise the
+            // reachable under PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false; otherwise the
             // package does not load).
             const sharing = shared.get(persistSource.sourceID);
             if (sharing !== undefined) {

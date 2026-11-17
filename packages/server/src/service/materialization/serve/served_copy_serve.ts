@@ -9,7 +9,7 @@
  * It reads a source's own table, `#(materialize)` or v1 `#@ persist`
  * (never a rollup's or a persisted view's): a `storage=` table only while
  * the host has storage destinations to serve from
- * (`PERSIST_STORAGE_MODE=on`), a colocated one always.
+ * (`PUBLISHER_PERSIST_STORAGE_MODE=on`), a colocated one always.
  *
  * The served copy compiles in a runtime whose connections are the package's
  * own plus each storage destination under a per-process alias
@@ -302,7 +302,7 @@ interface ServedCopyHost {
    modelDef(): unknown;
    /**
     * The storage destinations, while the storage tier serves
-    * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only colocated
+    * (`PUBLISHER_PERSIST_STORAGE_MODE=on`); undefined otherwise, when only colocated
     * tables are read.
     */
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
@@ -743,7 +743,7 @@ export class ServedCopyServe {
    /**
     * Whether the served copy may read a binding: a source's own table (never
     * a rollup's or a persisted view's); a storage table only while the host
-    * has storage destinations to serve from (`PERSIST_STORAGE_MODE=on`); a
+    * has storage destinations to serve from (`PUBLISHER_PERSIST_STORAGE_MODE=on`); a
     * colocated table always, on its own connection.
     */
    private usable(b: Binding): boolean {

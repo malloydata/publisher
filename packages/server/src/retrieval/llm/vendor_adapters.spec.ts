@@ -193,7 +193,7 @@ describe("anthropic adapter", () => {
 
    it("needs a key", () => {
       expect(() => createChatModel(llm({ apiKey: undefined }))).toThrow(
-         "LLM_API_KEY",
+         "PUBLISHER_RETRIEVAL_LLM_API_KEY",
       );
    });
 });

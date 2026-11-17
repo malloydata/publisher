@@ -25,7 +25,7 @@ shape the build could not carry, which is what it is.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.pjw_orders
 

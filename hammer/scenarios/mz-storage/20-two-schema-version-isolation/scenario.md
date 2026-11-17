@@ -31,7 +31,7 @@ separating them is the schema in `name=`.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.mz_orders
 

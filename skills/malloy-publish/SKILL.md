@@ -32,7 +32,7 @@ Two more facts about how a Publisher server sees the package, both easy to get w
 - **Local authoring means `--watch-env`.** Without `--watch-env <env>`, Publisher **publishes** each local package at boot as the immutable version its `publisher.json` declares and serves that; edits to your source directory are never read, however many times you save or reload. Start the server with `--watch-env <env>` (mounts the package in place and live-reloads), the same command `skill:malloy-html-data-apps` uses:
 
   ```sh
-  npx @malloy-publisher/server --server_root . --port 4000 --watch-env <env>
+  npx @malloy-publisher/server --root . --port 4000 --watch-env <env>
   ```
 
 ## Step 1: Verify publisher.json

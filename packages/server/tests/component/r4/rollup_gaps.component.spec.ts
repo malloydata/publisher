@@ -119,7 +119,10 @@ for (const placement of ["colocated", "storage"] as const) {
       let fixture: R4Fixture;
       beforeAll(async () => {
          restore = installSettings({
-            env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
+            env: {
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            },
          }).restore;
          fixture = await buildScenario({
             files: {

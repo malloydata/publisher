@@ -215,7 +215,7 @@ class Config:
         return pathlib.Path.home() / ".malloy-eval" / f"{self.set_name}-{tag}"
 
     def server_root(self, role: str) -> pathlib.Path:
-        """The SERVER_ROOT `serve.py --role <role>` uses, so later steps find it."""
+        """The PUBLISHER_ROOT `serve.py --role <role>` uses, so later steps find it."""
         return self.workdir() / "servers" / role
 
     def publisher_dir(self) -> pathlib.Path | None:

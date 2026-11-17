@@ -100,7 +100,7 @@ afterEach(() => {
 async function load(conn: string, connections: Map<string, Connection>) {
    restore = installSettings({
       env: {
-         PUBLISHER_MATERIALIZE: "true",
+         PUBLISHER_MATERIALIZE_ENABLED: "true",
          PUBLISHER_PACKAGE_VERSIONING: "off",
       },
    }).restore;

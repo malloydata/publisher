@@ -21,6 +21,68 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — (BREAKING) settings are no longer read under their old names
+
+Step 3 of the configuration design ([#1474](https://github.com/malloydata/publisher/pull/1474)), its second release. Every setting is now read only under the names derived from its key, such as `PUBLISHER_MCP_PORT`, `--mcp-port` and `mcp.port` in `publisher.config.json`, and the short flags `--init` and `--watch-env`. The names that step 2 ([#1481](https://github.com/malloydata/publisher/pull/1481)) deprecated are gone. **Before upgrading, start the current release with your configuration and read its startup log:** each old name in use logs `… is deprecated: set … instead`, and counts in `publisher_deprecated_usage_total{feature="config:<old name>"}`. Move each to the name the warning gives, or use the table below.
+
+- **An old variable is ignored, with a warning.** Its setting is then at its default, and startup warns about each old variable that is set, naming the one that replaced it. Some defaults are the permissive side of their setting. For example, `S3_CREDENTIAL_CHAIN_POLICY=off` left in place makes the s3 credential chain `any` again, `LOG_LEVEL=warn` is `debug` again, which logs request bodies, and `DISABLE_RESPONSE_LOGGING=true` logs response bodies again.
+- **An old flag fails startup**, as an unknown flag naming the new one: `Unknown flag --mcp_port. Did you mean --mcp-port?`.
+- **`"projects"` in `publisher.config.json` fails startup**, as an unknown key. Write `"environments"`.
+- **Every boolean setting reads a value the same way.** The old readings went with the old names, so the values the previous release refused now read as every boolean does. `PUBLISHER_INITIALIZE_STORAGE=1` and `PUBLISHER_ALLOW_PROXY_CONNECTIONS=yes` are on, and `"frozenConfig": "false"` is off.
+- **`publisher_deprecated_usage_total` no longer counts `config:` features.**
+- **`create-malloy-package`** writes `--root` and `--mcp-port` into a new workspace's scripts. A script it wrote before pins an older server, so it is left as it is.
+
+The two negated names say the opposite of their settings. `PUBLISHER_NO_MCP_CONFIG=1` and `DISABLE_RESPONSE_LOGGING=1` (or `true`) are `false` there.
+
+| Old name | New name | Setting |
+| --- | --- | --- |
+| `"projects"` in `publisher.config.json` | `"environments"` | `environments` |
+| `SERVER_ROOT` | `PUBLISHER_ROOT` | `root` |
+| `--server_root` | `--root` | `root` |
+| `PUBLISHER_CONFIG_PATH` | `PUBLISHER_CONFIG` | `config` |
+| `INITIALIZE_STORAGE` | `PUBLISHER_INITIALIZE_STORAGE` | `initializeStorage` |
+| `PUBLISHER_WATCH` | `PUBLISHER_WATCH_ENVIRONMENTS` | `watchEnvironments` |
+| `MCP_PORT` | `PUBLISHER_MCP_PORT` | `mcp.port` |
+| `--mcp_port` | `--mcp-port` | `mcp.port` |
+| `MCP_HOST` | `PUBLISHER_MCP_HOST` | `mcp.host` |
+| `--mcp_host` | `--mcp-host` | `mcp.host` |
+| `MCP_CORS_ORIGINS` | `PUBLISHER_MCP_CORS_ORIGINS` | `mcp.corsOrigins` |
+| `PUBLISHER_NO_MCP_CONFIG=1` | `PUBLISHER_MCP_CONFIG_FILE_ENABLED=false` | `mcp.configFileEnabled` |
+| `--no-mcp-config` | `--no-mcp-config-file-enabled` | `mcp.configFileEnabled` |
+| `MCP_APP_ORIGIN` | `PUBLISHER_MCP_APP_ORIGIN` | `mcp.appOrigin` |
+| `--admin_port` | `--admin-port` | `admin.port` |
+| `--admin_host` | `--admin-host` | `admin.host` |
+| `PUBLISHER_MAX_QUERY_ROWS` | `PUBLISHER_QUERY_MAX_ROWS` | `query.maxRows` |
+| `PUBLISHER_MAX_RESPONSE_BYTES` | `PUBLISHER_QUERY_MAX_RESPONSE_BYTES` | `query.maxResponseBytes` |
+| `PUBLISHER_DEFAULT_QUERY_ROW_LIMIT` | `PUBLISHER_QUERY_DEFAULT_ROW_LIMIT` | `query.defaultRowLimit` |
+| `PUBLISHER_MAX_CONCURRENT_QUERIES` | `PUBLISHER_QUERY_MAX_CONCURRENT` | `query.maxConcurrent` |
+| `PUBLISHER_QUERY_METADATA` | `PUBLISHER_QUERY_METADATA_ENABLED` | `query.metadataEnabled` |
+| `PUBLISHER_MAX_MEMORY_BYTES` | `PUBLISHER_MEMORY_MAX_BYTES` | `memory.maxBytes` |
+| `PUBLISHER_MEMORY_BACKPRESSURE` | `PUBLISHER_MEMORY_BACKPRESSURE_ENABLED` | `memory.backpressureEnabled` |
+| `PACKAGE_LOAD_WORKERS` | `PUBLISHER_PACKAGE_LOAD_WORKERS` | `packageLoad.workers` |
+| `PACKAGE_LOAD_JOB_TIMEOUT_MS` | `PUBLISHER_PACKAGE_LOAD_JOB_TIMEOUT_MS` | `packageLoad.jobTimeoutMs` |
+| `PACKAGE_LOAD_SCHEMA_CACHE_BYTES` | `PUBLISHER_PACKAGE_LOAD_SCHEMA_CACHE_BYTES` | `packageLoad.schemaCacheBytes` |
+| `EXTENSION_FETCH_POLICY` | `PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY` | `duckdb.extensionFetchPolicy` |
+| `PERSIST_STORAGE_MODE` | `PUBLISHER_PERSIST_STORAGE_MODE` | `persist.storageMode` |
+| `PUBLISHER_MATERIALIZE` | `PUBLISHER_MATERIALIZE_ENABLED` | `materialize.enabled` |
+| `PERSIST_COLLISION_ENFORCE` | `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED` | `persist.collisionEnforcementEnabled` |
+| `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` | `PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED` | `materialization.schedulerEnabled` |
+| `S3_CREDENTIAL_CHAIN_POLICY` | `PUBLISHER_ALLOW_S3_CREDENTIAL_CHAIN` | `allow.s3CredentialChain` |
+| `PUBLISHER_BYPASS_AUTHORIZE_SECRET` | `PUBLISHER_AUTHORIZE_BYPASS_SECRET` | `authorize.bypassSecret` |
+| `LOG_LEVEL` | `PUBLISHER_LOGGING_LEVEL` | `logging.level` |
+| `DISABLE_RESPONSE_LOGGING=1` | `PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED=false` | `logging.responseBodiesEnabled` |
+| `SHUTDOWN_DRAIN_DURATION_SECONDS` | `PUBLISHER_SHUTDOWN_DRAIN_DURATION_SECONDS` | `shutdown.drainDurationSeconds` |
+| `--shutdown_drain_duration_seconds` | `--shutdown-drain-duration-seconds` | `shutdown.drainDurationSeconds` |
+| `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `PUBLISHER_SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` | `shutdown.gracefulCloseTimeoutSeconds` |
+| `--shutdown_graceful_close_timeout_seconds` | `--shutdown-graceful-close-timeout-seconds` | `shutdown.gracefulCloseTimeoutSeconds` |
+| `EMBEDDING_API_KEY` | `PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY` | `retrieval.embedding.apiKey` |
+| `EMBEDDING_MODEL` | `PUBLISHER_RETRIEVAL_EMBEDDING_MODEL` | `retrieval.embedding.model` |
+| `EMBEDDING_API_BASE` | `PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL` | `retrieval.embedding.baseUrl` |
+| `EMBEDDING_DIMENSIONS` | `PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS` | `retrieval.embedding.dimensions` |
+| `EMBEDDING_MIN_SIMILARITY` | `PUBLISHER_RETRIEVAL_EMBEDDING_MIN_SIMILARITY` | `retrieval.embedding.minSimilarity` |
+| `EMBEDDING_INDEX_CONNECTION_SCHEMA` | `PUBLISHER_RETRIEVAL_EMBEDDING_CONNECTION_SCHEMA_INDEXING_ENABLED` | `retrieval.embedding.connectionSchemaIndexingEnabled` |
+| `LLM_API_KEY` | `PUBLISHER_RETRIEVAL_LLM_API_KEY` | `retrieval.llm.apiKey` |
+
 ## [Unreleased] — (BREAKING) startup refuses what it used to warn about and ignore
 
 Step 3 of the configuration design ([#1474](https://github.com/malloydata/publisher/pull/1474)). Every mistake the server used to warn about at startup, then ignore or read its old way, now fails startup, with `PUBLISHER_INIT_FAILED` and a message saying what to change. **Before upgrading, start the current release with your configuration and read its startup warnings:** each one other than a deprecation is a failure in this release.

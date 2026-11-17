@@ -320,7 +320,9 @@ async function failure(run: () => Promise<unknown>): Promise<Error> {
 describe("the load-versus-refused policy", () => {
    // The load worker reads its settings when it starts, so they are
    // installed before the pool: materialization v2 on, as by default.
-   const settings = installSettings({ env: { PUBLISHER_MATERIALIZE: "true" } });
+   const settings = installSettings({
+      env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
+   });
    usePackageLoadPool();
    afterAll(() => settings.restore());
 
@@ -428,7 +430,7 @@ describe("the load-versus-refused policy", () => {
                }),
             );
             const restore = installSettings({
-               env: { PUBLISHER_MATERIALIZE: "true" },
+               env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
                cwd: server,
             }).restore;
             const store = startedStore(new EnvironmentStore(server));

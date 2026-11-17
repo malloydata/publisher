@@ -363,8 +363,8 @@ for (const tier of tiers) {
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: tier.storage ? "on" : "off",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: tier.storage ? "on" : "off",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
             },
          }).restore;
          const scenario = await tier.scenario();

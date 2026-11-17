@@ -94,7 +94,7 @@ describe("query_cap_metrics", () => {
    });
 
    it("publisher_max_query_rows gauge reports the configured value", async () => {
-      installEnv({ PUBLISHER_MAX_QUERY_ROWS: "12345" });
+      installEnv({ PUBLISHER_QUERY_MAX_ROWS: "12345" });
       // Prime telemetry — the gauges install on the first
       // counter-emitting call (`recordQueryCapExceeded`); in
       // production that's the first 413, in tests we trigger it
@@ -106,7 +106,7 @@ describe("query_cap_metrics", () => {
    });
 
    it("publisher_max_response_bytes gauge reports the configured value", async () => {
-      installEnv({ PUBLISHER_MAX_RESPONSE_BYTES: "9876543" });
+      installEnv({ PUBLISHER_QUERY_MAX_RESPONSE_BYTES: "9876543" });
       recordQueryCapExceeded("bytes", "connection_sql");
       expect(await harness.collectGauge("publisher_max_response_bytes")).toBe(
          9876543,
@@ -114,13 +114,13 @@ describe("query_cap_metrics", () => {
    });
 
    it("publisher_max_query_rows gauge reports 0 when the cap is opted out", async () => {
-      installEnv({ PUBLISHER_MAX_QUERY_ROWS: "0" });
+      installEnv({ PUBLISHER_QUERY_MAX_ROWS: "0" });
       recordQueryCapExceeded("rows", "connection_sql");
       expect(await harness.collectGauge("publisher_max_query_rows")).toBe(0);
    });
 
    it("publisher_max_query_rows gauge reports -1 on misconfig so dashboards reveal the bad value", async () => {
-      installEnv({ PUBLISHER_MAX_QUERY_ROWS: "not-a-number" });
+      installEnv({ PUBLISHER_QUERY_MAX_ROWS: "not-a-number" });
       // Misconfig must not crash the scrape; -1 is the agreed
       // signal mirroring `publisher_query_timeout_ms`.
       recordQueryCapExceeded("rows", "connection_sql");

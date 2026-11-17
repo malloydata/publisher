@@ -7,6 +7,7 @@
 import { assertSupportedNodeVersion } from "./node_version_check";
 import { printHelpIfAsked } from "./cli_args";
 import { Settings, SettingsError } from "./settings";
+import { removedVariableWarnings } from "./settings/removed";
 
 // Exits non-zero on an unsupported Node before argument parsing, storage init
 // or any listener; otherwise the failure surfaces only as an unexplained 500
@@ -29,8 +30,8 @@ Settings.install(loaded);
 // loads, and one of them may be the bad value.
 const failures = loaded.fileError ? [loaded.fileError] : loaded.errors();
 if (failures.length > 0) {
-   for (const warning of loaded.warnings) {
-      process.stderr.write(`warn: ${warning.message}\n`);
+   for (const warning of removedVariableWarnings()) {
+      process.stderr.write(`warn: ${warning}\n`);
    }
    const message = new SettingsError(failures).message;
    process.stderr.write(
@@ -40,8 +41,11 @@ if (failures.length > 0) {
 }
 
 const { logger } = await import("./logger");
-for (const warning of loaded.warnings) {
-   logger.warn(warning.message);
+
+// A variable the configuration design removed is read by nothing, so its
+// setting is at its default; say so, naming the variable that replaced it.
+for (const warning of removedVariableWarnings()) {
+   logger.warn(warning);
 }
 
 // One line naming each setting given and where it came from; secrets show as (set).
@@ -63,10 +67,4 @@ if (apis.servingApiEnabled) {
    await startMainServer(loaded);
 } else {
    await import("./admin_server");
-}
-
-// Counted once the server's telemetry is up, which loading it starts.
-const { recordDeprecatedUsage } = await import("./deprecated_usage_metrics");
-for (const name of loaded.deprecatedNames) {
-   recordDeprecatedUsage(`config:${name}`);
 }

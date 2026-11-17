@@ -45,7 +45,7 @@ describe("a wildcard over a v1 table with a column left out", () => {
 
    it("returns every column live returns, and the rest still reads the table", async () => {
       const restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       }).restore;
       await freshLoadPool();
       const loader = await loadFixture({ ...DATA_FILES, "m.malloy": MODEL });

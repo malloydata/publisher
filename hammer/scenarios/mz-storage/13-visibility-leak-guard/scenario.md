@@ -22,7 +22,7 @@ Public fields route; the hidden column is refused.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.vis_orders
 

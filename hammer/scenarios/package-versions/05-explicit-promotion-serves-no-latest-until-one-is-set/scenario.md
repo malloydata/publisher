@@ -17,7 +17,7 @@ a later publish leaves latest where it is.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 - PUBLISHER_PACKAGE_VERSIONING: on
 - PUBLISHER_VERSION_PROMOTION: explicit
 

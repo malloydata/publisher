@@ -11,7 +11,7 @@
  * `finish` -- not at the disconnect, and not when the handler later writes its
  * answer to the dead socket. A slot released only on those events stayed held
  * until the process restarted, one per abandoned query, until the pod refused
- * every query at PUBLISHER_MAX_CONCURRENT_QUERIES.
+ * every query at PUBLISHER_QUERY_MAX_CONCURRENT.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -35,7 +35,7 @@ let restoreSettings: (() => void) | undefined;
 function installCap(cap: string): void {
    restoreSettings?.();
    restoreSettings = installSettings({
-      env: { PUBLISHER_MAX_CONCURRENT_QUERIES: cap },
+      env: { PUBLISHER_QUERY_MAX_CONCURRENT: cap },
    }).restore;
 }
 

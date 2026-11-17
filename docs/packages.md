@@ -187,11 +187,11 @@ with the line and the spelling it meant:
   attempt at a route Publisher reads (`#(doc)`, `#(markdown)`, `#(classification)`, `#(carries)`,
   `#(secure)`, `#(index)`, `#(dbmeta)`) but does not reach it.
 - `materialization-near-miss` (a load failure): a near miss of a materialization route or directive,
-  `#@ persist`, `#@ preaggregate`, and, with `PUBLISHER_MATERIALIZE` on, `#(materialize)` and
+  `#@ persist`, `#@ preaggregate`, and, with `PUBLISHER_MATERIALIZE_ENABLED` on, `#(materialize)` and
   `#(preaggregate)`, so `#(materialise)`, `#(Materialize)` and `#(preaggregates)` are caught. A
   declaration that silently builds nothing is a mistake in the model, so it fails the publish and
   the load ([materialization.md](materialization.md#fails-the-load-or-refused-alone)). With
-  `PUBLISHER_MATERIALIZE` off, `#(materialize)` and `#(preaggregate)` spelled exactly are not read,
+  `PUBLISHER_MATERIALIZE_ENABLED` off, `#(materialize)` and `#(preaggregate)` spelled exactly are not read,
   which is the deployment's choice rather than a mistake: `#(preaggregate)` is then an
   `annotation-near-miss` warning reaching for `#@ preaggregate`.
 - `annotation-malformed-route`: a prefix Malloy cannot route at all, such as `#percent` (write
@@ -218,7 +218,7 @@ counted in `publisher_annotation_findings_total` with the other annotation findi
 
 When an environment is first created, Publisher publishes each configured package as the version
 its `publisher.json` declares, into its own storage at `publisher_data/<env>/<pkg>/<version>/` (in
-the server root: the directory the server was launched from, unless `--server_root` set another),
+the server root: the directory the server was launched from, unless `--root` set another),
 compiles it, and serves it. A package that declares no `version` fails to load. Consequences:
 
 - A published version is immutable. Editing your original source directory afterwards changes

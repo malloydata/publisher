@@ -92,7 +92,7 @@ bun perf/profile/experiments.ts namespace
 
 # Worker-pool sizing: the ordinary harness
 bun run perf:loads --targets gen --preset medium --duration 30 --warmup-rounds 1 \
-  --server-env PACKAGE_LOAD_WORKERS=2
+  --server-env PUBLISHER_PACKAGE_LOAD_WORKERS=2
 ```
 
 Profiling costs something: with the CPU profiler on, a medium register took ~1040 ms instead of
@@ -198,7 +198,7 @@ query, every VU's request is inside DuckDB, and the time inside DuckDB is the HT
 throughput ceiling is one query at a time: gen's ~14.5 ms of DuckDB service per query caps it at
 ~69 queries/s, which is the plateau (68–70 req/s); storefront's ~2 ms caps it at ~500/s, which is its
 plateau (~530 req/s including report reads, which skip DuckDB). Neither is a Publisher lock: the
-query gate (`PUBLISHER_MAX_CONCURRENT_QUERIES=32`) admits all 32, and the main thread is 9–33 % busy.
+query gate (`PUBLISHER_QUERY_MAX_CONCURRENT=32`) admits all 32, and the main thread is 9–33 % busy.
 
 The cause is in how the package's sandbox is built: `Package.buildPackageMalloyConfig`
 (`src/service/package.ts:3938`) gives each package one `:memory:` DuckDB, and
@@ -273,11 +273,11 @@ A shared cache cuts compile by 50–58 %, but only if files compile in dependenc
 
 ### More workers
 
-`PACKAGE_LOAD_WORKERS` only adds parallelism between loads: one load is still one worker job plus
+`PUBLISHER_PACKAGE_LOAD_WORKERS` only adds parallelism between loads: one load is still one worker job plus
 the main-thread tail. The harness at `--preset medium --duration 30` (same session, so comparable to
 each other, not to the baseline):
 
-| `PACKAGE_LOAD_WORKERS` | register c1 avg | register c4 req/s | register c4 avg / p95 | reload c4 req/s | reload c4 avg / p95 |
+| `PUBLISHER_PACKAGE_LOAD_WORKERS` | register c1 avg | register c4 req/s | register c4 avg / p95 | reload c4 req/s | reload c4 avg / p95 |
 | ---------------------: | --------------: | ----------------: | --------------------: | --------------: | ------------------: |
 |                      1 |          998 ms |              1.39 |        2757 / 3613 ms |            1.41 |      2812 / 3547 ms |
 |                      2 |          972 ms |              1.55 |        2461 / 2681 ms |            1.56 |      2542 / 2783 ms |
@@ -353,7 +353,7 @@ the numbers that should move.
 | 8   | Render-tag validation off the main thread | **Partly**: ~16 ms per medium load on the main thread (October: 167 ms).                                 |
 | 9   | Upstream: build the dialect table once    | Not checked.                                                                                             |
 | 10  | Cache render-tag validation at query time | Not re-measured.                                                                                         |
-| 11  | `PACKAGE_LOAD_WORKERS` above 1            | **Open**; with the main-thread tail gone, a second worker should raise load throughput.                  |
+| 11  | `PUBLISHER_PACKAGE_LOAD_WORKERS` above 1            | **Open**; with the main-thread tail gone, a second worker should raise load throughput.                  |
 
 ### Quick wins
 
@@ -374,7 +374,7 @@ the numbers that should move.
 | 8   | **Move render-tag validation off the main thread** (into the worker, if `@malloydata/render-validator` loads there without the DOM-mutating renderer, or into a second worker), or validate once per distinct view instead of per file (`index.malloy` re-exports every view). | 167 ms (medium) and 1.5 s (large) per load on the main thread; the large `index.malloy` alone is a 1.1 s stall.                                                                      | With #2, the remaining ~10–15 % of main-thread load CPU leaves the main thread.                                                                                                                                 |                          M | Medium: the reason it is on the main thread is the renderer's DOM globals; needs proof the validator alone is safe in the worker.                                                                                                                               | `ctl.ts loads` phases; `perf:mixed`.                                      |
 | 9   | **Upstream (Malloy): build the dialect function table once** and reuse it across `GlobalNameSpace` instances (invalidate on dialect registration).                                                                                                                             | 0.146 ms per document; 17.6 % of storefront per-query main-thread CPU, ~10 % of gen's and of load compiles.                                                                          | storefront main-thread per request −~0.15 ms (−17 %); loads −5–10 %.                                                                                                                                            | S upstream + a Malloy bump | Low.                                                                                                                                                                                                                                                            | `perf:queries`; profile shows no `getDialectFunctions`.                   |
 | 10  | **Cache per-result render-tag validation at query time** by query shape (model + query text or result schema), and look at caching `collectCallerJoins` per source.                                                                                                            | Render validation 10.9 % of storefront per-query main thread; caller joins 9.2 % of gen's.                                                                                           | −10–20 % main-thread CPU per query.                                                                                                                                                                             |                          M | Medium: the cache key must include everything the validator reads (tags, schema).                                                                                                                                                                               | `perf:queries` c32 main-thread profile.                                   |
-| 11  | **Size `PACKAGE_LOAD_WORKERS` above 1** once the main-thread tail shrinks.                                                                                                                                                                                                     | Area 3: today 1 → 4 workers gives +11–15 % throughput at 4 concurrent medium loads and nothing for a single load, because ~515 ms per load is main-thread work.                      | After #1/#2/#8, concurrent-load throughput should scale with workers up to the core count; single loads unchanged.                                                                                              |                 S (config) | Low; each worker holds its own isolate (memory).                                                                                                                                                                                                                | `perf:loads --server-env PACKAGE_LOAD_WORKERS=N`.                         |
+| 11  | **Size `PUBLISHER_PACKAGE_LOAD_WORKERS` above 1** once the main-thread tail shrinks.                                                                                                                                                                                                     | Area 3: today 1 → 4 workers gives +11–15 % throughput at 4 concurrent medium loads and nothing for a single load, because ~515 ms per load is main-thread work.                      | After #1/#2/#8, concurrent-load throughput should scale with workers up to the core count; single loads unchanged.                                                                                              |                 S (config) | Low; each worker holds its own isolate (memory).                                                                                                                                                                                                                | `perf:loads --server-env PUBLISHER_PACKAGE_LOAD_WORKERS=N`.                         |
 
 Together, #1–#4 are small, independent and do not change behavior or a public contract; on this
 machine they should take a medium load from ~950 ms to ~570 ms, a large one from ~5.6 s to ~3 s, and

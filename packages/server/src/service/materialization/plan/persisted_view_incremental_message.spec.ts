@@ -25,7 +25,7 @@ let restore: () => void;
 beforeEach(async () => {
    rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-pv-msg-"));
    restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true" },
+      env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
    }).restore;
    await __setPackageLoadPoolForTests(new PackageLoadPool(1));
 });

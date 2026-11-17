@@ -58,7 +58,7 @@ async function getFreePort(): Promise<number> {
  * be booted in-process (the way the server's own tests do). Instead we run it
  * as a subprocess from source (`bun src/server.ts`, no `--watch` so there is
  * no orphaned file watcher to clean up), on OS-assigned free ports, pointed at
- * a temp SERVER_ROOT seeded with the committed `persist-test` fixture.
+ * a temp PUBLISHER_ROOT seeded with the committed `persist-test` fixture.
  *
  * If `CLI_TEST_SERVER_URL` is set, reuse that already-running server instead of
  * spawning one (handy for CI). That server must be seeded with the
@@ -110,11 +110,11 @@ export async function startTestServer(): Promise<TestServer> {
     env: {
       ...process.env,
       NODE_ENV: "development",
-      SERVER_ROOT: serverRoot,
+      PUBLISHER_ROOT: serverRoot,
       PUBLISHER_HOST: "127.0.0.1",
       PUBLISHER_PORT: String(port),
-      MCP_PORT: String(mcpPort),
-      PUBLISHER_WATCH: TEST_WATCH_ENV,
+      PUBLISHER_MCP_PORT: String(mcpPort),
+      PUBLISHER_WATCH_ENVIRONMENTS: TEST_WATCH_ENV,
       // The default today; pinned so it-env's package stays a published
       // version whatever the default becomes or the caller's env says.
       PUBLISHER_PACKAGE_VERSIONING: "on",

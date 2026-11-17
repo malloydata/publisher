@@ -32,7 +32,7 @@ const buildPlanPackages = tempBuildPlanPackages();
 let restore: (() => void) | undefined;
 beforeAll(() => {
    restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true" },
+      env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
    }).restore;
 });
 afterAll(() => restore?.());

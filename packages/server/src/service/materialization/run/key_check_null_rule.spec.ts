@@ -183,7 +183,7 @@ describe("an inlined join_one's check and a pair table's key check", () => {
    let restore: () => void = () => {};
    beforeEach(() => {
       restore = installSettings({
-         env: { PUBLISHER_MATERIALIZE: "true" },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
       }).restore;
    });
    afterEach(async () => {

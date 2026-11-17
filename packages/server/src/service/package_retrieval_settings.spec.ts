@@ -381,7 +381,7 @@ describe("retrieval.sourceSummary", () => {
          PackageManifestError,
       );
       expect(() => assertRequiredStagesAvailable(settings, false)).toThrow(
-         /retrieval\.sourceSummary\.enabled: true needs an LLM.*retrieval\.llm.*LLM_API_KEY.*"auto"/s,
+         /retrieval\.sourceSummary\.enabled: true needs an LLM.*retrieval\.llm.*PUBLISHER_RETRIEVAL_LLM_API_KEY.*"auto"/s,
       );
       expect(() => assertRequiredStagesAvailable(settings, true)).not.toThrow();
       for (const enabled of ["auto", false]) {

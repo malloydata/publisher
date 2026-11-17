@@ -3,7 +3,7 @@
 
 /**
  * R4 for `#(preaggregate)` (materialization v2, phase 4): with
- * PUBLISHER_MATERIALIZE on, a query a rollup reproduces is answered from the
+ * PUBLISHER_MATERIALIZE_ENABLED on, a query a rollup reproduces is answered from the
  * rollup's table, colocated or in a storage destination, and equals live; a
  * query it cannot reproduce is answered live with the path report's reason.
  * One scenario per rule: A2 (qualifying measures, join-level aggregates), A3

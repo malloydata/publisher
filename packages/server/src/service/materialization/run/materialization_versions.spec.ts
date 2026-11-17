@@ -1795,7 +1795,7 @@ describe("what a run's load binds, read back from the store", () => {
       const storageOn = installSettings({
          env: {
             PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
-            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
          },
       });
       try {

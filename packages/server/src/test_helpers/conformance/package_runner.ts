@@ -106,8 +106,8 @@ export interface Answer {
 export type Outcome = { answer: Answer } | { error: string };
 
 /**
- * The switches a served run is taken under: `off` (`PUBLISHER_MATERIALIZE`
- * set `false`) and `on` or `cutover` (`PUBLISHER_MATERIALIZE` on, the shipped
+ * The switches a served run is taken under: `off` (`PUBLISHER_MATERIALIZE_ENABLED`
+ * set `false`) and `on` or `cutover` (`PUBLISHER_MATERIALIZE_ENABLED` on, the shipped
  * default). Since the v1 cutover's retirement every one serves through the served
  * copy, the rollup and view legs, or live; `cutover` is kept as a name for
  * the column the fixture declares its expectations under.
@@ -117,8 +117,9 @@ export type Switch = "off" | "on" | "cutover";
 function settingsFor(materialize: Switch, env: Record<string, string> = {}) {
    return {
       env: {
-         PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_MATERIALIZE: materialize === "off" ? "false" : "true",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED:
+            materialize === "off" ? "false" : "true",
          ...env,
       },
    };

@@ -24,7 +24,7 @@ compile — that shape is refused under strict, as it always was.)
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.ujp_orders
 

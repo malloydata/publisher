@@ -30,7 +30,7 @@
  *
  * Every table is built for real (colocated on the source's own connection,
  * `storage=` into a DuckDB destination `lake`), so the snapshot must be a
- * DuckDB copy of the data. `PERSIST_STORAGE_MODE` is `on` throughout.
+ * DuckDB copy of the data. `PUBLISHER_PERSIST_STORAGE_MODE` is `on` throughout.
  */
 
 import type { GivenValue } from "@malloydata/malloy";
@@ -78,8 +78,8 @@ export interface CutoverRow {
 
 const MODES = {
    cutover: {
-      PERSIST_STORAGE_MODE: "on",
-      PUBLISHER_MATERIALIZE: "false",
+      PUBLISHER_PERSIST_STORAGE_MODE: "on",
+      PUBLISHER_MATERIALIZE_ENABLED: "false",
    },
 } as const;
 

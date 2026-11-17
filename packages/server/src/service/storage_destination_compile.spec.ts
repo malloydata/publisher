@@ -95,7 +95,7 @@ function ducklakeDestination(name: string): ApiConnection {
 }
 
 /** The settings every case here runs under, installed before the pool. */
-const BASE_ENV = { PACKAGE_LOAD_WORKERS: "1" };
+const BASE_ENV = { PUBLISHER_PACKAGE_LOAD_WORKERS: "1" };
 
 describe("a storage destination is not in the namespace a tenant authors in", () => {
    let tempDir: string;
@@ -358,7 +358,7 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
          // ask for after the name has resolved. The catalog is unreachable, so
          // the query itself falls back to live and still answers.
          restoreMode = installSettings({
-            env: { ...BASE_ENV, PERSIST_STORAGE_MODE: "on" },
+            env: { ...BASE_ENV, PUBLISHER_PERSIST_STORAGE_MODE: "on" },
          }).restore;
          const answered = await model.runQuery(unrecordedAudit(), {
             query: "run: nums -> { select: a }",

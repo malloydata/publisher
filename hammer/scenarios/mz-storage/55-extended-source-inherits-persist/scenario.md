@@ -32,7 +32,7 @@ routed read is distinguishable from a live one.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.esi_orders
 

@@ -2131,7 +2131,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             ? [{ message: this.surfaceWidenedWarning }]
             : []),
          // A collision spans sources, so it has no subject; the message names
-         // them. Only under PERSIST_COLLISION_ENFORCE=false: otherwise it
+         // them. Only under PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false: otherwise it
          // fails the load (formatInvalidAnnotations).
          ...this.mz.persistenceCollisionRefusals(),
          // Legal but probably unintended, e.g. a typo'd merge_key=.
@@ -3822,7 +3822,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                // The package's own sandbox: releasing the package frees it.
                ownDuckDBConnection(malloyConfig, connection);
                // Pin the sandbox against implicit auto-install too, or
-               // EXTENSION_FETCH_POLICY local-only would have a network hole.
+               // PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY local-only would have a network hole.
                if (connection instanceof DuckDBConnection) {
                   await applyExtensionSessionSettings(connection);
                }

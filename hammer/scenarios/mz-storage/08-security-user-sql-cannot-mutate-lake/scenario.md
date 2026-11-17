@@ -29,7 +29,7 @@ is unreachable from the user's namespace, and reachable from the serve path.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.sec1_orders
 

@@ -44,7 +44,7 @@ build: ## Production build: SDK → app → server bundle
 start: ## Run the built server (production, foreground; Ctrl+C to stop)
 	bun run start
 
-start-init: ## Run the built server with INITIALIZE_STORAGE=true (clears persisted state)
+start-init: ## Run the built server with PUBLISHER_INITIALIZE_STORAGE=true (clears persisted state)
 	bun run start:init
 
 stop: ## Kill any process listening on port 4000 or 4040
@@ -64,7 +64,7 @@ dev: ## Run Express (:4000) + Vite (:5173) together, combined logs
 		"bun run start:dev" \
 		"bun run start:dev:react"
 
-dev-init: ## Same as `dev` but with INITIALIZE_STORAGE=true on the server
+dev-init: ## Same as `dev` but with PUBLISHER_INITIALIZE_STORAGE=true on the server
 	bunx concurrently \
 		--names "server,react" \
 		--prefix-colors "cyan,magenta" \

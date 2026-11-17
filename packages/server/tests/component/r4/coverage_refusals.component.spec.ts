@@ -11,7 +11,7 @@
  *  - Naming: two `#@ persist name=` values that differ only in case, on a
  *    destination that folds case (`storage=` and colocated DuckDB); two
  *    persisted views that resolve to one table (under
- *    `PERSIST_COLLISION_ENFORCE=false`; by default each fails the load).
+ *    `PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false`; by default each fails the load).
  *  - Rollups: two models' same-named bases rolled up at one grain, whose
  *    hashed names never meet (`rollup_name_collision` does not fire); a
  *    `#(preaggregate)` whose partial column clashes with a field
@@ -21,7 +21,7 @@
  *  - Warnings: `materialization-unreachable`, for a persisted source nothing
  *    published reads.
  *  - Switches: `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` on, served;
- *    `PUBLISHER_MATERIALIZE=false` with a persisted view, not built.
+ *    `PUBLISHER_MATERIALIZE_ENABLED=false` with a persisted view, not built.
  *  - Governance: a `#(secure)` given read by a stored source's own `where:`,
  *    per caller; a `storage=` source joining a gated source, refused through
  *    a plain join and built through an annotated one, which the eligibility
@@ -85,8 +85,8 @@ interface Loaded {
 async function load(s: Scenario, probes: Probe[]): Promise<Loaded> {
    const restore = installSettings({
       env: {
-         PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_MATERIALIZE: "true",
+         PUBLISHER_PERSIST_STORAGE_MODE: "on",
+         PUBLISHER_MATERIALIZE_ENABLED: "true",
          ...s.env,
       },
    }).restore;
@@ -187,7 +187,7 @@ for (const tier of ["storage", "colocated"] as const) {
       {
          // By default the pair fails the load (`materialization-table-collision`,
          // below); this holds the serve path to the operator's opt-out.
-         env: { PERSIST_COLLISION_ENFORCE: "false" },
+         env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false" },
          files: {
             "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -254,7 +254,7 @@ scenario(
    {
       // By default the two fail the load (below); this holds the serve path
       // to the operator's opt-out.
-      env: { PERSIST_COLLISION_ENFORCE: "false" },
+      env: { PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: "false" },
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -523,9 +523,9 @@ source: orders is orders_raw extend {
 
 for (const materialize of ["true", "false"]) {
    scenario(
-      `a v1 storage= rollup over a storage= base, PUBLISHER_MATERIALIZE=${materialize}`,
+      `a v1 storage= rollup over a storage= base, PUBLISHER_MATERIALIZE_ENABLED=${materialize}`,
       {
-         env: { PUBLISHER_MATERIALIZE: materialize },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: materialize },
          files: {
             "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -719,7 +719,7 @@ source: placed is duckdb.table('ev') -> { select: id, region, amount }
          const addresses = (on: string) => {
             const restore = installSettings({
                env: {
-                  PERSIST_STORAGE_MODE: "on",
+                  PUBLISHER_PERSIST_STORAGE_MODE: "on",
                   PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: on,
                },
             }).restore;
@@ -745,9 +745,9 @@ source: placed is duckdb.table('ev') -> { select: id, region, amount }
 });
 
 scenario(
-   "PUBLISHER_MATERIALIZE=false with a persisted view",
+   "PUBLISHER_MATERIALIZE_ENABLED=false with a persisted view",
    {
-      env: { PUBLISHER_MATERIALIZE: "false" },
+      env: { PUBLISHER_MATERIALIZE_ENABLED: "false" },
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -935,7 +935,10 @@ source: tagged_join is orders_raw extend {
 describe("a v1 #@ preaggregate base with an array column", () => {
    it("refuses its rollups alone, naming the array as a fan-out join, and the package loads", async () => {
       const restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         env: {
+            PUBLISHER_PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE_ENABLED: "true",
+         },
       }).restore;
       try {
          await freshLoadPool();

@@ -241,9 +241,9 @@ describe("build-target addresses over the repo's persist corpus", () => {
                   restore();
                }
             };
-            const off = addressUnder({ PERSIST_STORAGE_MODE: "on" });
+            const off = addressUnder({ PUBLISHER_PERSIST_STORAGE_MODE: "on" });
             const on = addressUnder({
-               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
                PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
             });
             sources.forEach((source, i) => {

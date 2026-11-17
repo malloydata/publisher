@@ -205,7 +205,7 @@ describe("Environment.assertCanAdmitQuery (query-path back-pressure)", () => {
    it("is a no-op when no governor is attached", () => {
       const env = makeEnvironment(envDir);
       // No governor — must not throw. Equivalent of an OSS / non-Docker
-      // deployment that never opted into PUBLISHER_MAX_MEMORY_BYTES.
+      // deployment that never opted into PUBLISHER_MEMORY_MAX_BYTES.
       expect(() => env.assertCanAdmitQuery()).not.toThrow();
    });
 

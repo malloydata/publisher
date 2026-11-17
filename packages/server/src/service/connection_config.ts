@@ -253,7 +253,7 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
    }
    if (getExtensionFetchPolicy() === "local-only") {
       throw new Error(
-         `setupSQL is not allowed on DuckDB connection "${connection.name}" when EXTENSION_FETCH_POLICY is "local-only".`,
+         `setupSQL is not allowed on DuckDB connection "${connection.name}" when PUBLISHER_DUCKDB_EXTENSION_FETCH_POLICY is "local-only".`,
       );
    }
 }

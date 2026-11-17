@@ -97,7 +97,11 @@ export function createChatModel(
          raw = new AnthropicChat(
             settings.model,
             trimSlash(settings.baseUrl ?? ANTHROPIC_BASE_URL),
-            requireKey(settings.apiKey, "anthropic", "LLM_API_KEY"),
+            requireKey(
+               settings.apiKey,
+               "anthropic",
+               "PUBLISHER_RETRIEVAL_LLM_API_KEY",
+            ),
             fetchFn,
          );
          break;
@@ -105,7 +109,11 @@ export function createChatModel(
          raw = new GeminiChat(
             settings.model,
             trimSlash(settings.baseUrl ?? GEMINI_BASE_URL),
-            requireKey(settings.apiKey, "google", "LLM_API_KEY"),
+            requireKey(
+               settings.apiKey,
+               "google",
+               "PUBLISHER_RETRIEVAL_LLM_API_KEY",
+            ),
             fetchFn,
          );
          break;
@@ -168,7 +176,7 @@ export function createEmbeddingModel(
                apiKey: requireKey(
                   settings.apiKey,
                   "google",
-                  "EMBEDDING_API_KEY",
+                  "PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY",
                ),
                dimensions: settings.dimensions,
                fetchFn: deps.fetchFn ?? fetch,

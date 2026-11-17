@@ -3,11 +3,11 @@
 
 /**
  * Every conformance shape under the shipped default, which no
- * other spec runs. The default turns `PUBLISHER_MATERIALIZE` on, so the
+ * other spec runs. The default turns `PUBLISHER_MATERIALIZE_ENABLED` on, so the
  * `#(materialize)` shapes run here too; 6f found one defect only the default
  * reached when it was off (the cutover read `#(preaggregate)` with it off),
  * which `preaggregate_variants.spec.ts` pins with the switch set `false`.
- * Here only `PERSIST_STORAGE_MODE=on` is set: each query is answered live
+ * Here only `PUBLISHER_PERSIST_STORAGE_MODE=on` is set: each query is answered live
  * before any table is bound, then after the bind, and the two must agree on
  * rows and on each column's type and annotations (a number's subtype and
  * the `drill_expression` of Malloy's own `#(malloy)` annotations aside, a
@@ -86,7 +86,7 @@ describe("the conformance shapes under the default settings", () => {
       ]) {
          it(`${shape.name} [${variant}]: every answer equals live`, async () => {
             const restore = installSettings({
-               env: { PERSIST_STORAGE_MODE: "on", ...shape.env },
+               env: { PUBLISHER_PERSIST_STORAGE_MODE: "on", ...shape.env },
             }).restore;
             await freshLoadPool();
             const entry = Object.keys(shape.files)[0];

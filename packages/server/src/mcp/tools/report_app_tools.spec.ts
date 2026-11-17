@@ -435,7 +435,9 @@ describe("panel helpers", () => {
       expect(reportAppOrigin("http://localhost:4000")).toBe(
          "http://localhost:4000",
       );
-      expect(() => reportAppOrigin("localhost:4000")).toThrow(/MCP_APP_ORIGIN/);
+      expect(() => reportAppOrigin("localhost:4000")).toThrow(
+         /PUBLISHER_MCP_APP_ORIGIN/,
+      );
       expect(() => reportAppOrigin("ftp://x")).toThrow(/http or https/);
    });
 

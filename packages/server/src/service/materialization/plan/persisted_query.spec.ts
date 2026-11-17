@@ -3,7 +3,7 @@
 
 /**
  * `#@ persist` on a top-level `query:`: what the package's build plan holds,
- * and warns about, with PUBLISHER_MATERIALIZE off (a persisted query is not
+ * and warns about, with PUBLISHER_MATERIALIZE_ENABLED off (a persisted query is not
  * built, warned `persist-query-not-built`, and answered live) and on.
  */
 
@@ -34,7 +34,7 @@ function enable(on: boolean, gated = false) {
    restore?.();
    restore = installSettings({
       env: {
-         PUBLISHER_MATERIALIZE: on ? "true" : "false",
+         PUBLISHER_MATERIALIZE_ENABLED: on ? "true" : "false",
          PUBLISHER_MATERIALIZE_GATED_SOURCES: gated ? "true" : "false",
       },
    }).restore;
@@ -60,7 +60,7 @@ function codes(c: Awaited<ReturnType<typeof compiled>>): string[] {
    return (c.annotationFindings ?? []).map((f) => f.code);
 }
 
-describe("#@ persist on a named query, PUBLISHER_MATERIALIZE off", () => {
+describe("#@ persist on a named query, PUBLISHER_MATERIALIZE_ENABLED off", () => {
    it("builds nothing, and warns persist-query-not-built naming the workaround", async () => {
       const c = await compiled(
          `${BASE}#@ persist name="nq_tbl"\nquery: q is base -> { group_by: carrier; aggregate: n }\n`,
@@ -139,7 +139,7 @@ function notBuilt(c: Awaited<ReturnType<typeof compiled>>): string[] {
       .map((f) => f.message);
 }
 
-describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
+describe("#@ persist on a named query, PUBLISHER_MATERIALIZE_ENABLED on", () => {
    beforeEach(() => enable(true));
 
    it("plans one generated build source per query, named <query>__query, in the companion", async () => {

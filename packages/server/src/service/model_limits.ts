@@ -75,7 +75,7 @@ export function queryRowLimitSource(
  *
  * Running it first matters: serializing an overflowing result is the largest
  * allocation on the path, and if that serialization fails the caller would be
- * told `unserializable` when the true cause was `PUBLISHER_MAX_QUERY_ROWS`.
+ * told `unserializable` when the true cause was `PUBLISHER_QUERY_MAX_ROWS`.
  */
 export function assertWithinModelRowLimit(
    rowCount: number,
@@ -87,7 +87,7 @@ export function assertWithinModelRowLimit(
       // swallow the error.
       recordQueryCapExceeded("rows", source);
       throw new PayloadTooLargeError(
-         `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
+         `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_QUERY_MAX_ROWS.`,
       );
    }
 }
@@ -106,7 +106,7 @@ export function assertWithinModelByteLimit(
    if (serializedBytes > maxBytes) {
       recordQueryCapExceeded("bytes", source);
       throw new PayloadTooLargeError(
-         `Query response exceeded ${maxBytes} bytes (was ${serializedBytes}). Project fewer columns, add a LIMIT, or raise PUBLISHER_MAX_RESPONSE_BYTES.`,
+         `Query response exceeded ${maxBytes} bytes (was ${serializedBytes}). Project fewer columns, add a LIMIT, or raise PUBLISHER_QUERY_MAX_RESPONSE_BYTES.`,
       );
    }
 }
@@ -123,7 +123,7 @@ export function assertWithinModelByteLimit(
  * backstop. A stack overflow is also a `RangeError` but not a size problem, so
  * it propagates.
  *
- * The message does not suggest raising `PUBLISHER_MAX_RESPONSE_BYTES`, and
+ * The message does not suggest raising `PUBLISHER_QUERY_MAX_RESPONSE_BYTES`, and
  * reports the cap only as context: an unserializable response will not
  * serialize under a higher cap either.
  */

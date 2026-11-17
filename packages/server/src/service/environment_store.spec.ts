@@ -1086,7 +1086,7 @@ describe("EnvironmentStore Service", () => {
 
    it("should report an environment that failed to restore from the database", async () => {
       // The database-restore branch, not the config branch: initialize() takes
-      // this one whenever INITIALIZE_STORAGE is not "true" and the database
+      // this one whenever PUBLISHER_INITIALIZE_STORAGE is not "true" and the database
       // already holds environments, which is every restart of a server with a
       // persisted publisher.db. It has its own catch, so a failure recorded only
       // on the config path would be dropped on the path production actually
@@ -2828,7 +2828,7 @@ describe("formatReadinessLine", () => {
                   "127.0.0.1",
                   "--port",
                   "4321",
-                  "--mcp_port",
+                  "--mcp-port",
                   "4361",
                ],
             },
@@ -2841,7 +2841,7 @@ describe("formatReadinessLine", () => {
                env: {
                   PUBLISHER_HOST: "127.0.0.1",
                   PUBLISHER_PORT: "4321",
-                  MCP_PORT: "4361",
+                  PUBLISHER_MCP_PORT: "4361",
                },
             },
             counts,

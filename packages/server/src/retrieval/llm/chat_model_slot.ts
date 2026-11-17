@@ -30,7 +30,7 @@ export class ChatModelSlot {
 
    /**
     * The LLM settings in force, or null when every LLM feature is off: no
-    * `retrieval.llm.provider`, or a provider that needs `LLM_API_KEY` and has
+    * `retrieval.llm.provider`, or a provider that needs `PUBLISHER_RETRIEVAL_LLM_API_KEY` and has
     * none. Nothing errors when it is off.
     */
    settings(): LlmSettings | null {

@@ -34,14 +34,6 @@ export interface LoadInput {
    registry?: readonly RegisteredSetting[];
 }
 
-/** Something to say at startup about how a setting was read. */
-export interface SettingWarning {
-   key?: string;
-   /** A deprecated name in use: an old variable, flag or file key. */
-   kind?: "deprecated";
-   message: string;
-}
-
 /** A value a higher-precedence source hid, kept so it can be reported. */
 export interface ShadowedValue {
    source: SettingSource;
@@ -77,10 +69,9 @@ let installed: Settings | undefined;
  * config file, through the registry (registry/). Code asks for a value by key
  * (`settings.get("mcp.port")`), never from `process.env`.
  *
- * From step 2 of the configuration design the names read are the derived
- * ones (`PUBLISHER_MCP_PORT`, `--mcp-port`, the key in the file), with one
- * precedence: flag, variable, file. Today's names, kept on each entry's
- * `aliases`, still work, each with a deprecation warning.
+ * Each setting is read under the names derived from its key
+ * (`PUBLISHER_MCP_PORT`, `--mcp-port`, the key in the file) and the short
+ * flags the design keeps, with one precedence: flag, variable, file.
  */
 export class Settings {
    private constructor(
@@ -89,9 +80,6 @@ export class Settings {
       readonly configPath: string | undefined,
       /** Why the config file could not be read, if it could not. */
       readonly fileError: Error | undefined,
-      readonly warnings: readonly SettingWarning[],
-      /** The deprecated names this startup used, for the deprecated-usage metric. */
-      readonly deprecatedNames: readonly string[],
       /**
        * What fails startup without belonging to one setting: an unknown flag, a
        * flag with no value or with a value it does not take, and a key the file
@@ -106,8 +94,6 @@ export class Settings {
          loaded.slots,
          loaded.configPath,
          loaded.fileError,
-         loaded.warnings,
-         loaded.deprecated,
          loaded.problems,
       );
    }
@@ -198,8 +184,6 @@ export class Settings {
          ),
          data.configPath,
          undefined,
-         [],
-         [],
       );
    }
 
@@ -217,86 +201,54 @@ const WHOLE_REFERENCE = /^\$\{[A-Z_][A-Z0-9_]*\}$/;
 /** A `${VAR}` in a file value whose variable is not set. */
 class UnsetReference extends Error {}
 
-/**
- * A raw value from one source, before it is read as the setting's type.
- * `old` marks a deprecated name, one of today's that the design renamed;
- * `today` marks a name read as it was before step 1, which every old name is,
- * and so is a name the design left unchanged.
- */
+/** A raw value from one source, before it is read as the setting's type. */
 interface Candidate {
    kind: "flag" | "env" | "file";
    /** The flag or variable, or the file's path. */
    name: string;
-   /** The key or old key in the file, for a file value. */
+   /** The key in the file, for a file value. */
    path?: string;
    raw: unknown;
-   old: boolean;
-   today: boolean;
 }
 
 interface FlagName {
    entry: RegisteredSetting;
-   old: boolean;
    /** The value a switch sets; undefined for a flag that takes one. */
    switches?: boolean;
 }
 
 type Parsed = { value: unknown } | { error: Error };
 
-/** A name a setting is read under; `old` marks a deprecated one. */
-export interface SettingName {
-   name: string;
-   old: boolean;
-}
-
 /**
- * Every name a setting is read under, current first: the derived variable,
- * flag (with `--no-` for a boolean) and file key; the short flags the design
- * keeps; and today's names where the design renamed them, which are
- * deprecated. A secret has no flag, nor has a setting the design gives none
- * (`noFlag`); a structured setting is file-only and a
- * launch setting has no file key.
+ * Every name a setting is read under: the derived variable, flag (with
+ * `--no-` for a boolean) and file key, and the short flags the design keeps.
+ * A secret has no flag, nor has a setting the design gives none (`noFlag`); a
+ * structured setting is file-only and a launch setting has no file key.
  */
 export function namesOf(entry: RegisteredSetting): {
-   env: SettingName[];
-   flags: SettingName[];
-   file: Array<{ path: string; old: boolean }>;
+   env: string[];
+   flags: string[];
+   file: string[];
 } {
    const structured = entry.kind === "structured";
-   const derivedEnv = derivedEnvName(entry.key);
    const derivedFlag = derivedFlagName(entry.key);
-   const env = structured
-      ? []
-      : [
-           { name: derivedEnv, old: false },
-           ...(entry.aliases.env ?? [])
-              .filter((name) => name !== derivedEnv)
-              .map((name) => ({ name, old: true })),
-        ];
-   const flags: SettingName[] = [];
-   const addFlag = (name: string, old: boolean) => {
-      if (!flags.some((flag) => flag.name === name)) flags.push({ name, old });
-   };
+   const flags: string[] = [];
    if (!structured) {
       if (!entry.secret && !entry.noFlag) {
-         addFlag(derivedFlag, false);
+         flags.push(derivedFlag);
          if (entry.type instanceof BooleanType) {
-            addFlag(`--no-${derivedFlag.slice(2)}`, false);
+            flags.push(`--no-${derivedFlag.slice(2)}`);
          }
       }
-      for (const name of entry.shortFlags ?? []) addFlag(name, false);
-      for (const name of entry.aliases.flags ?? []) addFlag(name, true);
+      for (const name of entry.shortFlags ?? []) {
+         if (!flags.includes(name)) flags.push(name);
+      }
    }
-   const file =
-      entry.kind === "launch"
-         ? []
-         : [
-              { path: entry.key, old: false },
-              ...(entry.aliases.file ?? [])
-                 .filter((path) => path !== entry.key)
-                 .map((path) => ({ path, old: true })),
-           ];
-   return { env, flags, file };
+   return {
+      env: structured ? [] : [derivedEnvName(entry.key)],
+      flags,
+      file: entry.kind === "launch" ? [] : [entry.key],
+   };
 }
 
 /**
@@ -308,9 +260,7 @@ export function flagsTakingAValue(
    registry: readonly RegisteredSetting[] = REGISTRY,
 ): string[] {
    return registry.flatMap((entry) =>
-      entry.type instanceof BooleanType
-         ? []
-         : namesOf(entry).flags.map((flag) => flag.name),
+      entry.type instanceof BooleanType ? [] : namesOf(entry).flags,
    );
 }
 
@@ -325,9 +275,7 @@ class Loader {
    private readonly flags = new Map<string, Candidate[]>();
    private readonly slots = new Map<string, Slot>();
    private readonly resolving = new Set<string>();
-   private readonly warnings: SettingWarning[] = [];
    private readonly problems: Error[] = [];
-   private readonly deprecated = new Set<string>();
    private readonly unknownFlags: string[] = [];
    private readonly flagsWithoutValue: string[] = [];
    private readonly valuesAfterSwitches: Array<{
@@ -352,15 +300,13 @@ class Loader {
       slots: Map<string, Slot>;
       configPath: string | undefined;
       fileError: Error | undefined;
-      warnings: SettingWarning[];
-      deprecated: string[];
       problems: Error[];
    } {
       this.readFlags();
       // The launch settings say which file to read and have no file key. One
-      // that fails (an old and a new name that disagree) is reported with
-      // every other setting's error, so startup still prints
-      // PUBLISHER_INIT_FAILED; no file is read, since which one is unknown.
+      // that fails is reported with every other setting's error, so startup
+      // still prints PUBLISHER_INIT_FAILED; no file is read, since which one
+      // is unknown.
       const root = this.resolve(this.byKey.get("root")!);
       const config = this.resolve(this.byKey.get("config")!);
       if (!("error" in root) && !("error" in config)) {
@@ -376,8 +322,6 @@ class Loader {
          slots: this.slots,
          configPath: this.configPath,
          fileError: this.fileError,
-         warnings: this.warnings,
-         deprecated: [...this.deprecated],
          problems: this.problems,
       };
    }
@@ -390,38 +334,19 @@ class Loader {
 
    private nameFlags(entry: RegisteredSetting): void {
       const isSwitch = entry.type instanceof BooleanType;
-      for (const { name, old } of namesOf(entry).flags) {
+      for (const name of namesOf(entry).flags) {
          if (this.byFlag.has(name)) continue;
          this.byFlag.set(name, {
             entry,
-            old,
             ...(isSwitch ? { switches: !name.startsWith("--no-") } : {}),
          });
       }
    }
 
-   /** Every variable the setting is read from; `today` where today's reading applies. */
-   private envNames(
-      entry: RegisteredSetting,
-   ): Array<{ name: string; old: boolean; today: boolean }> {
-      const aliases = entry.aliases.env ?? [];
-      return namesOf(entry).env.map(({ name, old }) => ({
-         name,
-         old,
-         today: old || aliases.includes(name),
-      }));
-   }
-
-   private filePaths(
-      entry: RegisteredSetting,
-   ): Array<{ path: string; old: boolean }> {
-      return namesOf(entry).file;
-   }
-
    /**
     * An exact flag name; a switch alone; any other flag with the next argument
-    * as its value when there is one. A flag it does not know, and a flag with
-    * nothing after it, are skipped and warned about.
+    * as its value when there is one. A flag it does not know, a flag with
+    * nothing after it, and a value after a switch are kept to fail startup.
     */
    private readFlags(): void {
       for (let i = 0; i < this.argv.length; i++) {
@@ -448,17 +373,15 @@ class Loader {
             continue;
          }
          const hits = this.flags.get(flag.entry.key) ?? [];
-         hits.push({ kind: "flag", name, raw, old: flag.old, today: false });
+         hits.push({ kind: "flag", name, raw });
          this.flags.set(flag.entry.key, hits);
       }
    }
 
    private refuseFlags(): void {
-      const current = [...this.byFlag]
-         .filter(([, flag]) => !flag.old)
-         .map(([name]) => name);
+      const known = [...this.byFlag.keys()];
       for (const name of this.unknownFlags) {
-         const suggestion = nearest(name, current);
+         const suggestion = nearest(name, known);
          this.problems.push(
             new Error(
                `Unknown flag ${name}.${suggestion ? ` Did you mean ${suggestion}?` : ""}`,
@@ -472,15 +395,14 @@ class Loader {
          const on = flag.switches!;
          const opposite = namesOf(flag.entry).flags.find(
             (other) =>
-               !other.old &&
-               this.byFlag.get(other.name)?.switches === !on &&
-               this.byFlag.get(other.name)?.entry === flag.entry,
+               this.byFlag.get(other)?.switches === !on &&
+               this.byFlag.get(other)?.entry === flag.entry,
          );
          this.problems.push(
             new Error(
                `${name} takes no value, so it cannot be given "${next}": ${name} alone turns ${flag.entry.key} ${on ? "on" : "off"}.` +
                   (opposite
-                     ? ` To turn it ${on ? "off" : "on"}, write ${opposite.name}.`
+                     ? ` To turn it ${on ? "off" : "on"}, write ${opposite}.`
                      : ""),
             ),
          );
@@ -494,13 +416,11 @@ class Loader {
     * its parser's to check.
     */
    private refuseFileKeys(): void {
-      const read = this.registry.flatMap((entry) =>
-         this.filePaths(entry).map(({ path }) => path),
-      );
+      const read = this.registry.flatMap((entry) => namesOf(entry).file);
       const whole = new Set(
          this.registry
             .filter((entry) => entry.kind === "structured")
-            .flatMap((entry) => this.filePaths(entry).map(({ path }) => path)),
+            .flatMap((entry) => namesOf(entry).file),
       );
       const file = this.configPath ?? PUBLISHER_CONFIG_NAME;
       const visit = (node: Record<string, unknown>, prefix: string) => {
@@ -574,8 +494,7 @@ class Loader {
 
    /**
     * One precedence for every setting: flag, then variable, then file, then
-    * the default. A value given under an old name and a different one under a
-    * new name fails, rather than one silently winning.
+    * the default.
     */
    private read(entry: RegisteredSetting): Slot {
       const parsed: Array<{ candidate: Candidate; value: unknown }> = [];
@@ -594,35 +513,13 @@ class Loader {
          }
          parsed.push({ candidate, value: result.value });
       }
-      for (const { candidate } of parsed) {
-         if (candidate.old) this.warnDeprecated(entry, candidate);
-      }
-      // A repeated flag builds one list, so that list is what is compared.
-      const compared =
-         entry.type instanceof ListType ? joinListFlags(parsed) : parsed;
-      const olds = compared.filter(({ candidate }) => candidate.old);
-      const currents = compared.filter(({ candidate }) => !candidate.old);
-      for (const old of olds) {
-         const differing = currents.find(
-            (current) => !sameValue(entry, current.value, old.value),
-         );
-         if (differing) {
-            return {
-               error: conflict(entry, old, differing),
-               source: sourceOf(differing.candidate),
-            };
-         }
-      }
       for (const kind of ["flag", "env", "file"] as const) {
          const given = parsed.filter(
             ({ candidate }) => candidate.kind === kind,
          );
          if (given.length === 0) continue;
-         // A repeated flag adds to a list; elsewhere the last one wins, and a
-         // current name over an old one that agrees with it.
-         const winner =
-            [...given].reverse().find(({ candidate }) => !candidate.old) ??
-            given[given.length - 1];
+         // A repeated flag adds to a list; elsewhere the last one wins.
+         const winner = given[given.length - 1];
          return {
             value:
                entry.type instanceof ListType && kind === "flag"
@@ -653,14 +550,14 @@ class Loader {
    private candidates(entry: RegisteredSetting): Candidate[] {
       const flags = this.flags.get(entry.key) ?? [];
       const env: Candidate[] = [];
-      for (const { name, old, today } of this.envNames(entry)) {
+      for (const name of namesOf(entry).env) {
          const raw = this.env[name];
          // Blank is unset, so `-e NAME=` undoes a value an image sets.
          if (raw === undefined || raw.trim() === "") continue;
-         env.push({ kind: "env", name, raw, old, today });
+         env.push({ kind: "env", name, raw });
       }
       const file: Candidate[] = [];
-      for (const { path: key, old } of this.filePaths(entry)) {
+      for (const key of namesOf(entry).file) {
          const { value: raw, notObject } = valueAt(this.file, key);
          if (notObject !== undefined) this.notAnObject(notObject);
          if (raw === undefined || raw === null) continue;
@@ -670,20 +567,16 @@ class Loader {
             name: this.configPath ?? PUBLISHER_CONFIG_NAME,
             path: key,
             raw,
-            old,
-            // Only a key the file held before step 1 keeps today's reading.
-            today: (entry.aliases.file ?? []).includes(key),
          });
       }
       return [...flags, ...env, ...file];
    }
 
-   /** Read one source's value; a name read as it always was keeps that reading. */
+   /** Read one source's value as the setting's type. */
    private parseCandidate(
       entry: RegisteredSetting,
       candidate: Candidate,
    ): Parsed {
-      const today = entry.aliases.today ?? {};
       const source = sourceOf(candidate);
       if (
          entry.secret &&
@@ -699,21 +592,17 @@ class Loader {
             ),
          };
       }
-      const readsAsToday =
-         candidate.today &&
-         entry.type instanceof BooleanType &&
-         (candidate.kind === "file"
-            ? today.file !== undefined
-            : candidate.kind === "env" && today.reads !== undefined);
-      if (readsAsToday) return this.readBoolean(entry, candidate);
       try {
+         const raw = candidate.raw;
          const value =
             candidate.kind === "file"
-               ? this.parseFileValue(entry, candidate.raw, candidate.today)
-               : typeof candidate.raw === "boolean"
-                 ? candidate.raw
-                 : entry.type.fromString(candidate.raw as string);
-         return { value: this.negate(entry, candidate, value) };
+               ? entry.type.fromJson(
+                    typeof raw === "string" ? this.substitute(entry, raw) : raw,
+                 )
+               : typeof raw === "boolean"
+                 ? raw
+                 : entry.type.fromString(raw as string);
+         return { value };
       } catch (error) {
          if (!(error instanceof Mismatch)) return { error: error as Error };
          return {
@@ -729,144 +618,11 @@ class Loader {
       }
    }
 
-   /**
-    * A boolean today's name reads its own way: a value the common reader does
-    * not accept fails; one today's reader refuses is refused; and one the two
-    * read differently is refused too, so it cannot change meaning.
-    */
-   private readBoolean(entry: RegisteredSetting, candidate: Candidate): Parsed {
-      const source = sourceOf(candidate);
-      const refusal = (expected: string): Parsed => ({
-         error: new SettingError(
-            entry.key,
-            source,
-            expected,
-            candidate.raw,
-            entry.secret,
-         ),
-      });
-      let common: boolean;
-      let today: boolean;
-      try {
-         common = this.commonBoolean(entry, candidate);
-      } catch (error) {
-         if (!(error instanceof Mismatch)) return { error: error as Error };
-         return refusal(this.typeExpected(entry, candidate));
-      }
-      try {
-         today = this.parseToday(entry, candidate) as boolean;
-      } catch (error) {
-         if (!(error instanceof Mismatch)) return { error: error as Error };
-         return refusal(this.expected(entry, candidate));
-      }
-      if (today !== common) {
-         return {
-            error: new Error(disagreement(entry.key, candidate, today, common)),
-         };
-      }
-      return { value: this.negate(entry, candidate, today) };
-   }
-
-   /** The value as every boolean setting without a reading of its own reads it. */
-   private commonBoolean(
-      entry: RegisteredSetting,
-      candidate: Candidate,
-   ): boolean {
-      const type = entry.type as BooleanType;
-      return candidate.kind === "file"
-         ? type.fromJson(
-              typeof candidate.raw === "string"
-                 ? this.substitute(entry, candidate.raw)
-                 : candidate.raw,
-           )
-         : type.fromString(candidate.raw as string);
-   }
-
-   /** A boolean's value as today's reader reads it, before any negation. */
-   private parseToday(entry: RegisteredSetting, candidate: Candidate): unknown {
-      if (candidate.kind === "file") {
-         return this.parseFileValue(entry, candidate.raw, true);
-      }
-      const raw = candidate.raw as string;
-      switch (entry.aliases.today?.reads) {
-         case "exactly-true":
-            return raw === "true";
-         case "true-or-1":
-            return raw === "true" || raw === "1";
-         case "on-off": {
-            const spelled = raw.trim().toLowerCase();
-            if (spelled === "on") return true;
-            if (spelled === "off") return false;
-            throw new Mismatch();
-         }
-         default:
-            return entry.type.fromString(raw);
-      }
-   }
-
-   /** An old negated variable (`PUBLISHER_NO_MCP_CONFIG`) says the opposite of its setting. */
-   private negate(
-      entry: RegisteredSetting,
-      candidate: Candidate,
-      value: unknown,
-   ): unknown {
-      return entry.aliases.negated && candidate.kind === "env" && candidate.old
-         ? !value
-         : value;
-   }
-
-   private warnDeprecated(
-      entry: RegisteredSetting,
-      candidate: Candidate,
-   ): void {
-      const name = candidate.kind === "file" ? candidate.path! : candidate.name;
-      if (this.deprecated.has(name)) return;
-      this.deprecated.add(name);
-      const instead =
-         candidate.kind === "flag"
-            ? `use ${derivedFlagName(entry.key)}`
-            : candidate.kind === "env"
-              ? `set ${derivedEnvName(entry.key)}`
-              : `write "${entry.key}"`;
-      this.warnings.push({
-         key: entry.key,
-         kind: "deprecated",
-         message: `${candidate.kind === "file" ? `"${name}" in ${candidate.name}` : name} is deprecated: ${instead} instead (${entry.key}). A later release stops reading it.`,
-      });
-   }
-
    /** A section of the file that should hold settings but is not an object. */
    private notAnObject(section: string): void {
       const message = `Invalid "${section}" in ${PUBLISHER_CONFIG_NAME}: expected an object.`;
       if (!this.problems.some((problem) => problem.message === message)) {
          this.problems.push(new Error(message));
-      }
-   }
-
-   private parseFileValue(
-      entry: RegisteredSetting,
-      raw: unknown,
-      today: boolean,
-   ): unknown {
-      const substituted =
-         typeof raw === "string" ? this.substitute(entry, raw) : raw;
-      switch (today ? entry.aliases.today?.file : undefined) {
-         case "truthy":
-            return Boolean(substituted);
-         case "boolean-or-reference":
-            if (typeof raw === "boolean") return raw;
-            if (
-               typeof raw === "string" &&
-               new RegExp(VAR_REFERENCE.source).test(raw)
-            ) {
-               return entry.type.fromString(substituted as string);
-            }
-            throw new Mismatch();
-         case "json-boolean":
-            if (typeof raw === "boolean") return raw;
-            throw new Mismatch();
-         default:
-            return entry.type.fromJson(substituted);
       }
    }
 
@@ -896,23 +652,6 @@ class Loader {
    }
 
    /**
-    * What today's reading accepts, where it is narrower than the type: the
-    * common reader's spellings would name values this reading refuses.
-    */
-   private expected(entry: RegisteredSetting, candidate: Candidate): string {
-      const today = entry.aliases.today;
-      if (candidate.kind === "file" && today?.file === "json-boolean") {
-         return "true or false as a JSON boolean, not a string";
-      }
-      if (candidate.kind === "file" && today?.file === "boolean-or-reference") {
-         return "true or false as a JSON boolean, or a ${VAR} reference to one";
-      }
-      return today?.reads === "on-off"
-         ? 'one of "on" or "off"'
-         : this.typeExpected(entry, candidate);
-   }
-
-   /**
     * What the setting's type expects of this value. A string in the file is
     * read as a variable is; any other JSON value is held to the file's own
     * spelling, so `"frozenConfig": 1` is told `true or false`.
@@ -925,52 +664,6 @@ class Loader {
          ? (entry.type.expectedInFile ?? entry.type.expected)
          : entry.type.expected;
    }
-}
-
-/**
- * Whether two parsed values are the same setting value. An unordered list's
- * are compared as sets: `a,b` and `b,a` agree.
- */
-function sameValue(entry: RegisteredSetting, a: unknown, b: unknown): boolean {
-   if (
-      entry.type instanceof ListType &&
-      !entry.type.ordered &&
-      Array.isArray(a) &&
-      Array.isArray(b)
-   ) {
-      const members = (list: unknown[]) => [...new Set(list)].sort();
-      return JSON.stringify(members(a)) === JSON.stringify(members(b));
-   }
-   return JSON.stringify(a) === JSON.stringify(b);
-}
-
-/**
- * A list's flags as the one list they build, once for its current names and
- * once for its old ones, beside its variables and file values.
- */
-function joinListFlags(
-   parsed: Array<{ candidate: Candidate; value: unknown }>,
-): Array<{ candidate: Candidate; value: unknown }> {
-   const joined: Array<{ candidate: Candidate; value: unknown }> = [];
-   for (const old of [true, false]) {
-      const flags = parsed.filter(
-         ({ candidate }) => candidate.kind === "flag" && candidate.old === old,
-      );
-      if (flags.length === 0) continue;
-      joined.push({
-         candidate: {
-            ...flags[0].candidate,
-            name: [
-               ...new Set(flags.map(({ candidate }) => candidate.name)),
-            ].join(", "),
-         },
-         value: flags.flatMap(({ value }) => value as string[]),
-      });
-   }
-   return [
-      ...joined,
-      ...parsed.filter(({ candidate }) => candidate.kind !== "flag"),
-   ];
 }
 
 /** Whether an argument after a switch reads as a boolean: `--x false`. */
@@ -1004,47 +697,6 @@ function serviceLinkHint(candidate: Candidate): string | undefined {
       .toLowerCase()
       .replace(/_/g, "-");
    return `That is the variable Kubernetes sets for a Service named "${service}" in the pod's namespace: set enableServiceLinks: false in the pod spec, or rename the Service.`;
-}
-
-/** The failure for a setting given different values under an old and a new name. */
-function conflict(
-   entry: RegisteredSetting,
-   old: { candidate: Candidate; value: unknown },
-   current: { candidate: Candidate; value: unknown },
-): Error {
-   const shown = (side: { candidate: Candidate; value: unknown }) => {
-      const where =
-         side.candidate.kind === "file"
-            ? `"${side.candidate.path}" in ${side.candidate.name}`
-            : side.candidate.name;
-      return entry.secret ? where : `${where} (${JSON.stringify(side.value)})`;
-   };
-   return new Error(
-      `${entry.key} is given different values under its old and new names: ${shown(old)} and ${shown(current)}. Remove the old one.`,
-   );
-}
-
-/**
- * The warning for a boolean today reads differently from every other boolean
- * setting: `INITIALIZE_STORAGE=1`, `"frozenConfig": "false"`.
- */
-function disagreement(
-   key: string,
-   candidate: Candidate,
-   today: boolean,
-   common: boolean,
-): string {
-   const raw = JSON.stringify(candidate.raw);
-   const given =
-      candidate.kind === "file"
-         ? `"${key}": ${raw} in ${candidate.name}`
-         : `${candidate.name}=${typeof candidate.raw === "string" ? candidate.raw : raw}`;
-   const onOff = (value: boolean) => (value ? "on" : "off");
-   return (
-      `${key}: ${given} is refused: it has always been read as ${onOff(today)} ` +
-      `here, but every other boolean setting reads ${raw} as ${onOff(common)}. ` +
-      `Write true or false.`
-   );
 }
 
 function parentOf(key: string): string {

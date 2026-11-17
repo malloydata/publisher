@@ -6,7 +6,7 @@
  *
  * `/query`, `/sqlQuery` and `/sqlTemporaryTable` pass through
  * `QuerySlots.middleware`, which caps concurrent work at
- * PUBLISHER_MAX_CONCURRENT_QUERIES so a flood cannot saturate the pod. `/compile`
+ * PUBLISHER_QUERY_MAX_CONCURRENT so a flood cannot saturate the pod. `/compile`
  * and both `/sqlSource` routes reach the same controllers -- compile resolves
  * source schemas against the connection, sqlSource runs a live introspection --
  * but were registered without it, so a flood of either bypassed the cap its
@@ -37,7 +37,7 @@ let restoreSettings: (() => void) | undefined;
 function installCap(cap: string): void {
    restoreSettings?.();
    restoreSettings = installSettings({
-      env: { PUBLISHER_MAX_CONCURRENT_QUERIES: cap },
+      env: { PUBLISHER_QUERY_MAX_CONCURRENT: cap },
    }).restore;
 }
 

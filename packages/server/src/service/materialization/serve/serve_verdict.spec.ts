@@ -131,7 +131,7 @@ describe("computeServeVerdicts", () => {
       expect(serves.verdict).toBe("serves");
    });
 
-   it("serves nothing from storage unless PERSIST_STORAGE_MODE is on", () => {
+   it("serves nothing from storage unless PUBLISHER_PERSIST_STORAGE_MODE is on", () => {
       for (const storageMode of ["off", "write-only"]) {
          const [verdict] = computeServeVerdicts(
             facts([plan("orders", STORAGE)], {
@@ -449,7 +449,7 @@ describe("computeServeVerdicts", () => {
          expect(v.reason).toBe("destination_missing");
       });
 
-      it("never reads a destination while PERSIST_STORAGE_MODE=off ignores storage=", () => {
+      it("never reads a destination while PUBLISHER_PERSIST_STORAGE_MODE=off ignores storage=", () => {
          const [v] = computeServeVerdicts(
             facts([plan("orders", STORAGE)], {
                storageMode: "off",
@@ -596,7 +596,7 @@ describe("reachableSourceIDs", () => {
          reason: "served_copy",
       });
       expect(JSON.stringify(colocatedWith("off"))).not.toContain(
-         "PERSIST_STORAGE_MODE",
+         "PUBLISHER_PERSIST_STORAGE_MODE",
       );
       // A #@ persist source keeps today's serve-shape rule.
       expect(

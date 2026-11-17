@@ -3,7 +3,7 @@
 
 /**
  * Integration test: exercise `Package.create` with the package-load
- * worker pool enabled (PACKAGE_LOAD_WORKERS=1).
+ * worker pool enabled (PUBLISHER_PACKAGE_LOAD_WORKERS=1).
  *
  * Validates that the worker-load path:
  *   - reads the manifest, probes embedded databases, and compiles

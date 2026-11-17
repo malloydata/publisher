@@ -27,7 +27,7 @@ own words — no SQL its author wrote runs on a read-write lake session.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Model sec3.malloy
 

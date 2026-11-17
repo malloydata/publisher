@@ -1063,7 +1063,7 @@ export function assertTierEligible(
             `'#(materialize)'): it is protected by an #(authorize) or ` +
             `#(access_filter) gate, and its table is read only through the ` +
             `served copy, which keeps only the entry point's own row-level ` +
-            `gate, and only with PUBLISHER_MATERIALIZE on. The source serves ` +
+            `gate, and only with PUBLISHER_MATERIALIZE_ENABLED on. The source serves ` +
             `live. Turn that setting on, or use '#@ persist', whose colocated ` +
             `table the served copy reads past the source's own row-level ` +
             `gate under the same rule (G3) with that setting off.`,

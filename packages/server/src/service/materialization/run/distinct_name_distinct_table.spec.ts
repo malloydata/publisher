@@ -206,7 +206,7 @@ describe("one table per stored projection", () => {
 
    function withStorage<T>(fn: () => T): T {
       const { restore } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       try {
          return fn();
@@ -352,7 +352,7 @@ source: a_drops is raw -> { select: id, region, status } extend { except: status
 
    async function addressesOf(model: string) {
       const { restore } = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on" },
+         env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
       });
       try {
          const compiled = await compilePackageBuildPlan(
@@ -494,7 +494,9 @@ describe("a bare name between two schemas", () => {
 });
 
 function withStorage<T>(fn: () => T): T {
-   const { restore } = installSettings({ env: { PERSIST_STORAGE_MODE: "on" } });
+   const { restore } = installSettings({
+      env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
+   });
    try {
       return fn();
    } finally {
@@ -526,7 +528,7 @@ describe("a bare name between two schemas, over the real compiler", () => {
                ),
             ].join("\n");
             const { restore } = installSettings({
-               env: { PERSIST_STORAGE_MODE: "on" },
+               env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
             });
             try {
                const compiled = await compilePackageBuildPlan(

@@ -793,7 +793,7 @@ export function assertRequiredStagesAvailable(
    if (retrieval.sourceSummary?.enabled === true) {
       fail(
          `Invalid publisher.json retrieval.sourceSummary.enabled: true needs an LLM, and this server has none configured. ` +
-            `Fix: set retrieval.llm in publisher.config.json and LLM_API_KEY in the server's environment, ` +
+            `Fix: set retrieval.llm in publisher.config.json and PUBLISHER_RETRIEVAL_LLM_API_KEY in the server's environment, ` +
             `or set "enabled": "auto" (on only when an LLM is configured) or false.`,
       );
    }

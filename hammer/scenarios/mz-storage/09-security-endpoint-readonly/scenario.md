@@ -24,7 +24,7 @@ endpoint that cannot name the destination never gets that far.)
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.sec2_orders
 

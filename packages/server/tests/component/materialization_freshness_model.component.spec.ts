@@ -197,8 +197,8 @@ describe.skipIf(process.platform === "win32")(
       beforeAll(async () => {
          restore = installSettings({
             env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE_ENABLED: "true",
                PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
             },
          }).restore;

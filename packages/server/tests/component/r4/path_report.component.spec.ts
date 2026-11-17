@@ -14,7 +14,7 @@ import { resetMaterializationTelemetryForTesting } from "../../../src/materializ
 let restoreSettings: () => void;
 beforeAll(() => {
    restoreSettings = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on" },
+      env: { PUBLISHER_PERSIST_STORAGE_MODE: "on" },
    }).restore;
 });
 afterAll(async () => {

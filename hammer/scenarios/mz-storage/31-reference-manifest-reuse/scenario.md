@@ -25,7 +25,7 @@ storage fields via resolve-local).
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.rmr_orders
 

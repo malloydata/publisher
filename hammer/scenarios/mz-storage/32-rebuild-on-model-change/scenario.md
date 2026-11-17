@@ -22,7 +22,7 @@ The flow is markdown; two tiny hooks capture and compare the internal
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.rmc_orders
 

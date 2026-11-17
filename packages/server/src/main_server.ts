@@ -111,7 +111,7 @@ export interface RunningServers {
 
 /**
  * Start the standalone materialization scheduler, or return null when
- * `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` is off (the default, so an
+ * `PUBLISHER_MATERIALIZATION_SCHEDULER_ENABLED` is off (the default, so an
  * orchestrated deployment never runs it). A function so tests can drive the
  * real env-var path; buildApp calls it once.
  */
@@ -266,8 +266,8 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       );
    } else if (retrievalConfig?.llm) {
       logger.warn(
-         `retrieval.llm names provider "${retrievalConfig.llm.provider}" but LLM_API_KEY is not set, so every LLM feature is off. ` +
-            `Fix: set LLM_API_KEY in the server's environment.`,
+         `retrieval.llm names provider "${retrievalConfig.llm.provider}" but PUBLISHER_RETRIEVAL_LLM_API_KEY is not set, so every LLM feature is off. ` +
+            `Fix: set PUBLISHER_RETRIEVAL_LLM_API_KEY in the server's environment.`,
       );
    }
    if (retrievalConfig?.indexing?.maxEntities !== undefined) {
@@ -420,7 +420,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       metricsHandler: prometheusMetricsHandler(),
    });
 
-   // Constructed eagerly so a misconfigured PACKAGE_LOAD_WORKERS (e.g. 0) fails
+   // Constructed eagerly so a misconfigured PUBLISHER_PACKAGE_LOAD_WORKERS (e.g. 0) fails
    // the boot rather than the first package load, possibly hours later.
    {
       const { getPackageLoadPool } = await import(
@@ -461,7 +461,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
                "Running in development mode - proxying to React dev server at http://localhost:5173",
             );
          }
-         // `--watch-env` / PUBLISHER_WATCH: those envs' packages are mounted in
+         // `--watch-env` / PUBLISHER_WATCH_ENVIRONMENTS: those envs' packages are mounted in
          // place (see `loadEnvironmentIntoDisk`), so the watcher sees source edits.
          const watchEnvList = settings.get("watchEnvironments");
          if (watchEnvList.length > 0) {
@@ -473,7 +473,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
                      ", ",
                   )}); watch mode auto-reloads one at a time. Watching "${
                      watchEnvList[0]
-                  }". The others are mounted in place (their source is live) but will not auto-reload. Pass a single --watch-env (or one PUBLISHER_WATCH value) to silence this.`,
+                  }". The others are mounted in place (their source is live) but will not auto-reload. Pass a single --watch-env (or one PUBLISHER_WATCH_ENVIRONMENTS value) to silence this.`,
                );
             }
             const envName = watchEnvList[0];
@@ -496,7 +496,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
          MCP_HOST,
          function (this: import("net").Server) {
             // The bind address, deliberately not resolveClientHost, and the port
-            // read back rather than MCP_PORT: `--mcp_port 0` binds an ephemeral one.
+            // read back rather than MCP_PORT: `--mcp-port 0` binds an ephemeral one.
             const boundPort = logListening(
                "MCP server",
                this,
@@ -547,7 +547,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       );
       mcpServer.on(
          "error",
-         fatalListenError("MCP", MCP_PORT, "--mcp_port", mainServer),
+         fatalListenError("MCP", MCP_PORT, "--mcp-port", mainServer),
       );
 
       longTimeouts(mcpServer);
@@ -565,7 +565,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       if (adminServer) {
          adminServer.on(
             "error",
-            fatalListenError("Admin", ADMIN_PORT!, "--admin_port", mainServer),
+            fatalListenError("Admin", ADMIN_PORT!, "--admin-port", mainServer),
          );
          longTimeouts(adminServer);
       }

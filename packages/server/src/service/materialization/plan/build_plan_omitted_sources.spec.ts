@@ -272,7 +272,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
   measure: n is count()
 }
 `;
-      const env = { PUBLISHER_MATERIALIZE: "true" };
+      const env = { PUBLISHER_MATERIALIZE_ENABLED: "true" };
       const good = await plan(text, env, false);
       const planned = Object.keys(materializePlansIn(good.parts)).map((id) =>
          id.replace(good.dir, "<pkg>"),
@@ -300,7 +300,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
   view: by_carrier is { group_by: carrier; aggregate: n }
 }
 `;
-      const env = { PUBLISHER_MATERIALIZE: "true" };
+      const env = { PUBLISHER_MATERIALIZE_ENABLED: "true" };
       const good = await plan(text, env, false);
       const planned = Object.keys(sourcesIn(good.parts))
          .filter((id) => id.includes("__view@"))
@@ -527,7 +527,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
   measure: n is count()
 }
 `,
-         env: { PUBLISHER_MATERIALIZE: "true" },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
       },
       persisted_view: {
          text: `source: ops is duckdb.sql("select 1 as id, 'aa' as carrier") extend {
@@ -536,7 +536,7 @@ source: plain is duckdb.sql("select 1 as a") extend {
   view: by_carrier is { group_by: carrier; aggregate: n }
 }
 `,
-         env: { PUBLISHER_MATERIALIZE: "true" },
+         env: { PUBLISHER_MATERIALIZE_ENABLED: "true" },
       },
    } as const;
    const FAILURES = [true, "overlay", "unreadable"] as const;

@@ -171,15 +171,15 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
 
       env = await setupE2ETestEnvironment({
          env: {
-            EMBEDDING_API_KEY: "integration-test-key",
-            EMBEDDING_API_BASE: `http://127.0.0.1:${port}/v1`,
+            PUBLISHER_RETRIEVAL_EMBEDDING_API_KEY: "integration-test-key",
+            PUBLISHER_RETRIEVAL_EMBEDDING_BASE_URL: `http://127.0.0.1:${port}/v1`,
             // A stub-distinct model name: the suite shares publisher.db with
             // local manual runs, and rows cached under the real default model
             // name would poison a later real-provider run (the stub's bigram
             // vectors are not text-embedding-3-small's). Under this name the
             // leftovers are inert; a real run's model diff replaces them.
-            EMBEDDING_MODEL: "integration-test-bigram-stub",
-            EMBEDDING_DIMENSIONS: undefined,
+            PUBLISHER_RETRIEVAL_EMBEDDING_MODEL: "integration-test-bigram-stub",
+            PUBLISHER_RETRIEVAL_EMBEDDING_DIMENSIONS: undefined,
          },
       });
       mcpClient = env.mcpClient;

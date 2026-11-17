@@ -376,7 +376,7 @@ const tableCollisionCounter = lazyCounter(
       "addresses resolve to the table at serve time, so a query is answered " +
       "from another source's data. A wrong answer, not wasted work — page on " +
       "this one. Counted, then refused before any write, unless " +
-      "PERSIST_COLLISION_ENFORCE=false opts out, in which case the build " +
+      "PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED=false opts out, in which case the build " +
       "continues.",
 );
 const dropTablesCounter = lazyCounter(
@@ -704,7 +704,7 @@ export function recordSourceBound(): void {
  * table built from another definition) or by the served copy's compile (the
  * reason its package warning gives). `build_plan_unavailable` is the one to
  * alert on: colocated is the default tier and is not gated by
- * PERSIST_STORAGE_MODE, so every colocated source of the package reverts to
+ * PUBLISHER_PERSIST_STORAGE_MODE, so every colocated source of the package reverts to
  * live until a load succeeds.
  */
 export function recordSourceDeclined(reason: BindDeclineReason): void {

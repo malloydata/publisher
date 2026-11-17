@@ -65,7 +65,7 @@ exactly the same reason as one arriving by a handle it did.
 
 ## Publisher
 
-- PERSIST_STORAGE_MODE: on
+- PUBLISHER_PERSIST_STORAGE_MODE: on
 
 ## Data orders_pg.hbi_orders
 
