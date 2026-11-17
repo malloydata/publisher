@@ -21,8 +21,8 @@ not need:
                Entities tied at the top all count, so a tie is right when any
                of them is required.
   not found    a target labelled `absent` (the model holds nothing that
-               answers it) returned nothing, or only its labelled `closest`
-               field.
+               answers it) returned nothing, or only fields its label lists as
+               `closest` or `acceptable`. Anything else is a wrong pick.
 
 WHAT A TARGET'S LABEL CARRIES (`expectedEntities` on the search target)
 
@@ -130,7 +130,8 @@ def outcome(index: int, target: dict[str, Any], call: dict[str, Any]) -> dict[st
         "noise": sorted(own_set - ok) if labelled else [],
         "best_pick": top[0] if top else None,
         "best_pick_ok": (bool(set(top) & members) if top else False) if req else None,
-        "not_found_ok": (own_set <= closest) if absent else None,
+        # `ok` is closest plus acceptable here: an absent target names no required id.
+        "not_found_ok": (own_set <= ok) if absent else None,
         # The same two numbers `score_targets.py` reports per target, so a
         # replay row and an answer-run row read alike.
         "recall": (sum(1 for g in req if own_set & set(g)) / len(req)) if req else None,

@@ -117,7 +117,7 @@ targets and a case with one otherwise weigh the same:
 | `recall_anywhere` | the same, counting an answer that came back under any target of the call |
 | `precision` | of the entities the labelled targets returned, the share that are required, acceptable or a labelled closest field. One ratio over all targets, and source cards count only for a `source` target |
 | `best_pick` | targets whose highest-relevance entity is a required answer. Entities tied at the top all count |
-| `not_found` | `absent` targets that returned nothing, or only a `closest` field |
+| `not_found` | `absent` targets that returned nothing, or only fields the label lists as `closest` or `acceptable` |
 
 `latency_p50_s` and `latency_p95_s` are the request times as the replay saw
 them, one request at a time.

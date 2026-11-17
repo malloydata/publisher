@@ -82,8 +82,10 @@ class Outcome(unittest.TestCase):
         self.assertEqual((row["best_pick_ok"], row["recall"], row["precision"]), (False, 0.0, None))
 
     def test_an_absent_target_is_right_when_nothing_or_only_the_closest_field_came_back(self):
-        t = target("measure", "net revenue", absent=True, closest=["measure:o:gross"])
+        t = target("measure", "net revenue", absent=True, closest=["measure:o:gross"],
+                   acceptable=["measure:o:collected"])
         self.assertTrue(to.outcome(1, t, call())["not_found_ok"])
+        self.assertTrue(to.outcome(1, t, call(hit("measure:o:collected", ("net revenue", 0.6))))["not_found_ok"])
         self.assertTrue(to.outcome(1, t, call(hit("measure:o:gross", ("net revenue", 0.6))))["not_found_ok"])
         wrong = to.outcome(1, t, call(hit("measure:o:count", ("net revenue", 0.6))))
         self.assertEqual((wrong["not_found_ok"], wrong["n_ok"], wrong["best_pick_ok"]), (False, 0, None))
