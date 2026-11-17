@@ -44,7 +44,7 @@ import {
    differsOnlyInLockedSetup,
    isInstanceLocked,
    markInstanceLocked,
-   OPEN_TIME_LOCKDOWN,
+   openTimeLockdownOptions,
    preloadExcel,
    relativeReadEntries,
 } from "./duckdb_lockdown";
@@ -218,15 +218,18 @@ export function installDuckDBInstanceSharing(): void {
    // (config.ts, getDuckDBThreads). The shareable-mode `:memory:` primary
    // passes through here too.
    // Every instance also opens under the open-time lockdown
-   // (duckdb_lockdown.ts): persistent secrets off before anything can use
-   // them, as a lock taken later requires.
+   // (duckdb_lockdown.ts): the host's persistent secrets never read, and
+   // none writable.
    proto.buildInstanceOptions = function (
       this: DuckDBConnectionInternals,
       opts?: unknown,
    ): Record<string, string> {
+      const restricted =
+         this.normalized.lockConfiguration === true ||
+         (this.normalized.securityPolicy ?? "none") !== "none";
       return {
          ...withThreadCap(buildInstanceOptions.call(this, opts)),
-         ...OPEN_TIME_LOCKDOWN,
+         ...openTimeLockdownOptions(restricted),
       };
    };
 

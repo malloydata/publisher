@@ -31,9 +31,8 @@
  *   connection's data paths and its temp directory, external access off
  *   (allowlisted paths still pass), then `lock_configuration`.
  *
- * Every instance also opens with {@link OPEN_TIME_LOCKDOWN}: persistent
- * secrets off (it must be off before any lock, or DuckDB's secret manager
- * wedges). The global S3 configuration is an httpfs option, so it cannot be
+ * Every instance also opens with {@link openTimeLockdownOptions}: no host
+ * persistent secret is read, and none can be written. The global S3 configuration is an httpfs option, so it cannot be
  * set at open: every httpfs load Publisher makes turns it off and blanks the
  * env-seeded keys at once ({@link clearAmbientS3Settings}), and the sandboxed
  * and local tiers never load httpfs.
@@ -65,13 +64,26 @@ import { logger } from "../logger";
 
 /**
  * DuckDB options every Publisher instance opens with (applied in
- * duckdb_instance_sharing.ts's `buildInstanceOptions` patch).
+ * duckdb_instance_sharing.ts's `buildInstanceOptions` patch), so the host's
+ * persistent secrets are never loaded and none can be written:
+ *
+ * - An instance Malloy confines (`restricted`: the sandboxed and local
+ *   tiers) opens with persistent secrets off. DuckDB takes that setting only
+ *   before its secret manager is first used, and a lock taken with it on
+ *   wedges the manager, so it is set at open.
+ * - Any other instance keeps them on, because DuckDB's postgres extension
+ *   (DuckLake catalogs, attached Postgres) refuses to attach without the
+ *   persistent store ("Unknown secret storage found: 'local_file'"), but its
+ *   `secret_directory` is a private, empty directory no allowlist names: the
+ *   host's stored secrets are never read, and once external access is off a
+ *   persistent secret cannot be written.
  */
-export const OPEN_TIME_LOCKDOWN: Readonly<Record<string, string>> = {
-   // Before any lock: a lock taken with persistent secrets on wedges the
-   // secret manager. Publisher never writes a persistent secret.
-   allow_persistent_secrets: "false",
-};
+export function openTimeLockdownOptions(
+   restricted: boolean,
+): Record<string, string> {
+   if (restricted) return { allow_persistent_secrets: "false" };
+   return { secret_directory: privateTempDirectory("no-persistent-secrets") };
+}
 
 /** The prefix of a networked instance's private temp directory. */
 const LOCKED_TEMP_PREFIX = "locked-";
@@ -533,8 +545,9 @@ export async function lockDownDuckDBSession(
    if (typeof temp === "string" && temp !== "") {
       entries.add(asAllowEntry(temp));
    }
-   // Persistent secrets are already off: every instance opens that way
-   // (OPEN_TIME_LOCKDOWN), and DuckDB refuses the SET once a secret exists.
+   // Persistent secrets need nothing here: the instance opened with a private
+   // secret directory no allowlist names (openTimeLockdownOptions), and DuckDB
+   // refuses to change secret settings once a secret exists.
    await connection.runSQL("SET autoinstall_known_extensions=false");
    await connection.runSQL("SET autoload_known_extensions=false");
    await connection.runSQL(
