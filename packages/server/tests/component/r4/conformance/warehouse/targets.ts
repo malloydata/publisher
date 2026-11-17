@@ -15,9 +15,10 @@
  * - Snowflake: `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_WAREHOUSE`,
  *   `SNOWFLAKE_DATABASE`, and `SNOWFLAKE_PRIVATE_KEY` (or
  *   `SNOWFLAKE_PRIVATE_KEY_RAW`, as Malloy's CI names it) or
- *   `SNOWFLAKE_PASSWORD`; optional `SNOWFLAKE_ROLE`,
- *   `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`, and `SNOWFLAKE_SCHEMA`, the schema to
- *   fall back to, with run-prefixed tables, when the role cannot create one.
+ *   `SNOWFLAKE_PASSWORD`; optional `SNOWFLAKE_ROLE` and
+ *   `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`. The role must be able to create a
+ *   schema: there is no fallback, so a run never writes into a schema other
+ *   CI reads.
  * - Postgres, a stand-in that proves the harness itself on a laptop:
  *   `WAREHOUSE_CONFORMANCE_POSTGRES_URL`. The nightly job does not run it;
  *   the Postgres-gated suites in connection-integration-tests.yml cover
@@ -77,12 +78,31 @@ function missing(names: string[]): string[] {
  */
 export function snowflakePrivateKeyPem(raw: string): string {
    const text = raw.trim();
-   if (text.includes("-----BEGIN")) return text;
+   if (text.includes("-----BEGIN")) return masked(text);
    const decoded = Buffer.from(text, "base64").toString("utf8");
-   if (decoded.includes("-----BEGIN")) return decoded.trim();
+   if (decoded.includes("-----BEGIN")) return masked(decoded.trim());
    const body = text.replace(/\s+/g, "");
    const lines = body.match(/.{1,64}/g) ?? [];
-   return `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`;
+   return masked(
+      `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`,
+   );
+}
+
+/**
+ * A secret in a form GitHub never saw (re-wrapped or decoded), masked line by
+ * line in an Actions log: Actions masks a secret only as the secret was
+ * stored. Returns the value.
+ */
+export function masked(secret: string): string {
+   if (process.env.GITHUB_ACTIONS === "true") {
+      for (const line of secret.split("\n")) {
+         const value = line.trim();
+         if (value.length >= 8 && !value.startsWith("-----")) {
+            process.stdout.write(`::add-mask::${value}\n`);
+         }
+      }
+   }
+   return secret;
 }
 
 /** The warehouses whose credentials are present, and why the others are not. */
@@ -279,9 +299,55 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
    >[];
 }
 
-/** Snowflake folds an unquoted name to upper case; the scratch is created unquoted. */
+/** Snowflake folds an unquoted name to upper case; a scratch schema is spelled upper-case there. */
 function containerCase(dialect: Dialect, name: string): string {
    return dialect === "snowflake" ? name.toUpperCase() : name;
+}
+
+/** A run's own scratch area, exactly: the prefix, a UTC stamp, a run id. */
+const CONTAINER_NAME = new RegExp(`^${SCRATCH_PREFIX}\\d{12}_[a-z0-9]+$`, "i");
+
+/** A run-prefixed table in the fallback dataset: a run's prefix, then a plain name. */
+const PREFIXED_TABLE = new RegExp(
+   `^${SCRATCH_PREFIX}\\d{12}_[a-z0-9]+_[a-z0-9_]+$`,
+   "i",
+);
+
+/** An existing dataset the BigQuery fallback writes into: a plain identifier. */
+const DATASET_NAME = /^[A-Za-z0-9_]+$/;
+
+/** Refuse any name a drop would reach that is not one of ours, before any SQL is written. */
+function assertName(kind: string, name: string, pattern: RegExp): void {
+   if (!pattern.test(name)) {
+      throw new Error(
+         `refusing to touch ${kind} '${name}': not a warehouse conformance name`,
+      );
+   }
+}
+
+/** Snowflake's database, quoted as it was configured (upper-cased, as Snowflake folds it). */
+function snowflakeDatabase(): string {
+   const db = process.env.SNOWFLAKE_DATABASE ?? "";
+   assertName("database", db, /^[A-Za-z0-9_]+$/);
+   return `"${db.toUpperCase()}"`;
+}
+
+function bigQueryProject(): string {
+   const project = process.env.BIGQUERY_TEST_PROJECT_ID ?? "";
+   assertName("project", project, /^[a-z0-9-]+$/);
+   return project;
+}
+
+/** A schema or dataset as DDL names it, quoted. */
+function quotedContainer(dialect: Dialect, container: string): string {
+   switch (dialect) {
+      case "bigquery":
+         return `\`${bigQueryProject()}.${container}\``;
+      case "snowflake":
+         return `${snowflakeDatabase()}."${container}"`;
+      case "postgres":
+         return `"${container}"`;
+   }
 }
 
 function makeScratch(
@@ -290,8 +356,6 @@ function makeScratch(
    prefix: string,
    ownsContainer: boolean,
 ): Scratch {
-   const project = process.env.BIGQUERY_TEST_PROJECT_ID;
-   const database = process.env.SNOWFLAKE_DATABASE?.toUpperCase();
    return {
       dialect,
       container,
@@ -300,31 +364,38 @@ function makeScratch(
       name: (table) => `${container}.${prefix}${table}`,
       tablePath: (table) =>
          dialect === "bigquery"
-            ? `${project}.${container}.${prefix}${table}`
+            ? `${bigQueryProject()}.${container}.${prefix}${table}`
             : dialect === "snowflake"
-              ? `${database}.${container}.${(prefix + table).toUpperCase()}`
+              ? `${process.env.SNOWFLAKE_DATABASE!.toUpperCase()}.${container}.${(prefix + table).toUpperCase()}`
               : `${container}.${prefix}${table}`,
    };
 }
 
-/** A permission refusal, which the fallback answers, as opposed to any other failure. */
+/**
+ * BigQuery's refusal of a dataset create for want of the grant, which the
+ * fallback dataset answers; any other failure (a bad location, a network
+ * error) is not one.
+ */
 function isPermissionError(error: unknown): boolean {
    const text = error instanceof Error ? error.message : String(error);
-   return /permission|denied|not authorized|insufficient privileges|access/i.test(
+   return /access denied|permission denied|does not have [\w.]+ permission|\bPERMISSION_DENIED\b/i.test(
       text,
    );
 }
 
 /**
- * Create this run's scratch area: a schema or dataset of its own, or, when
- * the credentials may not create one and a fallback is configured, a prefix
- * in the fallback. Throws, naming the grant, when neither is possible.
+ * Create this run's scratch area, a schema or dataset of its own. On
+ * BigQuery, when the key may not create a dataset and
+ * `WAREHOUSE_CONFORMANCE_BQ_DATASET` names one it can write, run-prefixed
+ * tables there instead. Throws, naming the grant, otherwise: a run never
+ * writes into a schema other CI reads (Snowflake's `malloytest`).
  */
 export async function createScratch(
    dialect: Dialect,
    connection: Connection,
    name = scratchName(),
 ): Promise<Scratch> {
+   assertName("scratch", name, CONTAINER_NAME);
    const container = containerCase(dialect, name);
    try {
       switch (dialect) {
@@ -332,7 +403,7 @@ export async function createScratch(
             // A table the drop missed expires on its own after a day.
             await run(
                connection,
-               `CREATE SCHEMA \`${process.env.BIGQUERY_TEST_PROJECT_ID}.${container}\` ` +
+               `CREATE SCHEMA ${quotedContainer(dialect, container)} ` +
                   `OPTIONS(location="${bigQueryLocation()}", default_table_expiration_days=1, ` +
                   `labels=[("purpose", "publisher-warehouse-conformance")])`,
             );
@@ -340,12 +411,15 @@ export async function createScratch(
          case "snowflake":
             await run(
                connection,
-               `CREATE SCHEMA ${process.env.SNOWFLAKE_DATABASE}.${container} ` +
+               `CREATE SCHEMA ${quotedContainer(dialect, container)} ` +
                   `COMMENT = 'publisher warehouse conformance scratch; dropped by the run or the sweeper'`,
             );
             break;
          case "postgres":
-            await run(connection, `CREATE SCHEMA "${container}"`);
+            await run(
+               connection,
+               `CREATE SCHEMA ${quotedContainer(dialect, container)}`,
+            );
             break;
       }
       return makeScratch(dialect, container, "", true);
@@ -353,32 +427,26 @@ export async function createScratch(
       const fallback =
          dialect === "bigquery"
             ? process.env.WAREHOUSE_CONFORMANCE_BQ_DATASET
-            : dialect === "snowflake"
-              ? process.env.SNOWFLAKE_SCHEMA
-              : undefined;
-      if (!isPermissionError(error) || !fallback) {
-         const grant =
-            dialect === "bigquery"
-               ? "bigquery.datasets.create on the project (roles/bigquery.user), or set WAREHOUSE_CONFORMANCE_BQ_DATASET to a dataset it can write tables in"
-               : dialect === "snowflake"
-                 ? `CREATE SCHEMA on database ${process.env.SNOWFLAKE_DATABASE}, or set SNOWFLAKE_SCHEMA to a schema it can create tables in`
-                 : "CREATE on the database";
-         throw new Error(
-            `could not create the ${dialect} scratch area ${container}: ${
-               error instanceof Error ? error.message : String(error)
-            }. The run needs ${grant}.`,
-         );
+            : undefined;
+      if (fallback && isPermissionError(error)) {
+         assertName("dataset", fallback, DATASET_NAME);
+         return makeScratch(dialect, fallback, `${name}_`, false);
       }
-      return makeScratch(
-         dialect,
-         containerCase(dialect, fallback),
-         `${name}_`,
-         false,
+      const grant =
+         dialect === "bigquery"
+            ? `bigquery.datasets.create on project ${process.env.BIGQUERY_TEST_PROJECT_ID} (for example roles/bigquery.user), or the repository variable WAREHOUSE_CONFORMANCE_BQ_DATASET naming a dataset it can create tables in`
+            : dialect === "snowflake"
+              ? `CREATE SCHEMA on database ${process.env.SNOWFLAKE_DATABASE} for role ${process.env.SNOWFLAKE_ROLE ?? "(the user's default)"}`
+              : "CREATE on the database";
+      throw new Error(
+         `could not create the ${dialect} scratch area ${container}: ${
+            error instanceof Error ? error.message : String(error)
+         }. The run needs ${grant}.`,
       );
    }
 }
 
-/** Drop everything a scratch area holds. Best effort per table; throws if anything is left. */
+/** Drop everything a scratch area holds; throws if a drop fails. */
 export async function dropScratch(
    connection: Connection,
    scratch: Scratch,
@@ -389,11 +457,10 @@ export async function dropScratch(
    }
    for (const table of await listPrefixedTables(
       connection,
-      scratch.dialect,
       scratch.container,
       scratch.prefix,
    )) {
-      await dropTable(connection, scratch.dialect, scratch.container, table);
+      await dropTable(connection, scratch.container, table);
    }
 }
 
@@ -402,92 +469,76 @@ async function dropContainer(
    dialect: Dialect,
    container: string,
 ): Promise<void> {
-   switch (dialect) {
-      case "bigquery":
-         await run(
-            connection,
-            `DROP SCHEMA IF EXISTS \`${process.env.BIGQUERY_TEST_PROJECT_ID}.${container}\` CASCADE`,
-         );
-         return;
-      case "snowflake":
-         await run(
-            connection,
-            `DROP SCHEMA IF EXISTS ${process.env.SNOWFLAKE_DATABASE}.${container} CASCADE`,
-         );
-         return;
-      case "postgres":
-         await run(connection, `DROP SCHEMA IF EXISTS "${container}" CASCADE`);
-         return;
-   }
+   assertName("scratch", container, CONTAINER_NAME);
+   await run(
+      connection,
+      `DROP SCHEMA IF EXISTS ${quotedContainer(dialect, container)} CASCADE`,
+   );
 }
 
+/** A run-prefixed table (or a view Publisher made) in the BigQuery fallback dataset. */
 async function dropTable(
    connection: Connection,
-   dialect: Dialect,
-   container: string,
+   dataset: string,
    table: string,
 ): Promise<void> {
+   assertName("dataset", dataset, DATASET_NAME);
+   assertName("table", table, PREFIXED_TABLE);
    const kind = await run(
       connection,
-      dialect === "bigquery"
-         ? `SELECT table_type FROM \`${process.env.BIGQUERY_TEST_PROJECT_ID}.${container}\`.INFORMATION_SCHEMA.TABLES WHERE table_name = '${table}'`
-         : dialect === "snowflake"
-           ? `SELECT table_type FROM ${process.env.SNOWFLAKE_DATABASE}.INFORMATION_SCHEMA.TABLES WHERE table_schema = '${container}' AND table_name = '${table}'`
-           : `SELECT table_type FROM information_schema.tables WHERE table_schema = '${container}' AND table_name = '${table}'`,
+      `SELECT table_type FROM ${quotedContainer("bigquery", dataset)}.INFORMATION_SCHEMA.TABLES WHERE table_name = '${table}'`,
    );
    const isView = rowsOf(kind).some((r) =>
       /view/i.test(String(r.table_type ?? r.TABLE_TYPE)),
    );
-   const what = isView ? "VIEW" : "TABLE";
-   const path =
-      dialect === "bigquery"
-         ? `\`${process.env.BIGQUERY_TEST_PROJECT_ID}.${container}.${table}\``
-         : dialect === "snowflake"
-           ? `${process.env.SNOWFLAKE_DATABASE}.${container}."${table}"`
-           : `"${container}"."${table}"`;
-   await run(connection, `DROP ${what} IF EXISTS ${path}`);
+   await run(
+      connection,
+      `DROP ${isView ? "VIEW" : "TABLE"} IF EXISTS \`${bigQueryProject()}.${dataset}.${table}\``,
+   );
 }
 
+/** The fallback dataset's tables that start with `prefix` and are ours by name. */
 async function listPrefixedTables(
    connection: Connection,
-   dialect: Dialect,
-   container: string,
+   dataset: string,
    prefix: string,
 ): Promise<string[]> {
-   const like = prefix.replace(/_/g, "\\_");
+   assertName("dataset", dataset, DATASET_NAME);
    const result = await run(
       connection,
-      dialect === "bigquery"
-         ? `SELECT table_name FROM \`${process.env.BIGQUERY_TEST_PROJECT_ID}.${container}\`.INFORMATION_SCHEMA.TABLES WHERE STARTS_WITH(LOWER(table_name), '${prefix.toLowerCase()}')`
-         : dialect === "snowflake"
-           ? `SELECT table_name FROM ${process.env.SNOWFLAKE_DATABASE}.INFORMATION_SCHEMA.TABLES WHERE table_schema = '${container}' AND table_name ILIKE '${like}%'`
-           : `SELECT table_name FROM information_schema.tables WHERE table_schema = '${container}' AND table_name ILIKE '${like}%'`,
+      `SELECT table_name FROM ${quotedContainer("bigquery", dataset)}.INFORMATION_SCHEMA.TABLES WHERE STARTS_WITH(LOWER(table_name), '${prefix.toLowerCase().replace(/[^a-z0-9_]/g, "")}')`,
    );
-   return rowsOf(result).map((r) => String(r.table_name ?? r.TABLE_NAME));
+   return rowsOf(result)
+      .map((r) => String(r.table_name ?? r.TABLE_NAME))
+      .filter((t) => PREFIXED_TABLE.test(t));
 }
 
+/** The scratch areas present, by exact name; anything merely starting with the prefix is left alone. */
 async function listScratchContainers(
    connection: Connection,
    dialect: Dialect,
 ): Promise<string[]> {
+   const like = SCRATCH_PREFIX.replace(/_/g, "\\_");
    const result = await run(
       connection,
       dialect === "bigquery"
-         ? `SELECT schema_name FROM \`${process.env.BIGQUERY_TEST_PROJECT_ID}\`.\`region-${bigQueryLocation().toLowerCase()}\`.INFORMATION_SCHEMA.SCHEMATA WHERE STARTS_WITH(LOWER(schema_name), '${SCRATCH_PREFIX}')`
+         ? `SELECT schema_name FROM \`${bigQueryProject()}\`.\`region-${bigQueryLocation().toLowerCase()}\`.INFORMATION_SCHEMA.SCHEMATA WHERE STARTS_WITH(LOWER(schema_name), '${SCRATCH_PREFIX}')`
          : dialect === "snowflake"
-           ? `SELECT schema_name FROM ${process.env.SNOWFLAKE_DATABASE}.INFORMATION_SCHEMA.SCHEMATA WHERE schema_name ILIKE '${SCRATCH_PREFIX.replace(/_/g, "\\_")}%'`
-           : `SELECT schema_name FROM information_schema.schemata WHERE schema_name ILIKE '${SCRATCH_PREFIX.replace(/_/g, "\\_")}%'`,
+           ? `SELECT schema_name FROM ${snowflakeDatabase()}.INFORMATION_SCHEMA.SCHEMATA WHERE schema_name ILIKE '${like}%'`
+           : `SELECT schema_name FROM information_schema.schemata WHERE schema_name ILIKE '${like}%'`,
    );
-   return rowsOf(result).map((r) => String(r.schema_name ?? r.SCHEMA_NAME));
+   return rowsOf(result)
+      .map((r) => String(r.schema_name ?? r.SCHEMA_NAME))
+      .filter((n) => CONTAINER_NAME.test(n));
 }
 
 /**
- * Drop the scratch areas (and, in a fallback container, the prefixed tables)
- * a run left behind: every one older than `olderThanHours`, or, with
- * `runId`, the ones that run made, whatever their age (the workflow's
- * cleanup step, after a cancelled or timed-out run). Returns what it
- * dropped. One failed drop does not stop the rest; the failures are
- * returned too.
+ * Drop the scratch areas (and, in the BigQuery fallback dataset, the
+ * prefixed tables) a run left behind: every one older than
+ * `olderThanHours`, or, with `runId`, the ones that run made, whatever their
+ * age (the workflow's cleanup step, after a cancelled or timed-out run).
+ * Only a name of exactly our form is ever dropped. Returns what it dropped;
+ * one failed drop does not stop the rest, and the failures are returned too.
  */
 export async function sweepScratch(
    connection: Connection,
@@ -515,29 +566,25 @@ export async function sweepScratch(
    const fallback =
       dialect === "bigquery"
          ? process.env.WAREHOUSE_CONFORMANCE_BQ_DATASET
-         : dialect === "snowflake"
-           ? process.env.SNOWFLAKE_SCHEMA
-           : undefined;
+         : undefined;
    if (fallback) {
-      const container = containerCase(dialect, fallback);
       let tables: string[] = [];
       try {
          tables = await listPrefixedTables(
             connection,
-            dialect,
-            container,
+            fallback,
             SCRATCH_PREFIX,
          );
       } catch (error) {
-         failed.push(`${container}: ${String(error)}`);
+         failed.push(`${fallback}: ${String(error)}`);
       }
       for (const table of tables) {
          if (!due(table)) continue;
          try {
-            await dropTable(connection, dialect, container, table);
-            dropped.push(`${container}.${table}`);
+            await dropTable(connection, fallback, table);
+            dropped.push(`${fallback}.${table}`);
          } catch (error) {
-            failed.push(`${container}.${table}: ${String(error)}`);
+            failed.push(`${fallback}.${table}: ${String(error)}`);
          }
       }
    }

@@ -174,6 +174,28 @@ source: typed_q is typed_raw -> {
       },
    },
    {
+      name: "persist on a warehouse SQL source",
+      about: "The persist annotation directly on a wh.sql(...) source, with no -> query: the warehouse port of the DuckDB fixture's 'persist on a raw SQL source'",
+      files: {
+         "m.malloy": `${HEADER}
+
+@PERSIST(raw_direct)
+source: raw_direct is wh.sql("""
+  SELECT @COL(region), @COL(amount) FROM @TABLE(orders)
+""") extend {
+  measure: total is amount.sum()
+}
+`,
+      },
+      queries: [
+         {
+            name: "the source itself",
+            malloy:
+               "run: raw_direct -> { group_by: region; aggregate: total; order_by: region }",
+         },
+      ],
+   },
+   {
       name: "warehouse types under a rollup",
       about: "A rollup over the warehouse-typed table, summing a big integer past 2^53 and a NUMERIC by a string grain",
       gaps: {
@@ -283,9 +305,11 @@ export function warehouseShapes(): Shape[] {
 
 /** The variants a shape runs, narrowed by `WAREHOUSE_CONFORMANCE_VARIANTS`. */
 export function warehouseVariants(shape: Shape): Variant[] {
-   const only = process.env.WAREHOUSE_CONFORMANCE_VARIANTS?.split(",").map(
-      (v) => v.trim(),
-   );
+   // An empty setting (the workflow passes "" when no input names one)
+   // narrows nothing.
+   const only = process.env.WAREHOUSE_CONFORMANCE_VARIANTS?.split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
    return (shape.variants ?? VARIANTS).filter(
       (v) => !only?.length || only.includes(v),
    );
@@ -325,6 +349,13 @@ export function renderWarehouseFiles(
    };
    for (const [file, text] of Object.entries(shape.files)) {
       out[file] = text
+         .replace(/@TABLE\(([^)]*)\)/g, (_m, table: string) =>
+            sqlTablePath(scratch, table),
+         )
+         // A fixture column, quoted: Snowflake's are lower-case, created quoted.
+         .replace(/@COL\(([^)]*)\)/g, (_m, column: string) =>
+            scratch.dialect === "bigquery" ? `\`${column}\`` : `"${column}"`,
+         )
          .replace(/@PREAGG\(([^)]*)\)/g, (_m, grain: string) => {
             const name = `name="${named(`r_${grain}`)}"`;
             switch (variant) {
@@ -363,6 +394,22 @@ export function renderWarehouseFiles(
          });
    }
    return out;
+}
+
+/** A fixture table as the warehouse's own SQL names it, quoted where its dialect needs it. */
+function sqlTablePath(scratch: Scratch, table: string): string {
+   const path = scratch.tablePath(table);
+   switch (scratch.dialect) {
+      case "bigquery":
+         return `\`${path}\``;
+      case "postgres":
+         return path
+            .split(".")
+            .map((p) => `"${p}"`)
+            .join(".");
+      case "snowflake":
+         return path;
+   }
 }
 
 /** The tier a served query must report, as the DuckDB fixture expects it. */

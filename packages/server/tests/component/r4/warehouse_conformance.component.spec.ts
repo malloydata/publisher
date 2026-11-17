@@ -100,6 +100,8 @@ interface ResultRow {
    answeredBy?: string;
    detail?: string;
    gap?: string;
+   /** The metadata tolerances the served answer needed to match live. */
+   tolerated?: string[];
 }
 
 const { targets, skipped } = discoverTargets();
@@ -239,6 +241,9 @@ for (const target of targets) {
                              ? "fail"
                              : "pass",
                         answeredBy: verdict.answeredBy,
+                        ...(verdict.tolerated.length
+                           ? { tolerated: [...verdict.tolerated] }
+                           : {}),
                         ...(verdict.failure ? { detail: verdict.failure } : {}),
                         ...(gap ? { gap: `${gap.kind}: ${gap.reason}` } : {}),
                      });
@@ -280,7 +285,40 @@ for (const target of targets) {
             });
          }
       });
+
+      // Every case above can skip (a filter that matches nothing, a tier with
+      // no lake), and every skip reads green: a run that answered no query
+      // proves nothing, so it fails.
+      it("answered at least one query", () => {
+         expect(setupError).toBeUndefined();
+         expect(
+            results.filter((r) => r.status !== "skipped").length,
+         ).toBeGreaterThan(0);
+      });
    });
+}
+
+/**
+ * Key material, wherever an error message or a warning might have carried
+ * it: a PEM block, and a key JSON's `private_key` field.
+ */
+function scrubSecrets(text: string): string {
+   return (
+      text
+         .replace(
+            /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+            "[redacted private key]",
+         )
+         .replace(
+            /("?private_key(?:_id)?"?\s*[:=]\s*)"(?:[^"\\]|\\.)*"/gi,
+            '$1"[redacted]"',
+         )
+         // The same field inside a JSON string (an error message quoting a key file).
+         .replace(
+            /(private_key(?:_id)?\\"\s*:\s*\\")(?:[^"\\]|\\[^"])*/gi,
+            "$1[redacted]",
+         )
+   );
 }
 
 /** One cell of the summary: how a shape fared on one tier. */
@@ -305,26 +343,34 @@ function writeReport(
    dropError: unknown,
 ): void {
    fs.mkdirSync(OUT, { recursive: true });
+   const ran = results.filter((r) => r.status !== "skipped").length;
+   if (ran === 0 && !notes.some((n) => n.startsWith("setup failed"))) {
+      notes.push(
+         "**no query was answered**: every case was filtered out or skipped",
+      );
+   }
    fs.writeFileSync(
       path.join(OUT, `${dialect}.json`),
-      JSON.stringify(
-         {
-            dialect,
-            notes,
-            ...(dropError ? { dropError: String(dropError) } : {}),
-            results,
-            cases: cases.map((c) => ({
-               shape: c.shape,
-               variant: c.variant,
-               tag: c.tag,
-               loadError: c.run.loadError,
-               build: c.run.build,
-               verdicts: c.run.verdicts,
-               warnings: c.run.warnings,
-            })),
-         },
-         null,
-         2,
+      scrubSecrets(
+         JSON.stringify(
+            {
+               dialect,
+               notes,
+               ...(dropError ? { dropError: String(dropError) } : {}),
+               results,
+               cases: cases.map((c) => ({
+                  shape: c.shape,
+                  variant: c.variant,
+                  tag: c.tag,
+                  loadError: c.run.loadError,
+                  build: c.run.build,
+                  verdicts: c.run.verdicts,
+                  warnings: c.run.warnings,
+               })),
+            },
+            null,
+            2,
+         ),
       ),
    );
    const shapes = [...new Set(results.map((r) => r.shape))];
@@ -347,6 +393,20 @@ function writeReport(
       }),
       "",
    ];
+   const tolerated = results.filter((r) => r.tolerated?.length);
+   if (tolerated.length) {
+      md.push(
+         `<details><summary>Tolerances used (${tolerated.length} answers)</summary>`,
+         "",
+         ...tolerated.map(
+            (r) =>
+               `- **${r.shape}** [${r.variant}] ${r.query}: ${r.tolerated!.join(", ")}`,
+         ),
+         "",
+         "</details>",
+         "",
+      );
+   }
    const failures = results.filter((r) => r.status === "fail");
    if (failures.length) {
       md.push(
@@ -363,5 +423,8 @@ function writeReport(
          "",
       );
    }
-   fs.writeFileSync(path.join(OUT, `${dialect}.md`), md.join("\n"));
+   fs.writeFileSync(
+      path.join(OUT, `${dialect}.md`),
+      scrubSecrets(md.join("\n")),
+   );
 }
