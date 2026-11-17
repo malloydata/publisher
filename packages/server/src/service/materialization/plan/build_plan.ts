@@ -119,7 +119,10 @@ import {
 } from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { deletingWindowsOf } from "./rolling_window";
-import { tryCompileRollupCompanion } from "./rollup_compile";
+import {
+   tryCompileRollupCompanion,
+   type MaterializedBases,
+} from "./rollup_compile";
 import { compileV1BuildCompanion } from "./v1_build_companion";
 import { measureRefusalKey, rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
@@ -757,6 +760,8 @@ function gateDepsFor(
  * source orders after a persisted source it reads), and only the generated
  * sources as planned sources, under the AUTHOR's model path, where the
  * annotation is changed. Each is judged by the same gates as any persist source.
+ * Returns the companion's plans and files, which the model's rollup companion
+ * reads (a rollup over a stored `#(materialize)` base), or undefined.
  */
 async function collectGeneratedMaterialize(
    parts: BuildPlanParts,
@@ -769,7 +774,7 @@ async function collectGeneratedMaterialize(
       materializer: ModelMaterializer;
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
    },
-): Promise<void> {
+): Promise<MaterializedBases | undefined> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
    const { generated, refused, omitted } = await tryCompileMaterializeCompanion(
       {
@@ -785,7 +790,7 @@ async function collectGeneratedMaterialize(
       refused.map((r) => materializeRefusalFinding(r, args.modelPath)),
       omitted,
    );
-   if (!generated) return;
+   if (!generated) return undefined;
    for (const [key, compile] of generated.checkCompilers) {
       args.keyCheckCompilers?.set(key, compile);
    }
@@ -845,6 +850,7 @@ async function collectGeneratedMaterialize(
          }),
       };
    }
+   return { plans: generated.plans, files: generated.files };
 }
 
 /**
@@ -893,6 +899,7 @@ async function collectGeneratedRollups(
       packagePath: string;
       getRuntime: SynthesizedRuntimeFactory;
       modelDef: unknown;
+      materialized?: MaterializedBases;
    },
 ): Promise<void> {
    const { generated, refused, omitted } =
@@ -1285,8 +1292,9 @@ async function collectGeneratedTables(
       malloyModel,
       notBuilt: !getMaterializeEnabled(),
    });
+   let materialized: MaterializedBases | undefined;
    if (getMaterializeEnabled()) {
-      await collectGeneratedMaterialize(parts, {
+      materialized = await collectGeneratedMaterialize(parts, {
          modelPath,
          packagePath,
          getRuntime,
@@ -1311,6 +1319,7 @@ async function collectGeneratedTables(
       packagePath,
       getRuntime,
       modelDef: modelDefOf(malloyModel),
+      materialized,
    });
 }
 
