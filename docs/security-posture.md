@@ -247,6 +247,13 @@ a source that should not answer schema questions to outsiders wants a lock as we
   accepting ACL-model disclosure: a gate reading `childtable.name` names a relationship the caller
   may not otherwise see, so a failure to attach the gate returns an opaque error naming no column,
   join, or expression — only the source.
+- **A gate is evaluated with the query it is grafted into.** A gate on a field computed from a
+  timestamp follows the query's `timezone:`, and a gate inherited through a `->` derivation filters
+  the derivation's output, after its `all()`, window functions and `limit` have run over every row.
+  For these two live behaviours served answers match a live run. Gate on a column that already
+  holds the date or key, and filter a derivation's input with a first-stage `where:` on the gate's
+  given when its global context is sensitive. See
+  [row-level-access.md § Where a gate is evaluated](row-level-access.md#where-a-gate-is-evaluated).
 - **A row-level gate's given values land in the warehouse query log.** The filter is inlined
   (`WHERE org_id IN (7, 8)`), not parameterized, so every caller's group set appears verbatim in
   the warehouse's own query logging. Weigh that when deciding what a given carries — a group set
@@ -300,6 +307,8 @@ layout, or a legacy `.malloynb`) is Malloy, markdown and renderer tags. It is de
 is what makes them reviewable in a pull request and agent-authorable. Keeping them that way is a
 deliberate property, not an accident of scope. It is not absolute today: gap 3 below is where a
 declarative artifact still carries author-controlled HTML.
+
+**Process backstop.** An unhandled promise rejection, whether from a connection driver (a fire-and-forget cancel, for one) or from Publisher's own code, is logged at error and counted on `publisher_unhandled_rejection_total`, and the server keeps running, including a rejection inside a package-load worker. An uncaught synchronous exception still ends the process, because it can leave state half-written.
 
 ## Known gaps
 

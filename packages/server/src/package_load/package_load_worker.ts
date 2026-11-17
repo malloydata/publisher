@@ -99,6 +99,7 @@ import {
    type EligibilityRefusalReason,
 } from "../materialization_metrics";
 import { logger } from "../logger";
+import { installProcessSafetyHandlers } from "../process_safety";
 import type { SynthesizedRuntimeFactory } from "../service/materialization";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
@@ -138,6 +139,7 @@ import type {
    SerializedNotebookCell,
    WorkerBuildPlan,
    WorkerLogMessage,
+   WorkerUnhandledRejectionMessage,
 } from "./protocol";
 import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
@@ -151,6 +153,16 @@ if (!parentPort) {
 acceptBundledExperimentalDialects();
 
 const port = parentPort;
+
+// An unhandled rejection in a worker would otherwise end the thread. The main
+// thread logs and counts it (see WorkerUnhandledRejectionMessage).
+installProcessSafetyHandlers((report) => {
+   const msg: WorkerUnhandledRejectionMessage = {
+      type: "unhandled-rejection",
+      ...report,
+   };
+   port.postMessage(msg);
+});
 
 // ──────────────────────────────────────────────────────────────────────
 // RPC plumbing for worker → main calls
@@ -1701,6 +1713,16 @@ async function runServedCopyJob(job: CompileServedCopyRequest): Promise<void> {
       port.postMessage(
          await jobContext.run(context, () => compileServedCopy(job)),
       );
+   } catch (error) {
+      // Answer the job in-band rather than leave it waiting for the job timeout.
+      const result: CompileServedCopyResult = {
+         type: "compile-served-copy-result",
+         requestId: job.requestId,
+         protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
+         error: serializeError(error),
+         compileDurationMs: 0,
+      };
+      port.postMessage(result);
    } finally {
       inFlightJobs.delete(job.requestId);
       maybeExit();

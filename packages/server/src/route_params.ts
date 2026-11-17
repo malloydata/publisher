@@ -62,18 +62,31 @@ export function assertNoCollectionReload(
  * wants gone through the connection. Ignoring `true` would answer 204 to a
  * caller who believes its tables went with the record. Absent and `false`
  * (which older clients send on every delete) ask for exactly what a delete
- * does, and pass; any other value is the usual malformed-boolean 400.
+ * does, and pass. Any other value is refused with a 400 of its own, whose
+ * fix is to omit the parameter: the malformed-boolean message would suggest
+ * `dropTables=true`, which is refused too, and a client following it would
+ * loop.
  */
 export function assertNoDropTables(
    req: Pick<Request, "query" | "path" | "method">,
 ): void {
-   if (!optionalBooleanParam(req, "dropTables")) return;
+   const raw = req.query.dropTables;
+   const parsed = parseBooleanParam(raw);
+   if (!parsed.ok) {
+      throw new BadRequestError(
+         `Invalid dropTables value ${JSON.stringify(raw)}: a materialization ` +
+            `delete is record-only and takes no dropTables. Fix: ` +
+            `${req.method} ${req.path} (omit dropTables, or send ` +
+            `dropTables=false).`,
+      );
+   }
+   if (!parsed.value) return;
    throw new BadRequestError(
       "dropTables=true is no longer supported: deleting a materialization " +
          "is record-only and never drops a table. Delete without dropTables, " +
          "and drop any table you want gone yourself through its connection, " +
          "after checking that no remaining run, of any version, names a table " +
-         "with that name.",
+         "with that name in any place.",
    );
 }
 

@@ -575,6 +575,35 @@ describe("reclaimStorageTablesFromFailedRun", () => {
       );
    });
 
+   it("never drops a table whose name a live manifest names through another destination", async () => {
+      // A table's name does not say where it is: `lake_alias` may be another
+      // name for the very DuckLake `lake` names, so a committed run that names
+      // `daily_v1` through it may be serving this table. Judged by the name's
+      // last segment, whatever the destination or container.
+      await reclaim(
+         [entry("daily_v1")],
+         [
+            {
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  entries: {
+                     other: {
+                        storageDestinationName: "lake_alias",
+                        physicalTableName: "main.daily_v1",
+                     },
+                  },
+               },
+            },
+         ],
+      );
+
+      expect(said(infoLog, /Keeping a table from a failed run/)).toBe(true);
+      expect(said(infoLog, /Dropped a materialized storage table/)).toBe(false);
+      expect(said(warnLog, /Failed to drop a materialized storage table/)).toBe(
+         false,
+      );
+   });
+
    it("does attempt the drop when nothing references the table", async () => {
       // The inverse, so the test above is known to be the still-referenced check
       // doing the work rather than the reclaim being inert. No real destination

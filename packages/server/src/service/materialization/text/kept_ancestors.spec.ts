@@ -99,3 +99,59 @@ describe("the kept walk over a table-backed base", () => {
       ).toEqual([]);
    });
 });
+
+describe("carrying an ancestor's blocks from another file", () => {
+   const BASE = "file:///pkg/base.malloy";
+   const CHILD = "file:///pkg/child.malloy";
+   /** `snippet`'s range in `text`, 0-based lines and characters. */
+   const rangeOf = (text: string, snippet: string) => {
+      const at = text.indexOf(snippet);
+      const pos = (offset: number) => {
+         const before = text.slice(0, offset).split("\n");
+         return {
+            line: before.length - 1,
+            character: before[before.length - 1].length,
+         };
+      };
+      return { start: pos(at), end: pos(at + snippet.length) } as never;
+   };
+   const baseDecl = (lookup: string) =>
+      `source: lk is trips extend { join_one: L is ${lookup} on cat = L.cat }`;
+   const baseText = (lookup: string) =>
+      `source: trips is duckdb.table('t')\nsource: lookup is duckdb.table('c')\n${baseDecl(lookup)}\n`;
+   const childDecl = "source: lk_other is lk extend { where: amt > 0 }";
+   const confirmed = (base: string, child: string) =>
+      confirmedAncestors(
+         (url) => (url === BASE ? base : url === CHILD ? child : undefined),
+         CHILD,
+         rangeOf(child, childDecl),
+         [
+            {
+               sourceID: `lk@${BASE}`,
+               url: BASE,
+               range: rangeOf(
+                  base,
+                  baseDecl(base.includes("`lookup`") ? "`lookup`" : "lookup"),
+               ),
+            },
+         ] as never,
+      );
+
+   it("carries them through a whole import", () => {
+      const child = `import "base.malloy"\n${childDecl}\n`;
+      expect(confirmed(baseText("lookup"), child)).toHaveLength(1);
+   });
+
+   it("not when the importing file declares a name the blocks read, backticked or not", () => {
+      const child = `import "base.malloy"\nsource: lookup is duckdb.table('evil')\n${childDecl}\n`;
+      expect(confirmed(baseText("lookup"), child)).toEqual([]);
+      expect(confirmed(baseText("`lookup`"), child)).toEqual([]);
+      const backtickedChild = `import "base.malloy"\nsource: \`lookup\` is duckdb.table('evil')\n${childDecl}\n`;
+      expect(confirmed(baseText("lookup"), backtickedChild)).toEqual([]);
+   });
+
+   it("not through a selective import", () => {
+      const child = `import { lk } from "base.malloy"\n${childDecl}\n`;
+      expect(confirmed(baseText("lookup"), child)).toEqual([]);
+   });
+});
