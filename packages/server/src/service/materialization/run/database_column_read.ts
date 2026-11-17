@@ -15,12 +15,20 @@
  * than one schema, whose name does not parse, or whose connection is
  * unknown, is `unread`: the bind leaves it out and its sources answer live
  * (fail safe). Never throws.
+ *
+ * A table on a DuckLake connection whose catalog names a 128-bit integer
+ * column is read as holding a DOUBLE, which its Parquet files do
+ * (`ducklakeStoresAsDouble`), so the bind never reads it as exact.
  */
 
 import { getDialect, type Connection } from "@malloydata/malloy";
 import { errMessage } from "../../../utils";
 import { tablePathParts } from "../../quoting";
-import { storedColumnsOfOutput } from "../stored_column_types";
+import { connectionTypeOf } from "../../connection_type";
+import {
+   ducklakeStoresAsDouble,
+   storedColumnsOfOutput,
+} from "../stored_column_types";
 import type { FreshnessManifest, ObservedColumns } from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
 import { redactConnectionSecrets } from "./materialization_run_support";
@@ -96,11 +104,14 @@ export async function observedDatabaseColumns(args: {
             });
          }
       }
+      // DuckLake writes a 128-bit integer to Parquet as a DOUBLE.
+      const ducklake = connectionTypeOf(connection) === "ducklake";
       for (const batch of batches) {
          tasks.push(() =>
             readBatch(
                connection,
                dialect,
+               ducklake,
                batch,
                args.timeoutMs ?? BIND_READ_TIMEOUT_MS,
                out,
@@ -116,6 +127,8 @@ export async function observedDatabaseColumns(args: {
 async function readBatch(
    connection: ReadConnection,
    dialect: string,
+   /** A DuckLake connection's table: a 128-bit integer holds a DOUBLE. */
+   ducklake: boolean,
    batch: CatalogBatch,
    timeoutMs: number,
    out: Map<string, ObservedColumns>,
@@ -155,6 +168,14 @@ async function readBatch(
                : {
                     dialect,
                     columns: named.map((c) => {
+                       if (ducklake && ducklakeStoresAsDouble(c.type)) {
+                          return {
+                             name: c.name,
+                             type: "DOUBLE",
+                             nativeType: "DOUBLE",
+                             storedAsDouble: true as const,
+                          };
+                       }
                        // Spelled as the build's capture spells it; a type
                        // Malloy reads as no basic type has no spelling.
                        const [spelled] = storedColumnsOfOutput(

@@ -8,6 +8,7 @@ import * as os from "os";
 import * as path from "path";
 import { capturedColocatedSchema } from "./colocated_build_strategy";
 import { observedDatabaseColumns } from "./database_column_read";
+import { recordConnectionType } from "../../connection_type";
 
 /**
  * The bind's read of each colocated table's columns from its warehouse:
@@ -300,5 +301,75 @@ describe("observedDatabaseColumns: batched, bounded, timed out", () => {
          connection: async () => r.connection,
       });
       expect(observed.get("t")).toEqual({ unread: "ambiguous" });
+   });
+});
+
+/**
+ * P4-01: DuckLake writes a 128-bit integer to Parquet as a DOUBLE while its
+ * catalog still says HUGEINT. A table on a `ducklake` connection reads such a
+ * column as the DOUBLE it holds; the same column on a plain DuckDB connection,
+ * which keeps every digit, reads as its own type.
+ */
+describe("observedDatabaseColumns: a DuckLake 128-bit integer (P4-01)", () => {
+   const open = async (name: string) => {
+      const c = new DuckDBConnection(
+         name,
+         path.join(
+            fs.mkdtempSync(path.join(os.tmpdir(), "observed-")),
+            "db.duckdb",
+         ),
+      );
+      await c.runSQL(
+         `CREATE TABLE t AS SELECT 1::HUGEINT AS h, 1::UHUGEINT AS u, 1::BIGINT AS b, 1::DECIMAL(38,0) AS d`,
+      );
+      return c;
+   };
+   const read = async (connection: DuckDBConnection) =>
+      (
+         (
+            await observedDatabaseColumns({
+               entries: { id: { tableName: "t" } },
+               connectionNameOf: () => "w",
+               connection: async () => connection,
+            })
+         ).get("id") as { columns: unknown[] }
+      ).columns;
+
+   it("reads it as a DOUBLE on a ducklake connection", async () => {
+      const c = recordConnectionType(await open("lake_like"), "ducklake");
+      try {
+         expect(await read(c)).toEqual([
+            {
+               name: "h",
+               type: "DOUBLE",
+               nativeType: "DOUBLE",
+               storedAsDouble: true,
+            },
+            {
+               name: "u",
+               type: "DOUBLE",
+               nativeType: "DOUBLE",
+               storedAsDouble: true,
+            },
+            { name: "b", type: "BIGINT", nativeType: "BIGINT" },
+            { name: "d", type: "DOUBLE", nativeType: "DECIMAL(38,0)" },
+         ]);
+      } finally {
+         await c.close();
+      }
+   });
+
+   it("reads it as its own type on a plain duckdb connection", async () => {
+      const c = recordConnectionType(await open("plain"), "duckdb");
+      try {
+         const columns = (await read(c)) as {
+            name: string;
+            storedAsDouble?: true;
+         }[];
+         expect(columns.some((col) => col.storedAsDouble)).toBe(false);
+         expect(columns[0]).toMatchObject({ name: "h", nativeType: "HUGEINT" });
+      } finally {
+         await c.close();
+      }
    });
 });

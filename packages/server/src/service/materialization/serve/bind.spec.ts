@@ -764,6 +764,64 @@ describe("applyObservedColumns", () => {
       ]);
    });
 
+   // P4-01: a DuckLake table's 128-bit integer holds a DOUBLE's digits
+   // (the bind's read marks it `storedAsDouble`), whatever its build wrote.
+   it("P4-01: reads a DuckLake 128-bit integer as the DOUBLE it holds, and leaves out a rollup that stores one", () => {
+      const huge = [
+         { name: "id", type: "HUGEINT" },
+         { name: "amt", type: "DOUBLE" },
+         { name: "d", type: "DATE" },
+      ];
+      const lake: Binding = {
+         ...binding,
+         schema: huge,
+         nativeSchema: [{ name: "id", type: "HUGEINT" }],
+      };
+      const asDouble = {
+         name: "id",
+         type: "DOUBLE",
+         nativeType: "DOUBLE",
+         storedAsDouble: true as const,
+      };
+      const out = applyObservedColumns({
+         entries: {
+            addr1: { tableName: "orders_t", schema: huge },
+            rollup1: {
+               tableName: "orders_by_d",
+               schema: [{ name: "total__partial", type: "HUGEINT" }],
+            },
+         },
+         bindings: [lake],
+         observed: new Map([
+            ["addr1", { columns: [asDouble, ...huge.slice(1)] }],
+            ["rollup1", { columns: [{ ...asDouble, name: "total__partial" }] }],
+         ]),
+      });
+      expect(out.bindings[0].schema[0]).toEqual({ name: "id", type: "DOUBLE" });
+      expect(out.bindings[0].nativeSchema).toEqual([
+         { name: "id", type: "DOUBLE" },
+      ]);
+      expect(Object.keys(out.entries)).toEqual(["addr1"]);
+      expect(out.drifted.map((d) => d.columns)).toEqual([
+         [
+            {
+               column: "id",
+               builtType: "HUGEINT",
+               observedType: "DOUBLE",
+               storedAsDouble: true,
+            },
+         ],
+         [
+            {
+               column: "total__partial",
+               builtType: "HUGEINT",
+               observedType: "DOUBLE",
+               storedAsDouble: true,
+            },
+         ],
+      ]);
+   });
+
    it("leaves out a substituted table (a rollup) whose column drifted: no cast reaches it", () => {
       const out = applyObservedColumns({
          entries,

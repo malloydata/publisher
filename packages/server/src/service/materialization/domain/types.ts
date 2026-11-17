@@ -169,6 +169,12 @@ export type ObservedColumns =
            type?: string;
            /** Its type as the warehouse's catalog names it (`numeric(10,2)`). */
            nativeType?: string;
+           /**
+            * The catalog names a 128-bit integer, but the table is in DuckLake,
+            * whose Parquet files hold the column as a DOUBLE: `type` and
+            * `nativeType` say DOUBLE, what its values hold.
+            */
+           storedAsDouble?: true;
         }[];
         /** The connection's dialect the types were read on. */
         dialect?: string;

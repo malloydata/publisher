@@ -619,13 +619,26 @@ export class PackageMaterialization {
    /** Log what the bind's column read found: drifted tables, and tables it could not read. */
    private logObservedOutcome(): void {
       for (const drift of this.observedOutcome.drifted) {
+         const asDouble = drift.columns.filter((c) => c.storedAsDouble);
+         if (asDouble.length > 0) {
+            logger.warn(
+               "A DuckLake table holds a 128-bit integer column as a DOUBLE, so it is never read as exact: each such column is answered live where live keeps more digits",
+               {
+                  code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+                  packageName: this.owner.packageName(),
+                  sourceEntityId: drift.sourceEntityId,
+                  columns: asDouble,
+               },
+            );
+            if (asDouble.length === drift.columns.length) continue;
+         }
          logger.warn(
             "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
             {
                code: STORED_COLUMN_TYPE_MISMATCH_CODE,
                packageName: this.owner.packageName(),
                sourceEntityId: drift.sourceEntityId,
-               columns: drift.columns,
+               columns: drift.columns.filter((c) => !c.storedAsDouble),
             },
          );
       }

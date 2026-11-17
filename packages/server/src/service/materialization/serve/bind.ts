@@ -476,8 +476,17 @@ export interface UnreadTable {
 /** One bound colocated table whose warehouse columns moved since its build. */
 export interface ObservedDrift {
    sourceEntityId: string;
-   /** Each column whose type is no longer the one its build wrote, or that is gone. */
-   columns: { column: string; builtType: string; observedType?: string }[];
+   /**
+    * Each column whose type is no longer the one its build wrote, or that is
+    * gone, or a 128-bit integer a DuckLake table holds as a DOUBLE
+    * (`storedAsDouble`).
+    */
+   columns: {
+      column: string;
+      builtType: string;
+      observedType?: string;
+      storedAsDouble?: true;
+   }[];
 }
 
 /**
@@ -632,8 +641,10 @@ function nativeDriftOf(
          ...(now?.nativeType !== undefined
             ? { observedType: now.nativeType }
             : {}),
+         ...(now?.storedAsDouble ? { storedAsDouble: true as const } : {}),
       };
       if (!now) return [report];
+      if (now.storedAsDouble) return [report];
       return now.nativeType !== undefined &&
          normalizedType(now.nativeType) !== normalizedType(c.type)
          ? [report]
@@ -670,6 +681,8 @@ type ColumnDrift =
  * - a timestamp now zoned, or a zoned one now naive: `drop`, unless the
  *   dialect is DuckDB, whose serving sessions run in UTC so either reads
  *   alike;
+ * - a 128-bit integer in a DuckLake table (`storedAsDouble`): `retype`, as
+ *   the DOUBLE its Parquet files hold;
  * - another Malloy type, or the same one with another native type (a
  *   `bigint` altered to `numeric(10,2)`): `retype`, read through the one
  *   stored-column read plan with the type it holds now;
@@ -702,6 +715,18 @@ function columnDrift(
       return capabilitiesOf(read.dialect).utcSessions
          ? { kind: "none" }
          : { kind: "drop", report };
+   }
+   // A DuckLake table's 128-bit integer holds a DOUBLE's digits, whatever its
+   // build wrote: read as the DOUBLE it is, never as exact.
+   if (now.storedAsDouble) {
+      return {
+         kind: "retype",
+         type: now.type,
+         ...(now.nativeType !== undefined
+            ? { nativeType: now.nativeType }
+            : {}),
+         report: { ...report, storedAsDouble: true },
+      };
    }
    if (typeFamily(now.type) !== typeFamily(built.type) || nativeMoved) {
       return {

@@ -677,10 +677,12 @@ const HUGEINT_EXACT =
  * read through the warehouse's own bigint type, on live's own data path,
  * which rounds where live rounds and gives the field live's `bigint` subtype.
  *
- * - A `storage=` table (`colocated` false) is in DuckDB and its schema is
- *   what DESCRIBE reported: an integer column, or a DECIMAL with no scale, is
- *   read as HUGEINT (UHUGEINT as itself), which holds every value exactly;
- *   one stored as a float has lost digits already and is left out.
+ * - A `storage=` table (`colocated` false) is in a DuckLake destination and
+ *   its schema is what DESCRIBE reported: a 64-bit or narrower integer
+ *   column, or a DECIMAL with no scale, is read as HUGEINT, which holds every
+ *   value exactly; one stored as a float has lost digits already, and so has
+ *   a 128-bit integer, which DuckLake writes to Parquet as a DOUBLE
+ *   ({@link ducklakeStoresAsDouble}): both are left out.
  * - A colocated table is in the source's own warehouse, and its column can
  *   be wider than any type Malloy names for a `bigint` number (Postgres
  *   stores a sum of BIGINTs as `numeric`, SQL Server's `decimal(38,0)` is
@@ -825,11 +827,32 @@ function isBigIntegerField(field: unknown): boolean {
    return f.type === "number" && f.numberType === "bigint";
 }
 
-/** The DuckDB type a stored column is read as to keep every digit, or none. */
+/**
+ * The DuckDB type a `storage=` column is read as to keep every digit, or none.
+ *
+ * A storage destination is a DuckLake catalog, and DuckLake (DuckDB 1.5)
+ * writes a 128-bit integer column (`HUGEINT`, `UHUGEINT`) to Parquet as a
+ * DOUBLE while its catalog still reports the 128-bit type, so a value past
+ * 2^53 comes back rounded (4530000000000225187 as 4530000000000225280). Only
+ * rows still inlined in the catalog keep every digit, and a reader cannot
+ * tell which it has, so such a column has no exact read: left out, so only a
+ * query reading it is answered live ({@link ducklakeStoresAsDouble}).
+ */
 function duckdbBigIntegerCast(storedType: string): string | undefined {
    const base = storedType.trim().toUpperCase();
-   if (base === "UHUGEINT") return "UHUGEINT";
+   if (ducklakeStoresAsDouble(base)) return undefined;
    return HUGEINT_EXACT.test(base) ? "HUGEINT" : undefined;
+}
+
+/**
+ * Whether DuckLake stores a column of this type, as its catalog reports it,
+ * as a DOUBLE in its Parquet files: a 128-bit integer, which Parquet has no
+ * type for. Measured on DuckDB 1.5.5 with ducklake; a plain DuckDB table
+ * keeps every digit of the same column, and a `DECIMAL(38,0)` keeps them in
+ * DuckLake too.
+ */
+export function ducklakeStoresAsDouble(storedType: string): boolean {
+   return /^(HUGEINT|INT128|UHUGEINT)$/i.test(storedType.trim());
 }
 
 /**
