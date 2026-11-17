@@ -167,6 +167,9 @@ function placeJoins(
       if (f.join === undefined) return false;
       const r = byName.get(activeName(f));
       if (r === undefined) return false;
+      // A joined composite the query does not use is left as it is: it is
+      // not part of the answer.
+      if (r.type === "composite" && canon(r) === canon(f)) continue;
       if (!placeMembers(f, r, `${path}.${activeName(f)}`, out)) return false;
    }
    return true;
@@ -180,18 +183,19 @@ async function membersResolved(
    runnable: QueryMaterializer,
 ): Promise<string[] | undefined> {
    const view = await readPreparedQuery(runnable);
+   // A composite the query's own stages hold (a query-level `extend`, a
+   // nest's join) is not placed here.
+   if (holdsComposite(view.pipeline)) return undefined;
+   // Malloy records a resolution exactly when the query resolved a
+   // composite, through its source or a join of it: none, none reached.
+   const resolved = view.compositeResolvedSourceDef as StructLike | undefined;
+   if (resolved === undefined || resolved === null) return [];
    if (view.modelDef === undefined) return undefined;
    const source = resolveStructRefSource<StructLike>(
       view.structRef as never,
       view.modelDef as never,
    );
    if (source === undefined) return undefined;
-   if (!holdsComposite(source) && !holdsComposite(view.pipeline)) return [];
-   // A composite the query's own stages reach (a query-level `extend`, a
-   // nest's join) is not placed here.
-   if (holdsComposite(view.pipeline)) return undefined;
-   const resolved = view.compositeResolvedSourceDef as StructLike | undefined;
-   if (resolved === undefined || resolved === null) return undefined;
    const out: string[] = [];
    return placeMembers(source, resolved, "", out) ? out : undefined;
 }
