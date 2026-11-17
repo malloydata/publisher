@@ -47,6 +47,7 @@ import {
    openTimeLockdownOptions,
    preloadExcel,
    relativeReadEntries,
+   runAsOperatorSetup,
 } from "./duckdb_lockdown";
 
 /** A connection's settings, as `@malloydata/db-duckdb` normalized them. */
@@ -299,16 +300,20 @@ export function installDuckDBInstanceSharing(): void {
       if (isInstanceLocked(this)) {
          // Malloy's own split (duckdb_connection.ts, splitSetupSQL).
          const setupSQL = this.normalized.setupSQL ?? "";
-         for (const statement of setupSQL
-            .split(";\n")
-            .map((part) => part.trim())
-            .filter((part) => part !== "")) {
-            await this.runDuckDBQuery(statement);
-         }
+         await runAsOperatorSetup(async () => {
+            for (const statement of setupSQL
+               .split(";\n")
+               .map((part) => part.trim())
+               .filter((part) => part !== "")) {
+               await this.runDuckDBQuery(statement);
+            }
+         });
          this.connectionSetupRan = true;
          return;
       }
-      await setupOnce.call(this);
+      // Malloy's baseline and the operator's setupSQL, before any caller
+      // statement: not held to the one-statement rule (duckdb_lockdown.ts).
+      await runAsOperatorSetup(() => setupOnce.call(this));
       if (this.normalized.lockConfiguration === true) markInstanceLocked(this);
    };
 

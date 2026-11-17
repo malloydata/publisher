@@ -69,7 +69,7 @@ Three cases let a stored table answer a caller with rows live would not return t
 
 **Changed: a persisted query's table reads as the query, with no `_query`.** A persisted named query's table now takes the readable name a persisted view's does: `<package>__<file>__<query>__p<8 hex>` instead of `<package>__<file>__<query>_query__p<8 hex>`. **Each persisted query's table is renamed and rebuilt once**, by the package's next auto-run, and the old table is dropped by the rename rule only after the new one is served; a failed run leaves the old one. The hash is unchanged (it is over the full generated source name), so a query, a view or a source whose names read alike still build separate tables. A query whose own name ends `_query` keeps it. Anything that reads a persisted query's table by name outside Malloy must read the new name, or give the query a `name=`.
 
-## [Unreleased] — security: every DuckDB instance is locked down (BREAKING for remote reads through `duckdb`)
+## [Unreleased] — (BREAKING) security: every DuckDB instance is locked down, and raw SQL on DuckDB runs as a single SELECT
 
 **Security fix.** Every DuckDB instance Publisher created ran with DuckDB's defaults. SQL that reached one, a raw `sqlQuery` (on the package `duckdb` sandbox too) or model text (`duckdb.sql(...)`, `duckdb.table(...)`), could read any local file the server process could read, use the host's ambient cloud credentials and its cloud metadata service, and load community extensions or write persistent secrets. Every instance now runs under a lockdown chosen by what it needs:
 
@@ -80,14 +80,16 @@ The lockdown is part of each instance's configuration identity, so a locked inst
 
 **Who was affected:** any deployment where people who should not have the server's own reach could run SQL or write models: callers of the query endpoints with raw SQL, and package authors. Deployments behind a gateway that admitted only trusted callers and packages were not exposed beyond what those already had.
 
-**BREAKING:**
+**BREAKING**, each with its migration:
 
-- A model or query that reads a remote file (`https://`, `s3://`, `gs://`) through a plain `duckdb` connection, the package sandbox included, now fails. Read it through a configured connection instead: a `duckdb` connection whose `attachedDatabases` holds a credential for the bucket, or a `ducklake` connection.
-- A read or a write outside the connection's own roots fails, absolute paths and `..` included: the package directory for the sandbox, the environment directory for an environment `duckdb` connection, the data path for a DuckLake catalog. In the sandbox, a file that is a symlink out of the package is refused, and so is a relative glob over the package's top level (`'*.csv'`); a glob in a subdirectory (`'data/*.csv'`), a named file, or an absolute path inside the package reads as before.
-- Extension autoload is off on a locked connection: only the extensions its own setup loads, and `json`, `icu`, `excel` and `ducklake`, are available.
-- `setupSQL` on an environment `duckdb` connection with no `attachedDatabases` runs confined: it cannot reach the network, read or write outside the environment directory, or install or load an extension.
-- On a locked connection, SQL cannot create, replace or drop a secret, call DuckDB's logging or profiling functions, or run SQL taken from text (`query()`, `query_table()`, `json_execute_serialized_sql`, `IMPORT DATABASE`).
-- MotherDuck connections are locked like the other networked readers but have not been tested with external access off.
+- **Remote reads through `duckdb`.** A model or query that reads a remote file (`https://`, `s3://`, `gs://`) through a plain `duckdb` connection, the package sandbox included, now fails. *Migrate:* read it through a configured connection: a `duckdb` connection whose `attachedDatabases` holds a credential for the bucket, or a `ducklake` connection.
+- **Paths outside the connection's roots.** A read or write outside the package directory (the sandbox), the environment directory (an environment `duckdb` connection) or the data path (a DuckLake catalog) fails, absolute paths and `..` included. *Migrate:* move the file under the root, or reference it through a connection whose root holds it.
+- **`setupSQL` confinement.** `setupSQL` on an environment `duckdb` connection with no `attachedDatabases` runs confined: no network, nothing outside the environment directory, no `INSTALL` and no extension beyond `json`, `icu`, `excel` and `ducklake`. *Migrate:* keep what it reads under the environment directory, drop `INSTALL` lines, and attach remote data through `attachedDatabases`.
+- **Symlinks and globs in the sandbox.** A file that is a symlink out of the package is refused, and so is a relative glob over the package's top level (`'*.csv'`). *Migrate:* copy the data into the package, and glob a subdirectory (`'data/*.csv'`) or name the files.
+- **Extension autoload.** Autoload is off on a locked connection: only the extensions its own setup loads, plus `json`, `icu`, `excel` and `ducklake`, are available. *Migrate:* use a connection type that loads what you need (`attachedDatabases`, `ducklake`); there is no per-connection extension setting.
+- **Refused statements.** On a locked connection, SQL cannot create, replace or drop a secret, call DuckDB's logging or profiling functions, or run SQL taken from text (`query()`, `query_table()`, `json_execute_serialized_sql`, `IMPORT DATABASE`). *Migrate:* configure credentials as connection settings; none of these has a replacement through SQL.
+- **Single-SELECT raw SQL.** Raw SQL sent to a DuckDB-backed connection (the package sandbox, an environment `duckdb`, `ducklake` or `motherduck` connection), through the connection SQL routes or a `.sql()` source, runs only as a single SELECT, CTEs included. Several statements, or anything else (`COPY`, `CREATE`, `INSERT`, `ATTACH`, `SET`), are refused with the same 400 a managed DuckLake connection answers. *Migrate:* send one SELECT per request; build tables with `#@ persist` instead of `CREATE TABLE` through raw SQL.
+- **MotherDuck** connections are locked like the other networked readers, but have not been tested with external access off.
 
 **Known residual:** confining a connection to its data path is not org isolation inside one shared bucket. Isolating orgs that share a bucket requires credentials the host scopes per org; see [security-posture.md](docs/security-posture.md#known-gaps), gap 6, which also lists the other limits.
 

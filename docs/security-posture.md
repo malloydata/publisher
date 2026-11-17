@@ -391,10 +391,13 @@ shared with a connection that needs a different setup or a different policy.
 
 What it does not cover, so a multi-tenant deployment still has to:
 
-- **The confinement is not read-only.** A connection can write wherever it can read: a sandbox
-  can overwrite its own package's files (its models included), and an environment connection can
-  write anywhere under the environment directory, other packages' files included. Publisher does
-  not yet restrict raw SQL to reads.
+- **Raw SQL is read-only; the connection's own work is not.** Caller and author SQL on a
+  DuckDB-backed connection (the sandbox, and an environment `duckdb`, `ducklake` or `motherduck`
+  connection) runs only as a single SELECT, CTEs included: the connection SQL routes and `.sql()`
+  sources are decided by DuckDB's parser, and a query Malloy builds around author text runs one
+  statement per call. What still writes inside a connection's roots is the operator's `setupSQL`
+  and Publisher's own work (a `#@ persist` build, a temporary table it creates around a caller's
+  SELECT).
 - **An attached `s3` or `gcs` bucket allowlists its whole URL scheme.** These entries name no
   bucket, so a `duckdb` connection with one may reach any URL of that scheme, and the secret is the
   control: callers cannot create, replace or drop secrets on a locked instance, so the only

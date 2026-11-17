@@ -162,6 +162,41 @@ async function expectCommonVectorsRefused(
          "locked down",
       );
    }
+   // One statement per call, and nothing Malloy's own separator could put in
+   // front of a query but a macro: author text spliced into a query cannot
+   // end it and start a write.
+   for (const statement of [
+      "SELECT 1; SELECT 2",
+      `SELECT 1 AS a; COPY (SELECT 1) TO '${root}/pkg/overwritten.csv'`,
+      `COPY (SELECT 1) TO '${root}/pkg/x.csv'\n-- hack: split on this\nSELECT 1`,
+   ]) {
+      expect(await refused(connection, statement)).toContain("locked down");
+   }
+   // A .sql() source is one SELECT, decided by DuckDB's parser.
+   const sqlSource = (selectStr: string) =>
+      (
+         connection as unknown as {
+            fetchSchemaForSQLStruct(
+               ref: { connection: string; selectStr: string },
+               options: { refreshTimestamp?: number },
+            ): Promise<{ structDef?: unknown; error?: string }>;
+         }
+      ).fetchSchemaForSQLStruct(
+         { connection: connection.name, selectStr },
+         { refreshTimestamp: Date.now() },
+      );
+   for (const selectStr of [
+      `COPY (SELECT 1) TO '${root}/pkg/y.csv'`,
+      "SELECT 1; SELECT 2",
+      "INSERT INTO t VALUES (1)",
+   ]) {
+      expect((await sqlSource(selectStr)).error).toContain(
+         "runs only as a single SELECT",
+      );
+   }
+   expect(
+      (await sqlSource("WITH x AS (SELECT 1 AS a) SELECT a FROM x")).structDef,
+   ).toBeDefined();
    // A name shared with a refused function is not refused as a column.
    expect(
       rowsOf(await connection.runSQL("SELECT 1 AS query, 2 AS duckdb_log")),

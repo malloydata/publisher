@@ -62,7 +62,11 @@ import {
    getExtensionFetchPolicy,
 } from "../config";
 import { logger } from "../logger";
-import { serializeSQL } from "./single_select";
+import {
+   assertSingleSelect,
+   countStatements,
+   serializeSQL,
+} from "./single_select";
 
 /**
  * DuckDB options every Publisher instance opens with (applied in
@@ -968,6 +972,55 @@ export function runAsInternalStatement<T>(
 }
 
 /**
+ * The span of a connection's own setup (Malloy's baseline and the operator's
+ * setupSQL), which runs before any caller statement and may issue several
+ * statements at once. Like {@link internalStatement}, it belongs to the setup's
+ * own async chain: the caller statement that triggered the setup runs after
+ * it, on the caller's chain, outside it.
+ */
+const operatorSetup = new AsyncLocalStorage<boolean>();
+
+/** Run a connection's own setup (`fn`) as operator setup. */
+export function runAsOperatorSetup<T>(fn: () => Promise<T>): Promise<T> {
+   return operatorSetup.run(true, fn);
+}
+
+/** Malloy's own statement separator (its DuckDB dialect's `hackSplitComment`). */
+const MALLOY_SPLIT = "-- hack: split on this";
+
+/**
+ * Refuse a Malloy-shaped SQL text (`runSQL`, `runSQLStream`) on a locked
+ * instance unless every part Malloy splits off before the last is a macro
+ * Malloy itself defines (`DROP MACRO` / `CREATE MACRO`): author text that
+ * spells the separator cannot slip a statement of its own in front of the
+ * query.
+ */
+async function assertMalloyParts(
+   connection: unknown,
+   sql: string,
+): Promise<void> {
+   if (!isConfigurationFrozen(connection) || operatorSetup.getStore()) return;
+   const parts = sql.split(MALLOY_SPLIT);
+   for (const part of parts.slice(0, -1)) {
+      const words = tokenizeDuckDBSQL(part)
+         .filter((token) => token.kind === "word")
+         .map((token) => token.value);
+      const macro =
+         (words[0] === "drop" && words[1] === "macro") ||
+         (words[0] === "create" &&
+            (words[1] === "macro" ||
+               (words[1] === "or" &&
+                  words[2] === "replace" &&
+                  words[3] === "macro")));
+      if (!macro) {
+         throw new DuckDBStatementRefusedError(
+            "a statement placed before the query",
+         );
+      }
+   }
+}
+
+/**
  * Refuse `sql` on `connection` unless it may run: on a locked instance, the
  * statements {@link refusedOnLockedInstance} or DuckDB's own parser
  * ({@link refusedByParser}) names are refused before they reach DuckDB. An
@@ -979,10 +1032,22 @@ export async function assertStatementAllowed(
    sql: string,
 ): Promise<void> {
    if (!isConfigurationFrozen(connection)) return;
+   const internal = internalStatement.getStore() === sql;
    const reason = refusedOnLockedInstance(sql) ?? (await refusedByParser(sql));
-   if (!reason) return;
-   if (internalStatement.getStore() === sql) return;
-   throw new DuckDBStatementRefusedError(reason);
+   if (reason && !internal) throw new DuckDBStatementRefusedError(reason);
+   // One statement per call outside the connection's own setup: author text
+   // spliced into a query (a sql_* expression, a .sql() source) cannot end
+   // it and start another.
+   if (!internal && !operatorSetup.getStore()) {
+      const count = await countStatements(sql);
+      if (count !== 1) {
+         throw new DuckDBStatementRefusedError(
+            count === undefined
+               ? "SQL DuckDB's parser rejects"
+               : `${count} statements in one call`,
+         );
+      }
+   }
 }
 
 let statementGateInstalled = false;
@@ -1017,6 +1082,45 @@ export function installDuckDBStatementLockdown(): void {
          "@malloydata/db-duckdb's internals changed shape: the DuckDB statement lockdown cannot be installed",
       );
    }
+   const withMore = proto as unknown as {
+      runSQL(sql: string, options?: unknown): Promise<unknown>;
+      fetchSelectSchema(sqlRef: { selectStr: string }): Promise<unknown>;
+   };
+   const runSQL = withMore.runSQL;
+   const fetchSelectSchema = withMore.fetchSelectSchema;
+   if (
+      typeof runSQL !== "function" ||
+      typeof fetchSelectSchema !== "function"
+   ) {
+      throw new Error(
+         "@malloydata/db-duckdb's internals changed shape: the DuckDB statement lockdown cannot be installed",
+      );
+   }
+   withMore.runSQL = async function (
+      this: unknown,
+      sql: string,
+      options?: unknown,
+   ) {
+      await assertMalloyParts(this, sql);
+      return runSQL.call(this, sql, options);
+   };
+   // A `.sql()` source on a locked instance is one SELECT (CTEs included),
+   // decided by DuckDB's parser as for raw SQL (single_select.ts). Its schema
+   // is read here when the model compiles, so a refused source fails the
+   // model before any query runs it.
+   withMore.fetchSelectSchema = async function (
+      this: unknown,
+      sqlRef: { selectStr: string },
+   ) {
+      if (isConfigurationFrozen(this)) {
+         await assertSingleSelect(
+            (this as { name?: string }).name ?? "duckdb",
+            sqlRef.selectStr,
+            "locked-down DuckDB connection",
+         );
+      }
+      return fetchSelectSchema.call(this, sqlRef);
+   };
    proto.runDuckDBQuery = async function (this: unknown, sql: string) {
       await assertStatementAllowed(this, sql);
       return runDuckDBQuery.call(this, sql);
@@ -1026,7 +1130,11 @@ export function installDuckDBStatementLockdown(): void {
       sql: string,
       options?: unknown,
    ): AsyncIterableIterator<unknown> {
-      await assertStatementAllowed(this, sql);
+      await assertMalloyParts(this, sql);
+      // The last part is what Malloy streams (the parts before it run through
+      // runDuckDBQuery, which checks each one).
+      const parts = sql.split(MALLOY_SPLIT);
+      await assertStatementAllowed(this, parts[parts.length - 1]);
       yield* runSQLStream.call(this, sql, options);
    };
 }

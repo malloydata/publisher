@@ -69,6 +69,23 @@ export async function serializeSQL(sql: string): Promise<{
    }
 }
 
+/**
+ * How many statements DuckDB's own parser reads in `sql` (of any kind), or
+ * undefined when it does not parse.
+ */
+export async function countStatements(
+   sql: string,
+): Promise<number | undefined> {
+   const connection = await (await parserInstance()).connect();
+   try {
+      return (await connection.extractStatements(sql)).count;
+   } catch {
+      return undefined;
+   } finally {
+      connection.closeSync();
+   }
+}
+
 /** How many SELECT statements `sql` holds, or why it is not only SELECTs. */
 export async function classifySelect(
    sql: string,
@@ -98,6 +115,9 @@ export async function classifySelect(
 export async function assertSingleSelect(
    connectionName: string,
    sql: string,
+   kind:
+      | "managed database"
+      | "locked-down DuckDB connection" = "managed database",
 ): Promise<void> {
    const verdict = await classifySelect(sql);
    if ("selects" in verdict && verdict.selects === 1) return;
@@ -108,6 +128,6 @@ export async function assertSingleSelect(
            ? "it holds no statement"
            : `it holds ${verdict.selects} statements`;
    throw new BadRequestError(
-      `'${connectionName}' is a managed database: raw SQL on it runs only as a single SELECT, and ${why}.`,
+      `'${connectionName}' is a ${kind}: raw SQL on it runs only as a single SELECT, and ${why}.`,
    );
 }
