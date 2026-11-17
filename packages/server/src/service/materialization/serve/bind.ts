@@ -539,7 +539,9 @@ export interface ObservedDrift {
  * not the one of the type its build wrote (its captured `schema`, else the
  * binding's own): the bind compares like with like, so a warehouse that
  * stores a type of its own (a Postgres truncation as a timestamp) is never
- * drift. Then:
+ * drift. With no captured `schema` the binding's declared type stands in, so
+ * a column whose native type is still the one its build captured is read
+ * with the type it holds but is not drift: no warning, no count. Then:
  *
  * - a served-copy binding (`#(materialize)`, `#@ persist`) declares each
  *   drifted column with its observed type, and the one stored-column read
@@ -633,15 +635,24 @@ export function applyObservedColumns(args: {
       // The binding's decision for each drifted column.
       const decided = new Map<string, ObservedDrift["columns"][number]>();
       const schema = b.schema.flatMap((c) => {
-         const d = columnDrift(
-            built.get(c.name) ?? c,
-            nativeTypeOf(b.nativeSchema ?? entry?.nativeSchema, c.name),
-            read,
+         const builtNative = nativeTypeOf(
+            b.nativeSchema ?? entry?.nativeSchema,
+            c.name,
          );
+         const d = columnDrift(built.get(c.name) ?? c, builtNative, read);
          if (d.kind === "none") return [c];
          moved = true;
-         if (!built.has(c.name)) extra.push(d.report);
-         decided.set(c.name, d.report);
+         // With no captured type the binding's declared one stands in, which
+         // is not what the build wrote when the warehouse returns a type of
+         // its own (a date truncation as a timestamp): read with the type it
+         // holds, as any drift is, but not drift when its native type is the
+         // one the build captured.
+         if (built.has(c.name)) {
+            decided.set(c.name, d.report);
+         } else if (!asBuilt(builtNative, c.name, read)) {
+            extra.push(d.report);
+            decided.set(c.name, d.report);
+         }
          if (d.kind === "drop") return [];
          if (d.nativeType !== undefined) retyped.set(c.name, d.nativeType);
          return [{ name: c.name, type: d.type }];
@@ -697,6 +708,25 @@ function nativeDriftOf(
          ? [report]
          : [];
    });
+}
+
+/**
+ * Whether a column is as its build wrote it: the warehouse's native type for
+ * it now is the one the build captured. A DuckLake 128-bit integer held as a
+ * DOUBLE is never as built: its read is guarded whatever its build wrote.
+ */
+function asBuilt(
+   builtNative: string | undefined,
+   name: string,
+   read: Extract<ObservedColumns, { columns: unknown }>,
+): boolean {
+   const now = columnNamed(read.columns, name);
+   return (
+      builtNative !== undefined &&
+      now?.nativeType !== undefined &&
+      !now.storedAsDouble &&
+      normalizedType(now.nativeType) === normalizedType(builtNative)
+   );
 }
 
 /** A column's type as the build's native capture named it, by name. */
