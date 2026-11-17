@@ -24,7 +24,8 @@ A case's labels are its own `expectedEntities` plus every target's, merged.
 for an answer run (eval-answer's ledger-schema.md). A target may also say
 `"absent": true` (nothing in the model answers it; `closest` lists the near
 misses a response may offer), and a case may carry its own `scope`, sent in
-place of the set's, so one set can span packages and pinned sources.
+place of the set's, so one set can span packages and pinned sources. A case's
+`givens` and `filter_params` are sent as written.
 
 PER TARGET. Each target is also scored on its own (`target_outcomes.py`):
 recall over required answers, precision over what that target returned, whether
@@ -104,6 +105,9 @@ def case_problems(case: dict[str, Any]) -> list[str]:
             isinstance(k, str) and isinstance(v, str) and v for k, v in scope.items())):
         out.append(f"{qid}: scope must be an object of get_context scope fields, such as "
                    '{"environment": "e", "package": "p", "source": "s"}')
+    for key in ("givens", "filter_params"):
+        if case.get(key) is not None and not isinstance(case[key], dict):
+            out.append(f"{qid}: {key} must be an object of name to value, as get_context takes it")
     out += label_problems(case.get("expectedEntities"), f"{qid}: expectedEntities")
     return out
 
@@ -181,6 +185,11 @@ def request_for(case: dict[str, Any], scope: dict[str, str]) -> dict[str, Any]:
     args: dict[str, Any] = {"search_targets": sent, "scopes": [case.get("scope") or scope]}
     if isinstance(case.get("question"), str) and case["question"].strip():
         args["user_prompt"] = case["question"]
+    # Values a host needs to read a source's rows: a model that scopes its data
+    # by a given returns no stored values without it.
+    for key in ("givens", "filter_params"):
+        if case.get(key):
+            args[key] = case[key]
     return args
 
 

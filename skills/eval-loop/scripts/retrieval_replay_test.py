@@ -107,6 +107,16 @@ class Request(unittest.TestCase):
         case["scope"] = {"environment": "e2", "package": 7}
         self.assertIn("q1: scope must be an object of get_context scope fields", rr.case_problems(case)[0])
 
+    def test_a_cases_givens_and_filter_params_are_sent_as_written(self):
+        case = a_case()
+        case["givens"] = {"REPORT_ID": 7}
+        case["filter_params"] = {"region": "West"}
+        got = rr.request_for(case, {"environment": "e", "package": "p"})
+        self.assertEqual((got["givens"], got["filter_params"]), ({"REPORT_ID": 7}, {"region": "West"}))
+        self.assertNotIn("givens", rr.request_for(a_case(), {"environment": "e", "package": "p"}))
+        case["givens"] = [7]
+        self.assertIn("q1: givens must be an object", rr.case_problems(case)[0])
+
     def test_no_question_sends_no_user_prompt(self):
         case = a_case()
         del case["question"]

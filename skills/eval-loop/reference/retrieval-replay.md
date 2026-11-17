@@ -56,6 +56,10 @@ serve both kinds of run.
   of the set's scope, so a set built from real requests can span packages,
   model files and pinned sources. `--case-scopes` says every case has one, and
   then no `--environment` or `--package` is needed.
+- A case may carry `givens` and `filter_params`, objects of name to value,
+  sent as written. A model that scopes its rows by a given returns no stored
+  values without it, so a value search on such a model needs the given on
+  the case.
 - A case whose labels name no required field has no recall. It is reported
   as unlabelled with the number of entities that came back, which is the
   measurement for a question the model cannot answer.
