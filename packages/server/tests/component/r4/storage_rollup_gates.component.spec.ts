@@ -45,7 +45,7 @@ import { rowDifference } from "./harness";
 
 const P = ` storage="${LAKE}"`;
 
-const MODEL = `##! experimental { givens access_modifiers }
+const MODEL = `##! experimental { givens access_modifiers composite_sources }
 given: REGION :: string
 given: REG :: string
 given: ON_DAY :: timestamp
@@ -53,6 +53,7 @@ given: ACCT :: number
 given: ROLE :: string
 given: CAT :: string
 given: AT :: timestamp
+given: EXCL :: string
 
 source: orders_raw is duckdb.sql("""
   SELECT CAST(id AS BIGINT) AS id, CAST(amount AS DOUBLE) AS amount, category,
@@ -172,6 +173,33 @@ source: lines is duckdb.sql("""
 #(access_filter) region = $REGION
 source: gated_parent is orders_raw extend {
   join_many: lines on lines.order_id = id
+}
+
+// A column the source compares case-insensitively: a gate or a scope over
+// it is never read from the byte-exact copy (#1880's comparison rule).
+source: orders_ci is duckdb.sql("""
+  SELECT CAST(id AS BIGINT) AS id, CAST(amount AS DOUBLE) AS amount, category,
+         region COLLATE NOCASE AS region
+  FROM (VALUES (1, 10.0, 'A', 'east'), (2, 20.0, 'A', 'East'), (3, 30.0, 'B', 'EAST'),
+               (4, 5.0, 'B', 'west'), (5, 1.0, 'C', 'West')) AS t(id, amount, category, region)
+""") extend { primary_key: id }
+#(access_filter) region = $REGION
+source: ci_eq is orders_ci extend {
+  #(preaggregate) grain=["category", "region"]${P}
+  measure: total is amount.sum()
+}
+#(access_filter) category = $CAT
+source: ci_where_filter is orders_ci extend {
+  where: region != $EXCL
+  #(preaggregate) grain=["category", "region"]${P}
+  measure: total is amount.sum()
+}
+
+// A composite with its own row filter: refused live, so never built.
+#(access_filter) region = $REGION
+source: comp_own is compose(orders_raw, orders_raw extend { dimension: x is 1 }) extend {
+  #(preaggregate) grain=["category", "region"]${P}
+  measure: total is amount.sum()
 }
 
 source: region_names is duckdb.sql("""
@@ -384,6 +412,32 @@ const CASES: Case[] = [
          "missing given": {},
       },
       fromRollup: { off: false, on: false, caller: "jan 4 04:00" },
+   },
+   {
+      name: "a NOCASE gate",
+      malloy:
+         "run: ci_eq -> { group_by: category, region; aggregate: total; order_by: category }",
+      callers: {
+         east: { REGION: "east" },
+         EAST: { REGION: "EAST" },
+         West: { REGION: "West" },
+      },
+      fromRollup: { off: false, on: false, caller: "east" },
+   },
+   {
+      name: "a NOCASE where: beside a gate",
+      malloy:
+         "run: ci_where_filter -> { group_by: category, region; aggregate: total; order_by: category }",
+      callers: {
+         "A excl east": { CAT: "A", EXCL: "east" },
+         "B excl east": { CAT: "B", EXCL: "east" },
+      },
+      fromRollup: { off: false, on: false, caller: "A excl east" },
+   },
+   {
+      name: "a composite with its own row filter",
+      malloy: byCat("comp_own"),
+      callers: { east: { REGION: "east" }, west: { REGION: "west" } },
    },
    {
       name: "g-mixed: a gated parent joining an ungated source's storage= rollup",

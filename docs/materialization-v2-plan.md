@@ -464,7 +464,7 @@ Order: 1 first; 2, 3 and 4 in parallel after it, since they are separate legs of
 
 **Still open.**
 
-1. `storage=` rollups over gated bases wait for question 14's security review, listed beside `#(materialize)`; until then `rollupsServeGatedBases` is a test seam only.
+1. `storage=` rollups over gated bases are built and read on the colocated terms (P3/P4, pending question 14's sign-off); the test seam is removed.
 2. Gates through a join_one whose foreign key is in the grain: keep the join on the variant so the gate grafts through it, or leave them live until a user needs it.
 3. `private` gate fields wait for row 20.
 
@@ -873,7 +873,7 @@ flowchart TB
 | Gate policy                               | Say whether a table, read, keeps its source's gates                     | `keepsGates({ kind, tier, v1, gate }, switches)`; `mayKeepGates(legKind, switches)`                                                                                                                                 | Asked by plan, the serve verdict and the router; it only permits an attempt, and `govern()` still proves (fail closed)                                                       |
 | Declines                                  | Name each reason a table or a leg does not answer, with its public form | `SOURCE_DECLINES` with `SourceDecline`; #1740's `DECLINES` with `LegDecline`; `declineFor(lookup, leg)`                                                                                                             | Public form by construction (`satisfies`); existing `SkipReason`, `ServeVerdictReason` and warning codes only                                                                |
 | Dialect capabilities                      | Say what a warehouse can do                                             | Closed `DialectName`; `CAPABILITIES: Record<DialectName, Capabilities>`; an unknown name has none                                                                                                                   | Read by plan and run; SQL text stays in `run/warehouse_sql.ts`                                                                                                               |
-| Switches                                  | Carry deployment settings as one value                                  | `{ materialize, gatedSources, storageMode, gatedStorageRollupsReviewed }`                                                                                                                                           | Read once by the facade and the query pipeline, then passed                                                                                                                  |
+| Switches                                  | Carry deployment settings as one value                                  | `{ materialize, gatedSources, storageMode }`                                                                                                                                           | Read once by the facade and the query pipeline, then passed                                                                                                                  |
 
 **Entry points.** The whole public surface below the query pipeline:
 

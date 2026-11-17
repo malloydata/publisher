@@ -316,8 +316,8 @@ rollup's grain dimensions (so filtering the rollup's groups admits exactly the r
 read only when the gates on the rollup equal the live entry point's; otherwise the rollup is not built,
 or the query is answered live. One table holds every caller's groups, filtered per caller at read, so the
 staleness contract above applies to it as to any colocated table. A rollup in a `storage=` destination
-over a gated source stays off until the managed tier's security review, and a v1 `#@ preaggregate`
-rollup is never read past a gate. See [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize).
+is built and read on the same terms, when every column the gate reads is stored exactly and compared
+as its source compares it; a v1 `#@ preaggregate` rollup is never read past a gate. See [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize).
 
 Declare the gate the same way as on any other source — directly above the `source:` line, whether or
 not that line is also tagged `#@ persist`:
