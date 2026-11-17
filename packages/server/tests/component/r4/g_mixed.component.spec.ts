@@ -141,6 +141,16 @@ source: mz_ev_day is mz_ev extend {}
 #(access_filter) order_day = $ON_DAY
 source: mz_ev_day_la is mz_ev extend { timezone: 'America/Los_Angeles' }
 
+#(materialize) name="gmx_mz_stage" storage="lake"
+source: mz_stage is orders_raw -> {
+  select: id, region, stage_day is created_at.day
+} extend {
+  measure: n is count()
+}
+
+#(access_filter) stage_day = $ON_DAY
+source: mz_stage_day is mz_stage extend {}
+
 // A stored source derived from a gated one: its rows are the gated
 // source's, so it is never proven ungated (refused, as an inherited row
 // filter is).
@@ -279,25 +289,33 @@ const CASES: Case[] = [
    ),
 ];
 
-// A gate over a date the table stores, in UTC (question 14, F1): read in a
-// caller's zone 14 hours away it may compare another day, so a zoned query
-// is answered live; an unzoned one is served.
+// A gate over a day (question 14, F1). Over an `extend` dimension the served
+// copy truncates the stored time at read, in the caller's zone as live does,
+// so every query is served. Over a day a query stage stored at build, a
+// query in another zone would compare another day: answered live (#1855).
 CASES.push(
    {
-      name: "a gate over a stored day, unzoned",
+      name: "a gate over a day dimension, unzoned",
       malloy: "run: mz_ev_day -> { group_by: region; aggregate: n }",
    },
-   ...["Pacific/Kiritimati", "Etc/GMT+12"].map(
-      (zone): Case => ({
-         name: `a gate over a stored day, read in ${zone}`,
+   ...["Pacific/Kiritimati", "Etc/GMT+12"].flatMap((zone): Case[] => [
+      {
+         name: `a gate over a day dimension, read in ${zone}`,
          malloy: `run: mz_ev_day -> { timezone: '${zone}'; group_by: region; aggregate: n }`,
+      },
+      {
+         name: `a gate over a stored day, read in ${zone}`,
+         malloy: `run: mz_stage_day -> { timezone: '${zone}'; group_by: region; aggregate: n }`,
          live: true,
-      }),
-   ),
+      },
+   ]),
    {
-      name: "a gate over a stored day, on a source in its own time zone",
+      name: "a gate over a day dimension, on a source in its own time zone",
       malloy: "run: mz_ev_day_la -> { group_by: region; aggregate: n }",
-      live: true,
+   },
+   {
+      name: "a gate over a stored day, unzoned",
+      malloy: "run: mz_stage_day -> { group_by: region; aggregate: n }",
    },
 );
 
@@ -502,6 +520,7 @@ describe("g-mixed: a gated entry point over an ungated storage= source (gated so
             "mz_orders",
             "mz_cust",
             "mz_ev",
+            "mz_stage",
             "v1_orders",
             "v1_cust",
          ].every((n) => stored.some((b) => b.name === n)),

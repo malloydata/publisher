@@ -206,12 +206,21 @@ describe("g-mixed: a gate whose column drifted on the stored table (gated source
       });
    }
 
-   it("answers each drifted gate live, never from the table", async () => {
-      for (const malloy of [
-         "run: by_acct -> { group_by: id; aggregate: n; order_by: id }",
-         "run: by_region -> { group_by: id; aggregate: n; order_by: id }",
-         "run: by_flag -> { group_by: id; aggregate: n; order_by: id }",
-      ]) {
+   it("answers a gate over a column no cast reads exactly live, and one read through a faithful cast from the table", async () => {
+      for (const [malloy, via] of [
+         [
+            "run: by_acct -> { group_by: id; aggregate: n; order_by: id }",
+            undefined,
+         ],
+         [
+            "run: by_region -> { group_by: id; aggregate: n; order_by: id }",
+            undefined,
+         ],
+         [
+            "run: by_flag -> { group_by: id; aggregate: n; order_by: id }",
+            "served_copy",
+         ],
+      ] as const) {
          const served = await run(
             malloy,
             { ACCT: 7, REGIONS: ["north"] },
@@ -220,7 +229,7 @@ describe("g-mixed: a gate whose column drifted on the stored table (gated source
          expect([
             malloy,
             "error" in served ? served.error : served.via,
-         ]).toEqual([malloy, undefined]);
+         ]).toEqual([malloy, via]);
       }
    });
 });
