@@ -487,6 +487,9 @@ describe("RollupVariantServe (a host-chosen destination, no storage=)", () => {
       });
       expect(answer.binding).toBe(binding);
       expect(answer.virtualMap).toBeDefined();
+      // The leg reports this binding as the table it read, so the gate
+      // policy judges the answer as a storage= rollup's (F-14).
+      expect(answer.binding?.tier).toBe("storage");
       const { sql } = await answer.runnable.getPreparedResult({
          virtualMap: answer.virtualMap,
       } as never);
