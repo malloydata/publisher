@@ -302,3 +302,61 @@ export function redactStorageUrls(s: string): string {
       return REDACTED_STORAGE_URL + trailing;
    });
 }
+
+/** The query parameters that carry a credential in a signed or token-bearing URL: AWS SigV4 and GCS V4 signatures, credentials and session tokens, Azure SAS signatures (`sig`) and expiries (`se`), and bearer tokens. */
+const SIGNED_URL_PARAM_NAMES =
+   "x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential|sig|se|token|access_token";
+
+/**
+ * A credential parameter after a separator as written: `?`, `&`, `;` (which
+ * also ends `&amp;`), or a JSON-escaped `&` (`&`). Its value runs to the
+ * next written separator, quote, bracket or backslash; a percent-encoded
+ * `%26` inside it is part of the value (`?token=abc%26def`).
+ */
+const SIGNED_URL_PARAM_RAW = new RegExp(
+   String.raw`((?:[?&;]|\\u0026)(?:${SIGNED_URL_PARAM_NAMES})(?:=|\\u003[dD]))[^&;\s'"` +
+      "`" +
+      String.raw`)\]}>#<\\]*`,
+   "gi",
+);
+
+/**
+ * The same after a percent-encoded separator, once or more (`%3F`, `%26`,
+ * `%253F`, `%25253F`: a signed URL quoted inside another URL, an access log's
+ * request line). Its value ends at the next encoded separator too.
+ */
+const SIGNED_URL_PARAM_ENCODED = new RegExp(
+   String.raw`((?:%(?:25)*(?:3F|26|3B))(?:${SIGNED_URL_PARAM_NAMES})(?:%(?:25)*3D))(?:(?!%(?:25)*(?:26|23|3B))[^&;\s'"` +
+      "`" +
+      String.raw`)\]}>#<\\])*`,
+   "gi",
+);
+
+/** S3's echo of the signature a request carried, in its error body. */
+const S3_SIGNATURE_PROVIDED =
+   /(<SignatureProvided>)[^<]*(<\/SignatureProvided>)/gi;
+
+/**
+ * `s` with the value of every credential-bearing query parameter of a signed
+ * URL masked (`X-Amz-Signature=***`), whichever way its separators are written
+ * (as is, `&amp;`, JSON-escaped, or percent-encoded once or more), and S3's
+ * `<SignatureProvided>` echo masked: the log may keep a URL's bucket and path,
+ * never a signature or token that grants access to it. Linear in `s`.
+ */
+export function redactSignedUrlParams(s: string): string {
+   return s
+      .replace(SIGNED_URL_PARAM_ENCODED, "$1***")
+      .replace(SIGNED_URL_PARAM_RAW, "$1***")
+      .replace(S3_SIGNATURE_PROVIDED, "$1***$2");
+}
+
+/**
+ * The `PUBLISHER_INIT_FAILED` stderr line for `message`, with a Postgres
+ * password and a signed URL's secrets masked: a startup failure can quote
+ * either, and stderr is read by scripts and kept by process supervisors.
+ */
+export function initFailedLine(message: string): string {
+   return `PUBLISHER_INIT_FAILED error=${JSON.stringify(
+      redactSignedUrlParams(redactPgSecrets(message)),
+   )}\n`;
+}

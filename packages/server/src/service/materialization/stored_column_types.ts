@@ -193,8 +193,8 @@ export function declaredColumnsOf(
  * `sub` column under another name: the SELECT, and so the stored table,
  * hold `sub`, and the serve side renames it again. Its definition keeps the
  * output name (`name`) beside the new one (`as`), so the column is declared
- * as `sub`. A dimension the `extend` computes is no column of
- * the SELECT, and is not declared.
+ * as `sub`. A dimension the `extend` computes is no column of the SELECT;
+ * the explore's intrinsic fields already leave it out.
  */
 export function persistSourceDeclaredColumns(persistSource: {
    _explore: { intrinsicFields: readonly unknown[] };
@@ -206,11 +206,10 @@ export function persistSourceDeclaredColumns(persistSource: {
                isAtomicField?: () => boolean;
                name?: unknown;
                type?: unknown;
-               fieldTypeDef?: { name?: unknown; e?: unknown };
+               fieldTypeDef?: { name?: unknown };
             };
             if (!field.isAtomicField?.()) return [];
             const def = field.fieldTypeDef;
-            if (def?.e !== undefined) return [];
             const output =
                typeof def?.name === "string" ? def.name : field.name;
             return [{ name: output, type: field.type }];
@@ -474,6 +473,58 @@ export function serveTypePlan(
       }
    }
    return { casts, unservable };
+}
+
+/**
+ * How one database table's column that moved since its build is read now,
+ * the rule every reader of a database table and its warning share
+ * ({@link serveTypePlan}): `left_out` when the bind left it out (gone, a
+ * type Malloy reads as no basic type, a timestamp that gained or lost its
+ * zone off DuckDB) or no faithful cast reads its type as declared; `cast`
+ * (to a DuckDB type, `BOOLEAN` or `DATE`) where one does; else `as_is`, a
+ * type that still reads as declared.
+ */
+type DriftedColumnRead =
+   | { read: "as_is" }
+   | { read: "cast"; castTo: string }
+   | { read: "left_out" };
+
+export function driftedColumnRead(
+   column: { column: string; observedType?: string; leftOut?: true },
+   declaredType: string,
+   options: BuildCastOptions = {},
+): DriftedColumnRead {
+   if (column.leftOut || !column.observedType) return { read: "left_out" };
+   const [cast] = serveTypePlan(
+      [
+         {
+            column: column.column,
+            storedType: column.observedType,
+            declaredType,
+         },
+      ],
+      options,
+   ).casts;
+   if (cast) return { read: "cast", castTo: cast.castTo };
+   return storedTypeServesAs(column.observedType, declaredType) !== false
+      ? { read: "as_is" }
+      : { read: "left_out" };
+}
+
+/**
+ * The Malloy type a moved column must read as: its build source's declared
+ * one, else the one its build wrote.
+ */
+export function driftDeclaredType(
+   declared: readonly { name?: string; type?: string }[] | undefined,
+   column: string,
+   builtType: string,
+): string {
+   return (
+      declared?.find((c) => c.name === column)?.type ??
+      storedMalloyType(builtType) ??
+      builtType
+   );
 }
 
 /** A declared column, with the author's field when its big-integer read is asked. */
@@ -789,38 +840,51 @@ export function bigIntegerReads(
    // rounds exactly where live rounds. A `storage=` table is read in DuckDB,
    // which keeps every digit: cast there only when live does too.
    if (!options.colocated && !liveKeepsBigIntegers(options.dialect)) return [];
+   // How a field is matched to its stored column depends on how the table
+   // stores it. A v1 query-shaped table stores each column under its
+   // query's output name: a field a trailing `extend` renames (`rename:
+   // amount is total`) is stored as `total`, and that name is its own
+   // whatever another field is now called, so the output name is matched
+   // first, then a field the `extend` computes, and only then a renamed
+   // field's new name. A `#(materialize)` table stores the source after its
+   // renames, under each field's own name (`as`, else `name`), matched
+   // first; the output name only where no field goes by it.
    const byName = new Map<string, unknown>();
    const declared: DeclaredColumn[] = [];
-   for (const f of fields ?? []) {
-      const { name, as, type } = (f ?? {}) as {
+   const fieldOf = (f: unknown) =>
+      (f ?? {}) as {
          name?: unknown;
          as?: unknown;
          type?: unknown;
+         e?: unknown;
       };
-      const key = typeof as === "string" ? as : name;
-      if (typeof key !== "string" || typeof type !== "string") continue;
+   const claim = (key: unknown, f: unknown) => {
+      const { type } = fieldOf(f);
+      if (typeof key !== "string" || typeof type !== "string") return;
+      if (byName.has(key)) return;
       byName.set(key, f);
       declared.push({ name: key, type });
-   }
-   // A field a trailing `extend` renames (`rename: amount is total`) is
-   // stored under its output name (`total`): matched by that too, where no
-   // field already goes by it (P2-45).
-   for (const f of fields ?? []) {
-      const { name, as, type } = (f ?? {}) as {
-         name?: unknown;
-         as?: unknown;
-         type?: unknown;
-      };
-      if (
-         typeof as !== "string" ||
-         typeof name !== "string" ||
-         typeof type !== "string" ||
-         byName.has(name)
-      ) {
-         continue;
+   };
+   const ownName = (f: unknown) => {
+      const { name, as } = fieldOf(f);
+      return typeof as === "string" ? as : name;
+   };
+   if (options.storesOutputNames) {
+      for (const f of fields ?? []) {
+         if (fieldOf(f).e === undefined) claim(fieldOf(f).name, f);
       }
-      byName.set(name, f);
-      declared.push({ name, type });
+      for (const f of fields ?? []) {
+         if (fieldOf(f).e !== undefined) claim(ownName(f), f);
+      }
+      for (const f of fields ?? []) {
+         const { as, e } = fieldOf(f);
+         if (e === undefined && typeof as === "string") claim(as, f);
+      }
+   } else {
+      for (const f of fields ?? []) claim(ownName(f), f);
+      for (const f of fields ?? []) {
+         if (typeof fieldOf(f).as === "string") claim(fieldOf(f).name, f);
+      }
    }
    const out: BigIntegerRead[] = [];
    for (const column of schema) {
@@ -862,6 +926,14 @@ export interface BigIntegerReadOptions {
     * names it, as its build captured it, or undefined when it did not.
     */
    nativeTypeOf?: (column: string) => string | undefined;
+   /**
+    * The table stores each column under its query's output name, before the
+    * source's trailing `extend` renames it: a v1 query-shaped (or
+    * refinement-rooted) table. A `#(materialize)` table stores the source
+    * after its renames, under each field's own name. Decides which name a
+    * stored column is matched to a field by first ({@link bigIntegerReads}).
+    */
+   storesOutputNames?: boolean;
 }
 
 /**

@@ -995,6 +995,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "424":
@@ -1421,6 +1423,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "410":
@@ -1996,9 +2000,22 @@ paths:
       summary: Bind a version to a build manifest
       description: |
         Sets the version's `manifestLocation`, the externally computed build manifest its persist
-        references resolve through, and rebinds that version's models to it right away. A null
-        `manifestLocation` clears the binding and the version serves live. Only this version is
-        affected.
+        references resolve through, and rebinds that version's models to it right away. Only this
+        version is affected.
+
+        A version is owned by the host from then on once a manifest it named, by this route or by
+        a publish, has bound (one whose fetch fails marks nothing), or once a run it instructed
+        with `buildInstructions` has run, even one whose commit failed. The version's record keeps
+        that across an unload and a restart. A null `manifestLocation` then clears the binding and the version serves live:
+        this server never binds tables its own runs built for it, so a host can clear the binding
+        before it drops the tables the manifest named. A reload or restart of that version keeps
+        it live until the host binds a manifest again, and the version answers a local run without
+        `buildInstructions` with 409. Its status reports it the way it reports a version with nothing
+        bound: `manifestBindingStatus` `unbound`, `manifestEntryCount` 0 and `boundManifestUri` null.
+
+        A version no host has bound (standalone, or built only by this server's own runs) serves
+        what this server's own runs built for it when its binding is cleared, or live when they
+        built nothing, as it does when it loads.
 
         This is serving state, not package content, which is why it is the one thing about a
         published version that can change. It replaces the deprecated
@@ -3964,7 +3981,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: The package already has an active materialization, or the package or version is bound to a host manifest (`manifestLocation`) and the request has no `buildInstructions` (it serves the host's tables, so a local run would build tables it cannot serve)
+          description: The package already has an active materialization, or the package or version is bound to a host manifest (`manifestLocation`), or is a version a host has bound before, and the request has no `buildInstructions` (it serves the host's tables or live, so a local run would build tables it cannot serve)
           content:
             application/json:
               schema:
@@ -4092,31 +4109,17 @@ paths:
       summary: Delete a materialization
       description: |
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
-        materialization record. By default this removes the publisher's record
-        only; the caller owns table GC. Set dropTables=true to also drop
-        the physical tables this run produced (from the materialization's
-        manifest) as a best-effort cleanup.
+        materialization record. A delete is record-only: it never drops a
+        table, and the caller owns table GC. To drop a table this run produced,
+        check that no remaining run, of any version, names a table with that
+        name in any place, then drop it through its connection.
+        `dropTables=true` is refused with 400 and deletes nothing, as is any
+        value other than `true` or `false` (the fix is to omit it);
+        `dropTables=false`, which older clients send, is accepted and ignored.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - $ref: "#/components/parameters/materializationId"
-        - name: dropTables
-          in: query
-          required: false
-          description: |
-            When true, also drop the physical tables recorded in the
-            materialization's manifest before deleting the record. Defaults to
-            false (record-only delete; the caller owns table GC). A table
-            whose table segment another committed run of the package names,
-            in any place or container, is kept: it may be that run's table
-            reached under another name (two names for one DuckLake).
-
-            Only `true` and `false` are accepted. Any other value is refused
-            with 400 rather than read as `false`, which would delete the record,
-            leave the tables on disk, and still answer 204.
-          schema:
-            type: boolean
-            default: false
         - $ref: "#/components/parameters/versionId"
       responses:
         "204":
@@ -4283,12 +4286,14 @@ components:
     Forbidden:
       description: |
         Forbidden - insufficient permissions to perform the operation. With
-        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes),
-        the database ran the query and the storage holding a table's data (a
-        DuckLake data path, an object-store bucket) refused its read: the
-        query and the model are fine, and a retry fails the same way until
-        the database's storage credentials are fixed. The body names what
-        the caller read and never a storage path; the full text is logged.
+        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes,
+        and `sqlTemporaryTable`), the database ran the query and an object
+        store refused its read. Under a data path the environment configures
+        (a DuckLake catalog's), the query and the model are fine and a retry
+        fails the same way until the database's storage credentials are
+        fixed; otherwise the path the query reads refused access. The body
+        names what the caller read and never a storage path; the full text is
+        logged.
       content:
         application/json:
           schema:
@@ -4654,11 +4659,18 @@ components:
           description: >-
             Where the build manifest to bind is: a gs:// or s3:// URI, a
             file:// URL, or an absolute path on this server (a mounted volume).
-            Null, or leaving the field out, clears the binding and serves
-            live, so a client that drops a field it meant to send (a value
-            left undefined) clears the binding. An empty string or a relative
-            path is refused with 400, and so is any other field in the body
-            and a body not sent as application/json.
+            Once one binds, the version is the host's from then on, as it is
+            once a host's instructed run of it has run, even one whose
+            commit failed. Null, or
+            leaving the field out, clears the binding: a version a host has
+            bound then serves live, and stays live through a reload or a
+            restart until a manifest is bound again, never serving the tables
+            this server's own runs built for it. A version no host has bound
+            serves what its own runs built, or live when they built nothing.
+            A client that drops a field it meant to send (a value left
+            undefined) therefore clears the binding. An empty string or a
+            relative path is refused with 400, and so is any other field in
+            the body and a body not sent as application/json.
 
     PackageLatestVersion:
       type: object
@@ -5983,7 +5995,7 @@ components:
                   `-join-level` and `-name-clash`, now each
                   `preaggregate-not-built` with the reasons `hidden_field`,
                   `access_filter` (or `authorize`), `time_zone`,
-                  `current_time`, `given_in_persisted_query`,
+                  `current_time`, `reads_given`,
                   `inherited_where_with_given` or
                   `given_where_over_unstored_field`, `unreadable_measure`,
                   `join_level` and `name_clash`.
@@ -6024,7 +6036,7 @@ components:
                   be the very table served, so it is never dropped).
                   Listed on the newest run's
                   `metadata.keptTables` until no committed run names it in
-                  its place (its runs deleted, with or without `dropTables`),
+                  its place (its runs deleted; a delete is record-only),
                   a run finds it dropped by hand (never on Snowflake or
                   MySQL, whose catalogs hide tables), or its name is used
                   again in its own place
@@ -9984,12 +9996,13 @@ components:
             the environment does not have, usually one deleted after the
             package was loaded.
 
-            STORAGE_ACCESS_DENIED, on a 403, means the storage holding a
-            table's data (a DuckLake data path, an object-store bucket)
-            refused the database's read. The query and the model are fine;
-            whoever configures the database's storage credentials has to fix
-            it, and retrying fails the same way. The body names the source or
-            connection the caller read and no storage path.
+            STORAGE_ACCESS_DENIED, on a 403, means an object store refused the
+            database's read. Under a data path the environment configures (a
+            DuckLake catalog's), the query and the model are fine and whoever
+            configures the database's storage credentials has to fix it;
+            otherwise the path the query reads refused access. Retrying fails
+            the same way. The body names the source or connection the caller
+            read and no storage path.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
@@ -10864,16 +10877,15 @@ components:
             On every mechanism: `free_parameter`; a row-level gate the
             table could not keep, named by the gate's kind, `access_filter`
             for a row filter (`#(access_filter)`, any of the gates that
-            refused it) and `authorize` for a lock (`#(authorize)`); the four that
-            name where a given the build could not strip sits
-            (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
-            `dynamic_joined_where`), where `given_in_persisted_query` is the
-            one reason every mechanism gives for a build that would read a
-            given, so its table would hold one caller's rows (a given in a
-            `#@ persist` source's persisted query, a persisted view or query
-            whose result reads one, a rollup whose build reads one); the other
-            three are raised by a `storage=` `#@ persist` alone, naming the
-            position more finely; `inherited_where_with_given` (a
+            refused it) and `authorize` for a lock (`#(authorize)`);
+            `reads_given`, the one reason every mechanism gives
+            for a stored result that would read a given, so its table would
+            hold one caller's rows or could not be read per caller (a given in
+            a `#@ persist` source's persisted query, in a field it declares, in
+            a join's `on:` condition or in a source it joins that is not
+            stored per caller; a persisted view or query whose result reads
+            one; a rollup whose build reads one), with `message` naming where
+            the given sits; `inherited_where_with_given` (a
             given-reading `where:` or dimension the declaration inherits from
             a source it is built from, in its own file or another, rather than
             writing it in its own declaration: only the declaration's own
@@ -10920,7 +10932,7 @@ components:
             `nested_result` (a result that nests, which its table cannot
             answer yet), `access_filter` or `authorize` (it reaches a
             row-level gate its stored result cannot keep, named by the gate's
-            kind), `given_in_persisted_query` (its result reads a given),
+            kind), `reads_given` (its result reads a given),
             `current_time` (its result reads `now`), `no_stored_columns` (it has no stage to store) and
             `generated_build_failed` (its build does not compile on its own).
 
@@ -10950,14 +10962,18 @@ components:
 
 
             Retained, no longer produced: `given` (replaced by the positional
-            given reasons above), `reads_given` (a persisted view or query
-            whose result reads a given, and a rollup's given-reading refusals,
-            now `given_in_persisted_query`, `inherited_where_with_given` or
-            `given_where_over_unstored_field`; never in a release),
+            given reasons above), `given_in_persisted_query` (shipped in
+            0.14.0: a `#@ persist` source's persisted query, or a
+            `#(materialize)` source, whose build reads a given; now
+            `reads_given`, the one name every mechanism gives the case),
             `preaggregate_over_dynamic_source` (shipped in 0.14.0: a rollup
-            over a caller-scoped source, now `given_in_persisted_query`,
+            over a caller-scoped source, now `reads_given`,
             `given_where_over_unstored_field` or `inherited_where_with_given`,
-            as every mechanism names the same case), `not_duckdb_portable` (a `storage=` table no
+            as every mechanism names the same case), `dynamic_projection`,
+            `dynamic_join` and `dynamic_joined_where` (a `storage=`
+            `#@ persist` source's given in a field it declares, in a join's
+            `on:` condition, or in a source it joins; now `reads_given`,
+            whose `message` still names the position), `not_duckdb_portable` (a `storage=` table no
             column of which Malloy can type is now built, and its source is
             answered live), the three `partition_*` reasons (`partition=` is a
             retired key, which fails the publish and the load as
@@ -11822,13 +11838,6 @@ components:
             own, because it may be materialized in another destination or left
             out of instructions an orchestrator fixed, so retrying the same
             instructions would not supply it.
-        cancelled:
-          type: boolean
-          description: >-
-            True when the run was cancelled while this source was building:
-            the source did not fail, the run stopped it, and its staging table
-            was dropped. Read the source as cancelled rather than failed.
-            Absent for every other failure.
 
     ManifestEntry:
       type: object

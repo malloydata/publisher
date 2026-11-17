@@ -20,9 +20,12 @@ new name, and checks it does what the old one did (`collision-enforce-refuses-pu
 
 `alpha` and `beta` both declare `name="sdn_dup" storage=lake`, the collision.
 
+Package versioning is off on both publishers, as in `collision-enforce-refuses-publish`: `## Republish` re-publishes in place (`POST /packages` with no location), which a versioned package refuses with `PACKAGE_IS_VERSIONED`. This scenario is about the setting's name, not versions.
+
 ## Publisher strict
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: off
 - PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: true
 
 ## Data orders_pg.sdn_orders
@@ -61,6 +64,7 @@ cites: resolve to the same materialized table
 ## Publisher lax
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: off
 - PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED: false
 
 ## Republish sdn

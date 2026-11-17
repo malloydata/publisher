@@ -1,5 +1,5 @@
 ---
-id: reclaim-reverts-live-colocated
+id: delete-run-reverts-live-colocated
 tags: lifecycle, build-control
 package: rrc
 ---
@@ -8,23 +8,24 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Reclaim reverts to live IN PLACE (colocated) — no restart
+# Deleting a run reverts to live IN PLACE (colocated) — no restart
 
-The colocated analogue of `reclaim-reverts-live-external` (51): after reclaiming a
-**colocated** (`#@ persist`, no `storage=`) materialization, serving must revert to
-live immediately, WITHOUT a restart. The inline post-delete rebind must re-derive
-BOTH tiers — so a dropped colocated table is not left routed.
+The colocated analogue of `delete-run-reverts-live-external` (51): after deleting
+a **colocated** (`#@ persist`, no `storage=`) materialization, serving must revert
+to live immediately, WITHOUT a restart. The inline post-delete rebind must
+re-derive BOTH tiers — so a deleted run's colocated table is not left routed.
 
 This exercises the same symmetry as `colocated-restart-survival` (50), on the
 delete path instead of the load path: the post-delete rebind must cover colocated,
-not just `storage=`, or a reclaimed colocated source keeps routing to a table that
-was just dropped (a query error), instead of falling back to live.
+not just `storage=`, or a deleted run's colocated source keeps routing to its table
+(the delete is record-only, so the table is still there and answers stale), instead
+of falling back to live.
 
 Runs with the tier `off` (colocated is the v0 path, not gated by the storage kill
 switch), proving the colocated post-delete rebind is not behind the storage gate.
 
 Proof: build + route, mutate so live differs from the snapshot, confirm stale
-(routed), reclaim, then re-query with NO restart. Fresh ⇒ the inline post-delete
+(routed), delete the run, then re-query with NO restart. Fresh ⇒ the inline post-delete
 rebind cleared the colocated binding and serving fell back to live.
 
 ## Publisher
@@ -80,9 +81,9 @@ Expect:
 | 2026-01-01 | 150          |
 | 2026-01-02 | 200          |
 
-## Reclaim rrc
+## Forget rrc
 
-Drop the materialized table via `?dropTables=true`. No restart follows.
+Delete the latest run's record (record-only: its table stays). No restart follows.
 
 ## Query base (again)
 

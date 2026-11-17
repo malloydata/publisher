@@ -58,7 +58,7 @@
  *   caller's givens bind it; any other is refused with the reason the one
  *   classifier gives it on `#(materialize)`: `inherited_where_with_given`
  *   for an inherited one, `given_where_over_unstored_field` for one over a
- *   field the grain drops, `given_in_persisted_query` for one the build
+ *   field the grain drops, `reads_given` for one the build
  *   would read.
  * - **A6, fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
@@ -895,7 +895,7 @@ interface RollupFacts {
            /** The shared classifier's reason (`readTimeTermsOf`), as on `#(materialize)`. */
            reason:
               | "inherited_where_with_given"
-              | "given_in_persisted_query"
+              | "reads_given"
               | "given_where_over_unstored_field";
         };
    /** Where the base is declared, for its build copy's edits. */
@@ -951,7 +951,7 @@ function rollupFactsOf(
    // out of the build and written again on the variant, as the served copy
    // re-applies one (P2); an inherited one (`inherited_where_with_given`), one
    // over a field that is not a dimension (`given_where_over_unstored_field`),
-   // or one the build would read (`given_in_persisted_query`), is refused by
+   // or one the build would read (`reads_given`), is refused by
    // the one classifier `#(materialize)` reads, with its reason.
    const read = readTimeTermsOf(
       def as SourceDefLike,

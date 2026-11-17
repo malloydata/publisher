@@ -2435,22 +2435,16 @@ source: through_join is duckdb.table('orders_raw') extend {
             }
          });
 
-         it("answers a joined source's rollup under a gated parent (A7) as live: from the rollup on the database tier (g-mixed), CONTRACT without naming the gate in a storage destination", async () => {
+         it("declines a joined source's rollup under a gated parent (A7), as CONTRACT without naming the gate", async () => {
             const malloy =
                "run: gated_parent -> { group_by: category; aggregate: order_lines.qty_total }";
-            const run = await fixture.run({
-               name: "gated parent",
-               malloy,
-               givens: EAST.givens,
-            });
-            if (placement === "colocated") {
-               // The parent's own gate (a plain column) is grafted on the
-               // variant, which keeps the author's rows (question 14).
-               expect(run.servedBy?.kind).toBe("rollup");
-               expect(rowDifference(run.live, run.served)).toBeUndefined();
-               return;
-            }
-            expectLive(run);
+            expectLive(
+               await fixture.run({
+                  name: "gated parent",
+                  malloy,
+                  givens: EAST.givens,
+               }),
+            );
             fixture.setBindings(fixture.bindings);
             const { path } = await fixture.runAsIs(malloy, EAST.givens);
             const contract = (path?.considered ?? []).filter(

@@ -614,8 +614,7 @@ function rerootFailureKey(
  * What a served copy's compile reads of a binding: everything but how fresh
  * the table is (`freshAsOf`, its window and fallback, which decide only
  * whether the pin reads it) and what the router reads of it beside the copy
- * (`ownGateKept`, `holdsOnlyUngatedRows`, `storedAsDouble`, a rollup's key
- * check). A field added to `Binding` is read
+ * (`ownGateKept`, `retypedColumns`, a rollup's key check). A field added to `Binding` is read
  * here until it is listed, so a new input recompiles rather than reuses.
  * Memoized per binding, which is replaced, never edited.
  */
@@ -628,8 +627,7 @@ export function compileInputOf(b: Binding): string {
          freshnessWindowSeconds: _window,
          freshnessFallback: _fallback,
          ownGateKept: _gateKept,
-         holdsOnlyUngatedRows: _ungated,
-         storedAsDouble: _asDouble,
+         retypedColumns: _retyped,
          rollupKey: _rollupKey,
          ...read
       } = b;
@@ -1497,6 +1495,7 @@ export class ServedCopyServe {
          fieldsByName,
          timeframeOf,
          problems,
+         storesOutputNames: !plan,
       };
       if (plan) {
          const stored = materializedColumnsOf(subject, plan);
@@ -1620,6 +1619,7 @@ export class ServedCopyServe {
          ...(!plan
             ? {
                  keepsIncludes: true as const,
+                 outputNames: queryOutputNames(def.fields),
                  ...(refinesUnfilteredBase(map.node(node.sourceID), map)
                     ? { refinementRooted: true as const }
                     : {}),
@@ -1651,6 +1651,7 @@ export class ServedCopyServe {
          def.fields,
          def,
          binding,
+         subject.storesOutputNames,
          this.host.readsStoredIntegers,
       );
       columns = columns.flatMap((c) => {
@@ -2952,6 +2953,12 @@ interface RerootSubject {
    /** The timeframe a truncation carries, to restore on the field. */
    timeframeOf(name: string): { timeframe?: string };
    problems: ServedCopyProblem[];
+   /**
+    * The table stores each column under its query's output name (a v1
+    * table, no `#(materialize)` plan), not under the field's own name
+    * after its renames (`BigIntegerReadOptions.storesOutputNames`).
+    */
+   storesOutputNames: boolean;
 }
 
 /**
@@ -4396,14 +4403,17 @@ function bigIntegerReadsOf(
    fields: readonly unknown[] | undefined,
    def: unknown,
    binding: Binding,
+   /** The table stores its query's output names (a v1 table). */
+   storesOutputNames: boolean,
    /** A build reads the stored column in SQL, where no digit is lost. */
    asStored?: boolean,
 ): Map<string, string | undefined> {
    if (asStored) return new Map();
    return new Map(
-      bigIntegerReads(columns, fields, bigIntegerOptionsOf(def, binding)).map(
-         (r) => [r.column, r.castTo] as const,
-      ),
+      bigIntegerReads(columns, fields, {
+         ...bigIntegerOptionsOf(def, binding),
+         storesOutputNames,
+      }).map((r) => [r.column, r.castTo] as const),
    );
 }
 
@@ -4786,6 +4796,28 @@ export function chainBuildText(
       : copy.chainBuildFiles(request.downstream.sourceID, bindings);
 }
 
+/**
+ * A query-shaped source's output names: each field its query outputs, by the
+ * name it has before its `extend` renames it (`name`, beside `as`). A
+ * dimension the `extend` computes (`e`) is none.
+ */
+function queryOutputNames(fields: readonly unknown[] | undefined): string[] {
+   return (fields ?? []).flatMap((f) => {
+      const { name, e, join, type } = (f ?? {}) as {
+         name?: unknown;
+         e?: unknown;
+         join?: unknown;
+         type?: unknown;
+      };
+      return typeof name === "string" &&
+         e === undefined &&
+         join === undefined &&
+         type !== "turtle"
+         ? [name]
+         : [];
+   });
+}
+
 /** Whether a stale binding stores a source on `chain` (the queried source's). */
 export function staleOnChain(
    stale: readonly Binding[],
@@ -4959,7 +4991,9 @@ function gateNamesOf(
       return undefined;
    }
    const exprs = entryPointGateExprs(struct, compiled.modelDef);
-   return exprs === undefined ? undefined : gateReadNames(struct, exprs);
+   return exprs === undefined
+      ? undefined
+      : gateReadNames(struct, exprs, compiled.modelDef);
 }
 
 /**

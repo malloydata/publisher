@@ -372,7 +372,7 @@ export function assertColocatedPersistNotAuthorizeGated(
    // parameter in a persisted source's own query.
    if (buildSubstitutesAGiven(persistSource)) {
       // A rollup gets its own message, under the one reason every mechanism
-      // gives a build that reads a given (`given_in_persisted_query`): the
+      // gives a build that reads a given (`reads_given`): the
       // generic advice (move the given to the extend block) is where a
       // rollup's given already is, since the rollup READING the source bakes
       // it. And nothing else guards rollups: their
@@ -382,7 +382,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       // caller and serve that to all of them.
       if (origin === "preaggregate") {
          throw new MaterializationEligibilityError({
-            reason: "given_in_persisted_query",
+            reason: "reads_given",
             message:
                `Pre-aggregation rollup '${sourceName}' cannot be materialized: ` +
                `the source it rolls up is scoped by a given. Building the rollup ` +
@@ -396,7 +396,7 @@ export function assertColocatedPersistNotAuthorizeGated(
       }
       const what = `Source '${sourceName}'`;
       throw new MaterializationEligibilityError({
-         reason: "given_in_persisted_query",
+         reason: "reads_given",
          message:
             `${what} cannot be materialized (colocated '#@ persist'): its ` +
             `persisted query references a given. A given the persisted query ` +
@@ -907,19 +907,6 @@ export function storageKeepsOwnGate(
       referencesAuthorize(source) &&
       gateEnforcedAtRead(source.sourceID, plan, true)
    );
-}
-
-/**
- * Whether a source's table holds only ungated rows: no `#(authorize)` or
- * `#(access_filter)` gate anywhere beneath its compiled definition, its own,
- * one it inherits or derives from, or one on a source it joins
- * ({@link referencesAuthorize}'s walk, the one that refuses a gated build).
- * A walk that fails reads as gated (fail closed). A gated entry point over
- * such a table is served from it on every tier: its gate is grafted and
- * proven on the answer, as on a database table (g-mixed).
- */
-export function holdsOnlyUngatedRows(source: PersistSource): boolean {
-   return !referencesAuthorize(source);
 }
 
 /**

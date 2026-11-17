@@ -263,7 +263,7 @@ source: ok is ev -> { select: * } extend { where: ts < now }
 });
 
 describe("a given that defaults to now", () => {
-   it("is refused as given_in_persisted_query when the persisted query reads it", async () => {
+   it("is refused as reads_given when the persisted query reads it", async () => {
       const { sources } = await compilePersistSources(
          connections,
          `##! experimental { persistence givens }
@@ -281,7 +281,7 @@ source: p is ev -> { where: ts < $CUTOFF; select: * }
       }
       expect(caught).toBeInstanceOf(MaterializationEligibilityError);
       expect((caught as MaterializationEligibilityError).reason).toBe(
-         "given_in_persisted_query",
+         "reads_given",
       );
    });
 });

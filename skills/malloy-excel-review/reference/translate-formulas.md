@@ -157,7 +157,7 @@ Executed: with the defaults the five balances are 10500, 11025, 11576.25, 12155.
 and 12762.815625, the cached `Forecast!B6:F6`. With `givens: {"GROWTH_RATE": 0.02}` the
 fifth is 11040.808032, and with `0.08` it is 14693.280768, the cached What-If data
 table cells `Assumptions!E3` and `E6`. Label: `executed`. `#@ persist` on such a source
-is refused at planning (`given_in_persisted_query`): a persisted build would bake in the
+is refused at planning (`reads_given`): a persisted build would bake in the
 default givens. `cookbook-scenario.md#persistence` has what was tried.
 
 ## 3. Routes

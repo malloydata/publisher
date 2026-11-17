@@ -37,13 +37,7 @@
  * `#(materialize)` alike; and on the rollup leg for a colocated rollup whose
  * base's gates are all its own and each proven exact on the rollup (every
  * field a grain dimension), which the gated-sources switch already admits.
- * The review then covers that consistent behaviour. g-mixed, a gated entry
- * point over an ungated stored source, is the same rule on the `storage=`
- * tier: a table proven to hold only ungated rows counts as a G3 table, as a
- * database table does (pending the question-14 review's sign-off). The
- * rollup leg's join branch over an ungated base's database rollup answers
- * past a gated query source on the existing rollup row (a database table),
- * its gate grafted on the variant (`joinGateDecline` in rollup_variants.ts).
+ * The review then covers that consistent behaviour.
  * `gate_policy_frozen.spec.ts` enumerates every row this file allows and
  * fails on any change, naming the review.
  */
@@ -221,12 +215,6 @@ export interface TableRead {
     */
    readonly ownGateKept?: boolean;
    /**
-    * A `storage=` table every source stored in it was proven to hold only
-    * ungated rows (`Binding.holdsOnlyUngatedRows`). Absent reads false: fail
-    * closed.
-    */
-   readonly holdsOnlyUngatedRows?: boolean;
-   /**
     * The stored types of the table's columns that the entry point's row-level
     * gates read, and every column those are computed from
     * (`serve/gate_reads.ts`). Absent when they could not be listed: a
@@ -258,24 +246,17 @@ export function gateColumnTypeExact(type: string): boolean {
  * admits live. Fail closed: a `storage=` table whose gate columns could not
  * be listed is not.
  */
-function gateColumnsExact(t: TableRead): boolean {
+export function gateColumnsExact(t: TableRead): boolean {
    if (t.gateColumnTypes === undefined) return t.tier === "colocated";
    return t.gateColumnTypes.every(gateColumnTypeExact);
 }
 
 /**
  * Whether a table an answer read is a G3 table: a colocated one (as since
- * the v1 cutover), a `storage=` one plan admitted past its own gate, or a
- * `storage=` one that holds only ungated rows (g-mixed: a gated entry point
- * over an ungated stored source is served from its table on every tier, the
- * gate grafted and proven on the answer as on a database table).
+ * the v1 cutover), or a `storage=` one plan admitted past its own gate.
  */
 function g3Table(t: TableRead): boolean {
-   return (
-      t.tier === "colocated" ||
-      t.ownGateKept === true ||
-      t.holdsOnlyUngatedRows === true
-   );
+   return t.tier === "colocated" || t.ownGateKept === true;
 }
 
 /**
@@ -306,9 +287,8 @@ export function legMayPassGate(
  * given the tables it read. Never when a column the gates read is stored
  * inexactly ({@link gateColumnsExact}), under any switch. Otherwise always
  * under the gated-sources switch; under G3 alone, only when it read at least
- * one table and every one is a G3 table: for the served copy, colocated,
- * `storage=` admitted past its own gate, or `storage=` holding only ungated
- * rows; for the rollup leg, colocated (a
+ * one table and every one is a G3 table: for the served copy, colocated or
+ * `storage=` admitted past its own gate; for the rollup leg, colocated (a
  * `storage=` rollup awaits its review).
  */
 export function answerKeepsGates(

@@ -27,6 +27,7 @@ import {
    wrapPassthrough,
 } from "./materialization_build_session";
 import type { BuildReadCost } from "./build_read_cost";
+import { markBigQueryRead } from "./bigquery_job_cancel";
 import type { FederatedSourceType } from "../../connection";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
@@ -272,7 +273,13 @@ export function storageDeltaTarget(params: {
             // Wrapping would make every probe read undefined and seed forever.
             try {
                const result = await session.runSQL(
-                  wrapPassthrough(sourceType, handle, inner),
+                  wrapPassthrough(
+                     sourceType,
+                     handle,
+                     sourceType === "bigquery"
+                        ? markBigQueryRead(session, inner)
+                        : inner,
+                  ),
                );
                const rows = (result?.rows ?? []) as Record<string, unknown>[];
                const raw = rows[0]?.["watermark_max"];

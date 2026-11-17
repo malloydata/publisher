@@ -44,8 +44,17 @@ given: ACCT :: number
 #(access_filter) acct = $ACCT
 source: gated is duckdb.sql("SELECT 1 AS id, CAST(2 AS DECIMAL(20,0)) AS acct")
 source: open is duckdb.sql("SELECT 1 AS id, CAST(2 AS DECIMAL(20,0)) AS acct")
+#(access_filter) k = $ACCT
+source: renamed is open -> { select: id, k is acct }
+#(access_filter) k = $ACCT
+source: renamed_twice is open -> { select: id, k1 is acct } -> { select: id, k is k1 }
+given: ROLE :: string
+#(authorize) 'analyst' = $ROLE
+source: locked is open
 `);
-const author = (source: "gated" | "open"): QueryMaterializer =>
+const author = (
+   source: "gated" | "open" | "renamed" | "renamed_twice" | "locked",
+): QueryMaterializer =>
    authorModel.loadQuery(`run: ${source} -> { select: id }`);
 afterAll(async () => {
    await authorConnection.close();
@@ -59,7 +68,8 @@ const binding = (sourceName: string, extra: Partial<Binding> = {}): Binding =>
       destinationName: "lake",
       virtualHandle: `eid-${sourceName}`,
       tablePath: `lake.t_${sourceName}`,
-      schema: [],
+      // The gate column of the author compile below, stored exactly.
+      schema: [{ name: "acct", type: "DECIMAL(38,0)" }],
       ...extra,
    }) as unknown as Binding;
 
@@ -326,7 +336,12 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
                   runnable,
                   tablesRead: undefined,
                   gateTablesRead: [
-                     tier === "storage" ? { tier, schema: [] } : { tier },
+                     tier === "storage"
+                        ? {
+                             tier,
+                             schema: [{ name: "acct", type: "DECIMAL(38,0)" }],
+                          }
+                        : { tier },
                   ],
                   shapeBindings: [],
                } as never);
@@ -530,6 +545,67 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
             expect(
                await open.keepsContractsFor!((await open.attempt()).extra!),
             ).toBe(true);
+            // A query-shaped entry point whose gate reads a renamed stage
+            // output: followed back to the stored column it renames.
+            for (const source of ["renamed", "renamed_twice"] as const) {
+               for (const [type, keeps] of [
+                  ["DOUBLE", false],
+                  ["DECIMAL(38,0)", true],
+               ] as const) {
+                  const c = servedCandidate([stored(type)], author(source));
+                  expect(
+                     await c.keepsContractsFor!((await c.attempt()).extra!),
+                     `${source} over ${type}`,
+                  ).toBe(keeps);
+               }
+            }
+            // A gate column the table does not hold under any name: unproven.
+            const missing = servedCandidate([
+               binding("s", {
+                  kind: "materialize",
+                  tablePath: "main.s_tbl",
+                  ownGateKept: true,
+                  schema: [{ name: "id", type: "BIGINT" }],
+               }),
+            ]);
+            expect(
+               await missing.keepsContractsFor!(
+                  (await missing.attempt()).extra!,
+               ),
+            ).toBe(false);
+            // A lock reads no column: nothing to prove.
+            const lock = servedCandidate(
+               [
+                  binding("s", {
+                     kind: "materialize",
+                     tablePath: "main.s_tbl",
+                     ownGateKept: true,
+                     schema: [{ name: "id", type: "DOUBLE" }],
+                  }),
+               ],
+               author("locked"),
+            );
+            expect(
+               await lock.keepsContractsFor!((await lock.attempt()).extra!),
+            ).toBe(true);
+            // A database table on a DuckLake catalog that holds the gate's
+            // column as a DOUBLE (a 128-bit integer): live. Another column
+            // held so leaves the gate alone.
+            // A database table whose gate column the bind found altered
+            // since its build: judged by the type it holds now.
+            for (const [moved, keeps] of [
+               [[{ name: "acct", type: "DOUBLE" }], false],
+               [[{ name: "acct", type: "double precision" }], false],
+               [[{ name: "acct", type: "DECIMAL(38,0)" }], true],
+               [[{ name: "total", type: "DOUBLE" }], true],
+            ] as const) {
+               const lake = servedCandidate([
+                  { ...colocated, retypedColumns: [...moved] },
+               ]);
+               expect(
+                  await lake.keepsContractsFor!((await lake.attempt()).extra!),
+               ).toBe(keeps);
+            }
             // An author's compile that cannot be read: the served copy is
             // never answered from (its composite member cannot be checked).
             await expect(

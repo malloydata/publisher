@@ -41,6 +41,7 @@ interface FakeVersion {
    dirName: string;
    archiveStatus: "archive" | "unarchive";
    manifestPath: string | null;
+   hostOwned?: boolean;
    /** Its publisher.json. */
    manifest: Record<string, unknown> | null;
 }
@@ -413,7 +414,7 @@ describe("MaterializationScheduler: published versions", () => {
       expect(service.calls.map((c) => c.opts.versionId)).toEqual(["1.0.0"]);
    });
 
-   it("skips a version with no schedule, outside scope version, or bound to a host's manifest", async () => {
+   it("skips a version with no schedule, outside scope version, bound to a host's manifest, or bound by a host before", async () => {
       const service = fakeService();
       const sched = versionScheduler(
          [
@@ -423,6 +424,7 @@ describe("MaterializationScheduler: published versions", () => {
                manifestPath: "gs://bucket/m.json",
             }),
             fakeVersion("4.0.0", null),
+            fakeVersion("6.0.0", scheduled(), { hostOwned: true }),
             fakeVersion("5.0.0", {
                name: "v",
                scope: "package",

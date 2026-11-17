@@ -83,8 +83,8 @@ export function isPersistedResultSourceID(sourceID: string): boolean {
 
 /**
  * Whether `sourceID` is a persisted named query's generated build source
- * (`<query>__query`), not a persisted view's. Its table keeps the name it
- * always had; only how it is reported changes.
+ * (`<query>__query`), not a persisted view's: how it is reported, and its
+ * table's readable name, which reads as the query (`sourceLabel`).
  */
 export function isPersistedQuerySourceID(sourceID: string): boolean {
    return (
@@ -394,8 +394,8 @@ export interface MaterializePlan {
     */
    pairFullRefresh?: string;
    /**
-    * The table takes the source's own name because the declaration has no
-    * `name=`, which the refusal of a colliding table name says (see
+    * The table takes Publisher's readable default name because the
+    * declaration has no `name=`, which the refusal of a colliding table name says (see
     * `refuseCollidingMaterialize`).
     */
    nameDefaulted?: true;
@@ -418,8 +418,8 @@ export interface MaterializeParent {
    /**
     * The declarations from just below the parent to the extension's own,
     * root first, each an `extend` or a rename of the one before, in the
-    * parent's file or the extension's: what a `storage=` build carries over
-    * the parent's stored table.
+    * parent's file, a file between or the extension's: what a `storage=`
+    * build carries over the parent's stored table.
     */
    path: TermUse[];
    /**
@@ -453,6 +453,15 @@ export interface MaterializeParent {
       modelFile: string;
       /** The URL of the generated file declaring the parent's build source. */
       buildSourceURL: string;
+      /**
+       * The model files the chain passes through between the extension's
+       * file and the parent's, as absolute paths, the extension's side
+       * first: each declares a source on the chain and none of them
+       * `#(materialize)`. Absent when the extension's file imports the
+       * parent's directly. Each one's build copy imports the next one's copy
+       * in its place, so the chain reaches the re-rooted parent.
+       */
+      via?: string[];
    };
 }
 

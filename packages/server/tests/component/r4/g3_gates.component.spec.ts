@@ -300,15 +300,13 @@ const STORAGE: Tier = {
             "run: mz_joiner -> { group_by: g.region; aggregate: n_customers, g.n }",
          via: "live",
       },
-      // A G3 table beside an ungated storage= one: the ungated table holds
-      // only ungated rows, so it is a G3 table too (g-mixed, pending the
-      // question-14 review), and the answer is served. One not proven
-      // ungated keeps it live (the respelled checks below).
+      // A G3 table beside a table G3 did not admit (an ungated storage=
+      // one): the answer stays live.
       ...both(
          "an answer reading the gated table and an ungated storage= table",
          (p) =>
             `run: ${p}_mix -> { group_by: c.segment, region; aggregate: n }`,
-         SERVED_ROWS,
+         LIVE,
       ),
       // A caller join into a gated source: Publisher does not enforce a
       // joined source's gate on the parent, live or served (the
@@ -687,13 +685,6 @@ for (const tier of [COLOCATED, STORAGE]) {
                   tablesRead: { sourceName: string }[];
                   gateTablesRead?: { sourceName: string }[];
                };
-               /** The judged tables with the ungated one's proof dropped. */
-               const unproven = (answer: Served) =>
-                  answer.gateTablesRead?.map((b) =>
-                     b.sourceName === "cust_sto"
-                        ? { ...b, holdsOnlyUngatedRows: false }
-                        : b,
-                  );
                /**
                 * Run `malloy` with the served copy's SQL also reading the
                 * ungated `g3s_cust` table, quoted unlike its bound path, so
@@ -717,11 +708,9 @@ for (const tier of [COLOCATED, STORAGE]) {
                   copy.loadQuery = async (...args) => {
                      const answer = await loadQuery.apply(copy, args);
                      served.push(answer);
-                     // `g3s_cust` as a table the plan could not prove holds
-                     // only ungated rows (g-mixed would admit it).
                      return dropJudged
                         ? { ...answer, gateTablesRead: undefined }
-                        : { ...answer, gateTablesRead: unproven(answer) };
+                        : answer;
                   };
                   const getSQL = QueryMaterializer.prototype.getSQL;
                   const spy = spyOn(
@@ -837,8 +826,7 @@ for (const tier of [COLOCATED, STORAGE]) {
 describe("a served answer that names a storage= table beside a colocated one, spelled another way (G3, gated sources off)", () => {
    // A gated colocated table and an ungated storage= table, both bound in
    // the served copy. G3 admits an answer past the gate only when every
-   // table it reads is a G3 table; the storage= one is held here as one the
-   // plan could not prove holds only ungated rows.
+   // table it reads is colocated.
    const MIXED = `##! experimental { givens }
 import "raw.malloy"
 
@@ -896,15 +884,7 @@ source: gated_mix is orders_raw -> {
       copy.loadQuery = async (...args) => {
          const answer = await loadQuery.apply(copy, args);
          served.push(answer);
-         // The storage table as one the plan could not prove holds only
-         // ungated rows (g-mixed would admit `g3w_cust`).
-         return {
-            ...answer,
-            gateTablesRead: answer.gateTablesRead?.map((b) => ({
-               ...b,
-               holdsOnlyUngatedRows: false,
-            })),
-         };
+         return answer;
       };
       const getSQL = QueryMaterializer.prototype.getSQL;
       // The served copy's SQL also reads the storage table, quoted

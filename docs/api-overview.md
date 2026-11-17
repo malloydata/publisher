@@ -101,8 +101,8 @@ A query that fails tells you whose problem it is. Branch on `reason`, not on the
   - `CONNECTION_NOT_FOUND`: the model names a connection the environment does not have, usually
     one deleted after the package was loaded.
 - **403 with `reason: STORAGE_ACCESS_DENIED`:** the database ran the query, and the storage holding
-  a table's data (a DuckLake data path, an object-store bucket) refused its read. The query and the
-  model are fine; do not retry until the database's storage credentials are fixed. The query route
+  a table's data (a DuckLake data path, an object-store bucket) refused its read. When the path is one the environment configures (a DuckLake data path),
+  the query and the model are fine; do not retry until the database's storage credentials are fixed. Otherwise check the path the query reads. The query route
   and the raw `sqlQuery` route answer it alike; the body names what you read and never a storage
   path, which is in the server log. Any other 4xx that carries the database's text has its URLs
   replaced with `<storage path>`.

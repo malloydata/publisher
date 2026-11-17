@@ -14,6 +14,7 @@
  * the run; the run's record says what is served.
  */
 
+import { redactStorageUrls } from "../../../pg_helpers";
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { getPersistStorageMode } from "../../../config";
 import { logger } from "../../../logger";
@@ -95,8 +96,13 @@ function recordServed(served: Served): void {
    }
 }
 
-/** A load that did not take: the step, its error, and the record's `error`. */
-function notServed(step: string, error: string): Served {
+/**
+ * A load that did not take: the step, its error, and the record's `error`.
+ * Exported for its spec.
+ */
+export function notServed(step: string, loadError: string): Served {
+   // Read back by callers: no storage path in it.
+   const error = redactStorageUrls(loadError);
    return {
       metadata: {
          autoLoad: "failed",

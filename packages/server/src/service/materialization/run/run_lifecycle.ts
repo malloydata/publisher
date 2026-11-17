@@ -25,7 +25,7 @@ import {
    MaterializationMode,
    recordMaterializationRun,
 } from "../../../materialization_metrics";
-import { redactPgSecrets } from "../../../pg_helpers";
+import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 import {
    Materialization,
    MaterializationUpdate,
@@ -154,7 +154,9 @@ export class RunLifecycle {
             // Per-source failures arrive already redacted. A whole-run throw has
             // no connection to redact against but can still echo a DSN, so
             // redactPgSecrets (which needs none) is the floor for log and record.
-            const message = redactPgSecrets(errMessage(err));
+            // No storage path (a bucket, an organization's data path) on the
+            // record either: it is read back by callers.
+            const message = redactStorageUrls(redactPgSecrets(errMessage(err)));
             const cancelled = abortController.signal.aborted;
             const next = cancelled ? "CANCELLED" : "FAILED";
             const code = errorCodeOf(err);
@@ -286,7 +288,9 @@ function statusesInto(next: MaterializationStatus): MaterializationStatus[] {
 
 /**
  * Whether `err` is the build loop's own answer to the cancel (it checks the
- * signal between sources), rather than a failure the cancel raced.
+ * signal between sources and after the last, before any whole-run failure is
+ * judged, so a cancelled run always ends in this error), rather than a
+ * failure the cancel raced.
  */
 function isOwnCancellation(err: unknown): boolean {
    return err instanceof BuildCancelledError;

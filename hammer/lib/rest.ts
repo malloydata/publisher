@@ -505,13 +505,11 @@ export class Rest {
       return rec;
    }
 
-   async deleteMaterialization(
-      pkg: string,
-      id: string,
-      opts: { dropTables?: boolean } = {},
-   ): Promise<void> {
-      const suffix = `/materializations/${id}${opts.dropTables ? "?dropTables=true" : ""}`;
-      const res = await fetch(this.pkgUrl(pkg, suffix), { method: "DELETE" });
+   /** Delete a materialization record (record-only: it drops no table). */
+   async deleteMaterialization(pkg: string, id: string): Promise<void> {
+      const res = await fetch(this.pkgUrl(pkg, `/materializations/${id}`), {
+         method: "DELETE",
+      });
       if (!res.ok)
          throw new Error(
             `deleteMaterialization ${pkg}/${id} ${res.status}: ${await res.text()}`,
@@ -519,19 +517,18 @@ export class Rest {
    }
 
    /**
-    * Reclaim the most recent successful materialization: DELETE it with
-    * `?dropTables=true`, which runs the destination-aware read-write drop of the
-    * physical table. Returns the id reclaimed (throws if there is none).
+    * Delete the most recent successful materialization's record. Record-only:
+    * its tables stay. Returns the id deleted (throws if there is none).
     */
-   async reclaimLatest(pkg: string): Promise<string> {
+   async forgetLatest(pkg: string): Promise<string> {
       const mats = await this.listMaterializations(pkg);
       const ready = mats
          .filter((m) => m.status === "MANIFEST_FILE_READY")
          .sort((a, b) => String(b.id).localeCompare(String(a.id)));
       const id = ready[0]?.id as string | undefined;
       if (!id)
-         throw new Error(`reclaimLatest ${pkg}: no successful materialization`);
-      await this.deleteMaterialization(pkg, id, { dropTables: true });
+         throw new Error(`forgetLatest ${pkg}: no successful materialization`);
+      await this.deleteMaterialization(pkg, id);
       return id;
    }
 

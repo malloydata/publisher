@@ -241,7 +241,7 @@ Reach for `compile_model` on the part you are unsure of, not the whole file. Bot
 
 If a reload appears to succeed but your edit never takes effect, check that the package name is in the path: `…/packages/<pkg>?reload=true` reloads, `…/packages?reload=true` is the collection and cannot (it now answers 400; older servers answered 200 with the package list, which reads as success).
 
-Spell the value `true` or `false` and nothing else. `?reload=1`, `?reload=yes`, `?reload=TRUE` and a repeated `?reload=true&reload=1` now answer 400 quoting the value back; older servers read every one of them as `false` and answered 200 without recompiling. The same rule holds for the other boolean query params, `dropTables` and `bypass_filters`.
+Spell the value `true` or `false` and nothing else. `?reload=1`, `?reload=yes`, `?reload=TRUE` and a repeated `?reload=true&reload=1` now answer 400 quoting the value back; older servers read every one of them as `false` and answered 200 without recompiling. The same rule holds for the other boolean query params, such as `dryRun` and `bypass_filters`.
 
 Both tools read the package under `publisher_data/<env>/<pkg>/`, which sits in the server root: the directory the server was launched from, unless `--server_root` set another. For an env that is not in watch mode, a configured package is a published version under `publisher_data/<env>/<pkg>/<version>/`, so editing the original source directory, or that copy, does nothing. To tell which mode you are in, `GET /api/v0/watch-mode/status` reports whether watching is enabled and for which environment; a watch-mounted package also shows as a symlink in `publisher_data/`. Watch mode mounts your own source directory in place, which is the way to iterate.
 

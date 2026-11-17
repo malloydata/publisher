@@ -24,13 +24,15 @@ import { gateSwitches, getPersistStorageMode } from "../config";
 import {
    answerKeepsGates,
    GATE_LEGS,
+   gateColumnsExact,
    legMayPassGate,
    SERVING_GATE_CONTEXT,
    type TableRead,
 } from "./materialization/domain/gate_policy";
 import {
-   gateColumnTypes,
-   gateReadNamesOfQuery,
+   type GateReads,
+   gateColumnTypesOf,
+   gateReadsOfQuery,
 } from "./materialization/serve/gate_reads";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
@@ -44,6 +46,7 @@ import type { ServedCopyServe } from "./materialization/serve/served_copy_serve"
 import {
    explanationOfDecline,
    isDeclineOf,
+   LegDecline,
 } from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
@@ -121,9 +124,9 @@ export function variantsOf(
    const switches = gateSwitches();
    // What the entry point's gates read, from the author's compile: read once
    // per query, and only when an answer past a gate read a `storage=` table.
-   let names: Promise<Set<string> | undefined> | undefined;
-   const gateNames = () =>
-      (names ??= gateReadNamesOfQuery(facts.authorRunnable));
+   let reads: Promise<GateReads | undefined> | undefined;
+   const gateReadsOnce = () =>
+      (reads ??= gateReadsOfQuery(facts.authorRunnable));
    return legs.map((leg) => {
       // A leg with no row in the gate policy (the query leg) is never tried
       // past an entry-point gate: the policy fails closed.
@@ -142,13 +145,16 @@ export function variantsOf(
                gateLeg,
                await withGateColumnTypes(
                   answer.gateTablesRead ?? answer.tablesRead ?? [],
-                  gateNames,
+                  gateReadsOnce,
                ),
                switches,
                SERVING_GATE_CONTEXT,
             ),
          attempt: async () => {
             const answer = await leg.attempt(facts, pinned);
+            if (leg.kind === "served") {
+               await assertRowScopeExact(answer, gateReadsOnce);
+            }
             if (leg.kind === "served") {
                logger.debug("Serving query from the served copy (virtual)", {
                   modelPath: args.modelPath,
@@ -175,36 +181,69 @@ export function variantsOf(
  */
 async function withGateColumnTypes(
    tables: readonly TableRead[],
-   gateNames: () => Promise<Set<string> | undefined>,
-): Promise<TableRead[]> {
-   const asDouble = (t: TableRead) =>
-      (t as Partial<Pick<Binding, "storedAsDouble">>).storedAsDouble ?? [];
-   if (!tables.some((t) => t.tier === "storage" || asDouble(t).length > 0)) {
-      return [...tables];
+   gateReadsOnce: () => Promise<GateReads | undefined>,
+): Promise<readonly TableRead[]> {
+   const retyped = (t: TableRead) =>
+      (t as Partial<Pick<Binding, "retypedColumns">>).retypedColumns ?? [];
+   const storage = tables.filter((t) => t.tier === "storage");
+   if (storage.length === 0 && !tables.some((t) => retyped(t).length > 0)) {
+      return tables;
    }
-   const names = await gateNames();
+   const reads = await gateReadsOnce();
+   // Judged together: a gate column held by none of the storage tables the
+   // answer read leaves every one of them unproven.
+   const types = gateColumnTypesOf(
+      reads,
+      storage.map((t) => (t as Partial<Pick<Binding, "schema">>).schema),
+   );
+   const typeOf = new Map(storage.map((t, i) => [t, types[i]]));
+   const held = new Set((reads?.columns ?? []).flat());
    return tables.map((t) => {
       if (t.tier === "storage") {
-         return {
-            ...t,
-            gateColumnTypes: gateColumnTypes(
-               names,
-               (t as Partial<Pick<Binding, "schema">>).schema,
-            ),
-         };
+         return { ...t, gateColumnTypes: typeOf.get(t) };
       }
-      // A database table: only a column its DuckLake catalog holds as a
-      // DOUBLE is inexact. Unlisted gates fail closed on such a table.
-      const doubles = asDouble(t);
-      if (doubles.length === 0) return t;
+      // A database table is built in the source's own types, so only a
+      // column the bind found moved since then (altered in the warehouse, or
+      // a 128-bit integer its DuckLake catalog holds as a DOUBLE) is judged,
+      // by the type it holds now. Unreadable gates judge every such column.
+      const moved = retyped(t);
+      if (moved.length === 0) return t;
       return {
          ...t,
-         gateColumnTypes:
-            names === undefined
-               ? ["DOUBLE"]
-               : doubles.filter((c) => names.has(c)).map(() => "DOUBLE"),
+         gateColumnTypes: (reads === undefined || reads.unresolved
+            ? moved
+            : moved.filter((c) => held.has(c.name))
+         ).map((c) => c.type),
       };
    });
+}
+
+/**
+ * A served answer over a source whose rows a `where:` scopes (its own, one it
+ * extends, a composite member's, a query-shaped source's base's or stage's,
+ * gated or not) is kept only when the columns that scope reads are stored
+ * exactly, by the gate policy's own rule (`gateColumnsExact`): the policy
+ * itself is asked only past an entry-point gate, and a scope on a column
+ * stored as a float admits a neighbour's rows. Every term counts, not only one
+ * that reads a given: a scope written as a literal merges neighbours too.
+ * Fails closed on a source whose reads cannot be listed.
+ */
+async function assertRowScopeExact(
+   answer: LegAnswer,
+   gateReadsOnce: () => Promise<GateReads | undefined>,
+): Promise<void> {
+   const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
+   const judged = await withGateColumnTypes(tables, gateReadsOnce);
+   if (judged === tables) return;
+   const reads = await gateReadsOnce();
+   // A gated entry point's scope is judged by the gate policy, past the gate
+   // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
+   if (reads !== undefined && (!reads.scoped || reads.gated)) return;
+   if (judged.every(gateColumnsExact)) return;
+   throw new LegDecline(
+      "served_copy_not_served",
+      "the query's source scopes its rows by a column a stored table does not hold exactly",
+   );
 }
 
 /** The answer the router's decision describes, before anything runs. */

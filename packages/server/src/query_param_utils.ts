@@ -34,8 +34,8 @@ export type BooleanParam = { ok: true; value: boolean } | { ok: false };
  * param included, is `{ ok: false }` for the caller to answer 400.
  *
  * Refused rather than read as `false`: `?reload=1` read as false answers 200
- * without recompiling, and `?dropTables=1` read as false deletes the record
- * but keeps the tables, both silently. Coercing `1`/`yes` would bring the
+ * without recompiling, and `?dryRun=1` read as false publishes for real, both
+ * silently. Coercing `1`/`yes` would bring the
  * guessing back.
  */
 export function parseBooleanParam(value: unknown): BooleanParam {

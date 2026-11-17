@@ -190,13 +190,15 @@ Concretely:
   naming the path of a refused one widens nothing; it does mean an unauthenticated reader of
   `/status` learns the layout of the server's data directory, which the gateway in front is
   expected to keep from the public.
-- **Error bodies name no storage path.** Driver text that reaches a 4xx body (a query the
-  database ran and rejected) has every object-store and HTTP URL replaced with `<storage
-  path>`, and an object store refusing a read (`HTTP … error on '<url>' (HTTP 401|403)`, a
-  DuckLake data path or a bucket the database's storage credentials cannot read) answers 403
+- **Error bodies name no storage path.** Driver text that reaches a caller (a 4xx body, a Malloy
+  error, compile diagnostics, MCP error text, a run's recorded errors, `/status` `loadErrors`) has
+  every object-store and HTTP URL replaced with `<storage path>`, and the server log masks a signed
+  URL's signature, credential and token. An object store refusing a read (`HTTP … error on
+  '<url>' (HTTP 401|403)`, and Azure's and DuckDB's other forms) answers 403
   `STORAGE_ACCESS_DENIED` on the query and raw `sqlQuery` routes, naming the source or
-  connection the caller read and no URL; the full text, bucket and path included, is in the
-  server log. Hiding a schema a host's catalog uses (such as a managed `materialized` schema)
+  connection the caller read and no URL; it says the query is fine only for a URL under a data
+  path the environment configures. The full text, bucket and path included, is in the server
+  log. Hiding a schema a host's catalog uses (such as a managed `materialized` schema)
   from models is the host's to configure, not Publisher's.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, and a package's `index.malloy` surface constrain what a _model_ exposes. They are
@@ -244,6 +246,13 @@ a source that should not answer schema questions to outsiders wants a lock as we
   accepting ACL-model disclosure: a gate reading `childtable.name` names a relationship the caller
   may not otherwise see, so a failure to attach the gate returns an opaque error naming no column,
   join, or expression — only the source.
+- **A gate is evaluated with the query it is grafted into.** A gate on a field computed from a
+  timestamp follows the query's `timezone:`, and a gate inherited through a `->` derivation filters
+  the derivation's output, after its `all()`, window functions and `limit` have run over every row.
+  For these two live behaviours served answers match a live run. Gate on a column that already
+  holds the date or key, and filter a derivation's input with a first-stage `where:` on the gate's
+  given when its global context is sensitive. See
+  [row-level-access.md § Where a gate is evaluated](row-level-access.md#where-a-gate-is-evaluated).
 - **A row-level gate's given values land in the warehouse query log.** The filter is inlined
   (`WHERE org_id IN (7, 8)`), not parameterized, so every caller's group set appears verbatim in
   the warehouse's own query logging. Weigh that when deciding what a given carries — a group set
@@ -297,6 +306,8 @@ layout, or a legacy `.malloynb`) is Malloy, markdown and renderer tags. It is de
 is what makes them reviewable in a pull request and agent-authorable. Keeping them that way is a
 deliberate property, not an accident of scope. It is not absolute today: gap 3 below is where a
 declarative artifact still carries author-controlled HTML.
+
+**Process backstop.** An unhandled promise rejection, whether from a connection driver (a fire-and-forget cancel, for one) or from Publisher's own code, is logged at error and counted on `publisher_unhandled_rejection_total`, and the server keeps running, including a rejection inside a package-load worker. An uncaught synchronous exception still ends the process, because it can leave state half-written.
 
 ## Known gaps
 
