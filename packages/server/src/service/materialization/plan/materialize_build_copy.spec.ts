@@ -17,7 +17,11 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { buildCopyText, storedSourceCopyText } from "./materialize_build_copy";
+import {
+   buildCopyText,
+   crossFileCopyTexts,
+   storedSourceCopyText,
+} from "./materialize_build_copy";
 
 /**
  * A `#(materialize)` source's build copy (`materialize_build_copy.ts`): the
@@ -809,5 +813,109 @@ describe("storedSourceCopyText: a source re-rooted on its own build source", () 
             "m.malloy.materialize.malloy",
          ),
       ).toBeUndefined();
+   });
+});
+
+describe("a cross-file extension's build copy (P10 across files)", () => {
+   const parentText = `source: raw is duckdb.table('t')
+
+source: parent is raw extend {
+  dimension: big is amt > 2
+  measure: total is amt.sum()
+}
+`;
+   const childText = `import "a.malloy"
+import { other } from "c.malloy"
+
+source: child is parent extend {
+  measure: n is count()
+}
+`;
+   const at = (text: string, needle: string, past = 0) => {
+      const before = text.slice(0, text.indexOf(needle) + past);
+      const lines = before.split("\n");
+      return { line: lines.length - 1, character: lines.at(-1)!.length };
+   };
+   const parentDecl = {
+      url: "file:///p/a.malloy",
+      range: {
+         start: at(parentText, "parent is"),
+         // Just past the block's closing brace.
+         end: at(parentText, "\n}\n", 2),
+      },
+   };
+   const parent = {
+      sourceName: "parent",
+      sourceID: "parent@file:///p/a.malloy",
+      buildSourceName: "parent__mat",
+      columns: [
+         { dimension: "amt", column: "amt" },
+         { dimension: "big", column: "big", computed: true },
+      ],
+      persist: {},
+   } as unknown as MaterializePlan;
+   const plan = {
+      sourceName: "child",
+      sourceID: "child@file:///p/b.malloy",
+      buildSourceName: "child__mat",
+      columns: [{ dimension: "amt", column: "amt" }],
+      persist: {},
+      buildsOver: {
+         sourceID: parent.sourceID,
+         sourceName: "parent",
+         declaration: parentDecl,
+         path: [],
+         crossFile: {
+            modelFile: "/p/a.malloy",
+            buildSourceURL: "file:///p/a.malloy.materialize.malloy",
+         },
+      },
+   } as unknown as MaterializePlan;
+
+   it("points only the parent file's imports at its re-rooted copy, which imports the parent's build source", () => {
+      const made = crossFileCopyTexts({
+         text: childText,
+         parentText,
+         plan,
+         parent,
+         buildSourceFrom: "./a.malloy.materialize.malloy",
+         importOf: (written) =>
+            written === "a.malloy" ? "./a.malloy.chain.malloy" : undefined,
+      });
+      if ("reason" in made) throw new Error(made.reason);
+      expect(made.copy).toContain(`import './a.malloy.chain.malloy'`);
+      expect(made.copy).toContain(`import { other } from "c.malloy"`);
+      expect(made.copy).toContain("source: child is parent extend");
+      expect(made.parentCopy).toContain(
+         `import { parent__mat } from './a.malloy.materialize.malloy'`,
+      );
+      expect(made.parentCopy).toContain("parent is parent__mat");
+      // The stored computed dimension is the stored column now.
+      expect(made.parentCopy).not.toContain("big is amt > 2");
+      expect(made.parentCopy).toContain("total is amt.sum()");
+   });
+
+   it("is refused when the extension's file never imports the parent's file", () => {
+      const made = crossFileCopyTexts({
+         text: childText,
+         parentText,
+         plan,
+         parent,
+         buildSourceFrom: "./a.malloy.materialize.malloy",
+         importOf: () => undefined,
+      });
+      expect("reason" in made).toBe(true);
+   });
+
+   it("is refused when an import path is written with an escape", () => {
+      const made = crossFileCopyTexts({
+         text: `import "a\\u002emalloy"\n${childText}`,
+         parentText,
+         plan,
+         parent,
+         buildSourceFrom: "./a.malloy.materialize.malloy",
+         importOf: () => "./x.malloy",
+      });
+      expect("reason" in made).toBe(true);
    });
 });

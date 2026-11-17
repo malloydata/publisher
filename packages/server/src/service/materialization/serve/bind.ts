@@ -27,7 +27,10 @@
  * Called by the facade, which logs and counts what each declines; no I/O.
  */
 
-import { quoteManifestTablePath } from "../../quoting";
+import {
+   quoteManifestTablePath,
+   UnquotableIdentifierError,
+} from "../../quoting";
 import {
    isPersistedQuerySourceID,
    type MaterializePlan,
@@ -211,7 +214,8 @@ interface ColocatedBindDecline {
  * colocated eligibility (a miss is declined, not fatal), each table name
  * quoted for its plan's dialect: a table named by a reserved word or needing
  * its case kept reaches the warehouse only quoted, as the builder created it.
- * A name already quoted passes through.
+ * A name written as SQL is parsed and re-quoted; one its dialect cannot read
+ * or quote is declined (`unquotable_name`), and the rest still bind.
  */
 export function bindColocatedEntries(args: {
    entries: FreshnessManifest;
@@ -230,12 +234,30 @@ export function bindColocatedEntries(args: {
    for (const [sourceEntityId, entry] of Object.entries(args.entries)) {
       if (eligibility?.eligibleEntityIds.has(sourceEntityId)) {
          const dialect = args.dialects.get(sourceEntityId);
-         entries[sourceEntityId] = dialect
-            ? {
-                 ...entry,
-                 tableName: quoteManifestTablePath(entry.tableName, dialect),
-              }
-            : entry;
+         if (!dialect) {
+            // Never inlined as given: with no dialect to quote it in, the
+            // entry is not bound.
+            declined.push({
+               reason: "unquotable_name",
+               sourceEntityId,
+               detail:
+                  "no dialect is known for its table, to quote its name in",
+            });
+            continue;
+         }
+         try {
+            entries[sourceEntityId] = {
+               ...entry,
+               tableName: quoteManifestTablePath(entry.tableName, dialect),
+            };
+         } catch (err) {
+            if (!(err instanceof UnquotableIdentifierError)) throw err;
+            declined.push({
+               reason: "unquotable_name",
+               sourceEntityId,
+               detail: err.message,
+            });
+         }
          continue;
       }
       declined.push({
@@ -352,6 +374,16 @@ export function deriveColocatedServeBindings(args: {
          continue;
       }
       if (!args.eligible(sourceID)) continue;
+      // Never inlined as given: with no dialect, or a name the dialect
+      // cannot read or quote, it is not bound and the source answers live.
+      if (!source.dialect) continue;
+      let tablePath: string;
+      try {
+         tablePath = quoteManifestTablePath(entry.tableName, source.dialect);
+      } catch (err) {
+         if (!(err instanceof UnquotableIdentifierError)) throw err;
+         continue;
+      }
       bindings.push({
          kind: plan ? "materialize" : "persist",
          tier: "colocated",
@@ -361,9 +393,7 @@ export function deriveColocatedServeBindings(args: {
          virtualHandle: source.sourceEntityId,
          // Canonical for the connection's dialect, as Malloy's manifest
          // substitution pastes it (a reserved or case-preserved name quoted).
-         tablePath: source.dialect
-            ? quoteManifestTablePath(entry.tableName, source.dialect)
-            : entry.tableName,
+         tablePath,
          schema: schema.map((c) => ({ ...c })),
          ...(entry.nativeSchema?.length
             ? { nativeSchema: entry.nativeSchema.map((c) => ({ ...c })) }

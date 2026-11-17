@@ -18,6 +18,7 @@
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
+import { UnquotableIdentifierError } from "../../quoting";
 import {
    type DropOccasion,
    recordDropTables,
@@ -515,7 +516,9 @@ async function keptInPlace(
 /**
  * Drop one colocated table, with its staging and backup names, on its own
  * connection. Best-effort: `owed` when the drop failed, which is logged;
- * `skipped` when the table lived in an unloaded version's in-memory duckdb.
+ * `skipped` when the table lived in an unloaded version's in-memory duckdb;
+ * `unquotable` when its name cannot be written as SQL in the connection's
+ * dialect, so no drop can name it and none is owed (a retry fails alike).
  */
 async function dropColocatedTable(
    environment: MaterializationEnvironment,
@@ -529,7 +532,7 @@ async function dropColocatedTable(
       retireIfReplacedByView,
       occasion,
    }: ReturnType<typeof dropReach>,
-): Promise<"dropped" | "owed" | "skipped"> {
+): Promise<"dropped" | "owed" | "skipped" | "unquotable"> {
    const physicalTableName = entry.physicalTableName;
    try {
       const connection = await cachedConnection(connectionName);
@@ -568,6 +571,18 @@ async function dropColocatedTable(
       });
       return "dropped";
    } catch (err) {
+      if (err instanceof UnquotableIdentifierError) {
+         logger.warn(
+            "Not dropping a materialized table whose name cannot be written as SQL",
+            {
+               runId: materializationId,
+               physicalTableName,
+               connectionName,
+               error: err.message,
+            },
+         );
+         return "unquotable";
+      }
       recordDropTables("failure", "in_warehouse", occasion);
       logger.warn("Failed to drop materialized table on delete", {
          runId: materializationId,

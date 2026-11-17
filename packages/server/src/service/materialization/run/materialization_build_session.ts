@@ -1224,6 +1224,17 @@ export async function planChainedDownstream(params: {
     * with fewer columns than live. Absent: not checked.
     */
    recomputes?: PersistSource;
+   /**
+    * With `recomputes`: every column must also be declared as the type the
+    * recompute declares it, or the build is a shape it could not carry (a
+    * rollup over a stored base, whose aggregates could type otherwise).
+    */
+   sameDeclaredTypes?: boolean;
+   /**
+    * The downstream's build must read no given: a table holds one value's
+    * rows, which no caller's query may read as its own.
+    */
+   givenFree?: boolean;
 }): Promise<{ sql: string; downstream: PersistSource }> {
    const { model: build, downstreamName } = params;
    const virtualMap = new Map(
@@ -1307,6 +1318,41 @@ export async function planChainedDownstream(params: {
                `read through a definition no stored upstream carries`,
          });
       }
+      if (params.sameDeclaredTypes) {
+         const typed = (source: PersistSource) =>
+            JSON.stringify(
+               storageBuildCasts(source).declaredColumns.map((c) => [
+                  c.name,
+                  c.type,
+               ]),
+            );
+         let same = false;
+         try {
+            same = typed(params.recomputes) === typed(downstream);
+         } catch {
+            // An unreadable surface is not proven the same.
+         }
+         if (!same) {
+            throw new MaterializationEligibilityError({
+               message:
+                  `Chained build model of '${downstreamName}' over the rebound ` +
+                  `parents does not declare its columns as the types a ` +
+                  `recompute declares them`,
+            });
+         }
+      }
+   }
+   if (
+      params.givenFree &&
+      targets.connections.some((c) =>
+         c.targets.some(
+            (t) => t.readsGivens && t.sources.some((s) => s === downstream),
+         ),
+      )
+   ) {
+      throw new MaterializationEligibilityError({
+         message: `Chained build model of '${downstreamName}' reads a given`,
+      });
    }
    // The CTAS runs on a read-write session on the destination, as a
    // same-catalog build does, so the same rule holds: only SQL Malloy
@@ -1356,6 +1402,10 @@ export async function buildDownstreamIntoStorage(params: {
    downstreamName: string;
    /** See planChainedDownstream's `recomputes`. */
    recomputes?: PersistSource;
+   /** See planChainedDownstream's `sameDeclaredTypes`. */
+   sameDeclaredTypes?: boolean;
+   /** See planChainedDownstream's `givenFree`. */
+   givenFree?: boolean;
    /** connection → handle → quoted physical path for the upstream virtuals. */
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
@@ -1384,6 +1434,8 @@ export async function buildDownstreamIntoStorage(params: {
             downstreamName,
             virtualMap,
             ...(params.recomputes ? { recomputes: params.recomputes } : {}),
+            ...(params.sameDeclaredTypes ? { sameDeclaredTypes: true } : {}),
+            ...(params.givenFree ? { givenFree: true } : {}),
             connections: new FixedConnectionMap(
                new Map([[connectionName, session]]),
                connectionName,
