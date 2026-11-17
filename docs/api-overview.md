@@ -234,8 +234,8 @@ that answered, `latest` resolved), `rowLimit`, `rowLimitSource`, `rowLimitHit`, 
 `scannedBytes`, `queryCorrelationId` and `renderLogs`. Add `"include": ["malloyResult"]` for the full Malloy result,
 with column types, that the renderer consumes, or `["sql"]` for the SQL that ran.
 
-`metadata.path` is the path report: what answered the query and why. `servedBy` names the table that answered and
-its `dataAsOf`, or `kind: live`. `considered` lists every materialized table the router tried, in order, each `used`
+`metadata.path` is the path report: what answered the query and why. `servedBy` names the table that answered, its
+`tier` (`database` or `storage`) and its `dataAsOf`, or `kind: live`. `considered` lists every materialized table the router tried, in order, each `used`
 or `skipped` with a `reason` from a closed list (`NOT_BUILT`, `WARNED`, `MISSING_FIELD`, `CONTRACT`,
 `GRAIN_TOO_COARSE`, `TIME_ZONE`, `CROSS_CONNECTION`, `COUNT_SEMANTICS`, `STALE`, `RUN_FAILED`). `notConsidered` names nearby tables
 the router does not try for this query (a sibling's, or one on a source extending it), nearest first. `joins` says

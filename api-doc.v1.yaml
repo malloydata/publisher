@@ -6709,6 +6709,13 @@ components:
           type: string
           description: The table that answered. Each generation of a table is its own table, so this also names the generation.
             Absent when `kind` is `live`.
+        tier:
+          type: string
+          enum:
+            - database
+            - storage
+          description: "Where the table that answered lives: `database`, the source's own connection; `storage`, a
+            destination. Absent when `kind` is `live`."
         dataAsOf:
           type: string
           format: date-time
