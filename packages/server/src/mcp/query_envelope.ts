@@ -5,6 +5,7 @@ import { lazyCounter } from "../telemetry";
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { bigIntReplacer } from "../json_utils";
 import type { QueryRowLimitSource } from "../service/model_limits";
+import { resultColumns, type ResultColumn } from "./result_columns";
 
 const rowLimitHits = lazyCounter(
    "publisher_mcp_row_limit_hits_total",
@@ -14,8 +15,10 @@ const rowLimitHits = lazyCounter(
 /**
  * The agent-facing shape for a query result. Field names (leading underscores,
  * `renderLogErrors` casing) match Credible's `execute_query` on purpose, so an
- * agent and a shared skill see one shape locally and in production. As in
- * Credible, truncation fields appear only when truncation happened.
+ * agent and a shared skill see one shape locally and in production. The one
+ * exception is `_columns`, which only Publisher sends: a shared skill must read
+ * `_meta.schema` until Credible carries it too. As in Credible, truncation
+ * fields appear only when truncation happened.
  *
  * Three things can shorten a result: the query row cap pushed into the SQL
  * (silent, hence `_limit_hit`), the hard maxRows/maxBytes ceiling (a loud 413),
@@ -23,6 +26,15 @@ const rowLimitHits = lazyCounter(
  */
 interface QueryEnvelope {
    rows: unknown;
+   /**
+    * What each column is, read from the schema: type, numeric subtype, date
+    * grain, label, whether it is an aggregate, its declared display format,
+    * and the zone a timestamp reads in. Publisher only, for now: Credible's
+    * envelope carries the same facts only inside `_meta.schema`, so shared
+    * skills must not rely on this field. It counts against the result budget,
+    * and is left out when `_meta.schema` alone is over it.
+    */
+   _columns?: ResultColumn[];
    /** Malloy metadata the flat rows drop: field types, render tags, timezone. */
    _meta: {
       schema: Malloy.Schema;
@@ -127,8 +139,14 @@ export function buildQueryEnvelope(
       rowLimit > 0 &&
       rowCount === rowLimit;
 
+   // `_columns` restates the schema; when the schema alone is over the
+   // budget it would only inflate a payload that cannot fit anyway.
+   const schemaFits =
+      JSON.stringify(result.schema ?? null, bigIntReplacer, 2).length <= limit;
+
    const envelope: QueryEnvelope = {
       rows,
+      ...(schemaFits && { _columns: resultColumns(result) }),
       _meta: {
          schema: result.schema,
          annotations: result.annotations ?? [],
