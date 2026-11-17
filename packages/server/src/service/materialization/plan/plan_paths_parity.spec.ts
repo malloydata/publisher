@@ -197,6 +197,41 @@ source: d is raw extend {
       ).toEqual([]);
    });
 
+   it("refuses a pair table's name= the readable name would rewrite, and reports a name= an earlier check refused once", async () => {
+      const model = `${RAW}source: lines is duckdb.sql("""SELECT 7 AS line_id, 1 AS order_id, 5 AS qty""") extend {
+  primary_key: line_id
+}
+#(materialize) name="My-Pair" inline=["lines"]
+source: orders is raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+}
+#@ persist name='analytics."Orders"'
+source: q is raw -> { group_by: c }
+`;
+      const { main, worker } = await bothPaths(
+         packages,
+         model,
+         { materialization: { scope: "version" } },
+         { versionId: "1.0.0", scope: "version" },
+      );
+      expect(worker?.ok).toBe(true);
+      if (!worker?.ok) return;
+      expect(judged(worker.outcome)).toEqual(judged(main));
+      const malformed = main.annotationFindings
+         .filter((f) => f.tier === "malformed")
+         .map((f) => [f.code, f.subject]);
+      expect(malformed).toContainEqual(["materialize-invalid", "orders"]);
+      expect(
+         malformed.filter(([code]) => code === "persist-invalid"),
+      ).toHaveLength(1);
+      // The pair is not planned; the source an earlier check refused stays
+      // as that check left it (the load fails on its finding).
+      expect(
+         Object.values(main.plan?.sources ?? {}).map((s) => s.name),
+      ).toEqual(["q"]);
+   });
+
    it("judges a collision before an unbuildable incremental declaration", async () => {
       const pkg = await packages.create(SHAPES[0][1]);
       const main = await computePackageBuildPlan(pkg);

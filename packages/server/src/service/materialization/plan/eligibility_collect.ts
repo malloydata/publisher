@@ -414,14 +414,17 @@ export function refuseRewrittenNames<
    const findings: PackageAnnotationFinding[] = [];
    const drop = new Set<string>();
    for (const [sourceID, table] of Object.entries(compiled.tables)) {
-      if (table.kind === "rollup" || table.kind === "pair") continue;
+      // A rollup's `name=` leaf is checked where it is read
+      // (preaggregation_namespace.ts); a pair table's `name=` is its
+      // `#(materialize)`'s, so it is checked here.
+      if (table.kind === "rollup") continue;
       if (table.materialize?.nameDefaulted) continue;
       const name = deriveAnnotationFields(table.source).name?.trim();
       if (!name) continue;
       const leaf = name.slice(name.lastIndexOf(".") + 1);
       const readable = readableSegment(leaf);
       if (readable === leaf.toLowerCase()) continue;
-      const sourceName = table.source.name;
+      const sourceName = table.materialize?.sourceName ?? table.source.name;
       const author = authorNameOf(sourceID, sourceName);
       const view = /^view (.+) of (.+)$/.exec(author);
       const query = /^query (.+)$/.exec(author);
@@ -451,6 +454,19 @@ export function refuseRewrittenNames<
                   sourceName,
                   PERSIST_INVALID_CODE,
                ];
+      // One finding per mistake: a `name=` an earlier check already found
+      // invalid (an unquoted identifier path, say) is not reported again.
+      const model = table.modelPath ?? "";
+      if (
+         (compiled.annotationFindings ?? []).some(
+            (f) =>
+               f.tier === "malformed" &&
+               f.subject === subject &&
+               (f.model ?? "") === model,
+         )
+      ) {
+         continue;
+      }
       findings.push({
          route: table.materialize ? MATERIALIZE_ROUTE : "@",
          tier: "malformed",
@@ -462,7 +478,7 @@ export function refuseRewrittenNames<
             `underscores, starting with a letter (it is lowercased in the ` +
             `table's name).`,
          subject,
-         model: table.modelPath ?? "",
+         model,
       });
       drop.add(sourceID);
    }

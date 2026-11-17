@@ -10767,9 +10767,13 @@ components:
             `#(materialize)` a field that is not a stored dimension);
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns);
-            `preaggregate_over_dynamic_source` (a rollup whose base is scoped
-            by a given, which has no read-time re-application to put the term
-            back); `read_only_dialect` (a colocated build on a dialect that
+            `preaggregate_over_dynamic_source` (a rollup whose base reads a
+            given that has no default, so its build cannot be planned with a
+            value; a rollup over a caller-scoped base otherwise takes the
+            reasons above, as every mechanism does: `given_in_persisted_query`,
+            `given_where_over_unstored_field` or `inherited_where_with_given`.
+            In 0.14.0 every rollup over a caller-scoped base reported
+            `preaggregate_over_dynamic_source`); `read_only_dialect` (a colocated build on a dialect that
             cannot create tables; SQL Server today, whose connection reports
             `canPersist: false`); `needs_qualified_name` (a colocated table on
             BigQuery, where a table needs a dataset, whose `name=` names none:
