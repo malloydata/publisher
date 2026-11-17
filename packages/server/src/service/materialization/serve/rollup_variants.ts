@@ -135,6 +135,7 @@ import {
    type QueryLevelFacts,
 } from "../../governance/ir/prepared_query";
 import { packageFiles } from "../text/package_files";
+import { fieldPathsIn, gateIdentifiers } from "./gate_reads";
 import {
    emitMeasureExpr,
    generateRollupBuildFile,
@@ -1219,7 +1220,12 @@ export class RollupVariantServe {
       const missing = coverageDecline(shape, measures);
       if (missing) throw missing;
       if (query.zoned) {
-         const zone = zoneDecline(plan, query.struct, query.zoned.usage);
+         const zone = zoneDecline(
+            plan,
+            query.struct,
+            query.zoned.usage,
+            query.gates,
+         );
          if (zone) throw zone;
       }
       // A rollup's re-applied `where:` is written on its base's own variant,
@@ -2963,38 +2969,23 @@ function zonedQueryDecline(): LegDecline {
 /** The temporal types, the only ones a query's `timezone:` reads differently. */
 const ZONED_TYPES = new Set(["date", "timestamp", "timestamptz"]);
 
-/** Every field path an expression reads (`node: "field"`), at any depth. */
-function fieldPathsIn(e: unknown, out: string[][] = [], depth = 0): string[][] {
-   if (depth > 64 || e === null || typeof e !== "object") return out;
-   if (Array.isArray(e)) {
-      for (const x of e) fieldPathsIn(x, out, depth + 1);
-      return out;
-   }
-   const n = e as { node?: unknown; path?: unknown };
-   if (
-      n.node === "field" &&
-      Array.isArray(n.path) &&
-      n.path.every((p) => typeof p === "string")
-   ) {
-      out.push(n.path as string[]);
-   }
-   for (const v of Object.values(e)) fieldPathsIn(v, out, depth + 1);
-   return out;
-}
-
 /**
  * Why a query that sets its own `timezone:` is not read from `plan`, or
  * undefined (A5). The build truncated and compared times in the model's
  * zone, so the rollup answers a zoned query only when nothing it reads
  * depends on a zone: no field path the query reads (expanded through its
- * dimensions and measures), no stored partial and no `where:` of the base
- * reads a temporal field, directly or through a computed dimension, nor
- * anything through a join. Fails closed on usage that could not be read.
+ * dimensions and measures), no stored partial, no `where:` of the base and no
+ * field the entry point's gates read reads a temporal field, directly or
+ * through a computed dimension, nor anything through a join. The gates are
+ * grafted on the variant after this check, in the query's zone, so a gate
+ * over a stored day truncated in the model's zone would admit another day's
+ * groups. Fails closed on usage that could not be read.
  */
 function zoneDecline(
    plan: RollupVariantPlan,
    struct: object,
    usage: readonly (readonly string[])[] | undefined,
+   gates: EnforcedGates | undefined,
 ): LegDecline | undefined {
    if (usage === undefined) return zonedQueryDecline();
    const def = struct as { fields?: unknown[]; filterList?: unknown[] };
@@ -3023,7 +3014,10 @@ function zoneDecline(
       m.partials.flatMap((p) => [p.leaf.joinPath, ...p.leaf.reads]),
    );
    const where = fieldPathsIn(def.filterList);
-   return [...usage, ...where].some(readsTime) ||
+   const gated = gateIdentifiers(
+      gates ? [...gates.authorize, ...gates.accessFilter] : [],
+   ).map((id) => [id]);
+   return [...usage, ...where, ...gated].some(readsTime) ||
       stored.some((p) => p.length > 0 && readsTime(p))
       ? zonedQueryDecline()
       : undefined;
