@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a rename that reuses or swaps names reads the right stored column
+
+**Fixed: a persisted source whose trailing `extend` renames a column to a name another column had was served wrong.** A `#@ persist` source's table stores each column under its query's output name, and serving renames it again. Two cases read the wrong stored column:
+- **Swap:** a rename that swaps two names (`rename: tmp is total; rename: total is n; rename: n is tmp`) served `n` and `total` from each other's columns.
+- **Reuse:** a renamed `BIGINT` sum whose old name another field took (`rename: total2 is total; rename: total is n`, or a dimension named `total`) was served rounded past 2^53.
+
+Both are now read from their own stored columns, with every digit, on the `storage=` tier and in the source's own database. **Who was affected:** `#@ persist` sources with such renames; other renames were served correctly. **How to tell:** a served answer that differed from live for those fields now equals it.
+
 ## [Unreleased] — exact DuckLake integers, managed-origin and Snowflake rollups serve, failed-run manifest, twin addresses, partial-column serve
 
 **Fixed: a big integer stored in DuckLake was served rounded and reported as materialized.** DuckLake on DuckDB 1.5 writes a `HUGEINT` or `UHUGEINT` column to its Parquet files as a `DOUBLE`, while its catalog still reports the 128-bit type. A sum of `BIGINT`s that a build computed in DuckDB was therefore stored rounded (4530000000000225187 read back as 4530000000000225280), and Publisher, trusting the catalog, read the column as an exact `HUGEINT`. The path report said the answer came from the table while the digits were wrong. Rows DuckLake kept inlined in its catalog stayed exact, which is why small tables looked right. Now:
