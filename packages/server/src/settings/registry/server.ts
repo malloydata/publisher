@@ -90,6 +90,14 @@ export const server = [
       aliases: { env: ["PUBLISHER_CALLER_HEADER"] },
    }),
    setting({
+      key: "trustPageContextHeader",
+      type: boolean(),
+      default: false,
+      description:
+         "Let the gateway override the page context injected into data apps, through the x-publisher-page-context request header.",
+      notes: "Data-app pages carry an injected `publisher-context` block naming their environment, package, version, API base and the hosts that may embed them. With this on, the request header `x-publisher-page-context` (JSON with any of `environment`, `package`, `apiBase`, `hostOrigins`) overrides those fields, for a gateway that serves Publisher under other names or paths. An invalid header is ignored whole and logged. Responses that read it carry `Vary: x-publisher-page-context`. Leave it off unless the gateway strips the header from client requests, since any client could otherwise set it.",
+   }),
+   setting({
       key: "packageVersioning",
       type: oneOf(["off", "on"]),
       default: "on",

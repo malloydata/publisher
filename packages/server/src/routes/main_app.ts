@@ -52,6 +52,8 @@ export interface MainAppOptions {
    /** Proxy the Console to the Vite dev server (development only). */
    proxyConsoleToDevServer?: boolean;
    frameAncestors?: string;
+   /** Honor `x-publisher-page-context` on data-app pages (`trustPageContextHeader`). */
+   trustPageContextHeader?: boolean;
    /** Requests per minute per client; 0 turns the limit off. */
    rateLimitPerMinute?: number;
    /** The Prometheus scrape handler, when the exporter is up. */
@@ -81,6 +83,10 @@ export function createMainApp(options: MainAppOptions): express.Express {
       app,
       environmentStore,
       options.dataAppRuntimePath,
+      {
+         frameAncestors: options.frameAncestors,
+         trustPageContextHeader: options.trustPageContextHeader ?? false,
+      },
    );
    if (options.consoleRoot) {
       app.use("/", express.static(options.consoleRoot));

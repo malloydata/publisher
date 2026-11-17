@@ -415,6 +415,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       consoleRoot: isDevelopment ? undefined : ROOT,
       proxyConsoleToDevServer: isDevelopment,
       frameAncestors: settings.get("frameAncestors"),
+      trustPageContextHeader: settings.get("trustPageContextHeader"),
       // Opt-in (`rateLimit`).
       rateLimitPerMinute: settings.get("rateLimit"),
       metricsHandler: prometheusMetricsHandler(),
