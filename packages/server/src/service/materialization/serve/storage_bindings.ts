@@ -31,6 +31,7 @@ import {
    type StoredColumnTypeMismatch,
 } from "../stored_column_types";
 import type { BuildPlan } from "../domain/types";
+import type { MaterializePlan } from "../domain/table_plans";
 
 /** The warning code a stored column type mismatch is logged and reported with. */
 export { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../stored_column_types";
@@ -46,11 +47,10 @@ export interface SourceTypeMismatches {
 
 /**
  * How a stored column whose type does not serve as declared is read: through
- * a faithful `cast`; not at all, so queries that read it are answered `live`;
- * or as its `stored` type, where the reader declares the table's own types
- * (a `#(materialize)` table's served copy, a rollup's grain).
+ * a faithful `cast`, or not at all, so queries that read it are answered
+ * `live`.
  */
-export type MismatchHandling = "cast" | "live" | "stored";
+export type MismatchHandling = "cast" | "live";
 
 /**
  * A `#(materialize)`, persisted view or query, or rollup `storage=` table's
@@ -75,6 +75,19 @@ export interface BoundTableTypeFinding {
 export function boundTableTypeFindings(
    bindings: readonly Binding[],
    plan: BuildPlan | null,
+   readers: {
+      /**
+       * The query time zone the reader of a table's source reads it in (a
+       * date cast from an instant is not faithful under one); undefined when
+       * it reads in none or the source is not found.
+       */
+      queryTimezone?: (
+         sourceID: string,
+         source: NonNullable<BuildPlan["sources"]>[string],
+      ) => string | undefined;
+      /** The `#(materialize)` plans, by the author's sourceID. */
+      materializePlans?: Readonly<Record<string, MaterializePlan>>;
+   } = {},
 ): BoundTableTypeFinding[] {
    const sources = Object.entries(plan?.sources ?? {});
    const findings: BoundTableTypeFinding[] = [];
@@ -93,7 +106,20 @@ export function boundTableTypeFindings(
       );
       const mismatches = storedColumnTypeMismatches(binding.schema, declared);
       if (mismatches.length === 0) continue;
-      const handled = handlingOf(binding, source, mismatches);
+      // A joined field stored in a `#(materialize)` table's record (an
+      // inlined join_one, a pair table) has no cast inside the record, so
+      // the served copy leaves its whole source live.
+      const recordColumns = new Set(
+         binding.kind === "materialize"
+            ? (readers.materializePlans?.[sourceID]?.columns ?? [])
+                 .filter((c) => c.join !== undefined)
+                 .map((c) => c.column)
+            : [],
+      );
+      const handled = handlingOf(mismatches, {
+         queryTimezone: readers.queryTimezone?.(sourceID, source),
+         recordColumns,
+      });
       findings.push({
          binding,
          sourceID,
@@ -109,31 +135,23 @@ export function boundTableTypeFindings(
 }
 
 /**
- * How each reader treats a mismatch: a persisted result casts what a faithful
- * cast reads and answers live otherwise (`storedColumnCasts`); a rollup
- * declares its grain as stored, and does not read a numeric partial stored
- * as another type (`partialTypeRefusal`); a `#(materialize)` table's served
- * copy declares each column as stored (`materializedColumnsOf`).
+ * How each reader treats a mismatch, the one rule every `storage=` reader
+ * applies ({@link serveTypePlan}): read through a faithful cast where one
+ * gives live's values, else not read, so a query reading it answers live. A
+ * persisted result (`storedColumnCasts`) and a rollup (`storedRollupReads`)
+ * decline the table for such a column; a `#(materialize)` table's served copy
+ * leaves the column out (`materializedColumnsOf`).
  */
 function handlingOf(
-   binding: Binding,
-   source: NonNullable<BuildPlan["sources"]>[string],
    mismatches: readonly StoredColumnTypeMismatch[],
+   options: { queryTimezone?: string; recordColumns: ReadonlySet<string> },
 ): (m: StoredColumnTypeMismatch) => MismatchHandling {
-   if (binding.kind === "view" || binding.kind === "query") {
-      const cast = new Set(
-         serveTypePlan(mismatches).casts.map((c) => c.column),
-      );
-      return (m) => (cast.has(m.column) ? "cast" : "live");
-   }
-   if (binding.kind === "rollup") {
-      const grain = new Set(source.preaggregate?.grainDimensions ?? []);
-      return (m) =>
-         !grain.has(m.column) && m.declaredType === "number"
-            ? "live"
-            : "stored";
-   }
-   return () => "stored";
+   const cast = new Set(
+      serveTypePlan(mismatches, { queryTimezone: options.queryTimezone })
+         .casts.map((c) => c.column)
+         .filter((c) => !options.recordColumns.has(c)),
+   );
+   return (m) => (cast.has(m.column) ? "cast" : "live");
 }
 
 /** One binding's mismatches, with how each is handled, for the model's log. */

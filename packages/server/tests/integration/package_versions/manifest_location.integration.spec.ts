@@ -22,7 +22,11 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 
 const ENV_NAME = "manifest-location-env";
 const PKG = "persist-test";
@@ -127,6 +131,7 @@ describe("a version bound to a manifest on this server's disk", () => {
       );
       env = await startRestE2E();
       baseUrl = env.baseUrl;
+      await deleteLeftoverEnvironment(baseUrl, ENV_NAME);
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "content-type": "application/json" },

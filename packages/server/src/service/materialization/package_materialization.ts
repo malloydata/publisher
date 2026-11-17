@@ -69,6 +69,7 @@ import * as warnings from "./package_warnings";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
+import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
    BuildPlan,
@@ -595,6 +596,24 @@ export class PackageMaterialization {
     * declaration, so its served copy finds the declaration here. One function
     * for the package's life: the served-copy context is compared by identity.
     */
+   /**
+    * A rollup's base, by its name in the model the plan entry came from, as
+    * the rollup leg reads the base's zone.
+    */
+   private baseDeclaration(source: {
+      modelPath?: string;
+      preaggregate?: { baseSourceName?: string } | null;
+   }): unknown {
+      const name = source.preaggregate?.baseSourceName;
+      const model = source.modelPath
+         ? this.owner.models().get(source.modelPath)
+         : undefined;
+      if (!name || !model) return undefined;
+      const map = SourceMap.of(model.getModelDef());
+      const id = map.sourceIDOf(name);
+      return id === undefined ? undefined : map.node(id)?.def;
+   }
+
    private readonly declarationLookup = (sourceID: string): unknown => {
       for (const model of this.owner.models().values()) {
          const def = SourceMap.of(model.getModelDef()).node(sourceID)?.def;
@@ -662,6 +681,15 @@ export class PackageMaterialization {
       this.boundTypeFindings = boundTableTypeFindings(
          bindings,
          this.plan.buildPlan,
+         {
+            materializePlans: this.plan.materializePlans,
+            queryTimezone: (sourceID, source) =>
+               queryTimezoneOf(
+                  source.preaggregate
+                     ? this.baseDeclaration(source)
+                     : this.declarationLookup(sourceID),
+               ),
+         },
       );
       for (const finding of this.boundTypeFindings) {
          for (const m of finding.mismatches) {
