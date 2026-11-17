@@ -44,6 +44,7 @@ import {
    booleanParam,
    queryVersionRefOf,
    assertNoCollectionReload,
+   assertNoDropTables,
    versionRefOf,
 } from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
@@ -559,12 +560,11 @@ export function registerLegacyRoutes(
    app.delete(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
       apiRoute(async (req, res) => {
-         const dropTables = booleanParam(req, "dropTables");
+         assertNoDropTables(req);
          await materializationController.deleteMaterialization(
             req.params.projectName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables },
          );
          res.status(204).send();
       }),

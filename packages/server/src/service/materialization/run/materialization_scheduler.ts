@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The standalone materialization scheduler ({@link MaterializationScheduler}):
+ * fires each loaded package's declared `materialization.schedule` cron as an
+ * auto-run through the materialization service, for a Publisher with no
+ * control plane. Constructed by main_server.ts only when the local scheduler
+ * is configured; exported through index.ts.
+ *
+ * Arming state is in memory, re-anchored after a restart from the newest
+ * recorded scheduler fire. Logs and counts each fire.
+ */
+
 import type { MaterializationSchedulerConfig } from "../../../config";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";

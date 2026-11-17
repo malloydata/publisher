@@ -4,7 +4,9 @@
 import { createHash, randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
+import { pathToFileURL } from "url";
 import { compareText } from "../compare_text";
+import { confinedPackagePathSync } from "../utils";
 
 /**
  * Hashed in place of an unreadable file, so it digests differently from an
@@ -36,7 +38,13 @@ export function computeSourceContentSha(
       } else {
          const absolute = path.join(packagePath, relativePath);
          try {
-            hash.update(fs.readFileSync(absolute));
+            // Inside the package only: a file that links out hashes as
+            // unreadable, whatever it leads to.
+            hash.update(
+               fs.readFileSync(
+                  confinedPackagePathSync(packagePath, pathToFileURL(absolute)),
+               ),
+            );
          } catch {
             hash.update(UNREADABLE);
          }

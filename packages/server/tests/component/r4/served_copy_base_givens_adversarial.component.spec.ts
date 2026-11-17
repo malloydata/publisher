@@ -22,7 +22,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../../src/errors";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -313,13 +313,10 @@ for (const [shape, ev, tiers, labels, expectedBuilt] of [
 ] as const) {
    const model = modelOver(ev, tiers, labels);
    describe(`R4 adversarial: a base scoped by a given, with a defaulted given (over a ${shape})`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
       let built: string[];
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: {
                "m.malloy": model,
@@ -336,7 +333,6 @@ for (const [shape, ev, tiers, labels, expectedBuilt] of [
             .sort();
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -607,13 +603,10 @@ source: viewer is tiers extend {
 `;
 
 describe("R4 adversarial: stored dimensions, joins and extension tables over a scoped base", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    let built: string[];
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": chainModel },
          seedSql,
@@ -625,7 +618,6 @@ describe("R4 adversarial: stored dimensions, joins and extension tables over a s
          .sort();
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -756,13 +748,10 @@ source: incremental_own is duckdb.table('ev') extend {
 `;
 
 describe("R4 adversarial: colocated and incremental over a scoped base", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    let built: string[];
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": colocatedModel },
          seedSql,
@@ -775,7 +764,6 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
          .sort();
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

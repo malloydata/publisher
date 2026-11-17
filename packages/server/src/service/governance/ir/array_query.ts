@@ -156,12 +156,6 @@ export interface ArrayQueryJoin {
    at?: { url?: string; line?: number };
 }
 
-/** One shared empty result, so a clean subtree allocates nothing. */
-const NO_JOINS: ArrayQueryJoin[] = [];
-
-/** Per object outside any array query: the joins under it, read once. */
-const joinsMemo = new WeakMap<object, ArrayQueryJoin[]>();
-
 function locationOf(f: IrObject): ArrayQueryJoin["at"] {
    const loc = isObject(f.location) ? f.location : undefined;
    if (!loc) return undefined;
@@ -176,9 +170,11 @@ function locationOf(f: IrObject): ArrayQueryJoin["at"] {
 /** Keys that hold no expression, source or pipeline. */
 const NOT_IR = new Set(["at", "location", "annotations"]);
 
-/** The source joins any `extend:` under one array query's node declares. */
-function joinsInside(arrayQuery: IrObject): ArrayQueryJoin[] {
-   const found: ArrayQueryJoin[] = [];
+/**
+ * Push the source joins any `extend:` under one array query's node declares
+ * onto `found`.
+ */
+function joinsInside(arrayQuery: IrObject, found: ArrayQueryJoin[]): void {
    const seen = new Set<object>();
    const walk = (v: unknown): void => {
       if (!isObject(v) || seen.has(v)) return;
@@ -195,54 +191,65 @@ function joinsInside(arrayQuery: IrObject): ArrayQueryJoin[] {
             }
          }
       }
-      for (const [k, child] of Object.entries(v)) {
-         if (!NOT_IR.has(k)) walk(child);
+      for (const k of Object.keys(v)) {
+         if (!NOT_IR.has(k)) walk(v[k]);
       }
    };
    walk(arrayQuery);
-   return found;
 }
 
 /**
  * Every join to a source declared anywhere inside an array query's pipeline
  * (any stage, a nest in it, or an array query nested in it) under `root`:
  * a model definition, a source, or a compiled query. A join to a record or
- * array (an element's own nested array) is not one. Memoized per object, so
- * a source shared by many queries is read once.
+ * array (an element's own nested array) is not one.
+ *
+ * One walk per call, each object read once: the IR shares nodes (a structured
+ * clone keeps that aliasing), so a source many queries reach is read the first
+ * time only and its joins are listed once, in first-reached order. Nothing is
+ * kept between calls: a load reads a freshly hydrated ModelDef, which no
+ * earlier call has seen (ms2data/service#7795).
  */
 export function arrayQueryJoins(root: unknown): ArrayQueryJoin[] {
-   const inProgress = new Set<object>();
-   const walk = (v: unknown): ArrayQueryJoin[] => {
-      if (!isObject(v)) return [];
-      const memo = joinsMemo.get(v);
-      if (memo) return memo;
-      // The IR is a tree with shared nodes; a cycle reads nothing twice.
-      if (inProgress.has(v)) return [];
-      inProgress.add(v);
-      let found: ArrayQueryJoin[] = NO_JOINS;
+   const found: ArrayQueryJoin[] = [];
+   const seen = new Set<object>();
+   const walk = (v: unknown): void => {
+      if (!isObject(v) || seen.has(v)) return;
+      seen.add(v);
       if (v.node === "arrayQuery") {
-         found = joinsInside(v);
-      } else {
-         for (const [k, child] of Object.entries(v)) {
-            if (NOT_IR.has(k)) continue;
-            const under = walk(child);
-            if (under.length > 0) found = [...found, ...under];
-         }
+         joinsInside(v, found);
+         return;
       }
-      inProgress.delete(v);
-      joinsMemo.set(v, found);
-      return found;
+      for (const k of Object.keys(v)) {
+         if (!NOT_IR.has(k)) walk(v[k]);
+      }
    };
-   return walk(root);
+   walk(root);
+   return found;
 }
 
 const governsMemo = new WeakMap<object, boolean>();
+
+/**
+ * Record what {@link governsAccess} answers for `root`, computed over an
+ * equal value elsewhere: the package-load worker walks its own copy of a
+ * model's IR and ships the answer with it (`SerializedModel.governsAccess`),
+ * so the main thread never walks a model to learn that it governs nothing.
+ * The answer reads only the IR's content, which a structured clone keeps.
+ */
+export function noteGovernsAccess(root: unknown, governs: boolean): void {
+   if (isObject(root)) governsMemo.set(root, governs);
+}
 
 /**
  * Whether anything under `root` (a model definition, imports folded in)
  * carries an `#(authorize)`, `#(access_filter)`, `#(carries)` or
  * `#(classification)` note: a check of Publisher's reads what a query reads,
  * or which source it reaches, so a read it cannot follow matters here.
+ *
+ * Answering false walks every node, so it is answered once per object:
+ * memoized, and for a worker-compiled model noted at hydration from the
+ * worker's own walk ({@link noteGovernsAccess}).
  */
 export function governsAccess(root: unknown): boolean {
    if (!isObject(root)) return false;
@@ -266,9 +273,9 @@ export function governsAccess(root: unknown): boolean {
             }
          }
       }
-      for (const [k, child] of Object.entries(v)) {
+      for (const k of Object.keys(v)) {
          if (k === "at" || k === "location") continue;
-         if (walk(child)) return true;
+         if (walk(v[k])) return true;
       }
       return false;
    };

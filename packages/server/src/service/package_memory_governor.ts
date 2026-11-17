@@ -20,7 +20,12 @@ export interface MemoryGovernorStatus {
 /** Returns the current process RSS in bytes; injectable for tests. */
 export type RssSampler = () => number;
 
-const DEFAULT_RSS_SAMPLER: RssSampler = () => process.memoryUsage().rss;
+/**
+ * RSS alone, read from the OS. Not `process.memoryUsage().rss`: Bun computes
+ * the heap statistics in that object too, a cost that grows with live objects
+ * and is paid on the main thread every tick (ms2data/service#7795).
+ */
+const DEFAULT_RSS_SAMPLER: RssSampler = () => process.memoryUsage.rss();
 
 /** Counts false → true transitions, for alerting on a flapping pod. */
 const backpressureActivations = lazyCounter(

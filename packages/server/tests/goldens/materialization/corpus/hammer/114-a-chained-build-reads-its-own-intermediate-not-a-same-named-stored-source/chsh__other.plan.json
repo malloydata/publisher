@@ -14,6 +14,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "mid@<hammer>/chsh/other.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -27,7 +30,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {

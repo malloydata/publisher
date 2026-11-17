@@ -52,6 +52,15 @@ a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
 `workflow_dispatch`. It is not a pull-request check and nothing depends on it. Two legs, one with
 `PUBLISHER_MATERIALIZE=true` and one with `false`, each upload their logs as an artifact.
 
+`main-thread-regression.yml` is the main-thread regression check
+(`packages/server/tests/perf/main-thread/README.md`): a storm-lite A/B of two server builds on
+one runner, added after Publisher 0.13.1 pinned the worker's main thread
+(https://github.com/ms2data/service/issues/7795). On a PR that touches `packages/server/**`
+or `bun.lock` it compares the PR's head with its merge base; nightly, and as `release.yml`'s
+gate, it compares `main` with the anchor release in `anchor.json`. It holds no secret but stays on GitHub-hosted
+`ubuntu-latest`, where its absolute budgets were calibrated, and it is **not a required check yet**: its flake rate on PRs decides
+that. It path-filters, which is only safe because it is not required (see below).
+
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
 `BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand.
@@ -67,15 +76,16 @@ pending forever. A docs-only skip needs an always-run gate job first.
 ### Credible's donated runners
 
 Credible runs self-hosted Ubuntu 24.04 x64 runners for the `malloydata` organization (4 vCPU / 16 GB,
-Docker, one job per machine), which do not count against GitHub's 20-concurrent-job limit. A job
+Docker, one job at a time per machine, machines reused between jobs), which do not count against
+GitHub's 20-concurrent-job limit. A job
 opts in with:
 
 ```yaml
-runs-on: ${{ vars.DONATED_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
 timeout-minutes: 30
 ```
 
-The organization variable `DONATED_RUNNERS` is the kill switch: set it to `false` and every such job
+The organization variable `CREDIBLE_RUNNERS` is the kill switch: set it to `false` and every such job
 goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, the Linux leg of
 `cross-platform-tests.yml`, `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
 `image-scan.yml` (amd64 build only), and `python-sdk.yml` when `build.yml` calls it (not when
@@ -83,8 +93,10 @@ goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, the Linux
 `main`, through the `layer-cache-writer` identity bound to `main`'s OIDC subject.
 
 **Keep off them:** any job that uses a repository or organization secret, holds `id-token: write`
-for anything but the layer cache, publishes, or runs on `pull_request_target`; and macOS, Windows,
-and arm64 jobs. Every job moved there needs a `timeout-minutes`. `credible-ubuntu-24.04` is spot
+for anything but the layer cache, publishes, or runs on `pull_request_target` (the runners refuse
+those); and macOS, Windows, and arm64 jobs. Publishing jobs, which stay on GitHub's runners, restore no
+Actions cache (setup-bun's `no-cache: true`): any `main` job, here or on GitHub's runners, can write
+`main`'s cache entries. Every job moved there needs a `timeout-minutes`. `credible-ubuntu-24.04` is spot
 (a reclaimed job fails "The operation was canceled." and a rerun covers it);
 `credible-ubuntu-24.04-ondemand` is the label for a job that must not be interrupted. Package
 installs go through pull-through caches whose credentials last an hour from job start.
@@ -254,6 +266,13 @@ ref. `build-python-sdk` calls `python-sdk.yml` with it too, and `publish-python-
 built (see *Publishing to PyPI*). `publish-packages` triggers the two other npm trains (see below).
 `gh-release` cuts the tag, and
 only after npm and Docker have both succeeded.
+
+**`main-thread-check` runs first.** `prepare` needs it, so a release whose `main` fails the
+main-thread regression check stops before any branch is cut or anything is published, and a
+re-dispatch after a fix starts clean. It adds about ten minutes to a release. A release that must
+ship while the check itself is known to be wrong is dispatched with
+`skip_main_thread_check=true`: the job still runs and passes with a warning, rather than being
+skipped, because a skipped job would also skip every job downstream of `prepare`.
 
 **The release branch is also the post-release PR.** `prepare` rewrites every `## [Unreleased]`
 heading in `RELEASE_NOTES.md` as `## [<version>]` (`scripts/release-notes.mjs stamp`) in the same

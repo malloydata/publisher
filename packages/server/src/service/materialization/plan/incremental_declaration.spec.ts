@@ -8,10 +8,8 @@
 import type { FixedConnectionMap, PersistSource } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { deriveAnnotationFields } from "./build_plan";
-import {
-   resolveIncrementalDeclaration,
-   type IncrementalDeclaration,
-} from "./incremental_declaration";
+import { resolveIncrementalDeclaration } from "./incremental_declaration";
+import type { IncrementalDeclaration } from "../domain/incremental";
 import {
    compilePersistSources,
    duckdbTestConnections,

@@ -8,12 +8,13 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# `partition=` on `#(materialize)` is refused at publish
+# `partition=` on `#(materialize)` fails the publish and the load
 
 `#(materialize)` once carried `partition=` onto the `#@ persist` line it
-generates. It is retired there too: the key is malformed
-(`materialize-retired-key`), so the source is not built and the publish is
-refused, with a message that says to remove it.
+generates. It is retired there too: the annotation is invalid
+(`materialize-retired-key`), so the publish and the load fail on every path,
+with a message that says to remove it. An invalid annotation is never refused
+alone and answered live; only a valid one Publisher cannot build is.
 
 ## Publisher
 
@@ -37,24 +38,15 @@ refused, with a message that says to remove it.
 source: orders is orders_pg.sql('SELECT order_id, org_id, amount FROM public.pcs_orders')
 ```
 
-## Warns pcs
+## Rejected pcs
 
-cites: #(materialize) no longer reads `partition=`; remove it
+The configured package does not load, so `orders` is not served at all, live or
+stored.
 
 ## Republish refused pcs
 
 cites: #(materialize) no longer reads `partition=`; remove it
 
-## Query still answers live
+## Build refused pcs
 
-Not built, the source is answered live from the warehouse.
-
-```malloy
-run: orders -> { aggregate: total is amount.sum() }
-```
-
-Expect:
-
-| total:num |
-| --------- |
-| 160       |
+cites: [materialize-retired-key]

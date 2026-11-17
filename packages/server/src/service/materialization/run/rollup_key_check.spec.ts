@@ -13,10 +13,15 @@
  */
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { makeMaterialization } from "../../../test_helpers/materialization_test_fixtures";
-import { installSettings } from "../../../test_helpers/settings_env";
+import {
+   makeMaterialization,
+   rollupPlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
+import { useMaterializationOn } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { RollupVariantPlan } from "../domain/table_plans";
@@ -47,20 +52,14 @@ import { splitManifestEntries } from "./manifest_loader";
 import { deriveServeBindings } from "../domain/binding";
 import { storedKeyChecksOf } from "../plan/rollup_plan";
 import type { BuildEnvironment } from "./materialization_run_support";
-import { SourceBuilder } from "./source_build";
+import { buildSource } from "./source_build";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { storageDestinationRoot } from "../../connection_config";
 
 const packages = tempBuildPlanPackages();
-let restore: () => void;
-beforeEach(() => {
-   restore = installSettings({
-      env: { PUBLISHER_MATERIALIZE: "true", PERSIST_STORAGE_MODE: "on" },
-   }).restore;
-});
+useMaterializationOn({ each: true });
 afterEach(async () => {
-   restore();
    await packages.cleanup();
 });
 
@@ -107,16 +106,16 @@ async function scenario(model: string) {
    )) as unknown as MalloyConnection;
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
-   const [rollupID] = Object.keys(compiled.preaggregatePlans ?? {});
-   const rollup = compiled.preaggregatePlans?.[rollupID ?? ""] as
+   const [rollupID] = Object.keys(rollupPlansIn(compiled) ?? {});
+   const rollup = rollupPlansIn(compiled)?.[rollupID ?? ""] as
       | RollupVariantPlan
       | undefined;
-   const source = compiled.sources[rollupID ?? ""];
+   const source = sourcesIn(compiled)[rollupID ?? ""];
    const address = source
       ? computeSourceEntityId(
            source,
            compiled.connectionDigests,
-           compiled.targets?.[rollupID ?? ""],
+           targetsIn(compiled)?.[rollupID ?? ""],
         )
       : "";
    const environment = {
@@ -124,13 +123,15 @@ async function scenario(model: string) {
       getStorageDestination: () => {
          throw new Error("no storage in this spec");
       },
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
-   const builder = new SourceBuilder(async () => {
+   const storage: Parameters<typeof buildSource>[1] = async () => {
       throw new Error("no storage in this spec");
-   });
+   };
    const build = new InstructedBuild({
-      buildOneSource: (...a) => builder.build(...a),
+      buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -165,22 +166,18 @@ async function scenario(model: string) {
             ? rollupKeyRecordsIn({ [INLINE_UNIQUENESS_KEY]: relied })
             : undefined,
       );
-      const result = await build.run(
+      const result = await build.run({
          compiled,
          environment,
-         rebuild ? [instruction] : [],
-         rebuild ? {} : previous.entries,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         false,
-         "recompute",
-         ledger,
-      );
+         instructions: rebuild ? [instruction] : [],
+         seedEntries: rebuild ? {} : previous.entries,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: false,
+         warehouseReach: "recompute",
+         uniqueness: ledger,
+      });
       expect(result.failures).toEqual({});
       previous = { entries: result.entries, metadata: result.uniquenessChecks };
       return result;
@@ -413,13 +410,15 @@ describe("the joined source's own primary key check, on a build", () => {
 
 /**
  * A source stored in a destination, checked over its table at its own build
- * (the join-to-rollup leg in a destination reads that table). The destination
+ * (the join-to-rollup branch in a destination reads that table). The destination
  * is a plain DuckDB file under the environment, as a `storage=` destination
  * of type duckdb is; the stand-in build writes the source's rows there.
  */
 async function storedScenario(
    /** Base key checks to attach to the rollup's plan, as for a storage rollup. */
    baseChecks: { sourceID: string; keyColumn: string; sql: string }[] = [],
+   /** Whether each build stacks on a stored upstream, as over a stored base. */
+   stacked = false,
 ) {
    const pkg = await packages.create(JOINED);
    const duckdb = (await pkg.getMalloyConnection(
@@ -427,13 +426,13 @@ async function storedScenario(
    )) as unknown as MalloyConnection;
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
-   const [sourceID] = Object.keys(compiled.preaggregatePlans ?? {});
-   const source = compiled.sources[sourceID ?? ""];
+   const [sourceID] = Object.keys(rollupPlansIn(compiled) ?? {});
+   const source = sourcesIn(compiled)[sourceID ?? ""];
    if (!sourceID || !source) throw new Error("no planned source");
-   compiled.storedKeyChecks = { [sourceID]: "flight_id" };
+   compiled.tables[sourceID].storedKeyCheck = "flight_id";
    if (baseChecks.length > 0) {
       (
-         compiled.preaggregatePlans?.[sourceID] as RollupVariantPlan
+         rollupPlansIn(compiled)?.[sourceID] as RollupVariantPlan
       ).parentKeyChecks = baseChecks.map((c) => ({
          ...c,
          connectionName: "duckdb",
@@ -442,7 +441,7 @@ async function storedScenario(
    const address = computeSourceEntityId(
       source,
       compiled.connectionDigests,
-      compiled.targets?.[sourceID],
+      targetsIn(compiled)?.[sourceID],
    );
    const root = storageDestinationRoot(pkg.getPackagePath());
    fs.mkdirSync(root, { recursive: true });
@@ -450,10 +449,11 @@ async function storedScenario(
    const environment = {
       getApiConnection: () => ({ name: "duckdb", type: "duckdb" }),
       getStorageDestination: () => ({ name: "lake", type: "duckdb" }),
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
    // The stored rows: the base's, so a duplicate in it reaches the table.
-   const builder = new SourceBuilder(async (request) => {
+   const storage: Parameters<typeof buildSource>[1] = async (request) => {
       const table = request.instruction.physicalTableName;
       // Its own alias: the scenario's connection may be shared, and the
       // check attaches the file as `lake` in a session of its own.
@@ -476,10 +476,12 @@ async function storedScenario(
             { name: "flight_id", type: "INTEGER" },
             { name: "size", type: "INTEGER" },
          ],
+         ...(stacked ? { upstreamReuse: "reused" } : {}),
       } as ManifestEntry;
-   });
+   };
    const build = new InstructedBuild({
-      buildOneSource: (...a) => builder.build(...a),
+      buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -503,29 +505,27 @@ async function storedScenario(
             ? rollupKeyRecordsIn({ [INLINE_UNIQUENESS_KEY]: previous.metadata })
             : undefined,
       );
-      const result = await build.run(
+      const result = await build.run({
          compiled,
          environment,
-         rebuild ? [instruction] : [],
-         rebuild ? {} : previous.entries,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         false,
-         "recompute",
-         ledger,
-      );
+         instructions: rebuild ? [instruction] : [],
+         seedEntries: rebuild ? {} : previous.entries,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: false,
+         warehouseReach: "recompute",
+         uniqueness: ledger,
+      });
       expect(result.failures).toEqual({});
       previous = { entries: result.entries, metadata: result.uniquenessChecks };
       return result;
    }
    const record = (m: Metadata | undefined, id: string = sourceID) =>
       m?.rollupKeys?.[rollupKeyRecordKey(address, id)];
-   return { duckdb, run, record, address };
+   const baseSourceID = (compiled.tables[sourceID]?.rollup as RollupVariantPlan)
+      .baseSourceID;
+   return { duckdb, run, record, address, baseSourceID, compiled, sourceID };
 }
 
 describe("a stored source's primary key check, on a build into a destination", () => {
@@ -605,6 +605,192 @@ describe("a storage rollup's base key check, on a build into a destination", () 
                entry,
             )?.parentKeys,
          ).toMatchObject({ "base@x": true, "nulls@x": false });
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("a storage rollup's own key check, on a build into a destination", () => {
+   it(
+      "runs over the base's rows, records against the table in the destination, carries while it stands, and checks again on a rebuild",
+      async () => {
+         const s = await storedScenario();
+         const own = (m: Metadata | undefined) =>
+            m?.rollupKeys?.[rollupKeyRecordKey(s.address)];
+         const table = tableIdentityKey("destination", "lake", "crew_stored_t");
+         const first = await s.run(true);
+         expect(own(first.uniquenessChecks)).toMatchObject({
+            table,
+            keyColumn: "flight_id",
+            unique: true,
+            checkedInRun: "run-1",
+         });
+         const second = await s.run(false);
+         expect(own(second.uniquenessChecks)).toEqual(
+            own(first.uniquenessChecks),
+         );
+         // Bound with the storage entry, as the join_one leg reads it.
+         expect(
+            keyUniquenessAt(
+               rollupKeyRecordsIn({
+                  [INLINE_UNIQUENESS_KEY]: second.uniquenessChecks!,
+               }),
+               s.address,
+               second.entries[s.address]!,
+            ),
+         ).toMatchObject({ keyColumn: "flight_id", unique: true });
+         // A rebuild over a duplicate checks again and says so.
+         await s.duckdb.runSQL("INSERT INTO crew_src VALUES (1, 9)");
+         const third = await s.run(true);
+         expect(own(third.uniquenessChecks)).toMatchObject({
+            table,
+            unique: false,
+            checkedInRun: "run-3",
+         });
+      },
+      { timeout: 60000 },
+   );
+});
+
+/** `crew`'s rows are a persisted source's: the rollup's build reads its table. */
+const STACKED = `##! experimental { persistence }
+#@ persist name="crew_p"
+source: crew_base is duckdb.table('crew_src') -> { select: * }
+
+source: crew is crew_base extend {
+  primary_key: flight_id
+  #(preaggregate) grain=["flight_id"]
+  measure: crew_size is size.sum()
+}
+
+source: flights is duckdb.table('flights_src') extend {
+  primary_key: id
+  join_one: crew with id
+  measure: flight_count is count()
+}
+`;
+
+describe("a colocated rollup over a base that is itself stored", () => {
+   it(
+      "records no verdict for its key: its build grouped the stored table's rows, not the base's",
+      async () => {
+         const pkg = await packages.create(STACKED);
+         const duckdb = (await pkg.getMalloyConnection(
+            "duckdb",
+         )) as unknown as MalloyConnection;
+         for (const sql of SEED) await duckdb.runSQL(sql);
+         const compiled = await compilePackageBuildPlan(pkg);
+         const [rollupID] = Object.keys(compiled.tables).filter(
+            (id) => compiled.tables[id]?.rollup,
+         );
+         const rollup = compiled.tables[rollupID ?? ""]
+            ?.rollup as RollupVariantPlan;
+         // A join_one is keyed on its grain, so a check is planned.
+         expect(rollup.keyCheck?.keyColumn).toBe("flight_id");
+         const addressOf = (id: string) =>
+            computeSourceEntityId(
+               compiled.tables[id]!.source,
+               compiled.connectionDigests,
+               compiled.tables[id]?.target,
+            );
+         const baseID = Object.keys(compiled.tables).find((id) =>
+            id.startsWith("crew_base@"),
+         )!;
+         const instruction = (id: string, table: string) =>
+            ({
+               sourceEntityId: addressOf(id),
+               materializedTableId: `mt-${table}`,
+               physicalTableName: table,
+               realization: "COPY",
+            }) as BuildInstruction;
+         const environment = {
+            getApiConnection: () => ({ name: "duckdb", type: "duckdb" }),
+            getStorageDestination: () => {
+               throw new Error("no storage in this spec");
+            },
+            getEnvironmentName: () => "env",
+            getEnvironmentPath: () => pkg.getPackagePath(),
+         } as unknown as BuildEnvironment;
+         const storage: Parameters<typeof buildSource>[1] = async () => {
+            throw new Error("no storage in this spec");
+         };
+         const build = new InstructedBuild({
+            buildOneSource: (options) => buildSource(options, storage),
+            tableNotOwned: async () => undefined,
+            reclaimStorageTablesFromFailedRun: async () => {},
+         });
+         const run = (
+            instructions: BuildInstruction[],
+            seed: Record<string, ManifestEntry>,
+            id: string,
+         ) =>
+            build.run({
+               compiled,
+               environment,
+               instructions,
+               seedEntries: seed,
+               signal: new AbortController().signal,
+               strict: false,
+               priorRefusals: [],
+               hostInstructed: false,
+               warehouseReach: "recompute",
+               uniqueness: new UniquenessLedger(undefined, id, undefined),
+            });
+         // The stored base holds a duplicate the warehouse no longer has.
+         await duckdb.runSQL("INSERT INTO crew_src VALUES (1, 9)");
+         const first = await run(
+            [instruction(baseID, "crew_p"), instruction(rollupID!, "crew_r")],
+            {},
+            "run-1",
+         );
+         expect(first.failures).toEqual({});
+         await duckdb.runSQL("DELETE FROM crew_src WHERE size = 9");
+         // The rollup alone, over the base's table carried from run 1.
+         const second = await run(
+            [instruction(rollupID!, "crew_r")],
+            first.entries,
+            "run-2",
+         );
+         expect(second.failures).toEqual({});
+         const rollupAddress = addressOf(rollupID!);
+         expect(second.entries[rollupAddress]?.upstreamReuse).toBe("reused");
+         // The base's own rows are unique now; the rows the rollup grouped
+         // are not. No verdict: the join leg reads the key as unknown.
+         expect(
+            second.uniquenessChecks?.rollupKeys?.[
+               rollupKeyRecordKey(rollupAddress)
+            ],
+         ).toBeUndefined();
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("a rollup built over a stored base, on a build into a destination", () => {
+   it(
+      "records no verdict over the base's own rows, which are not the rows it grouped",
+      async () => {
+         const s = await storedScenario([], true);
+         const check = {
+            keyColumn: "flight_id",
+            sql: "SELECT 1 AS k WHERE false",
+         };
+         (
+            s.compiled.tables[s.sourceID]?.rollup as RollupVariantPlan
+         ).parentKeyChecks = [
+            { ...check, sourceID: s.baseSourceID, connectionName: "duckdb" },
+            { ...check, sourceID: "other@x", connectionName: "duckdb" },
+         ];
+         const first = await s.run(true);
+         // Neither the rollup's own check nor its base's runs.
+         expect(
+            first.uniquenessChecks?.rollupKeys?.[rollupKeyRecordKey(s.address)],
+         ).toBeUndefined();
+         expect(
+            s.record(first.uniquenessChecks, s.baseSourceID),
+         ).toBeUndefined();
+         // Another source's rows are not the rollup's: its check still runs.
+         expect(s.record(first.uniquenessChecks, "other@x")?.unique).toBe(true);
       },
       { timeout: 60000 },
    );
@@ -791,7 +977,7 @@ describe("the rollup key record, bound for serving", () => {
                a: { ...entry, keyUniqueness: { parentKeys: { s: true } } },
             } as never,
             "store",
-            true,
+            "store",
          ).tableNameManifest.a?.keyUniqueness,
       ).toEqual({ parentKeys: { s: true } });
    });
@@ -825,8 +1011,21 @@ describe("the rollup key record, bound for serving", () => {
             ),
          ).toBeUndefined();
       }
-      // A rollup's own check never describes a stored table.
+      // A rollup's own check over another table never describes it; over
+      // its table in its destination, it does, as a colocated rollup's.
       expect(keyUniquenessAt({ h: record }, "h", stored)).toBeUndefined();
+      const own = {
+         ...record,
+         table: tableIdentityKey("destination", "lake", "flights_t"),
+      };
+      expect(keyUniquenessAt({ h: own }, "h", stored)).toEqual({
+         keyColumn: "k",
+         unique: true,
+      });
+      expect(keyUniquenessOf(own, stored)).toEqual({
+         keyColumn: "k",
+         unique: true,
+      });
    });
 
    it("restores a stored table's own key check from an uncontested auto-run", () => {
@@ -874,7 +1073,7 @@ describe("the rollup key record, bound for serving", () => {
       const fromStore = splitManifestEntries(
          { h: stored },
          "store",
-         true,
+         "store",
       ).storageEntries;
       const fromHost = splitManifestEntries(
          { h: stored },
@@ -919,6 +1118,70 @@ describe("the rollup key record, bound for serving", () => {
       expect(held.storageBindings[1]?.primaryKeys).toEqual({
          flights: true,
       });
+   });
+
+   it("binds a stored rollup's own key check, warns while it says repeated, and forgets it", () => {
+      const stored = (id: string, unique: boolean) =>
+         ({
+            sourceEntityId: id,
+            sourceName: `crew_${id}__rollup`,
+            physicalTableName: `crew_${id}_t`,
+            connectionName: "duckdb",
+            storageDestinationName: "lake",
+            origin: "preaggregate",
+            schema: [{ name: "flight_id", type: "INTEGER" }],
+            keyUniqueness: { keyColumn: "flight_id", unique },
+         }) as unknown as ManifestEntry;
+      const bindings = deriveServeBindings(
+         splitManifestEntries(
+            { a: stored("a", false), b: stored("b", true) },
+            "store",
+            "store",
+         ).storageEntries,
+         {},
+      );
+      expect(bindings.map((b) => [b.virtualHandle, b.rollupKey])).toEqual([
+         ["a", { keyColumn: "flight_id", unique: false }],
+         ["b", { keyColumn: "flight_id", unique: true }],
+      ]);
+      // A host's manifest never brings one.
+      expect(
+         deriveServeBindings(
+            splitManifestEntries({ a: stored("a", false) }, "host")
+               .storageEntries,
+            {},
+         )[0]?.rollupKey,
+      ).toBeUndefined();
+      const materialization = new PackageMaterialization({
+         models: () => new Map(),
+         packageName: () => "pkg",
+      } as unknown as PackageMaterializationOwner);
+      materialization.plan.buildPlan = {
+         sources: {
+            "ra@m": {
+               name: "crew_a__rollup",
+               sourceEntityId: "a",
+               modelPath: "m.malloy",
+               preaggregate: {
+                  baseSourceName: "crew",
+                  grainDimensions: ["flight_id"],
+                  measures: ["crew_size"],
+               },
+            },
+         },
+      } as never;
+      (
+         materialization as unknown as {
+            storageBindings: typeof bindings;
+         }
+      ).storageBindings = bindings;
+      expect(
+         materialization
+            .repeatedJoinOneKeyWarnings()
+            .map((w) => [w.subject, w.code]),
+      ).toEqual([["crew", "preaggregate-join-one-key-repeated"]]);
+      materialization.forgetKeyUniqueness(["a"]);
+      expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
    });
 
    it("asks for stored-table key checks only when a storage rollup is read as a join_many", () => {
@@ -993,7 +1256,7 @@ describe("the rollup key record, bound for serving", () => {
    it("reaches the colocated manifest from the store, and never from a host's manifest", () => {
       const annotated = withRollupKeyRecords({ a: entry }, [committed()]);
       expect(
-         splitManifestEntries(annotated, "store", true).tableNameManifest.a
+         splitManifestEntries(annotated, "store", "store").tableNameManifest.a
             ?.keyUniqueness,
       ).toEqual({ keyColumn: "k", unique: true });
       expect(
@@ -1013,10 +1276,10 @@ describe("the rollup key record, bound for serving", () => {
       });
       await committer.autoLoad(
          {
-            reloadAllModelsForPackage: async (_p, manifest) => {
-               bound = manifest;
+            loadRunManifest: async ({ colocated }) => {
+               bound = colocated;
+               return { loaded: true };
             },
-            bindPackageStorageServeBindings: async () => {},
          },
          "pkg",
          {
@@ -1042,9 +1305,9 @@ describe("the rollup key record, bound for serving", () => {
       });
       await committer.autoLoad(
          {
-            reloadAllModelsForPackage: async () => {},
-            bindPackageStorageServeBindings: async (_p, entries) => {
-               storage = entries;
+            loadRunManifest: async (params) => {
+               storage = params.storage;
+               return { loaded: true };
             },
          },
          "pkg",
@@ -1088,10 +1351,10 @@ describe("the rollup key record, bound for serving", () => {
          },
       });
       expect(
-         materialization.materializedTableCatalog().bound.a?.keyUniqueness,
+         materialization.verdicts.tableCatalog().bound.a?.keyUniqueness,
       ).toEqual({ keyColumn: "k", unique: true });
       materialization.forgetKeyUniqueness(["a"]);
-      const bound = materialization.materializedTableCatalog().bound;
+      const bound = materialization.verdicts.tableCatalog().bound;
       expect(bound.a).toEqual({ tableName: "r_t" });
       expect(bound.b?.keyUniqueness?.unique).toBe(false);
    });
@@ -1111,7 +1374,7 @@ describe("the rollup key record, bound for serving", () => {
             measures: ["crew_size"],
          },
       });
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "r1@m": rollup("a", "crew"),
             "r2@m": rollup("b", "crew_ok"),
@@ -1146,7 +1409,7 @@ describe("the rollup key record, bound for serving", () => {
          models: () => new Map(),
          packageName: () => "pkg",
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "r1@m": {
                name: "segments__rollup",

@@ -1,6 +1,27 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The run-level half of incremental materialization: per source, decide whether
+ * this refresh is a bounded DELTA or a full SEED, and record the boundary reached.
+ *
+ * The mechanics (probes, range arithmetic, DML text) live in incremental_apply.ts,
+ * which knows nothing about a run. This module reads the ledger, calls the
+ * planner, issues the DML and writes the boundary back, keeping the planner
+ * testable against fakes and the build loop free of ledger bookkeeping.
+ *
+ * Surface: the run's context ({@link incrementalRunContext}), a source's
+ * refresh and lineage ({@link sourceIncrementalRefresh},
+ * {@link incrementalLineage}), the plan and its step
+ * ({@link planSourceRefresh}, {@link applyIncrementalStep},
+ * {@link refreshOneSourceIncrementally}, {@link storageRefreshFor}), and the
+ * ledger writes ({@link resetLedger}, {@link advanceLedgerAfterSeed}). Read by
+ * the two tier strategies, the instructed build and the service.
+ *
+ * Effects: the delta's SQL in the warehouse or destination, the incremental
+ * ledger in the run store; logs and counts each step.
+ */
+
 import { logger } from "../../../logger";
 import {
    persistSourceDeclaredColumns,
@@ -24,21 +45,18 @@ import type {
 } from "../domain/types";
 import {
    collectIncrementalDeclarations,
-   CompiledBuildPlan,
    deriveColumns,
+   storedColumnOf,
 } from "../plan/build_plan";
+import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
+import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import { storageDeltaTarget } from "./incremental_storage";
-import {
-   STORAGE_TARGET_DIALECT,
-   type StorageIncrementalRefresh,
-} from "./materialization_build_session";
+import { type StorageIncrementalRefresh } from "./materialization_build_session";
 import type { QueryMetadata } from "../../query_metadata";
 import { errMessage } from "../../../utils";
 import {
    applyDeltaScript,
    isPairGuardFailure,
-   INCREMENTAL_SOURCE_RANGE_DIALECTS,
-   INCREMENTAL_TARGET_DML_DIALECTS,
    isRenderableWatermarkType,
    planIncrementalStep,
    probePostgresVersion,
@@ -50,18 +68,9 @@ import {
    type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
+import { isDecimalDeltaGuardFailure } from "./postgres_numeric_precision";
 import { capturedNativeSchema } from "./colocated_native_types";
-import type { IncrementalDeclaration } from "../plan/incremental_declaration";
-
-/**
- * The run-level half of incremental materialization: per source, decide whether
- * this refresh is a bounded DELTA or a full SEED, and record the boundary reached.
- *
- * The mechanics (probes, range arithmetic, DML text) live in incremental_apply.ts,
- * which knows nothing about a run. This module reads the ledger, calls the
- * planner, issues the DML and writes the boundary back, keeping the planner
- * testable against fakes and the build loop free of ledger bookkeeping.
- */
+import type { IncrementalDeclaration } from "../domain/incremental";
 
 /**
  * The ledger surface a build needs; a narrowing of ResourceRepository. Addressed
@@ -183,7 +192,7 @@ export function sourceIncrementalRefresh(
       dialect: persistSource.dialectName,
       targetDialect:
          table.storageDestinationName !== undefined
-            ? STORAGE_TARGET_DIALECT
+            ? STORAGE_DIALECT
             : persistSource.dialectName,
       physicalTableName: table.physicalTableName,
       connectionName: persistSource.connectionName,
@@ -232,11 +241,11 @@ export function incrementalLineage(params: {
    ) {
       return undefined;
    }
-   if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(params.dialect)) return undefined;
+   if (!capabilitiesOf(params.dialect).incrementalSourceRange) return undefined;
    // The DML engine must be one whose transactional apply is proven. A legal
    // `storage=` destination is always DuckDB-family; this states the invariant
    // where it is relied on.
-   if (!INCREMENTAL_TARGET_DML_DIALECTS.has(params.targetDialect)) {
+   if (!capabilitiesOf(params.targetDialect).incrementalTargetDml) {
       return undefined;
    }
    const mergeKeys = d.mergeKeys
@@ -249,11 +258,13 @@ export function incrementalLineage(params: {
    // A pair table's delta replaces whole parents by its key, in DuckDB, the
    // target of every `storage=` table and of a colocated table in a DuckDB
    // warehouse (pairDeltaStatements). Anything else seeds: a colocated pair
-   // table in another warehouse, or a pair whose merge key is not its parent
-   // key, which was planned wrong.
+   // table in another warehouse, which its plan already rebuilds in full with
+   // a package warning (`materialize-pair-full-refresh`), so this is only a
+   // backstop, or a pair whose merge key is not its parent key, which was
+   // planned wrong.
    if (
       d.pair &&
-      (params.targetDialect !== "duckdb" ||
+      (!capabilitiesOf(params.targetDialect).pairDelta ||
          mergeKeys.length !== 1 ||
          mergeKeys[0] !== d.pair.parentKey)
    ) {
@@ -339,7 +350,7 @@ export async function planSourceRefresh(params: {
    // recorded boundary the source seeds regardless.
    const postgresVersionNum =
       lineage.strategy === "merge" &&
-      target.dialect === "postgres" &&
+      capabilitiesOf(target.dialect).mergeGatedByServerVersion &&
       ledgerEntry !== null
          ? await probePostgresVersion(target.runner)
          : undefined;
@@ -465,6 +476,8 @@ export async function advanceLedgerAfterSeed(params: {
    quotedTablePath: string;
    runner: SqlRunner;
    dialect: string;
+   /** The column the table holds the watermark under, when renamed. */
+   storedColumn?: (field: string) => string;
 }): Promise<WatermarkBound | undefined> {
    const boundary = await seedCoveredThrough(
       params.runner,
@@ -472,6 +485,7 @@ export async function advanceLedgerAfterSeed(params: {
       params.lineage,
       params.quotedTablePath,
       params.context.now,
+      params.storedColumn,
    );
    if (!boundary.bound) {
       if (boundary.error) {
@@ -547,19 +561,38 @@ export async function applyIncrementalStep(params: {
    // together (see deltaScript). A failure leaves the table and the boundary
    // as they were; the next run recomputes the same range.
    try {
-      await applyDeltaScript(target.runner, target.dialect, step.statements);
+      await applyDeltaScript(
+         target.runner,
+         target.dialect,
+         step.statements,
+         target.abortSignal,
+      );
    } catch (err) {
       // A pair delta whose parent-row check failed was rolled back: rebuild
       // in full, which writes the flag over the whole table (fail safe).
-      if (!lineage.pair || !isPairGuardFailure(err)) throw err;
+      // A delta value its DECIMAL column cannot hold exactly was refused, not
+      // rounded: rebuild in full, which widens the column to hold it.
+      const decimal = isDecimalDeltaGuardFailure(err);
+      if (!decimal && (!lineage.pair || !isPairGuardFailure(err))) throw err;
       reportIncrementalStep({
-         step: {
-            mode: "seed",
-            reasonCode: "pair_parent_row",
-            reason:
-               "the delta would leave a parent without exactly one " +
-               "parent-row flag, so it was rolled back",
-         },
+         step: decimal
+            ? {
+                 mode: "seed",
+                 // The stored column's shape cannot hold the delta: no metric
+                 // label of its own, the reason names the decimal cause.
+                 reasonCode: "shape_mismatch",
+                 reason:
+                    "a delta value needs more digits than its stored DECIMAL " +
+                    "column holds, so it was rolled back rather than rounded " +
+                    "and the table rebuilds at the wider scale",
+              }
+            : {
+                 mode: "seed",
+                 reasonCode: "pair_parent_row",
+                 reason:
+                    "the delta would leave a parent without exactly one " +
+                    "parent-row flag, so it was rolled back",
+              },
          sourceName: params.sourceName,
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
@@ -716,10 +749,7 @@ export function incrementalRunContext(
    // declaration, so that source builds full.
    const declarations: Record<string, IncrementalDeclaration> = {};
    for (const [sourceID, declaration] of Object.entries(
-      collectIncrementalDeclarations(
-         compiled.sources,
-         compiled.materializePlans,
-      ),
+      collectIncrementalDeclarations(compiled.tables),
    )) {
       if (declaration.incremental) declarations[sourceID] = declaration;
    }
@@ -806,7 +836,7 @@ export async function refreshOneSourceIncrementally(params: {
       materializedTableId: instruction.materializedTableId,
       physicalTableName: lineage.physicalTableName,
       connectionName: persistSource.connectionName,
-      realization: instruction.realization,
+      realization: "COPY",
       ...params.upstreamReuse,
       rowCount: null,
       buildDurationMs: outcome.durationMs ?? null,
@@ -843,42 +873,72 @@ export function storageRefreshFor(params: {
    const { context, lineage, persistSource, instruction } = params;
    return {
       plan: async ({ session, sourceType, handle, quotedTablePath }) => {
-         const { target, readCost } = storageDeltaTarget({
-            session,
-            sourceType,
-            handle,
-            destinationName: params.destinationName,
-            destinationSchema: params.destinationSchema,
-            physicalTableName: params.physicalTableName,
-            quotedTablePath,
-            lineage,
-            persistSource,
-            buildSQL: params.buildSQL,
-            queryMetadata: params.queryMetadata,
-         });
-         // A table an older build typed (ms2data/service#6642): a delta only
-         // INSERTs into the columns it has, so only a re-seed's CTAS casts them.
+         const { target, readCost, numericColumnsStoredAsDouble } =
+            storageDeltaTarget({
+               session,
+               sourceType,
+               handle,
+               destinationName: params.destinationName,
+               destinationSchema: params.destinationSchema,
+               physicalTableName: params.physicalTableName,
+               quotedTablePath,
+               lineage,
+               persistSource,
+               buildSQL: params.buildSQL,
+               queryMetadata: params.queryMetadata,
+            });
+         const reseeding = instruction.reseed || context.forceRefresh;
+         // A table an older build typed (incremental_recast.spec.ts): a delta
+         // only INSERTs into the columns it has, so only a re-seed's CTAS casts
+         // them.
          const recast = await columnsARebuildWouldRecast(
             session,
             quotedTablePath,
             persistSource,
          );
+         // A Postgres numeric a build before the decimal-precision fix stored
+         // as DOUBLE, which serves float sums until the table is seeded again
+         // (postgres_numeric_precision.ts); a seed now stores it exactly.
+         const doubles = reseeding ? [] : await numericColumnsStoredAsDouble();
+         // The stored table's columns, under the names the delta's SQL
+         // emits them (a renamed field's column under its own name), so a
+         // delta of a source with a `rename:` matches the table.
+         const toStored = storedColumnOf(persistSource);
          let step = await planSourceRefresh({
             context,
             lineage,
             target,
-            columns: deriveColumns(persistSource).map((c) => String(c.name)),
-            reseed: instruction.reseed || recast.length > 0,
+            columns: deriveColumns(persistSource).map((c) =>
+               toStored(String(c.name)),
+            ),
+            reseed:
+               instruction.reseed || recast.length > 0 || doubles.length > 0,
          });
-         if (
-            recast.length > 0 &&
-            step.mode === "seed" &&
-            step.reasonCode === "forced" &&
-            !instruction.reseed &&
-            !context.forceRefresh
-         ) {
+         const recastOnly =
+            step.mode === "seed" && step.reasonCode === "forced" && !reseeding;
+         if (recastOnly && doubles.length > 0) {
+            // No metric label of its own: the stored column's shape cannot
+            // hold the source's exact values, as a decimal delta that does
+            // not fit re-seeds, and the reason names the cause.
             step = {
-               ...step,
+               mode: "seed",
+               reasonCode: "shape_mismatch",
+               reason:
+                  `the stored table holds the Postgres numeric ${doubles
+                     .map((c) => `\`${c}\``)
+                     .join(", ")} as DOUBLE, which serves float sums ` +
+                  `where live is exact; a rebuild stores it as DECIMAL, ` +
+                  `and a delta cannot change a column's type`,
+            };
+            logger.info("Re-seeding to store Postgres numerics exactly", {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               sourceName: persistSource.name,
+               columns: doubles,
+            });
+         } else if (recastOnly && recast.length > 0) {
+            step = {
+               mode: "seed",
+               reasonCode: "forced",
                reason:
                   `the stored table holds ${recast
                      .map((m) => `\`${m.column}\` as ${m.storedType}`)
@@ -919,8 +979,9 @@ export function storageRefreshFor(params: {
             context,
             lineage,
             quotedTablePath,
-            dialect: STORAGE_TARGET_DIALECT,
+            dialect: STORAGE_DIALECT,
             runner: (sql) => session.runSQL(sql),
+            storedColumn: storedColumnOf(persistSource),
          }),
    };
 }

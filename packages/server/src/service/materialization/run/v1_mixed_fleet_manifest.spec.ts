@@ -5,7 +5,7 @@
  * A fleet mid-rollout of the v1 cutover's retirement (6g) has older workers
  * that served a v1 `#@ preaggregate` rollup through the composite, from a
  * `__preagg__` table, beside workers that serve it through the rollup leg,
- * from a `__rollup__` table, under a different `sourceEntityId`. A host may
+ * from a rollup table of its own, under a different `sourceEntityId`. A host may
  * bind a manifest an older worker built to a new one. The new worker must
  * match a manifest entry only against its own plan, so the older entry costs
  * a rebuild (the query answers live) and never an answer read from its
@@ -20,7 +20,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../access_record";
 import { __setPackageLoadPoolForTests } from "../../../package_load/package_load_pool";
@@ -29,14 +28,16 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName } from "../../identity";
 import { MaterializationService } from "./materialization_service";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -81,38 +82,26 @@ describe("a host manifest from an older worker of the v1 cutover (mixed fleet)",
          },
       }).restore;
       await __setPackageLoadPoolForTests(null);
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "v1-mixed-fleet-")),
-      );
-      envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
+      ({ root, envPath, db, repo } = await openTempStorage("v1-mixed-fleet-", {
+         id: ENV_ID,
+         name: ENV,
+      }));
       writePackageFiles(
          path.join(envPath, "pa"),
          { "model.malloy": MODEL },
          { manifest: { name: "pa", description: "fixture" } },
       );
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage("pa");
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore;
-      service = new MaterializationService(store);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    });
 
    afterEach(async () => {
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
       await __setPackageLoadPoolForTests(null);
    });
@@ -213,7 +202,7 @@ describe("a host manifest from an older worker of the v1 cutover (mixed fleet)",
       expect(built.status).toBe("MANIFEST_FILE_READY");
       const ownEntries = built.manifest?.entries ?? {};
       const [[ownID, own]] = Object.entries(ownEntries);
-      expect(own.physicalTableName).toContain("__rollup__");
+      expect(own.physicalTableName).toContain("__orders_by_category__p");
 
       // The older worker's table and entry: the composite's name, under a
       // content address no plan of this worker names.
@@ -233,7 +222,7 @@ describe("a host manifest from an older worker of the v1 cutover (mixed fleet)",
       };
 
       await tamper("__preagg__", 1000);
-      await tamper("__rollup__", 2000);
+      await tamper("__orders_by_category__p", 2000);
 
       // Handed only the older entry: live.
       await bindHostManifest(olderEntries);

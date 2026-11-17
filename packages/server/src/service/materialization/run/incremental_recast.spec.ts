@@ -8,9 +8,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { openTempDuckDB } from "../../../test_helpers/temp_storage";
 import { logger } from "../../../logger";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { plannedSources } from "../plan/build_plan";
@@ -29,8 +27,8 @@ import {
 describe("columnsARebuildWouldRecast", () => {
    // File-backed: db-duckdb shares one in-memory instance between connections,
    // where another file's `ev` may already exist.
-   const dbDir = mkdtempSync(join(tmpdir(), "recast-"));
-   const duckdb = new DuckDBConnection("duckdb", join(dbDir, "recast.duckdb"));
+   const temp = openTempDuckDB("recast-", "duckdb", { file: "recast.duckdb" });
+   const duckdb = temp.connection;
    let source: Awaited<ReturnType<typeof compile>>;
 
    async function compile(model: string) {
@@ -62,10 +60,7 @@ source: t is duckdb.table('ev') -> {
 `);
    });
 
-   afterAll(async () => {
-      await duckdb.close();
-      rmSync(dbDir, { recursive: true, force: true });
-   });
+   afterAll(() => temp.dispose());
 
    it("names the columns an older build stored as another type", async () => {
       await duckdb.runSQL(
@@ -99,11 +94,10 @@ source: t is duckdb.table('ev') -> {
 describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
    // File-backed: db-duckdb shares one in-memory instance between
    // connections, so an attach here would outlive this file.
-   const dir = mkdtempSync(join(tmpdir(), "recast-refresh-"));
-   const destination = new DuckDBConnection(
-      "recast_probe",
-      join(dir, "probe.duckdb"),
-   );
+   const temp = openTempDuckDB("recast-refresh-", "recast_probe", {
+      file: "probe.duckdb",
+   });
+   const destination = temp.connection;
    const TABLE = '"lake"."orders__g000__abc"';
    const LINEAGE: IncrementalLineage = {
       physicalTableName: "orders__g000__abc",
@@ -123,12 +117,15 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
    });
    afterAll(async () => {
       await destination.runSQL("DETACH lake");
-      await destination.close();
-      rmSync(dir, { recursive: true, force: true });
+      await temp.dispose();
    });
 
-   /** A source declaring a date watermark and two booleans. */
-   function source() {
+   /**
+    * A source declaring a date watermark and two booleans; with `renamed`,
+    * its `flag` field is a `rename: flag_r is flag`, so its column is still
+    * `flag` in the build SQL and the stored table.
+    */
+   function source(renamed = false) {
       const s = fakeSource({
          name: "orders",
          sourceEntityId: "addr-1",
@@ -136,13 +133,27 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
          connectionName: "orders_pg",
          dialectName: "postgres",
       });
+      const fields: [string, string][] = [
+         ["order_date", "date"],
+         [renamed ? "flag_r" : "flag", "boolean"],
+         ["is_open", "boolean"],
+      ];
       (
          s as unknown as { _explore: { intrinsicFields: unknown[] } }
-      )._explore.intrinsicFields = [
-         ["order_date", "date"],
-         ["flag", "boolean"],
-         ["is_open", "boolean"],
-      ].map(([name, type]) => ({ name, type, isAtomicField: () => true }));
+      )._explore.intrinsicFields = fields.map(([name, type]) => ({
+         name,
+         type,
+         isAtomicField: () => true,
+      }));
+      if (renamed) {
+         (s as unknown as { _sourceDef: unknown })._sourceDef = {
+            fields: [
+               { name: "order_date", type: "date" },
+               { name: "flag", as: "flag_r", type: "boolean" },
+               { name: "is_open", type: "boolean" },
+            ],
+         };
+      }
       return s;
    }
 
@@ -177,12 +188,16 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
 
    async function refresh(
       storedAs: string,
-      opts: { reseed?: boolean; forceRefresh?: boolean } = {},
+      opts: {
+         reseed?: boolean;
+         forceRefresh?: boolean;
+         renamed?: boolean;
+      } = {},
    ) {
       await destination.runSQL(
          `CREATE OR REPLACE TABLE ${TABLE} AS SELECT ${storedAs}`,
       );
-      const persistSource = source();
+      const persistSource = source(opts.renamed);
       const instruction = {
          sourceEntityId: "addr-1",
          ...(opts.reseed ? { reseed: true } : {}),
@@ -258,6 +273,20 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
       const { result, seed } = await refresh(DECLARED);
       expect(seed).toBeUndefined();
       expect(result?.refresh).toBe("delta");
+   });
+
+   // A `storage=` table stores a renamed field's column under the name the
+   // build SQL emits, so the delta's DML names it the same way and applies,
+   // rather than seeding on a shape mismatch every refresh.
+   it("advances by delta over a source with a rename:, naming the stored column", async () => {
+      const { result, seed, issued } = await refresh(DECLARED, {
+         renamed: true,
+      });
+      expect(seed).toBeUndefined();
+      expect(result?.refresh).toBe("delta");
+      const insert = issued.find((sql) => sql.includes("INSERT INTO"));
+      expect(insert).toContain('"flag"');
+      expect(insert).not.toContain("flag_r");
    });
 
    it("re-seeds a table an older build typed, saying why", async () => {

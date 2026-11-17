@@ -1,45 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   FixedConnectionMap,
-   InMemoryURLReader,
-   type ModelDef,
-   Runtime,
-} from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
+import { type ModelDef } from "@malloydata/malloy";
+import { beforeAll, describe, expect, it } from "bun:test";
+import { materializationFixture } from "../../../test_helpers/materialization_fixture";
 import { confirmedAncestors, keptAncestorChain } from "./kept_ancestors";
 import { SourceMap } from "./source_map";
 
-// File-backed: db-duckdb's in-memory database is shared across spec files.
-const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "kept-ancestors-spec-"));
-const duckdb = new DuckDBConnection("duckdb", path.join(dbDir, "db.duckdb"));
+const mz = materializationFixture();
 const URL_ = "file:///pkg/m.malloy";
 
-async function compile(text: string): Promise<ModelDef> {
-   const runtime = new Runtime({
-      urlReader: new InMemoryURLReader(new Map([[URL_, text]])),
-      connections: new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      ),
-   });
-   return (await runtime.loadModel(new URL(URL_)).getModel())._modelDef;
-}
-
 beforeAll(async () => {
-   await duckdb.runSQL(
+   await mz.duckdb.runSQL(
       "CREATE TABLE ev AS SELECT 1 AS id, 'acme' AS org, 1.0 AS amt",
    );
-});
-
-afterAll(async () => {
-   await duckdb.close();
-   fs.rmSync(dbDir, { recursive: true, force: true });
 });
 
 // Over a table, Malloy records no base edge for an extension; the walk
@@ -63,7 +37,7 @@ describe("the kept walk over a table-backed base", () => {
       (model.contents[name] as unknown as { location: { range: never } })
          .location.range;
    beforeAll(async () => {
-      model = await compile(TEXT);
+      model = await mz.compile(TEXT);
    });
 
    for (const [label, read] of [
@@ -79,15 +53,15 @@ describe("the kept walk over a table-backed base", () => {
             ["b2", "b3"],
          );
          expect(
-            names(confirmedAncestors(TEXT, own("renamed_ext"), chain)),
+            names(
+               confirmedAncestors(() => TEXT, URL_, own("renamed_ext"), chain),
+            ),
          ).toEqual(["base", "ev"]);
          const mid = keptAncestorChain(map, idOf("mid_ext"), URL_);
          expect(names(mid)).toEqual(["mid", "base", "ev"]);
-         expect(names(confirmedAncestors(TEXT, own("mid_ext"), mid))).toEqual([
-            "mid",
-            "base",
-            "ev",
-         ]);
+         expect(
+            names(confirmedAncestors(() => TEXT, URL_, own("mid_ext"), mid)),
+         ).toEqual(["mid", "base", "ev"]);
       });
    }
 
@@ -98,6 +72,7 @@ describe("the kept walk over a table-backed base", () => {
       // confirmed, though it names the next alias.
       const at = (name: string) => ({
          sourceID: idOf(name),
+         url: URL_,
          range: own(name),
       });
       const forged = [
@@ -106,17 +81,21 @@ describe("the kept walk over a table-backed base", () => {
             aliases: [at("mid"), at("b2")],
          },
       ];
-      expect(confirmedAncestors(TEXT, own("mid_ext"), forged)).toEqual([]);
+      expect(
+         confirmedAncestors(() => TEXT, URL_, own("mid_ext"), forged),
+      ).toEqual([]);
       // An alias naming a source that is not the one it renames.
       const misnamed = TEXT.replace("source: b3 is b2\n", "source: b3 is ev\n");
-      expect(confirmedAncestors(misnamed, own("renamed_ext"), chain)).toEqual(
-         [],
-      );
+      expect(
+         confirmedAncestors(() => misnamed, URL_, own("renamed_ext"), chain),
+      ).toEqual([]);
       // A child naming a source that is no alias of the ancestor.
       const other = TEXT.replace(
          "source: renamed_ext is b3 extend",
          "source: renamed_ext is ev extend",
       );
-      expect(confirmedAncestors(other, own("renamed_ext"), chain)).toEqual([]);
+      expect(
+         confirmedAncestors(() => other, URL_, own("renamed_ext"), chain),
+      ).toEqual([]);
    });
 });

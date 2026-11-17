@@ -53,6 +53,8 @@ describe("settings at startup", () => {
       while (flagMcpPort === flagPort) flagMcpPort = await getFreePort();
       server = await spawnServer({
          args: ["--port", String(flagPort), "--mcp_port", String(flagMcpPort)],
+         // "Settings given" is info, whatever LOG_LEVEL the shell exports.
+         env: { LOG_LEVEL: "info" },
       });
 
       const line = await waitForReady();
@@ -70,16 +72,15 @@ describe("settings at startup", () => {
 
    it("warns about a flag it does not know and a flag missing its value, and starts", async () => {
       server = await spawnServer({
-         // The design's derived name, not read before step 2, then a known
-         // flag with nothing after it.
-         args: ["--mcp-port", "1", "--admin_port"],
+         // A misspelled flag, then a known flag with nothing after it.
+         args: ["--mcp_prot", "1", "--admin_port"],
       });
 
       const line = await waitForReady();
       expect(line).toContain(`mcp=http://127.0.0.1:${server.mcpPort} `);
       await server.waitUntilServing();
       expect(server.output()).toContain(
-         "--mcp-port is not read before a later release, so it is ignored; until then use --mcp_port.",
+         "Unknown flag --mcp_prot, so it is ignored. Did you mean --mcp-port?",
       );
       expect(server.output()).toContain(
          "--admin_port has no value after it, so it is ignored.",
@@ -146,7 +147,8 @@ describe("--help from the real entry point", () => {
          expect(out).toContain(
             "--serving-api-enabled, --no-serving-api-enabled",
          );
-         expect(out).toContain("--admin_port <n>");
+         expect(out).toContain("--admin-port <n>");
+         expect(out).toContain("(was --admin_port)");
          expect(out).not.toContain("PUBLISHER_READY");
       });
    }

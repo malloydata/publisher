@@ -58,7 +58,7 @@ source: orders_wide_local is duckdb.virtual('af106e366ef6b6a3cc9c6879b9ee78042dd
       signup_date is customers__signup_date__stored,
       loud_name is customers__loud_name__stored
     }
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
@@ -137,7 +137,7 @@ source: orders_wide is __served_copy_alias_of_lake.virtual('e21cb38810563b21fbe2
       signup_date is customers__signup_date__stored,
       loud_name is customers__loud_name__stored
     }
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
@@ -171,7 +171,7 @@ source: orders_wide_local is duckdb.virtual('af106e366ef6b6a3cc9c6879b9ee78042dd
       signup_date is customers__signup_date__stored,
       loud_name is customers__loud_name__stored
     }
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order

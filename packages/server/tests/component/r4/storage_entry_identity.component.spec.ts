@@ -23,7 +23,7 @@ import {
    LAKE,
    loadFixture,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
 const model = (status: string) => `import "raw.malloy"
@@ -82,25 +82,14 @@ describe("a storage= entry built from another definition of a same-named source"
       lake.wrapConnections(
          () => new FixedConnectionMap(new Map([[LAKE, before.lake]]), LAKE),
       );
-      after.pkg.setServeDestinationConfig(() => lake);
-      after.pkg.bindColocatedServeManifest({});
-      after.pkg.bindStorageServeBindings(built.stored as never);
+      after.pkg.materialization().setServeDestinationConfig(() => lake);
+      after.pkg.materialization().bind({ colocated: {} });
+      after.pkg.materialization().bind({ storage: built.stored as never });
       await after.pkg.getModel("m.malloy")?.prepareServedCopy();
 
       // Same name, another address.
       const plan = Object.values(
-         (
-            after.pkg as unknown as {
-               materialization: {
-                  buildPlan?: {
-                     sources: Record<
-                        string,
-                        { name?: string; sourceEntityId?: string }
-                     >;
-                  };
-               };
-            }
-         ).materialization.buildPlan?.sources ?? {},
+         after.pkg.materialization().getBuildPlan()?.sources ?? {},
       ).find((s) => s.name === "orders");
       expect(plan?.sourceEntityId).toBeDefined();
       expect(plan?.sourceEntityId).not.toBe(entries[0].sourceEntityId);

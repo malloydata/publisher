@@ -51,7 +51,7 @@ The history is where cost lives. Each run records its trigger, timing, and per s
 
 Look across several runs, not one: the pattern over the recent history (how often it rebuilds, how long each source takes, what reuses) is the signal.
 
-- **For `storage=` tables, how queries were routed.** `publisher_query_route_total{leg, outcome, reason}` on the metrics endpoint counts each serving leg the router considered: `used` when it answered, `skipped` with the reason, and `fallback` when its stored run failed and live answered, and each query response's `servedFrom` says it per query. Nothing equivalent exists for a table built in the source's own warehouse: there, "rarely queried" is a judgement from the model and the user's knowledge, not a measured metric. Say so when it matters.
+- **For `storage=` tables, how queries were routed.** `publisher_query_route_total{leg, outcome, reason}` on the metrics endpoint counts each serving leg the router considered: `used` when it answered, `skipped` with the reason, and `fallback` when its stored run failed and live answered, and each query response's `servedFrom` says it per query. For a table built in the source's own warehouse there is no route counter, but each response's `servedFrom` reads `database` when one answered, so a log of responses measures it. Say so when it matters.
 
 ## Step 3: Analyze and recommend
 
@@ -76,14 +76,14 @@ Frame each recommendation with the evidence from Step 2 (the run IDs, timings, b
 
   (`--wait` gives up after 120 s by default and exits non-zero while the build continues; raise `--timeout` for a real build.)
 
-- **Remove a persist source:** delete the `#@ persist` annotation, rebuild, then drop the old run's tables:
+- **Remove a persist source:** delete the `#@ persist` annotation, rebuild, delete the old runs, then drop the old table yourself:
 
   ```bash
   malloy-pub materialize --environment <env> --package <pkg> --wait
-  malloy-pub delete materialization <old-id> --environment <env> --package <pkg> --drop-tables
+  malloy-pub delete materialization <old-id> --environment <env> --package <pkg>
   ```
 
-  > `--drop-tables` drops the physical tables in that run's manifest **except any a still-ready run also names** - with the stable names an auto-run assigns, a table the new run carried forward survives the delete. Deleting a run also re-derives the package's serve bindings from the latest remaining ready run (or clears them to serve live), so a delete does not break queries; it can leave a table behind. A removed source's table is therefore dropped only once no ready run names it - delete the old runs that do, or drop it in the warehouse yourself.
+  > Deleting a run is **record-only**: it never drops a table. It re-derives the package's serve bindings from the latest remaining ready run (or clears them to serve live), so a delete does not break queries. To drop the old table, read its `physicalTableName` from the old run's manifest, check that no remaining ready run, of any version, names a table with that name in any place (the runs list answers for the latest version only, so list each version's runs with `versionId`; with the stable names an auto-run assigns, a table the new run carried forward is still served, and two destination names can reach one DuckLake), then drop it through its connection.
 
 - **Change the schedule / cadence:**
 

@@ -1,11 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 /**
- * Joins a served copy moves across connections (materialization v2, the
- * plan's question 11).
+ * Joins a served copy moves across connections (question 11).
  *
  * Malloy refuses a join whose source is on another connection than the source
- * it joins into (`join-connection-mismatch`, malloydata/malloy#3032), and it
+ * it joins into (`join-connection-mismatch`), and it
  * refuses it for the whole file. A served copy re-roots a source onto its
  * storage destination, and a reference join it keeps may read a source that
  * is not stored there. The served copy leaves that join out, so the queries
@@ -25,7 +24,7 @@
  * out: the first compile may report, beside the refused joins, only problems
  * that follow from them (an importer that cannot find a source whose file
  * failed), and each of those must be gone once the joins are out. A file with
- * any other error is left to fail as it does today. Later passes leave out
+ * any other error is left to fail with its own error. Later passes leave out
  * only definitions that fail for reading something missing; any other problem
  * stops it.
  *
@@ -63,6 +62,17 @@ const FOLLOWS_FROM_LEFT_OUT: ReadonlySet<string> = new Set([
    "ungroup-of-non-aggregate",
 ]);
 
+/**
+ * Malloy's codes for a statement in an importer that fails because the file
+ * it imports failed: an `export` of a name that file no longer defines. Each
+ * follows from the refused joins on the first compile and must be gone once
+ * they are out; a pass never leaves one out, since an `export` is not a
+ * definition and no cut of the text can place it.
+ */
+const FOLLOWS_FROM_FAILED_IMPORT: ReadonlySet<string> = new Set([
+   "export-name-not-defined",
+]);
+
 /** Whether a problem's code is Malloy refusing a join across connections. */
 export function isJoinConnectionMismatch(code: string | undefined): boolean {
    return code === JOIN_CONNECTION_MISMATCH;
@@ -88,7 +98,9 @@ export function isCrossConnectionRefusal(error: unknown): boolean {
       problems.every(
          (p) =>
             p.code === JOIN_CONNECTION_MISMATCH ||
-            (p.code !== undefined && FOLLOWS_FROM_LEFT_OUT.has(p.code)),
+            (p.code !== undefined &&
+               (FOLLOWS_FROM_LEFT_OUT.has(p.code) ||
+                  FOLLOWS_FROM_FAILED_IMPORT.has(p.code))),
       )
    );
 }

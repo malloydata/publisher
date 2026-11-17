@@ -10,7 +10,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -55,12 +58,9 @@ source: aa_flights is flights extend {
 `;
 
 describe("R4: a persisted view answers its exact call, equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -69,8 +69,14 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
+   });
+
+   it("refuses a nested view colocated at plan: no read could use its table", () => {
+      expect(fixture.viewRefusals.some((r) => r.includes("nests"))).toBe(true);
+      expect(
+         fixture.bindings.some((b) => b.sourceName === "flights__nested__view"),
+      ).toBe(false);
    });
 
    it("refuses a view whose result reads the current time, with a warning", () => {
@@ -146,8 +152,9 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
       ],
       ["a view that is not persisted", "run: flights -> plain", undefined],
       // Its nest's stored rows cannot be rebuilt exactly (a `select:` nest's
-      // duplicates, an empty nest), so the leg declines it.
-      ["a nested view, colocated", "run: flights -> nested", "MISSING_FIELD"],
+      // duplicates, an empty nest), so the plan refuses it (`nested_result`)
+      // on either tier and no table is built.
+      ["a nested view, colocated", "run: flights -> nested", undefined],
       [
          "a caller's redefinition of the source",
          "source: flights2 is flights\nrun: flights2 -> by_carrier",
@@ -420,12 +427,9 @@ source: public_flights is flights include {
 `;
 
 describe("R4: a persisted view answers only on the source whose statement annotates it", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": declaringModel },
          seedSql,
@@ -433,7 +437,6 @@ describe("R4: a persisted view answers only on the source whose statement annota
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

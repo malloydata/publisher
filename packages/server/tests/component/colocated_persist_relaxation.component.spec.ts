@@ -91,7 +91,8 @@ function refusedForInheritedGate(pkg: Package, sourceName: string): boolean {
    );
    return (
       !planned &&
-      refusal?.reason === "authorize" &&
+      // An inherited row filter is a row filter: named `access_filter`.
+      refusal?.reason === "access_filter" &&
       refusal.message.includes("reads an #(access_filter) row-level gate")
    );
 }
@@ -144,10 +145,12 @@ async function buildAndBindColocated(
    if (!source) {
       throw new Error(`persist source '${sourceName}' not in build plan`);
    }
-   pkg.bindColocatedServeManifest({
-      [source.sourceEntityId]: {
-         tableName: physicalTableName,
-         connectionName: "duckdb",
+   pkg.materialization().bind({
+      colocated: {
+         [source.sourceEntityId]: {
+            tableName: physicalTableName,
+            connectionName: "duckdb",
+         },
       },
    });
 }

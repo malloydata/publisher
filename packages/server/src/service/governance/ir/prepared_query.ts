@@ -550,6 +550,25 @@ export function setsTimezone(query: unknown, depth = 0): boolean {
 }
 
 /**
+ * Every query time zone a compiled query sets (`timezone:` in any of its
+ * stages, a nest's or a view's it calls included), as written: what
+ * {@link setsTimezone} looks for, with the zones themselves.
+ */
+export function queryTimezones(query: unknown, depth = 0): string[] {
+   if (!query || typeof query !== "object" || depth > 64) return [];
+   if (Array.isArray(query)) {
+      return query.flatMap((q) => queryTimezones(q, depth + 1));
+   }
+   return Object.entries(query).flatMap(([k, v]) =>
+      k === "queryTimezone" && typeof v === "string"
+         ? [v]
+         : typeof v === "object"
+           ? queryTimezones(v, depth + 1)
+           : [],
+   );
+}
+
+/**
  * Whether a compiled expression or query holds raw SQL (the `sql_*` family,
  * `genericSQLExpr`) anywhere it computes or reads. Its text names columns by
  * itself (`${TABLE}.region`, or a bare `region`), which the compiler records

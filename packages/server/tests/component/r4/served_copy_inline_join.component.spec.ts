@@ -15,7 +15,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { ModelDef } from "@malloydata/malloy";
 import { classificationFindingsBySource } from "../../../src/service/classification_findings";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    PackageMaterialization,
    type PackageMaterializationOwner,
@@ -88,12 +91,9 @@ source: flights_wide is duckdb.table('flights') extend {
 `;
 
 describe("R4: an inlined join_one served from its stored columns", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
@@ -101,7 +101,6 @@ describe("R4: an inlined join_one served from its stored columns", () => {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -279,12 +278,9 @@ const keptModel = model.replace(
 );
 
 describe("R4: an inlined join the record cannot stand in for is kept as written", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": keptModel },
          seedSql,
@@ -292,7 +288,6 @@ describe("R4: an inlined join the record cannot stand in for is kept as written"
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -343,12 +338,9 @@ const sameConnectionModel = keptModel
    );
 
 describe("R4: an inlined join kept as written on one connection is warned", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": sameConnectionModel },
          seedSql,
@@ -356,7 +348,6 @@ describe("R4: an inlined join kept as written on one connection is warned", () =
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -436,12 +427,9 @@ const findingsOf = (modelDef: unknown, source: string) =>
    classificationFindingsBySource("m.malloy", modelDef as ModelDef).get(source);
 
 describe("R4: a classified inlined join keeps its classes, and declines per query", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": classifiedModel("none", true) },
          seedSql,
@@ -449,7 +437,6 @@ describe("R4: a classified inlined join keeps its classes, and declines per quer
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -536,12 +523,9 @@ describe("R4: a classified inlined join keeps its classes, and declines per quer
 });
 
 describe("R4: a partly classified inlined join reports live's coverage, and stays served", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       // `carriers.since` declares no class; no #(carries), so it loads.
       fixture = await buildScenario({
          files: { "m.malloy": classifiedModel("", false) },
@@ -550,7 +534,6 @@ describe("R4: a partly classified inlined join reports live's coverage, and stay
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

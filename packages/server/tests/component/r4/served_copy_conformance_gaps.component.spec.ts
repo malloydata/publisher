@@ -25,7 +25,7 @@ import {
    type Outcome,
    withSwitch,
    type WireField,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, SHAPES, type Variant } from "./conformance/shapes";
 import { rowDifference } from "./harness";
 
@@ -193,7 +193,12 @@ for (const c of CASES) {
  * This pins both: once Malloy is fixed, live equals the truth again, this
  * fails, and the query goes back to the gap cases above.
  */
-for (const variant of ["storage", "materialize"] as const) {
+for (const variant of [
+   "storage",
+   "colocated",
+   "materialize",
+   "materialize_colocated",
+] as const) {
    describe(`a sum through a stored nest under a NULL parent key, against the truth [${variant}]`, () => {
       const shape = SHAPES.find((s) => s.name === "query-shaped: a nest");
       if (!shape) throw new Error("no conformance shape query-shaped: a nest");

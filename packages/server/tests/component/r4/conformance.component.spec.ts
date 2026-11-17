@@ -3,11 +3,11 @@
 
 /**
  * The conformance fixture (ms2data/service#7098): synthetic packages shaped
- * like real ones, each served three ways (v1 `#@ persist` with `storage=`,
- * v1 colocated, and `#(materialize)`), under the v1 cutover (`cutover`: v1
+ * like real ones, each served four ways (v1 `#@ persist` with `storage=`,
+ * v1 colocated, and `#(materialize)` with `storage=` and colocated), under the v1 cutover (`cutover`: v1
  * tables are read by the served copy, the rollup and view legs, or not at
  * all; since the retirement the only path), through the real
- * package path (conformance/package_harness.ts). Every query's served answer must
+ * package path (src/test_helpers/conformance/package_runner.ts). Every query's served answer must
  * equal live, rows and result metadata (field types with their timeframes,
  * and annotations), and a stored table must have answered it.
  *
@@ -34,12 +34,14 @@ import {
    type Switch,
    withSwitch,
    type WireField,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import {
    type ConformanceQuery,
    type Expect,
    type Gap,
    type GapMap,
+   isColocated,
+   MATERIALIZE_VARIANTS,
    renderFiles,
    type Shape,
    SHAPES,
@@ -192,7 +194,7 @@ function expectedTier(
    on: Switch,
 ): Expect {
    // `#(materialize)` is served only by the served copy, which the switch turns on.
-   if (variant === "materialize" && on === "off") return "live";
+   if (MATERIALIZE_VARIANTS.includes(variant) && on === "off") return "live";
    return typeof query.expect === "string"
       ? query.expect
       : (query.expect?.[variant] ?? "served");
@@ -209,7 +211,7 @@ function gapFor(
          map?.[`${variant}/${on}`] ??
          // The v1 cutover changes nothing for `#(materialize)`: its gaps
          // with the switch on are its gaps after the cutover.
-         (variant === "materialize" && on === "cutover"
+         (MATERIALIZE_VARIANTS.includes(variant) && on === "cutover"
             ? map?.[`${variant}/on`]
             : undefined) ??
          map?.[variant] ??
@@ -264,7 +266,7 @@ for (const shape of SHAPES) {
             // rollup leg's, under their v2 names) and at bind, so it gets a
             // package of its own, loaded, built and bound under it, by a
             // load pool spawned with it.
-            restore = withSwitch("on");
+            restore = withSwitch("on", shape.env);
             try {
                await freshLoadPool();
                const loader = await loadFixture({
@@ -277,13 +279,13 @@ for (const shape of SHAPES) {
                fixture = await loader.bind({ includeRollups: true });
                for (const on of SWITCHES.filter((s) => s !== "cutover")) {
                   restore();
-                  restore = withSwitch(on);
+                  restore = withSwitch(on, shape.env);
                   for (const q of shape.queries) {
                      served.set(key(q, on), await runIn(fixture, q));
                   }
                }
                restore();
-               restore = withSwitch("cutover");
+               restore = withSwitch("cutover", shape.env);
                await freshLoadPool();
                const cutoverLoader = await loadFixture({
                   ...DATA_FILES,
@@ -411,8 +413,8 @@ for (const shape of SHAPES) {
                      return;
                   }
                   expect(s.answer.servedBy).toBe("materialized");
-                  if (variant === "colocated" || want === "colocated") {
-                     expect(s.answer.servedFrom).toBeNull();
+                  if (isColocated(variant) || want === "colocated") {
+                     expect(s.answer.servedFrom).toBe("database");
                      // After the cutover a colocated table is read by the
                      // served copy, never Malloy's build manifest.
                      if (on === "cutover") {

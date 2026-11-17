@@ -39,6 +39,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "customer_dim@<pkg>/dims.malloy": "persist",
+      "order_facts@<pkg>/facts.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -52,8 +56,8 @@
       }
     },
     "sourceModelPaths": {
-      "customer_dim@<pkg>/dims.malloy": "index.malloy",
-      "order_facts@<pkg>/facts.malloy": "index.malloy"
+      "customer_dim@<pkg>/dims.malloy": "dims.malloy",
+      "order_facts@<pkg>/facts.malloy": "facts.malloy"
     }
   },
   "loadWarnings": [],
@@ -130,7 +134,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "index.malloy",
+        "modelPath": "dims.malloy",
         "name": "customer_dim",
         "origin": "persist",
         "preaggregate": null,
@@ -165,7 +169,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "index.malloy",
+        "modelPath": "facts.malloy",
         "name": "order_facts",
         "origin": "persist",
         "preaggregate": null,

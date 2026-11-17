@@ -20,9 +20,10 @@ UNFILTERED relation, and the filter is applied over it when the query runs. The
 colocated tier gets that division of labour for free, because it binds a manifest
 and lets the compiler rewrite the FROM underneath the author's own source, filter
 still attached (`filtered-source-serves-only-filtered-rows-colocated` is the
-control, and it is green). The storage tier re-declares the source instead — as
-`conn.virtual('handle')::Shape` plus its dimensions, measures, joins and views —
-so it has to carry the filter itself, and today it does not.
+control, and it is green). The storage tier serves the source from its served copy
+instead: the author's own model text with `high_value` re-rooted on its stored
+table (`<alias>.virtual('<handle>')::<type>`) and its `extend` block kept as
+written, so the filter it applies over the stored rows is the author's own.
 
 ## Publisher
 
@@ -91,20 +92,21 @@ Expect:
 
 ## Note (since=2026-09-16)
 
-> Easy to reintroduce, and silent when it is. Every other refinement the shape
-> cannot reproduce announces itself by failing the shape's COMPILE, which is what
-> triggers the fallback ladder; a dropped `where:` compiles perfectly and simply
-> answers with more rows. Nothing upstream catches it either — materialization
+> Easy to reintroduce, and silent when it is. Every other refinement the served
+> copy cannot keep announces itself by failing the copy's COMPILE, which steps that
+> source back to live; a dropped `where:` compiles perfectly and simply answers
+> with more rows. Nothing upstream catches it either — materialization
 > eligibility refuses a given, a `#(partition)`, an authorize gate and a free
 > parameter, and says nothing about filters.
 >
-> Hence the two rules the fix rests on. Filters are carried at EVERY tier of the
-> serve-shape ladder, the empty one included: the other kinds are optimizations,
-> while a filter is part of what the source means. And an entry that cannot be
-> reproduced — one reaching through a join whose target is not materialized, or
-> referencing a given — is still emitted, so the shape fails to compile and the
-> query serves live, rather than being dropped so the query serves unfiltered.
+> Hence the two rules the served copy rests on. A re-root replaces only the base
+> of a declaration and keeps its `extend` blocks as written, so a `where:` is
+> never thinned away. And when definitions must be left out — a join Malloy refuses
+> across connections, and what reads it — a `where:` is not a definition that can
+> be cut alone: one that reads what was left out takes its whole source with it,
+> so the query serves live rather than unfiltered.
 >
-> `filterList` accumulates through `extend`, so a source's own entries already
-> carry every filter it inherits. That is why the chained arrangement
+> A source declared by refinement over a filtered base is kept as written and
+> reads the re-rooted base by name, so it inherits the base's `where:` from the
+> base's own kept text. That is why the chained arrangement
 > (`filtered-chain-serves-only-filtered-rows`) needs no separate handling.

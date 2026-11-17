@@ -7,9 +7,9 @@
  *
  *  - `storage=` written beside a route's key or inside it builds into the
  *    destination, and a query is served from it, equal to live;
- *  - a `storage=` that names nothing (empty, or not a name) refuses that
- *    source alone, with a package warning, and the rest of the package still
- *    loads and serves.
+ *  - a `storage=` that names nothing (empty, or not a name) is an invalid
+ *    annotation on every route: the package fails to load, with the route's
+ *    `*-invalid` code, and never builds the source in its own warehouse.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -160,41 +160,54 @@ source: agg is orders_raw extend {
    }, 120_000);
 
    /** An empty and a non-name destination, per route, beside a sound source. */
-   const EMPTY: { route: string; declaration: (storage: string) => string }[] =
-      [
-         {
-            route: "#(materialize)",
-            declaration: (st) => `#(materialize) storage=${st}
+   const EMPTY: {
+      route: string;
+      code: string;
+      declaration: (storage: string) => string;
+   }[] = [
+      {
+         route: "#(materialize)",
+         code: "materialize-invalid",
+         declaration: (st) => `#(materialize) storage=${st}
 source: bad is orders_raw extend { measure: n is count() }`,
-         },
-         {
-            route: "a persisted view",
-            declaration: (st) => `source: bad is orders_raw extend {
+      },
+      {
+         route: "a persisted view",
+         code: "persist-view-invalid",
+         declaration: (st) => `source: bad is orders_raw extend {
   measure: n is count()
   #@ persist storage=${st}
   view: v is { group_by: region; aggregate: n }
 }`,
-         },
-         {
-            route: "#@ preaggregate",
-            declaration: (st) => `source: bad is orders_raw extend {
+      },
+      {
+         route: "#@ preaggregate",
+         code: "preaggregate-invalid",
+         declaration: (st) => `source: bad is orders_raw extend {
   #@ preaggregate grain="region" storage=${st}
   measure: total is amount.sum()
 }`,
-         },
-         {
-            route: "#(preaggregate)",
-            declaration: (st) => `source: bad is orders_raw extend {
+      },
+      {
+         route: "#(preaggregate)",
+         code: "preaggregate-invalid",
+         declaration: (st) => `source: bad is orders_raw extend {
   #(preaggregate) grain=["region"] storage=${st}
   measure: total is amount.sum()
 }`,
-         },
-      ];
+      },
+   ];
    const SOUND = `#(materialize) storage="lake"
 source: good is orders_raw extend { measure: n is count() }`;
+   const GOOD_QUERY = [
+      {
+         name: "good",
+         malloy: "run: good -> { group_by: region; aggregate: n }",
+      },
+   ];
 
    // A nested `storage=` wins whenever it is written: one that names nothing
-   // refuses the source, never falling through to a flat destination beside it.
+   // is invalid, never falling through to a flat destination beside it.
    for (const [label, persist] of [
       ["empty", '#@ persist storage=""'],
       ["whitespace", '#@ persist storage="  "'],
@@ -209,162 +222,32 @@ source: good is orders_raw extend { measure: n is count() }`;
          '#@ persist { storage { at="lake" } } storage="lake"',
       ],
    ] as const) {
-      it(`#@ persist, storage ${label}: refused as empty_storage, not built`, async () => {
-         const { plan, served } = await run(
+      it(`#@ persist, storage ${label}: the load fails, persist-invalid`, async () => {
+         const { plan } = await run(
             `persist-${label}`,
             `${persist}
 source: bad is orders_raw -> { group_by: region; aggregate: n is count() }
 
 ${SOUND}`,
-            [
-               {
-                  name: "bad",
-                  malloy: "run: bad -> { select: * }",
-               },
-               {
-                  name: "good",
-                  malloy: "run: good -> { group_by: region; aggregate: n }",
-               },
-            ],
+            GOOD_QUERY,
          );
-         expect(plan.loadError).toBeUndefined();
-         const refused = Object.values(
-            (plan.wirePlan?.refusedSources ?? {}) as Record<
-               string,
-               { name?: string; reason?: string }
-            >,
-         );
-         expect(refused.map((r) => [r.name, r.reason])).toEqual([
-            ["bad", "empty_storage"],
-         ]);
-         const ids = Object.keys(plan.wirePlan?.sources ?? {});
-         expect(ids.some((id) => id.startsWith("bad@"))).toBe(false);
-         const byName = new Map(served.map((q) => [q.query, q]));
-         expect(byName.get("bad")).toMatchObject({
-            servedBy: "live",
-            equalToLive: true,
-         });
-         expect(byName.get("good")).toMatchObject({
-            servedFrom: "storage",
-            equalToLive: true,
-         });
+         expect(plan.loadError).toContain('#@ persist source "bad"');
+         expect(plan.loadError).toContain("[persist-invalid]");
       }, 120_000);
    }
-
-   // The colocated sibling rule keeps a gated source's rows from being served
-   // past its gate through a table it shares. A blank `storage=` is an
-   // author's mistake on one source, not a gate: it refuses that source and
-   // leaves the table its sibling shares to build and serve.
-   it("#@ persist, storage empty: a colocated sibling with the same SQL still builds and serves", async () => {
-      const { plan, served } = await run(
-         "persist-empty-sibling",
-         `#@ persist storage="" name="a_tbl"
-source: a is orders_raw -> { group_by: region; aggregate: n is count() }
-#@ persist name="b_tbl"
-source: b is orders_raw -> { group_by: region; aggregate: n is count() }`,
-         [
-            { name: "a", malloy: "run: a -> { select: * }" },
-            { name: "b", malloy: "run: b -> { select: * }" },
-         ],
-      );
-      expect(plan.loadError).toBeUndefined();
-      const refused = Object.values(
-         (plan.wirePlan?.refusedSources ?? {}) as Record<
-            string,
-            { name?: string; reason?: string }
-         >,
-      );
-      expect(refused.map((r) => [r.name, r.reason])).toEqual([
-         ["a", "empty_storage"],
-      ]);
-      const ids = Object.keys(plan.wirePlan?.sources ?? {});
-      expect(ids.filter((id) => /^[ab]@/.test(id)).map((id) => id[0])).toEqual([
-         "b",
-      ]);
-      const byName = new Map(served.map((q) => [q.query, q]));
-      expect(byName.get("a")).toMatchObject({
-         servedBy: "live",
-         equalToLive: true,
-      });
-      expect(byName.get("b")).toMatchObject({
-         servedBy: expect.not.stringMatching(/^live$/),
-         equalToLive: true,
-      });
-   }, 120_000);
-
-   // `#(materialize)` refuses a blank `storage=` as it generates its builds,
-   // before any sibling rule reads it; held to the same outcome.
-   it("#(materialize), storage empty: a colocated sibling with the same SQL still builds and serves", async () => {
-      const { plan, served } = await run(
-         "materialize-empty-sibling",
-         `#(materialize) storage="" name="a_tbl"
-source: a is orders_raw extend { measure: n is count() }
-#(materialize) name="b_tbl"
-source: b is orders_raw extend { measure: n is count() }`,
-         [
-            {
-               name: "a",
-               malloy: "run: a -> { group_by: region; aggregate: n }",
-            },
-            {
-               name: "b",
-               malloy: "run: b -> { group_by: region; aggregate: n }",
-            },
-         ],
-      );
-      expect(plan.loadError).toBeUndefined();
-      const ids = Object.keys(plan.wirePlan?.sources ?? {});
-      expect(ids.filter((id) => /^[ab]@/.test(id)).map((id) => id[0])).toEqual([
-         "b",
-      ]);
-      expect(
-         plan.loadWarnings.some(
-            (w) =>
-               /storage=/.test(w.message ?? "") && /"a"/.test(w.message ?? ""),
-         ),
-      ).toBe(true);
-      const byName = new Map(served.map((q) => [q.query, q]));
-      expect(byName.get("a")).toMatchObject({
-         servedBy: "live",
-         equalToLive: true,
-      });
-      expect(byName.get("b")).toMatchObject({
-         servedBy: expect.not.stringMatching(/^live$/),
-         equalToLive: true,
-      });
-   }, 120_000);
 
    for (const e of EMPTY) {
       for (const [label, storage] of [
          ["empty", '""'],
          ["not a name", '["lake"]'],
       ] as const) {
-         it(`${e.route}, storage ${label}: refuses that source alone, with a warning`, async () => {
-            const { plan, served } = await run(
+         it(`${e.route}, storage ${label}: the load fails, ${e.code}`, async () => {
+            const { plan } = await run(
                `${e.route}-${label}`,
                `${e.declaration(storage)}\n\n${SOUND}`,
-               [
-                  {
-                     name: "good",
-                     malloy: "run: good -> { group_by: region; aggregate: n }",
-                  },
-               ],
+               GOOD_QUERY,
             );
-            expect(plan.loadError).toBeUndefined();
-            const ids = Object.keys(plan.wirePlan?.sources ?? {});
-            expect(ids.some((id) => id.startsWith("good@"))).toBe(true);
-            expect(ids.some((id) => id.startsWith("bad"))).toBe(false);
-            expect(
-               plan.loadWarnings.some(
-                  (w) =>
-                     /storage=/.test(w.message ?? "") &&
-                     /bad|v\b|total/.test(w.message ?? ""),
-               ),
-            ).toBe(true);
-            expect(served[0]).toMatchObject({
-               servedFrom: "storage",
-               equalToLive: true,
-            });
+            expect(plan.loadError).toContain(`[${e.code}]`);
          }, 120_000);
       }
    }

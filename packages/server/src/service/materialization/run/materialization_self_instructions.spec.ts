@@ -48,7 +48,7 @@ describe("deriveSelfInstructions", () => {
       };
 
       const { instructions, carried } = (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             deriveSelfInstructions: (
                c: unknown,
                n: string[] | undefined,
@@ -89,7 +89,7 @@ describe("deriveSelfInstructions", () => {
       };
 
       const { instructions, carried } = (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             deriveSelfInstructions: (
                c: unknown,
                n: string[] | undefined,
@@ -108,7 +108,7 @@ describe("deriveSelfInstructions", () => {
       ).toBeDefined();
    });
 
-   it("never instructs a storage rollup over a storage= base, and still builds the base (#6293)", () => {
+   it("instructs a storage rollup over a storage= base beside the base, each to its own table", () => {
       const { restore } = installSettings({
          env: { PERSIST_STORAGE_MODE: "on" },
       });
@@ -128,20 +128,19 @@ describe("deriveSelfInstructions", () => {
             },
             [["orders", "rollup"]],
          );
-         (
-            compiled as unknown as {
-               preaggregatePlans: Record<string, unknown>;
-            }
-         ).preaggregatePlans = {
+         compiled.tables.rollup = {
+            kind: "rollup",
+            source: compiled.tables.rollup.source,
             rollup: {
+               variant: true,
                baseSourceName: "orders",
                baseSourceID: "orders",
                grainDimensions: ["category"],
                measures: [],
-            },
+            } as never,
          };
          const { instructions, refused } = (
-            ctx.service as unknown as {
+            ctx.service.collaborators as unknown as {
                deriveSelfInstructions: (
                   c: unknown,
                   n: string[] | undefined,
@@ -154,8 +153,10 @@ describe("deriveSelfInstructions", () => {
          ).deriveSelfInstructions(compiled, undefined, {});
          expect(instructions.map((i) => i.sourceEntityId)).toEqual([
             "aa11aa11aa11aa11aa11",
+            "cc33cc33cc33cc33cc33",
          ]);
-         // Left out, not refused: the package warning reports it.
+         const [base, rolled] = instructions;
+         expect(rolled.physicalTableName).not.toBe(base.physicalTableName);
          expect(refused).toEqual({});
       } finally {
          restore();
@@ -182,7 +183,7 @@ describe("deriveSelfInstructions", () => {
             [["lake_src", "wh_src"]],
          );
          const { instructions } = (
-            ctx.service as unknown as {
+            ctx.service.collaborators as unknown as {
                deriveSelfInstructions: (
                   c: unknown,
                   n: string[] | undefined,
@@ -210,7 +211,7 @@ describe("deriveSelfInstructions", () => {
    /** deriveSelfInstructions with defaults, for the row-level-authorize tests below. */
    function derive(compiled: unknown): { instructions: BuildInstruction[] } {
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             deriveSelfInstructions: (
                c: unknown,
                n: string[] | undefined,
@@ -332,7 +333,7 @@ describe("deriveSelfInstructions", () => {
          priorEntries: Record<string, unknown> = {},
       ): Derived {
          return (
-            ctx.service as unknown as {
+            ctx.service.collaborators as unknown as {
                deriveSelfInstructions: (
                   c: unknown,
                   n: string[] | undefined,
@@ -426,16 +427,14 @@ describe("deriveSelfInstructions", () => {
          // refused work is one must not fail every run over it.
          const rollup = gated("rollup");
          const compiled = compiledWith({ rollup }, [["rollup"]]);
-         (
-            compiled as unknown as {
-               preaggregatePlans: Record<string, unknown>;
-            }
-         ).preaggregatePlans = {
+         compiled.tables.rollup = {
+            kind: "rollup",
+            source: compiled.tables.rollup.source,
             rollup: {
                baseSourceName: "orders",
                grainDimensions: ["category"],
                measures: [],
-            },
+            } as never,
          };
 
          const { instructions, refused } = deriveWith(compiled);
@@ -503,7 +502,7 @@ describe("deriveSelfInstructions", () => {
       priorEntries: unknown,
    ): { instructions: BuildInstruction[]; carried: Record<string, unknown> } {
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             deriveSelfInstructions: (
                c: unknown,
                n: string[] | undefined,
@@ -605,7 +604,7 @@ describe("deriveSelfInstructions", () => {
          [["s1", "s2"]],
       );
       const { instructions, carried } = (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             deriveSelfInstructions: (
                c: unknown,
                n: string[] | undefined,

@@ -16,7 +16,8 @@
  * Pure: a reader that cannot place a declaration returns undefined.
  */
 
-import { identifier } from "../../malloy_text";
+import { identifier, stringLiteral } from "../../malloy_text";
+import type { GivenReadTerm, TermUse } from "../domain/read_time_terms";
 import {
    isName,
    lexAll,
@@ -42,8 +43,8 @@ export function declarationSpans(
    options: {
       /**
        * Walk back over trailing `include { … }` blocks too, so the run is
-       * everything after the base (a v1 query-shaped source's re-root under
-       * the cutover keeps its author's `include`, review F3).
+       * everything after the base (a v1 query-shaped source's re-root keeps
+       * its author's `include`).
        */
       throughIncludes?: boolean;
    } = {},
@@ -58,6 +59,12 @@ export function declarationSpans(
          * under it.
          */
         connectionRooted: boolean;
+        /**
+         * The base begins with a connection's table or SQL, whatever follows
+         * it before the trailing run: with {@link connectionRooted} false, a
+         * block the run does not walk back over stands between them.
+         */
+        connectionBased: boolean;
      }
    | undefined {
    const tokens = topLevelTokens(declaration);
@@ -103,9 +110,9 @@ export function declarationSpans(
    const base = tokens.filter(
       (t, k) => k > isIndex && t.end <= baseEnd && t.kind !== "close",
    );
-   const connectionRooted =
+   const connectionBased =
       !queryShaped &&
-      base.length === 3 &&
+      base.length >= 3 &&
       base[0].kind === "word" &&
       base[1].text === "." &&
       base[1].start === base[0].end &&
@@ -115,7 +122,8 @@ export function declarationSpans(
       nameEnd,
       ...(extendStart !== undefined ? { extendStart } : {}),
       queryShaped,
-      connectionRooted,
+      connectionRooted: connectionBased && base.length === 3,
+      connectionBased,
    };
 }
 
@@ -535,12 +543,82 @@ export function documentFlagLines(text: string): string[] {
       .filter((line) => line.startsWith("##!"));
 }
 
+/** The statements of a source's blocks that define fields by name. */
+const DEFINING_STATEMENTS: ReadonlySet<string> = new Set([
+   "dimension",
+   "measure",
+   "join_one",
+   "join_many",
+   "join_cross",
+   "view",
+   "rename",
+]);
+
+/**
+ * The names a run of trailing blocks (`include { … } extend { … }`, a
+ * declaration's text after its base) hides in a top-level `include { … }`,
+ * under `private:` or `internal:`, that the run does not define: a column
+ * the stored table must hold for the kept block to compile. A definition is
+ * a `rename:` target, or a dimension, measure, join or view name, written
+ * `<name> is|with|on` where a definition starts (after its statement's
+ * colon, a comma, or at the start of a line); a mere use (`length(s)`,
+ * `where: s is not null`) defines nothing. Undefined when the text does not
+ * lex.
+ */
+export function hiddenIncludeNames(run: string): string[] | undefined {
+   const tokens = lexAll(run);
+   if (!tokens) return undefined;
+   const nameOf = (t: Token) =>
+      t.text.startsWith("`") ? t.text.slice(1, -1) : t.text;
+   const hidden: string[] = [];
+   const defined = new Set<string>();
+   let block: string | undefined;
+   let label: string | undefined;
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.depth === 0) {
+         if (t.kind === "word") block = t.text;
+         label = undefined;
+         continue;
+      }
+      if (t.depth !== 1 || !isName(t)) continue;
+      const next = tokens[k + 1];
+      if (next?.text === ":" && next.start === t.end) {
+         label = t.text;
+         k++;
+         continue;
+      }
+      if (
+         block === "include" &&
+         (label === "private" || label === "internal")
+      ) {
+         hidden.push(nameOf(t));
+         continue;
+      }
+      const prev = tokens[k - 1];
+      const startsDefinition =
+         prev?.text === ":" ||
+         prev?.text === "," ||
+         run.slice(prev?.end ?? 0, t.start).includes("\n");
+      if (
+         label !== undefined &&
+         DEFINING_STATEMENTS.has(label) &&
+         startsDefinition &&
+         next?.kind === "word" &&
+         (next.text === "is" || next.text === "with" || next.text === "on")
+      ) {
+         defined.add(nameOf(t));
+      }
+   }
+   return hidden.filter((n) => !defined.has(n));
+}
+
 /**
  * In a run of `extend { … }` blocks, delete each `except:` item of a
  * top-level block's own statement that `removable` accepts, and an `except:`
  * statement left with no item. For a
  * stored table that never held an excluded column (a v1 `storage=` table
- * stores public columns only), `except: region` names nothing the re-rooted
+ * does not store one), `except: region` names nothing the re-rooted
  * source has, which Malloy refuses; with nothing to exclude, deleting it
  * leaves the surface as it was. An item whose name appears anywhere else in
  * the text (a field the text itself defines) is kept: it may hide something.
@@ -619,4 +697,120 @@ export function dropExceptItems(
    if (edits.length === 0) return { text, dropped };
    const out = applyEdits(text, edits);
    return out === undefined ? undefined : { text: out, dropped };
+}
+
+/** Why a given-reading term cannot be taken out: it is not found as written. */
+export const TERM_NOT_FOUND =
+   "a `where:` reading a given could not be found as written in the " +
+   "source's declaration, so it cannot be left out of the build";
+
+/**
+ * Each term's span in `text`, or why one cannot be taken out.
+ *
+ * A term is found as its verbatim text (`code`) at the one occurrence inside
+ * the declaration that covers every place the compiler says it reads a field
+ * or a given, so the same text in a comment, a string, another term or
+ * another source never matches; none, or more than one, is refused.
+ *
+ * The occurrence must also lie in the declaration's trailing `extend { … }`
+ * run, read with the re-root rewriter's own reader ({@link declarationSpans}):
+ * that run is the only text the served copy keeps, so a term written anywhere
+ * else (a parenthesised head, an inline `extend` in the base) would be built
+ * out of the table and then never re-applied. The served copy refuses such a
+ * source at read too (`read_terms_not_kept`); refusing it here means its
+ * table is never built for nothing.
+ */
+export function termSpans(
+   text: string,
+   plan: { declaration?: TermUse },
+   terms: readonly GivenReadTerm[],
+): { spans: { start: number; end: number }[] } | { reason: string } {
+   const declaration = plan.declaration;
+   if (!declaration) return { reason: TERM_NOT_FOUND };
+   const from = offsetOf(text, declaration.range.start);
+   const to = offsetOf(text, declaration.range.end);
+   if (from < 0 || to < from) return { reason: TERM_NOT_FOUND };
+   const extendStart = declarationSpans(text.slice(from, to))?.extendStart;
+   const run = extendStart === undefined ? undefined : from + extendStart;
+   const spans: { start: number; end: number }[] = [];
+   for (const term of terms) {
+      const uses = term.at.map((use) => ({
+         start: offsetOf(text, use.range.start),
+         end: offsetOf(text, use.range.end),
+      }));
+      if (uses.some((u) => u.start < 0 || u.end < u.start)) {
+         return { reason: TERM_NOT_FOUND };
+      }
+      const matches: number[] = [];
+      for (
+         let at = text.indexOf(term.code, from);
+         at >= 0 && at + term.code.length <= to;
+         at = text.indexOf(term.code, at + 1)
+      ) {
+         const end = at + term.code.length;
+         if (uses.every((u) => u.start >= at && u.end <= end)) matches.push(at);
+      }
+      if (matches.length !== 1) return { reason: TERM_NOT_FOUND };
+      const span = { start: matches[0], end: matches[0] + term.code.length };
+      if (spans.some((s) => s.start < span.end && span.start < s.end)) {
+         return { reason: TERM_NOT_FOUND };
+      }
+      if (run === undefined || span.start < run) {
+         return {
+            reason:
+               `\`where: ${term.code}\` reads a given and is not in the ` +
+               "trailing `extend { … }` of this source, " +
+               "the only part of a declaration the served copy keeps, so it " +
+               "could not be re-applied at read. Write it in a trailing " +
+               "`extend`",
+         };
+      }
+      spans.push(span);
+   }
+   return { spans };
+}
+
+/**
+ * The edits that point each top-level `import` of `text` at another path:
+ * the path string of every `import` statement whose path `importOf` answers
+ * for. Undefined when the text does not lex, or an import's path is written
+ * with an escape, which is never guessed at.
+ */
+export function importRewrites(
+   text: string,
+   importOf: (written: string) => string | undefined,
+): TextEdit[] | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const edits: TextEdit[] = [];
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.kind !== "word" || t.text !== "import" || t.depth !== 0) continue;
+      // The path is the statement's first string at the top level: right
+      // after `import`, or after `{ … } from`.
+      let j = k + 1;
+      while (
+         j < tokens.length &&
+         !(tokens[j].depth === 0 && /^["']/.test(tokens[j].text))
+      ) {
+         if (tokens[j].depth === 0 && tokens[j].kind === "word") {
+            if (tokens[j].text !== "from") break;
+         }
+         j++;
+      }
+      const literal = tokens[j];
+      if (!literal || literal.depth !== 0 || !/^["']/.test(literal.text)) {
+         continue;
+      }
+      const body = literal.text.slice(1, -1);
+      if (body.includes("\\")) return undefined;
+      const to = importOf(body);
+      if (to === undefined) continue;
+      edits.push({
+         start: literal.start,
+         end: literal.end,
+         insert: stringLiteral(to),
+      });
+   }
+   return edits;
 }

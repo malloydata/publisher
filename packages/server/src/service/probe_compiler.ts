@@ -105,40 +105,7 @@ export function currentTimeCalls(sql: string): number {
    return (sql.match(CURRENT_TIME_SQL) ?? []).length;
 }
 
-/** Max IR depth to walk; deep enough for real sources, a hang backstop. */
-const MAX_WALK_DEPTH = 200;
-
-/**
- * Whether a slice of compiled IR reads a given, by EITHER a `{node:'given'}`
- * reference or a non-empty `givenUsage` summary, so a compiler that prunes one
- * of the two signals cannot make a given read clean. Throws past a depth
- * bound, which every caller treats as a read.
- */
-export function readsAGiven(
-   node: unknown,
-   seen: WeakSet<object> = new WeakSet(),
-   depth = 0,
-): boolean {
-   if (depth > MAX_WALK_DEPTH) {
-      throw new Error("given walk exceeded max depth");
-   }
-   if (node === null || typeof node !== "object") return false;
-   if (seen.has(node as object)) return false;
-   seen.add(node as object);
-
-   if (Array.isArray(node)) {
-      return node.some((item) => readsAGiven(item, seen, depth + 1));
-   }
-   const record = node as Record<string, unknown>;
-   if (record.node === "given" || record.node === "givenReference") return true;
-   if (record.givenRef !== undefined) return true;
-   const summary = record.refSummary as { givenUsage?: unknown[] } | undefined;
-   if (summary?.givenUsage && summary.givenUsage.length > 0) return true;
-   if (Array.isArray(record.givenUsage) && record.givenUsage.length > 0) {
-      return true;
-   }
-   return Object.values(record).some((v) => readsAGiven(v, seen, depth + 1));
-}
+export { readsAGiven } from "./governance/ir/compiled_model";
 
 /** One compiled probe: the givens it reads and, when it generates, its SQL. */
 interface Probe {

@@ -8,7 +8,8 @@ import * as path from "path";
 
 import { Environment } from "./environment";
 import type { Package } from "./package";
-import { withSettings } from "../test_helpers/settings_env";
+import { installSettings } from "../test_helpers/settings_env";
+import { BadRequestError } from "../errors";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { parsePackageName } from "./identity";
 
@@ -17,8 +18,8 @@ import { parsePackageName } from "./identity";
  * §3.1, §9.2–§9.5). Scope is a single package-level mode (`Package.scope`) and a
  * materialization cron is package-root-only + version-scope-only:
  *
- *  - per-source `#@ persist ... sharing=`/`schedule=` are retired (declaring
- *    either on a source is a manifest error);
+ *  - per-source `#@ persist ... sharing=`/`schedule=` are retired keys
+ *    (`persist-retired-key`, which fails the load);
  *  - `materialization.schedule` is legal only when `scope: version`;
  *  - `materialization.schedule` and freshness (package or source) are mutually
  *    exclusive.
@@ -126,34 +127,23 @@ source: f is duckdb.sql("SELECT 1 as x")
 
    // ── Rule 1: per-source sharing/schedule retired ───────────────────────
 
-   it(
-      "rejects a per-source sharing= annotation, pointing at root scope",
-      async () => {
-         const pkg = await loadPackage(SHARING_SOURCE_MODEL, {
-            scope: "version",
-         });
-         const joined = pkg.formatInvalidPersistencePolicy();
-         expect(joined).toContain('"s"');
-         expect(joined).toContain("sharing");
-         expect(joined).toContain('"scope"');
-      },
-      { timeout: 30000 },
-   );
-
-   it(
-      "rejects a per-source schedule= annotation, pointing at the root schedule",
-      async () => {
-         const pkg = await loadPackage(SCHEDULE_SOURCE_MODEL, {
-            scope: "version",
-         });
-         const joined = pkg.formatInvalidPersistencePolicy();
-         expect(joined).toContain('"s"');
-         expect(joined).toContain("schedule");
-         expect(joined).toContain("materialization.schedule");
-         // The retired field is not emitted on the wire plan.
-         const source = sourceByName(pkg, "s") as Record<string, unknown>;
-         expect(source.schedule).toBeUndefined();
-         expect(source.sharing).toBeUndefined();
+   it.each([
+      ["sharing=", SHARING_SOURCE_MODEL, "materialization.scope"],
+      ["schedule=", SCHEDULE_SOURCE_MODEL, "materialization.schedule"],
+   ])(
+      "fails the load on a per-source %s annotation, pointing at the root setting",
+      async (_key, model, root) => {
+         let error: unknown;
+         try {
+            await loadPackage(model, { scope: "version" });
+         } catch (e) {
+            error = e;
+         }
+         expect(error).toBeInstanceOf(BadRequestError);
+         const message = (error as Error).message;
+         expect(message).toContain('#@ persist source "s"');
+         expect(message).toContain(root);
+         expect(message).toContain("[persist-retired-key]");
       },
       { timeout: 30000 },
    );
@@ -367,29 +357,132 @@ source: a is duckdb.sql("SELECT 1 as x")
 source: b is duckdb.sql("SELECT 2 as y")
 `;
 
+   /** The load's failure message for `model`, which must not load. */
+   async function loadError(model: string): Promise<string> {
+      let error: unknown;
+      try {
+         await loadPackage(model);
+      } catch (e) {
+         error = e;
+      }
+      expect(error).toBeInstanceOf(BadRequestError);
+      return (error as Error).message;
+   }
+
    it(
-      "warns when two distinct sources resolve to the same name= + destination",
+      "fails the load when two distinct sources resolve to the same name= + destination",
       async () => {
-         const pkg = await loadPackage(COLLIDING_MODEL);
-         const warnings = pkg.persistenceCollisionWarnings();
-         expect(warnings).toHaveLength(1);
-         expect(warnings[0]).toContain('"a"');
-         expect(warnings[0]).toContain('"b"');
-         expect(warnings[0]).toContain('"dup"');
+         const message = await loadError(COLLIDING_MODEL);
+         expect(message).toContain('"a"');
+         expect(message).toContain('"b"');
+         expect(message).toContain('"dup"');
+         expect(message).toContain("[materialization-table-collision]");
+         // Naming the operator's opt-out.
+         expect(message).toContain("PERSIST_COLLISION_ENFORCE=false");
+      },
+      { timeout: 30000 },
+   );
+
+   it.each([
+      ["main.t, then t", "main.t", "t"],
+      ["t, then main.t", "t", "main.t"],
+   ])(
+      "fails the load when a name= with the default schema and one without it are one table: %s",
+      async (_order, first, second) => {
+         const message = await loadError(`##! experimental.persistence
+
+#@ persist name="${first}"
+source: a is duckdb.sql("SELECT 1 as x")
+
+#@ persist name="${second}"
+source: b is duckdb.sql("SELECT 2 as y")
+`);
+         expect(message).toContain("[materialization-table-collision]");
       },
       { timeout: 30000 },
    );
 
    it(
-      "surfaces the collision on the package status warnings (not just the log)",
+      "fails the load on a collision even when one of the two is an incremental source DuckDB cannot build",
       async () => {
-         const pkg = await loadPackage(COLLIDING_MODEL);
-         const warnings = pkg.getPackageMetadata().warnings ?? [];
-         const collision = warnings.find((w) =>
-            w.message?.includes("resolve to the same materialized table"),
+         const message = await loadError(`##! experimental.persistence
+
+source: raw is duckdb.sql("SELECT 1 as x, DATE '2024-01-01' as d")
+
+#@ persist name="t" refresh="incremental" watermark="d"
+source: a is raw -> { group_by: x, d }
+
+#@ persist name="t"
+source: b is raw -> { group_by: x }
+`);
+         expect(message).toContain("[materialization-table-collision]");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      'fails the load on name="t" beside name="other.t": a bare name may land in that schema, so it is judged one table',
+      async () => {
+         // A known false positive when the connection's default schema is
+         // not `other`: a bare name's schema cannot be told at load, and a
+         // missed collision would serve one source the other's rows.
+         const message = await loadError(`##! experimental.persistence
+
+#@ persist name="t"
+source: a is duckdb.sql("SELECT 1 as x")
+
+#@ persist name="other.t"
+source: b is duckdb.sql("SELECT 2 as y")
+`);
+         expect(message).toContain("[materialization-table-collision]");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "does not collide two name=s in two named schemas",
+      async () => {
+         const pkg = await loadPackage(`##! experimental.persistence
+
+#@ persist name="s1.t"
+source: a is duckdb.sql("SELECT 1 as x")
+
+#@ persist name="s2.t"
+source: b is duckdb.sql("SELECT 2 as y")
+`);
+         expect(pkg.materialization().persistenceCollisionWarnings()).toEqual(
+            [],
          );
-         expect(collision).toBeDefined();
-         expect(collision!.message).toContain('"dup"');
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "with PERSIST_COLLISION_ENFORCE=false, loads and refuses the colliding sources alone, on the package's warnings",
+      async () => {
+         const { restore } = installSettings({
+            env: { PERSIST_COLLISION_ENFORCE: "false" },
+         });
+         try {
+            const pkg = await loadPackage(COLLIDING_MODEL);
+            expect(
+               pkg.materialization().persistenceCollisionWarnings(),
+            ).toHaveLength(1);
+            const collision = (pkg.getPackageMetadata().warnings ?? []).find(
+               (w) =>
+                  w.message?.includes("resolve to the same materialized table"),
+            );
+            expect(collision).toMatchObject({
+               code: "persist-not-built",
+               severity: "warn",
+            });
+            expect(collision!.message).toContain('"dup"');
+            expect(pkg.formatInvalidAnnotations()).toBe("");
+            // The manifest policy set never carries it.
+            expect(pkg.persistencePolicyWarnings()).toEqual([]);
+         } finally {
+            restore();
+         }
       },
       { timeout: 30000 },
    );
@@ -398,7 +491,9 @@ source: b is duckdb.sql("SELECT 2 as y")
       "does not warn when the same name= targets different destinations",
       async () => {
          const pkg = await loadPackage(SAME_NAME_DIFF_DEST_MODEL);
-         expect(pkg.persistenceCollisionWarnings()).toEqual([]);
+         expect(pkg.materialization().persistenceCollisionWarnings()).toEqual(
+            [],
+         );
          const warnings = pkg.getPackageMetadata().warnings ?? [];
          expect(
             warnings.some((w) =>
@@ -413,37 +508,9 @@ source: b is duckdb.sql("SELECT 2 as y")
       "does not warn for a plain package with distinct persist names",
       async () => {
          const pkg = await loadPackage(PLAIN_MODEL);
-         expect(pkg.persistenceCollisionWarnings()).toEqual([]);
-      },
-      { timeout: 30000 },
-   );
-
-   it(
-      "collisions never enter persistencePolicyWarnings (the strict-publish set)",
-      async () => {
-         const pkg = await loadPackage(COLLIDING_MODEL);
-         // The collision is real…
-         expect(pkg.persistenceCollisionWarnings()).toHaveLength(1);
-         // …but it must not ride the always-strict-at-publish policy set.
-         expect(pkg.persistencePolicyWarnings()).toEqual([]);
-      },
-      { timeout: 30000 },
-   );
-
-   it(
-      "refuses the publish by default; PERSIST_COLLISION_ENFORCE=false opts out",
-      async () => {
-         const pkg = await loadPackage(COLLIDING_MODEL);
-         // Default: the collision is a publish rejection, naming the opt-out.
-         withSettings({}, () => {
-            const rejection = pkg.formatPersistenceCollisionRejections();
-            expect(rejection).toContain('"dup"');
-            expect(rejection).toContain("PERSIST_COLLISION_ENFORCE=false");
-         });
-         // Opted out: warn-only, so the publish gate string is empty.
-         withSettings({ env: { PERSIST_COLLISION_ENFORCE: "false" } }, () => {
-            expect(pkg.formatPersistenceCollisionRejections()).toBe("");
-         });
+         expect(pkg.materialization().persistenceCollisionWarnings()).toEqual(
+            [],
+         );
       },
       { timeout: 30000 },
    );

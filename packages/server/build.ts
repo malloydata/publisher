@@ -129,3 +129,22 @@ fs.writeFileSync(serverJsPath, shebangContent);
 
 // Make the file executable
 fs.chmodSync(serverJsPath, "755");
+
+// The conformance harness's unguarded test seam must never ship. The import
+// ratchet (src/import_direction.spec.ts) and the name scan
+// (src/service/connection_type.spec.ts) catch an import of it; this catches
+// any reach the scans cannot see, computed access included, because a bundle
+// that keeps the export keeps its name. It runs last, once the outputs carry
+// their final .mjs names.
+for (const file of fs.readdirSync("./dist")) {
+   if (!file.endsWith(".mjs")) continue;
+   if (
+      fs
+         .readFileSync(`./dist/${file}`, "utf8")
+         .includes("recordConnectionsAsForConformanceHarness")
+   ) {
+      throw new Error(
+         `dist/${file} contains recordConnectionsAsForConformanceHarness, a test seam only the conformance harness may reach`,
+      );
+   }
+}

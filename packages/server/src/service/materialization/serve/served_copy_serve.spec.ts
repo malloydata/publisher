@@ -4,7 +4,11 @@
 import { describe, expect, it } from "bun:test";
 import type { FieldClassification } from "../../classification";
 import type { Binding } from "../domain/binding";
-import { staleOnChain, storedColumnNotes } from "./served_copy_serve";
+import {
+   materializedReadPlan,
+   staleOnChain,
+   storedColumnNotes,
+} from "./served_copy_serve";
 
 const classified = (c: Partial<FieldClassification>): FieldClassification =>
    ({ declared: [], classifications: [], ...c }) as FieldClassification;
@@ -51,5 +55,52 @@ describe("staleOnChain", () => {
    it("is not a stale table off the chain, or none at all", () => {
       expect(staleOnChain([stale(["other"])], ["daily", "base"])).toBe(false);
       expect(staleOnChain([], ["daily"])).toBe(false);
+   });
+});
+
+describe("materializedReadPlan", () => {
+   const def = {
+      queryTimezone: undefined,
+      fields: [
+         { name: "id", type: "number" },
+         { name: "amt", type: "number" },
+         { name: "flag", type: "boolean" },
+         { name: "raw_d", as: "d", type: "date" },
+         { name: "ts", type: "timestamp" },
+         { name: "total", type: "number", expressionType: "aggregate" },
+         { name: "c", type: "record", join: "one" },
+      ],
+   };
+
+   it("reads each drifted column as live types its field: a faithful cast, else left out", () => {
+      const plan = materializedReadPlan(
+         [
+            { name: "id", type: "BIGINT" },
+            { name: "amt", type: "VARCHAR" },
+            { name: "flag", type: "INTEGER" },
+            { name: "d", type: "TIMESTAMP" },
+            { name: "ts", type: "TIMESTAMP WITH TIME ZONE" },
+         ],
+         def,
+      );
+      expect(plan.casts).toEqual([
+         { column: "flag", castTo: "BOOLEAN" },
+         { column: "d", castTo: "DATE" },
+      ]);
+      expect(plan.leftOut.map((m) => [m.column, m.storedType])).toEqual([
+         ["amt", "VARCHAR"],
+      ]);
+   });
+
+   it("checks no column that names a measure or a join, or no field at all", () => {
+      const plan = materializedReadPlan(
+         [
+            { name: "total", type: "VARCHAR" },
+            { name: "c", type: "VARCHAR" },
+            { name: "c__fee", type: "VARCHAR" },
+         ],
+         def,
+      );
+      expect(plan.mismatches).toEqual([]);
    });
 });

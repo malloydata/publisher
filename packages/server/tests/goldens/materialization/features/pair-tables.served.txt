@@ -89,7 +89,7 @@ source: orders_pair is __served_copy_alias_of_lake.virtual('19d80b436ce31978acec
     lines__sku__pair is lines__sku
     lines__qty__pair is lines__qty
 } extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
@@ -145,7 +145,7 @@ source: customers_path is __served_copy_alias_of_lake.virtual('86beef7e3f90b49ad
     orders__lines__sku__pair is orders__lines__sku
     orders__lines__qty__pair is orders__lines__qty
 } extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"
@@ -212,7 +212,7 @@ source: customers_blocks is __served_copy_alias_of_lake.virtual('c058478f6fd7ba6
     big_orders__order__pair is big_orders__order
   where: __pair_lane__pair = 0
 } extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"
@@ -343,7 +343,7 @@ source: orders_pair is __served_copy_alias_of_lake.virtual('19d80b436ce31978acec
     lines__sku__pair is lines__sku
     lines__qty__pair is lines__qty
 } extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order
@@ -399,7 +399,7 @@ source: customers_path is __served_copy_alias_of_lake.virtual('86beef7e3f90b49ad
     orders__lines__sku__pair is orders__lines__sku
     orders__lines__qty__pair is orders__lines__qty
 } extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"
@@ -465,7 +465,7 @@ source: customers_blocks is __served_copy_alias_of_lake.virtual('c058478f6fd7ba6
     orders__lines__qty__pair is orders__lines__qty
   where: __pair_lane__pair = 1
 } extend {
-  internal rename:
+  private rename:
     id__stored is id
   dimension:
     id is id__stored::"HUGEINT"

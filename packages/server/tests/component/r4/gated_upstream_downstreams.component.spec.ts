@@ -35,7 +35,7 @@ import {
    type LoadedFixture,
    loadFixture,
    type Outcome,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
 /** The gated upstreams, by prefix. `xf` is declared in base.malloy. */
@@ -207,54 +207,37 @@ const sameOutcome = (live: Outcome, served: Outcome): string | undefined => {
 /**
  * The refusals each setting must report for the downstreams of the
  * `#(access_filter)` and `#(authorize)` upstreams, by `name:tier:reason`.
- * A v1 `storage=` downstream is refused in every shape but the annotated
- * join (the deep scan's documented gap; a join does not carry the gate live
- * either, so the table equals live), and the v1 colocated one, whose table is
- * the refused plain join's. A downstream that inherits a row filter
- * (`af`, `xf`) is refused in every form, so no table holds every caller's
- * rows that nothing reads.
+ * The annotated join is built in either tier, its table apart from the
+ * refused plain join's (the deep scan's documented gap; a join does not carry
+ * the gate live either, so the table equals live). A downstream that inherits
+ * a row filter (`af`, `xf`) is refused in every form, so no table holds every
+ * caller's rows that nothing reads. One that inherits a lock (`az`) is
+ * admitted on both tiers, v1 and `#(materialize)` alike, with the switch off
+ * or on (G3), and refused only through a join.
  */
-function expectedGateRefusals(gated: boolean): string[] {
+function expectedGateRefusals(): string[] {
    const out: string[] = [];
    for (const g of ["af", "az", "xf"]) {
       for (const s of SHAPES) {
          if (s === "ajoin") {
-            // The v1 colocated annotated join shares its table (one address:
-            // the same SQL) with the plain join, which is refused, so it is
-            // refused too: the bind serves no source on that address.
-            out.push(`${g}_pc_${s}:colocated:authorize`);
+            // The v1 colocated annotated join compiles to the plain join's
+            // SQL, but names its own table (`name=`), so it is not on the
+            // refused plain join's address and is not refused with it.
             continue;
          }
-         out.push(`${g}_ps_${s}:storage:authorize`);
-         // A gate reached only through a join is never the entry point's own.
-         if (s === "join") {
-            out.push(`${g}_pc_${s}:colocated:authorize`);
-            out.push(`${g}_mc_${s}:colocated:authorize`);
-            out.push(`${g}_ms_${s}:storage:authorize`);
-            continue;
+         // A gate reached only through a join is never the entry point's own;
+         // a row filter over a dropped gate column classifies rejected; an
+         // inherited row filter is refused colocated and stored, either way.
+         if (s === "join" || g !== "az") {
+            // Named by the gate's kind: a row filter or a lock.
+            const reason = g === "az" ? "authorize" : "access_filter";
+            out.push(`${g}_pc_${s}:colocated:${reason}`);
+            out.push(`${g}_ps_${s}:storage:${reason}`);
+            out.push(`${g}_mc_${s}:colocated:${reason}`);
+            out.push(`${g}_ms_${s}:storage:${reason}`);
          }
-         // The authorize-route lock is admitted colocated (it is decided
-         // before any row is read); a row filter over a dropped gate column
-         // classifies rejected.
-         if (g !== "az" && s === "agg") {
-            out.push(`${g}_pc_${s}:colocated:authorize`);
-            out.push(`${g}_mc_${s}:colocated:authorize`);
-            out.push(`${g}_ms_${s}:storage:authorize`);
-            continue;
-         }
-         // An inherited row filter: refused colocated and stored, either way.
-         if (g !== "az") {
-            out.push(`${g}_pc_${s}:colocated:authorize`);
-            out.push(`${g}_mc_${s}:colocated:authorize`);
-            out.push(`${g}_ms_${s}:storage:authorize`);
-            continue;
-         }
-         if (!gated) {
-            out.push(`${g}_ms_${s}:storage:authorize`);
-            // Off, a `#(materialize)` table is read by nothing that keeps the
-            // gate, so any gate refuses it, colocated or not.
-            out.push(`${g}_mc_${s}:colocated:authorize`);
-         }
+         // The authorize-route lock is admitted on both tiers (it is decided
+         // before any row is read), the switch off or on: G3.
       }
    }
    return out.sort();
@@ -315,13 +298,12 @@ for (const gated of [false, true]) {
          const gateRefusals = refused
             .filter((r) => /^(af|az|xf)_(pc|ps|mc|ms)_/.test(r))
             .sort();
-         expect(gateRefusals).toEqual(expectedGateRefusals(gated));
+         expect(gateRefusals).toEqual(expectedGateRefusals());
          // A downstream that bakes the upstream's given into its build is
          // refused whatever the switch. An extension inherits the upstream's
          // given-reading `where:`, which only the upstream's own declaration
-         // re-applies at read: a v1 one is refused as
-         // `inherited_where_with_given`, a `#(materialize)` one at plan
-         // (`materialize-not-built`, no refusedSources entry); none is built.
+         // re-applies at read: each is refused as
+         // `inherited_where_with_given`; none is built.
          const built = fixture.built.map((b) => b.name);
          for (const v of Object.keys(STORED)) {
             for (const s of SHAPES) {
@@ -330,13 +312,22 @@ for (const gated of [false, true]) {
                if (s === "ext") {
                   expect([name, hit]).toEqual([
                      name,
-                     v.startsWith("p")
-                        ? `${name}:${v === "pc" ? "colocated" : "storage"}:inherited_where_with_given`
-                        : undefined,
+                     `${name}:${v.endsWith("c") ? "colocated" : "storage"}:inherited_where_with_given`,
                   ]);
                   expect([name, built.includes(name)]).toEqual([name, false]);
                } else expect(hit).toEndWith(":given_in_persisted_query");
             }
+         }
+         // A rollup over a query on it: its given (ORG_ID) has no default, so
+         // the build cannot be planned with a value and the eligibility gate
+         // refuses it, under the reason every mechanism gives a build that
+         // reads a given.
+         for (const r of ["pre1_q", "pre2_q", "pre2s_q"]) {
+            const hit = refused.find((x) => x.startsWith(`gv_${r}__rollup__`));
+            expect([r, hit?.split(":").pop()]).toEqual([
+               r,
+               "given_in_persisted_query",
+            ]);
          }
       });
 
@@ -397,29 +388,34 @@ for (const gated of [false, true]) {
          expect(message).toContain("reads an #(access_filter) row-level gate");
       });
 
-      it("builds no v1 colocated table it shares with a refused source, and answers its callers live", () => {
+      it("builds the v1 colocated annotated join its own table, apart from the refused plain join's, and serves it", () => {
+         // One build SQL, two `name=`s: two tables (foldDistinctTableNames),
+         // so the plain join's refusal is its own. Every caller's answer
+         // equals live (the matrix above).
          const built = fixture.built.map((b) => b.name);
-         const plan = loader.pkg.getBuildPlan() as unknown as {
-            refusedSources?: Record<string, { name: string; message: string }>;
-         };
          for (const g of ["af", "az", "xf"]) {
             const name = `${g}_pc_ajoin`;
-            expect([name, built.includes(name)]).toEqual([name, false]);
-            const message = Object.values(plan.refusedSources ?? {}).find(
-               (r) => r.name === name,
-            )?.message;
-            expect(message).toContain(`shares its table with '${g}_`);
+            expect([name, built.includes(name)]).toEqual([name, true]);
+            expect([`${g}_pc_join`, built.includes(`${g}_pc_join`)]).toEqual([
+               `${g}_pc_join`,
+               false,
+            ]);
             for (const i of CALLERS.keys()) {
                const out = served.get(`${name}#${i}`)!;
                if ("error" in out) throw new Error(`${name}: ${out.error}`);
-               expect([name, out.answer.servedBy]).toEqual([name, "live"]);
+               expect([name, out.answer.servedBy]).toEqual([
+                  name,
+                  "materialized",
+               ]);
             }
          }
       });
 
-      it("still builds and serves the gated downstreams it can read: an annotated join, an authorize lock", () => {
+      it("still builds and serves the gated downstreams it can read: an annotated join, an authorize lock (on either tier, G3)", () => {
          const built = fixture.built.map((b) => b.name);
-         for (const name of ["af_ms_ajoin", "az_pc_sel"]) {
+         // `az_ps_sel` and `az_mc_sel` share their tables' content address
+         // with `az_ms_sel` and `az_pc_sel`, which the fixture builds once.
+         for (const name of ["af_ms_ajoin", "az_pc_sel", "az_ms_sel"]) {
             expect([name, built.includes(name)]).toEqual([name, true]);
             const out = served.get(`${name}#0`)!;
             if ("error" in out) throw new Error(`${name}: ${out.error}`);

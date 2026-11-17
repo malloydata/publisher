@@ -18,6 +18,13 @@
  * gate the rollup cannot prove), and a caller `except:` or `rename:` of the
  * gate field is denied, as live is. Colocated and `storage=` (the latter
  * behind its review seam, as question 14 leaves it off in production).
+ *
+ * G3 for colocated rollups: with the gated-sources switch off, a colocated
+ * rollup over a base whose gates are all its own (a row filter, a lock, or
+ * both, each field a grain dimension) is built and read past the gate the
+ * same way, each caller getting exactly live's rows; one over an inherited
+ * gate, a gate through a join or a gate field outside the grain is not
+ * built, and a `storage=` one waits for its review.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -157,7 +164,7 @@ source: ext_open is by_column extend {
 #(access_filter) carrier = $CARRIER
 source: ext_gated is by_column extend {}
 
-// A gated parent joining a rollup's base (A7): the join leg redeclares the
+// A gated parent joining a rollup's base (A7): the join branch redeclares the
 // parent around the join, carrying no gate to prove, so it declines.
 source: order_lines is duckdb.table('lines_raw') extend {
   #(preaggregate) grain=["order_id"]${p}
@@ -315,8 +322,16 @@ function expectLive(run: R4Run): void {
    expect(rowDifference(run.live, run.served)).toBeUndefined();
 }
 
-for (const placement of ["colocated", "storage"] as const) {
-   describe(`R4: gated queries on ${placement} rollups (row 1, gated sources on)`, () => {
+for (const [placement, gatedSources] of [
+   ["colocated", true],
+   ["storage", true],
+   ["colocated", false],
+] as const) {
+   // With the switch off (G3), only a base's own gates are kept.
+   const cases = CASES.filter(
+      (c) => gatedSources || c.source !== "by_inherited",
+   );
+   describe(`R4: gated queries on ${placement} rollups (${gatedSources ? "row 1, gated sources on" : "G3, gated sources off"})`, () => {
       let restore: () => void;
       let restoreReview: () => void;
       let fixture: R4Fixture;
@@ -325,7 +340,7 @@ for (const placement of ["colocated", "storage"] as const) {
             env: {
                PERSIST_STORAGE_MODE: "on",
                PUBLISHER_MATERIALIZE: "true",
-               PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
             },
          }).restore;
          // `storage=` waits for question 14's review in production; the
@@ -349,7 +364,7 @@ for (const placement of ["colocated", "storage"] as const) {
          await disposeScenarios();
       });
 
-      for (const c of CASES) {
+      for (const c of cases) {
          it(`answers two callers through ${c.kind} from the rollup, each equal to live and to its own rows`, async () => {
             // Interleaved and repeated: A, B, A, B.
             for (const caller of [...c.callers, ...c.callers]) {
@@ -410,7 +425,7 @@ for (const placement of ["colocated", "storage"] as const) {
             );
             return { audit, result };
          };
-         for (const c of CASES) {
+         for (const c of cases) {
             const malloy = `run: ${c.source} -> { group_by: category; aggregate: total }`;
             const caller = c.callers[0];
             fixture.setBindings([]);
@@ -517,6 +532,15 @@ for (const placement of ["colocated", "storage"] as const) {
       });
 
       const NEGATIVES: [string, string, Record<string, string | number>][] = [
+         ...(gatedSources
+            ? []
+            : ([
+                 [
+                    "an inherited gate on an extension's own rollup (never built under G3)",
+                    "run: by_inherited -> { group_by: category; aggregate: total }",
+                    EAST.givens,
+                 ],
+              ] as [string, string, Record<string, string | number>][])),
          [
             "a gate field outside the grain (never built)",
             "run: outside -> { group_by: category; aggregate: total }",
@@ -656,8 +680,28 @@ for (const placement of ["colocated", "storage"] as const) {
       }
 
       // Last: it empties the origin table.
+      if (!gatedSources) {
+         it("builds no rollup over an inherited gate, a gate through a join, or a gate field outside the grain", () => {
+            expect(
+               fixture.rollupRefusals
+                  .filter((r) =>
+                     ["by_inherited", "through_join", "outside"].includes(
+                        r.sourceName,
+                     ),
+                  )
+                  .map((r) => [r.sourceName, r.reason])
+                  .sort(),
+            ).toEqual([
+               ["by_inherited", "access_filter"],
+               ["by_inherited", "access_filter"],
+               ["outside", "access_filter"],
+               ["through_join", "access_filter"],
+            ]);
+         });
+      }
+
       it("reads the rollup, not the origin: answers survive the origin table emptied", async () => {
-         const queries = CASES.map((c) => ({
+         const queries = cases.map((c) => ({
             c,
             malloy: `run: ${c.source} -> { group_by: category; aggregate: total }`,
          }));
@@ -693,7 +737,7 @@ for (const placement of ["colocated", "storage"] as const) {
    });
 }
 
-describe("R4: gated queries on rollups with gated sources off", () => {
+describe("R4: gated queries on storage= rollups with gated sources off", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    beforeAll(async () => {
@@ -705,7 +749,7 @@ describe("R4: gated queries on rollups with gated sources off", () => {
          },
       }).restore;
       fixture = await buildScenario({
-         files: { "m.malloy": model("") },
+         files: { "m.malloy": model(` storage="${DESTINATION}"`) },
          seedSql,
          preaggregate: true,
       });
@@ -715,14 +759,18 @@ describe("R4: gated queries on rollups with gated sources off", () => {
       await disposeScenarios();
    });
 
-   it("builds no rollup over a gated base (row 21)", () => {
+   it("builds no storage= rollup over a gated base: it waits for its review", () => {
       expect(
-         Object.keys(fixture.rollupTables).filter(
-            (n) =>
-               !n.startsWith("open__rollup__") &&
-               !n.startsWith("order_lines__rollup__"),
-         ),
-      ).toEqual([]);
+         fixture.rollupRefusals
+            .filter((r) => !["open", "order_lines"].includes(r.sourceName))
+            .every(
+               // Named by the gate's kind: a row filter or a lock.
+               (r) =>
+                  r.reason === "access_filter" ||
+                  r.reason === "authorize" ||
+                  r.reason === "time_zone",
+            ),
+      ).toBe(true);
    });
 
    for (const c of CASES) {

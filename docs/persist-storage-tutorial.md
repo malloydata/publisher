@@ -423,7 +423,7 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/pers
 # Rebuild, then query — now it reflects the new row (375 + 999 = 1374):
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations \
   -H 'content-type: application/json' -d '{"forceRefresh": true}' >/dev/null
-# (wait for MANIFEST_FILE_READY, then query again) -> [{"t":1374}]
+# (wait for MANIFEST_FILE_READY, which an auto-run reaches only once the package serves the new table, then query again) -> [{"t":1374}]
 ```
 
 That's the point: queries serve from the store you materialized into, and
@@ -455,7 +455,7 @@ The replace itself is atomic (DuckLake's catalog swap is transactional), so a
 query never hits a half-swapped table. But on a **schema-changing** rebuild there
 is a brief window where the running server's serve binding still describes the
 old columns, until it rebinds on the build's auto-load — and the two directions
-differ. A query that reaches a **newly added** field fails the serve-shape
+differ. A query that reaches a **newly added** field fails the served copy's
 compile and falls back to serving live (safe). A query over a **removed** field
 still compiles against the stale binding and then fails at run against the new
 table. What happens next depends on the binding's `fallback`: `live` recomputes
@@ -468,20 +468,17 @@ window is the job of a caller that assigns physical names per build and
 distributes serve bindings (the orchestrated build path), not of the auto-run
 server.
 
-A materialization record can be reclaimed by deleting it with `dropTables=true` —
-a destination-aware drop (Publisher only ever drops a table name it recorded
-building, never a catalog scan):
+Deleting a materialization record is record-only: the table it built stays in
+the destination. Drop it yourself afterwards, once no remaining run of any
+version names a table with that name, in any place
+([Dropping a run's tables](materialization.md#dropping-a-runs-tables)):
 
 ```bash
 # delete a materialization (find its id in the list)
 curl -s -X DELETE \
-  "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/<ID>?dropTables=true" \
+  "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/<ID>" \
   -o /dev/null -w "HTTP %{http_code}\n"
 # -> HTTP 204
-```
-
-```
-info: Dropped materialized storage table on delete { physicalTableName: "daily_orders", storageDestinationName: "lake" }
 ```
 
 ---
@@ -515,8 +512,8 @@ view or join its base declares, say) is left as written and serves live, and its
 verdict says why.
 
 Each answer's path report says which happened: an answer read from the lake
-carries `servedBy` with `via: "served_copy"`, and a live answer carries no
-`servedFrom`.
+carries `servedBy` with `via: "served_copy"` and `servedFrom: "storage"`, and
+a live answer carries no `servedFrom`.
 
 Fallback means turning the feature on can never make a query wrong — at worst it
 serves live, exactly as it would with the feature off.
@@ -738,21 +735,25 @@ declare still builds; its source is answered live.
 
 These are the checks derivable from the compiled source and the built schema
 alone. One more belongs here and **is enforced**: a source protected by
-`#(access_filter)` — directly, or transitively through a join or derivation — is
-refused, because the serve path rebinds it to a virtual source whose shape
-carries no `#(access_filter)` annotation, so the gate can't be evaluated on the
-served table. The check walks the compiled source for the gate and fails
-closed: a source it cannot prove gate-free is refused.
+`#(access_filter)` or `#(authorize)` — directly, or transitively through a join or
+derivation — is refused unless the compiler can _prove_ the gate is the entry point's
+own row filter or lock and nothing else is reachable beneath it. The check walks the
+compiled source for the gate and fails closed: a source it cannot prove is refused
+(an unattributed or join-only gate, a row filter inherited from a source it derives
+from, an unclassifiable one, or one that doesn't reduce to a row filter or lock).
 
-A colocated `#@ persist` is a different case, and the difference is worth stating because it is easy
-to over-claim. A colocated build has no virtual source: the substitution replaces only the source's
-relation SQL, while the gate is applied as the reading query's own `WHERE`, so the two compose and
-rows do come back filtered. The gate is not absent — which is why a colocated source is admitted when
-the compiler can _prove_ the gate is the entry point's own row-level filter and nothing else is
-reachable beneath it, and refused otherwise (an unattributed or join-only gate, an unclassifiable one,
-or one that doesn't reduce to a row filter at all). When admitted, what is frozen is the data the gate
-DECIDES AGAINST — the gating column's values are whatever they were at build time, so a row that
-changes hands keeps being served to its former owner until the next rebuild. See
+A proven gate is admitted on both tiers, the same way. The table is read through the
+served copy, which keeps the source's own text, gates included, so the gate is grafted
+onto every served query and proven there exactly as on live: rows come back filtered,
+or the caller is denied, as live. The gate is not absent at read; it is absent **at
+rest**. The table holds every caller's rows, ungated, and a `storage=` destination may
+be a separate, shared store, readable by anyone with direct access to it. Admitting a
+gated `storage=` source is a maintainer-approved exception made ahead of the managed
+tier's security review, for consistency with colocated. A colocated build has no
+separate store: the table stays in your own warehouse. When admitted, what is frozen is
+the data the gate DECIDES AGAINST — the gating column's values are whatever they were at
+build time, so a row that changes hands keeps being served to its former owner until
+the next rebuild. See
 [materialization.md](materialization.md) for the author-facing refusal and the freshness contract that
 follows from it.
 
@@ -817,8 +818,9 @@ Everything you need is on the package status and the logs:
     was unreachable, kept distinct from the shape limits so a store outage is not
     read as an un-carriable query.
   - `malloy_model_query_duration` tags a routed query with
-    `served_from=storage`, or `served_from=live_fallback` when a run-time store
-    failure degraded it to live (so a fallback never counts as a storage hit).
+    `served_from=storage` or `served_from=database` by the tier that answered,
+    or `served_from=live_fallback` when a run-time store failure degraded it to
+    live (so a fallback never counts as a storage hit).
     Note this attribute follows `QueryResult.servedFrom`'s vocabulary, not the
     counter's directly above it — so `served_from=live_fallback` and
     `outcome=live_fallback` are different events despite sitting two bullets

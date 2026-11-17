@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   gatesIn,
+   modelPathsIn,
+   sourcesIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
@@ -45,9 +50,9 @@ describe("compilePackageBuildPlan (real compiler)", () => {
          expect(compiled.builds.map((b) => b.connectionName)).toEqual([
             "duckdb",
          ]);
-         const [[sourceID, source]] = Object.entries(compiled.sources);
+         const [[sourceID, source]] = Object.entries(sourcesIn(compiled));
          expect(source.name).toBe("by_category");
-         expect(compiled.sourceModelPaths).toEqual({ [sourceID]: "m.malloy" });
+         expect(modelPathsIn(compiled)).toEqual({ [sourceID]: "m.malloy" });
          expect([...compiled.connections.keys()]).toEqual(["duckdb"]);
          expect(compiled.connectionDigests.duckdb).toEqual(expect.any(String));
          // The digest is what the source's content address is built from.
@@ -132,6 +137,9 @@ describe("compilePackageBuildPlan", () => {
          try {
             const pkg = {
                getModelPaths: () => ["notes.malloynb"],
+               getMaterializationConfig: () => null,
+               getPackageMetadata: () => ({}),
+               getVersionId: () => undefined,
                getPackagePath: () => "/test",
                getMalloyConfig: () => ({}),
                getMalloyConnection: async () => ({}),
@@ -154,6 +162,9 @@ describe("compilePackageBuildPlan", () => {
       try {
          const pkg = {
             getModelPaths: () => ["m.malloy"],
+            getMaterializationConfig: () => null,
+            getPackageMetadata: () => ({}),
+            getVersionId: () => undefined,
             getPackagePath: () => "/test",
             getMalloyConfig: () => ({}),
             getMalloyConnection: async () => ({}),
@@ -230,6 +241,9 @@ describe("compilePackageBuildPlan", () => {
       try {
          const pkg = {
             getModelPaths: () => ["base.malloy", "agg.malloy"],
+            getMaterializationConfig: () => null,
+            getPackageMetadata: () => ({}),
+            getVersionId: () => undefined,
             getPackagePath: () => "/test",
             getMalloyConfig: () => ({}),
             getMalloyConnection: async () => ({ getDigest: async () => "dig" }),
@@ -277,11 +291,11 @@ source: gated is base -> { select: org_id } extend {}
 
          const compiled = await compilePackageBuildPlan(pkg);
 
-         const [sourceID] = Object.keys(compiled.sources).filter(
-            (id) => compiled.sources[id].name === "gated",
+         const [sourceID] = Object.keys(sourcesIn(compiled)).filter(
+            (id) => sourcesIn(compiled)[id].name === "gated",
          );
          expect(sourceID).toBeDefined();
-         expect(compiled.sourceGateOutcomes?.[sourceID]).toEqual({
+         expect(gatesIn(compiled)?.[sourceID]).toEqual({
             classification: "row_level",
             attributed: true,
          });
@@ -318,8 +332,8 @@ source: gated is base -> { select: org_id }
 
          const compiled = await compilePackageBuildPlan(pkg);
 
-         const [sourceID] = Object.keys(compiled.sources).filter(
-            (id) => compiled.sources[id].name === "gated",
+         const [sourceID] = Object.keys(sourcesIn(compiled)).filter(
+            (id) => sourcesIn(compiled)[id].name === "gated",
          );
          expect(sourceID).toBeDefined();
          // `attributed: true` here — the gate is genuinely the entry point's
@@ -330,7 +344,7 @@ source: gated is base -> { select: org_id }
          // eligibility (`materialization_eligibility.ts`), so this pins the
          // specific mechanism findings-r2 is about rather than the
          // coarser "somehow refused" shape.
-         expect(compiled.sourceGateOutcomes?.[sourceID]).toEqual({
+         expect(gatesIn(compiled)?.[sourceID]).toEqual({
             classification: "rejected",
             attributed: true,
          });
@@ -361,9 +375,7 @@ source: orders is duckdb.sql("""
 
          const compiled = await compilePackageBuildPlan(pkg);
 
-         const rollupEntries = Object.entries(
-            compiled.sourceGateOutcomes ?? {},
-         );
+         const rollupEntries = Object.entries(gatesIn(compiled) ?? {});
          expect(rollupEntries).toHaveLength(1);
          const [, outcome] = rollupEntries[0];
          expect(outcome).toEqual({
@@ -379,6 +391,9 @@ describe("computePackageBuildPlan", () => {
    it("returns a null plan and no dropped sources when the package declares no persist sources", async () => {
       const pkg = {
          getModelPaths: () => [],
+         getMaterializationConfig: () => null,
+         getPackageMetadata: () => ({}),
+         getVersionId: () => undefined,
          getPackagePath: () => "/test",
          getMalloyConfig: () => ({}),
          getMalloyConnection: async () => ({}),
@@ -466,23 +481,25 @@ source: s is base_b -> { select: org_id }
             const { colocatedSourceEligibility } =
                await computePackageBuildPlan(pkg);
 
-            const sourceIDA = Object.keys(compiled.sources).find(
+            const sourceIDA = Object.keys(sourcesIn(compiled)).find(
                (id) =>
-                  compiled.sources[id].name === "s" && id.includes("model_a"),
+                  sourcesIn(compiled)[id].name === "s" &&
+                  id.includes("model_a"),
             );
-            const sourceIDB = Object.keys(compiled.sources).find(
+            const sourceIDB = Object.keys(sourcesIn(compiled)).find(
                (id) =>
-                  compiled.sources[id].name === "s" && id.includes("model_b"),
+                  sourcesIn(compiled)[id].name === "s" &&
+                  id.includes("model_b"),
             );
             expect(sourceIDA).toBeDefined();
             expect(sourceIDB).toBeDefined();
 
             const idA = computeSourceEntityId(
-               compiled.sources[sourceIDA as string],
+               sourcesIn(compiled)[sourceIDA as string],
                compiled.connectionDigests,
             );
             const idB = computeSourceEntityId(
-               compiled.sources[sourceIDB as string],
+               sourcesIn(compiled)[sourceIDB as string],
                compiled.connectionDigests,
             );
             // Distinct content ⇒ distinct entity ids, which is what makes this a
@@ -548,23 +565,25 @@ source: s is duckdb.sql("select 1 as x") extend {
             const { colocatedSourceEligibility } =
                await computePackageBuildPlan(pkg);
 
-            const sourceIDA = Object.keys(compiled.sources).find(
+            const sourceIDA = Object.keys(sourcesIn(compiled)).find(
                (id) =>
-                  compiled.sources[id].name === "s" && id.includes("model_a"),
+                  sourcesIn(compiled)[id].name === "s" &&
+                  id.includes("model_a"),
             );
-            const sourceIDB = Object.keys(compiled.sources).find(
+            const sourceIDB = Object.keys(sourcesIn(compiled)).find(
                (id) =>
-                  compiled.sources[id].name === "s" && id.includes("model_b"),
+                  sourcesIn(compiled)[id].name === "s" &&
+                  id.includes("model_b"),
             );
             expect(sourceIDA).toBeDefined();
             expect(sourceIDB).toBeDefined();
 
             const idA = computeSourceEntityId(
-               compiled.sources[sourceIDA as string],
+               sourcesIn(compiled)[sourceIDA as string],
                compiled.connectionDigests,
             );
             const idB = computeSourceEntityId(
-               compiled.sources[sourceIDB as string],
+               sourcesIn(compiled)[sourceIDB as string],
                compiled.connectionDigests,
             );
             // Same id: this is the real collision, not a tautology.

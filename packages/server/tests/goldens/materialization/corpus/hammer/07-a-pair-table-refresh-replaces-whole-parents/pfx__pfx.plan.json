@@ -25,6 +25,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "flights@<hammer>/pfx/pfx.malloy": "pair",
+      "flights_full@<hammer>/pfx/pfx.malloy": "pair"
+    },
     "materializePlans": {
       "flights@<hammer>/pfx/pfx.malloy": {
         "buildSourceName": "flights__mat",
@@ -292,7 +296,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {

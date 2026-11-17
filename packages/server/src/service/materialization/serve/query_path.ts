@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The path report (materialization v2, D1): what answered a query and why.
+ * The path report (D1): what answered a query and why.
  *
  * Built after the query runs, from three things Publisher already has:
  *
  * - the router's decision ({@link routeQuery}'s `considered`), which says how
- *   each candidate variant (the `storage=` serve shape, the pre-aggregation
- *   companion) fared;
+ *   each candidate (the view, query, rollup and served legs) fared;
  * - the build-manifest entries the run that answered actually read, which say
  *   which colocated table answered: a colocated `#@ persist` table (or rollup)
  *   Malloy substituted through the manifest, a tier that never reaches the
@@ -57,10 +56,22 @@ export interface PlannedTable {
    sourceEntityId: string;
    origin: "persist" | "preaggregate";
    /**
+    * The key Malloy files the table under in a build manifest, where it is
+    * not `sourceEntityId` (an address foldDistinctTableNames moved): a
+    * colocated persisted view or query is substituted under it.
+    */
+   compilerKey?: string;
+   /**
     * The model the plan entry came from. A rollup has no stable `sourceID` on
     * the model side, so it is matched to its plan by name within its model.
     */
    modelPath?: string;
+   /**
+    * A rollup's columns as its build source declares them (Malloy types), the
+    * types its stored table is read back as: the build casts to them, and the
+    * rollup leg checks each stored column against them.
+    */
+   columns?: readonly { name: string; type: string }[];
 }
 
 /**
@@ -133,7 +144,7 @@ interface ModelRollup {
    baseSourceID?: string;
    /**
     * A `#(preaggregate)` rollup, which the router's rollup leg answers on
-    * either tier (its `storage=` table too), never the serve shape.
+    * either tier (its `storage=` table too).
     */
    variant?: boolean;
 }
@@ -148,7 +159,7 @@ interface TableState {
     * since its only other name is a physical storage path.
     */
    tableId?: string;
-   kind: "materialized" | "rollup" | "view";
+   kind: "materialized" | "rollup" | "view" | "query";
    tier: "storage" | "colocated";
    /** Built and bound, but withheld by its freshness window. */
    stale: boolean;
@@ -168,7 +179,7 @@ interface TableState {
     * the binding.
     */
    binding?: StorageTable;
-   /** For a rollup: its synthesized source name (the composite member). */
+   /** For a rollup: its synthesized source name. */
    rollupName?: string;
    /** A `#(preaggregate)` rollup: the rollup leg decides it on either tier. */
    variant?: boolean;
@@ -226,17 +237,17 @@ export interface QueryPathInput {
     */
    colocatedRead?: ReadonlySet<string>;
    /**
-    * For a query the pre-aggregation companion answered: the composite member
-    * its compile resolved to (a rollup's name, or the base's). A composite
-    * looks every member up in the manifest, so the manifest's reads cannot
-    * say which rollup answered; the compiled query can.
+    * For a query the rollup leg answered: the rollup it answered from (its
+    * synthesized source name).
     */
    rollupMember?: string;
    /**
     * The table of the persisted view the query calls (`#@ persist` on a view,
-    * P14), when it calls one: tried before every other table (R1).
+    * P14), or of the persisted named query it calls (`kind: "query"`), when
+    * it calls one: tried before every other table (R1).
     */
    view?: {
+      kind?: "query";
       tableId?: string;
       tier: "storage" | "colocated";
       built: boolean;
@@ -254,9 +265,10 @@ export interface QueryPathInput {
 }
 
 /**
- * Assemble the path report. Order in `considered` follows the order Publisher
- * tries the tiers: `storage=` tables, then colocated rollups, then colocated
- * `#@ persist` tables nearest first.
+ * Assemble the path report. `considered` lists `storage=` tables, then
+ * colocated rollups, then colocated tables nearest first: not the order the
+ * router tries the legs (`makeLegs`: persisted results, then rollups, then
+ * the served copy).
  */
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
@@ -292,11 +304,12 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
       tally,
       tables,
       rollupDecision,
+      rollupMemberDeclines(input.considered),
       storageAnswered,
    );
    const { considered, tierOf, markUsed, skip } = tally;
 
-   // A join leg answered in a storage destination reads the query source's
+   // A join branch answered in a storage destination reads the query source's
    // stored table there as well as the rollup's: named as used beside it,
    // while the rollup stays the table that answered.
    if (rollupAnswered) {
@@ -387,6 +400,8 @@ function pathTally(): PathTally {
       servedBy = {
          kind: t.kind,
          ...(t.tableId ? { tableId: t.tableId } : {}),
+         // The wire names the colocated tier by where it lives.
+         tier: t.tier === "colocated" ? "database" : "storage",
          ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
       };
    };
@@ -430,12 +445,14 @@ function viewTableDecision(
    onChain: ReadonlySet<string>,
 ): ApiQueryPath | undefined {
    const { considered, markUsed, skip } = tally;
-   const viewDecision = decided.get("view");
+   const viewDecision = decided.get(
+      input.view?.kind === "query" ? "query" : "view",
+   );
    if (input.view) {
       const t: TableState = {
          key: `persisted-view/${input.view.tableId ?? ""}`,
          ...(input.view.tableId ? { tableId: input.view.tableId } : {}),
-         kind: "view",
+         kind: input.view.kind ?? "view",
          tier: input.view.tier,
          stale: input.view.stale,
          unbuilt: !input.view.built,
@@ -555,14 +572,33 @@ function storageTableDecisions(
 }
 
 /**
- * Colocated rollups, through the pre-aggregation companion. Returns whether
- * a rollup answered.
+ * Each rollup's own decline, by synthesized source name, from every rollup
+ * leg that tried it (the v1 and `#(preaggregate)` legs share the kind).
+ */
+function rollupMemberDeclines(
+   considered: readonly ConsideredVariant[],
+): ReadonlyMap<string, { code: string; callerDetail?: string }> {
+   const out = new Map<string, { code: string; callerDetail?: string }>();
+   for (const c of considered) {
+      if (c.kind !== "rollup" || !c.members) continue;
+      for (const [name, member] of Object.entries(c.members)) {
+         if (!out.has(name)) out.set(name, member);
+      }
+   }
+   return out;
+}
+
+/**
+ * Rollups the rollup leg decides: colocated ones, and `#(preaggregate)` ones
+ * on either tier. A rollup the leg tried carries its own reason; one it never
+ * tried, the leg's. Returns whether a rollup answered.
  */
 function colocatedRollupDecisions(
    input: QueryPathInput,
    tally: PathTally,
    tables: readonly TableState[],
    rollupDecision: ConsideredVariant | undefined,
+   memberDeclines: ReadonlyMap<string, { code: string; callerDetail?: string }>,
    storageAnswered: boolean,
 ): boolean {
    const { markUsed, skip } = tally;
@@ -592,11 +628,23 @@ function colocatedRollupDecisions(
                markUsed(t);
                rollupAnswered = true;
             } else if (!used && input.rollupMember !== undefined) {
-               // The companion compiled, but Malloy's composite chose the base.
+               // The rollup leg answered from another rollup.
                skip(t, "GRAIN_TOO_COARSE");
             }
          } else {
-            skip(t, skipReasonOf(rollupDecision), rollupDecision.callerDetail);
+            const own =
+               t.rollupName !== undefined
+                  ? memberDeclines.get(t.rollupName)
+                  : undefined;
+            if (own) {
+               skip(t, skipReasonOf(own), own.callerDetail);
+            } else {
+               skip(
+                  t,
+                  skipReasonOf(rollupDecision),
+                  rollupDecision.callerDetail,
+               );
+            }
          }
       }
    }
@@ -760,7 +808,7 @@ function verdictWarningMessage(reason: string): string {
  * Anything unexplained is a compile failure against the stored form: almost
  * always a field or refinement the stored form does not carry.
  */
-function skipReasonOf(decision: ConsideredVariant): SkipReason {
+function skipReasonOf(decision: Pick<ConsideredVariant, "code">): SkipReason {
    return declineOfCode(decision.code)?.reason ?? "MISSING_FIELD";
 }
 
@@ -1128,7 +1176,7 @@ export function queryShapeOf(
             if (def?.type === "turtle") {
                // A nested named view (`nest: by_category`): its own groups,
                // filters and measures are part of what the query reads. (Malloy
-               // refuses a view through a join today; the prefix keeps paths
+               // refuses a view through a join; the prefix keeps paths
                // dotted from the queried source if that changes.)
                if (followed.has(def)) continue;
                followed.add(def);

@@ -4,10 +4,9 @@
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
+import { BuildPlanUnavailableError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { PACKAGE_STALE_MARKER } from "../../src/service/materialization/run/materialization_run_support";
 import type {
@@ -15,23 +14,23 @@ import type {
    ResourceRepository,
 } from "../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { openTempStorage } from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 /**
  * A chained `storage=` build's text is the package's files rewritten at the
  * source ranges of the model the package serves. A package that serves a
  * model older than its files (a reload that did not load) must not stack:
  * those ranges describe other text, so the rewrite could re-root or blank the
- * wrong declaration. The downstream is recomputed, as the run's plan (compiled
- * from the files) defines it, and the entry says why.
+ * wrong declaration. The downstream is recomputed, as the run's plan
+ * defines it, and the entry says why.
  *
- * The package is made stale the way a save makes it: one file changes the
- * downstream's definition and still compiles, another fails a load-time check
- * the build plan does not run (a misspelled gate), so the reload fails and the
- * old model keeps serving.
+ * A package already stale is not run at all (a 409 at creation, #1786), so
+ * the recompute is reached by a package that goes stale while its run is
+ * past those checks: the save and the failed reload land just before the
+ * build (a test hook).
  *
  * Opt-in: set PUBLISHER_TEST_POSTGRES_URL, for the DuckLake destination's
  * catalog (the only destination type a configuration may declare).
@@ -76,11 +75,10 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
             PERSIST_STORAGE_MODE: "on",
          },
       }).restore;
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "stale-chain-")),
-      );
-      envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
+      ({ root, envPath, db, repo } = await openTempStorage("stale-chain-", {
+         id: ENV_ID,
+         name: ENV,
+      }));
       writePackageFiles(
          path.join(envPath, PKG),
          {
@@ -89,14 +87,6 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
          },
          { manifest: { name: PKG, description: "fixture" } },
       );
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       admin = new PostgresConnection({ name: "admin", connectionString: url! });
       await admin.runSQL(`CREATE DATABASE ${catalog}`);
       await admin.runSQL(`CREATE DATABASE ${warehouse}`);
@@ -133,11 +123,10 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
          ],
       );
       await env.addPackage(PKG);
-      service = new MaterializationService({
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    });
 
    afterEach(async () => {
@@ -194,17 +183,13 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
       return hit;
    };
 
-   it("recomputes the downstream, with a coded reason, rather than rewrite its files at the served model's ranges", async () => {
-      const first = await build();
-      expect([first.status, first.error]).toEqual([
-         "MANIFEST_FILE_READY",
-         null,
-      ]);
-      expect(entryOf(first, "summed").upstreamReuse).toBe("reused");
-
-      // The downstream's file now filters, and still compiles; another file
-      // does not, so the reload fails and the package keeps serving the
-      // model it compiled before.
+   /**
+    * Make the package stale the way a save makes it: one file changes the
+    * downstream's definition and still compiles, another fails a load-time
+    * check the build plan does not run (a misspelled gate), so the reload
+    * fails and the old model keeps serving.
+    */
+   async function makeStale(): Promise<void> {
       const pkgDir = path.join(envPath, PKG);
       fs.writeFileSync(
          path.join(pkgDir, "m.malloy"),
@@ -219,8 +204,51 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
       );
       await expect(env.getPackage(PKG as never, true)).rejects.toThrow();
       expect(env.getStaleCompileErrors().has(PKG)).toBe(true);
+   }
 
-      const second = await build(true);
+   it("refuses, with a 409, to create a run of a package that is already stale", async () => {
+      const first = await build();
+      expect([first.status, first.error]).toEqual([
+         "MANIFEST_FILE_READY",
+         null,
+      ]);
+      await makeStale();
+      const refused = await service
+         .createMaterialization(ENV, PKG, { forceRefresh: true })
+         .then(
+            () => undefined,
+            (err: unknown) => err,
+         );
+      expect(refused).toBeInstanceOf(BuildPlanUnavailableError);
+   });
+
+   // A package that goes stale after a run's guards (at its creation, and
+   // once its plan is compiled) and before its chained build: the chained
+   // build is not written from the files, which no longer describe the model
+   // the run planned from, and the downstream is recomputed as the plan
+   // defines it.
+   it("recomputes the downstream, with a coded reason, when the package goes stale mid-run, rather than rewrite its files at the served model's ranges", async () => {
+      const first = await build();
+      expect([first.status, first.error]).toEqual([
+         "MANIFEST_FILE_READY",
+         null,
+      ]);
+      expect(entryOf(first, "summed").upstreamReuse).toBe("reused");
+
+      // The test hook: the save, and the reload it fails, land as the run
+      // starts building, after both of its stale checks passed.
+      const hooked = service.collaborators;
+      const executeInstructedBuild = hooked.executeInstructedBuild;
+      hooked.executeInstructedBuild = async (...args) => {
+         await makeStale();
+         return executeInstructedBuild(...args);
+      };
+      let second: Materialization;
+      try {
+         second = await build(true);
+      } finally {
+         hooked.executeInstructedBuild = executeInstructedBuild;
+      }
       expect([second.status, second.error]).toEqual([
          "MANIFEST_FILE_READY",
          null,
@@ -228,8 +256,8 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
       const summed = entryOf(second, "summed");
       expect(summed.upstreamReuse).toBe("recomputed");
       expect(summed.upstreamRecomputeReason).toContain(PACKAGE_STALE_MARKER);
-      // The run plans from the files, so the recompute holds their
-      // definition: one category.
-      expect(summed.rowCount).toBe(1);
+      // The recompute holds the definition the run planned, from the files
+      // before the save: both categories.
+      expect(summed.rowCount).toBe(2);
    });
 });

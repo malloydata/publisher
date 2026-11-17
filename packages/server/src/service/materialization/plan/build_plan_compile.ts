@@ -9,6 +9,7 @@
  * worker compiles from its own file map.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import type { KeyCheckCompiler } from "../domain/key_check";
 import { modelDefOf, primaryKeyOf } from "../../governance/ir/compiled_model";
 import { MODEL_FILE_SUFFIX } from "../../../constants";
@@ -18,13 +19,15 @@ import {
    collectModelBuildPlan,
    deriveBuildPlanOutcome,
    emptyBuildPlanParts,
+   finishBuildPlan,
    resolveConnectionDigests,
    resolvePackageConnections,
    type BuildPlanOutcome,
    type BuildPlanPackage,
-   type CompiledBuildPlan,
+   type FinishedBuildPlan,
 } from "./build_plan";
-import { refuseCollidingMaterialize } from "./eligibility_collect";
+import { loadGateText } from "./load_gate_text";
+import { newCrossFileCompanions } from "./materialize_compile";
 import {
    joinOneKey,
    joinOneKeysOf,
@@ -46,7 +49,18 @@ import { packageFiles } from "../text/package_files";
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
-): Promise<CompiledBuildPlan> {
+   {
+      keepIncrementalUnbuildable = false,
+   }: {
+      /**
+       * Keep a source whose valid incremental declaration this deployment
+       * cannot honour (incremental_policy's rules 6, 7 and 12), rather than
+       * refuse it alone. For a spec that plans incremental machinery on
+       * DuckDB, which no load or run does.
+       */
+      keepIncrementalUnbuildable?: boolean;
+   } = {},
+): Promise<FinishedBuildPlan> {
    const parts = emptyBuildPlanParts();
    // Every join_one of every model, for the rollup key checks a build runs.
    const joinOneKeys = new Set<string>();
@@ -65,10 +79,12 @@ export async function compilePackageBuildPlan(
    // Every declared primary key, by sourceID, for the stored-table key checks.
    const primaryKeys = new Map<string, string>();
    // Each `#(materialize)` uniqueness check's compiler over a run's
-   // manifest: this plan is built on the thread that runs builds.
+   // compiler manifest: this plan is built on the thread that runs builds.
    const keyCheckCompilers = new Map<string, KeyCheckCompiler>();
    const yielder = createEventLoopYielder();
 
+   // One compile of each cross-file parent's file for the whole plan.
+   const crossFileCompanions = newCrossFileCompanions();
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
       // notebooks: getModel() parses a model file as a flat model and throws on
@@ -79,7 +95,7 @@ export async function compilePackageBuildPlan(
       // a turn between models so requests are not held for the whole plan.
       // Checked after the yield, so a cancel that lands during it is seen.
       await yielder.maybeYield();
-      if (signal?.aborted) throw new Error("Build cancelled");
+      if (signal?.aborted) throw new BuildCancelledError();
 
       const authorFiles = packageFiles(
          pkg.getPackagePath(),
@@ -121,13 +137,16 @@ export async function compilePackageBuildPlan(
          runtime,
          getRuntime: (overlay) => authorFiles.runtime(overlay),
          keyCheckCompilers,
+         crossFileCompanions,
       });
    }
 
    // A rollup key check no join_one of the package reads is not run: it
    // would scan the base for nothing (known limitation 29).
-   for (const plan of Object.values(parts.preaggregatePlans)) {
-      const rollup = plan as RollupVariantPlan;
+   const rollupPlans = Object.values(parts.tables).flatMap((table) =>
+      table.rollup ? [table.rollup as RollupVariantPlan] : [],
+   );
+   for (const rollup of rollupPlans) {
       if (
          rollup.keyCheck &&
          !joinOneKeys.has(
@@ -141,21 +160,21 @@ export async function compilePackageBuildPlan(
    // A query source read through a join_many keyed on its primary key, and
    // a rollup's base reached by a join on another column: the rollup's build
    // checks that key unique and never NULL.
-   const rollupPlans = Object.values(
-      parts.preaggregatePlans,
-   ) as RollupVariantPlan[];
    await compileParentKeyChecks(rollupPlans, parentKeyNeeds, joinedKeyNeeds);
    // A `storage=` rollup read that way is read beside the query source's
-   // stored table (#1704): each stored source's key is checked over its
+   // stored table: each stored source's key is checked over its
    // table at its own build instead.
    const storedKeyChecks = storedKeyChecksOf(
       rollupPlans,
       parentKeyNeeds.map(({ need }) => need),
       (sourceID) => primaryKeys.get(sourceID),
-      Object.keys(parts.sources).filter(
-         (sourceID) => !parts.preaggregatePlans[sourceID],
+      Object.keys(parts.tables).filter(
+         (sourceID) => !parts.tables[sourceID].rollup,
       ),
    );
+   for (const [sourceID, keyColumn] of Object.entries(storedKeyChecks)) {
+      parts.tables[sourceID].storedKeyCheck = keyColumn;
+   }
 
    const connections = await resolvePackageConnections(
       pkg,
@@ -176,25 +195,14 @@ export async function compilePackageBuildPlan(
    );
 
    // The build path reads this plan directly: a `#(materialize)` source
-   // refused for its table name must not build here either.
-   return refuseCollidingMaterialize({
-      ...(pkg.getPackageMetadata?.()?.scope === "version"
-         ? { versionScoped: true }
-         : {}),
-      builds: parts.builds,
-      sources: parts.sources,
-      targets: parts.targets,
+   // refused for its table name, or a source whose incremental declaration
+   // this deployment cannot honour, must not build here either.
+   return finishBuildPlan(parts, {
       connectionDigests,
       connections,
-      sourceModelPaths: parts.sourceModelPaths,
-      droppedPersistSources: parts.droppedPersistSources,
-      annotationFindings: parts.annotationFindings,
-      preaggregatePlans: parts.preaggregatePlans,
-      ...(Object.keys(storedKeyChecks).length > 0 ? { storedKeyChecks } : {}),
-      materializePlans: parts.materializePlans,
-      ...(keyCheckCompilers.size > 0 ? { keyCheckCompilers } : {}),
-      sourceGateOutcomes: parts.sourceGateOutcomes,
-      omittedSources: parts.omittedSources,
+      versionScoped: versionOwnsTables(pkg),
+      keyCheckCompilers,
+      keepIncrementalUnbuildable,
    });
 }
 
@@ -209,9 +217,43 @@ export async function computePackageBuildPlan(
    signal?: AbortSignal,
 ): Promise<BuildPlanOutcome> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
-   return deriveBuildPlanOutcome(
+   return deriveBuildPlanOutcome(compiled, pkg.getMaterializationConfig());
+}
+
+/**
+ * The load gate's text for a plan a run compiled (plan/load_gate_text.ts),
+ * read off the plan the run derives so the run and the load agree: empty
+ * when the files carry no invalid materialization annotation.
+ */
+export function runLoadGateText(
+   compiled: FinishedBuildPlan,
+   pkg: BuildPlanPackage,
+   judgement: { versionScoped: boolean; enforceCollisions: boolean },
+): string {
+   const derived = deriveBuildPlanOutcome(
       compiled,
-      pkg.getMaterializationConfig?.() ?? null,
-      pkg.getPackageMetadata?.()?.scope,
+      pkg.getMaterializationConfig(),
+   );
+   return loadGateText(
+      {
+         plan: derived.plan,
+         annotationFindings: derived.annotationFindings,
+         incrementalDeclarations: derived.incrementalDeclarations,
+         materializePlans: derived.materializePlans,
+         modelGateLines: derived.modelGateLines,
+      },
+      judgement,
+   );
+}
+
+/**
+ * Whether the package's tables are named per version: a published version
+ * of a `scope: "version"` package (the run's `ownedVersionOf`). An
+ * unversioned package writes an author's `name=` as given whatever its scope.
+ */
+function versionOwnsTables(pkg: BuildPlanPackage): boolean {
+   return (
+      pkg.getPackageMetadata().scope === "version" &&
+      pkg.getVersionId() !== undefined
    );
 }

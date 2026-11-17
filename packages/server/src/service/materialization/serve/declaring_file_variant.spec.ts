@@ -34,4 +34,24 @@ describe("declaringFileOf", () => {
          declaringFileOf("orders@https://example.com/orders.malloy", ".copy"),
       ).toEqual({ error: "not a local file" });
    });
+
+   it("keeps a declaring file's spaces through its URL and the copy's name", () => {
+      const file = path.resolve("/pkg/my models/the orders.malloy");
+      const at = declaringFileOf(
+         `orders@${pathToFileURL(file).href}`,
+         ".rollup-author.malloy",
+      );
+      expect(at).toEqual({
+         name: "orders",
+         declaringURL: pathToFileURL(file),
+         copyURL: pathToFileURL(`${file}.rollup-author.malloy`),
+         copyName: "the orders.malloy.rollup-author.malloy",
+      });
+   });
+
+   it("reads the name before the URL's scheme, a quoted name with a dot included", () => {
+      const file = path.resolve("/pkg/m.malloy");
+      const at = declaringFileOf(`a.b@${pathToFileURL(file).href}`, ".copy");
+      expect("name" in at && at.name).toBe("a.b");
+   });
 });

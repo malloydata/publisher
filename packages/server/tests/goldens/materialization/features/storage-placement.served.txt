@@ -40,14 +40,14 @@ source: p_sibling is __served_copy_alias_of_lake.virtual('abb899ecd520649537a3b9
 source: p_nested is __served_copy_alias_of_lake.virtual('abb899ecd520649537a3b9696e66dd32a8c726e4c1b961ca0cc7f7d797a578c6')::p_nested__served
 
 #@ persist name="p_named" storage="lake"
-source: p_named_sibling is __served_copy_alias_of_lake.virtual('5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4')::p_named_sibling__served
+source: p_named_sibling is __served_copy_alias_of_lake.virtual('9dd25350bdb25aa9f7851c358e415a9fd78d32524fe535ed1ecd8aacf8eeec6b')::p_named_sibling__served
 
 #@ persist { name="p_named_nested" storage="lake" }
-source: p_named_nested is __served_copy_alias_of_lake.virtual('5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4')::p_named_nested__served
+source: p_named_nested is __served_copy_alias_of_lake.virtual('2132b8ba56b26471fd390f5db5b1efafcc536a1b564a521951213e4f8928e006')::p_named_nested__served
 
 #(materialize) storage="lake"
 source: m_storage is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb')::m_storage__served extend {
-  internal rename:
+  private rename:
     id__stored is id
     customer_id__stored is customer_id
     order__stored is order

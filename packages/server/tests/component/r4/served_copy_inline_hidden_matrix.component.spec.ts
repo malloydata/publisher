@@ -22,13 +22,17 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
    type Row,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const seedSql = [
@@ -140,7 +144,9 @@ source: wide is ${h.head} extend {
                      expect(run.servedVia).toBeUndefined();
                   } else {
                      expect(run.servedVia).toBe("served_copy");
-                     expect(run.servedFrom).toBe(colocated ? null : "storage");
+                     expect(run.servedFrom).toBe(
+                        colocated ? "database" : "storage",
+                     );
                   }
                } finally {
                   restore();
@@ -169,12 +175,9 @@ async function failure(run: () => Promise<unknown>): Promise<unknown> {
  * rows.
  */
 describe("R4: a pair table beside a hidden column refuses exactly where live refuses", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental { access_modifiers }
@@ -191,9 +194,6 @@ source: wide is duckdb.table('flights') include { private: secret; internal: ts;
          seedSql,
          materialize: true,
       });
-   });
-   afterAll(async () => {
-      restore();
    });
 
    async function parity(malloy: string, answers: boolean): Promise<void> {
@@ -226,9 +226,7 @@ source: wide is duckdb.table('flights') include { private: secret; internal: ts;
       expect(rowDifference(live ?? [], served?.rows ?? [])).toBeUndefined();
    }
 
-   it("re-roots the pair source, with no problem", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const refused: [string, string][] = [
       ["select", "run: wide -> { select: secret }"],

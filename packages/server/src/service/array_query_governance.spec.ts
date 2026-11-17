@@ -53,6 +53,7 @@ import {
 } from "../test_helpers/authorize_fixture";
 import { seededDuckdb, writeTempPackage } from "../test_helpers/temp_package";
 import { withAccessRecord, type AccessRecord } from "./access_record";
+import * as arrayQueryIr from "./governance/ir/array_query";
 import type { Model } from "./model";
 import { QueryPrivileges } from "./model_query_request";
 import { Package } from "./package";
@@ -598,14 +599,23 @@ source: open_a is duckdb.table('people.parquet')
       }
    });
 
-   it("loads the same join where the package governs nothing", async () => {
-      const pkg = await load(`
+   it("loads the same join where the package governs nothing, without walking the model for joins", async () => {
+      // The join walk reads every node; a model that governs nothing has no
+      // use for it, so the gate asks governsAccess first (ms2data/service#7795).
+      const walk = spyOn(arrayQueryIr, "arrayQueryJoins");
+      try {
+         const pkg = await load(`
 source: other is duckdb.table('people')
 source: open_a is duckdb.table('people') extend {
   dimension: leak is items -> { extend: { join_one: o is other on sku = o.org_id } aggregate: x is o.ssn.max() }
 }
 `);
-      expect(pkg.getModel("m.malloy")).toBeDefined();
+         expect(pkg.getModel("m.malloy")).toBeDefined();
+         expect(pkg.formatArrayQueryJoins()).toBe("");
+         expect(walk).not.toHaveBeenCalled();
+      } finally {
+         walk.mockRestore();
+      }
    });
 
    it("loads a governed package whose array queries read only their elements", async () => {
@@ -625,5 +635,13 @@ source: chart is base include { internal: * } extend {
 }
 `);
       expect(pkg.getModel("m.malloy")).toBeDefined();
+      // A governed model is walked, so the spy above sees the gate's calls.
+      const walk = spyOn(arrayQueryIr, "arrayQueryJoins");
+      try {
+         expect(pkg.formatArrayQueryJoins()).toBe("");
+         expect(walk).toHaveBeenCalledTimes(1);
+      } finally {
+         walk.mockRestore();
+      }
    });
 });

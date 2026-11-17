@@ -18,7 +18,7 @@
  */
 
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
-import { expect } from "bun:test";
+import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
 import { assertInlinedJoinsUnique } from "../../../src/service/materialization/run/inline_uniqueness";
 import {
@@ -40,10 +40,8 @@ import {
 } from "../../../src/service/materialization/run/inline_uniqueness";
 import { createModelRuntime } from "../../../src/service/model_runtime";
 import { tryCompilePersistedViewCompanion } from "../../../src/service/materialization/plan/persisted_view_compile";
-import {
-   extensionOverStoredModel,
-   type MaterializePlan,
-} from "../../../src/service/materialization/plan/build_file_generator";
+import { extensionOverStoredModel } from "../../../src/service/materialization/plan/materialize_stored_chain";
+import { type MaterializePlan } from "../../../src/service/materialization/domain/table_plans";
 import {
    oneFileModel,
    planChainedDownstream,
@@ -51,10 +49,15 @@ import {
 import { storageTablePath } from "../../../src/service/materialization/domain/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import {
+   applyObservedColumns,
    deriveColocatedServeBindings,
    kindFromPlan,
+   type ObservedDrift,
+   v1StoredColumnsOf,
 } from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
+import { capturedColocatedSchema } from "../../../src/service/materialization/run/colocated_build_strategy";
+import { observedDatabaseColumns } from "../../../src/service/materialization/run/database_column_read";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -72,10 +75,13 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { unrecordedAudit } from "../../../src/service/access_record";
+import type { PlannedTable } from "../../../src/service/materialization/serve/query_path";
 import {
    buildSQLOf,
+   deriveColumns,
    plannedSources,
 } from "../../../src/service/materialization/plan/build_plan";
+import { computePackageBuildPlan } from "../../../src/service/materialization/plan/build_plan_compile";
 import {
    compilerBuildId,
    presentAs,
@@ -93,8 +99,10 @@ import {
 import { declarableColumns } from "../../../src/service/materialization/stored_column_types";
 import {
    castToDeclaredTypes,
+   isCastConversionError,
    persistSourceDeclaredColumns,
    persistSourceQueryTimezone,
+   wideIntegerColumns,
 } from "../../../src/service/materialization/stored_column_types";
 import type {
    KeyUniqueness,
@@ -104,6 +112,12 @@ import { Model } from "../../../src/service/model";
 import type { HydrationRuntime } from "../../../src/service/model_runtime";
 import { malloyGivenToApi, type MalloyGiven } from "../../../src/service/given";
 import { ModelPolicy } from "../../../src/service/model_policy";
+import {
+   orderingOfStruct,
+   type ResultStructShape,
+   type RowOrdering,
+   withOrdering,
+} from "../../../src/test_helpers/conformance/answer_difference";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
 
 /**
@@ -178,7 +192,7 @@ export interface R4Scenario {
     */
    preaggregate?: boolean;
    /**
-    * With {@link preaggregate}: run each colocated rollup's key check (known
+    * With {@link preaggregate}: run each rollup's key check (known
     * limitation 29) once its table is built, as an auto-run does, and bind
     * what it found. `false` binds no check, as for a table a host's manifest
     * binds or a build that could not check; `"unique"` binds a pass without
@@ -200,8 +214,13 @@ export interface R4Scenario {
     */
    persistedViews?: boolean;
    /**
-    * Planned sources, by name, bound colocated: their tables are read through
-    * the build manifest (Malloy substitutes them), not a storage binding.
+    * Planned sources, by name, built colocated: each table is built in the
+    * scenario's database and put in the build manifest, not a storage
+    * binding. A `#@ persist` source's table is bound on the served copy with
+    * the columns its build captured, as the package binds it, so its served
+    * run reads the table as a real run does (harness_drift.component.spec.ts
+    * holds the two together). A persisted view's companion source is read
+    * through the view path.
     */
    colocated?: string[];
    /**
@@ -219,6 +238,13 @@ export interface R4Scenario {
 }
 
 export type Row = Record<string, unknown>;
+
+export {
+   orderingOfStruct,
+   rowDifference,
+   type RowOrdering,
+   withOrdering,
+} from "../../../src/test_helpers/conformance/answer_difference";
 
 export interface R4Run {
    live: Row[];
@@ -301,6 +327,24 @@ export interface R4Fixture {
    setClock(at: string): void;
    /** Why the persisted-view planner refused a view, one sentence each. */
    viewRefusals: string[];
+   /**
+    * With {@link R4Scenario.preaggregate}: each `#(preaggregate)` declaration
+    * the rollup planner refused, by its refusal reason (an invalid one's
+    * code) and base source.
+    */
+   rollupRefusals: { reason: string; sourceName: string }[];
+   /** For a `#(materialize)` scenario: each source's plan, by its name. */
+   materializePlans: Record<string, MaterializePlan>;
+   /**
+    * Read every colocated table's columns from the scenario's database, as a
+    * package's bind reads them, and hold the bindings and the build manifest
+    * to them (`applyObservedColumns`): for a test that alters a table after
+    * its build. Returns what the read found.
+    */
+   observeDatabaseColumns(): Promise<{
+      drifted: ObservedDrift[];
+      unread: { sourceEntityId: string; reason: string }[];
+   }>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
       sql: (table: (sourceName: string) => string) => string,
@@ -535,7 +579,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       );
    }
    // A rollup whose build reads a given is left out, as the package's build
-   // plan leaves it out (`preaggregate-reads-given`).
+   // plan leaves it out (`preaggregate-not-built`, reason
+   // `given_in_persisted_query`).
    const allRollupTargets = rollups?.generated
       ? await rollups.generated.runtime.getBuildTargets(rollups.generated.model)
       : undefined;
@@ -555,7 +600,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // build manifest keyed by its build id.
    const colocatedEntries: Record<
       string,
-      { tableName: string; keyUniqueness?: KeyUniqueness }
+      {
+         tableName: string;
+         keyUniqueness?: KeyUniqueness;
+         schema?: { name: string; type: string }[];
+      }
    > = {};
    // The join_ones a package's build reads the rollups' key checks for.
    const joinOneKeys = joinOneKeysOf(SourceMap.of(authorDef));
@@ -592,7 +641,17 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          await duckdb.runSQL(
             `CREATE TABLE ${table} AS ${target.buildSQL({ entries: {} })}`,
          );
-         colocatedEntries[target.buildId] = { tableName: table };
+         // Its columns, captured as a colocated build captures them.
+         const rollupSchema = await capturedColocatedSchema({
+            connection: duckdb,
+            physicalTableName: table,
+            dialect: duckdb.dialectName,
+            sourceName: source.name,
+         });
+         colocatedEntries[target.buildId] = {
+            tableName: table,
+            ...(rollupSchema ? { schema: rollupSchema } : {}),
+         };
          const check = plan.keyCheck;
          const checks = scenario.rollupKeyChecks ?? true;
          if (
@@ -729,7 +788,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // A colocated table is looked up by the compiler under its own build id.
    const entityIdOf = (source: (typeof sources)[number], i: number) =>
       scenario.colocated?.includes(source.name) || colocatedMaterialize(source)
-         ? compilerBuildId(source, {})
+         ? compilerBuildId(source)
          : `h${i}`;
    sources.forEach((source, i) => {
       plan[source.sourceID] = {
@@ -741,10 +800,14 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // its parent's stored table.
    const entryBySourceID = new Map<string, ManifestEntry>();
    const storedBuildSQL: Record<string, string> = {};
-   const colocatedMaterializeEntries: Record<
+   // The colocated tables the served copy binds: each `#(materialize)` one
+   // and each `#@ persist` one, as the package binds them.
+   const colocatedServeEntries: Record<
       string,
       {
          tableName: string;
+         connectionName: string;
+         schema?: { name: string; type: string }[];
          nativeSchema?: { name: string; type: string }[];
          keyUniqueness?: KeyUniqueness;
       }
@@ -817,9 +880,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             dialect: builder.dialectName,
             sourceName: source.name,
          });
+         // And its columns, read back as a colocated build reads them
+         // (colocated_build_strategy.ts), which its binding declares.
+         const schema = await capturedColocatedSchema({
+            connection: builder,
+            physicalTableName: table,
+            dialect: builder.dialectName,
+            sourceName: source.name,
+         });
          const leafKeys = await pairLeafKeys(source);
-         colocatedMaterializeEntries[entityIdOf(source, i)] = {
+         colocatedServeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            connectionName: source.connectionName,
+            ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
             ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
          };
@@ -831,6 +904,29 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             `CREATE TABLE ${table} AS ${buildSQLOf(source, { entries: {} })}`,
          );
          colocatedEntries[entityIdOf(source, i)] = { tableName: table };
+         // Its columns and their warehouse types, captured as a colocated
+         // build captures them (colocated_build_strategy.ts), which the
+         // served copy's binding of a `#@ persist` table declares.
+         const schema = await capturedColocatedSchema({
+            connection: duckdb,
+            physicalTableName: table,
+            dialect: duckdb.dialectName,
+            sourceName: source.name,
+         });
+         const nativeSchema = await capturedNativeSchema({
+            run: (sql) => duckdb.runSQL(sql, { rowLimit: 100_000 }),
+            physicalTableName: table,
+            dialect: duckdb.dialectName,
+            sourceName: source.name,
+         });
+         colocatedServeEntries[entityIdOf(source, i)] = {
+            tableName: table,
+            // The connection the build wrote it on, as a build's entry
+            // records it, so the bind's connection check runs.
+            connectionName: source.connectionName,
+            ...(schema ? { schema } : {}),
+            ...(nativeSchema ? { nativeSchema } : {}),
+         };
          continue;
       }
       const table = `r4_${source.name}_${i}`;
@@ -886,16 +982,32 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          built = { sql: planned.sql, source: planned.downstream };
          storedBuildSQL[source.name] = planned.sql;
       }
-      // Cast to the declared types as the storage build does.
+      const origin = connections.get(source.connectionName);
+      // Cast to the declared types as the storage build does, a 128-bit
+      // integer computed in DuckDB stored as DECIMAL(38,0) (P4-01).
+      const computedInDuckDB = !origin || origin === duckdb;
       const select = scenario.uncast
          ? built.sql
          : castToDeclaredTypes(
               built.sql,
               persistSourceDeclaredColumns(built.source),
-              { queryTimezone: persistSourceQueryTimezone(built.source) },
+              {
+                 queryTimezone: persistSourceQueryTimezone(built.source),
+                 exactIntegers: computedInDuckDB
+                    ? wideIntegerColumns(
+                         (
+                            await duckdb.runSQL(`DESCRIBE (${built.sql})`, {
+                               rowLimit: 10_000,
+                            })
+                         ).rows.map((r) => ({
+                            name: String(r.column_name),
+                            type: String(r.column_type),
+                         })),
+                      )
+                    : [],
+              },
            );
       builtSQL[source.name] = select;
-      const origin = connections.get(source.connectionName);
       if (origin && origin !== duckdb) {
          // Built on its origin, its rows copied into the destination.
          const file = path.join(dir, `${table}.parquet`);
@@ -904,9 +1016,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             `CREATE TABLE ${DESTINATION}.${table} AS SELECT * FROM read_parquet('${file}')`,
          );
       } else {
-         await duckdb.runSQL(
-            `CREATE TABLE ${DESTINATION}.${table} AS ${select}`,
-         );
+         try {
+            await duckdb.runSQL(
+               `CREATE TABLE ${DESTINATION}.${table} AS ${select}`,
+            );
+         } catch (err) {
+            // As the storage build does: a value the casts cannot convert
+            // stores the computed types instead.
+            if (!isCastConversionError(err)) throw err;
+            builtSQL[source.name] = built.sql;
+            await duckdb.runSQL(
+               `CREATE TABLE ${DESTINATION}.${table} AS ${built.sql}`,
+            );
+         }
       }
       // runSQL returns 10 rows unless told otherwise: one per column here.
       const described = await duckdb.runSQL(
@@ -998,6 +1120,41 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             parentKeys: { ...entry.keyUniqueness?.parentKeys, ...parentKeys },
          };
       }
+      // A storage rollup's own key check (known limitation 29), run on its
+      // base's connection over the rows its build reads, as a colocated
+      // one's is, when a join_one is keyed on its grain.
+      const rollupKey = rollupOrigin.has(source.sourceID)
+         ? rollupPlanByName.get(source.name)?.keyCheck
+         : undefined;
+      if (
+         rollupKey &&
+         checks !== false &&
+         joinOneKeys.has(
+            joinOneKey(
+               rollupPlanByName.get(source.name)?.baseSourceID ?? "",
+               rollupKey.keyColumn,
+            ),
+         )
+      ) {
+         const record =
+            checks === "unique"
+               ? { keyColumn: rollupKey.keyColumn, unique: true }
+               : await runRollupKeyCheck(
+                    rollupKey,
+                    connections.get(source.connectionName) ?? duckdb,
+                    table,
+                 );
+         if (record) {
+            const entry = entries[`h${i}`] as ManifestEntry & {
+               keyUniqueness?: KeyUniqueness;
+            };
+            entry.keyUniqueness = {
+               ...entry.keyUniqueness,
+               keyColumn: record.keyColumn,
+               unique: record.unique,
+            };
+         }
+      }
       entryBySourceID.set(source.sourceID, entries[`h${i}`]);
    }
    // Each kind read off the plan, as the package's bind reads it.
@@ -1005,6 +1162,15 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       materializeSourceIDs: new Set(Object.keys(materializePlans)),
       viewBuildSourceIDs,
    };
+   // The colocated tier's eligibility, decided by the package's own build
+   // plan compile over the scenario's files (collectColocatedSourceEligibility:
+   // the authorize gate, `@env.`, a table shared across gates), so a
+   // colocated table binds only where a package would bind it. Compiled only
+   // when a colocated table was built.
+   const colocatedEligible = await colocatedEligibilityOf(
+      Object.keys(colocatedServeEntries).length > 0,
+      { dir, files: Object.keys(scenario.files), connections },
+   );
    const bindings = [
       ...deriveServeBindings(
          entries,
@@ -1012,10 +1178,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          undefined,
          planSourceIds(plan),
       ).map((b) => ({ ...b, kind: kindFromPlan(b, kinds) })),
-      // The colocated `#(materialize)` tables, through the package's own
-      // derivation.
+      // The colocated `#(materialize)` and `#@ persist` tables, through the
+      // package's own derivation: a `#@ persist` one is read by the served
+      // copy re-rooted on it, as a real run reads it.
       ...deriveColocatedServeBindings({
-         entries: colocatedMaterializeEntries,
+         entries: colocatedServeEntries,
          planSources: Object.fromEntries(
             sources.map((source) => [
                source.sourceID,
@@ -1028,7 +1195,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ]),
          ),
          materializePlans,
-         eligible: () => true,
+         eligible: colocatedEligible,
+         // A fallback only: each table's build captured its schema above.
+         v1Schema: (sourceID) =>
+            v1StoredColumnsOf(authorMap.node(sourceID)?.def),
+         notV1: (sourceID) => viewBuildSourceIDs.has(sourceID),
       }),
    ];
 
@@ -1040,7 +1211,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const policy = ModelPolicy.fixed({
       snapshot: () => makeSnapshot([], manifestOn ? colocatedEntries : {}),
       materializedTables: {
-         planned: new Map([
+         planned: new Map<string, PlannedTable>([
             ...sources.map(
                (source) =>
                   [
@@ -1052,6 +1223,17 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                         origin: rollupOrigin.has(source.sourceID)
                            ? ("preaggregate" as const)
                            : ("persist" as const),
+                        // A rollup's declared columns, as the package's
+                        // catalog carries them from its plan.
+                        ...(rollupOrigin.has(source.sourceID)
+                           ? {
+                                columns: deriveColumns(source).flatMap((c) =>
+                                   c.name && c.type
+                                      ? [{ name: c.name, type: c.type }]
+                                      : [],
+                                ),
+                             }
+                           : {}),
                      },
                   ] as const,
             ),
@@ -1159,9 +1341,41 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       duckdb,
       model,
       viewRefusals,
+      rollupRefusals: (rollups?.refused ?? []).map((r) => ({
+         reason: r.tier === "unservable" ? r.refused.reason : r.code,
+         sourceName: r.sourceName,
+      })),
+      materializePlans: Object.fromEntries(
+         Object.values(materializePlans).map((p) => [p.sourceName, p]),
+      ),
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;
+      },
+      async observeDatabaseColumns() {
+         // Each entry with what its build captured and its connection, as a
+         // run's manifest entry carries them.
+         const all = Object.fromEntries(
+            Object.entries(colocatedEntries).map(([id, e]) => [
+               id,
+               { ...e, ...colocatedServeEntries[id] },
+            ]),
+         );
+         const observed = await observedDatabaseColumns({
+            entries: all,
+            connectionNameOf: (id) => all[id]?.connectionName ?? "duckdb",
+            connection: async (name) => connections.get(name) ?? duckdb,
+         });
+         const applied = applyObservedColumns({
+            entries: all,
+            bindings,
+            observed,
+         });
+         bindings.splice(0, bindings.length, ...applied.bindings);
+         for (const id of Object.keys(colocatedEntries)) {
+            if (!(id in applied.entries)) delete colocatedEntries[id];
+         }
+         return { drifted: applied.drifted, unread: applied.unread };
       },
       async storedSQL(sql) {
          const text = sql((sourceName) => {
@@ -1265,6 +1479,45 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
 }
 
 /**
+ * Which planned sources the colocated tier admits, by sourceID, from the
+ * package's own build plan over the scenario's model files: a source is
+ * eligible when the plan's colocated eligibility lists its content address.
+ * A plan that does not compile throws, so a scenario never binds on a
+ * guess.
+ */
+async function colocatedEligibilityOf(
+   needed: boolean,
+   scenario: {
+      dir: string;
+      files: string[];
+      connections: Map<string, Connection>;
+   },
+): Promise<(sourceID: string) => boolean> {
+   if (!needed) return () => false;
+   const config = new MalloyConfig({ connections: {} });
+   const [first] = scenario.connections.keys();
+   config.wrapConnections(
+      () => new FixedConnectionMap(scenario.connections, first),
+   );
+   const outcome = await computePackageBuildPlan({
+      getModelPaths: () => scenario.files.filter((f) => f.endsWith(".malloy")),
+      getPackagePath: () => scenario.dir,
+      getMalloyConfig: () => config,
+      getMaterializationConfig: () => null,
+      getPackageMetadata: () => ({}),
+      getVersionId: () => undefined,
+      getMalloyConnection: async (name) => {
+         const c = scenario.connections.get(name);
+         if (!c) throw new Error(`no connection ${name}`);
+         return c;
+      },
+   });
+   const eligible = outcome.colocatedSourceEligibility.eligibleEntityIds;
+   const sources = outcome.plan?.sources ?? {};
+   return (sourceID) => eligible.has(sources[sourceID]?.sourceEntityId ?? "");
+}
+
+/**
  * Whether a run over a pair table (`inline=` on a join_many) was served by the
  * served copy, as it should be. Since Malloy 0.0.438 (malloydata/malloy#3208)
  * live counts a parent with no joined row as none, which the pair table's
@@ -1290,273 +1543,15 @@ export function expectPairServedVia(
    );
 }
 
-/** Relative tolerance for floats, as R4 states it. */
-const FLOAT_TOLERANCE = 1e-9;
-
 /**
- * How a query orders its rows, and each of its nests' rows, as its compiled
- * result shape states it. Malloy orders every nest: by its `order_by`, else by
- * its default (the first aggregate descending, and so on), so the order of a
- * nest is part of its answer, the same as its values.
+ * One test: the served copy over `fixture()` compiled and re-rooted every
+ * source, so it reports no problem. A thunk, since the fixture is built in a
+ * `beforeAll` after the test is declared.
  */
-export interface RowOrdering {
-   /** The output fields the rows are sorted by, in order; empty when unordered. */
-   orderBy: { field: string; dir: "asc" | "desc" }[];
-   /** Each nested result's own ordering, by its output name. */
-   nests: Record<string, RowOrdering>;
-}
-
-/** The ordering each run's rows were answered under, by the rows array. */
-const orderings = new WeakMap<Row[], RowOrdering>();
-
-/** Record the ordering `rows` were answered under, for {@link rowDifference}. */
-export function withOrdering(rows: Row[], ordering?: RowOrdering): Row[] {
-   if (ordering) orderings.set(rows, ordering);
-   return rows;
-}
-
-interface ResultStructShape {
-   fields?: ResultFieldShape[];
-   resultMetadata?: {
-      orderBy?: { field: string | number; dir?: "asc" | "desc" }[];
-   };
-}
-interface ResultFieldShape extends ResultStructShape {
-   name: string;
-   as?: string;
-}
-
-/** A compiled result struct's ordering, and its nests', from Malloy's result metadata. */
-export function orderingOfStruct(struct: ResultStructShape): RowOrdering {
-   const fields = struct.fields ?? [];
-   const orderBy = (struct.resultMetadata?.orderBy ?? []).flatMap((o) => {
-      const field =
-         typeof o.field === "number"
-            ? (fields[o.field - 1]?.as ?? fields[o.field - 1]?.name)
-            : o.field;
-      return field ? [{ field, dir: o.dir ?? "asc" }] : [];
+export function itLeavesNoServedCopyProblem(
+   fixture: () => Pick<R4Fixture, "servedCopyProblems">,
+): void {
+   it("leaves no problem on the served copy", async () => {
+      expect(await fixture().servedCopyProblems()).toEqual([]);
    });
-   const nests: Record<string, RowOrdering> = {};
-   for (const f of fields) {
-      if (Array.isArray(f.fields)) nests[f.as ?? f.name] = orderingOfStruct(f);
-   }
-   return { orderBy, nests };
-}
-
-/** A value in the form two runs are compared in. */
-function normalizeValue(value: unknown): unknown {
-   if (typeof value === "bigint") {
-      // Past 2^53 a Number would round two different integers together.
-      return value >= Number.MIN_SAFE_INTEGER &&
-         value <= Number.MAX_SAFE_INTEGER
-         ? Number(value)
-         : value.toString();
-   }
-   if (value instanceof Date) return value.toISOString();
-   if (
-      typeof value === "string" &&
-      /^-?\d+$/.test(value) &&
-      value.length < 16
-   ) {
-      // DuckDB returns some integer aggregates as strings over raw SQL.
-      return Number(value);
-   }
-   if (Array.isArray(value)) return value.map(normalizeValue);
-   if (isRecord(value)) {
-      return Object.fromEntries(
-         Object.entries(value).map(([k, v]) => [k, normalizeValue(v)]),
-      );
-   }
-   return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-   return (
-      typeof value === "object" &&
-      value !== null &&
-      !Array.isArray(value) &&
-      !(value instanceof Date)
-   );
-}
-
-/** JSON with object keys sorted, so key order never decides a row's place. */
-function canonicalJson(value: unknown): string {
-   return JSON.stringify(value, (_key, v: unknown) =>
-      isRecord(v)
-         ? Object.fromEntries(
-              Object.keys(v)
-                 .sort()
-                 .map((k) => [k, v[k]]),
-           )
-         : v,
-   );
-}
-
-/**
- * A row's sort key for pairing it with its counterpart: its normalized value
- * with nested rows in a canonical order, so two rows that differ only in how
- * tied nested rows came back still pair. Only the pairing uses it; the nested
- * rows' order is judged separately, against the nest's own ordering.
- */
-function pairingKey(value: unknown): string {
-   const canonical = (v: unknown): unknown => {
-      if (Array.isArray(v)) {
-         const items = v.map(canonical);
-         return items.every(isRecord)
-            ? items
-                 .map((item) => ({ item, key: canonicalJson(item) }))
-                 .sort((p, q) => p.key.localeCompare(q.key))
-                 .map(({ item }) => item)
-            : items;
-      }
-      if (isRecord(v)) {
-         return Object.fromEntries(
-            Object.entries(v).map(([k, x]) => [k, canonical(x)]),
-         );
-      }
-      return v;
-   };
-   return canonicalJson(canonical(normalizeValue(value)));
-}
-
-/**
- * Integers (counts, sums of integers) must match exactly; other numbers
- * within the relative float tolerance, floored at 1 so two values near zero
- * are compared absolutely. NaN matches NaN: DuckDB divides 0.0 by 0 as NaN,
- * which a ratio over a childless parent's sum and count is.
- */
-function numbersEqual(x: number, y: number): boolean {
-   if (x === y || (Number.isNaN(x) && Number.isNaN(y))) return true;
-   if (Number.isSafeInteger(x) && Number.isSafeInteger(y)) return false;
-   const scale = Math.max(Math.abs(x), Math.abs(y), 1);
-   return Math.abs(x - y) <= FLOAT_TOLERANCE * scale;
-}
-
-/** Two normalized scalars (or nests with no known ordering, in order) equal. */
-function normalizedEqual(x: unknown, y: unknown): boolean {
-   if (typeof x === "number" && typeof y === "number")
-      return numbersEqual(x, y);
-   if (Array.isArray(x) && Array.isArray(y)) {
-      return (
-         x.length === y.length && x.every((v, i) => normalizedEqual(v, y[i]))
-      );
-   }
-   if (isRecord(x) && isRecord(y)) {
-      const keys = Object.keys(x).sort();
-      return (
-         JSON.stringify(keys) === JSON.stringify(Object.keys(y).sort()) &&
-         keys.every((k) => normalizedEqual(x[k], y[k]))
-      );
-   }
-   return canonicalJson(x) === canonicalJson(y);
-}
-
-/**
- * The difference between two sets of rows, or undefined when they match.
- *
- * With an ordering that sorts by some fields, the rows must come back in that
- * order: row i's sort-key values must equal row i's on the other side, so the
- * only freedom left is among rows that tie on every sort key, whose order the
- * engine decides. Unordered (no ordering, at the top level, or a nest whose
- * ordering is empty), the rows are compared as a set. A nest whose ordering is
- * not known at all is compared in order, the strict reading.
- */
-function rowsDifference(
-   expected: unknown[],
-   actual: unknown[],
-   ordering: RowOrdering | undefined,
-   where: string,
-): string | undefined {
-   if (expected.length !== actual.length) {
-      return `${where}row counts differ: ${expected.length} against ${actual.length}`;
-   }
-   const records = expected.every(isRecord) && actual.every(isRecord);
-   if (!records) {
-      return normalizedEqual(normalizeValue(expected), normalizeValue(actual))
-         ? undefined
-         : `${where}${JSON.stringify(normalizeValue(expected))} against ${JSON.stringify(normalizeValue(actual))}`;
-   }
-   const sortedBy = (ordering?.orderBy ?? []).filter(
-      (o) =>
-         expected.every((r) => o.field in r) &&
-         actual.every((r) => o.field in r),
-   );
-   for (let i = 0; i < expected.length && sortedBy.length > 0; i++) {
-      for (const { field } of sortedBy) {
-         const x = normalizeValue(expected[i][field]);
-         const y = normalizeValue(actual[i][field]);
-         if (!normalizedEqual(x, y)) {
-            return `${where}row ${i} is out of order on ${field}: ${JSON.stringify(x)} against ${JSON.stringify(y)}`;
-         }
-      }
-   }
-   const pair = (rows: Record<string, unknown>[]) =>
-      ordering === undefined && where !== ""
-         ? rows
-         : rows
-              .map((row) => ({ row, key: pairingKey(row) }))
-              .sort((p, q) => p.key.localeCompare(q.key))
-              .map(({ row }) => row);
-   const a = pair(expected);
-   const b = pair(actual);
-   for (let i = 0; i < a.length; i++) {
-      const columns = Object.keys(a[i]).sort();
-      const otherColumns = Object.keys(b[i]).sort();
-      if (JSON.stringify(columns) !== JSON.stringify(otherColumns)) {
-         return `${where}columns differ: ${columns.join(",")} against ${otherColumns.join(",")}`;
-      }
-      for (const c of columns) {
-         const x = a[i][c];
-         const y = b[i][c];
-         if (Array.isArray(x) && Array.isArray(y)) {
-            const inner = rowsDifference(
-               x,
-               y,
-               ordering?.nests[c],
-               `${where}row ${i} column ${c}: `,
-            );
-            if (inner) return inner;
-         } else if (!normalizedEqual(normalizeValue(x), normalizeValue(y))) {
-            return `${where}row ${i} column ${c}: ${JSON.stringify(normalizeValue(x))} against ${JSON.stringify(normalizeValue(y))}`;
-         }
-      }
-   }
-   return undefined;
-}
-
-/**
- * The difference between two row sets, or undefined when they match: same
- * columns, same row count, each value equal (integers exactly, other numbers
- * within the float tolerance), and rows in the order the query asked for, up
- * to ties on its sort keys.
- *
- * The ordering is the one recorded for the rows ({@link withOrdering}; every
- * run of a fixture records its query's). The top level is held to it only
- * when both sides are such answers: rows from raw SQL (a test's truth, a
- * stored table) come back in no order the query decides, so against them the
- * top level is compared as a set, and each nest is still held to its own
- * ordering. With no ordering on either side, the top level is a set and each
- * nest is compared in order.
- */
-export function rowDifference(
-   expected: Row[],
-   actual: Row[],
-   ordering?: RowOrdering,
-): string | undefined {
-   const columns = Object.keys(expected[0] ?? actual[0] ?? {}).sort();
-   const actualColumns = Object.keys(actual[0] ?? expected[0] ?? {}).sort();
-   if (JSON.stringify(columns) !== JSON.stringify(actualColumns)) {
-      return `columns differ: ${columns.join(",")} against ${actualColumns.join(",")}`;
-   }
-   const recorded = orderings.get(expected) ?? orderings.get(actual);
-   const known = ordering ?? recorded;
-   const bothAnswers =
-      ordering !== undefined ||
-      (orderings.has(expected) && orderings.has(actual));
-   return rowsDifference(
-      expected,
-      actual,
-      known && !bothAnswers ? { orderBy: [], nests: known.nests } : known,
-      "",
-   );
 }

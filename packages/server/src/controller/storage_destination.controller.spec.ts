@@ -28,6 +28,7 @@ describe("StorageDestinationController", () => {
       envPath = mkdtempSync(join(tmpdir(), "dest-controller-"));
       mkdirSync(storageDestinationRoot(envPath), { recursive: true });
       const environment = {
+         getEnvironmentName: () => "env",
          getEnvironmentPath: () => envPath,
          getStorageDestination: (name: string): ApiConnection => {
             if (name !== "lake") {

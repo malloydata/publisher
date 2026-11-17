@@ -4,28 +4,24 @@
 /**
  * The layered settings a persist source's plan entry resolves: freshness and
  * query metadata, each read from the source's tag, its model's tags and the
- * package's materialization config, most specific first. Split out of
- * build_plan.ts; behaviour unchanged.
+ * package's materialization config, most specific first.
  */
 
 import type { PersistSource } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { readRoute } from "./declaration";
+import {
+   isFreshnessFallback,
+   type DeclaredFreshness,
+} from "../domain/freshness";
 
 type WireFreshness = components["schemas"]["Freshness"];
 type QueryMetadata = components["schemas"]["QueryMetadata"];
 export type WirePackageMaterialization =
    components["schemas"]["PackageMaterializationConfig"];
 
-/** The freshness `fallback` values the publisher recognizes; others are dropped. */
-const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
-type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
-
 /** One layer's contribution to the resolved freshness (all optional). */
-interface FreshnessLayer {
-   window?: string;
-   fallback?: FreshnessFallback;
-}
+type FreshnessLayer = DeclaredFreshness;
 
 /**
  * Minimal reader over a Malloy `Tag`: scalar reads by path, plus the subtree read
@@ -43,18 +39,15 @@ export interface ReadableTag {
  * Per-source `sharing`/`schedule` are rejected at publish
  * (Package.persistencePolicyWarnings), not resolved here.
  */
-function tagFreshnessLayer(tag: ReadableTag | undefined): FreshnessLayer {
+export function tagFreshnessLayer(
+   tag: ReadableTag | undefined,
+): FreshnessLayer {
    if (!tag || typeof tag.text !== "function") return {};
    const layer: FreshnessLayer = {};
    const window = tag.text("freshness", "window");
    if (typeof window === "string") layer.window = window;
    const fallback = tag.text("freshness", "fallback");
-   if (
-      typeof fallback === "string" &&
-      (FRESHNESS_FALLBACKS as readonly string[]).includes(fallback)
-   ) {
-      layer.fallback = fallback as FreshnessFallback;
-   }
+   if (isFreshnessFallback(fallback)) layer.fallback = fallback;
    return layer;
 }
 
@@ -81,13 +74,8 @@ function packageFreshnessLayer(
    if (!cfg) return {};
    const layer: FreshnessLayer = {};
    if (cfg.freshness?.window) layer.window = cfg.freshness.window;
-   const fallback = cfg.freshness?.fallback;
-   if (
-      typeof fallback === "string" &&
-      (FRESHNESS_FALLBACKS as readonly string[]).includes(fallback)
-   ) {
-      layer.fallback = fallback as FreshnessFallback;
-   }
+   const fallback: unknown = cfg.freshness?.fallback;
+   if (isFreshnessFallback(fallback)) layer.fallback = fallback;
    return layer;
 }
 
@@ -118,14 +106,20 @@ function safeModelTag(source: PersistSource): ReadableTag | undefined {
  * model-file > package. Null when unset everywhere, so the control plane can tell
  * "unset" from a declaration. Invalid `fallback` values are dropped, never
  * defaulted.
+ *
+ * A rollup's source layer is `rollup`: what its own declaration says, over
+ * what its base's own declaration says (rollup_plan.ts). Its generated
+ * `#@ persist` line declares none, so a rollup and its base go stale together
+ * unless the rollup says otherwise.
  */
 export function resolveFreshness(
    source: PersistSource,
    packageMaterialization: WirePackageMaterialization | null | undefined,
+   rollup?: DeclaredFreshness,
 ): WireFreshness | null {
    const layers: FreshnessLayer[] = [
       // `#@ persist` declares knobs bare: it IS the materialization declaration.
-      tagFreshnessLayer(safeSourceTag(source)),
+      rollup ?? tagFreshnessLayer(safeSourceTag(source)),
       ...modelTagLayers(safeModelTag(source)).map(tagFreshnessLayer),
       packageFreshnessLayer(packageMaterialization),
    ];

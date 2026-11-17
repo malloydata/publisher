@@ -374,10 +374,6 @@ program
     "Environment name (required for package/connection)",
   )
   .option("--package <n>", "Package name")
-  .option(
-    "--drop-tables",
-    "Also drop the materialized tables (materialization only)",
-  )
   .action(async (resource, name, options) => {
     try {
       const client = getClient();
@@ -418,7 +414,6 @@ program
             options.environment,
             options.package,
             name,
-            options.dropTables === true,
           );
           break;
         default:
@@ -451,7 +446,10 @@ program
     "--reseed",
     "Rebuild incremental sources from scratch, discarding their covered_through boundary (--force-refresh does NOT do this)",
   )
-  .option("--wait", "Poll until the run settles (build complete or failed)")
+  .option(
+    "--wait",
+    "Poll until the run settles (built and served, built but not served (exit 2), or failed)",
+  )
   .option(
     "--timeout <seconds>",
     "With --wait, seconds to wait before giving up (default 120)",
@@ -468,7 +466,7 @@ program
         options.pollInterval,
         "--poll-interval",
       );
-      await materializationCommands.materialize(
+      process.exitCode = await materializationCommands.materialize(
         client,
         options.environment,
         options.package,

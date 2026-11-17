@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { PackageMaterialization } from "./materialization/package_materialization";
+import {
+   sourcesIn,
+   targetsIn,
+} from "../test_helpers/materialization_test_fixtures";
 import {
    afterEach,
    beforeEach,
@@ -11,15 +16,11 @@ import {
    spyOn,
 } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../storage/DatabaseInterface";
-import { initializeSchema } from "../storage/duckdb/schema";
 import { changedConnectionNames, Environment } from "./environment";
 import { Package } from "./package";
-import type { EnvironmentStore } from "./environment_store";
 import { MaterializationService } from "./materialization/run/materialization_service";
 import {
    BadRequestError,
@@ -30,6 +31,11 @@ import { compilePackageBuildPlan } from "./materialization/plan/build_plan_compi
 import { computeSourceEntityId } from "./materialization/plan/build_plan";
 import { installSettings } from "../test_helpers/settings_env";
 import { writePackageFiles } from "../test_helpers/temp_package";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../test_helpers/materialization_service_harness";
 
 // Build plans of real packages loaded through a real Environment, around an
 // edit of the connection their persisted source reads.
@@ -130,20 +136,14 @@ beforeEach(async () => {
    restoreSettings = installSettings({
       env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
    }).restore;
-   root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "environment-versions-")),
-   );
-   envPath = path.join(root, "env");
+   ({ root, envPath, db, repo } = await openTempStorage(
+      "environment-versions-",
+      {
+         id: ENV_ID,
+         name: "testEnv",
+      },
+   ));
    sourcesPath = path.join(root, "sources");
-   fs.mkdirSync(envPath);
-   db = new DuckDBConnection(":memory:");
-   await db.initialize();
-   await initializeSchema(db);
-   await db.run(
-      "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, 'testEnv', ?, now(), now())",
-      [ENV_ID, envPath],
-   );
-   repo = createDuckDBRepository(db);
 });
 
 afterEach(async () => {
@@ -152,8 +152,7 @@ afterEach(async () => {
    // kept firing with backoff into later spec files, against a deleted root.
    for (const env of opened.splice(0)) await env.closeAllConnections();
    restoreSettings();
-   await db.close();
-   fs.rmSync(root, { recursive: true, force: true });
+   await disposeTempStorage({ db, root });
 });
 
 /** The addresses the loaded package hands out (GET build-plan, validation). */
@@ -166,11 +165,11 @@ function planned(pkg: Package): string[] {
 /** The addresses a run computes: a fresh compile with the connections as they are now. */
 async function compiled(pkg: Package): Promise<string[]> {
    const plan = await compilePackageBuildPlan(pkg);
-   return Object.values(plan.sources).map((s) =>
+   return Object.values(sourcesIn(plan)).map((s) =>
       computeSourceEntityId(
          s,
          plan.connectionDigests,
-         plan.targets?.[s.sourceID],
+         targetsIn(plan)?.[s.sourceID],
       ),
    );
 }
@@ -188,11 +187,10 @@ async function editConnection(
 
 /** A MaterializationService over `environment`, as main_server.ts wires it. */
 function serviceOver(environment: Environment): MaterializationService {
-   return new MaterializationService({
-      storageManager: { getRepository: () => repo },
-      getEnvironment: async () => environment,
-      getLoadedEnvironments: () => [environment],
-   } as unknown as EnvironmentStore);
+   return serviceOverEnvironment(
+      () => repo,
+      () => environment,
+   );
 }
 
 /** One instructed table for the package's persisted source at `address`. */
@@ -265,15 +263,7 @@ describe("re-deriving after a connection edit", () => {
       // The re-derivation fails (as a model that no longer compiles would).
       spyOn(Package.prototype, "refreshBuildPlan").mockImplementationOnce(
          function (this: Package) {
-            return (
-               this as unknown as {
-                  materialization: {
-                     refreshBuildPlan(
-                        d: () => Promise<unknown>,
-                     ): Promise<boolean>;
-                  };
-               }
-            ).materialization.refreshBuildPlan(async () => {
+            return this.materialization().refreshBuildPlan(async () => {
                throw new Error("does not compile");
             });
          },
@@ -289,6 +279,47 @@ describe("re-deriving after a connection edit", () => {
          })
          .catch((e: unknown) => e);
       expect(err).toBeInstanceOf(BuildPlanUnavailableError);
+   });
+
+   it("a re-derivation over files carrying an invalid annotation fails: no run builds what the load refuses", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      const [before] = planned(v1);
+      v1.markBuildPlanStale();
+      const derived = await v1.materialization().refreshBuildPlan(async () => ({
+         ok: true,
+         durationMs: 0,
+         digestSkipped: [],
+         eligibilityRefused: {},
+         outcome: {
+            annotationFindings: [
+               {
+                  route: "@",
+                  tier: "malformed",
+                  code: "persist-unknown-key",
+                  message: '#@ persist source "s": `nmae=` is not a key',
+                  model: "m.malloy",
+               },
+            ],
+         } as never,
+      }));
+      expect(derived).toBe(false);
+      expect(v1.isBuildPlanUnavailable()).toBe(true);
+      const err = await serviceOver(env)
+         .createMaterialization("testEnv", PKG, {
+            buildInstructions: [instruction(before)],
+         })
+         .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(BuildPlanUnavailableError);
+   });
+
+   it("a re-derivation of a package that serves an older model than its files fails", async () => {
+      const env = await newEnvironment();
+      const v1 = (await publish(env, source("1.0.0"))).loaded;
+      v1.markBuildPlanStale();
+      const derived = await v1.refreshBuildPlan({ isStale: () => true });
+      expect(derived).toBe(false);
+      expect(v1.isBuildPlanUnavailable()).toBe(true);
    });
 
    it("run creation waits for the re-derivation and validates against the new plan, end to end", async () => {
@@ -323,7 +354,7 @@ describe("re-deriving after a connection edit", () => {
          },
       ]);
 
-      expect(v1.isBuildPlanStale()).toBe(false);
+      expect(v1.materialization().isBuildPlanStale()).toBe(false);
       expect(refreshes).not.toHaveBeenCalled();
       refreshes.mockRestore();
    });
@@ -388,52 +419,44 @@ describe("a failed re-derivation", () => {
    function failNextRefresh() {
       spyOn(Package.prototype, "refreshBuildPlan").mockImplementationOnce(
          function (this: Package) {
-            return (
-               this as unknown as {
-                  materialization: {
-                     refreshBuildPlan(
-                        d: () => Promise<unknown>,
-                     ): Promise<boolean>;
-                  };
-               }
-            ).materialization.refreshBuildPlan(async () => {
+            return this.materialization().refreshBuildPlan(async () => {
                throw new Error("load worker timed out");
             });
          },
       );
    }
 
-   type Internals = {
-      materialization: {
-         sourceEligibility: unknown;
-         colocatedSourceEligibility: unknown;
-         servingPlanWhileUnavailable: unknown;
-         buildConnectionNames: ReadonlySet<string>;
-      };
-   };
+   /** The facade's plan lifecycle, whose fields these specs read. */
+   function internals(pkg: Package): {
+      sourceEligibility: unknown;
+      colocatedSourceEligibility: unknown;
+      servingPlanWhileUnavailable: unknown;
+      buildConnectionNames: ReadonlySet<string>;
+   } {
+      return (
+         pkg.materialization() as unknown as {
+            plan: ReturnType<typeof internals>;
+         }
+      ).plan;
+   }
 
    function colocated(pkg: Package): {
       eligibleEntityIds: Set<string>;
       refused: Record<string, string>;
    } {
-      return (
-         pkg as unknown as {
-            materialization: {
-               colocatedSourceEligibility: {
-                  eligibleEntityIds: Set<string>;
-                  refused: Record<string, string>;
-               };
-            };
-         }
-      ).materialization.colocatedSourceEligibility;
+      return (pkg.materialization() as PackageMaterialization).plan
+         .colocatedSourceEligibility as {
+         eligibleEntityIds: Set<string>;
+         refused: Record<string, string>;
+      };
    }
 
    it("keeps what serving reads, so bindings and a host's rebind keep serving while run creation is refused", async () => {
       const env = await newEnvironment();
       const v1 = (await publish(env, source("1.0.0"))).loaded;
-      const internals = (v1 as unknown as Internals).materialization;
+      const state = internals(v1);
       const planBefore = v1.getBuildPlan();
-      const storageBefore = internals.sourceEligibility;
+      const storageBefore = state.sourceEligibility;
       const [address] = planned(v1);
       expect(storageBefore).toBeDefined();
       expect(colocated(v1).eligibleEntityIds.has(address)).toBe(true);
@@ -446,8 +469,8 @@ describe("a failed re-derivation", () => {
       // No route or run sees the pre-edit plan...
       expect(v1.getBuildPlan()).toBeNull();
       // ...but binding still matches entries as it did before the edit.
-      expect(internals.sourceEligibility).toBe(storageBefore);
-      expect(internals.servingPlanWhileUnavailable).toBe(planBefore);
+      expect(state.sourceEligibility).toBe(storageBefore);
+      expect(state.servingPlanWhileUnavailable).toBe(planBefore);
       // Except a colocated table on the connection the edit changed: it was
       // built through that connection as it was, and would be read through it
       // as it is now, so it serves live until the plan is re-derived.
@@ -507,13 +530,7 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
          if (this !== v1) return original.apply(this, args);
          calls++;
          if (calls > 1) return original.apply(this, args);
-         return (
-            this as unknown as {
-               materialization: {
-                  refreshBuildPlan(d: () => Promise<unknown>): Promise<boolean>;
-               };
-            }
-         ).materialization.refreshBuildPlan(async () => ({
+         return this.materialization().refreshBuildPlan(async () => ({
             ok: false,
             error: "Malloy compile failed",
             durationMs: 0,
@@ -525,7 +542,9 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
       await editConnection(env, "SELECT 6");
       await v1.whenBuildPlanCurrent();
       expect(v1.isBuildPlanUnavailable()).toBe(true);
-      expect(v1.lastBuildPlanRefreshFailedTransiently()).toBe(false);
+      expect(v1.materialization().lastBuildPlanRefreshFailedTransiently()).toBe(
+         false,
+      );
 
       // Past the first backoff (2s): no retry recompiles it.
       await new Promise((resolve) => setTimeout(resolve, 2_500));
@@ -573,10 +592,7 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
       }
       expect(v1.isBuildPlanUnavailable()).toBe(false);
       expect(planned(v1)).toEqual(await compiled(v1));
-      expect(
-         (v1 as unknown as Internals).materialization
-            .servingPlanWhileUnavailable,
-      ).toBeNull();
+      expect(internals(v1).servingPlanWhileUnavailable).toBeNull();
    }, 30_000);
 
    it("re-derives when a connection a skipped source needed is created", async () => {
@@ -584,8 +600,7 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
       const v1 = (await publish(env, source("1.0.0"))).loaded;
       // As a source whose connection did not resolve leaves it: named in the
       // plan's build connections, absent from its sources.
-      (v1 as unknown as Internals).materialization.buildConnectionNames =
-         new Set(["duck", "late"]);
+      internals(v1).buildConnectionNames = new Set(["duck", "late"]);
       const refreshes = spyOn(Package.prototype, "refreshBuildPlan");
 
       await editConnection(env, "SELECT 1", [

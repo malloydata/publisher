@@ -1,0 +1,4 @@
+// Deliberately warns (a null-typed dimension): both importers must report it.
+source: shared is duckdb.sql("select 1 as x") extend {
+  dimension: nothing is null
+}

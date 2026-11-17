@@ -82,7 +82,7 @@ function accessLabel(access: "private" | "internal" | undefined): string {
  * block; a public field's definition may be rewritten in place in a later
  * block, which is why its stored column stays `internal`.
  */
-export function renameAccess(c: {
+function renameAccess(c: {
    access?: "private" | "internal";
 }): "private" | "internal" {
    return c.access ? "private" : "internal";
@@ -250,8 +250,8 @@ export function intoFirstExtend(
    if (extend === "") return `extend {${statements}\n}`;
    const tokens = lexAll(extend);
    if (!tokens) return undefined;
-   // A run that carries the author's `include { … }` (a v1 re-root under the
-   // cutover keeps it, `keepsIncludes`): the statements go in the first
+   // A run that carries the author's `include { … }` (a v1 re-root keeps
+   // it, `keepsIncludes`): the statements go in the first
    // extend block after the last one (or a block of their own when none
    // follows), never inside an include's braces, and never ahead of an
    // include whose `public: *` would make the internal names they rename to

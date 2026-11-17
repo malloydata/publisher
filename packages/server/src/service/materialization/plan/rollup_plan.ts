@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(preaggregate)` (materialization v2, phase 4): reading the declarations,
+ * `#(preaggregate)`: reading the declarations,
  * planning the rollups, and writing their build file.
  *
  *     source: flights is duckdb.table('flights.parquet') extend {
@@ -49,8 +49,17 @@
  *   joins a gated source, is a publish warning and the rollup is not built.
  *   A gated base's rollups are built only when a query can read them past
  *   their gate ({@link rollupGateEnforcedAtRead}); otherwise none is (row 21).
- *   An `internal` grain dimension a gate reads is the one hidden field a
- *   rollup stores, redeclared `internal` on the variant.
+ *   A hidden grain dimension is stored, redeclared with its modifier on
+ *   the variant (a `private` one only when the base itself declares it,
+ *   read through its build copy).
+ * - **Given-reading terms.** A `where:` of the base's own that reads a given,
+ *   over grain dimensions only, is left out of the build (its build copy
+ *   replaces it by `true`) and written again on the variant, where each
+ *   caller's givens bind it; any other is refused with the reason the one
+ *   classifier gives it on `#(materialize)`: `inherited_where_with_given`
+ *   for an inherited one, `given_where_over_unstored_field` for one over a
+ *   field the grain drops, `given_in_persisted_query` for one the build
+ *   would read.
  * - **A6, fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
  *   rollup only for a query that fixes it at every aggregating level.
@@ -65,6 +74,7 @@
  * readers are `governance/ir/source_graph.ts`'s single walk).
  */
 
+import { refusalKey } from "./refusal_key";
 import { keyCheckPipeline } from "../text/key_check_text";
 import {
    primaryKeyOf,
@@ -74,29 +84,68 @@ import {
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
 import { tableKeepsGates } from "../domain/gate_policy";
+import {
+   gateRefusalReason,
+   type GateRefusalReason,
+} from "../domain/gate_refusal";
+import { byReadCost } from "../domain/read_cost";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
+import { hasFanoutJoin } from "./preaggregation_validation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
 import { collectEntryPointGates } from "../../gate_classification";
 import { createHash } from "node:crypto";
-import { ownLevelNotes, type AnnotationNote } from "../../annotations";
+import {
+   ownLevelNotes,
+   type AnnotationNote,
+   type AnnotationsDef,
+} from "../../annotations";
 import {
    declaredFieldNotes,
+   declaredNotes,
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
+import { canonicalAuthorizeRoute } from "../../authorize_routes";
 import {
+   PREAGGREGATE_INVALID_CODE,
+   PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+   PREAGGREGATE_NOT_BUILT_CODE,
    PREAGGREGATE_ROUTE_KEYS,
    routeOfNote,
    type PackageAnnotationFinding,
+   type RefusalKey,
 } from "../../annotation_reader";
-import { placementOf, readNotes } from "./declaration";
+import type { RefusedReason } from "../domain/types";
+import { STORAGE_DIALECT } from "../domain/dialect";
+import { storedMalloyType } from "../stored_column_types";
+import {
+   destinationOf,
+   placementOf,
+   readNotes,
+   readNotesIfAny,
+   readRouteIfAny,
+} from "./declaration";
+import { Annotations } from "@malloydata/malloy";
+import type { DeclaredFreshness } from "../domain/freshness";
+import {
+   mergeRollupFreshness,
+   readFreshnessGroup,
+   rollupSourceFreshness,
+} from "./freshness_declaration";
+import { tagFreshnessLayer } from "./plan_layers";
 import { malloyIdentifiers } from "../../query_text";
 import {
    classifyWhereTerms,
    currentTimeFields,
    readsCurrentTime,
 } from "./persist_dynamic_terms";
-import { isSpliceableNamespace } from "./preaggregation_namespace";
+import { declarationOf, readTimeTermsOf } from "./materialize_read_time";
+import type { SourceDefLike } from "./build_file_generator";
+import type { GivenReadTerm, TermUse } from "../domain/read_time_terms";
+import {
+   namespaceRewrite,
+   readRollupContainer,
+} from "./preaggregation_namespace";
 import {
    measureAggregates,
    type MeasureAggregate,
@@ -115,7 +164,11 @@ import {
    type RollupMeasure,
    type RollupVariantPlan,
 } from "../domain/table_plans";
-import { rollupBaseAlias } from "../text/read_text";
+import {
+   ROLLUP_COMPANION_SUFFIX,
+   rollupBaseAlias,
+   rollupCompanionURLOf,
+} from "../text/read_text";
 
 export type { ParentKeyCheck, RollupKeyCheck };
 import type { SourceMap, SourceNode } from "../text/source_map";
@@ -148,25 +201,42 @@ export interface ParentKeyNeed {
 
 /**
  * Whether a rollup at `placement` over a gated base may be read past its
- * base's gate (and so is worth building), by the gate policy: under
- * `materialize.gatedSources`, colocated, or in a storage destination once the
- * managed-tier review allows it.
+ * base's gate (and so is worth building), by the gate policy: colocated,
+ * under `materialize.gatedSources` or, with it off, under G3 when every gate
+ * is the base's `own`; in a storage destination once the managed-tier review
+ * allows it.
  */
-function rollupsServeGatedBases(placement: { storage?: string }): boolean {
+function rollupsServeGatedBases(
+   placement: { storage?: string },
+   own: boolean,
+): boolean {
    return tableKeepsGates(
       {
          kind: "rollup",
          tier: placement.storage === undefined ? "colocated" : "storage",
          v1: false,
          baseGateProven: true,
+         gate: baseGateOf(own),
       },
       gateSwitches(),
    );
 }
 
 /**
- * A rollup the variant leg planned: a `#(preaggregate)` one, or a v1
- * `#@ preaggregate` line read as one (the cutover's G4).
+ * A rollup base's gates as the gate policy reads them: row-level, and
+ * `attributed` when every one is the base's own (G3 for rollups).
+ */
+function baseGateOf(own: boolean): {
+   rowLevel: boolean;
+   attributed: boolean;
+   inheritedRowFilter: boolean;
+} {
+   return { rowLevel: true, attributed: own, inheritedRowFilter: !own };
+}
+
+/**
+ * A rollup the rollup leg planned: a `#(preaggregate)` one, or a v1
+ * `#@ preaggregate` line read as one.
  */
 function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
    return (
@@ -181,8 +251,8 @@ function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
  * rollups): `govern()` grafts and proves the base's gates on the rollup
  * variant, so the tier checks that refuse a gated build (the colocated and
  * storage `authorize` refusals) do not apply to it. True only for a rollup
- * the variant leg planned (a `#(preaggregate)` one, or a v1 `#@ preaggregate`
- * line read as one, the cutover's G4) over a gated base, whose every gate the
+ * the rollup leg planned (a `#(preaggregate)` one, or a v1 `#@ preaggregate`
+ * line read as one) over a gated base, whose every gate the
  * planner proved exact on the rollup (table 1: each field a grain dimension,
  * no gated join), at a
  * placement the gate policy allows (`domain/gate_policy.ts`). The build plan, the
@@ -202,19 +272,55 @@ export function rollupGateEnforcedAtRead(plan: unknown): boolean {
                : "storage",
          v1: !variant,
          baseGateProven: variant && plan.baseGated === true,
+         gate: baseGateOf(variant && plan.baseGateOwn === true),
       },
       gateSwitches(),
    );
 }
 
-/** Why a declaration was not planned. */
-export interface RollupRefusal {
-   tier: "malformed" | "unservable";
+/**
+ * Why a declaration was not planned: an invalid one (`malformed`, which fails
+ * the load), or a valid one refused alone with its refusal record; or one
+ * planned with a warning naming its rewrite (`deprecated`).
+ */
+export type RollupRefusal = {
    code: string;
    message: string;
    /** The base source's name in the planning model. */
    sourceName: string;
    measure?: string;
+} & (
+   | { tier: "malformed" }
+   | { tier: "deprecated" }
+   | { tier: "unservable"; refused: RefusalKey }
+);
+
+/**
+ * The refusal record of a rollup declaration refused before its rollup is
+ * planned: named by the measure's path on its base (the base alone for a
+ * refusal of every rollup on it), and keyed, in the base file's rollup
+ * companion where no author source is declared, by that name and the table
+ * it would have had (its grain and destination), so two refused
+ * declarations on one measure are two records.
+ */
+export function measureRefusalKey(
+   baseSourceID: string,
+   baseName: string,
+   measure: string | undefined,
+   reason: RefusedReason,
+   table?: { grain: readonly string[]; storage?: string },
+): RefusalKey {
+   const url = splitSourceID(baseSourceID)?.url ?? "";
+   const name = measure !== undefined ? `${baseName}.${measure}` : baseName;
+   const at = table
+      ? `[${[...table.grain].sort().join(",")}${table.storage !== undefined ? ` in ${table.storage}` : ""}]`
+      : "";
+   return refusalKey(
+      `${name}${at}@${rollupCompanionURLOf(url)?.href ?? `${url}${ROLLUP_COMPANION_SUFFIX}`}`,
+      name,
+      reason,
+      "preaggregate",
+   );
 }
 
 interface FieldLike {
@@ -226,6 +332,8 @@ interface FieldLike {
    join?: unknown;
    expressionType?: unknown;
    accessModifier?: unknown;
+   /** A `sql native` field's warehouse type. */
+   rawType?: unknown;
    annotations?: Parameters<typeof ownLevelNotes>[0] & { inherits?: unknown };
 }
 
@@ -234,6 +342,7 @@ interface SourceLike {
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
    queryTimezone?: unknown;
+   dialect?: unknown;
 }
 
 const fieldNameOf = (f: FieldLike): string | undefined =>
@@ -258,6 +367,24 @@ const isDimension = (f: FieldLike) =>
 /** Fails closed, as `isHidden` does elsewhere: anything but `public` is hidden. */
 const isHidden = (f: FieldLike | undefined) =>
    f?.accessModifier != null && f.accessModifier !== "public";
+
+/** Whether `f` is declared inside the base's own statement (its location). */
+function declaredWithin(
+   f: FieldLike,
+   facts: Pick<RollupFacts, "declaration">,
+): boolean {
+   const at = (f as { location?: TermUse }).location;
+   const within = facts.declaration;
+   if (!at?.range || !within || at.url !== within.url) return false;
+   const before = (
+      a: { line: number; character: number },
+      b: { line: number; character: number },
+   ) => a.line < b.line || (a.line === b.line && a.character <= b.character);
+   return (
+      before(within.range.start, at.range.start) &&
+      before(at.range.end, within.range.end)
+   );
+}
 
 /** Every compiled source of `map`, once per map: what A1's reader looks among. */
 const scopes = new WeakMap<SourceMap, unknown[]>();
@@ -291,9 +418,19 @@ interface Declaration {
    measure: string;
    grain: string[];
    storage?: string;
-   namespace?: string;
    /**
-    * Read from a v1 `#@ preaggregate` line (the cutover's G4): a finding v1's
+    * The schema or dataset its table is created in: its `name=`'s container,
+    * its deprecated `namespace=`, or its base's `name=` container.
+    */
+   namespace?: string;
+   /** {@link namespace} was written as the deprecated `namespace=`. */
+   deprecatedNamespace?: true;
+   /** Its `name=`'s leaf, the readable prefix of its table's name. */
+   prefix?: string;
+   /** Its `freshness` group (freshness_declaration.ts). */
+   freshness?: DeclaredFreshness;
+   /**
+    * Read from a v1 `#@ preaggregate` line: a finding v1's
     * own validation already reports with the same code is not reported again.
     */
    v1?: true;
@@ -301,9 +438,10 @@ interface Declaration {
 
 /**
  * Read one note as a declaration, or a refusal. Unknown keys are malformed on
- * this route (a new route's key set is closed); so is a grain that is not a
- * list of names, a namespace beside a storage destination, and an `@env.`
- * reference, which is never read from a route Publisher owns.
+ * this route (the key set is closed); so is a grain that is not a list of
+ * names, a `name=` with no container to place its table in, a container
+ * beside a storage destination, and an `@env.` reference,
+ * which is never read from a route Publisher owns. Each fails the load.
  */
 function readDeclaration(
    note: AnnotationNote,
@@ -319,7 +457,7 @@ function readDeclaration(
    });
    if (/@env\./.test(note.text)) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          "reads the environment (`@env.`); write the value itself",
       );
    }
@@ -327,7 +465,7 @@ function readDeclaration(
    const errors = log.filter((m) => m.severity === "error");
    if (errors.length > 0) {
       return refuse(
-         "preaggregate-malformed",
+         "preaggregate-unparseable",
          `does not parse (${errors.map((e) => e.message).join("; ")})`,
       );
    }
@@ -336,13 +474,22 @@ function readDeclaration(
    if (unknown.length > 0) {
       return refuse(
          "preaggregate-unknown-key",
-         `has ${unknown.map((k) => `\`${k}=\``).join(", ")}, which it does not read; it reads grain=, storage= and namespace=`,
+         `has ${unknown.map((k) => `\`${k}=\``).join(", ")}, which it does not read; it reads grain=, storage=, name= and freshness.window= / freshness.fallback=`,
       );
    }
+   const fresh = readFreshnessGroup(tag, ["freshness"]);
+   if ("unknownKeys" in fresh) {
+      return refuse(
+         "preaggregate-unknown-key",
+         `has ${fresh.unknownKeys.map((k) => `\`freshness.${k}=\``).join(", ")}, which it does not read; use freshness.window= or freshness.fallback=`,
+      );
+   }
+   if ("invalid" in fresh)
+      return refuse(PREAGGREGATE_INVALID_CODE, fresh.invalid);
    const items = tag.array("grain");
    if (!items) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          'needs grain=[…], a list of the dimensions to store it at, such as grain=["category"]',
       );
    }
@@ -352,40 +499,35 @@ function readDeclaration(
       grain.some((g) => typeof g !== "string" || g.trim() === "")
    ) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          "has a grain=[…] that names nothing, or holds something other than quoted dimension names",
       );
    }
    const placed = placementOf(tag);
-   const namespace = keys.includes("namespace")
-      ? tag.text("namespace")
-      : undefined;
    if ("refused" in placed) {
       return refuse(
-         "preaggregate-malformed",
+         PREAGGREGATE_INVALID_CODE,
          "has a storage= that is not a destination name",
       );
    }
-   if (keys.includes("namespace") && !namespace?.trim()) {
-      return refuse(
-         "preaggregate-malformed",
-         "has a namespace= that is not a name",
-      );
+   const keyText = (key: string) =>
+      keys.includes(key) ? (tag.text(key) ?? "") : undefined;
+   const placedIn = readRollupContainer({
+      name: keyText("name"),
+      namespace: keyText("namespace"),
+   });
+   if ("invalid" in placedIn) {
+      return refuse(PREAGGREGATE_INVALID_CODE, placedIn.invalid);
    }
+   const namespace = placedIn.container;
    const storage =
       "placement" in placed && placed.placement.tier === "storage"
          ? placed.placement.destination
          : undefined;
    if (storage !== undefined && namespace !== undefined) {
       return refuse(
-         "preaggregate-malformed",
-         "names both storage= and namespace=; a destination places its own tables",
-      );
-   }
-   if (namespace !== undefined && !isSpliceableNamespace(namespace)) {
-      return refuse(
-         "preaggregate-malformed",
-         `has namespace="${namespace}", which is not plain dot-separated names`,
+         PREAGGREGATE_INVALID_CODE,
+         `names both storage= and ${placedIn.deprecatedNamespace ? "namespace=" : "name="}; a destination places its own tables`,
       );
    }
    return {
@@ -395,6 +537,9 @@ function readDeclaration(
       ),
       ...(storage !== undefined ? { storage } : {}),
       ...(namespace !== undefined ? { namespace } : {}),
+      ...(placedIn.deprecatedNamespace ? { deprecatedNamespace: true } : {}),
+      ...(placedIn.prefix !== undefined ? { prefix: placedIn.prefix } : {}),
+      ...(fresh.freshness ? { freshness: fresh.freshness } : {}),
    };
 }
 
@@ -448,21 +593,21 @@ interface RollupPlanContext {
    readUnderGates?: boolean;
    /**
     * Whether v1 `#@ preaggregate` lines are read as `#(preaggregate)`
-    * declarations (the v1 cutover's G4). Absent: they are.
+    * declarations. Absent: they are.
     */
-   readsV1?: boolean;
+   readsPreaggregateLines?: boolean;
    /**
     * Whether `#(preaggregate)` declarations are read. Absent: they are. A
-    * caller that plans only because the v1 cutover is on passes
-    * `getMaterializeEnabled()`, so v2's route stays unread with its switch
-    * off.
+    * caller that plans v1 rollups whatever the switch passes
+    * `getMaterializeEnabled()`, so `#(preaggregate)` stays unread with its
+    * switch off.
     */
-   readsV2?: boolean;
+   readsPreaggregateDeclarations?: boolean;
 }
 
 /**
- * Plan the rollups `node` declares (its own `#(preaggregate)` notes only), in
- * coarsest-first order (fewest grain dimensions, then name).
+ * Plan the rollups `node` declares (its own `#(preaggregate)` notes only),
+ * cheapest read first ({@link byReadCost}).
  */
 export function planSourceRollups(
    map: SourceMap,
@@ -471,22 +616,181 @@ export function planSourceRollups(
 ): { plans: RollupVariantPlan[]; refused: RollupRefusal[] } {
    const def = node.def as SourceLike;
    const sourceName = node.name ?? splitSourceID(node.sourceID)?.name ?? "";
-   const refused: RollupRefusal[] = [];
    const fields = (def.fields ?? []) as FieldLike[];
    const byName = new Map<string, FieldLike>();
    for (const f of fields) {
       const n = fieldNameOf(f);
       if (n !== undefined) byName.set(n, f);
    }
-   const sources = scopeOf(map);
+   const { declarations, refused } = rollupDeclarationsOf(
+      map,
+      def,
+      sourceName,
+      ctx,
+   );
+   if (declarations.length === 0) return { plans: [], refused };
+   const facts = rollupFactsOf(map, node, def, byName, sourceName);
 
-   // Every declaration this source writes, and a refusal for one on a field
-   // that is not a measure (the wrong kind of field: malformed).
+   // Group by grain and placement: ten measures at one grain are one table.
+   const groups = new Map<
+      string,
+      {
+         decl: Declaration;
+         measures: RollupMeasure[];
+         declarations: Declaration[];
+      }
+   >();
+   const decomposed = new Map<string, ReturnType<typeof decomposeMeasure>>();
+   for (const decl of declarations) {
+      const declined = declarationRefusal(decl, facts, ctx);
+      if (declined === "skip") continue;
+      if (declined) {
+         refused.push(declined);
+         continue;
+      }
+      let d = decomposed.get(decl.measure);
+      if (!d) {
+         d = checkedAgainstIR(
+            decomposeMeasure(decl.measure, facts.scope),
+            measureAggregates(def, decl.measure),
+         );
+         decomposed.set(decl.measure, d);
+      }
+      // v1's validation fails the load for its own non-additive measure.
+      if (decl.v1 && isMeasureRefusal(d) && d.kind === "not_mergeable") {
+         continue;
+      }
+      const measure = rollupMeasureOf(decl, d, facts);
+      if ("tier" in measure) {
+         refused.push(measure);
+         continue;
+      }
+      const key = [
+         ...decl.grain,
+         `storage=${decl.storage ?? ""}`,
+         `namespace=${decl.namespace ?? ""}`,
+      ].join("\u0000");
+      const group = groups.get(key) ?? {
+         decl,
+         measures: [],
+         declarations: [],
+      };
+      if (!group.measures.some((m) => m.name === decl.measure)) {
+         group.measures.push(measure);
+      }
+      group.declarations.push(decl);
+      groups.set(key, group);
+   }
+
+   // One table has one freshness: measures at one grain and placement that
+   // declare different ones are malformed, and the rollup is not planned. A
+   // conflict among v1 lines alone is v1 validation's to report
+   // (`conflicting_freshness`); one that a `#(preaggregate)` takes part in,
+   // which v1 validation does not see, is reported here.
+   const plans: RollupVariantPlan[] = [];
+   const baseFreshness = declaredBaseFreshness(def);
+   for (const group of groups.values()) {
+      const merged = mergeRollupFreshness(
+         group.declarations.map((d) => d.freshness),
+      );
+      if ("conflict" in merged) {
+         if (!group.declarations.every((d) => d.v1)) {
+            refused.push({
+               tier: "malformed",
+               code: PREAGGREGATE_INVALID_CODE,
+               message: `rollups of source "${sourceName}" declare a different freshness.${merged.conflict}= on measures at the grain [${group.decl.grain.join(", ")}]; one grain is one rollup table, so give every measure at it the same one`,
+               sourceName,
+            });
+         }
+         continue;
+      }
+      // One table has one name: measures at one grain and placement that
+      // write different `name=` leaves are malformed.
+      const prefixes = new Set(group.declarations.map((d) => d.prefix ?? ""));
+      if (prefixes.size > 1) {
+         refused.push({
+            tier: "malformed",
+            code: PREAGGREGATE_INVALID_CODE,
+            message: `rollups of source "${sourceName}" name different tables (name=) on measures at the grain [${group.decl.grain.join(", ")}]; one grain is one rollup table, so give every measure at it the same name=`,
+            sourceName,
+         });
+         continue;
+      }
+      const freshness = rollupSourceFreshness(merged.freshness, baseFreshness);
+      plans.push({
+         ...rollupPlanOf(group, node, facts, ctx),
+         ...(freshness ? { freshness } : {}),
+      });
+   }
+   plans.sort(byReadCost);
+   return { plans, refused };
+}
+
+/**
+ * The base's own source-level freshness: its `#@ persist` line's, else its
+ * `#(materialize)` declaration's, field by field. A rollup inherits it under
+ * its own (freshness_declaration.ts), so a rollup and its base go stale
+ * together unless the rollup says otherwise.
+ */
+function declaredBaseFreshness(def: SourceLike): DeclaredFreshness | undefined {
+   if (!def.annotations) return undefined;
+   const annotations = new Annotations(
+      def.annotations as ConstructorParameters<typeof Annotations>[0],
+   );
+   return rollupSourceFreshness(
+      tagFreshnessLayer(readRouteIfAny(annotations, "@")),
+      tagFreshnessLayer(readRouteIfAny(annotations, "materialize")),
+   );
+}
+
+/**
+ * Every rollup declaration `def` writes, its `#(preaggregate)` notes and its
+ * measures' own v1 `#@ preaggregate` lines, with a refusal
+ * for a declaration on a field that is not a measure (malformed).
+ */
+function rollupDeclarationsOf(
+   map: SourceMap,
+   def: SourceLike,
+   sourceName: string,
+   ctx: RollupPlanContext,
+): { declarations: Declaration[]; refused: RollupRefusal[] } {
+   const refused: RollupRefusal[] = [];
+   const fields = (def.fields ?? []) as FieldLike[];
+   const sources = scopeOf(map);
    const declarations: Declaration[] = [];
-   // `#(preaggregate)` is read unless the caller runs only for the v1
-   // cutover (`readsV2: false`), which reads v1's lines below alone.
-   const readsV2 = ctx.readsV2 ?? true;
-   for (const field of readsV2 ? fields : []) {
+   // `#(preaggregate)` is read unless the caller reads only v1's lines below
+   // (`readsPreaggregateDeclarations: false`).
+   const readsPreaggregateDeclarations =
+      ctx.readsPreaggregateDeclarations ?? true;
+   // One placement rule for both spellings: a grain with no container of its
+   // own (and no storage=) is created beside its base's colocated `name=`,
+   // and a deprecated `namespace=` is read with a warning naming `name=`.
+   const inherited = basePersistNamespace(
+      { annotations: def.annotations },
+      { materialize: readsPreaggregateDeclarations },
+   );
+   const deprecationWarned = new Set<string>();
+   const placed = (decl: Declaration): Declaration => {
+      if (decl.deprecatedNamespace && decl.namespace !== undefined) {
+         const key = `${decl.measure}\u0000${decl.namespace}`;
+         if (!deprecationWarned.has(key)) {
+            deprecationWarned.add(key);
+            refused.push({
+               tier: "deprecated",
+               code: PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+               message: `Measure "${decl.measure}" of source "${sourceName}" places its rollup with namespace="${decl.namespace}": ${namespaceRewrite(decl.namespace)}.`,
+               sourceName,
+               measure: decl.measure,
+            });
+         }
+      }
+      return decl.namespace === undefined &&
+         decl.storage === undefined &&
+         inherited !== undefined
+         ? { ...decl, namespace: inherited }
+         : decl;
+   };
+   for (const field of readsPreaggregateDeclarations ? fields : []) {
       const name = fieldNameOf(field);
       if (name === undefined) continue;
       const notes = declaredRollupNotes(def, field, sources);
@@ -504,22 +808,18 @@ export function planSourceRollups(
       for (const note of notes) {
          const read = readDeclaration(note, name, sourceName);
          if ("tier" in read) refused.push(read);
-         else declarations.push(read);
+         else declarations.push(placed(read));
       }
    }
-   // The v1 cutover (G4): a measure's own `#@ preaggregate` lines, read by
-   // v1's own reader (a grain per line, `#@ -preaggregate` clearing those
-   // above it, `storage=` and `namespace=` bound to their line), are this
-   // leg's declarations too, so a v1 rollup is planned, built (under the v2
-   // rollup's table name, so it rebuilds once) and served here, and the v1
-   // composite is not. A line v1 reports as unusable is left to v1's own
-   // validation.
-   if (ctx.readsV1 ?? true) {
-      // As v1 places it: a grain naming no namespace (and no storage=) is
-      // created beside its base's own `#@ persist name=`.
-      const inheritedNamespace = basePersistNamespace({
-         annotations: def.annotations,
-      });
+   // A measure's own v1 `#@ preaggregate` lines, read by v1's own reader (a
+   // grain per line, `#@ -preaggregate` clearing those above it, `storage=`
+   // and `name=` bound to their line), are this leg's declarations too,
+   // so a v1 rollup is planned, built (under the `#(preaggregate)` rollup's
+   // table name) and served here. A line v1 reports as unusable is left to
+   // v1's own validation. A source with a fan-out join has its v1 rollups
+   // refused alone (`base_source_has_fanout_join`, which v1's validation
+   // reports): none is planned, so its measures answer live.
+   if ((ctx.readsPreaggregateLines ?? true) && !hasFanoutJoin({ fields })) {
       for (const field of fields) {
          const name = fieldNameOf(field);
          if (name === undefined || !isMeasure(field)) continue;
@@ -534,25 +834,35 @@ export function planSourceRollups(
             annotations: { notes },
          });
          for (const grain of read.grains) {
-            declarations.push({
-               measure: name,
-               grain: grain.dimensions,
-               v1: true,
-               ...(grain.storage !== undefined
-                  ? { storage: grain.storage }
-                  : {}),
-               ...(grain.namespace !== undefined
-                  ? { namespace: grain.namespace }
-                  : grain.storage === undefined &&
-                      inheritedNamespace !== undefined
-                    ? { namespace: inheritedNamespace }
-                    : {}),
-            });
+            declarations.push(
+               placed({
+                  measure: name,
+                  grain: grain.dimensions,
+                  v1: true,
+                  ...(grain.freshness !== undefined
+                     ? { freshness: grain.freshness }
+                     : {}),
+                  ...(grain.storage !== undefined
+                     ? { storage: grain.storage }
+                     : {}),
+                  ...(grain.namespace !== undefined
+                     ? { namespace: grain.namespace }
+                     : {}),
+                  ...(grain.deprecatedNamespace
+                     ? { deprecatedNamespace: true }
+                     : {}),
+                  ...(grain.prefix !== undefined
+                     ? { prefix: grain.prefix }
+                     : {}),
+               }),
+            );
          }
       }
    }
    // A source-level declaration names no measure.
-   for (const note of readsV2 ? ownLevelNotes(def.annotations) : []) {
+   for (const note of readsPreaggregateDeclarations
+      ? ownLevelNotes(def.annotations)
+      : []) {
       if (routeOfNote(note.text) !== PREAGGREGATE_ROUTE) continue;
       refused.push({
          tier: "malformed",
@@ -561,13 +871,70 @@ export function planSourceRollups(
          sourceName,
       });
    }
-   if (declarations.length === 0) return { plans: [], refused };
+   return { declarations, refused };
+}
 
+/** What deciding each of a source's rollup declarations reads. */
+interface RollupFacts {
+   sourceName: string;
+   byName: ReadonlyMap<string, FieldLike>;
+   joins: ReadonlyMap<string, ReturnType<SourceMap["joinsOf"]>[number]>;
+   joinUsage: ReturnType<SourceMap["fieldJoinsOf"]>;
+   declaredName: string;
+   gate: ReturnType<typeof gateFieldNames>;
+   /** The source's rows read the current time (S25b). */
+   windowed: boolean;
+   /**
+    * The base's own given-reading `where:` terms, re-applied on the variant
+    * (each over grain dimensions only), or why they cannot be.
+    */
+   given:
+      | { terms: GivenReadTerm[] }
+      | {
+           refused: string;
+           /** The shared classifier's reason (`readTimeTermsOf`), as on `#(materialize)`. */
+           reason:
+              | "inherited_where_with_given"
+              | "given_in_persisted_query"
+              | "given_where_over_unstored_field";
+        };
+   /** Where the base is declared, for its build copy's edits. */
+   declaration: TermUse | undefined;
+   timeFields: ReturnType<typeof currentTimeFields>;
+   /** The time zone the source sets, and whether a source in it joins it. */
+   zone: ReturnType<typeof timezoneOf>;
+   joinedInZone: boolean;
+   /** Whether a same-zone joiner reads a rollup placed in `storage` (none: colocated). */
+   readInZone(storage: string | undefined): boolean;
+   scope: Parameters<typeof decomposeMeasure>[1];
+   /** The joins a field path reads, or undefined when unknown. */
+   joinsRead(path: readonly string[]): string[] | undefined;
+   /** The base's dialect. */
+   dialect: string | undefined;
+   unservable(
+      reason: RefusedReason,
+      decl: Declaration,
+      why: string,
+   ): RollupRefusal;
+}
+
+function rollupFactsOf(
+   map: SourceMap,
+   node: SourceNode,
+   def: SourceLike,
+   byName: ReadonlyMap<string, FieldLike>,
+   sourceName: string,
+): RollupFacts {
    const joins = new Map(map.joinsOf(node.sourceID).map((j) => [j.name, j]));
    const joinUsage = map.fieldJoinsOf(node.sourceID);
-   const relativeID = ctx.packageRelativeSourceID(node.sourceID);
    const declaredName = splitSourceID(node.sourceID)?.name ?? sourceName;
-   const gate = gateFieldNames(def, byName, map.model(), joinUsage);
+   const gate = gateFieldNames(
+      def,
+      byName,
+      map.model(),
+      joinUsage,
+      scopeOf(map),
+   );
    // S25b: what reads the current time. A rollup stores what its build saw,
    // and a live query re-reads `now` every time, so anything here that reads
    // it (a rolling window on the source or a query-shaped base, a grain
@@ -580,26 +947,52 @@ export function planSourceRollups(
             t.dependsOn.kind === "given_and_current_time",
       ) || readsCurrentTime((def as { query?: unknown }).query);
    const timeFields = currentTimeFields(def.fields);
-   // #1686: a source that sets its own `timezone:` (or inherits one) built
-   // its times in that zone, and the base leg reads no query on it from a
+   // A given-reading `where:` of the base's own, over its dimensions, is left
+   // out of the build and written again on the variant, as the served copy
+   // re-applies one (P2); an inherited one (`inherited_where_with_given`), one
+   // over a field that is not a dimension (`given_where_over_unstored_field`),
+   // or one the build would read (`given_in_persisted_query`), is refused by
+   // the one classifier `#(materialize)` reads, with its reason.
+   const read = readTimeTermsOf(
+      def as SourceDefLike,
+      classifyWhereTerms(def).filter((t) => t.dependsOn.kind === "given"),
+      [...byName].flatMap(([n, f]) =>
+         isDimension(f) ? [{ column: n }] : [],
+      ) as never,
+      ((map.model() as { givens?: Record<string, unknown> } | undefined)
+         ?.givens ?? {}) as Record<string, unknown>,
+   );
+   const given = read.ok
+      ? { terms: read.terms }
+      : { refused: read.reason, reason: read.refusal };
+   const declaration = declarationOf(def as SourceDefLike);
+   // A source that sets its own `timezone:` (or inherits one) built its
+   // times in that zone, and the base branch reads no query on it from a
    // rollup (`TIME_ZONE`), whose variant is redeclared without the zone. The
-   // only reader left is the join leg (A7): through a join from a source in
-   // the same zone, colocated or, since #1704, in a `storage=` destination
-   // the joining source is stored in too (the leg declines at read when it
-   // is not). Anything else is never read.
+   // only reader left is the join branch (A7): through a join from a source
+   // in the same zone, to a colocated rollup or to one in a `storage=`
+   // destination the joining source is stored in too (the branch reads no
+   // other: `CROSS_CONNECTION`). Anything else is never read.
+   // rollup_plan.spec.ts pins both.
    const zone = timezoneOf(def);
-   const joinedInZone =
-      zone !== undefined &&
-      map
-         .nodes()
-         .some(
-            (n) =>
-               n.sourceID !== node.sourceID &&
-               recordedTimezoneOf(n.def) === zone &&
-               map
-                  .joinsOf(n.sourceID)
-                  .some((j) => j.sourceID === node.sourceID),
-         );
+   const joinersInZone =
+      zone === undefined
+         ? []
+         : [...map.nodes()].filter(
+              (n) =>
+                 n.sourceID !== node.sourceID &&
+                 recordedTimezoneOf(n.def) === zone &&
+                 map
+                    .joinsOf(n.sourceID)
+                    .some((j) => j.sourceID === node.sourceID),
+           );
+   /** Whether a same-zone joiner reads a rollup placed in `storage` (none: colocated). */
+   const readInZone = (storage: string | undefined) =>
+      storage === undefined
+         ? joinersInZone.length > 0
+         : joinersInZone.some((n) =>
+              storedDestinationsOf(map, n.def).has(storage),
+           );
    const scope = {
       measureCode: (n: string) => {
          const f = byName.get(n);
@@ -622,317 +1015,384 @@ export function planSourceRollups(
       return [...usage.joins];
    };
    const unservable = (
-      code: string,
-      measure: string,
+      reason: RefusedReason,
+      decl: Declaration,
       why: string,
    ): RollupRefusal => ({
       tier: "unservable",
-      code,
-      message: `#(preaggregate) on measure "${measure}" of source "${sourceName}" is not built, so the measure is served live: ${why}.`,
+      code: PREAGGREGATE_NOT_BUILT_CODE,
+      message: `#(preaggregate) on measure "${decl.measure}" of source "${sourceName}" is not built, so the measure is served live: ${why}.`,
       sourceName,
-      measure,
+      measure: decl.measure,
+      refused: measureRefusalKey(
+         node.sourceID,
+         declaredName,
+         decl.measure,
+         reason,
+         decl,
+      ),
    });
 
-   // Group by grain and placement: ten measures at one grain are one table.
-   const groups = new Map<
-      string,
-      { decl: Declaration; measures: RollupMeasure[] }
-   >();
-   const decomposed = new Map<string, ReturnType<typeof decomposeMeasure>>();
-   for (const decl of declarations) {
-      const field = byName.get(decl.measure) as FieldLike;
-      if (isHidden(field)) {
-         // v1's validation warns for its own line (preaggregate-hidden-field).
-         if (decl.v1) continue;
-         refused.push(
-            unservable(
-               "preaggregate-hidden-field",
-               decl.measure,
-               "the measure is not public, and a rollup would publish it",
-            ),
-         );
-         continue;
-      }
-      const grainProblem = decl.grain
-         .map((g) => {
-            const f = byName.get(g);
-            if (g.includes(".")) {
-               return `the grain names \`${g}\`, a path; declare a dimension on the source that reads it, and name that`;
-            }
-            if (!f || !isDimension(f)) {
-               return `the grain names \`${g}\`, which is not a dimension of the source`;
-            }
-            return undefined;
-         })
-         .find((p) => p !== undefined);
-      if (grainProblem) {
-         refused.push({
-            tier: "malformed",
-            code: "preaggregate-unknown-grain",
-            message: `#(preaggregate) on measure "${decl.measure}" of source "${sourceName}": ${grainProblem}`,
-            sourceName,
-            measure: decl.measure,
-         });
-         continue;
-      }
-      const timeRead = windowed
-         ? "the source's rows read the current time (a `where:` with `now`, a rolling window)"
-         : timeFields.has(decl.measure)
-           ? "the measure reads the current time (`now`)"
-           : decl.grain
-                .filter((g) => timeFields.has(g))
-                .map(
-                   (g) =>
-                      `its grain dimension \`${g}\` reads the current time (\`now\`)`,
-                )[0];
-      if (timeRead) {
-         refused.push(
-            unservable(
-               "preaggregate-current-time",
-               decl.measure,
-               `${timeRead}, which a rollup would fix at build time while a live query reads it again at every read`,
-            ),
-         );
-         continue;
-      }
-      if (zone !== undefined && !joinedInZone) {
-         refused.push(
-            unservable(
-               "preaggregate-time-zone",
-               decl.measure,
-               `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads`,
-            ),
-         );
-         continue;
-      }
-      // An `internal` grain dimension a gate reads is stored (A4): the gate
-      // needs it on the rollup's rows, and the variant redeclares it
-      // `internal`, so no query selects it. Any other hidden field is not.
-      const hiddenGrain = decl.grain.find(
-         (g) =>
-            isHidden(byName.get(g)) &&
-            !(
-               byName.get(g)?.accessModifier === "internal" &&
-               gate.dimensions.includes(g)
-            ),
+   return {
+      sourceName,
+      byName,
+      joins,
+      joinUsage,
+      declaredName,
+      gate,
+      windowed,
+      given,
+      declaration,
+      timeFields,
+      zone,
+      joinedInZone: joinersInZone.length > 0,
+      readInZone,
+      scope,
+      joinsRead,
+      dialect: typeof def.dialect === "string" ? def.dialect : undefined,
+      unservable,
+   };
+}
+
+/**
+ * Why `decl` is not built, as a refusal; `skip` for one v1's own validation
+ * already reports; undefined when it may be built. Checked in order: a hidden
+ * measure, a grain that is not the source's dimensions, the current time, the
+ * source's own time zone, a hidden grain dimension, a `storage=` grain no
+ * stored read declares, and the source's gates.
+ */
+function declarationRefusal(
+   decl: Declaration,
+   facts: RollupFacts,
+   ctx: RollupPlanContext,
+): RollupRefusal | "skip" | undefined {
+   const { byName, sourceName, unservable, gate, timeFields, zone } = facts;
+   const field = byName.get(decl.measure) as FieldLike;
+   if (isHidden(field)) {
+      // v1's validation warns for its own line (preaggregate-hidden-field).
+      if (decl.v1) return "skip";
+      return unservable(
+         "hidden_field",
+         decl,
+         "the measure is not public, and a rollup would publish it",
       );
-      if (hiddenGrain) {
-         if (decl.v1) continue;
-         refused.push(
-            unservable(
-               "preaggregate-hidden-field",
-               decl.measure,
-               `its grain dimension \`${hiddenGrain}\` is not public, and a rollup would publish it`,
-            ),
-         );
-         continue;
+   }
+   const grainProblem = decl.grain
+      .map((g) => {
+         const f = byName.get(g);
+         if (g.includes(".")) {
+            return `the grain names \`${g}\`, a path; declare a dimension on the source that reads it, and name that`;
+         }
+         if (!f || !isDimension(f)) {
+            return `the grain names \`${g}\`, which is not a dimension of the source`;
+         }
+         return undefined;
+      })
+      .find((p) => p !== undefined);
+   if (grainProblem) {
+      // v1's validation fails the load for its own line, in its words.
+      if (decl.v1) return "skip";
+      return {
+         tier: "malformed",
+         code: "preaggregate-unknown-grain",
+         message: `#(preaggregate) on measure "${decl.measure}" of source "${sourceName}": ${grainProblem}`,
+         sourceName,
+         measure: decl.measure,
+      };
+   }
+   const timeRead = facts.windowed
+      ? "the source's rows read the current time (a `where:` with `now`, a rolling window)"
+      : timeFields.has(decl.measure)
+        ? "the measure reads the current time (`now`)"
+        : decl.grain
+             .filter((g) => timeFields.has(g))
+             .map(
+                (g) =>
+                   `its grain dimension \`${g}\` reads the current time (\`now\`)`,
+             )[0];
+   if (timeRead) {
+      return unservable(
+         "current_time",
+         decl,
+         `${timeRead}, which a rollup would fix at build time while a live query reads it again at every read`,
+      );
+   }
+   if (zone !== undefined && !facts.readInZone(decl.storage)) {
+      const noJoin =
+         decl.storage === undefined || !facts.joinedInZone
+            ? "no source in the same zone joins it"
+            : `no source in the same zone that joins it is stored in \`${decl.storage}\`, the only place a join reads a rollup there from`;
+      return unservable(
+         "time_zone",
+         decl,
+         `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (${noJoin}), so its table would cost a build no query reads`,
+      );
+   }
+   // A hidden grain dimension is stored and redeclared with its modifier on
+   // the variant, so no query selects it, as the served copy stores a hidden
+   // column: `internal` lifted by the build's `include { public: * }`,
+   // `private` by its build copy, which lifts only what the base's own
+   // statement declares. One private on a source it extends stays private,
+   // and is never stored.
+   const hiddenGrain = decl.grain.find((g) => {
+      const f = byName.get(g);
+      return (
+         isHidden(f) &&
+         f?.accessModifier !== "internal" &&
+         !(f?.accessModifier === "private" && declaredWithin(f, facts))
+      );
+   });
+   if (hiddenGrain) {
+      return unservable(
+         "hidden_field",
+         decl,
+         `its grain dimension \`${hiddenGrain}\` is private on a source it extends, which a rollup's build cannot read`,
+      );
+   }
+   const unreadableGrain =
+      decl.storage === undefined
+         ? undefined
+         : unreadableStoredGrain(decl.grain, byName, facts.dialect);
+   if (unreadableGrain) {
+      return unservable(
+         "unreadable_grain",
+         decl,
+         `its grain dimension \`${unreadableGrain.name}\` is stored as ${unreadableGrain.storedType}, which no read of a storage destination declares, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse, which reads it`,
+      );
+   }
+   if ("refused" in facts.given) {
+      return unservable(facts.given.reason, decl, facts.given.refused);
+   }
+   const ungrained = facts.given.terms
+      .flatMap((t) => t.columns)
+      .filter((c) => !decl.grain.includes(c));
+   if (ungrained.length > 0) {
+      // A given-reading `where:` over a field the table does not store, as
+      // the classifier names it on `#(materialize)`: the fix is the grain.
+      return unservable(
+         "given_where_over_unstored_field",
+         decl,
+         // malloy-text: a warning message for a person, not Malloy
+         `the source's \`where:\` reads a given and ${[...new Set(ungrained)].map((c) => `\`${c}\``).join(", ")}, which the grain does not keep, so it could not be re-applied to the rollup's rows per caller`,
+      );
+   }
+   // Row 21: a gated base's rollup is built only where a query can read
+   // it past the gate; elsewhere its table would cost a build no query
+   // reads.
+   if (
+      gate.declared &&
+      !(ctx.readUnderGates ?? rollupsServeGatedBases(decl, gate.own))
+   ) {
+      return unservable(
+         gate.reason.base,
+         decl,
+         decl.storage !== undefined
+            ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
+            : "the source's row-level gate (`#(access_filter)` or `#(authorize)`) is inherited from a source it extends, and a rollup keeps only its base's own gate unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
+      );
+   }
+   // A gate on a source the base joins is not the base's to graft: the
+   // rollup is not built (A4, fail closed).
+   if (gate.declared && gate.joinGated) {
+      return unservable(
+         gate.reason.joined,
+         decl,
+         "a source it joins has a row-level gate, which a rollup cannot re-apply to its rows",
+      );
+   }
+   // A4: a gate's fields must be in the grain for its rows to be filtered;
+   // a gate that reads through a join (or anything but a dimension) can
+   // never be re-applied to a rollup's rows.
+   const ungated = [
+      ...gate.unkeepable,
+      ...gate.dimensions.filter((g) => !decl.grain.includes(g)),
+   ];
+   if (ungated.length > 0) {
+      return unservable(
+         gate.reason.base,
+         decl,
+         // malloy-text: a warning message for a person, not Malloy
+         `the source's access filter reads ${ungated.map((g) => `\`${g}\``).join(", ")}, which the grain does not keep, so the rollup's rows could not be filtered per caller`,
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The first grain dimension a `storage=` rollup's table would store as a type
+ * no stored read declares ({@link storedMalloyType}: a BLOB, an INTERVAL, a
+ * MAP or a JSON), with that type. Every read of the rollup groups by its
+ * grain, so such a table is never read. Judged only for a DuckDB-dialect
+ * base, whose warehouse type is the type the destination stores; another
+ * warehouse's native type may arrive as another type, which serve judges.
+ */
+function unreadableStoredGrain(
+   grain: readonly string[],
+   byName: ReadonlyMap<string, FieldLike>,
+   dialect: string | undefined,
+): { name: string; storedType: string } | undefined {
+   if (dialect !== STORAGE_DIALECT) return undefined;
+   for (const name of grain) {
+      const f = byName.get(name);
+      if (f?.type !== "sql native" || typeof f.rawType !== "string") continue;
+      const storedType = f.rawType.toUpperCase();
+      if (storedMalloyType(storedType) === undefined) {
+         return { name, storedType };
       }
-      // Row 21: a gated base's rollup is built only where a query can read
-      // it past the gate; elsewhere its table would cost a build no query
-      // reads.
+   }
+   return undefined;
+}
+
+/**
+ * The measure `decl` stores, its partials and merge, or the refusal of a
+ * measure whose partials cannot be merged or read, that aggregates through a
+ * join its grain does not key, or whose partial's column is taken.
+ */
+function rollupMeasureOf(
+   decl: Declaration,
+   d: ReturnType<typeof decomposeMeasure>,
+   facts: RollupFacts,
+): RollupMeasure | RollupRefusal {
+   const { byName, sourceName, unservable, joins, joinsRead } = facts;
+   if (isMeasureRefusal(d)) {
+      return d.kind === "not_mergeable"
+         ? {
+              tier: "malformed",
+              code: "preaggregate-not-mergeable",
+              message: `#(preaggregate) on measure "${decl.measure}" of source "${sourceName}": its partials cannot be merged (${d.detail}). Store sum, count, min and max measures, and derive the rest from them`,
+              sourceName,
+              measure: decl.measure,
+           }
+         : unservable(
+              "unreadable_measure",
+              decl,
+              `its definition is outside what #(preaggregate) reads (${d.detail})`,
+           );
+   }
+   // A2: a join-level aggregate merges only when each joined row falls in
+   // one group, which the join's key in the grain guarantees.
+   let joinProblem: string | undefined;
+   const measureFanOut = new Set<string>();
+   for (const leaf of d.leaves) {
+      // A join-level sum or count is deduplicated at the joined rows, so
+      // its partials add up only across groups with different keys: every
+      // other grain dimension must be fixed when it is read. Through more
+      // than one join, two keys in the grain can share a joined row.
       if (
-         gate.declared &&
-         !(ctx.readUnderGates ?? rollupsServeGatedBases(decl))
+         leaf.joinPath.length > 0 &&
+         leaf.aggregate !== "min" &&
+         leaf.aggregate !== "max"
       ) {
-         refused.push(
-            unservable(
-               "preaggregate-access-filter",
-               decl.measure,
-               decl.storage !== undefined && gateSwitches().gatedSources
-                  ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
-                  : "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
-            ),
-         );
-         continue;
-      }
-      // A gate on a source the base joins is not the base's to graft: the
-      // rollup is not built (A4, fail closed).
-      if (gate.declared && gate.joinGated) {
-         refused.push(
-            unservable(
-               "preaggregate-access-filter",
-               decl.measure,
-               "a source it joins has a row-level gate, which a rollup cannot re-apply to its rows",
-            ),
-         );
-         continue;
-      }
-      // A4: a gate's fields must be in the grain for its rows to be filtered;
-      // a gate that reads through a join (or anything but a dimension) can
-      // never be re-applied to a rollup's rows.
-      const ungated = [
-         ...gate.unkeepable,
-         ...gate.dimensions.filter((g) => !decl.grain.includes(g)),
-      ];
-      if (ungated.length > 0) {
-         refused.push(
-            unservable(
-               "preaggregate-access-filter",
-               decl.measure,
-               // malloy-text: a warning message for a person, not Malloy
-               `the source's access filter reads ${ungated.map((g) => `\`${g}\``).join(", ")}, which the grain does not keep, so the rollup's rows could not be filtered per caller`,
-            ),
-         );
-         continue;
-      }
-      let d = decomposed.get(decl.measure);
-      if (!d) {
-         d = checkedAgainstIR(
-            decomposeMeasure(decl.measure, scope),
-            measureAggregates(def, decl.measure),
-         );
-         decomposed.set(decl.measure, d);
-      }
-      if (isMeasureRefusal(d)) {
-         refused.push(
-            d.kind === "not_mergeable"
-               ? {
-                    tier: "malformed",
-                    code: "preaggregate-not-mergeable",
-                    message: `#(preaggregate) on measure "${decl.measure}" of source "${sourceName}": its partials cannot be merged (${d.detail}). Store sum, count, min and max measures, and derive the rest from them`,
-                    sourceName,
-                    measure: decl.measure,
-                 }
-               : unservable(
-                    "preaggregate-unreadable-measure",
-                    decl.measure,
-                    `its definition is outside what #(preaggregate) reads (${d.detail})`,
-                 ),
-         );
-         continue;
-      }
-      // A2: a join-level aggregate merges only when each joined row falls in
-      // one group, which the join's key in the grain guarantees.
-      let joinProblem: string | undefined;
-      const measureFanOut = new Set<string>();
-      for (const leaf of d.leaves) {
-         // A join-level sum or count is deduplicated at the joined rows, so
-         // its partials add up only across groups with different keys: every
-         // other grain dimension must be fixed when it is read. Through more
-         // than one join, two keys in the grain can share a joined row.
-         if (
-            leaf.joinPath.length > 0 &&
-            leaf.aggregate !== "min" &&
-            leaf.aggregate !== "max"
-         ) {
-            if (leaf.joinPath.length > 1) {
-               joinProblem = `it aggregates through more than one join (\`${leaf.joinPath.join(".")}\`), so a joined row could be counted in two groups`;
-               break;
-            }
-            const key = joins.get(leaf.joinPath[0] as string)?.baseKey;
-            for (const g of decl.grain) if (g !== key) measureFanOut.add(g);
-         }
-         const read = new Set<string>();
-         let unknown = false;
-         for (const path of [leaf.joinPath, ...leaf.reads]) {
-            const js = joinsRead(path);
-            if (js === undefined) unknown = true;
-            else for (const j of js) read.add(j);
-         }
-         if (unknown) {
-            joinProblem =
-               "it reads a field whose joins Publisher cannot trace, so a joined row could be counted in two groups";
+         if (leaf.joinPath.length > 1) {
+            joinProblem = `it aggregates through more than one join (\`${leaf.joinPath.join(".")}\`), so a joined row could be counted in two groups`;
             break;
          }
-         for (const j of read) {
-            const key = joins.get(j)?.baseKey;
-            if (!key || !decl.grain.includes(key)) {
-               joinProblem = key
-                  ? `it aggregates through join \`${j}\`, whose key \`${key}\` is not in the grain, so a joined row could be counted in two groups`
-                  : `it aggregates through join \`${j}\`, which is not keyed on one field of the source, so a joined row could be counted in two groups`;
-               break;
-            }
+         const key = joins.get(leaf.joinPath[0] as string)?.baseKey;
+         for (const g of decl.grain) if (g !== key) measureFanOut.add(g);
+      }
+      const read = new Set<string>();
+      let unknown = false;
+      for (const path of [leaf.joinPath, ...leaf.reads]) {
+         const js = joinsRead(path);
+         if (js === undefined) unknown = true;
+         else for (const j of js) read.add(j);
+      }
+      if (unknown) {
+         joinProblem =
+            "it reads a field whose joins Publisher cannot trace, so a joined row could be counted in two groups";
+         break;
+      }
+      for (const j of read) {
+         const key = joins.get(j)?.baseKey;
+         if (!key || !decl.grain.includes(key)) {
+            joinProblem = key
+               ? `it aggregates through join \`${j}\`, whose key \`${key}\` is not in the grain, so a joined row could be counted in two groups`
+               : `it aggregates through join \`${j}\`, which is not keyed on one field of the source, so a joined row could be counted in two groups`;
+            break;
          }
-         if (joinProblem) break;
       }
-      if (joinProblem) {
-         refused.push(
-            unservable("preaggregate-join-level", decl.measure, joinProblem),
-         );
-         continue;
-      }
-      const columns =
-         d.leaves.length === 1
-            ? [`${decl.measure}__partial`]
-            : d.leaves.map((_, i) => `${decl.measure}__partial${i}`);
-      const clash = columns.find((c) => byName.has(c));
-      if (clash) {
-         refused.push(
-            unservable(
-               "preaggregate-name-clash",
-               decl.measure,
-               `the source already has a field named \`${clash}\`, the column its partial is stored as`,
-            ),
-         );
-         continue;
-      }
-      const key = [
-         ...decl.grain,
-         `storage=${decl.storage ?? ""}`,
-         `namespace=${decl.namespace ?? ""}`,
-      ].join("\u0000");
-      const group = groups.get(key) ?? { decl, measures: [] };
-      if (!group.measures.some((m) => m.name === decl.measure)) {
-         group.measures.push({
-            name: decl.measure,
-            partials: d.leaves.map((leaf, i) => ({
-               column: columns[i] as string,
-               leaf,
-            })),
-            merged: d.merged(columns),
-            fanOutDimensions: [...measureFanOut].sort(byCodepoint),
-         });
-      }
-      groups.set(key, group);
+      if (joinProblem) break;
    }
+   if (joinProblem) {
+      return unservable("join_level", decl, joinProblem);
+   }
+   const columns =
+      d.leaves.length === 1
+         ? [`${decl.measure}__partial`]
+         : d.leaves.map((_, i) => `${decl.measure}__partial${i}`);
+   const clash = columns.find((c) => byName.has(c));
+   if (clash) {
+      return unservable(
+         "name_clash",
+         decl,
+         `the source already has a field named \`${clash}\`, the column its partial is stored as`,
+      );
+   }
+   return {
+      name: decl.measure,
+      partials: d.leaves.map((leaf, i) => ({
+         column: columns[i] as string,
+         leaf,
+      })),
+      merged: d.merged(columns),
+      fanOutDimensions: [...measureFanOut].sort(byCodepoint),
+   };
+}
 
-   const plans: RollupVariantPlan[] = [...groups.values()].map(
-      ({ decl, measures }) => {
-         const name = rollupName(declaredName, relativeID, decl.grain, decl);
-         const sorted = [...measures].sort((a, b) =>
-            byCodepoint(a.name, b.name),
+/** The plan of one rollup table: a grain and placement, and its measures. */
+function rollupPlanOf(
+   { decl, measures }: { decl: Declaration; measures: RollupMeasure[] },
+   node: SourceNode,
+   facts: RollupFacts,
+   ctx: RollupPlanContext,
+): RollupVariantPlan {
+   const { byName, joins, joinUsage, declaredName, gate, sourceName } = facts;
+   const relativeID = ctx.packageRelativeSourceID(node.sourceID);
+   const name = rollupName(declaredName, relativeID, decl.grain, decl);
+   const sorted = [...measures].sort((a, b) => byCodepoint(a.name, b.name));
+   const privateGrain = decl.grain.filter(
+      (g) => byName.get(g)?.accessModifier === "private",
+   );
+   return {
+      variant: true,
+      baseSourceName: sourceName,
+      baseDeclaredName: declaredName,
+      baseSourceID: node.sourceID,
+      rollupSourceName: name,
+      grainDimensions: decl.grain,
+      ...(decl.storage !== undefined ? { storage: decl.storage } : {}),
+      ...(decl.namespace !== undefined ? { namespace: decl.namespace } : {}),
+      ...(decl.prefix !== undefined ? { prefix: decl.prefix } : {}),
+      // The v1 shape the build plan's wire entry reads (measure names).
+      measures: sorted.map((m) => ({
+         name: m.name,
+         partialName: m.partials[0]?.column ?? "",
+         reaggregate: reaggregateOf(m.partials[0]?.leaf),
+      })),
+      rollupMeasures: sorted,
+      baseGated: gate.declared,
+      ...(gate.declared && gate.own ? { baseGateOwn: true as const } : {}),
+      internalGrain: decl.grain.filter(
+         (g) => byName.get(g)?.accessModifier === "internal",
+      ),
+      ...(privateGrain.length > 0 ? { privateGrain } : {}),
+      ...("terms" in facts.given && facts.given.terms.length > 0
+         ? { readTimeTerms: facts.given.terms }
+         : {}),
+      ...((privateGrain.length > 0 ||
+         ("terms" in facts.given && facts.given.terms.length > 0)) &&
+      facts.declaration
+         ? { declaration: facts.declaration }
+         : {}),
+      fanOutDimensions: decl.grain.filter((g) => {
+         const usage = joinUsage.get(g);
+         if (usage === undefined) return joinUsage.has(g);
+         return (
+            usage.nested ||
+            [...usage.joins].some((j) => joins.get(j)?.relationship !== "one")
          );
-         return {
-            variant: true,
-            baseSourceName: sourceName,
-            baseDeclaredName: declaredName,
-            baseSourceID: node.sourceID,
-            rollupSourceName: name,
-            grainDimensions: decl.grain,
-            ...(decl.storage !== undefined ? { storage: decl.storage } : {}),
-            ...(decl.namespace !== undefined
-               ? { namespace: decl.namespace }
-               : {}),
-            // The v1 shape the build plan's wire entry reads (measure names).
-            measures: sorted.map((m) => ({
-               name: m.name,
-               partialName: m.partials[0]?.column ?? "",
-               reaggregate: reaggregateOf(m.partials[0]?.leaf),
-            })),
-            rollupMeasures: sorted,
-            baseGated: gate.declared,
-            internalGrain: decl.grain.filter(
-               (g) => byName.get(g)?.accessModifier === "internal",
-            ),
-            fanOutDimensions: decl.grain.filter((g) => {
-               const usage = joinUsage.get(g);
-               if (usage === undefined) return joinUsage.has(g);
-               return (
-                  usage.nested ||
-                  [...usage.joins].some(
-                     (j) => joins.get(j)?.relationship !== "one",
-                  )
-               );
-            }),
-         };
-      },
-   );
-   plans.sort(
-      (a, b) =>
-         a.grainDimensions.length - b.grainDimensions.length ||
-         byCodepoint(a.rollupSourceName, b.rollupSourceName),
-   );
-   return { plans, refused };
+      }),
+   };
 }
 
 /**
@@ -994,11 +1454,16 @@ function gateFieldNames(
    byName: ReadonlyMap<string, FieldLike>,
    modelDef: unknown,
    joinUsage: ReturnType<SourceMap["fieldJoinsOf"]>,
+   scope: SourceScope,
 ): {
    dimensions: string[];
    unkeepable: string[];
    declared: boolean;
    joinGated: boolean;
+   /** Every gate is the base's own: none inherited, none from a derivation. */
+   own: boolean;
+   /** The refusal name for the base's own gates, and for its joins' ({@link gateRefusalReason}). */
+   reason: { base: GateRefusalReason; joined: GateRefusalReason };
 } {
    const dimensions = new Set<string>();
    const unkeepable = new Set<string>();
@@ -1037,30 +1502,57 @@ function gateFieldNames(
          }
       }
    }
-   const joinGated = ((def.fields ?? []) as FieldLike[]).some(
-      (f) => f.join !== undefined && gatedJoin(f, modelDef),
+   const joinedRoutes = ((def.fields ?? []) as FieldLike[]).flatMap((f) =>
+      f.join !== undefined ? joinGateRoutes(f, modelDef) : [],
    );
+   const joinGated = joinedRoutes.length > 0;
    return {
       dimensions: [...dimensions].sort(byCodepoint),
       unkeepable: [...unkeepable].sort(byCodepoint),
       declared: entries.length > 0,
       joinGated,
+      reason: {
+         base: gateRefusalReason(entries.map((e) => e.route)),
+         joined: gateRefusalReason(joinedRoutes),
+      },
+      own:
+         entries.length > 0 &&
+         unkeepable.size === 0 &&
+         entries.every((e) => !e.selfContained && e.struct !== undefined) &&
+         gateNotesDeclaredBy(def, scope),
    };
 }
 
-/** Whether a joined source carries a row-level gate (fails closed). */
-function gatedJoin(join: FieldLike, modelDef: unknown): boolean {
+/**
+ * Whether every gate note on `def`'s own level is one its own statement
+ * declared ({@link declaredNotes}): Malloy copies a base's notes onto a source
+ * that extends it, so a gate the walk reads as the entry point's may be
+ * inherited. Only a base's own gate is kept under G3.
+ */
+function gateNotesDeclaredBy(def: SourceLike, scope: SourceScope): boolean {
+   const gates = ownLevelNotes(def.annotations).filter(
+      (n) => canonicalAuthorizeRoute(routeOfNote(n.text)) !== undefined,
+   );
+   const declared = new Set(
+      declaredNotes(def as NotedSourceDef, scope as Record<string, unknown>),
+   );
+   return gates.length > 0 && gates.every((n) => declared.has(n));
+}
+
+/**
+ * The routes of the row-level gates a joined source carries, empty when it
+ * carries none (fails closed: an unreadable one reads as a lock).
+ */
+function joinGateRoutes(join: FieldLike, modelDef: unknown): string[] {
    try {
-      return (
-         collectEntryPointGates(
-            join as unknown as SourceDef,
-            modelDef as ModelDef,
-            new Set(),
-            true,
-         ).length > 0
-      );
+      return collectEntryPointGates(
+         join as unknown as SourceDef,
+         modelDef as ModelDef,
+         new Set(),
+         true,
+      ).map((g) => g.route);
    } catch {
-      return true;
+      return ["authorize"];
    }
 }
 
@@ -1105,6 +1597,7 @@ export function rollupRefusalFinding(
          ? `${refusal.sourceName}.${refusal.measure}`
          : refusal.sourceName,
       model,
+      ...(refusal.tier === "unservable" ? { refused: refusal.refused } : {}),
    };
 }
 
@@ -1113,20 +1606,45 @@ export function rollupRefusalFinding(
 // ---------------------------------------------------------------------------
 
 /**
+ * The `storage=` destinations a source's table, or the table of a source it is
+ * built on, is declared in: by `#(materialize) storage=` or
+ * `#@ persist storage=` on a source of its chain. The join branch reads a rollup
+ * in a destination only for a query source the served copy reads from there.
+ */
+function storedDestinationsOf(map: SourceMap, struct: unknown): Set<string> {
+   const out = new Set<string>();
+   for (const id of map.chainOf(struct)) {
+      const notes = ownLevelNotes(
+         (map.node(id)?.def as { annotations?: AnnotationsDef } | undefined)
+            ?.annotations,
+      );
+      const read = (route: string, key?: string) => {
+         const own = notes.filter((n) => routeOfNote(n.text) === route);
+         const tag = own.length > 0 ? readNotesIfAny(own, route) : undefined;
+         if (tag && (key === undefined || tag.has(key))) {
+            const destination = destinationOf(tag, key);
+            if (destination !== undefined) out.add(destination);
+         }
+      };
+      read("materialize");
+      read("@", "persist");
+   }
+   return out;
+}
+
+/**
  * The Malloy text of a rollup's key check (known limitation 29), or undefined
- * when the rollup's grain is not one dimension or it is not colocated (the
- * join-to-rollup leg reads a colocated rollup only). Run against the rollup
+ * when the rollup's grain is not one dimension. Run against the rollup
  * companion, which imports the base under {@link rollupBaseAlias}, so it reads
- * exactly the rows the rollup's build groups. A NULL key meets no joining
- * row, so its repeats do not count.
+ * exactly the rows the rollup's build groups: the base's, on its own
+ * connection, for a colocated and a `storage=` rollup alike. A NULL key meets
+ * no joining row, so its repeats do not count.
  */
 export function rollupKeyCheckQuery(
    plan: RollupVariantPlan,
 ): string | undefined {
    const [key, ...rest] = plan.grainDimensions;
-   if (key === undefined || rest.length > 0 || plan.storage !== undefined) {
-      return undefined;
-   }
+   if (key === undefined || rest.length > 0) return undefined;
    // malloy-text: keyCheckPipeline writes its names through identifier
    return `run: ${keyCheckPipeline("rollup_key", rollupBaseAlias(plan.baseDeclaredName), key)}`;
 }
@@ -1134,8 +1652,8 @@ export function rollupKeyCheckQuery(
 /**
  * Every named source in `map` with a declared primary key and a join, keyed
  * on that key, to a declared source: the query sources whose key the
- * join-to-rollup leg may need checked. A join keyed on another field never
- * takes the leg as a join_many (`keyRepeatRefusal`), so it needs no check.
+ * join-to-rollup branch may need checked. A join keyed on another field never
+ * takes the branch as a join_many (`keyRepeatRefusal`), so it needs no check.
  */
 export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
    const out: ParentKeyNeed[] = [];
@@ -1169,10 +1687,10 @@ export function parentKeyNeedsOf(map: SourceMap): ParentKeyNeed[] {
 
 /**
  * A joined source whose declared primary key is not the column a join to it
- * is keyed on: the join-to-rollup leg needs that key checked never NULL and
- * unique before it serves a count, sum or average of the source's own rows
- * through the join. Since malloydata/malloy#3208 live takes those at a joined
- * source over the rows whose key is not NULL (`CASE WHEN key IS NOT NULL`,
+ * is keyed on: the join-to-rollup branch needs that key checked never NULL
+ * and unique before it serves a count, sum or average of the source's own
+ * rows through the join. Live takes those at a joined source over the rows
+ * whose key is not NULL (`CASE WHEN key IS NOT NULL`,
  * `COUNT(DISTINCT key)` where the rows fan out), while the rollup, built at
  * the source's own grain, counts and sums every row.
  */
@@ -1227,9 +1745,9 @@ export function joinedKeyNeedsOf(map: SourceMap): JoinedKeyNeed[] {
 }
 
 /**
- * Whether the join-to-rollup leg reads rollup `plan` through `need`'s join as
- * a join_many: the join is declared one, or the rollup's grain is finer than
- * the join's key, so the leg re-points it as one (`joinRollupLegs`).
+ * Whether the join-to-rollup branch reads rollup `plan` through `need`'s join
+ * as a join_many: the join is declared one, or the rollup's grain is finer
+ * than the join's key, so the branch re-points it as one (`joinRollupBranches`).
  */
 export function readsAsJoinMany(
    plan: RollupVariantPlan,
@@ -1248,11 +1766,11 @@ export function readsAsJoinMany(
 }
 
 /**
- * The stored-table key checks a build runs (`CompiledBuildPlan.storedKeyChecks`):
+ * The stored-table key checks a build runs (each table's `storedKeyCheck`):
  * each of `sourceIDs` (the planned sources, the rollups left out) with a declared
  * primary key, by sourceID, when some `storage=` rollup in `plans` is read
- * through a join keyed on a source's primary key as a join_many. That leg
- * reads the query source's stored table in the destination (#1704), so the
+ * through a join keyed on a source's primary key as a join_many. That branch
+ * reads the query source's stored table in the destination, so the
  * key is checked over that table at its own build. Empty otherwise: no scan
  * for nothing.
  */

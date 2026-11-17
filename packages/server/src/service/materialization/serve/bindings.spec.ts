@@ -5,11 +5,8 @@
 
 import { describe, expect, it } from "bun:test";
 
-import {
-   buildVirtualMap,
-   sqlReadsTable,
-   narrowSchemaToPublic,
-} from "./bindings";
+import { buildVirtualMap, sqlReadsTable, tablesReadForGates } from "./bindings";
+import { answerKeepsGates } from "../domain/gate_policy";
 import {
    bindingServesModelSource,
    deriveServeBindings,
@@ -42,6 +39,66 @@ describe("sqlReadsTable", () => {
       expect(sqlReadsTable('SELECT 1 FROM "orders"."x"', '"orders"')).toBe(
          false,
       );
+   });
+});
+
+describe("tablesReadForGates", () => {
+   const colocated: Binding = {
+      kind: "materialize",
+      tier: "colocated",
+      sourceName: "c",
+      destinationName: "duckdb",
+      virtualHandle: "h1",
+      tablePath: '"c_tbl"',
+      schema: [],
+   };
+   const storage: Binding = {
+      kind: "materialize",
+      tier: "storage",
+      sourceName: "s",
+      destinationName: "lake",
+      virtualHandle: "h2",
+      tablePath: "main.s_tbl",
+      schema: [],
+   };
+   const G3_ONLY = {
+      materialize: true,
+      gatedSources: false,
+      gatedStorageRollupsReviewed: false,
+   };
+   const keeps = (tables: readonly Binding[]) =>
+      answerKeepsGates("served", tables, G3_ONLY, {
+         colocatedReadsKeepGates: true,
+      });
+
+   it("counts a storage table spelled with other quoting as read, so a mixed answer never reads as colocated", () => {
+      // The storage table read unquoted and upper-cased: the one spelling
+      // sqlReadsTable matches (`"main"."s_tbl"`) is not there.
+      const sql =
+         'SELECT 1 FROM "c_tbl" AS base LEFT JOIN MAIN.S_TBL AS j ON j.id = base.id';
+      const found = [colocated, storage].filter((b) =>
+         sqlReadsTable(
+            sql,
+            b.tier === "colocated" ? b.tablePath : '"main"."s_tbl"',
+         ),
+      );
+      expect(found).toEqual([colocated]);
+      expect(keeps(found)).toBe(true);
+      const judged = tablesReadForGates(sql, [colocated, storage], found);
+      expect(judged).toEqual([colocated, storage]);
+      expect(keeps(judged)).toBe(false);
+   });
+
+   it("leaves out a storage table the SQL never names, so G3 still serves a colocated-only answer", () => {
+      const sql = 'SELECT 1 FROM "c_tbl" AS base WHERE base.s_tbl_flag';
+      const judged = tablesReadForGates(sql, [colocated, storage], [colocated]);
+      expect(judged).toEqual([colocated]);
+      expect(keeps(judged)).toBe(true);
+   });
+
+   it("keeps a mixed answer off G3 when both tables are found", () => {
+      expect(keeps([colocated, storage])).toBe(false);
+      expect(keeps([])).toBe(false);
    });
 });
 
@@ -280,136 +337,6 @@ describe("deriveServeBindings", () => {
       const ext = bindings.filter((b) => b.sourceName === "ext");
       expect(ext).toHaveLength(1);
       expect(ext[0].tablePath).toBe("lake.ext_t");
-   });
-});
-
-describe("narrowSchemaToPublic", () => {
-   const schema = [
-      { name: "id", type: "BIGINT" },
-      { name: "ssn", type: "VARCHAR" },
-      { name: "amount", type: "BIGINT" },
-   ];
-
-   it("drops a captured column the source does not publicly expose (except:)", () => {
-      // `ssn` is materialized into the table (getSQL projects it) and captured by
-      // DESCRIBE, but the source `except:`s it, so it is absent from the field
-      // list and must not be declared on the serve shape.
-      const fields = [
-         { name: "id" },
-         { name: "amount" },
-         { name: "amount_x2", code: "amount * 2", expressionType: "scalar" },
-      ];
-      expect(narrowSchemaToPublic(schema, fields)).toEqual([
-         { name: "id", type: "BIGINT" },
-         { name: "amount", type: "BIGINT" },
-      ]);
-   });
-
-   it("drops a captured column whose field carries a non-public access modifier", () => {
-      const fields = [
-         { name: "id" },
-         { name: "ssn", accessModifier: "private" },
-         { name: "amount" },
-      ];
-      expect(narrowSchemaToPublic(schema, fields).map((c) => c.name)).toEqual([
-         "id",
-         "amount",
-      ]);
-   });
-
-   it("keeps every column when all are public (no-op for a plain rollup)", () => {
-      const fields = [{ name: "id" }, { name: "ssn" }, { name: "amount" }];
-      expect(narrowSchemaToPublic(schema, fields)).toEqual(schema);
-   });
-
-   it("fails closed to an empty shape when the field list is unavailable", () => {
-      // Can't determine the public surface → declare nothing → queries fall back
-      // to live rather than risk exposing a hidden column.
-      expect(narrowSchemaToPublic(schema, undefined)).toEqual([]);
-      expect(narrowSchemaToPublic(schema, [])).toEqual([]);
-   });
-
-   it("matches an UPPERCASE captured name and emits the author's spelling", () => {
-      // What an upper-folding warehouse (Snowflake, Oracle, Redshift, Teradata)
-      // reports from DESCRIBE. An exact match intersects to NOTHING here, and the
-      // caller drops an empty-schema binding — so the source leaves the serve
-      // shape and every query on it falls back live.
-      const captured = [
-         { name: "ID", type: "BIGINT" },
-         { name: "SSN", type: "VARCHAR" },
-         { name: "AMOUNT", type: "BIGINT" },
-      ];
-      const fields = [{ name: "id" }, { name: "amount" }];
-      expect(narrowSchemaToPublic(captured, fields)).toEqual([
-         { name: "id", type: "BIGINT" },
-         { name: "amount", type: "BIGINT" },
-      ]);
-   });
-
-   it("still hides a non-public column when the captured name differs in case", () => {
-      // The security property must not ride on the case matching: folding decides
-      // which PHYSICAL column can match an author field, never which author fields
-      // exist. `ssn` is access-restricted, so `SSN` has nothing public to match.
-      const captured = [
-         { name: "ID", type: "BIGINT" },
-         { name: "SSN", type: "VARCHAR" },
-      ];
-      const fields = [
-         { name: "id" },
-         { name: "ssn", accessModifier: "private" },
-      ];
-      expect(narrowSchemaToPublic(captured, fields).map((c) => c.name)).toEqual(
-         ["id"],
-      );
-   });
-
-   it("prefers an EXACT hit over a fold, so a folding dimension cannot steal a column", () => {
-      // Malloy permits two fields differing only in case: a `TitleCase` dimension
-      // over a `snake_case` column. On a case-PRESERVING warehouse the captured
-      // name already is the author's, so folding first let the dimension's name
-      // win the physical column — the shape declared the stored column as `Total`,
-      // the duplicate against the re-emitted dimension failed the shape down to
-      // base-only, and `group_by: Total` served the raw column (1) instead of the
-      // computed one (other * 10 = 20). Wrong rows, reported `servedFrom: storage`.
-      const captured = [
-         { name: "total", type: "BIGINT" },
-         { name: "other", type: "BIGINT" },
-      ];
-      const fields = [
-         { name: "total" },
-         { name: "other" },
-         { name: "Total", code: "other * 10", expressionType: "scalar" },
-      ];
-      expect(narrowSchemaToPublic(captured, fields)).toEqual([
-         { name: "total", type: "BIGINT" },
-         { name: "other", type: "BIGINT" },
-      ]);
-   });
-
-   it("drops a captured column that several author fields fold onto", () => {
-      // The upper-folded version of the case above: nothing here can tell which of
-      // `total`/`Total` the warehouse's `TOTAL` came from, and guessing is the bug
-      // the test above pins. Dropping sends a query touching it to live, where the
-      // author's own names still distinguish the two.
-      const captured = [{ name: "TOTAL", type: "BIGINT" }];
-      const fields = [
-         { name: "total" },
-         { name: "Total", code: "other * 10", expressionType: "scalar" },
-      ];
-      expect(narrowSchemaToPublic(captured, fields)).toEqual([]);
-   });
-
-   it("emits a case-colliding author field once rather than failing the shape", () => {
-      // Two physical columns folding onto one author field: declaring the name
-      // twice is a duplicate that fails the whole shape model, which would cost
-      // storage serving for every source in the model. First wins.
-      const captured = [
-         { name: "AMOUNT", type: "BIGINT" },
-         { name: "amount", type: "VARCHAR" },
-      ];
-      expect(narrowSchemaToPublic(captured, [{ name: "amount" }])).toEqual([
-         { name: "amount", type: "BIGINT" },
-      ]);
    });
 });
 

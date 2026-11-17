@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 
 import type { MemoryGovernorConfig } from "../config";
 import { resetInstrumentsForTesting } from "../telemetry";
@@ -197,6 +197,25 @@ describe("PackageMemoryGovernor", () => {
       } finally {
          await harness.shutdown();
          resetInstrumentsForTesting();
+      }
+   });
+
+   it("samples RSS alone by default, through process.memoryUsage.rss()", () => {
+      // Bun computes heap statistics in memoryUsage(), a main-thread cost
+      // that grows with live objects (ms2data/service#7795).
+      const rssOnly = spyOn(process.memoryUsage, "rss");
+      try {
+         const gov = new PackageMemoryGovernor(makeConfig());
+         gov.tick();
+         expect(rssOnly).toHaveBeenCalledTimes(1);
+         const sampled = gov.getStatus().rssBytes;
+         expect(sampled).toBe(rssOnly.mock.results[0].value as number);
+         // The same quantity: resident bytes, as the full call reports them.
+         const reported = process.memoryUsage().rss;
+         expect(sampled).toBeGreaterThan(0);
+         expect(Math.abs(sampled - reported) / reported).toBeLessThan(0.25);
+      } finally {
+         rssOnly.mockRestore();
       }
    });
 });

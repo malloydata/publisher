@@ -23,10 +23,12 @@ import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../config";
 import {
    answerKeepsGates,
+   GATE_LEGS,
    legMayPassGate,
+   SERVING_GATE_CONTEXT,
 } from "./materialization/domain/gate_policy";
 import { logger } from "../logger";
-import { sourceChain } from "./materialization/text/source_map";
+import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
    type Binding,
    isColocated,
@@ -34,7 +36,10 @@ import {
    type Snapshot,
 } from "./materialization/domain/binding";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
-import { isDeclineOf } from "./materialization/domain/leg_decline";
+import {
+   explanationOfDecline,
+   isDeclineOf,
+} from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
    buildQueryPath,
@@ -45,12 +50,14 @@ import {
 import type { BuildManifest } from "./materialization/domain/types";
 import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import type { PersistedViewServe } from "./materialization/serve/view_variants";
-import type {
-   Answer,
-   Leg,
-   LegAnswer,
-   LegKind,
-   QueryFacts,
+import {
+   type Answer,
+   type Leg,
+   type LegAnswer,
+   type LegContext,
+   type LegKind,
+   LIVE_ANSWER,
+   type QueryFacts,
 } from "./materialization/serve/leg";
 import {
    readPreparedQuery,
@@ -65,6 +72,8 @@ import type {
 /** The decline vocabulary's name for each leg's codes. */
 const DECLINING_LEG = {
    view: "view",
+   // The query leg declines in the view leg's codes (`view_*`).
+   query: "view",
    rollup: "rollup",
    served: "served_copy",
 } as const satisfies Record<LegKind, string>;
@@ -72,9 +81,23 @@ const DECLINING_LEG = {
 /** What each leg's skip is logged as, at debug. */
 const SKIP_MESSAGE: Record<LegKind, string> = {
    view: "the persisted view does not answer this query",
+   query: "the persisted named query does not answer this query",
    rollup: "no #(preaggregate) rollup answers this query",
    served: "served copy cannot answer this query",
 };
+
+/**
+ * A leg's skip, at debug: it repeats on every query of a dashboard, and the
+ * path report and `publisher_query_route_total` already say why.
+ */
+function logSkip(kind: LegKind, modelPath: string, err: unknown): void {
+   if (!logger.isDebugEnabled()) return;
+   logger.debug(SKIP_MESSAGE[kind], {
+      modelPath,
+      code: isDeclineOf(err, DECLINING_LEG[kind]) ? err.code : "error",
+      error: err instanceof Error ? err.message : String(err),
+   });
+}
 
 /**
  * The router's candidates for one query: one per leg, in the legs' order.
@@ -88,68 +111,52 @@ export function variantsOf(
    legs: readonly Leg[],
    facts: QueryFacts,
    pinned: Pinned,
-   args: {
-      modelPath: string;
-      /**
-       * The v1 cutover's contracts at read for colocated tables (G3): the
-       * served copy goes past an entry-point gate when every table it reads
-       * is colocated, even with `materialize.gatedSources` off, since a
-       * colocated table never leaves the author's warehouse.
-       */
-      colocatedKeepsContracts?: boolean;
-   },
+   args: { modelPath: string },
 ): Variant<LegAnswer>[] {
    const switches = gateSwitches();
-   const gateContext = {
-      colocatedReadsKeepGates: !!args.colocatedKeepsContracts,
-   };
-   return legs.map((leg) => ({
-      kind: leg.kind,
-      applicable: leg.applies(facts, pinned),
-      keepsContracts: legMayPassGate(leg.kind, switches, gateContext),
-      keepsContractsFor: (answer: LegAnswer) =>
-         answerKeepsGates(
-            leg.kind,
-            answer.tablesRead ?? [],
-            switches,
-            gateContext,
-         ),
-      attempt: async () => {
-         const answer = await leg.attempt(facts, pinned);
-         if (leg.kind === "served") {
-            logger.debug("Serving query from the served copy (virtual)", {
-               modelPath: args.modelPath,
-               tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
-            });
-         }
-         return { runnable: answer.runnable, extra: answer };
-      },
-      explain: (err): VariantSkipExplanation | undefined =>
-         isDeclineOf(err, DECLINING_LEG[leg.kind])
-            ? {
-                 code: err.code,
-                 ...(err.callerDetail
-                    ? { callerDetail: err.callerDetail }
-                    : {}),
-              }
-            : undefined,
-      onSkip: (err) => {
-         logger.debug(SKIP_MESSAGE[leg.kind], {
-            modelPath: args.modelPath,
-            error: err instanceof Error ? err.message : String(err),
-         });
-      },
-   }));
+   return legs.map((leg) => {
+      // A leg with no row in the gate policy (the query leg) is never tried
+      // past an entry-point gate: the policy fails closed.
+      const gateLeg = (GATE_LEGS as readonly LegKind[]).includes(leg.kind)
+         ? (leg.kind as (typeof GATE_LEGS)[number])
+         : undefined;
+      return {
+         kind: leg.kind,
+         applicable: leg.applies(facts, pinned),
+         keepsContracts:
+            gateLeg !== undefined &&
+            legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
+         keepsContractsFor: (answer: LegAnswer) =>
+            gateLeg !== undefined &&
+            answerKeepsGates(
+               gateLeg,
+               answer.gateTablesRead ?? answer.tablesRead ?? [],
+               switches,
+               SERVING_GATE_CONTEXT,
+            ),
+         attempt: async () => {
+            const answer = await leg.attempt(facts, pinned);
+            if (leg.kind === "served") {
+               logger.debug("Serving query from the served copy (virtual)", {
+                  modelPath: args.modelPath,
+                  tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
+               });
+            }
+            return { runnable: answer.runnable, extra: answer };
+         },
+         explain: (err): VariantSkipExplanation | undefined =>
+            isDeclineOf(err, DECLINING_LEG[leg.kind])
+               ? explanationOfDecline(err)
+               : undefined,
+         onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
+      };
+   });
 }
 
 /** The answer the router's decision describes, before anything runs. */
 export function answerOf(route: RouteDecision<LegAnswer>): Answer {
    if (route.served !== "variant") {
-      return Object.freeze({
-         leg: "live",
-         considered: route.considered,
-         colocatedRead: new Set<string>(),
-      });
+      return Object.freeze({ ...LIVE_ANSWER, considered: route.considered });
    }
    return Object.freeze({
       leg: route.kind,
@@ -245,6 +252,8 @@ export interface QueryServingHost {
    readonly rollupVariants: RollupVariantServe;
    /** The `#@ persist` view leg (materialization v2, phase 4, P14). */
    readonly persistedViews: PersistedViewServe;
+   /** The `#@ persist` named-query leg. */
+   readonly persistedQueries: NonNullable<LegContext["persistedQueries"]>;
 }
 
 /**
@@ -293,13 +302,14 @@ export async function queryPathFor(
       const variantRollups = host.rollupVariants.hasRollups()
          ? host.rollupVariants.rollups()
          : [];
-      // The persisted view the query calls, if any: its table is the first
-      // candidate (R1), whatever the router decided about it.
+      // The persisted view or named query the query calls, if any: its table
+      // is the first candidate (R1), whatever the router decided about it.
       const routed = answer.leg === "live" ? undefined : answer.answer;
       const viewTable =
          routed?.viewTable ??
          (args.queryString !== undefined
-            ? host.persistedViews.reportedTable(args.queryString, pinned)
+            ? (host.persistedViews.reportedTable(args.queryString, pinned) ??
+              host.persistedQueries.reportedTable(args.queryString, pinned))
             : undefined);
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.
@@ -332,14 +342,14 @@ export async function queryPathFor(
       return buildQueryPath({
          shape,
          modelPath: host.modelPath,
-         chain: sourceChain(struct, modelDef),
+         chain: chainOfQuerySource(struct, modelDef, host.modelDef()),
          catalog,
          freshColocated: pinned.hasEntries
             ? new Set(Object.keys(pinned.compilerManifest.entries))
             : undefined,
-         // The serve shape's tables, and the `#(materialize)` tables only the
-         // served copy reads, so a table on the chain is named whichever
-         // candidate answered.
+         // The `storage=` tables, the `#(materialize)` tables the served copy
+         // reads and the rollup tables, so a table on the chain is named
+         // whichever candidate answered.
          storage: {
             all: [
                ...storageTables,
@@ -401,4 +411,24 @@ export async function queryPathFor(
       });
       return undefined;
    }
+}
+
+/**
+ * The queried source's chain ({@link sourceChain}), walked on the model's own
+ * definition when it declares the source: the query's compile may not carry
+ * the model's imports, and an extension of a table-backed source declared in
+ * another file finds its base only through them (P2-41). Otherwise on the
+ * query's.
+ */
+function chainOfQuerySource(
+   struct: unknown,
+   queryModelDef: unknown,
+   modelDef: unknown,
+): string[] {
+   const id = (struct as { sourceID?: unknown } | undefined)?.sourceID;
+   const own =
+      typeof id === "string" && modelDef !== queryModelDef
+         ? SourceMap.of(modelDef).node(id)?.def
+         : undefined;
+   return own ? sourceChain(own, modelDef) : sourceChain(struct, queryModelDef);
 }

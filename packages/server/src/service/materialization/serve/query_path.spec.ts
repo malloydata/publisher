@@ -109,6 +109,36 @@ describe("buildQueryPath", () => {
       ]);
    });
 
+   it("reads a persisted query's table off the query leg's decision", () => {
+      const report = buildQueryPath(
+         input({
+            view: {
+               kind: "query",
+               tableId: "id_q",
+               tier: "colocated",
+               built: true,
+               stale: false,
+            },
+            considered: [
+               {
+                  kind: "query",
+                  outcome: "skipped",
+                  reason: "does_not_answer",
+                  code: "view_missing_field",
+               },
+            ],
+         }),
+      );
+      expect(report.considered).toEqual([
+         {
+            tableId: "id_q",
+            kind: "query",
+            outcome: "skipped",
+            reason: "MISSING_FIELD",
+         },
+      ]);
+   });
+
    it("lists storage before colocated, and a colocated table only when no stored one answered", () => {
       const daily = storageOf("daily");
       const tables = [planned("daily"), planned("orders")];
@@ -142,6 +172,7 @@ describe("buildQueryPath", () => {
       expect(missed.servedBy).toEqual({
          kind: "materialized",
          tableId: "id_orders",
+         tier: "database",
       });
       expect(missed.considered).toEqual([
          {
@@ -348,6 +379,7 @@ describe("buildQueryPath", () => {
       expect(report.servedBy).toEqual({
          kind: "materialized",
          tableId: "id_other",
+         tier: "storage",
       });
    });
 
@@ -370,6 +402,7 @@ describe("buildQueryPath", () => {
       expect(read.servedBy).toEqual({
          kind: "materialized",
          tableId: "id_orders",
+         tier: "database",
       });
    });
 
@@ -449,7 +482,10 @@ describe("buildQueryPath", () => {
             storageTablesRead: [daily],
          }),
       );
-      expect(report.servedBy).toEqual({ kind: "materialized" });
+      expect(report.servedBy).toEqual({
+         kind: "materialized",
+         tier: "storage",
+      });
       expect(report.considered).toEqual([]);
       expect(JSON.stringify(report)).not.toContain("lake.t_daily");
    });
@@ -479,6 +515,7 @@ describe("buildQueryPath", () => {
       expect(warned.servedBy).toEqual({
          kind: "materialized",
          tableId: "id_daily",
+         tier: "database",
       });
       // No warning (a destination missing while the tier is on): the storage
       // table is left out, and an unbuilt colocated twin is not invented.
@@ -525,7 +562,7 @@ describe("buildQueryPath", () => {
                rollupMember: "orders_rollup",
             }),
          ).servedBy,
-      ).toEqual({ kind: "rollup", tableId: "id_b" });
+      ).toEqual({ kind: "rollup", tableId: "id_b", tier: "database" });
       expect(ownModel.considered).toEqual([]);
       // A third model with the same name: ambiguous, so no table is named.
       expect(

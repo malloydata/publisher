@@ -52,6 +52,18 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "m_storage@<pkg>/m.malloy": "materialize",
+      "p_named_nested@<pkg>/m.malloy": "persist",
+      "p_named_sibling@<pkg>/m.malloy": "persist",
+      "p_nested@<pkg>/m.malloy": "persist",
+      "p_sibling@<pkg>/m.malloy": "persist",
+      "rollups__rollup__region__495e6697@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "v1_rollups__rollup__region__cbe05f06@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "v1_rollups__rollup__status__1425197f@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "views__v_nested__view@<pkg>/m.malloy.persist-view.malloy": "view",
+      "views__v_sibling__view@<pkg>/m.malloy.persist-view.malloy": "view"
+    },
     "materializePlans": {
       "m_storage@<pkg>/m.malloy": {
         "buildSourceName": "m_storage__mat",
@@ -540,7 +552,7 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+        "sourceEntityId": "2132b8ba56b26471fd390f5db5b1efafcc536a1b564a521951213e4f8928e006",
         "sourceID": "p_named_nested@<pkg>/m.malloy",
         "sql": "sha256:8b0c58a474b6c64b"
       },
@@ -568,7 +580,7 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "5581630f251fc69bee0819ff474a90427bd2332f845afe9236e0fc1b1bcee5e4",
+        "sourceEntityId": "9dd25350bdb25aa9f7851c358e415a9fd78d32524fe535ed1ecd8aacf8eeec6b",
         "sourceID": "p_named_sibling@<pkg>/m.malloy",
         "sql": "sha256:8b0c58a474b6c64b"
       },

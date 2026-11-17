@@ -1,0 +1,3 @@
+import "../diamond/base.malloy"
+
+source: c0 is items extend { dimension: s0 is v }

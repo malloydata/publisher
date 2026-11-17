@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A `#(preaggregate)` rollup whose build reads a given is left out of the
- * build plan with a `preaggregate-reads-given` warning: its table would hold
- * one given value's rows, served to every caller. A rollup in the same model
- * that reads no given is still planned. Drives `Package.create` on the worker
- * path with PUBLISHER_MATERIALIZE on, as the package warnings specs do.
+ * A `#(preaggregate)` rollup whose given-reading `where:` cannot be
+ * re-applied at read is left out of the build plan with a
+ * `preaggregate-not-built` warning, under the reason `#(materialize)` gives
+ * the same case: `given_where_over_unstored_field` for a term over a column
+ * the grain drops (the fix is the grain), `given_in_persisted_query` for a
+ * given its build reads (the table would hold one given value's rows, served
+ * to every caller). A rollup in the same model that reads no given is still
+ * planned. Drives `Package.create` on the worker path with
+ * PUBLISHER_MATERIALIZE on, as the package warnings specs do.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
@@ -32,13 +36,18 @@ source: scoped is ${ROWS} extend {
   measure: total is amount.sum()
 }
 
+source: baked is ${ROWS} -> { where: region = $REGION; select: * } extend {
+  #(preaggregate) grain=["category"]
+  measure: total is amount.sum()
+}
+
 source: open is ${ROWS} extend {
   #(preaggregate) grain=["category"]
   measure: total is amount.sum()
 }
 `;
 
-describe("#(preaggregate) rollups whose build reads a given", () => {
+describe("#(preaggregate) rollups whose given-reading where: cannot be re-applied", () => {
    let tempDir: string;
    let pool: PackageLoadPool;
    let duckdb: DuckDBConnection;
@@ -74,18 +83,37 @@ describe("#(preaggregate) rollups whose build reads a given", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 
-   it("leaves the rollup out with a warning", () => {
+   it("leaves each rollup out with a warning naming its own fix", () => {
       const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "preaggregate-reads-given",
+         (w) => w.code === "preaggregate-not-built",
       );
-      expect(warnings.map((w) => [w.model, w.subject])).toEqual([
-         ["m.malloy", "scoped"],
+      expect(warnings.map((w) => [w.model, w.subject]).sort()).toEqual([
+         ["m.malloy", "baked"],
+         ["m.malloy", "scoped.total"],
       ]);
-      expect(warnings[0].message).toContain("read a given");
+      // Its where: reads `region`, which the grain does not keep, so it
+      // could not be re-applied to the rollup's rows per caller.
+      expect(
+         warnings.find((w) => w.subject === "scoped.total")?.message,
+      ).toContain("reads a given and `region`");
+      expect(
+         Object.values(pkg.getBuildPlan()?.refusedSources ?? {})
+            .map((r) => [r.name.split(/[.]|__rollup__/)[0], r.reason])
+            .sort(),
+      ).toEqual([
+         ["baked", "given_in_persisted_query"],
+         ["scoped", "given_where_over_unstored_field"],
+      ]);
       const planned = Object.values(pkg.getBuildPlan()?.sources ?? {}).map(
          (s) => s.name,
       );
-      expect(planned.some((n) => n.startsWith("scoped__rollup__"))).toBe(false);
+      expect(
+         planned.some(
+            (n) =>
+               n.startsWith("scoped__rollup__") ||
+               n.startsWith("baked__rollup__"),
+         ),
+      ).toBe(false);
    });
 
    it("still plans a rollup in the same model that reads no given", () => {

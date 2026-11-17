@@ -23,6 +23,7 @@ import {
    servedFromOf,
 } from "./materialization/serve/leg";
 import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
+import { tablesReadForGates } from "./materialization/serve/bindings";
 import { answerOf, recordingManifest, variantsOf } from "./query_serving";
 
 const runnable = { tag: "routed" } as unknown as QueryMaterializer;
@@ -104,12 +105,12 @@ describe("Answer", () => {
       expect(servedFromOf(answer)).toBe("storage");
    });
 
-   it("reads a rollup route as a rollup, not a storage hit", () => {
+   it("reads a colocated rollup route as a colocated hit, not a storage hit", () => {
       const answer = answerOf(rollupRoute) as RoutedAnswer;
       expect(answer.leg).toBe("rollup");
       expect(answer.answer.rollupMember).toBe("orders__by_day");
       expect(answer.answer.virtualMap).toBeUndefined();
-      expect(servedFromOf(answer)).toBeUndefined();
+      expect(servedFromOf(answer)).toBe("database");
    });
 
    it("reads a storage= #(preaggregate) rollup route as a storage hit", () => {
@@ -288,7 +289,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
       ).find((c) => c.kind === "rollup");
 
    for (const on of [true, false]) {
-      it(`keeps the contracts only with gated sources on (${on ? "on" : "off"})`, () => {
+      it(`is tried past the gate with gated sources ${on ? "on" : "off (G3)"}, and keeps it off only for a colocated rollup`, () => {
          const { restore } = installSettings({
             env: {
                PUBLISHER_MATERIALIZE: "true",
@@ -296,14 +297,24 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
             },
          });
          try {
-            expect(rollupCandidate()?.keepsContracts).toBe(on);
+            const candidate = rollupCandidate();
+            expect(candidate?.keepsContracts).toBe(true);
+            const read = (tier: "colocated" | "storage") =>
+               candidate?.keepsContractsFor?.({
+                  runnable,
+                  tablesRead: undefined,
+                  gateTablesRead: [{ tier }],
+                  shapeBindings: [],
+               } as never);
+            expect(read("colocated")).toBe(true);
+            expect(read("storage")).toBe(on);
          } finally {
             restore();
          }
       });
    }
 
-   it("carries every table a join leg in a storage destination reads into the route", async () => {
+   it("carries every table a join branch in a storage destination reads into the route", async () => {
       const rollup = { ...binding("rollup"), kind: "rollup" as const };
       const source = binding("flights");
       const candidate = rollupCandidate({
@@ -335,5 +346,117 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
       }) as RoutedAnswer;
       expect(answer.answer.graftScope).toBe(graftScope);
       expect(answer.pastEntryPointGate).toBe(true);
+   });
+});
+
+describe("the served copy past an entry-point gate under G3 (gated sources off)", () => {
+   const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+   const colocated = binding("c", {
+      kind: "materialize",
+      tier: "colocated",
+      destinationName: "duckdb",
+      tablePath: '"c_tbl"',
+   });
+   const storage = binding("s", {
+      kind: "materialize",
+      tablePath: "main.s_tbl",
+   });
+   // The storage table read unquoted beside the colocated one. Only the
+   // quoting defeats the served copy's exact match against the bound
+   // `"main"."s_tbl"` (sqlTableReads ignores case), so it finds only "c_tbl".
+   const sql =
+      'SELECT 1 FROM "c_tbl" AS base LEFT JOIN main.s_tbl AS j ON j.id = base.id';
+   const servedCandidate = (gateTablesRead: Binding[] | undefined) =>
+      variantsOf(
+         makeLegs(pinned, {
+            servedCopy: {
+               hasBindings: () => true,
+               loadQuery: async () => ({
+                  runnable,
+                  virtualMap,
+                  bindings: [colocated, storage],
+                  // The exact-match result, which gateTablesRead overrides.
+                  tablesRead: [colocated],
+                  gateTablesRead,
+                  graftScope: undefined,
+               }),
+            } as never,
+         }),
+         {
+            queryString: "run: gated -> { aggregate: n }",
+            givens: undefined,
+            authorRunnable: runnable,
+         },
+         pinned,
+         { modelPath: "m.malloy" },
+      ).find((c) => c.kind === "served")!;
+   const withG3 = async <T>(run: () => Promise<T>): Promise<T> => {
+      const { restore } = installSettings({
+         env: {
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         },
+      });
+      try {
+         return await run();
+      } finally {
+         restore();
+      }
+   };
+
+   it("judges an answer by the tables it is judged to read for its gates, so a storage table spelled another way keeps it off G3", async () => {
+      await withG3(async () => {
+         const judged = tablesReadForGates(
+            sql,
+            [colocated, storage],
+            [colocated],
+         );
+         expect(judged).toEqual([colocated, storage]);
+         const candidate = servedCandidate(judged);
+         // Tried past the gate (every table it may read could be colocated)…
+         expect(candidate.keepsContracts).toBe(true);
+         const routed = await candidate.attempt();
+         // …but the answer it produced reads a storage table: not kept.
+         expect(routed.extra?.gateTablesRead).toEqual([colocated, storage]);
+         expect(candidate.keepsContractsFor!(routed.extra!)).toBe(false);
+      });
+   });
+
+   it("still keeps a colocated-only answer under G3", async () => {
+      await withG3(async () => {
+         const candidate = servedCandidate([colocated]);
+         const routed = await candidate.attempt();
+         expect(candidate.keepsContractsFor!(routed.extra!)).toBe(true);
+      });
+   });
+
+   it("keeps an answer reading only storage tables plan admitted past their own gate, and judges a mixed one by every table it may read", async () => {
+      const kept = { ...storage, ownGateKept: true };
+      const other = binding("o", {
+         kind: "materialize",
+         tablePath: "main.o_tbl",
+      });
+      await withG3(async () => {
+         for (const [read, keeps] of [
+            [[kept], true],
+            [[colocated, kept], true],
+            [[kept, other], false],
+            [[storage], false],
+         ] as const) {
+            const candidate = servedCandidate([...read]);
+            const routed = await candidate.attempt();
+            expect(candidate.keepsContractsFor!(routed.extra!)).toBe(keeps);
+         }
+         // The kept table found, the other spelled another way: the fail
+         // closed read still counts the other, so the answer stays live.
+         const respelled =
+            'SELECT 1 FROM "main"."s_tbl" AS base LEFT JOIN MAIN.O_TBL AS j ON TRUE';
+         const judged = tablesReadForGates(respelled, [kept, other], [kept]);
+         expect(judged).toEqual([kept, other]);
+         const candidate = servedCandidate(judged);
+         expect(
+            candidate.keepsContractsFor!((await candidate.attempt()).extra!),
+         ).toBe(false);
+      });
    });
 });

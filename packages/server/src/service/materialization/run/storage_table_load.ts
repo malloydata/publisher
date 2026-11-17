@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Loading a file into a DuckLake destination as a table
+ * ({@link loadStorageTable}), and copying a table between catalogs for a
+ * migration ({@link copyStorageTable}), with the reader SQL and the refusals
+ * around them. Read by catalog_admin.ts.
+ *
+ * Effects: one DuckLake transaction per table on a transient read-write
+ * session. A load reads only under the destination's data path, and renders
+ * a caller's reader options as typed literals, never spliced text.
+ */
+
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import path from "path";
 import { components } from "../../../api";
@@ -10,7 +21,6 @@ import {
    logInternalFailure,
 } from "../../../errors";
 import {
-   applySessionResourceLimits,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    escapeSQL,
@@ -21,10 +31,11 @@ import {
    type PartitionKey,
 } from "../../connection";
 import {
-   createIsolatedBuildSession,
+   withIsolatedSession,
    writePartitionedTable,
 } from "./materialization_build_session";
 import { quoteIdentifier } from "../../quoting";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -167,28 +178,20 @@ export async function loadStorageTable(params: {
    }
    // A configured data path is checked before anything attaches; with none,
    // the catalog's recorded path is checked once it is attached.
-   const configuredPath =
-      destinationConnection.ducklakeConnection.storage?.bucketUrl;
+   const ducklake = destinationConnection.ducklakeConnection;
+   const configuredPath = ducklake.storage?.bucketUrl;
    if (configuredPath) {
       assertUnderDataPath(params.uri, configuredPath);
    }
    const reader = readerSql(params.uri, params.format, params.options);
 
-   const { session, dispose, workDir } = createIsolatedBuildSession(
-      `load_${destinationName}`,
-   );
-   try {
-      await applySessionResourceLimits(session, { tempDirectory: workDir });
-      await attachDuckLakeReadWrite(
-         session,
-         destinationName,
-         destinationConnection.ducklakeConnection,
-      );
+   return withIsolatedSession(`load_${destinationName}`, async (session) => {
+      await attachDuckLakeReadWrite(session, destinationName, ducklake);
       if (!configuredPath) {
          const recorded = await recordedCatalogSettings(
             session,
             destinationName,
-            destinationConnection.ducklakeConnection.catalog?.metadataSchema,
+            ducklake.catalog?.metadataSchema,
          );
          assertUnderDataPath(params.uri, recorded.data_path ?? "");
       }
@@ -198,9 +201,7 @@ export async function loadStorageTable(params: {
       return await writeTableAs(session, params, reader, (error) =>
          readerRefusal(error, params.uri),
       );
-   } finally {
-      await dispose();
-   }
+   });
 }
 
 /**
@@ -247,9 +248,12 @@ export function readerRefusal(
  * - The same table guarantees as {@link loadStorageTable}: one DuckLake
  *   transaction, `create` refusing a table that exists (409), a transient
  *   session with the build session's teardown.
- * - A partitioned source (one a since-retired `partition=` build wrote) is
+ * - A partitioned source (one an earlier release's `partition=` build wrote) is
  *   written with its partition spec and in partition order, and the spec is
  *   returned. A partitioned table copied onto itself is refused (400).
+ *   Copied with `replace` onto a table an incremental build manages, the
+ *   spec stays until that build's next full refresh, and its deltas into it
+ *   run without the copy's memory bounds.
  * - The caller checks that the source exists and that the destination may
  *   hold its rows before calling: this attaches and writes.
  *
@@ -303,11 +307,7 @@ export async function copyStorageTable(params: {
         ? `${COPY_SOURCE_ALIAS}_2`
         : COPY_SOURCE_ALIAS;
 
-   const { session, dispose, workDir } = createIsolatedBuildSession(
-      `copy_${destinationName}`,
-   );
-   try {
-      await applySessionResourceLimits(session, { tempDirectory: workDir });
+   return withIsolatedSession(`copy_${destinationName}`, async (session) => {
       await attachDuckLakeReadWrite(
          session,
          destinationName,
@@ -321,7 +321,7 @@ export async function copyStorageTable(params: {
          );
       }
       const from = [sourceAlias, source.schemaName, source.tableName]
-         .map((part) => quoteIdentifier(part, "duckdb"))
+         .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
          .join(".");
       // The copy keeps the source's layout: DuckLake applies a partition spec
       // only to files written after it is set, so a copy written without it
@@ -357,9 +357,7 @@ export async function copyStorageTable(params: {
          )),
          partitionedBy,
       };
-   } finally {
-      await dispose();
-   }
+   });
 }
 
 /**
@@ -404,7 +402,7 @@ export async function writeTableAs(
    // session, and the flush below for a catalog that records its own limit.
    await session.runSQL("SET ducklake_default_data_inlining_row_limit = 0");
    const target = [destinationName, schemaName, tableName]
-      .map((part) => quoteIdentifier(part, "duckdb"))
+      .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
       .join(".");
    const create =
       params.mode === "replace" ? "CREATE OR REPLACE TABLE" : "CREATE TABLE";

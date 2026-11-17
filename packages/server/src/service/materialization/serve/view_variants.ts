@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Persisted-view variants (materialization v2, phase 4, P14): the router's
- * view leg for `#@ persist` on a view.
+ * Persisted-view variants (P14): the router's view leg for `#@ persist` on a
+ * view.
  *
  * A persisted view's table holds the view's result, so it answers a query
  * only when the query calls that view exactly, or starts from it and goes on:
@@ -70,27 +70,30 @@ import { extractRunViewCall, type RunViewCall } from "../../query_text";
 import { quoteManifestTablePath } from "../../quoting";
 import type { BuildManifest } from "../domain/types";
 import {
-   generatePersistedViewFile,
+   generatePersistedResultFile,
    persistedViewCompanionHref,
    viewNoteTexts,
 } from "../text/read_text";
-import { splitSourceID, type PersistedViewPlan } from "../domain/table_plans";
+import {
+   isPersistedQuerySourceID,
+   splitSourceID,
+   type PersistedQueryPlan,
+   type PersistedViewPlan,
+} from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import type { Binding, Pinned } from "../domain/binding";
+import { type Binding, type Pinned, storageLookupOf } from "../domain/binding";
 import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes, noteSource } from "../text/field_notes";
-import {
-   TIMEFRAMES,
-   timeframeRestatements,
-   typeDeclaration,
-} from "./served_copy";
+import { TIMEFRAMES } from "./served_copy";
+import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
 import {
-   serveTypePlan,
-   storedColumnTypeMismatches,
+   canonicalStoredSchema,
+   storedColumnReadPlan,
 } from "../stored_column_types";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -108,10 +111,14 @@ interface ViewVariantHost {
     * imports the planner.
     */
    planModelPersistedViews(modelDef: unknown): { plans: PersistedViewPlan[] };
+   /** The persisted named queries likewise, for the companion they share. */
+   planModelPersistedQueries(modelDef: unknown): {
+      plans: PersistedQueryPlan[];
+   };
 }
 
 /** A persisted view's answer, for the router. */
-interface ViewAnswer {
+export interface ViewAnswer {
    runnable: QueryMaterializer;
    /** The view's table: its address, tier and as-of. */
    table: ViewTable;
@@ -135,7 +142,7 @@ export interface ViewTable {
    dataAsOf?: string;
 }
 
-interface ResolvedTable extends ViewTable {
+export interface ResolvedTable extends ViewTable {
    virtualMap?: VirtualMap;
    quotedPath?: string;
    binding?: Binding;
@@ -143,7 +150,7 @@ interface ResolvedTable extends ViewTable {
    colocatedTable?: string;
 }
 
-interface CompiledVariant {
+export interface CompiledVariant {
    materializer?: ModelMaterializer;
    modelDef?: ModelDef;
    runtime?: GraftRuntime;
@@ -265,7 +272,19 @@ export class PersistedViewServe {
          throw new LegDecline("view_missing_field");
       }
       const { call, plan } = called;
-      const refined = refinedCallDecline(call);
+      const refined =
+         refinedCallDecline(call) ??
+         callerTextDecline(
+            call.otherNames,
+            [call.source, plan.sourceName],
+            call.view,
+            {
+               contents: this.host.modelDef()?.contents as
+                  | Record<string, unknown>
+                  | undefined,
+               declaringURL: splitSourceID(plan.sourceID)?.url,
+            },
+         );
       if (refined) throw refined;
       // The run target must be the view's own source, by sourceID: not an
       // extension, and not a caller's redefinition of the name.
@@ -313,68 +332,41 @@ export class PersistedViewServe {
             `the stored result cannot answer \`${call.view}\` with live's columns: ${variant.refusal}`,
          );
       }
-      if (!variant.materializer || !variant.modelDef) {
-         logger.warn("A persisted-view variant did not compile", {
-            modelPath: this.host.modelPath(),
-            view: `${plan.sourceName} -> ${plan.viewName}`,
-            error: variant.error,
-         });
-         throw new LegDecline(
-            "view_missing_field",
-            "the query does not compile against the stored view",
-         );
-      }
-      const runnable = variant.materializer.loadRestrictedQuery(
-         args.queryString,
-      );
-      let sql: string;
-      try {
-         const result = await runnable.getPreparedResult({
-            ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
-            ...(args.givens ? { givens: args.givens as never } : {}),
-            ...(table.virtualMap ? {} : { buildManifest: args.buildManifest }),
-         } as never);
-         sql = result.sql;
-      } catch {
-         throw new LegDecline(
-            "view_missing_field",
-            "the query does not compile against the stored view",
-         );
-      }
-      // The compiled SQL must read the table, never recompute the view.
-      const read = table.virtualMap ? table.quotedPath : table.colocatedTable;
-      if (!read || !sql.includes(read)) {
-         throw new LegDecline("view_stale");
-      }
-      const { virtualMap, quotedPath, binding, colocatedTable, ...reported } =
-         table;
-      void quotedPath;
-      void colocatedTable;
-      return {
-         runnable,
-         table: reported,
-         ...(virtualMap ? { virtualMap } : {}),
-         ...(binding ? { binding } : {}),
-         graftScope: {
-            modelDef: variant.modelDef,
-            materializer: variant.materializer,
-            cacheScope: `persisted_view\u0000${this.generation}\u0000${plan.buildSourceID}\u0000${localName}`,
-            ...(variant.runtime ? { runtime: variant.runtime } : {}),
-         },
-      };
+      return readStoredVariant({
+         ...args,
+         variant,
+         table,
+         modelPath: this.host.modelPath(),
+         subject: `${plan.sourceName} -> ${plan.viewName}`,
+         cacheScope: `persisted_view\u0000${this.generation}\u0000${plan.buildSourceID}\u0000${localName}`,
+         compilerKey: this.compilerKeyOf(plan.buildSourceID),
+      });
    }
 
-   /** The view's table: a `storage=` binding, or a colocated manifest entry. */
-   private tableOf(
-      plan: PersistedViewPlan,
+   /**
+    * The key Malloy substitutes `buildSourceID`'s colocated table under,
+    * where it is not the table's address (see PlannedTable.compilerKey).
+    */
+   compilerKeyOf(buildSourceID: string): string | undefined {
+      return this.host.catalog()?.planned.get(buildSourceID)?.compilerKey;
+   }
+
+   /** A persisted result's table: a `storage=` binding, or a colocated manifest entry. */
+   tableOf(
+      plan: Pick<PersistedViewPlan, "buildSourceID" | "storage">,
       pinned: Pinned,
       freshManifest: BuildManifest | undefined,
    ): ResolvedTable {
       const planned = this.host.catalog()?.planned.get(plan.buildSourceID);
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
-      if (plan.storage !== undefined) {
-         const lookup = pinned.tableFor(plan.buildSourceID, "view");
+      const lookup = storageLookupOf(
+         pinned,
+         plan.buildSourceID,
+         isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
+         plan.storage !== undefined,
+      );
+      if (lookup) {
          if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
          }
@@ -391,7 +383,10 @@ export class PersistedViewServe {
                stale: true,
             };
          }
-         const quotedPath = quoteManifestTablePath(binding.tablePath, "duckdb");
+         const quotedPath = quoteManifestTablePath(
+            binding.tablePath,
+            STORAGE_DIALECT,
+         );
          return {
             ...withId,
             ...dataAsOf,
@@ -478,109 +473,45 @@ export class PersistedViewServe {
          return { error: "no context" };
       }
       const shape = await viewShape(author, modelDef, plan, localName);
-      const modelPath = this.host.modelPath();
-      const modelFile = path.join(packagePath, modelPath);
-      const destinations = this.host.serveDestinationConfig();
-      const config =
-         table.binding && destinations
-            ? servedCopyConfig(
-                 packageConfig,
-                 destinations(),
-                 new Set([table.binding.destinationName]),
-              )
-            : packageConfig;
       const view = viewDeclaration(plan.viewName, shape);
       if ("refusal" in view) return { refusal: view.refusal };
-      // A stored column whose type does not serve as live's is read through
-      // the served copy's faithful cast (a date truncation a build stored as
-      // a TIMESTAMP), or refuses the variant.
-      const read = table.binding
-         ? storedColumnCasts(
-              table.binding.schema,
-              shape.columns,
-              shape.queryTimezone,
-           )
-         : { casts: new Map<string, "DATE" | "BOOLEAN">() };
-      if ("refusal" in read) return { refusal: read.refusal };
-      const { casts } = read;
       // malloy-text: viewDeclaration's text, every value through identifier or noteSource
       const viewBody = view.text;
-      return compileDeclaringFileVariant({
+      return compilePersistedResultVariant({
          packagePath,
-         modelPath,
          packageConfig,
-         config,
          modelDef,
-         sourceID: plan.sourceID,
-         copySuffix: ".view-author.malloy",
-         queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
-         flags: VARIANT_FLAGS,
-         declare: ({
-            gates: authorGates,
-            sourceName: source,
-            copyName,
-            declaringURL,
-            addFile,
-         }) => {
+         modelPath: this.host.modelPath(),
+         destinations: this.host.serveDestinationConfig(),
+         companionPlans: () => ({
+            views: this.host.planModelPersistedViews(modelDef).plans,
+            queries: this.host.planModelPersistedQueries(modelDef).plans,
+         }),
+         plan,
+         table,
+         shape,
+         redeclare: { sourceID: plan.sourceID },
+         colocatedAlias: `${plan.buildSourceName}__built`,
+         emit: (read) => {
             // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
-            const gates = authorGates;
-            if (table.binding) {
-               const typeName = `${plan.buildSourceName}__type`;
-               const stored = `${plan.buildSourceName}__stored`;
-               // A stored column carries the notes live's output column does
-               // (its field's, and the view's own on it): a `type:` field
-               // keeps its annotations, so the result column reads them as
-               // live's does. A timeframe column's go on its redefined field
-               // (timeframeRestatements), and a measure's on the view's
-               // re-aggregation of it (viewDeclaration), instead.
-               // A cast column's go on its redefined field too
-               // (storedColumnCasts).
-               const columnNotes = new Map(
-                  shape.columns.map((c) => [
-                     c.name,
-                     c.timeframe || casts.has(c.name) || c.kind === "measure"
-                        ? []
-                        : c.notes,
-                  ]),
-               );
-               const columns = table.binding.schema.map((c) => {
-                  const notes = columnNotes.get(c.name);
-                  return {
-                     name: c.name,
-                     type: c.type,
-                     ...(notes && notes.length > 0 ? { notes } : {}),
-                  };
-               });
+            const gates = read.gates;
+            // malloy-text: the source's own `timezone:` statement, its zone through stringLiteral
+            const zone = read.sourceTimezone;
+            const declared = `${gates}source: ${identifier(read.sourceName)} is ${identifier(read.stored.name)}`;
+            if ("typeText" in read.stored) {
+               // malloy-text: storedTypedSource's text, names through identifier
+               const typeText = read.stored.typeText;
                // malloy-text: the served copy's timeframe and cast emitter, the author's notes, names through identifier
-               const timeframes = timeframeRestatements(
-                  shape.columns.map((c) => {
-                     const castTo = casts.get(c.name);
-                     if (!castTo) return c;
-                     // A measure's notes go on its re-aggregation.
-                     const notes = c.kind === "measure" ? [] : c.notes;
-                     return { ...c, notes, castTo };
-                  }),
-                  table.binding.schema.map((c) => c.name),
-               );
-               // malloy-text: the type emitter, the author's gate and view notes (single lines), and names through identifier
-               return `${typeDeclaration({ typeName, columns })}
-source: ${identifier(stored)} is ${identifier(servedCopyAlias(table.binding.destinationName))}.virtual(${stringLiteral(table.binding.virtualHandle)})::${identifier(typeName)}
-${gates}source: ${identifier(source)} is ${identifier(stored)} extend {${timeframes}
+               const timeframes = read.stored.timeframes;
+               return `${typeText}
+${declared} extend {${zone}${timeframes}
 ${viewBody}
 }`;
             }
-            // The companion over the copy, so its build SQL (and so its
-            // address) is the one the build plan computed.
-            const siblings = this.host
-               .planModelPersistedViews(modelDef)
-               .plans.filter((p) => p.declaringURL === declared.url);
-            const text = generatePersistedViewFile(siblings, copyName);
-            if (!text) return { error: "no companion" };
-            const companion = persistedViewCompanionHref(declaringURL.href);
-            addFile(new URL(companion), text);
-            const built = `${plan.buildSourceName}__built`;
-            return `import { ${identifier(built)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}
-${gates}source: ${identifier(source)} is ${identifier(built)} extend {
+            // malloy-text: the companion import, names through identifier and its file through doubleQuotedString
+            const importLine = read.stored.importLine;
+            return `${importLine}
+${declared} extend {${zone}
 ${viewBody}
 }`;
          },
@@ -588,12 +519,223 @@ ${viewBody}
    }
 }
 
+/**
+ * Compile a persisted result's variant, the view leg's and the query leg's
+ * alike: the source it reads redeclared over its table in an overlay of its
+ * own declaring file, so it keeps the author's `sourceID` and every gate the
+ * governor keys on it finds its graft target, as the served copy keeps it by
+ * re-rooting the author's own file. A `storage=` table is read through a
+ * typed source, each stored column whose type or value does not serve as
+ * live's through the served copy's faithful cast (or the variant is refused);
+ * a colocated one through its build source, imported from the companion over
+ * the copy so its address is the one the build plan computed. `emit` writes
+ * the leg's own declarations over that stored source.
+ */
+export async function compilePersistedResultVariant(args: {
+   packagePath: string;
+   packageConfig: ModelConnectionInput;
+   modelDef: ModelDef;
+   modelPath: string;
+   destinations: (() => MalloyConfig) | undefined;
+   /** Every persisted view and named query the model sees: the companion's. */
+   companionPlans(): {
+      views: readonly PersistedViewPlan[];
+      queries: readonly PersistedQueryPlan[];
+   };
+   plan: { buildSourceName: string; declaringURL: string };
+   table: ResolvedTable;
+   shape: ViewShape;
+   /** What the variant redeclares: a source by `sourceID`, or its declaring file. */
+   redeclare:
+      | { sourceID: string; alsoRedeclared?: string[] }
+      | {
+           declaringURL: string;
+           alsoRedeclared: string[];
+           alsoExported?: string[];
+        };
+   /** The name a colocated build source is imported under. */
+   colocatedAlias: string;
+   emit(read: {
+      gates: string;
+      sourceName: string;
+      /** The source's own `timezone:` statement, or "". */
+      sourceTimezone: string;
+      stored:
+         | { name: string; typeText: string; timeframes: string }
+         | { name: string; importLine: string };
+   }): string;
+}): Promise<CompiledVariant> {
+   const { packagePath, packageConfig, plan, table, shape } = args;
+   const read = table.binding
+      ? storedColumnCasts(
+           // Matched by a unique case fold too, as the served copy matches:
+           // a warehouse that folded the build's quoted aliases (P3-06..09).
+           canonicalStoredSchema(
+              table.binding.schema,
+              shape.columns.map((c) => c.name),
+           ),
+           shape,
+        )
+      : { casts: new Map<string, ColumnCast>() };
+   if ("refusal" in read) return { refusal: read.refusal };
+   // The source's own time zone: a `storage=` read truncates each stored
+   // truncation again, and a later stage truncates a stored timestamp, each
+   // in the zone live computes it in, never UTC.
+   const sourceTimezone = shape.sourceTimezone
+      ? `\n  timezone: ${stringLiteral(shape.sourceTimezone)}`
+      : "";
+   const modelFile = path.join(packagePath, args.modelPath);
+   const config =
+      table.binding && args.destinations
+         ? servedCopyConfig(
+              packageConfig,
+              args.destinations(),
+              new Set([table.binding.destinationName]),
+           )
+         : packageConfig;
+   return compileDeclaringFileVariant({
+      packagePath,
+      modelPath: args.modelPath,
+      packageConfig,
+      config,
+      modelDef: args.modelDef,
+      ...args.redeclare,
+      copySuffix: ".view-author.malloy",
+      queryModelURL: pathToFileURL(`${modelFile}.view.malloy`),
+      flags: VARIANT_FLAGS,
+      declare: ({ gates, sourceName, copyName, declaringURL, addFile }) => {
+         if (table.binding) {
+            const name = `${plan.buildSourceName}__stored`;
+            const { typeText, timeframes } = storedTypedSource({
+               columns: shape.columns,
+               casts: read.casts,
+               binding: table.binding,
+               typeName: `${plan.buildSourceName}__type`,
+               stored: name,
+            });
+            return args.emit({
+               gates,
+               sourceName,
+               sourceTimezone,
+               stored: { name, typeText, timeframes },
+            });
+         }
+         const ownFile = (p: { declaringURL: string }) =>
+            p.declaringURL === plan.declaringURL;
+         const { views, queries } = args.companionPlans();
+         const text = generatePersistedResultFile(
+            views.filter(ownFile),
+            queries.filter(ownFile),
+            copyName,
+         );
+         if (!text) return { error: "no companion" };
+         const companion = persistedViewCompanionHref(declaringURL.href);
+         addFile(new URL(companion), text);
+         const name = args.colocatedAlias;
+         return args.emit({
+            gates,
+            sourceName,
+            sourceTimezone,
+            stored: {
+               name,
+               importLine: `import { ${identifier(name)} is ${identifier(plan.buildSourceName)} } from ${doubleQuotedString(path.basename(fileURLToPath(companion)))}`,
+            },
+         });
+      },
+   });
+}
+
+/**
+ * Compile the caller's text on a compiled variant and check that its SQL
+ * reads the stored table, or throw a {@link LegDecline}: the tail every
+ * persisted result's attempt shares (a view's, a named query's).
+ */
+export async function readStoredVariant(args: {
+   queryString: string;
+   givens: Record<string, unknown> | undefined;
+   buildManifest: BuildManifest | undefined;
+   variant: CompiledVariant;
+   table: ResolvedTable;
+   modelPath: string;
+   /** What the variant answers, for the log. */
+   subject: string;
+   /** The graft cache scope of this variant. */
+   cacheScope: string;
+   /** The key Malloy substitutes a colocated table under, when not its address. */
+   compilerKey?: string;
+}): Promise<ViewAnswer> {
+   const { variant, table } = args;
+   // Sources folded apart on one build share Malloy's key: under it, this
+   // variant reads its own table.
+   const own =
+      args.compilerKey && table.tableId
+         ? args.buildManifest?.entries[table.tableId]
+         : undefined;
+   const buildManifest =
+      own && args.buildManifest
+         ? {
+              ...args.buildManifest,
+              entries: {
+                 ...args.buildManifest.entries,
+                 [args.compilerKey!]: own,
+              },
+           }
+         : args.buildManifest;
+   if (!variant.materializer || !variant.modelDef) {
+      logger.warn("A persisted-view variant did not compile", {
+         modelPath: args.modelPath,
+         view: args.subject,
+         error: variant.error,
+      });
+      throw new LegDecline(
+         "view_missing_field",
+         "the query does not compile against the stored view",
+      );
+   }
+   const runnable = variant.materializer.loadRestrictedQuery(args.queryString);
+   let sql: string;
+   try {
+      const result = await runnable.getPreparedResult({
+         ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
+         ...(args.givens ? { givens: args.givens as never } : {}),
+         ...(table.virtualMap ? {} : { buildManifest }),
+      } as never);
+      sql = result.sql;
+   } catch {
+      throw new LegDecline(
+         "view_missing_field",
+         "the query does not compile against the stored view",
+      );
+   }
+   // The compiled SQL must read the table, never recompute the result.
+   const read = table.virtualMap ? table.quotedPath : table.colocatedTable;
+   if (!read || !sql.includes(read)) {
+      throw new LegDecline("view_stale");
+   }
+   const { virtualMap, quotedPath, binding, colocatedTable, ...reported } =
+      table;
+   void quotedPath;
+   void colocatedTable;
+   return {
+      runnable,
+      table: reported,
+      ...(virtualMap ? { virtualMap } : {}),
+      ...(binding ? { binding } : {}),
+      graftScope: {
+         modelDef: variant.modelDef,
+         materializer: variant.materializer,
+         cacheScope: args.cacheScope,
+         ...(variant.runtime ? { runtime: variant.runtime } : {}),
+      },
+   };
+}
+
 /** The flags every generated variant file declares. */
 const VARIANT_FLAGS =
    "##! experimental { access_modifiers givens persistence virtual_source }";
 
 /** What the variant reproduces of the view's result. */
-interface ViewShape {
+export interface ViewShape {
    /**
     * Output columns, in order, with a timeframe where the field has one and
     * the annotation lines live's result column carries.
@@ -605,6 +747,12 @@ interface ViewShape {
    stageType?: string;
    /** The query time zone the view's rows were computed in (the source's or the view's own). */
    queryTimezone?: string;
+   /** The source's own query time zone (`timezone:` on the source). */
+   sourceTimezone?: string;
+   /** The view's own query time zone (`timezone:` in one of its stages). */
+   viewTimezone?: string;
+   /** The source's dialect, the one live answers on (as compiled, unchecked). */
+   dialect?: unknown;
 }
 
 /** One output column of the view, as live reports it. */
@@ -619,10 +767,12 @@ interface ViewColumn {
     * `calculation`), a `dimension`, or a `nest` (a nested result).
     */
    kind: "measure" | "dimension" | "nest";
+   /** The compiled output field, for what its type alone does not say (a `bigint` number). */
+   field: unknown;
 }
 
 /** A compiled query stage, as far as the shape reads it. */
-interface StageIR {
+export interface StageIR {
    type?: unknown;
    outputStruct?: { fields?: unknown[] };
    orderBy?: { field?: unknown; dir?: unknown }[];
@@ -635,7 +785,9 @@ interface ResultKinds {
 }
 
 /** The kinds live's result reports, read from Malloy's public result explore. */
-function resultKinds(explore: { allFields: readonly unknown[] }): ResultKinds {
+export function resultKinds(explore: {
+   allFields: readonly unknown[];
+}): ResultKinds {
    const out: ResultKinds = { measures: new Set(), nests: new Set() };
    for (const raw of explore.allFields) {
       const f = raw as {
@@ -654,7 +806,7 @@ function resultKinds(explore: { allFields: readonly unknown[] }): ResultKinds {
 }
 
 /** The last stage's output columns and ordering. */
-function stageShape(
+export function stageShape(
    stage: StageIR | undefined,
    kinds: ResultKinds,
 ): Pick<ViewShape, "columns" | "orderBy"> {
@@ -687,6 +839,7 @@ function stageShape(
                   : kinds.measures.has(name)
                     ? "measure"
                     : "dimension",
+               field: raw,
             },
          ];
       },
@@ -737,51 +890,74 @@ async function viewShape(
    const view = def?.fields?.find(
       (f) => f.type === "turtle" && (f.as ?? f.name) === plan.viewName,
    );
-   const queryTimezone = queryTimezoneOf({
-      queryTimezone: (def as { queryTimezone?: unknown } | undefined)
-         ?.queryTimezone,
-      query: { pipeline: stages },
-   });
+   const { queryTimezone: ownZone, dialect } = (def ?? {}) as {
+      queryTimezone?: unknown;
+      dialect?: unknown;
+   };
+   const sourceTimezone = queryTimezoneOf({ queryTimezone: ownZone });
+   const viewTimezone = queryTimezoneOf({ query: { pipeline: stages } });
+   const queryTimezone = viewTimezone ?? sourceTimezone;
    return {
       columns,
       orderBy,
       notes: viewNoteTexts(view?.annotations),
       ...(typeof last?.type === "string" ? { stageType: last.type } : {}),
       ...(queryTimezone ? { queryTimezone } : {}),
+      ...(sourceTimezone ? { sourceTimezone } : {}),
+      ...(viewTimezone ? { viewTimezone } : {}),
+      ...(dialect !== undefined ? { dialect } : {}),
    };
 }
 
 /**
  * The stored columns of a `storage=` view's table read through a cast, by
- * name: `DATE` or `BOOLEAN`, the served copy's faithful casts
- * ({@link serveTypePlan}). A build stores each column as its declared type
- * where it can, but one whose cast it declined (a view or source with a query
- * time zone) or a build whose casts failed and stored what the warehouse
- * returned holds a date truncation as a TIMESTAMP, which the `type:` would
- * declare a timestamp where live types it a date. A column no faithful cast
- * reads as live's type is the refusal instead, and the query answers live.
+ * name ({@link storedColumnReadPlan}: a faithful `DATE` or `BOOLEAN`, or a big
+ * integer's native read), or why the stored table cannot give live's values:
+ * a column no faithful cast reads as live's type, a big integer stored as a
+ * float (its digits already lost), or a column live answers as a
+ * warehouse-native value (`sql native`) or JSON, which no `type:` reads back
+ * as live does.
  */
-function storedColumnCasts(
+export function storedColumnCasts(
    schema: readonly { name: string; type: string }[],
-   columns: readonly ViewColumn[],
-   queryTimezone: string | undefined,
-): { casts: Map<string, "DATE" | "BOOLEAN"> } | { refusal: string } {
-   const declared = columns
+   shape: Pick<ViewShape, "columns" | "queryTimezone" | "dialect">,
+): { casts: Map<string, ColumnCast> } | { refusal: string } {
+   const native = shape.columns.find(
+      (c) => c.type === "sql native" || c.type === "json",
+   );
+   if (native) {
+      return {
+         refusal: `live answers \`${native.name}\` as a ${native.type === "json" ? "JSON" : "warehouse-native"} value, which no stored read gives exactly`,
+      };
+   }
+   const declared = shape.columns
       .filter((c) => c.kind !== "nest" && c.type !== "")
-      .map((c) => ({ name: c.name, type: c.type }));
-   const mismatches = storedColumnTypeMismatches(schema, declared);
-   const plan = serveTypePlan(mismatches, { queryTimezone });
-   const [unservable] = plan.unservable;
+      .map((c) => ({ name: c.name, type: c.type, field: c.field }));
+   const plan = storedColumnReadPlan(schema, declared, {
+      queryTimezone: shape.queryTimezone,
+      dialect: shape.dialect,
+      // A storage destination is DuckLake.
+      ducklake: true,
+   });
+   const [unservable] = plan.leftOut;
    if (unservable) {
       return {
          refusal: `the stored \`${unservable.column}\` (${unservable.storedType}) cannot be read as live's ${unservable.declaredType}`,
       };
    }
+   const [lost] = plan.refusals;
+   if (lost) {
+      return {
+         refusal: `the stored \`${lost.column}\` (${lost.storedType}) cannot hold live's integer exactly`,
+      };
+   }
    return {
       casts: new Map(
-         plan.casts.map((c) => [
+         plan.casts.map((c): [string, ColumnCast] => [
             c.column,
-            c.castTo === "BOOLEAN" ? ("BOOLEAN" as const) : ("DATE" as const),
+            c.native
+               ? { nativeCast: c.castTo }
+               : { castTo: c.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
          ]),
       ),
    };
@@ -846,14 +1022,30 @@ function regroupRefusal(shape: ViewShape): string | undefined {
  * re-aggregates through the number it picks, NULL kept NULL. Where that
  * regrouping is not provably exact ({@link regroupRefusal}), or a measure's
  * type is one `max()` does not take (a JSON value, an array), it returns the
- * refusal instead, and the query answers live.
+ * refusal instead, and the query answers live. `head` opens the statement
+ * (a named query's is `query: q is <source> ->`).
  */
-function viewDeclaration(
+export function viewDeclaration(
    viewName: string,
    shape: ViewShape,
+   // malloy-text: a statement head its callers write through identifier
+   head = `view: ${identifier(viewName)} is`,
 ): { text: string } | { refusal: string } {
+   // An index's result is not the view's rows as a query writes them: live
+   // annotates none of its columns, and a stored read annotates every one.
+   if (shape.stageType === "index") {
+      return {
+         refusal:
+            "it is an `index:`, whose columns live writes without the annotations a stored read gives them",
+      };
+   }
    // malloy-text: the author's own view notes (single lines, no `#@`), names through identifier
    const notes = shape.notes.map((n) => `  ${n}\n`).join("");
+   // The view's own time zone, so a timeframe a `storage=` read truncates
+   // again, and a later stage, compute in the zone live does.
+   const zone = shape.viewTimezone
+      ? `timezone: ${stringLiteral(shape.viewTimezone)}`
+      : "";
    const select = shape.columns.map((c) => identifier(c.name)).join(", ");
    const order =
       shape.orderBy.length > 0
@@ -863,7 +1055,7 @@ function viewDeclaration(
          : "";
    if (!regroups(shape.columns)) {
       return {
-         text: `${notes}  view: ${identifier(viewName)} is { select: ${select}${order ? `; ${order}` : ""} }`,
+         text: `${notes}  ${head} { ${zone ? `${zone}; ` : ""}select: ${select}${order ? `; ${order}` : ""} }`,
       };
    }
    const refusal =
@@ -882,7 +1074,7 @@ function viewDeclaration(
    if (refusal) return { refusal };
    const lines = shape.columns.map(groupedColumn).join("");
    return {
-      text: `${notes}  view: ${identifier(viewName)} is {\n${lines}${order ? `    ${order}\n` : ""}  }`,
+      text: `${notes}  ${head} {\n${zone ? `    ${zone}\n` : ""}${lines}${order ? `    ${order}\n` : ""}  }`,
    };
 }
 
@@ -910,6 +1102,73 @@ export function refinedCallDecline(call: RunViewCall): LegDecline | undefined {
          "view_missing_field",
          `the query refines \`${call.view}\` (\`+ { … }\`), and the stored result holds only the view as written`,
       );
+   }
+   return undefined;
+}
+
+/**
+ * A caller's text that names, outside the call's head, a name that may read
+ * the stored rows where live reads the source, or undefined: fails closed.
+ *
+ * - A name the variant redeclares (`redeclared`: the run target's, and for a
+ *   named query its own): the variant gives it to the stored result, so a
+ *   join back to the source, or a preamble source built over it, reads the
+ *   stored rows.
+ * - A named query of the model (`contents`): a named query keeps its source
+ *   as a bare name, resolved where the query is used, which in the variant
+ *   is the stored result.
+ * - A model name declared in a file other than the redeclared one
+ *   (`declaringURL`): that file's own import of the declaring file resolves
+ *   to the variant's overlay.
+ *
+ * A caller's own preamble names (a report's definition cells), the declaring
+ * file's other sources (read from its copy), a dimension-only `extend:` and
+ * a join to one of those sources read as live does.
+ */
+export function callerTextDecline(
+   otherNames: ReadonlySet<string>,
+   redeclared: readonly (string | undefined)[],
+   name: string,
+   model: {
+      contents: Record<string, unknown> | undefined;
+      declaringURL: string | undefined;
+   },
+): LegDecline | undefined {
+   const named = redeclared.find((n) => n !== undefined && otherNames.has(n));
+   if (named !== undefined) {
+      return new LegDecline(
+         "view_missing_field",
+         `the query text names \`${named}\` beside the call of \`${name}\`, a name the stored result's variant gives to the stored rows`,
+      );
+   }
+   for (const other of otherNames) {
+      if (!model.contents || !Object.hasOwn(model.contents, other)) continue;
+      const entry = model.contents[other] as
+         | {
+              type?: unknown;
+              sourceID?: unknown;
+              location?: { url?: unknown };
+           }
+         | undefined;
+      if (entry?.type === "query") {
+         return new LegDecline(
+            "view_missing_field",
+            `the query text names the named query \`${other}\` beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
+         );
+      }
+      const declaredIn =
+         (typeof entry?.sourceID === "string"
+            ? splitSourceID(entry.sourceID)?.url
+            : undefined) ??
+         (typeof entry?.location?.url === "string"
+            ? entry.location.url
+            : undefined);
+      if (declaredIn === undefined || declaredIn !== model.declaringURL) {
+         return new LegDecline(
+            "view_missing_field",
+            `the query text names \`${other}\`, declared in another file than the stored result's, beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
+         );
+      }
    }
    return undefined;
 }

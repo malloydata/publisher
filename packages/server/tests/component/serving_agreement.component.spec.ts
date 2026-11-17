@@ -6,6 +6,10 @@
 // source an `index.malloy` re-exports, an inherited `#@ preaggregate`, serving
 // after a connection edit, and the verdicts, path report, preview and package
 // warnings agreeing about one package.
+import {
+   castToDeclaredTypes,
+   wideIntegerColumns,
+} from "../../src/service/materialization/stored_column_types";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -19,6 +23,7 @@ import { QueryPrivileges } from "../../src/service/model_query_request";
 import type { Package } from "../../src/service/package";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 
 let rootDir: string;
 let envPath: string;
@@ -95,7 +100,7 @@ source: orders is duckdb.sql("""
 
 /** Build every planned rollup (one table per address) and bind it colocated. */
 async function buildRollups(pkg: Package): Promise<string> {
-   const ids = [...pkg.getPreaggregateEntityIds()];
+   const ids = [...pkg.materialization().getPreaggregateEntityIds()];
    expect(ids).toHaveLength(1);
    const rollup = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
       (s) => s.sourceEntityId === ids[0],
@@ -107,9 +112,11 @@ async function buildRollups(pkg: Package): Promise<string> {
    await connection.runSQL(
       `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
    );
-   pkg.bindColocatedServeManifest({
-      [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
-   } as never);
+   pkg.materialization().bind({
+      colocated: {
+         [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
+      } as never,
+   });
    return ids[0];
 }
 
@@ -134,6 +141,7 @@ describe("a rollup on a source an index.malloy re-exports", () => {
          expect(JSON.stringify(result)).toContain("built_rollup");
          expect(result.path?.servedBy).toEqual({
             kind: "rollup",
+            tier: "database",
             tableId: rollupId,
          });
          expect(result.path?.considered).toEqual([
@@ -142,7 +150,8 @@ describe("a rollup on a source an index.malloy re-exports", () => {
       }
       // The verdict agrees with the path report.
       const verdicts = pkg
-         .getServeVerdicts()
+         .materialization()
+         .serveVerdicts()
          .filter((v) => v.origin === "preaggregate");
       expect(verdicts.length).toBeGreaterThan(0);
       expect(verdicts.every((v) => v.verdict === "serves")).toBe(true);
@@ -173,7 +182,7 @@ describe("a #@ preaggregate measure reused in a persisted query", () => {
       expect(pkg.getModel("index.malloy")?.preaggregateViolations()).toEqual(
          [],
       );
-      expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+      expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe("");
       expect(planEntry(pkg, "daily").origin).not.toBe("preaggregate");
    });
 
@@ -214,9 +223,11 @@ async function buildDaily(pkg: Package, table: string): Promise<string> {
       "duck",
    )) as DuckDBConnection;
    await connection.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
-   pkg.bindColocatedServeManifest({
-      [entry.sourceEntityId]: { tableName: table, connectionName: "duck" },
-   } as never);
+   pkg.materialization().bind({
+      colocated: {
+         [entry.sourceEntityId]: { tableName: table, connectionName: "duck" },
+      } as never,
+   });
    return entry.sourceEntityId;
 }
 
@@ -254,11 +265,15 @@ describe("serving after a connection edit and a rebuild", () => {
       expect(JSON.stringify(second)).toContain("built_after");
       expect(second.path?.servedBy).toEqual({
          kind: "materialized",
+         tier: "database",
          tableId: after,
          via: "served_copy",
       });
       expect(
-         pkg.getServeVerdicts().find((v) => v.sourceName === "daily"),
+         pkg
+            .materialization()
+            .serveVerdicts()
+            .find((v) => v.sourceName === "daily"),
       ).toMatchObject({ verdict: "serves" });
    });
 });
@@ -288,8 +303,21 @@ source: daily_s is orders -> {
   view: by_region is { group_by: region; aggregate: tt is t.sum() }
 }
 
+// Its own lock: read past it from the shared table (G3, as colocated).
 #(authorize) 'admin' in $ROLES
-source: daily_s_secure is daily_s extend { dimension: r2 is region }
+source: daily_s_locked is daily_s extend { dimension: r2 is region }
+
+#(access_filter) region in $ROLES
+source: gated_orders is orders extend {}
+
+// A row filter it inherits: refused on every tier.
+#@ persist name="daily_s_secure" storage="lake"
+source: daily_s_secure is gated_orders -> {
+  group_by: region
+  aggregate: t is amount.sum(), m is amount.max()
+} extend {
+  dimension: r2 is region
+}
 
 #@ persist name="txt_s" storage="lake"
 source: txt_s is orders -> {
@@ -298,7 +326,7 @@ source: txt_s is orders -> {
 `;
 
 const AGREEMENT_INDEX = `import "model.malloy"
-export { orders, daily_c, daily_s, daily_s_secure, txt_s }
+export { orders, daily_c, daily_s, daily_s_locked, daily_s_secure, txt_s }
 `;
 
 /**
@@ -339,7 +367,21 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
       const table = `t_${entry.sourceEntityId.slice(0, 12)}`;
       const storage = entry.annotationFields?.storage;
       if (storage) {
-         await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
+         // As a real build stores a sum: a warehouse's numeric arrives as a
+         // DECIMAL, and a DuckDB-computed 128-bit integer is cast to
+         // DECIMAL(38,0), which a lake keeps exactly (P4-01).
+         const computed = await lake.runSQL(`DESCRIBE (${entry.sql})`);
+         const select = castToDeclaredTypes(entry.sql, [], {
+            exactIntegers: wideIntegerColumns(
+               (
+                  computed.rows as {
+                     column_name: string;
+                     column_type: string;
+                  }[]
+               ).map((r) => ({ name: r.column_name, type: r.column_type })),
+            ),
+         });
+         await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${select}`);
          const described = await lake.runSQL(`DESCRIBE ${table}`);
          stored[entry.sourceEntityId] = {
             sourceEntityId: entry.sourceEntityId,
@@ -363,22 +405,30 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
          };
       }
    }
-   pkg.bindColocatedServeManifest(colocated as never);
-   pkg.bindStorageServeBindings(stored as never);
+   pkg.materialization().bind({ colocated: colocated as never });
+   pkg.materialization().bind({ storage: stored as never });
 }
 
 describe("the verdicts, path report, preview and warnings agree on one package", () => {
+   // `buildAll` builds the `storage=` tables from the sandbox by hand, which
+   // no real build can, so the sandbox stands in for a warehouse here.
+   let restoreTypes: () => void;
+   beforeEach(() => {
+      restoreTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+   });
+   afterEach(() => restoreTypes());
+
    it("says the same thing about every materialized source on every surface", async () => {
       const { pkg } = await loadPackage({
          "model.malloy": AGREEMENT_MODEL,
          "index.malloy": AGREEMENT_INDEX,
       });
       const { lake, config } = lakeDestination(rootDir);
-      pkg.setServeDestinationConfig(() => config);
+      pkg.materialization().setServeDestinationConfig(() => config);
       const preview = await pkg.previewServeVerdicts();
       await buildAll(pkg, lake);
 
-      const verdicts = pkg.getServeVerdicts();
+      const verdicts = pkg.materialization().serveVerdicts();
       const verdictOf = (name: string) => {
          const found = verdicts.filter(
             (v) => v.sourceName === name && v.origin === "persist",
@@ -419,23 +469,31 @@ describe("the verdicts, path report, preview and warnings agree on one package",
       );
       expect(r.path?.servedBy.kind).toBe("rollup");
 
-      // The gated extension shares its base's table. Its verdict says live
-      // because the gate refused it, and the path report says why the query
-      // didn't use the table: WARNED with the verdict's code, `refused`
-      // (decided 2026-11-11), so both surfaces name the same cause.
-      const secure = verdictOf("daily_s_secure");
-      expect(secure).toMatchObject({ verdict: "live", reason: "refused" });
-      expect(secure.message).toContain("protected by a gate");
-      const g = await query(
-         "run: daily_s_secure -> { group_by: r2; aggregate: x is t.sum() }",
+      // The locked extension shares its base's table and is read past its
+      // own lock, from storage, as a colocated one is (G3).
+      expect(verdictOf("daily_s_locked")).toMatchObject({
+         verdict: "serves",
+         tier: "storage",
+      });
+      const locked = await query(
+         "run: daily_s_locked -> { group_by: r2; aggregate: x is t.sum() }",
          { ROLES: ["admin"] },
       );
-      expect(g.path?.servedBy.kind).not.toBe("materialized");
-      const skipped = g.path?.considered.find(
-         (entry) =>
-            entry.outcome === "skipped" && entry.kind === "materialized",
+      expect(locked.servedFrom).toBe("storage");
+
+      // A source that inherits a row filter is refused on every tier. Its
+      // verdict says live because the gate refused it, and no table of it
+      // is built, so the query is answered live and the path report names
+      // no table it used.
+      const secure = verdictOf("daily_s_secure");
+      expect(secure).toMatchObject({ verdict: "live", reason: "refused" });
+      expect(secure.message).toContain("row-level gate");
+      const g = await query(
+         "run: daily_s_secure -> { group_by: r2; aggregate: x is t.sum() }",
+         { ROLES: ["east"] },
       );
-      expect(skipped).toMatchObject({ reason: "WARNED", code: "refused" });
+      expect(g.path?.servedBy.kind).toBe("live");
+      expect(g.servedFrom).not.toBe("storage");
 
       // A mistyped column: the package warns about it, the source still
       // serves, and a query reading that column is answered live.

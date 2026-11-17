@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import type { RunViewCall } from "../../query_text";
 import {
+   callerTextDecline,
    callTargetDecline,
    exactCallDecline,
    refinedCallDecline,
@@ -17,6 +18,7 @@ function call(over: Partial<RunViewCall> = {}): RunViewCall {
       view: "by_carrier",
       refined: false,
       laterStages: 0,
+      otherNames: new Set(["run"]),
       ...over,
    };
 }
@@ -75,5 +77,98 @@ describe("exactCallDecline", () => {
       const decline = exactCallDecline(call(), plan, "flights");
       expect(decline?.code).toBe("view_missing_field");
       expect(decline?.callerDetail).toContain("not a call of `by_carrier`");
+   });
+});
+
+describe("callerTextDecline", () => {
+   const M = "file:///p/m.malloy";
+   const model = {
+      declaringURL: M,
+      contents: {
+         fl: { type: "source", sourceID: `fl@${M}` },
+         counts: { type: "source", sourceID: `counts@${M}` },
+         fl_q: { type: "query", location: { url: M } },
+         alias: { type: "source", sourceID: "alias@file:///p/viewer.malloy" },
+      },
+   };
+
+   it("passes a caller's own names and the declaring file's other sources", () => {
+      expect(
+         callerTextDecline(
+            new Set(["run", "mine", "counts"]),
+            ["fl", "q"],
+            "q",
+            model,
+         ),
+      ).toBeUndefined();
+   });
+
+   it("declines a text that names a redeclared name, saying which", () => {
+      const decline = callerTextDecline(
+         new Set(["run", "join_many", "fl"]),
+         ["q", undefined, "fl"],
+         "q",
+         model,
+      );
+      expect(decline?.code).toBe("view_missing_field");
+      expect(decline?.reason).toBe("MISSING_FIELD");
+      expect(decline?.callerDetail).toContain("`fl`");
+   });
+
+   it("declines a named query of the model, and a name from another file", () => {
+      expect(
+         callerTextDecline(new Set(["fl_q"]), ["fl"], "q", model)?.callerDetail,
+      ).toContain("named query `fl_q`");
+      expect(
+         callerTextDecline(new Set(["alias"]), ["fl"], "q", model)
+            ?.callerDetail,
+      ).toContain("`alias`, declared in another file");
+   });
+});
+
+describe("the view leg's decisions at their edges", () => {
+   it("declines a run target whose compiled source has no sourceID", () => {
+      expect(
+         callTargetDecline(
+            call(),
+            { sourceID: SOURCE_ID },
+            "flights",
+            undefined,
+         )?.code,
+      ).toBe("view_missing_field");
+   });
+
+   it("reads the plan's sourceID, never the run target's name", () => {
+      expect(
+         callTargetDecline(
+            call({ source: "renamed" }),
+            { sourceID: SOURCE_ID },
+            "renamed",
+            SOURCE_ID,
+         ),
+      ).toBeUndefined();
+   });
+
+   it("names the called view in an exact-call decline, not the plan's", () => {
+      const decline = exactCallDecline(
+         call({ view: "called" }),
+         { viewName: "by_carrier" },
+         "called",
+      );
+      expect(decline?.callerDetail).toBe("the query is not a call of `called`");
+   });
+
+   it("compares the result's name exactly, case and all", () => {
+      expect(
+         exactCallDecline(call(), { viewName: "by_carrier" }, "By_Carrier")
+            ?.code,
+      ).toBe("view_missing_field");
+   });
+
+   it("declines a refined call with later stages as refined", () => {
+      expect(
+         refinedCallDecline(call({ refined: true, laterStages: 2 }))?.code,
+      ).toBe("view_missing_field");
+      expect(refinedCallDecline(call({ laterStages: 2 }))).toBeUndefined();
    });
 });

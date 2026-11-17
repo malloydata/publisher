@@ -13,13 +13,18 @@
  * colocated table's serve binding.
  */
 
+import {
+   materializePlansIn,
+   sourcesIn,
+   targetsIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { computeSourceEntityId } from "../plan/build_plan";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import type { MaterializePlan } from "../plan/build_file_generator";
+import type { MaterializePlan } from "../domain/table_plans";
 import {
    PackageMaterialization,
    type PackageMaterializationOwner,
@@ -36,7 +41,7 @@ import {
 } from "./inline_uniqueness";
 import { InstructedBuild } from "./instructed_build";
 import type { BuildEnvironment } from "./materialization_run_support";
-import { SourceBuilder } from "./source_build";
+import { buildSource } from "./source_build";
 import { deriveColocatedServeBindings } from "../serve/bind";
 
 const packages = tempBuildPlanPackages();
@@ -75,28 +80,30 @@ async function scenario() {
    )) as unknown as MalloyConnection;
    for (const sql of SEED) await duckdb.runSQL(sql);
    const compiled = await compilePackageBuildPlan(pkg);
-   const [sourceID] = Object.keys(compiled.materializePlans ?? {});
-   const source = compiled.sources[sourceID ?? ""];
+   const [sourceID] = Object.keys(materializePlansIn(compiled) ?? {});
+   const source = sourcesIn(compiled)[sourceID ?? ""];
    if (!sourceID || !source) throw new Error("no planned pair source");
    const address = computeSourceEntityId(
       source,
       compiled.connectionDigests,
-      compiled.targets?.[sourceID],
+      targetsIn(compiled)?.[sourceID],
    );
-   const [leaf] = pairLeafKeyChecksOf(compiled.materializePlans?.[sourceID]);
+   const [leaf] = pairLeafKeyChecksOf(materializePlansIn(compiled)?.[sourceID]);
    if (!leaf) throw new Error("no leaf key check planned");
    const environment = {
       getApiConnection: () => ({ name: "duckdb", type: "duckdb" }),
       getStorageDestination: () => {
          throw new Error("no storage in this spec");
       },
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => pkg.getPackagePath(),
    } as unknown as BuildEnvironment;
-   const builder = new SourceBuilder(async () => {
+   const storage: Parameters<typeof buildSource>[1] = async () => {
       throw new Error("no storage in this spec");
-   });
+   };
    const build = new InstructedBuild({
-      buildOneSource: (...a) => builder.build(...a),
+      buildOneSource: (options) => buildSource(options, storage),
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const instruction = {
@@ -119,24 +126,20 @@ async function scenario() {
             ? rollupKeyRecordsIn({ [INLINE_UNIQUENESS_KEY]: previous.metadata })
             : undefined,
       );
-      const result = await build.run(
+      const result = await build.run({
          compiled,
          environment,
-         rebuild
+         instructions: rebuild
             ? [orchestrated ? { ...instruction, sourceID } : instruction]
             : [],
-         rebuild ? {} : previous.entries,
-         new AbortController().signal,
-         false,
-         undefined,
-         undefined,
-         undefined,
-         [],
-         undefined,
-         orchestrated,
-         "recompute",
-         ledger,
-      );
+         seedEntries: rebuild ? {} : previous.entries,
+         signal: new AbortController().signal,
+         strict: false,
+         priorRefusals: [],
+         hostInstructed: orchestrated,
+         warehouseReach: "recompute",
+         uniqueness: ledger,
+      });
       expect(result.failures).toEqual({});
       previous = { entries: result.entries, metadata: result.uniquenessChecks };
       return result;
@@ -222,9 +225,10 @@ describe("a pair table's leaf key check, on a build", () => {
                   name: s.source.name,
                   sourceEntityId: s.address,
                   connectionName: "duckdb",
+                  dialect: "duckdb",
                },
             },
-            materializePlans: s.compiled.materializePlans ?? {},
+            materializePlans: materializePlansIn(s.compiled) ?? {},
             eligible: () => true,
          });
          expect(bindings.map((b) => b.primaryKeys)).toEqual([
@@ -264,29 +268,36 @@ describe("a pair table's leaf key check, on a build", () => {
    // that fails part-way, or a rewrite that brings a NULL or repeated leaf
    // key, never leaves a pass bound over rows it did not check.
    it("is forgotten on the models' colocated bindings when a run is about to write the table", () => {
-      const model = {};
+      const model = {
+         setServedCopyContext: () => {},
+         prepareServedCopy: async () => {},
+         persistedViewBuilds: () => [],
+         servedCopyProblems: () => [],
+         storedColumnTypeMismatches: () => [],
+      };
       const materialization = new PackageMaterialization({
          models: () => new Map([["m.malloy", model]]),
          packageName: () => "pkg",
          packagePath: () => "/nowhere",
          malloyConfig: () => undefined,
       } as unknown as PackageMaterializationOwner);
-      materialization.buildPlan = {
+      materialization.plan.buildPlan = {
          sources: {
             "flights@m": {
                name: "flights",
                sourceEntityId: "a",
                connectionName: "duckdb",
+               dialect: "duckdb",
             },
          },
       } as never;
-      materialization.materializePlans = {
+      materialization.plan.materializePlans = {
          "flights@m": {
             persist: {},
             storedColumns: [{ name: "id", type: "number" }],
          } as unknown as MaterializePlan,
       };
-      materialization.colocatedSourceEligibility = {
+      materialization.plan.colocatedSourceEligibility = {
          eligibleEntityIds: new Set(["a"]),
       } as never;
       const bound = (): Binding | undefined =>
@@ -305,7 +316,7 @@ describe("a pair table's leaf key check, on a build", () => {
       });
       expect(bound()?.primaryKeys).toEqual({ "segs@m": true });
       materialization.forgetKeyUniqueness(["a"]);
-      expect(bound()?.tablePath).toBe("flights_pairs");
+      expect(bound()?.tablePath).toBe('"flights_pairs"');
       expect(bound()?.primaryKeys).toBeUndefined();
       // A later bind that holds the record again pushes it.
       materialization.bind({

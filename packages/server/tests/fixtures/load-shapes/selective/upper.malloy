@@ -1,0 +1,6 @@
+IMPORT "../diamond/base.malloy"
+
+source: upper_items is items
+
+#(doc) Expect row_count 6, v_total 210.
+query: check_upper is upper_items -> { aggregate: row_count, v_total }

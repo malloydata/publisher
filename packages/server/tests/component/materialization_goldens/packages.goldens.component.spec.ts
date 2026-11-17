@@ -31,7 +31,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { DATA_FILES } from "../r4/conformance/data";
-import { freshLoadPool } from "../r4/conformance/package_harness";
+import { freshLoadPool } from "../../../src/test_helpers/conformance/package_runner";
 import { renderFiles, SHAPES, VARIANTS } from "../r4/conformance/shapes";
 import { FEATURE_SHAPES } from "./feature_shapes";
 import {
@@ -85,7 +85,12 @@ function readTree(dir: string): Record<string, string> {
 function conformanceCases(): GoldenCase[] {
    const out: GoldenCase[] = [];
    for (const shape of SHAPES) {
-      for (const variant of shape.variants ?? VARIANTS) {
+      // The colocated `#(materialize)` variant is checked against live by the
+      // conformance specs; its plan and build text are the colocated v1
+      // variant's and the `materialize` variant's, so it adds no golden.
+      for (const variant of (shape.variants ?? VARIANTS).filter(
+         (v) => v !== "materialize_colocated",
+      )) {
          const entry = Object.keys(shape.files)[0];
          out.push({
             stem: `conformance/${slug(shape.name)}.${variant}`,
@@ -98,6 +103,7 @@ function conformanceCases(): GoldenCase[] {
                model: q.model,
                givens: q.givens,
             })),
+            ...(shape.env ? { env: shape.env } : {}),
          });
       }
    }
