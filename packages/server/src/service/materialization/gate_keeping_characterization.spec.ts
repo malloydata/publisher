@@ -646,11 +646,11 @@ const ROUTER: Record<string, Record<string, string>> = {
          "view, a kept and another storage table": "used, past the gate",
          "view, no table": "used, past the gate",
          "rollup, colocated tables": "used, past the gate",
-         "rollup, storage tables": "used, past the gate",
+         "rollup, storage tables": "skipped row_level_gate",
          "rollup, colocated and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
-            "used, past the gate",
-         "rollup, a kept and another storage table": "used, past the gate",
+            "skipped row_level_gate",
+         "rollup, a kept and another storage table": "skipped row_level_gate",
          "rollup, no table": "used, past the gate",
          "served, colocated tables": "used, past the gate",
          "served, storage tables": "used, past the gate",
@@ -693,11 +693,11 @@ const ROUTER: Record<string, Record<string, string>> = {
          "view, a kept and another storage table": "used, past the gate",
          "view, no table": "used, past the gate",
          "rollup, colocated tables": "used, past the gate",
-         "rollup, storage tables": "used, past the gate",
+         "rollup, storage tables": "skipped row_level_gate",
          "rollup, colocated and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
-            "used, past the gate",
-         "rollup, a kept and another storage table": "used, past the gate",
+            "skipped row_level_gate",
+         "rollup, a kept and another storage table": "skipped row_level_gate",
          "rollup, no table": "used, past the gate",
          "served, colocated tables": "used, past the gate",
          "served, storage tables": "used, past the gate",
@@ -767,8 +767,9 @@ describe("gate keeping at the router, under an entry-point veto", () => {
    };
    const runnable = {} as never;
    // The author's compile the router lists the gate's columns from: a source
-   // whose stored columns the gate reads none of, so every table's gate
-   // columns are exact and the rows below are the policy's by tier alone.
+   // with a row filter on `id`, so the gate reads a column and the rows
+   // below are the policy's by tier (a gate reading no column, a lock alone,
+   // is `gatesReadNoColumn`, in gate_policy.spec.ts).
    const authorRunnable = {
       getPreparedQuery: async () => ({
          _query: { structRef: "s" },
@@ -783,6 +784,9 @@ describe("gate keeping at the router, under an entry-point veto", () => {
                   connection: "duckdb",
                   dialect: "duckdb",
                   fields: [{ name: "id", type: "number" }],
+                  annotations: {
+                     notes: [{ text: "#(access_filter) id = $ID\n" }],
+                  },
                },
             },
          },

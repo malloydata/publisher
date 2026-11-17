@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a rollup reads past a lock its base inherits
+
+**Changed: a `#(preaggregate)` rollup over a base gated only by `#(authorize)` locks is built and read past them, on both tiers.** A lock that reads only givens and literals (`#(authorize) 'admin' = $ROLE`, `false`, or `true` re-opening a locked base) admits or refuses the whole query, and it is decided on the live source for every query, so pre-grouped rows cannot change its outcome. Such a rollup was built only when the lock was written on the base's own statement and the rollup was colocated. It is now built and read when the base inherits the lock from a source it extends, at any depth or from another file, and in a `storage=` destination, with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on or off. A caller the lock admits gets live's rows from the rollup; a caller it refuses, or one missing the given, is refused exactly as live refuses them. A base whose gates include any row filter (`#(access_filter)`) is unchanged.
+
+**Tightened: a `storage=` rollup is no longer read past a gate that reads a column before that tier's review, under either switch.** With `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a query whose entry point carries a row filter could be answered from a `storage=` rollup of an ungated source it extends. Such a query now answers live until `storage=` rollups past a row filter are reviewed. A query whose gates are locks alone is not affected.
+
+**How to tell:** a lock-only base's rollup no longer reports `preaggregate-not-built` with reason `authorize`, and its queries report the rollup in their path report.
+
 ## [Unreleased] — security fix: three ways a stored table could answer a caller with rows live would not
 
 Three cases let a stored table answer a caller with rows live would not return to that caller: two past a source's own row-level gate (`#(access_filter)`, read under G3, or under `PUBLISHER_MATERIALIZE_GATED_SOURCES`), and one through a composite source. Each is fixed by answering such queries live. Upgrade if any applies to you.

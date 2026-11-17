@@ -105,7 +105,11 @@ import {
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
-import { canonicalAuthorizeRoute } from "../../authorize_routes";
+import {
+   AUTHORIZE_ROUTE,
+   canonicalAuthorizeRoute,
+} from "../../authorize_routes";
+import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import {
    PREAGGREGATE_INVALID_CODE,
    PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
@@ -209,6 +213,7 @@ export interface ParentKeyNeed {
 function rollupsServeGatedBases(
    placement: { storage?: string },
    own: boolean,
+   lockOnly: boolean,
 ): boolean {
    return tableKeepsGates(
       {
@@ -216,7 +221,7 @@ function rollupsServeGatedBases(
          tier: placement.storage === undefined ? "colocated" : "storage",
          v1: false,
          baseGateProven: true,
-         gate: baseGateOf(own),
+         gate: baseGateOf(own, lockOnly),
       },
       gateSwitches(),
    );
@@ -224,14 +229,24 @@ function rollupsServeGatedBases(
 
 /**
  * A rollup base's gates as the gate policy reads them: row-level, and
- * `attributed` when every one is the base's own (G3 for rollups).
+ * `attributed` when every one is the base's own (G3 for rollups); `lockOnly`
+ * when every one is a lock reading no row field.
  */
-function baseGateOf(own: boolean): {
+function baseGateOf(
+   own: boolean,
+   lockOnly: boolean,
+): {
    rowLevel: boolean;
    attributed: boolean;
    inheritedRowFilter: boolean;
+   lockOnly: boolean;
 } {
-   return { rowLevel: true, attributed: own, inheritedRowFilter: !own };
+   return {
+      rowLevel: true,
+      attributed: own,
+      inheritedRowFilter: !own,
+      lockOnly,
+   };
 }
 
 /**
@@ -272,7 +287,10 @@ export function rollupGateEnforcedAtRead(plan: unknown): boolean {
                : "storage",
          v1: !variant,
          baseGateProven: variant && plan.baseGated === true,
-         gate: baseGateOf(variant && plan.baseGateOwn === true),
+         gate: baseGateOf(
+            variant && plan.baseGateOwn === true,
+            variant && plan.baseGateLocksOnly === true,
+         ),
       },
       gateSwitches(),
    );
@@ -1181,7 +1199,10 @@ function declarationRefusal(
    // reads.
    if (
       gate.declared &&
-      !(ctx.readUnderGates ?? rollupsServeGatedBases(decl, gate.own))
+      !(
+         ctx.readUnderGates ??
+         rollupsServeGatedBases(decl, gate.own, gate.lockOnly)
+      )
    ) {
       return unservable(
          gate.reason.base,
@@ -1372,6 +1393,9 @@ function rollupPlanOf(
       rollupMeasures: sorted,
       baseGated: gate.declared,
       ...(gate.declared && gate.own ? { baseGateOwn: true as const } : {}),
+      ...(gate.declared && gate.lockOnly
+         ? { baseGateLocksOnly: true as const }
+         : {}),
       internalGrain: decl.grain.filter(
          (g) => byName.get(g)?.accessModifier === "internal",
       ),
@@ -1462,6 +1486,14 @@ function gateFieldNames(
    joinGated: boolean;
    /** Every gate is the base's own: none inherited, none from a derivation. */
    own: boolean;
+   /**
+    * Every gate, own or inherited, is an `#(authorize)` lock whose text reads
+    * only givens and literals: no identifier names a field, and no word but
+    * the lock grammar's remains once its givens and literals are removed. Such a lock
+    * admits or refuses the whole query, so pre-grouped rows cannot change
+    * its outcome. Any doubt reads false.
+    */
+   lockOnly: boolean;
    /** The refusal name for the base's own gates, and for its joins' ({@link gateRefusalReason}). */
    reason: { base: GateRefusalReason; joined: GateRefusalReason };
 } {
@@ -1515,12 +1547,62 @@ function gateFieldNames(
          base: gateRefusalReason(entries.map((e) => e.route)),
          joined: gateRefusalReason(joinedRoutes),
       },
+      lockOnly: locksReadNoRowField(entries, dimensions, unkeepable),
       own:
          entries.length > 0 &&
          unkeepable.size === 0 &&
          entries.every((e) => !e.selfContained && e.struct !== undefined) &&
          gateNotesDeclaredBy(def, scope),
    };
+}
+
+/**
+ * Whether every gate in `entries` is an `#(authorize)` lock that reads no row
+ * field: each was read off a resolved entry point, is on the lock route,
+ * names no field of `def` (`dimensions` and `unkeepable` empty: the same
+ * identifier walk the A4 check runs), and its text holds nothing but givens,
+ * literals and the lock grammar's words. A row filter always reads a field,
+ * so it is never lock-only.
+ */
+function locksReadNoRowField(
+   entries: ReturnType<typeof collectEntryPointGates>,
+   dimensions: ReadonlySet<string>,
+   unkeepable: ReadonlySet<string>,
+): boolean {
+   if (entries.length === 0) return false;
+   if (dimensions.size > 0 || unkeepable.size > 0) return false;
+   if (
+      !entries.every(
+         (e) =>
+            e.struct !== undefined &&
+            canonicalAuthorizeRoute(e.route) === AUTHORIZE_ROUTE,
+      )
+   ) {
+      return false;
+   }
+   return entries.every((e) => e.exprs.every(readsOnlyGivensAndLiterals));
+}
+
+/** Words a lock's text may hold besides givens and literals. */
+const LOCK_WORDS = new Set(["and", "in", "true", "false"]);
+
+/**
+ * Whether a gate's text names nothing but givens, literals and the lock
+ * grammar's words (`'admin' = $ROLE`, `true`, `false`): with its comments,
+ * string literals and `$GIVEN`s removed, no other identifier remains, and no
+ * quoted name. Conservative on purpose: any other word, a field or a
+ * function alike, reads as a row read.
+ */
+function readsOnlyGivensAndLiterals(expr: string): boolean {
+   if (expr.includes("`")) return false;
+   const rest = stripMalloyCommentsAndLiterals(expr).replace(
+      /\$[A-Za-z_][A-Za-z_0-9]*/g,
+      " ",
+   );
+   for (const m of rest.matchAll(/[A-Za-z_][A-Za-z_0-9]*/g)) {
+      if (!LOCK_WORDS.has(m[0].toLowerCase())) return false;
+   }
+   return true;
 }
 
 /**

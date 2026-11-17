@@ -284,6 +284,50 @@ source: orders is ${ROWS} extend {
       expect(refused).toEqual([]);
    });
 
+   it("plans one over a lock it inherits that reads no row field, on either tier, and marks it lock-only (g-inh-lock)", async () => {
+      for (const storage of ["", ' storage="lake"']) {
+         const { plans, refused } = await plan({
+            "orders.malloy": `##! experimental.givens
+given: ROLE :: string is 'viewer'
+given: REGION :: string is 'x'
+#(authorize) 'admin' = $ROLE
+source: locked is ${ROWS}
+source: mid is locked extend { dimension: c2 is lower(category) }
+source: orders is mid extend {
+  #(preaggregate) grain=["category"]${storage}
+  measure: total is amount.sum()
+}
+#(access_filter) region = $REGION
+source: filtered is locked extend {
+  #(preaggregate) grain=["category", "region"]${storage}
+  measure: total is amount.sum()
+}
+#(authorize) false
+source: shut is ${ROWS}
+#(authorize) true
+source: reopened is shut extend {
+  #(preaggregate) grain=["category"]${storage}
+  measure: total is amount.sum()
+}`,
+         });
+         expect(
+            plans.map((p) => [
+               p.baseSourceName,
+               p.baseGateOwn,
+               p.baseGateLocksOnly,
+            ]),
+         ).toEqual([
+            ["orders", undefined, true],
+            ["reopened", true, true],
+         ]);
+         for (const p of plans) expect(rollupGateEnforcedAtRead(p)).toBe(true);
+         // An inherited lock beside a row filter is not lock-only.
+         expect(refused.map((r) => [r.sourceName, why(r)])).toEqual([
+            ["filtered", "access_filter"],
+         ]);
+      }
+   });
+
    it("plans none over an extension that inherits the gate, and still plans the ungated", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
