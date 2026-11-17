@@ -27,6 +27,7 @@ import {
    differsOnlyInLockedSetup,
    lockDownDuckDBSession,
    networkedDuckDBOptions,
+   runAsInternalStatement,
    sandboxedDuckDBOptions,
 } from "./duckdb_lockdown";
 import { Package } from "./package";
@@ -86,20 +87,52 @@ async function expectCommonVectorsRefused(
       }
       expect(value === ENV_KEY || value === ENV_SECRET).toBe(false);
    }
-   // Host credentials through a credential_chain secret.
-   await refused(
-      connection,
-      "CREATE SECRET lockdown_chain (TYPE s3, PROVIDER credential_chain)",
-   );
-   // The metadata server, through an http secret carrying its header or a
-   // bearer token: either the secret is refused or the read is, and no request
-   // reaches the stand-in.
+   // Every secret statement a caller can write is refused before it runs: a
+   // credential_chain secret (host credentials), an http secret carrying the
+   // metadata server's header or a bearer token, an s3 secret pointing its
+   // own ENDPOINT anywhere, and every spelling of CREATE and DROP.
    for (const secret of [
+      "CREATE SECRET lockdown_chain (TYPE s3, PROVIDER credential_chain)",
       `CREATE SECRET lockdown_md (TYPE http, EXTRA_HTTP_HEADERS MAP {'Metadata-Flavor': 'Google'}, SCOPE '${origin}')`,
       `CREATE SECRET lockdown_bearer (TYPE http, BEARER_TOKEN 'tok', SCOPE '${origin}/b')`,
+      `CREATE SECRET lockdown_ep (TYPE s3, KEY_ID 'k', SECRET 's', ENDPOINT '${origin.replace("http://", "")}', URL_STYLE 'path', USE_SSL false)`,
+      "create or replace persistent secret x (TYPE http, BEARER_TOKEN 't')",
+      "CREATE TEMPORARY SECRET IF NOT EXISTS x (TYPE http, BEARER_TOKEN 't')",
+      'CREATE /* hidden */ "SECRET" x (TYPE http)',
+      "SELECT 1; CREATE SECRET x (TYPE http)",
+      "PREPARE p AS CREATE SECRET x (TYPE http)",
+      "DROP SECRET IF EXISTS secret_s3_lake_files",
+      "DROP PERSISTENT SECRET x",
    ]) {
-      await connection.runSQL(secret).catch(() => {});
+      expect(await refused(connection, secret)).toContain("locked down");
    }
+   // DuckDB's logging and profiling, which its configuration lock does not
+   // cover, in every form: a call, a table function, the log views, a pragma,
+   // any casing or quoting, behind a comment, after another statement, and
+   // as text handed to query().
+   for (const statement of [
+      "CALL enable_logging(level='trace')",
+      "SELECT * FROM enable_logging()",
+      "CaLl /* x */ \"ENABLE_LOGGING\"('HTTP')",
+      "SELECT 1; CALL enable_logging()",
+      "SELECT * FROM duckdb_logs",
+      "SELECT * FROM duckdb_log_contexts()",
+      "CALL truncate_duckdb_logs()",
+      "CALL disable_logging()",
+      "PRAGMA enable_profiling",
+      "PRAGMA enable_profile",
+      "SELECT write_log('x')",
+      "SELECT * FROM query('SELECT * FROM duckdb_logs')",
+      "SELECT * FROM query_table('duckdb_' || 'logs')",
+   ]) {
+      expect(await refused(connection, statement)).toContain("locked down");
+   }
+   // A name shared with a refused function is not refused as a column.
+   expect(
+      rowsOf(await connection.runSQL("SELECT 1 AS query, 2 AS duckdb_log")),
+   ).toEqual([{ query: 1, duckdb_log: 2 }]);
+   // Nothing the refused statements could have set up reaches the metadata
+   // stand-in.
    await refused(
       connection,
       `SELECT * FROM read_text('${origin}/computeMetadata/v1/instance/service-accounts/default/token')`,
@@ -412,6 +445,38 @@ describe("environment duckdb with an attached bucket: setup, then lock", () => {
 
    it("refuses every vector", async () => {
       await expectCommonVectorsRefused(connection);
+   });
+
+   it("admits Publisher's own secret renewal, and nothing a caller sends while it runs", async () => {
+      const internal =
+         "CREATE OR REPLACE SECRET internal_renewal (TYPE http, BEARER_TOKEN 'renewed')";
+      const caller =
+         "CREATE SECRET caller_secret (TYPE http, BEARER_TOKEN 'caller')";
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      // A renewal in flight, holding the marker on its own async chain...
+      const renewing = runAsInternalStatement(internal, async () => {
+         await held;
+         await connection.runSQL(internal);
+      });
+      // ...while callers, on theirs, send another secret and the very same text.
+      const other = refused(connection, caller);
+      const sameText = refused(connection, internal);
+      release();
+      await renewing;
+      expect(await other).toContain("locked down");
+      expect(await sameText).toContain("locked down");
+      // Inside the renewal's own scope, only its own statement passes.
+      expect(
+         await runAsInternalStatement(internal, () =>
+            refused(connection, caller),
+         ),
+      ).toContain("locked down");
+      const names = rowsOf(
+         await connection.runSQL("SELECT name FROM duckdb_secrets()"),
+      ).map((row) => row.name);
+      expect(names).toContain("internal_renewal");
+      expect(names).not.toContain("caller_secret");
    });
 
    it("keys a different attachment set to a different instance", () => {

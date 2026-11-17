@@ -371,7 +371,7 @@ of two policies, chosen by what the instance legitimately needs
 | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | The per-package `duckdb` sandbox                                          | Malloy's `securityPolicy: "sandboxed"`: no network, no extension install, locked configuration, files confined to the package |
 | An environment `duckdb` connection with only `setupSQL`                   | The same confinement as options (the environment directory), then its `setupSQL`, then the lock                              |
-| An environment `duckdb` connection with `attachedDatabases`               | Its own attaches and secrets, then an allowlist of what they read, external access off, and the lock                         |
+| An environment `duckdb` connection with `attachedDatabases`               | Its own setupSQL, attaches and secrets, then an allowlist (the environment directory and the URL scheme of each attached bucket), external access off, and the lock |
 | A `ducklake` connection, and a storage destination served from one        | Its catalog ATTACH and scoped secret, then an allowlist of exactly its data path, external access off, and the lock          |
 | A `motherduck` connection                                                 | Locked after open, like the networked readers                                                                                |
 | A build, load or copy session                                             | Its own attaches, then the allowlist and external access off; not configuration-locked, and no caller or author SQL runs in DuckDB on it |
@@ -379,11 +379,28 @@ of two policies, chosen by what the instance legitimately needs
 Under every policy: no file outside the allowlist (`..` and symlinks included), no ambient `AWS_*`
 credentials (httpfs's env-seeded settings are blanked and its global S3 fallback is off), no
 cloud-metadata or other non-allowlisted URL, no ATTACH of another catalog, no extension install or
-load beyond what the instance's own setup loaded, no persistent secret, and no `SET`/`RESET` once
-locked. The lockdown is part of each instance's configuration identity, so an instance is never
+load beyond what the instance's own setup loaded (extension autoload is off), no persistent
+secret, and no `SET`/`RESET` once locked. On a locked instance, Publisher also refuses, before
+DuckDB sees it, any statement that creates or drops a secret, or that reaches DuckDB's logging or
+profiling, which DuckDB's configuration lock does not cover; Publisher's own renewal of a storage
+secret is the one secret statement it admits. The lockdown is part of each instance's configuration identity, so an instance is never
 shared with a connection that needs a different setup or a different policy.
 
 What it does not cover, so a multi-tenant deployment still has to:
+
+- **The confinement is not read-only.** A connection can write wherever it can read: a sandbox
+  can overwrite its own package's files (its models included), and an environment connection can
+  write anywhere under the environment directory, other packages' files included. Publisher does
+  not yet restrict raw SQL to reads.
+- **An attached `s3` or `gcs` bucket allowlists its whole URL scheme.** These entries name no
+  bucket, so a `duckdb` connection with one may reach any URL of that scheme, and the secret is the
+  control: callers cannot create, replace or drop secrets on a locked instance, so the only
+  credential and endpoint in force are the configured ones. Give such a credential access to the
+  buckets the connection should read and nothing else.
+- **`setupSQL` on a `duckdb` connection with `attachedDatabases` runs before the lock.** It runs
+  first, with external access still on, because the attaches that follow it need the network.
+  Allowing `setupSQL` (`PUBLISHER_ALLOW_DUCKDB_SETUP_SQL`) trusts its authors with the host for that
+  connection; on a connection with only `setupSQL`, it runs confined.
 
 - **Org isolation inside one shared bucket.** The allowlist confines a connection to its data path
   as DuckDB compares paths, and that comparison is not a security boundary for object-store URLs. A
@@ -402,13 +419,16 @@ What it does not cover, so a multi-tenant deployment still has to:
   permission check, so the package's top-level names are allowed there too, unless the working
   directory already holds that name. A sandbox may therefore create, but never overwrite or read
   someone else's, a file of one of those names in the server's working directory; run Publisher
-  from a directory nothing else reads. A relative glob over the package's top level
+  from a directory nothing else reads. The names are taken when the instance opens, so a name
+  created in the working directory after that is still allowed for that instance's lifetime. A relative glob over the package's top level
   (`'*.csv'`) is refused, because it lists the working directory; a glob in a subdirectory
   (`'data/*.csv'`), a named file, or an absolute path reads.
 - **Windows** has no `sandboxed` policy (Malloy refuses it off POSIX, and its `local` policy
   refuses every file). There the package sandbox is confined to its package the way an
   environment connection with only `setupSQL` is: an allowlist, external access off, and the
-  lock.
+  lock, without Malloy's own path checks.
+- **MotherDuck** connections are locked like the networked readers, but have not been exercised
+  with external access off.
 - **Malloy's restricted mode** remains the control for caller-supplied Malloy on a shared worker:
   it refuses `.sql()`, `.table()`, raw SQL functions, `import` and `##!` flags, and the query path
   uses it via `loadRestrictedQuery`. The DuckDB lockdown bounds what the SQL that remains can reach;

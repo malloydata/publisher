@@ -104,9 +104,11 @@ import {
    cloudStorageAllowPrefixes,
    duckDBInstanceOf,
    isConfigurationFrozen,
+   installDuckDBStatementLockdown,
    isLockedByOptions,
    lockDownDuckDBSession,
    relativeReadEntries,
+   runAsInternalStatement,
 } from "./duckdb_lockdown";
 import { installDuckDBStatementGate } from "./duckdb_statement_gate";
 import {
@@ -125,6 +127,9 @@ installDuckDBStatementGate();
 // Retired DuckDB connections free their native database at once
 // (duckdb_hard_close.ts).
 installDuckDBHardClose();
+// Statements a locked instance refuses, checked before any of the above
+// (duckdb_lockdown.ts).
+installDuckDBStatementLockdown();
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -2420,10 +2425,10 @@ async function attachCloudStorage(
    ) {
       const renewOn = async (target: DuckDBConnection) => {
          // Replaced in place on the live connection; no in-flight query is
-         // disturbed.
-         await target.runSQL(
-            buildCloudStorageSecretSQL(secretName, credentials),
-         );
+         // disturbed. Admitted past a locked instance's secret gate for this
+         // one statement only (duckdb_lockdown.ts).
+         const sql = buildCloudStorageSecretSQL(secretName, credentials);
+         await runAsInternalStatement(sql, () => target.runSQL(sql));
       };
       renewable.setStorageSecretRenewer(() => renewOn(connection));
       // The secret is the instance's: a later connection joining the locked

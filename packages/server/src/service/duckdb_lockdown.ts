@@ -51,6 +51,7 @@
 
 import { DuckDBConnection as DuckDBConnectionClass } from "@malloydata/db-duckdb";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import { AsyncLocalStorage } from "async_hooks";
 import { createHash } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
@@ -566,6 +567,10 @@ export async function lockDownDuckDBSession(
    // refuses to change secret settings once a secret exists.
    await connection.runSQL("SET autoinstall_known_extensions=false");
    await connection.runSQL("SET autoload_known_extensions=false");
+   // Start the secret manager while it can still read its directory: started
+   // first after external access is off, it fails, and every later secret
+   // lookup (a renewal, a scoped read) with it.
+   await connection.runSQL("SELECT count(*) FROM duckdb_secrets()");
    await connection.runSQL(
       `SET allowed_directories=[${[...entries].map(sqlString).join(",")}]`,
    );
@@ -641,4 +646,302 @@ export function setupIdentity(value: unknown): string {
            )
          : inner,
    );
+}
+
+// --- The statement gate on a locked instance ---------------------------------
+
+/**
+ * Table functions, pragmas and scalars that reach DuckDB's logging and
+ * profiling, which DuckDB 1.5.5's `lock_configuration` does not cover: a
+ * locked session could otherwise log every other caller's query text and the
+ * HTTP headers (signed credentials included) of the instance's own reads, and
+ * read them back. `query` and `query_table` run SQL or name a table given as
+ * a string the gate could not see through, so they are refused too.
+ * Checked against `duckdb_functions()` on 1.5.5.
+ */
+const REFUSED_FUNCTIONS: ReadonlySet<string> = new Set([
+   "enable_logging",
+   "disable_logging",
+   "truncate_duckdb_logs",
+   "duckdb_logs",
+   "duckdb_logs_parsed",
+   "duckdb_log_contexts",
+   "write_log",
+   "parse_duckdb_log_message",
+   "enable_profiling",
+   "disable_profiling",
+   "enable_profile",
+   "disable_profile",
+   "all_profiling_output",
+   "duckdb_profiling_settings",
+   "query",
+   "query_table",
+]);
+
+/** The refused names that are also read as relations (`FROM duckdb_logs`). */
+const REFUSED_RELATIONS: ReadonlySet<string> = new Set([
+   "duckdb_logs",
+   "duckdb_logs_parsed",
+   "duckdb_log_contexts",
+   "duckdb_profiling_settings",
+   "all_profiling_output",
+]);
+
+/** Why a locked instance refuses a statement. */
+export class DuckDBStatementRefusedError extends Error {
+   constructor(reason: string) {
+      super(
+         `This DuckDB connection is locked down and refuses ${reason}. ` +
+            `Publisher's DuckDB connections do not expose logging, profiling ` +
+            `or secret management to SQL.`,
+      );
+      this.name = "DuckDBStatementRefusedError";
+   }
+}
+
+/** One lexical token of DuckDB SQL: a word (keyword or identifier), a string, or punctuation. */
+type Token =
+   | { kind: "word"; value: string }
+   | { kind: "string"; value: string }
+   | { kind: "punct"; value: string };
+
+/**
+ * DuckDB's lexical grammar, as far as the gate needs it: comments (`--` and
+ * nested block comments) dropped, string literals (`'…'` with `''`, `E'…'`
+ * with backslash escapes, `$tag$…$tag$`) kept as strings, quoted identifiers
+ * (`"…"` with `""`) and bare words lowercased (DuckDB resolves both without
+ * regard to case), everything else one character of punctuation. An
+ * unterminated literal or comment runs to the end, as DuckDB's own reader
+ * would refuse it anyway.
+ */
+export function tokenizeDuckDBSQL(sql: string): Token[] {
+   const tokens: Token[] = [];
+   let i = 0;
+   const n = sql.length;
+   while (i < n) {
+      const c = sql[i];
+      if (/\s/.test(c)) {
+         i++;
+      } else if (c === "-" && sql[i + 1] === "-") {
+         while (i < n && sql[i] !== "\n") i++;
+      } else if (c === "/" && sql[i + 1] === "*") {
+         let depth = 1;
+         i += 2;
+         while (i < n && depth > 0) {
+            if (sql[i] === "/" && sql[i + 1] === "*") {
+               depth++;
+               i += 2;
+            } else if (sql[i] === "*" && sql[i + 1] === "/") {
+               depth--;
+               i += 2;
+            } else {
+               i++;
+            }
+         }
+      } else if (
+         c === "'" ||
+         ((c === "e" || c === "E") && sql[i + 1] === "'")
+      ) {
+         const escapes = c !== "'";
+         i += escapes ? 2 : 1;
+         let value = "";
+         while (i < n) {
+            if (escapes && sql[i] === "\\" && i + 1 < n) {
+               value += sql[i + 1];
+               i += 2;
+            } else if (sql[i] === "'" && sql[i + 1] === "'") {
+               value += "'";
+               i += 2;
+            } else if (sql[i] === "'") {
+               i++;
+               break;
+            } else {
+               value += sql[i++];
+            }
+         }
+         tokens.push({ kind: "string", value });
+      } else if (c === "$" && /^\$[A-Za-z_]*\$/.test(sql.slice(i))) {
+         const tag = /^\$[A-Za-z_]*\$/.exec(sql.slice(i))![0];
+         const end = sql.indexOf(tag, i + tag.length);
+         const stop = end < 0 ? n : end;
+         tokens.push({
+            kind: "string",
+            value: sql.slice(i + tag.length, stop),
+         });
+         i = end < 0 ? n : end + tag.length;
+      } else if (c === '"') {
+         i++;
+         let value = "";
+         while (i < n) {
+            if (sql[i] === '"' && sql[i + 1] === '"') {
+               value += '"';
+               i += 2;
+            } else if (sql[i] === '"') {
+               i++;
+               break;
+            } else {
+               value += sql[i++];
+            }
+         }
+         tokens.push({ kind: "word", value: value.toLowerCase() });
+      } else if (/[A-Za-z_\u0080-￿]/.test(c)) {
+         let j = i + 1;
+         while (j < n && /[A-Za-z0-9_$\u0080-￿]/.test(sql[j])) j++;
+         tokens.push({ kind: "word", value: sql.slice(i, j).toLowerCase() });
+         i = j;
+      } else {
+         tokens.push({ kind: "punct", value: c });
+         i++;
+      }
+   }
+   return tokens;
+}
+
+/** Words that may stand between CREATE/DROP and SECRET. */
+const SECRET_MODIFIERS = new Set([
+   "or",
+   "replace",
+   "persistent",
+   "temporary",
+   "temp",
+   "if",
+   "not",
+   "exists",
+]);
+
+/**
+ * Why `sql` must not run on a locked instance, or undefined when it may: it
+ * names a refused function ({@link REFUSED_FUNCTIONS}), or it creates or drops
+ * a secret (any form: OR REPLACE, PERSISTENT, TEMPORARY, IF [NOT] EXISTS, and
+ * inside PREPARE or a macro, since every token of every statement is read).
+ * String literals are read the same way, to any depth, so SQL handed to a
+ * function as text is held to the same rule.
+ */
+export function refusedOnLockedInstance(
+   sql: string,
+   depth = 0,
+): string | undefined {
+   const tokens = tokenizeDuckDBSQL(sql);
+   for (let t = 0; t < tokens.length; t++) {
+      const token = tokens[t];
+      if (token.kind === "string") {
+         if (depth < 4) {
+            const inner = refusedOnLockedInstance(token.value, depth + 1);
+            if (inner) return inner;
+         }
+         continue;
+      }
+      if (token.kind !== "word") continue;
+      if (REFUSED_FUNCTIONS.has(token.value)) {
+         // As a call, a PRAGMA or CALL target, or (the log and profile views)
+         // as a table: a column or alias that merely shares a name passes.
+         const next = tokens[t + 1];
+         const previous = tokens[t - 1];
+         if (
+            REFUSED_RELATIONS.has(token.value) ||
+            (next?.kind === "punct" && next.value === "(") ||
+            (previous?.kind === "word" &&
+               (previous.value === "pragma" || previous.value === "call"))
+         ) {
+            return `'${token.value}'`;
+         }
+      }
+      if (token.value === "create" || token.value === "drop") {
+         let u = t + 1;
+         while (
+            u < tokens.length &&
+            tokens[u].kind === "word" &&
+            SECRET_MODIFIERS.has(tokens[u].value)
+         ) {
+            u++;
+         }
+         const next = tokens[u];
+         if (next?.kind === "word" && next.value === "secret") {
+            return `${token.value.toUpperCase()} SECRET`;
+         }
+      }
+   }
+   return undefined;
+}
+
+/**
+ * The one statement Publisher itself may run past the gate, set only for the
+ * span of the call that issues it (a storage secret's renewal). An
+ * AsyncLocalStorage value belongs to the async chain that set it, so a caller
+ * query in flight on the same instance, on its own chain, never sees it; and
+ * it admits that exact text only, so nothing else on the renewal's own chain
+ * passes either.
+ */
+const internalStatement = new AsyncLocalStorage<string>();
+
+/** Run `fn`, which issues exactly `sql`, with that statement admitted by the gate. */
+export function runAsInternalStatement<T>(
+   sql: string,
+   fn: () => Promise<T>,
+): Promise<T> {
+   return internalStatement.run(sql, fn);
+}
+
+/**
+ * Throw unless `sql` may run on `connection`: on a locked instance, the
+ * statements {@link refusedOnLockedInstance} names are refused before they
+ * reach DuckDB. An instance not locked (still in its own setup, or a
+ * server-owned build session) runs only Publisher's SQL and is not gated.
+ */
+export function assertStatementAllowed(connection: unknown, sql: string): void {
+   if (!isConfigurationFrozen(connection)) return;
+   const reason = refusedOnLockedInstance(sql);
+   if (!reason) return;
+   if (internalStatement.getStore() === sql) return;
+   throw new DuckDBStatementRefusedError(reason);
+}
+
+let statementGateInstalled = false;
+
+/**
+ * Hold every statement a Publisher DuckDB connection runs to
+ * {@link assertStatementAllowed}: `runDuckDBQuery` (which `runSQL` and
+ * `runRawSQL` reach) and `runSQLStream`, the two ways SQL reaches the native
+ * connection. Installed after the statement gate and hard close
+ * (connection.ts), so the check runs first, on the issuing call's own async
+ * chain, before anything is queued.
+ */
+export function installDuckDBStatementLockdown(): void {
+   if (statementGateInstalled) return;
+   statementGateInstalled = true;
+   const proto = DuckDBConnectionClass.prototype as unknown as {
+      runDuckDBQuery(sql: string): Promise<unknown>;
+      runSQLStream(
+         sql: string,
+         options?: unknown,
+      ): AsyncIterableIterator<unknown>;
+   };
+   const runDuckDBQuery = proto.runDuckDBQuery;
+   const runSQLStream = proto.runSQLStream;
+   if (
+      typeof runDuckDBQuery !== "function" ||
+      typeof runSQLStream !== "function"
+   ) {
+      // Fail closed: a reshaped db-duckdb must not leave locked instances
+      // ungated without anyone noticing.
+      throw new Error(
+         "@malloydata/db-duckdb's internals changed shape: the DuckDB statement lockdown cannot be installed",
+      );
+   }
+   proto.runDuckDBQuery = function (this: unknown, sql: string) {
+      try {
+         assertStatementAllowed(this, sql);
+      } catch (error) {
+         return Promise.reject(error);
+      }
+      return runDuckDBQuery.call(this, sql);
+   };
+   proto.runSQLStream = function (
+      this: unknown,
+      sql: string,
+      options?: unknown,
+   ): AsyncIterableIterator<unknown> {
+      assertStatementAllowed(this, sql);
+      return runSQLStream.call(this, sql, options);
+   };
 }
