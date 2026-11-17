@@ -1186,21 +1186,19 @@ function collectPersistViewFindingsSwitchedOff(
    args: { modelPath: string; packagePath: string; malloyModel: MalloyModel },
 ): void {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
-   let planned: ReturnType<typeof planModelPersistedViews>;
-   try {
-      planned = planModelPersistedViews(
-         modelDefIfAny(args.malloyModel),
-         (url) => {
-            try {
-               return path.resolve(fileURLToPath(url)) === modelFile;
-            } catch {
-               return false;
-            }
-         },
-      );
-   } catch {
-      return;
-   }
+   // Not caught: a declaration that cannot be read must not load as if it
+   // were absent (load versus refused), so the load fails, as it does with
+   // the switch on.
+   const planned = planModelPersistedViews(
+      modelDefIfAny(args.malloyModel),
+      (url) => {
+         try {
+            return path.resolve(fileURLToPath(url)) === modelFile;
+         } catch {
+            return false;
+         }
+      },
+   );
    const off = {
       reason: "persisted views are built only with PUBLISHER_MATERIALIZE on",
       outcome: { refused: "materialization_off" as const },
