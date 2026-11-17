@@ -202,8 +202,10 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
   query off every rollup too. [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize)
   has the full rule, which v1 and v2 rollups share.
 - **Two more conditions hold under every switch**, so that a gate filters the stored rows exactly
-  as it filters live's. Each covers every field the gate reads and every field that field is
-  computed from, through renames, joins and the stages of a query-shaped source.
+  as it filters live's. Each covers every field the gate reads, every field a `where:` that reads
+  a given reads (a row scope decided per caller, gated or not, a composite member's included), and
+  every field those are computed from, through renames, joins and the stages of a query-shaped
+  source.
   - A query that sets its own `timezone:` (or reads a table built in another zone) answers live
     when the gate reads a time value the table stored in its build's zone: a truncation computed
     in a query stage, or a rollup's time grain. The path report says `served_copy_time_zone` or
