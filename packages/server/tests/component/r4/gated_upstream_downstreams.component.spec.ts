@@ -229,10 +229,12 @@ function expectedGateRefusals(): string[] {
          // a row filter over a dropped gate column classifies rejected; an
          // inherited row filter is refused colocated and stored, either way.
          if (s === "join" || g !== "az") {
-            out.push(`${g}_pc_${s}:colocated:authorize`);
-            out.push(`${g}_ps_${s}:storage:authorize`);
-            out.push(`${g}_mc_${s}:colocated:authorize`);
-            out.push(`${g}_ms_${s}:storage:authorize`);
+            // Named by the gate's kind: a row filter or a lock.
+            const reason = g === "az" ? "authorize" : "access_filter";
+            out.push(`${g}_pc_${s}:colocated:${reason}`);
+            out.push(`${g}_ps_${s}:storage:${reason}`);
+            out.push(`${g}_mc_${s}:colocated:${reason}`);
+            out.push(`${g}_ms_${s}:storage:${reason}`);
          }
          // The authorize-route lock is admitted on both tiers (it is decided
          // before any row is read), the switch off or on: G3.

@@ -344,7 +344,11 @@ function rollupBuildCopies(
                plan.baseSourceID,
                plan.baseDeclaredName,
                undefined,
-               plan.readTimeTerms?.length ? "reads_given" : "hidden_field",
+               // A given-reading `where:` the build copy could not leave
+               // out, as `#(materialize)` names it.
+               plan.readTimeTerms?.length
+                  ? "given_in_persisted_query"
+                  : "hidden_field",
             ),
          });
       }
