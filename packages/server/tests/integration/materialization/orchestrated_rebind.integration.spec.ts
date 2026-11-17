@@ -3,12 +3,16 @@
 
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import fsp from "fs/promises";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -37,6 +41,7 @@ describe("Orchestrated rebind PATCH safety", () => {
          __dirname,
          "../../fixtures/persist-schedule-warn-test",
       );
+      await deleteLeftoverEnvironment(baseUrl, PROJECT_NAME);
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -67,6 +72,17 @@ describe("Orchestrated rebind PATCH safety", () => {
       }
       await env?.stop();
       env = null;
+   });
+
+   // A test that fails before its own reset must not leave its manifest bound
+   // for the next one: unbind after every test, without assertions of its own.
+   afterEach(async () => {
+      if (!baseUrl) return;
+      await fetch(`${baseUrl}${API}`, {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ name: PACKAGE_NAME, manifestLocation: null }),
+      }).catch(() => {});
    });
 
    async function getPackage(): Promise<Record<string, unknown>> {

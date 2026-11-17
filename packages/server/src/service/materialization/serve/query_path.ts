@@ -66,6 +66,12 @@ export interface PlannedTable {
     * the model side, so it is matched to its plan by name within its model.
     */
    modelPath?: string;
+   /**
+    * A rollup's columns as its build source declares them (Malloy types), the
+    * types its stored table is read back as: the build casts to them, and the
+    * rollup leg checks each stored column against them.
+    */
+   columns?: readonly { name: string; type: string }[];
 }
 
 /**

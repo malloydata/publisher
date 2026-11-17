@@ -786,7 +786,7 @@
       "path": {
         "considered": [
           {
-            "detail": "the query sets its own time zone, and the rollup was built in the model's",
+            "detail": "the query sets its own time zone and reads a time the rollup stored in the model's",
             "kind": "rollup",
             "outcome": "skipped",
             "reason": "TIME_ZONE",
@@ -875,7 +875,7 @@
       "path": {
         "considered": [
           {
-            "detail": "the query sets its own time zone, and the rollup was built in the model's",
+            "detail": "the query sets its own time zone and reads a time the rollup stored in the model's",
             "kind": "rollup",
             "outcome": "skipped",
             "reason": "TIME_ZONE",

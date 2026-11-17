@@ -648,6 +648,12 @@ source: scoped is duckdb.table('orders_raw') extend {
   #(preaggregate) grain=["category"]
   measure: scoped_total is amount.sum()
 }
+
+// Read no given, so the companion is never empty.
+source: open is duckdb.table('orders_raw') extend {
+  #(preaggregate) grain=["category"]
+  measure: open_total is amount.sum()
+}
 `,
          },
          seedSql,
@@ -658,7 +664,12 @@ source: scoped is duckdb.table('orders_raw') extend {
       await disposeScenarios();
    });
 
-   it("leaves out a rollup whose rows read a given, and answers live", async () => {
+   it("leaves out a rollup whose rows read a given it cannot re-apply, and answers live", async () => {
+      // Its where: reads `region`, which the grain does not keep
+      // (r4/rollup_gaps serves one whose grain does).
+      expect(
+         fixture.rollupRefusals.filter((r) => r.sourceName === "scoped"),
+      ).toEqual([{ reason: "reads_given", sourceName: "scoped" }]);
       expect(
          Object.keys(fixture.rollupTables).filter((n) =>
             n.startsWith("scoped__rollup__"),
@@ -709,25 +720,25 @@ source: mine is base extend {}
       await disposeScenarios();
    });
 
-   it("answers live, as the gate requires, and says CONTRACT", async () => {
+   it("answers from the rollup past its own gate (G3), each caller's rows, equal to live", async () => {
       const malloy = "run: orders -> { group_by: category; aggregate: total }";
-      const run = await fixture.run({
-         name: "gated",
-         malloy,
-         givens: { REGION: "east" },
-      });
-      expectLive(run);
-      // The gate held: only the east rows are counted.
-      expect(run.live).toEqual(
-         expect.arrayContaining([
-            expect.objectContaining({ category: "A", total: 10 }),
-         ]),
-      );
+      for (const region of ["east", "west"]) {
+         const run = await fixture.run({
+            name: `gated ${region}`,
+            malloy,
+            givens: { REGION: region },
+            truthSql: `SELECT category, CAST(SUM(amount) AS DOUBLE) AS total FROM orders_raw WHERE region = '${region}' GROUP BY 1`,
+         });
+         expectServedFromRollup(run);
+         expect(rowDifference(run.truth ?? [], run.served)).toBeUndefined();
+      }
    });
 
-   it("builds no rollup over the gated source, though its grain keeps the gate's field (row 21)", () => {
+   it("builds the rollup over the source's own gate, its grain keeping the gate's field (G3)", () => {
       const built = Object.keys(fixture.rollupTables);
-      expect(built.filter((n) => n.startsWith("orders__rollup__"))).toEqual([]);
+      expect(
+         built.filter((n) => n.startsWith("orders__rollup__")),
+      ).toHaveLength(1);
       // The ungated sources' rollups are still built.
       expect(built.some((n) => n.startsWith("open__rollup__"))).toBe(true);
       expect(built.some((n) => n.startsWith("base__rollup__"))).toBe(true);

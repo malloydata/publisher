@@ -273,9 +273,11 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       pair_sto: "planned | storage | not_built",
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll.total_col": "refused access_filter | colocated | live refused",
+      // G3 for a colocated rollup: the base's own gate, proven on its grain.
+      roll__rollup__category_region__7617040b:
+         "planned | colocated | not_built",
       "roll.total_sto": "refused access_filter | colocated | live refused",
-      "roll_v1.v1_total": "refused access_filter | colocated | live refused",
+      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
       views__by_region_col__view:
          "refused authorize | colocated | live refused",
       views__by_region_sto__view: "refused authorize | storage | live refused",
@@ -288,7 +290,7 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
    "a gate on the declared source, materialize off, gated sources off": {
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
-      "roll_v1.v1_total": "refused access_filter | colocated | live refused",
+      roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
    },
    "a gate above it, materialize on, gated sources on": {
       mat_col: "planned | colocated | not_built",
@@ -649,13 +651,13 @@ const ROUTER: Record<string, Record<string, string>> = {
             "skipped row_level_gate",
          "view, a kept and another storage table": "skipped row_level_gate",
          "view, no table": "skipped row_level_gate",
-         "rollup, colocated tables": "skipped row_level_gate",
+         "rollup, colocated tables": "used, past the gate",
          "rollup, storage tables": "skipped row_level_gate",
-         "rollup, colocated and storage tables": "skipped row_level_gate",
+         "rollup, colocated and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
             "skipped row_level_gate",
          "rollup, a kept and another storage table": "skipped row_level_gate",
-         "rollup, no table": "skipped row_level_gate",
+         "rollup, no table": "used, past the gate",
          "served, colocated tables": "used, past the gate",
          "served, storage tables": "skipped row_level_gate",
          "served, colocated and storage tables": "skipped row_level_gate",
@@ -696,13 +698,13 @@ const ROUTER: Record<string, Record<string, string>> = {
             "skipped row_level_gate",
          "view, a kept and another storage table": "skipped row_level_gate",
          "view, no table": "skipped row_level_gate",
-         "rollup, colocated tables": "skipped row_level_gate",
+         "rollup, colocated tables": "used, past the gate",
          "rollup, storage tables": "skipped row_level_gate",
-         "rollup, colocated and storage tables": "skipped row_level_gate",
+         "rollup, colocated and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
             "skipped row_level_gate",
          "rollup, a kept and another storage table": "skipped row_level_gate",
-         "rollup, no table": "skipped row_level_gate",
+         "rollup, no table": "used, past the gate",
          "served, colocated tables": "used, past the gate",
          "served, storage tables": "skipped row_level_gate",
          "served, colocated and storage tables": "skipped row_level_gate",

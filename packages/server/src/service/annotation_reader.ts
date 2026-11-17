@@ -305,13 +305,15 @@ export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
 
 /**
  * `#(preaggregate)`'s keys (materialization v2, A1): the grain it stores a
- * measure at, where (a `storage=` destination, or a `namespace=` in the
- * source's own warehouse), and its `freshness` group, as on `#@ persist`. A
+ * measure at, where (a `storage=` destination, or a `name=` whose container
+ * places it in the source's own warehouse; `namespace=` is that container's
+ * deprecated spelling), and its `freshness` group, as on `#@ persist`. A
  * closed set: any other key is malformed.
  */
 export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
    "grain",
    "storage",
+   "name",
    "namespace",
    "freshness",
 ]);
@@ -440,6 +442,12 @@ export const PERSIST_NOT_BUILT_CODE = "persist-not-built";
 export const MATERIALIZE_NOT_BUILT_CODE = "materialize-not-built";
 /** A valid rollup, or one measure of it, Publisher refuses alone. */
 export const PREAGGREGATE_NOT_BUILT_CODE = "preaggregate-not-built";
+/**
+ * A rollup placed with `namespace=`, the deprecated spelling of its `name=`
+ * container: still read, for one release, with this warning.
+ */
+export const PREAGGREGATE_NAMESPACE_DEPRECATED_CODE =
+   "deprecated-preaggregate-namespace";
 /**
  * {@link PERSIST_NOT_BUILT_CODE}'s former name, still emitted beside it for
  * one release so a client switching on it keeps working; removed after.

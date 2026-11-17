@@ -72,8 +72,10 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { unrecordedAudit } from "../../../src/service/access_record";
+import type { PlannedTable } from "../../../src/service/materialization/serve/query_path";
 import {
    buildSQLOf,
+   deriveColumns,
    plannedSources,
 } from "../../../src/service/materialization/plan/build_plan";
 import { computePackageBuildPlan } from "../../../src/service/materialization/plan/build_plan_compile";
@@ -1153,7 +1155,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const policy = ModelPolicy.fixed({
       snapshot: () => makeSnapshot([], manifestOn ? colocatedEntries : {}),
       materializedTables: {
-         planned: new Map([
+         planned: new Map<string, PlannedTable>([
             ...sources.map(
                (source) =>
                   [
@@ -1165,6 +1167,17 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                         origin: rollupOrigin.has(source.sourceID)
                            ? ("preaggregate" as const)
                            : ("persist" as const),
+                        // A rollup's declared columns, as the package's
+                        // catalog carries them from its plan.
+                        ...(rollupOrigin.has(source.sourceID)
+                           ? {
+                                columns: deriveColumns(source).flatMap((c) =>
+                                   c.name && c.type
+                                      ? [{ name: c.name, type: c.type }]
+                                      : [],
+                                ),
+                             }
+                           : {}),
                      },
                   ] as const,
             ),

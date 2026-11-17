@@ -5877,6 +5877,11 @@ components:
                   per measure, `model` its file, `subject` the source and the
                   message the measure; `warn`; only while
                   `PUBLISHER_MATERIALIZE` is on).
+                  `deprecated-preaggregate-namespace`: a rollup line placed with
+                  `namespace=`, the deprecated spelling of its `name=`
+                  container; still read, in that container under the readable
+                  name (one per measure and container, `subject`
+                  `<base>.<measure>`; `warn`).
                   `report-name-ambiguous`: two or more grid reports share a
                   basename, so the deprecated `GET …/dashboards/{name}` route
                   answers 409 for it (one per name, `subject` naming it and the
@@ -5973,9 +5978,9 @@ components:
                   kind (`#@ persist`, `#(materialize)`, a rollup, a persisted
                   view or query) stores a column as a type other than the one
                   its build declares. It is read through a cast to the
-                  declared type where that is faithful, answered live, or, for
-                  a `#(materialize)` source or a rollup's grain, read as its
-                  stored type (one per source and column, `model` the model
+                  declared type where that is faithful, and otherwise
+                  answered live, never read as its stored type (one per
+                  source and column, `model` the model
                   declaring it, `subject` the source, a rollup's base, or a
                   view's or query's build source, the message naming the
                   column, both types and which applies; `warn`; see
@@ -10747,7 +10752,12 @@ components:
             by a given, which has no read-time re-application to put the term
             back); `read_only_dialect` (a colocated build on a dialect that
             cannot create tables; SQL Server today, whose connection reports
-            `canPersist: false`); `storage_source_unsupported` (`storage=` on a
+            `canPersist: false`); `needs_qualified_name` (a colocated table on
+            BigQuery, where a table needs a dataset, whose `name=` names none:
+            a `#@ persist` source, a persisted view or query, a
+            `#(materialize)` source, or a rollup whose own `name=` and base's
+            give no container; refused at plan, before any warehouse work);
+            `storage_source_unsupported` (`storage=` on a
             source whose connection the build cannot pass through to a
             destination, e.g. the package's DuckDB sandbox);
             `table_name_collision` (under `PERSIST_COLLISION_ENFORCE=false`, a
@@ -10782,8 +10792,7 @@ components:
             `#@ persist`, so it is already its base's table),
             `inline_unsupported` (an `inline=` join or pair-table layout the
             build cannot store), `no_stored_columns` (the source has no
-            dimension to store), `needs_qualified_name` (a BigQuery table
-            built in its own warehouse needs a dataset-qualified `name=`), and
+            dimension to store), `needs_qualified_name` (as above), and
             `generated_build_failed` (Publisher could not write or compile its
             generated build, a Publisher bug worth reporting).
 

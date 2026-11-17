@@ -193,14 +193,15 @@ const MISTAKES: Mistake[] = [
             '#(materialize) name="t__p0123abcd"',
             "materialize-invalid",
          ],
-         // A rollup takes no name=: it is an unknown key there.
+         // A rollup's name= leaf starts its table's name, which Publisher
+         // ends with its own hash: a leaf already ending so is invalid.
          preaggregate: [
             '#(preaggregate) grain=["category"] name="t__p0123abcd"',
-            "preaggregate-unknown-key",
+            "preaggregate-invalid",
          ],
          v1Preaggregate: [
             '#@ preaggregate grain="category" name="t__p0123abcd"',
-            "preaggregate-unknown-key",
+            "preaggregate-invalid",
          ],
          view: ['#@ persist name="t__p0123abcd"', "persist-view-invalid"],
          query: ['#@ persist name="t__p0123abcd"', "persist-query-invalid"],

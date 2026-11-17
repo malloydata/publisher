@@ -86,6 +86,45 @@ describe("the gate policy's rows", () => {
       );
    });
 
+   it("keeps a colocated rollup's own proven base gate with the switch off (G3), and no other", () => {
+      const OFF_ALL: GateSwitches = {
+         materialize: false,
+         gatedSources: false,
+         gatedStorageRollupsReviewed: false,
+      };
+      const own = {
+         rowLevel: true,
+         attributed: true,
+         inheritedRowFilter: false,
+      };
+      const rollup = (t: Partial<GatedTable>) =>
+         table({ kind: "rollup", gate: own, baseGateProven: true, ...t });
+      for (const sw of [OFF_ALL, { ...OFF_ALL, materialize: true }]) {
+         expect(tableKeepsGates(rollup({ tier: "colocated" }), sw)).toBe(true);
+         // In a storage destination: awaits its review.
+         expect(tableKeepsGates(rollup({ tier: "storage" }), sw)).toBe(false);
+         // An inherited gate, or one not proven on the grain.
+         expect(
+            tableKeepsGates(
+               rollup({
+                  tier: "colocated",
+                  gate: { ...own, attributed: false, inheritedRowFilter: true },
+               }),
+               sw,
+            ),
+         ).toBe(false);
+         expect(
+            tableKeepsGates(
+               rollup({ tier: "colocated", baseGateProven: false }),
+               sw,
+            ),
+         ).toBe(false);
+         expect(
+            tableKeepsGates(rollup({ tier: "colocated", v1: true }), sw),
+         ).toBe(false);
+      }
+   });
+
    it("keeps a v1 table's own row-level gate under G3 on either tier, whatever the switches, and nothing else of v1", () => {
       const persist = (t: Partial<GatedTable>) =>
          table({ kind: "persist", v1: true, ...t });
@@ -134,14 +173,17 @@ describe("the gate policy at the router", () => {
       }
    });
 
-   it("lets only the served copy past without it, for an answer reading only colocated tables (G3)", () => {
+   it("lets the served copy and the rollup leg past without it, for an answer reading only colocated tables (G3)", () => {
       expect(legMayPassGate("view", OFF, G3)).toBe(false);
-      expect(legMayPassGate("rollup", OFF, G3)).toBe(false);
+      expect(legMayPassGate("rollup", OFF, G3)).toBe(true);
       expect(legMayPassGate("served", OFF, G3)).toBe(true);
       expect(answerKeepsGates("served", colocated, OFF, G3)).toBe(true);
       expect(answerKeepsGates("served", mixed, OFF, G3)).toBe(false);
       expect(answerKeepsGates("served", [], OFF, G3)).toBe(false);
-      expect(answerKeepsGates("rollup", colocated, OFF, G3)).toBe(false);
+      expect(answerKeepsGates("rollup", colocated, OFF, G3)).toBe(true);
+      expect(answerKeepsGates("rollup", mixed, OFF, G3)).toBe(false);
+      expect(answerKeepsGates("rollup", [], OFF, G3)).toBe(false);
+      expect(legMayPassGate("rollup", OFF, NO_G3)).toBe(false);
       expect(legMayPassGate("served", OFF, NO_G3)).toBe(false);
       expect(answerKeepsGates("served", colocated, OFF, NO_G3)).toBe(false);
    });

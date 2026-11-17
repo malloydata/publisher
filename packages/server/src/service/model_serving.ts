@@ -73,6 +73,7 @@ import {
    answeredWith,
    type Answer,
    canDegradeToLive,
+   isStoredDecimalArithmeticError,
    liveFallbackAnswer,
    type Leg,
    runManifestOf,
@@ -721,6 +722,9 @@ export class ModelServing {
             callerQueryText: query,
             routedPastEntryPointGate:
                answer.leg !== "live" && answer.pastEntryPointGate,
+            // A rollup's variant writes again the given-reading terms its
+            // build left out: re-proven on it.
+            reprovesGivenTerms: answer.leg === "rollup",
          },
       });
       const { runnable: governed, decision } = await governor.govern(
@@ -895,6 +899,8 @@ export class ModelServing {
          //  - only when the query actually routed to storage;
          //  - only per `bindingsAllowDegradeToLive` over the bindings that
          //    produced THIS shape (a sibling source must not decide);
+         //  - or for DECIMAL arithmetic past 38 digits, whatever the policy
+         //    (`isStoredDecimalArithmeticError`): the table is right;
          //  - never for a client error (bad given) or an abort;
          //  - the retry re-supplies the REAL givens, or the live source could
          //    serve unfiltered rows.
@@ -908,7 +914,9 @@ export class ModelServing {
             this.failQuery(ctx, governed, answer, error);
          }
          logger.warn(
-            "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
+            isStoredDecimalArithmeticError(error)
+               ? "Storage-served query's DECIMAL arithmetic exceeded 38 digits; falling back to live"
+               : "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
             {
                modelPath: this.host.modelPath,
                error: error instanceof Error ? error.message : String(error),
@@ -1738,6 +1746,7 @@ function governRequestOf(r: {
       | "callerRegion"
       | "callerQueryText"
       | "routedPastEntryPointGate"
+      | "reprovesGivenTerms"
    >;
 }): GovernRequest {
    return {

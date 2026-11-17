@@ -97,8 +97,13 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import {
+   numericAsTextSQL,
+   postgresNumericColumns,
+   stageNumericColumns,
+} from "./postgres_numeric_precision";
 import { PASSTHROUGH_SOURCE_TYPES } from "../domain/source_connection_type";
-import { STORAGE_DIALECT } from "../domain/dialect";
+import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -979,28 +984,59 @@ async function buildOnFederatedSession(
       : undefined;
    if (refreshed) return refreshed;
 
+   // A Postgres numeric DuckDB would read as DOUBLE is read as its exact
+   // text instead, staged, and stored as the DECIMAL that holds it
+   // (postgres_numeric_precision.ts).
+   const numeric = capabilitiesOf(sourceType).passthroughNumericAsDouble
+      ? await postgresNumericColumns(session, handle, buildSQL, sourceType)
+      : { columns: [], numeric: [] };
    const passthrough = await read(
       session,
       sourceType,
       handle,
-      buildSQL,
+      numeric.numeric.length > 0
+         ? numericAsTextSQL(
+              buildSQL,
+              numeric.columns,
+              numeric.numeric,
+              sourceType,
+           )
+         : buildSQL,
       queryMetadata,
    );
+   const staged =
+      numeric.numeric.length > 0
+         ? await stageNumericColumns(
+              session,
+              passthrough.selectSQL,
+              numeric.numeric,
+              { table: target },
+           )
+         : undefined;
 
    // The serve transform declares exactly this schema, and the compiler does
    // not type-check a virtual source's declared columns.
-   // Cast in DuckDB, around the passthrough: the warehouse runs exactly
-   // the build SQL, and only the stored types change.
-   const schema = await createTableWithDeclaredTypes(
-      session,
-      target,
-      passthrough.selectSQL,
-      { columns: params.declaredColumns ?? [], ...params.castOptions },
-      {
-         sourceType,
-         ...(params.replacesView ? { replacesView: params.replacesView } : {}),
-      },
-   );
+   // Cast in DuckDB, around the passthrough: the warehouse runs the build
+   // SQL (at most reading a numeric as its text), and only the stored types
+   // change.
+   let schema: WireColumn[];
+   try {
+      schema = await createTableWithDeclaredTypes(
+         session,
+         target,
+         staged?.selectSQL ?? passthrough.selectSQL,
+         { columns: params.declaredColumns ?? [], ...params.castOptions },
+         {
+            sourceType,
+            ...(numeric.described ? { described: numeric.described } : {}),
+            ...(params.replacesView
+               ? { replacesView: params.replacesView }
+               : {}),
+         },
+      );
+   } finally {
+      await staged?.drop();
+   }
    // Record where the new snapshot reaches, so the next refresh can be a
    // delta. On this session: the attach does not outlive this function.
    const seededThrough = await params.incremental?.afterSeed({
@@ -1714,6 +1750,12 @@ export async function createTableWithDeclaredTypes(
        * build. Decides which declared columns are cast ({@link columnsToCast}).
        */
       sourceType?: FederatedSourceType;
+      /**
+       * The source's columns as the session reads them, when the caller has
+       * already described the passthrough: {@link columnsToCast} reads them
+       * rather than describing it again.
+       */
+      described?: readonly { name: string; type: string }[];
    } & Parameters<typeof createTableAndDescribe>[3] = {},
 ): Promise<WireColumn[]> {
    const columns = await columnsToCast(
@@ -1721,6 +1763,7 @@ export async function createTableWithDeclaredTypes(
       selectSQL,
       declared.columns,
       options.sourceType,
+      options.described,
    );
    const cast = castToDeclaredTypes(selectSQL, columns, declared);
    if (cast === selectSQL) {
@@ -1776,12 +1819,14 @@ async function columnsToCast(
    selectSQL: string,
    declared: readonly DeclaredColumn[],
    sourceType: FederatedSourceType | undefined,
+   alreadyDescribed?: readonly { name: string; type: string }[],
 ): Promise<readonly DeclaredColumn[]> {
    if (sourceType !== "postgres") return declared;
    if (!declared.some((d) => d.type === "string")) return declared;
-   let described: WireColumn[];
+   let described: readonly WireColumn[];
    try {
-      described = await describeTable(session, `(${selectSQL})`);
+      described =
+         alreadyDescribed ?? (await describeTable(session, `(${selectSQL})`));
    } catch (err) {
       logger.warn(
          "Could not describe a storage build's source columns; casting every declared column",

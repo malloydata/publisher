@@ -58,7 +58,7 @@ const modelOn = (
    sql: string,
 ) => `##! experimental { persistence }
 
-#@ persist name="by_k"
+#@ persist name="scratch.by_k"
 source: by_k is ${connection}.sql("${sql}") -> {
   group_by: k
   aggregate: total is n.sum()

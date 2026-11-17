@@ -75,6 +75,8 @@ interface DeclaringFileContext {
     * that imports the declaring file's names should import them from the copy.
     */
    addFile(url: URL, text: string): void;
+   /** An author file's text, its source-level `#@` lines blanked. */
+   authorText(url: URL): Promise<string | undefined>;
 }
 
 /**
@@ -166,6 +168,9 @@ export async function compileDeclaringFileVariant(args: {
       sourceName: source,
       gates,
       addFile: (url, text) => overlay.set(url.href, text),
+      authorText: async (url) =>
+         blanked.get(overlayKey(url)) ??
+         (await authorFiles.readIfAny(url.href)),
    });
    if (typeof declaration !== "string") return declaration;
    const others = copyNames.names.filter((n) => !redeclared.has(n));

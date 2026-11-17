@@ -5,6 +5,7 @@
 
 import {
    afterAll,
+   afterEach,
    beforeAll,
    describe,
    expect,
@@ -15,7 +16,11 @@ import * as fsp from "fs/promises";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -62,6 +67,7 @@ describe("Per-query freshness gate (E2E)", () => {
       tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "freshness-gate-"));
 
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
+      await deleteLeftoverEnvironment(baseUrl, PROJECT_NAME);
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -100,6 +106,12 @@ describe("Per-query freshness gate (E2E)", () => {
    function url(p: string): string {
       return `${baseUrl}${API}${p}`;
    }
+
+   // A test that fails before its own revertToLive() must not leave its
+   // manifest bound for the next one (a bound package refuses a local run).
+   afterEach(async () => {
+      if (baseUrl) await revertToLive();
+   });
 
    const ROUTING_QUERY = "run: order_summary -> { aggregate: c is count() }";
 
