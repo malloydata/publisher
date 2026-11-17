@@ -13,6 +13,8 @@
  * warehouse_sql.ts.
  */
 
+import { decodeBackslashEscapes } from "../../quoting";
+
 /** The prefix of the comment on a `name=` view an earlier release made. */
 const NAME_VIEW_MARK = "malloy-publisher:name-view";
 
@@ -110,15 +112,22 @@ export function pathSegments(path: string): string[] {
  * schema, on either side, is read in `viewSchema`, the schema the view lives
  * in (where its own unqualified names resolve, and where earlier releases
  * put a bare `name=` view beside its table), so `s2.g1` is not `g1`. A view
- * reading anything else, or more than one relation, is not.
+ * reading anything else, or more than one relation, is not. A backslash
+ * escape in the definition is decoded first where `dialect` reads one
+ * (BigQuery), as it reads a quoted identifier.
  */
 export function viewDefinitionReadsOnly(
    definition: unknown,
    target: string,
    viewSchema?: unknown,
+   dialect?: string,
 ): boolean {
    if (typeof definition !== "string") return false;
-   const text = definition
+   const decoded =
+      dialect === undefined
+         ? definition
+         : decodeBackslashEscapes(definition, dialect);
+   const text = decoded
       .toLowerCase()
       .replace(/["`[\]]/g, "")
       .replace(/\s+/g, " ");

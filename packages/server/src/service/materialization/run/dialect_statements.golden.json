@@ -19,9 +19,21 @@
     "databricks": "'it\\'s \\\\ here'",
     "trino": "'it''s \\ here'",
     "presto": "'it''s \\ here'",
-    "mysql": "'it''s \\\\ here'",
+    "mysql": "CONCAT('it''s ', CHAR(92 USING utf8mb4), ' here')",
     "sqlserver": "N'it''s \\ here'",
     "unknown_dialect": "'it''s \\ here'"
+  },
+  "sqlString.lineBreaks": {
+    "duckdb": "'a\nb\rc'",
+    "postgres": "'a\nb\rc'",
+    "standardsql": "'a\\nb\\rc'",
+    "snowflake": "'a\nb\rc'",
+    "databricks": "'a\nb\rc'",
+    "trino": "'a\nb\rc'",
+    "presto": "'a\nb\rc'",
+    "mysql": "'a\nb\rc'",
+    "sqlserver": "N'a\nb\rc'",
+    "unknown_dialect": "'a\nb\rc'"
   },
   "relationProbeSql.one": {
     "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('orders') AND database_name = current_database() AND schema_name = current_schema() UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('orders') AND database_name = current_database() AND schema_name = current_schema()",
@@ -334,6 +346,112 @@
       "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
     }
   },
+  "relationProbeSql.hostile": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`') UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`')",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"')) AS p",
+    "standardsql": "SELECT t.table_type AS kind, o.option_value AS comment FROM `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.TABLES t LEFT JOIN `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.TABLE_OPTIONS o ON o.table_name = t.table_name AND o.option_name = 'description' WHERE t.table_name = 't`\\'x'",
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM \"p`j\\\".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'd\"s\\\\`' AND TABLE_NAME = 't`''x'",
+    "databricks": "SELECT table_type AS kind, comment FROM `p``j\\`.information_schema.tables WHERE table_schema = lower('d\"s\\\\`') AND table_name = lower('t`\\'x')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM \"p`j\\\".information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = lower('d\"s\\`') AND t.table_name = lower('t`''x')",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'p`j\\.d\"s\\`.t`'x'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableProbeSql.hostile": {
+    "duckdb": "SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`') UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE lower(table_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`')",
+    "postgres": "SELECT row_to_json(p) AS \"row\" FROM (SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, obj_description(c.oid, 'pg_class') AS comment FROM pg_class c WHERE c.oid = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"')) AS p",
+    "standardsql": "SELECT t.table_type AS kind, o.option_value AS comment FROM `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.TABLES t LEFT JOIN `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.TABLE_OPTIONS o ON o.table_name = t.table_name AND o.option_name = 'description' WHERE t.table_name = 't`\\'x'",
+    "snowflake": "SELECT TABLE_TYPE AS \"kind\", COMMENT AS \"comment\" FROM \"p`j\\\".INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'd\"s\\\\`' AND TABLE_NAME = 't`''x'",
+    "databricks": "SELECT table_type AS kind, comment FROM `p``j\\`.information_schema.tables WHERE table_schema = lower('d\"s\\\\`') AND table_name = lower('t`\\'x')",
+    "trino": "SELECT t.table_type AS kind, c.comment AS comment FROM \"p`j\\\".information_schema.tables t LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog AND c.schema_name = t.table_schema AND c.table_name = t.table_name WHERE t.table_schema = lower('d\"s\\`') AND t.table_name = lower('t`''x')",
+    "presto": "SELECT table_type AS kind, CAST(NULL AS varchar) AS comment FROM \"p`j\\\".information_schema.tables WHERE table_schema = lower('d\"s\\`') AND table_name = lower('t`''x')",
+    "mysql": "SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment FROM information_schema.TABLES WHERE TABLE_SCHEMA = CONCAT('d\"s', CHAR(92 USING utf8mb4), '`') AND TABLE_NAME = 't`''x'",
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'p`j\\.d\"s\\`.t`'x'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "ownedTableMarkSql.hostile": {
+    "duckdb": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "postgres": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "standardsql": "ALTER TABLE `p\\`j\\\\`.`d\"s\\\\\\``.`t\\`'x` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s')",
+    "snowflake": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "databricks": "COMMENT ON TABLE `p``j\\`.`d\"s\\```.`t``'x` IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "trino": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "presto": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "mysql": "ALTER TABLE `p``j\\`.`d\"s\\```.`t``'x` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s'",
+    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N't`''x';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N't`''x';",
+    "unknown_dialect": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'"
+  },
+  "viewReadsSql.hostile": {
+    "duckdb": {
+      "answer": "definition",
+      "sql": "SELECT sql AS definition, schema_name AS view_schema FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('t`''x') AND lower(database_name) = lower('p`j\\') AND lower(schema_name) = lower('d\"s\\`')"
+    },
+    "postgres": {
+      "answer": "reads",
+      "sql": "SELECT row_to_json(p) AS \"row\" FROM (SELECT (EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND d.refobjid = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"target\"')) AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_rewrite r ON r.oid = d.objid WHERE d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass AND r.ev_class = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND d.refobjid <> to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"target\"') AND d.refobjid <> to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND EXISTS (SELECT 1 FROM pg_catalog.pg_class rc WHERE rc.oid = d.refobjid AND rc.relkind IN ('r', 'v', 'm', 'p', 'f')))) AS reads) AS p"
+    },
+    "standardsql": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.VIEWS WHERE table_name = 't`\\'x'"
+    },
+    "snowflake": {
+      "answer": "definition",
+      "sql": "SELECT VIEW_DEFINITION AS \"definition\", TABLE_SCHEMA AS \"view_schema\" FROM \"p`j\\\".INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = 'd\"s\\\\`' AND TABLE_NAME = 't`''x'"
+    },
+    "databricks": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM `p``j\\`.information_schema.views WHERE table_schema = lower('d\"s\\\\`') AND table_name = lower('t`\\'x')"
+    },
+    "trino": {
+      "answer": "definition",
+      "sql": "SELECT view_definition AS definition, table_schema AS view_schema FROM \"p`j\\\".information_schema.views WHERE table_schema = lower('d\"s\\`') AND table_name = lower('t`''x')"
+    },
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'p`j\\.d\"s\\`.t`'x'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
+  "dropViewSql.hostile": {
+    "duckdb": "DROP VIEW IF EXISTS \"p`j\\\".\"d\"\"s\\`\".\"t`'x\"",
+    "postgres": "DROP VIEW IF EXISTS \"p`j\\\".\"d\"\"s\\`\".\"t`'x\"",
+    "standardsql": "DROP VIEW IF EXISTS `p\\`j\\\\`.`d\"s\\\\\\``.`t\\`'x`",
+    "snowflake": "DROP VIEW IF EXISTS \"p`j\\\".\"d\"\"s\\`\".\"t`'x\"",
+    "databricks": "DROP VIEW IF EXISTS `p``j\\`.`d\"s\\```.`t``'x`",
+    "trino": "DROP VIEW IF EXISTS \"p`j\\\".\"d\"\"s\\`\".\"t`'x\"",
+    "presto": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'presto'"
+    },
+    "mysql": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'mysql'"
+    },
+    "sqlserver": {
+      "refused": "a SQL Server name takes at most a schema, not 'p`j\\.d\"s\\`.t`'x'"
+    },
+    "unknown_dialect": {
+      "refused": "Publisher cannot read a relation's comment in dialect 'unknown_dialect'"
+    }
+  },
   "replaceOwnViewStatements": {
     "duckdb": [
       "SELECT error('the name= view \"sch\".\"v\" changed while the build checked it') FROM (SELECT 1 FROM duckdb_views() WHERE NOT internal AND lower(view_name) = lower('v') AND ((lower(database_name) = lower('sch') AND schema_name = 'main') OR (database_name = current_database() AND lower(schema_name) = lower('sch'))) AND sql = 'CREATE VIEW v AS SELECT * FROM t__m1;' HAVING count(*) = 0) g",
@@ -361,7 +479,12 @@
         "sch",
         "Or ders"
       ],
-      "backtick": null
+      "backtick": [
+        "p-1",
+        "ds",
+        "t"
+      ],
+      "escapedBacktick": null
     },
     "postgres": {
       "bare": [
@@ -374,7 +497,12 @@
         "sch",
         "Or ders"
       ],
-      "backtick": null
+      "backtick": [
+        "p-1",
+        "ds",
+        "t"
+      ],
+      "escapedBacktick": null
     },
     "standardsql": {
       "bare": [
@@ -382,9 +510,18 @@
         "Sch",
         "Orders"
       ],
-      "quoted": null,
+      "quoted": [
+        "Cat",
+        "sch",
+        "Or ders"
+      ],
       "backtick": [
         "p-1",
+        "ds",
+        "t"
+      ],
+      "escapedBacktick": [
+        "p`1\\",
         "ds",
         "t"
       ]
@@ -400,37 +537,48 @@
         "sch",
         "Or ders"
       ],
-      "backtick": null
+      "backtick": [
+        "p-1",
+        "DS",
+        "T"
+      ],
+      "escapedBacktick": null
     },
     "databricks": {
       "bare": null,
       "quoted": null,
-      "backtick": null
+      "backtick": null,
+      "escapedBacktick": null
     },
     "trino": {
       "bare": null,
       "quoted": null,
-      "backtick": null
+      "backtick": null,
+      "escapedBacktick": null
     },
     "presto": {
       "bare": null,
       "quoted": null,
-      "backtick": null
+      "backtick": null,
+      "escapedBacktick": null
     },
     "mysql": {
       "bare": null,
       "quoted": null,
-      "backtick": null
+      "backtick": null,
+      "escapedBacktick": null
     },
     "sqlserver": {
       "bare": null,
       "quoted": null,
-      "backtick": null
+      "backtick": null,
+      "escapedBacktick": null
     },
     "unknown_dialect": {
       "bare": null,
       "quoted": null,
-      "backtick": null
+      "backtick": null,
+      "escapedBacktick": null
     }
   },
   "probeSelect": {
@@ -1434,6 +1582,38 @@
       "DROP TABLE IF EXISTS \"sch\".\"Orders x__m1_oorders\""
     ]
   },
+  "ColocatedTier.drop.hostile": {
+    "duckdb": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "postgres": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "standardsql": [
+      "DROP TABLE IF EXISTS `s\\`c\\\\`.`Or\"d\\`ers__m1`"
+    ],
+    "snowflake": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "databricks": [
+      "DROP TABLE IF EXISTS `s``c\\`.`Or\"d``ers__m1`"
+    ],
+    "trino": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "presto": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "mysql": [
+      "DROP TABLE IF EXISTS `s``c\\`.`Or\"d``ers__m1`"
+    ],
+    "sqlserver": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ],
+    "unknown_dialect": [
+      "DROP TABLE IF EXISTS \"s`c\\\".\"Or\"\"d`ers__m1\""
+    ]
+  },
   "capturedNativeSchema.one": {
     "duckdb": [
       "DESCRIBE \"orders\""
@@ -1526,6 +1706,38 @@
     ],
     "unknown_dialect": [
       "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"cat\".information_schema.columns WHERE lower(table_name) = lower('Orders') AND lower(table_schema) = lower('sch') ORDER BY ordinal_position"
+    ]
+  },
+  "capturedNativeSchema.hostile": {
+    "duckdb": [
+      "DESCRIBE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\""
+    ],
+    "postgres": [
+      "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum"
+    ],
+    "standardsql": [
+      "SELECT column_name, data_type FROM `p\\`j\\\\`.`d\"s\\\\\\``.INFORMATION_SCHEMA.COLUMNS WHERE table_name = 't`\\'x' ORDER BY ordinal_position"
+    ],
+    "snowflake": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\\\`') ORDER BY ordinal_position"
+    ],
+    "databricks": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM `p``j\\`.information_schema.columns WHERE lower(table_name) = lower('t`\\'x') AND lower(table_schema) = lower('d\"s\\\\`') ORDER BY ordinal_position"
+    ],
+    "trino": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\`') ORDER BY ordinal_position"
+    ],
+    "presto": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\`') ORDER BY ordinal_position"
+    ],
+    "mysql": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM `p``j\\`.information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower(CONCAT('d\"s', CHAR(92 USING utf8mb4), '`')) ORDER BY ordinal_position"
+    ],
+    "sqlserver": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower(N't`''x') AND lower(table_schema) = lower(N'd\"s\\`') ORDER BY ordinal_position"
+    ],
+    "unknown_dialect": [
+      "SELECT table_catalog, table_schema, table_name, column_name, data_type, numeric_precision, numeric_scale FROM \"p`j\\\".information_schema.columns WHERE lower(table_name) = lower('t`''x') AND lower(table_schema) = lower('d\"s\\`') ORDER BY ordinal_position"
     ]
   },
   "bigQueryCostColumns": "\n   total_slot_time_ms,\n   json_extract_string(statistics, '$.query.totalBytesProcessed') AS bytes_processed,\n   json_extract_string(statistics, '$.query.totalBytesBilled')    AS bytes_billed,\n   json_extract_string(statistics, '$.query.cacheHit')            AS cache_hit",

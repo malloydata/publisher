@@ -881,6 +881,17 @@ describe("service/package", () => {
                colocatedSourceEligibility: typeof eligibility;
             }
          ).colocatedSourceEligibility = eligibility;
+         // Each examined source's dialect, as a real plan carries it: an
+         // entry with none is never bound as given.
+         (pkg as unknown as { buildPlan: unknown }).buildPlan = {
+            graphs: [],
+            sources: Object.fromEntries(
+               ["eid-eligible", "eid-refused", "eid-known"].map((id) => [
+                  `${id}@m.malloy`,
+                  { sourceEntityId: id, dialect: "duckdb" },
+               ]),
+            ),
+         };
          return pkg;
       };
 
@@ -898,7 +909,7 @@ describe("service/package", () => {
          });
 
          expect(pkg.materialization().getBuildManifestEntries()).toEqual({
-            "eid-eligible": { tableName: "t_eligible" },
+            "eid-eligible": { tableName: '"t_eligible"' },
          });
       });
 
@@ -930,7 +941,7 @@ describe("service/package", () => {
          });
 
          expect(pkg.materialization().getBuildManifestEntries()).toEqual({
-            "eid-known": { tableName: "t_known" },
+            "eid-known": { tableName: '"t_known"' },
          });
       });
    });

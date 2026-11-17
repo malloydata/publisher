@@ -514,15 +514,49 @@ describe("bindColocatedEntries", () => {
       });
       expect(bound.entries).toEqual({
          a: { tableName: '"order"' },
-         b: { tableName: "kept" },
       });
+      // `b` has no dialect to quote its name in: declined, never bound as
+      // given.
       expect(bound.declined).toEqual([
+         {
+            reason: "unquotable_name",
+            sourceEntityId: "b",
+            detail: "no dialect is known for its table, to quote its name in",
+         },
          {
             reason: "refused",
             sourceEntityId: "c",
             detail: "a gate the table cannot keep",
          },
       ]);
+   });
+
+   it("declines only an entry whose name its dialect cannot read or quote, and binds the rest", () => {
+      const bound = bindColocatedEntries({
+         entries: {
+            bad: { tableName: "`ds`.`a``b`" },
+            good: { tableName: "`ds`.`a\\`b`" },
+            plain: { tableName: "ds.t" },
+         },
+         eligibility: {
+            eligibleEntityIds: new Set(["bad", "good", "plain"]),
+            refused: {},
+         },
+         dialects: new Map([
+            ["bad", "standardsql"],
+            ["good", "standardsql"],
+            ["plain", "standardsql"],
+         ]),
+      });
+      expect(bound.entries).toEqual({
+         good: { tableName: "`ds`.`a\\`b`" },
+         plain: { tableName: "`ds`.`t`" },
+      });
+      expect(bound.declined).toHaveLength(1);
+      expect(bound.declined[0]).toMatchObject({
+         reason: "unquotable_name",
+         sourceEntityId: "bad",
+      });
    });
 
    it("declines every entry when the plan's eligibility is unknown", () => {

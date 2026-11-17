@@ -237,6 +237,25 @@ describe("observedDatabaseColumns: batched, bounded, timed out", () => {
       ]);
    });
 
+   it("marks a name its dialect cannot quote unread, alone, and reads the rest", async () => {
+      const bq = recording("standardsql");
+      const observed = await observedDatabaseColumns({
+         entries: {
+            newline: { tableName: "`ds`.`a\nb`" },
+            doubled: { tableName: "`ds`.`a``b`" },
+            escaped: { tableName: "`ds`.`a\\`b`" },
+            plain: { tableName: "ds.t" },
+         },
+         connectionNameOf: () => "w",
+         connection: async () => bq.connection,
+      });
+      expect(observed.get("newline")).toEqual({ unread: "unparseable" });
+      expect(observed.get("doubled")).toEqual({ unread: "unparseable" });
+      expect(bq.statements).toEqual([
+         "SELECT table_name, column_name, data_type FROM `ds`.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('a`b', 't') ORDER BY table_name, ordinal_position",
+      ]);
+   });
+
    it("runs DuckDB's per-table reads at most four at a time", async () => {
       const r = recording("duckdb", () => [], 20);
       await observedDatabaseColumns({

@@ -14,9 +14,18 @@
  */
 
 import type { MaterializePlan, StoredChain } from "../domain/table_plans";
-import { copyEdits, ACCESS_FLAG } from "./materialize_build_copy";
+import {
+   copyEdits,
+   ownAndParentEdits,
+   parentRerootEdit,
+   ACCESS_FLAG,
+} from "./materialize_build_copy";
 import { offsetOf } from "../text/malloy_lexer";
-import { applyEdits, documentFlagLines } from "../text/declaration_text";
+import {
+   applyEdits,
+   documentFlagLines,
+   type TextEdit,
+} from "../text/declaration_text";
 import { identifier, stringLiteral, annotationValue } from "../../malloy_text";
 import { buildSourceBody, importAlias } from "./build_file_generator";
 
@@ -38,31 +47,61 @@ export function storedChainText(
    text: string,
    plan: MaterializePlan,
    parent: MaterializePlan,
-   options: { liftAccess?: boolean } = {},
+   options: {
+      liftAccess?: boolean;
+      /**
+       * The parent's file, when it is another than the extension's
+       * (`buildsOver.crossFile`): the parent's declaration, and each one on
+       * the path declared there, is read from it.
+       */
+      parentText?: string;
+   } = {},
 ): StoredChain | undefined {
    const over = plan.buildsOver;
    if (!over) return undefined;
-   const edits = copyEdits(text, plan, parent, options.liftAccess, true);
-   if ("reason" in edits) return undefined;
+   // The path ends with the extension's own declaration.
+   const ownURL = over.path[over.path.length - 1]?.url;
+   const parentText = over.crossFile ? options.parentText : text;
+   if (parentText === undefined) return undefined;
+   // Each file's edits: one file's both, or the parent's re-root in its file
+   // and the extension's own edits in the extension's.
+   const edited = new Map<string, TextEdit[]>();
+   if (over.crossFile) {
+      const reroot = parentRerootEdit(parentText, plan, parent, true);
+      const own = ownAndParentEdits(text, plan, undefined, options.liftAccess);
+      if (reroot === undefined || "reason" in own) return undefined;
+      edited.set("parent", [reroot]);
+      edited.set("own", own.edits);
+   } else {
+      const edits = copyEdits(text, plan, parent, options.liftAccess, true);
+      if ("reason" in edits) return undefined;
+      edited.set("own", edits.edits);
+      edited.set("parent", edits.edits);
+   }
    const statements: string[] = [];
-   for (const { range } of [over.declaration, ...over.path]) {
-      const from = offsetOf(text, range.start);
-      const to = offsetOf(text, range.end);
+   for (const { url, range } of [over.declaration, ...over.path]) {
+      const inParent = over.crossFile !== undefined && url !== ownURL;
+      const from_ = inParent ? parentText : text;
+      const from = offsetOf(from_, range.start);
+      const to = offsetOf(from_, range.end);
       if (from < 0 || to < from) return undefined;
-      const inside = edits.edits
+      const inside = (edited.get(inParent ? "parent" : "own") ?? [])
          .filter((e) => e.start >= from && e.end <= to)
          .map((e) => ({ ...e, start: e.start - from, end: e.end - from }));
-      const edited = applyEdits(text.slice(from, to), inside);
-      if (edited === undefined) return undefined;
+      const declaration = applyEdits(from_.slice(from, to), inside);
+      if (declaration === undefined) return undefined;
       // malloy-text: the author's own declaration, edited as its build copy edits it
-      statements.push(`source: ${edited}`);
+      statements.push(`source: ${declaration}`);
    }
    return {
       parentBuildSourceName: parent.buildSourceName,
       // The lift's `include { public: * }` needs its flag here too (P3).
       flags: [
-         ...documentFlagLines(text),
-         ...(options.liftAccess ? [ACCESS_FLAG] : []),
+         ...new Set([
+            ...documentFlagLines(text),
+            ...(over.crossFile ? documentFlagLines(parentText) : []),
+            ...(options.liftAccess ? [ACCESS_FLAG] : []),
+         ]),
       ],
       declarations: statements.join("\n"),
    };

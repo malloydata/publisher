@@ -24,7 +24,7 @@ import {
    inverseRenameBlocks,
    type TextEdit,
 } from "../text/declaration_text";
-import { offsetOf } from "../text/malloy_lexer";
+import { lexAll, offsetOf } from "../text/malloy_lexer";
 import {
    NOT_FOUND,
    declarationOf,
@@ -249,6 +249,20 @@ export function copyEdits(
    liftAccess = false,
    joinRecords = false,
 ): { edits: TextEdit[] } | { reason: string } {
+   const found = ownAndParentEdits(text, plan, parent, liftAccess, joinRecords);
+   if ("reason" in found) return found;
+   if (found.edits.length === 0) return { reason: NOT_FOUND };
+   return found;
+}
+
+/** {@link copyEdits}, which may be none. */
+export function ownAndParentEdits(
+   text: string,
+   plan: MaterializePlan,
+   parent?: MaterializePlan,
+   liftAccess = false,
+   joinRecords = false,
+): { edits: TextEdit[] } | { reason: string } {
    const edits: TextEdit[] = [];
    const given = givenReadTerms(plan);
    if (given.length > 0) {
@@ -267,22 +281,14 @@ export function copyEdits(
       edits.push({ ...span, insert: "true" });
    }
    if (parent) {
-      const range = plan.buildsOver?.declaration.range;
-      const from = range ? offsetOf(text, range.start) : -1;
-      const to = range ? offsetOf(text, range.end) : -1;
-      const rerooted =
-         from >= 0 && to >= from
-            ? rerootOnBuildSource(text.slice(from, to), parent, {
-                 joinRecords,
-              })
-            : undefined;
+      const reroot = parentRerootEdit(text, plan, parent, joinRecords);
       if (
-         rerooted === undefined ||
-         edits.some((e) => e.start < to && from < e.end)
+         reroot === undefined ||
+         edits.some((e) => e.start < reroot.end && reroot.start < e.end)
       ) {
          return { reason: PARENT_NOT_REROOTED };
       }
-      edits.push({ start: from, end: to, insert: rerooted });
+      edits.push(reroot);
    }
    if (liftAccess) {
       const from = plan.declaration
@@ -306,8 +312,154 @@ export function copyEdits(
          { start: 0, end: 0, insert: `${ACCESS_FLAG}\n` },
       );
    }
-   if (edits.length === 0) return { reason: NOT_FOUND };
    return { edits };
+}
+
+/**
+ * The edit that re-roots `plan`'s parent's declaration in `text`, the file
+ * that declares it, on the parent's build source ({@link rerootOnBuildSource});
+ * undefined when it is not where the plan says or does not re-root.
+ */
+export function parentRerootEdit(
+   text: string,
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+   joinRecords = false,
+): TextEdit | undefined {
+   const range = plan.buildsOver?.declaration.range;
+   const from = range ? offsetOf(text, range.start) : -1;
+   const to = range ? offsetOf(text, range.end) : -1;
+   const rerooted =
+      from >= 0 && to >= from
+         ? rerootOnBuildSource(text.slice(from, to), parent, { joinRecords })
+         : undefined;
+   return rerooted === undefined
+      ? undefined
+      : { start: from, end: to, insert: rerooted };
+}
+
+/** Ends the name of a parent's file re-rooted for another file's build copy. */
+const CHAIN_COPY_SUFFIX = ".materialize-chain.malloy";
+
+/**
+ * The name of the `index`th copy of a parent's file (`parentFileName`) that a
+ * build copy of `modelFileName` imports in its place, beside the parent's
+ * file so the copy's own imports resolve as the file's do.
+ */
+export function chainCopyName(
+   parentFileName: string,
+   modelFileName: string,
+   index: number,
+): string {
+   return `${parentFileName}.${modelFileName}.${index}${CHAIN_COPY_SUFFIX}`;
+}
+
+/**
+ * The build copy of an extension table whose parent is declared in another
+ * file (P10 across files), as two texts:
+ *
+ *  - `parentCopy`, the parent's file with the parent re-rooted on its build
+ *    source ({@link rerootOnBuildSource}), which it imports from
+ *    `buildSourceFrom` (the parent's generated file, by its path from the
+ *    parent's file);
+ *  - `copy`, the extension's file with its own edits ({@link copyEdits}: its
+ *    given-reading and left-out current-time terms, its lifted access) and
+ *    every `import` of the parent's file pointed at `parentCopy` instead
+ *    (`importOf` answers, for an import's path as written, the path to write
+ *    in its place, or undefined to keep it).
+ *
+ * So the extension, as written, reads the parent's table. Why not, when an
+ * edit cannot be placed, the parent does not re-root, or no `import` of the
+ * parent's file can be rewritten (an import the lexer cannot read, a path
+ * with an escape in it): the compile then never sees a half-rewritten file.
+ */
+export function crossFileCopyTexts(args: {
+   text: string;
+   parentText: string;
+   plan: MaterializePlan;
+   parent: MaterializePlan;
+   buildSourceFrom: string;
+   importOf: (written: string) => string | undefined;
+   liftAccess?: boolean;
+}): { copy: string; parentCopy: string } | { reason: string } {
+   const { plan, parent } = args;
+   const reroot = parentRerootEdit(args.parentText, plan, parent);
+   if (reroot === undefined) return { reason: PARENT_NOT_REROOTED };
+   let parentCopy = applyEdits(args.parentText, [reroot]);
+   if (parentCopy === undefined) return { reason: PARENT_NOT_REROOTED };
+   const at = afterModelHeader(parentCopy);
+   const line = `import { ${identifier(parent.buildSourceName)} } from ${stringLiteral(args.buildSourceFrom)}\n`;
+   parentCopy = `${parentCopy.slice(0, at)}${line}${parentCopy.slice(at)}`;
+   const own = ownAndParentEdits(
+      args.text,
+      plan,
+      undefined,
+      args.liftAccess ?? false,
+   );
+   if ("reason" in own) return own;
+   const imports = importRewrites(args.text, args.importOf);
+   if (imports === undefined || imports.length === 0) {
+      return { reason: PARENT_IMPORT_NOT_REWRITTEN };
+   }
+   if (
+      imports.some((i) =>
+         own.edits.some((e) => e.start < i.end && i.start < e.end),
+      )
+   ) {
+      return { reason: PARENT_IMPORT_NOT_REWRITTEN };
+   }
+   const copy = applyEdits(args.text, [...own.edits, ...imports]);
+   if (copy === undefined) return { reason: NOT_FOUND };
+   return { copy, parentCopy };
+}
+
+const PARENT_IMPORT_NOT_REWRITTEN =
+   "the extension's file does not import the parent's file in a way its " +
+   "build copy can point at the parent's re-rooted copy";
+
+/**
+ * The edits that point each top-level `import` of `text` at another path:
+ * the path string of every `import` statement whose path `importOf` answers
+ * for. Undefined when the text does not lex, or an import's path is written
+ * with an escape, which is never guessed at.
+ */
+function importRewrites(
+   text: string,
+   importOf: (written: string) => string | undefined,
+): TextEdit[] | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const edits: TextEdit[] = [];
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.kind !== "word" || t.text !== "import" || t.depth !== 0) continue;
+      // The path is the statement's first string at the top level: right
+      // after `import`, or after `{ … } from`.
+      let j = k + 1;
+      while (
+         j < tokens.length &&
+         !(tokens[j].depth === 0 && /^["']/.test(tokens[j].text))
+      ) {
+         if (tokens[j].depth === 0 && tokens[j].kind === "word") {
+            if (tokens[j].text !== "from") break;
+         }
+         j++;
+      }
+      const literal = tokens[j];
+      if (!literal || literal.depth !== 0 || !/^["']/.test(literal.text)) {
+         continue;
+      }
+      const body = literal.text.slice(1, -1);
+      if (body.includes("\\")) return undefined;
+      const to = importOf(body);
+      if (to === undefined) continue;
+      edits.push({
+         start: literal.start,
+         end: literal.end,
+         insert: stringLiteral(to),
+      });
+   }
+   return edits;
 }
 
 const PARENT_NOT_REROOTED =
