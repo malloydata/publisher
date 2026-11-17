@@ -324,8 +324,14 @@ for (const placement of ["colocated", "storage"] as const) {
                   .filter((r) => r.sourceName.startsWith("scoped_"))
                   .sort((a, b) => a.sourceName.localeCompare(b.sourceName)),
             ).toEqual([
-               { reason: "reads_given", sourceName: "scoped_inherited" },
-               { reason: "reads_given", sourceName: "scoped_outside" },
+               {
+                  reason: "inherited_where_with_given",
+                  sourceName: "scoped_inherited",
+               },
+               {
+                  reason: "given_in_persisted_query",
+                  sourceName: "scoped_outside",
+               },
             ]);
             for (const source of ["scoped_outside", "scoped_inherited"]) {
                expectLive(
