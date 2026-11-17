@@ -336,10 +336,11 @@ jobs:
           # The donated runners' registry cache when on them (GitHub's runners
           # cannot reach it), GitHub's cache otherwise. Only main writes.
           cache-from: ${{ vars.CREDIBLE_RUNNERS == 'true' && format('type=registry,ref={0}', env.LAYER_CACHE) || 'type=gha' }}
+          # main first: `x && '' || y` yields y, since '' is falsy, so '' can only be the last alternative.
           cache-to: >-
-            ${{ github.ref != 'refs/heads/main' && '' ||
-                vars.CREDIBLE_RUNNERS == 'true' && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) ||
-                'type=gha,mode=max' }}
+            ${{ github.ref == 'refs/heads/main'
+                && (vars.CREDIBLE_RUNNERS == 'true' && format('type=registry,ref={0},mode=max', env.LAYER_CACHE) || 'type=gha,mode=max')
+                || '' }}
       - name: Inspect image metadata
         run: |
           # Lock in the Dockerfile claims made for audit findings #7 and #8:

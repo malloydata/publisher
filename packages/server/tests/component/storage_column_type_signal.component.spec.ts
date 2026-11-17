@@ -154,18 +154,17 @@ describe("a stored column whose type drifted", () => {
          "top_cats__query",
       ]);
       expect(warnings).toHaveLength(5);
-      // How each reader takes the column: the persist source's served copy
-      // and a persisted result answer live, a rollup does not read a
-      // numeric partial, and a `#(materialize)` served copy reads it as stored.
+      // Every reader takes the column the same way: no faithful cast reads
+      // a number stored as text, so a query reading it answers live.
       for (const subject of [
          "daily",
          "ops__by_cat__view",
          "top_cats__query",
          "sales",
+         "orders",
       ]) {
          expect(bySubject.get(subject)).toContain("answered live");
       }
-      expect(bySubject.get("orders")).toContain("read as its stored type");
 
       // Asked again, still counted once per table.
       pkg.getPackageMetadata();

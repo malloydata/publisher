@@ -9,6 +9,7 @@ import {
 } from "../../../test_helpers/persisted_result_fixture";
 import type { Binding } from "../domain/binding";
 import type { BuildPlan } from "../domain/types";
+import type { MaterializePlan } from "../domain/table_plans";
 import {
    boundTableTypeFindings,
    modelStorageTables,
@@ -245,13 +246,13 @@ describe("boundTableTypeFindings", () => {
                ["day", "cast"],
             ],
          },
-         // A rollup declares its grain as stored, and does not read a
-         // numeric partial stored as another type.
+         // A rollup and a `#(materialize)` table follow the same rule:
+         // neither reads a column as its stored type.
          {
             subject: "orders",
             kind: "rollup",
             handling: [
-               ["k", "stored"],
+               ["k", "live"],
                ["s__partial", "live"],
             ],
          },
@@ -259,10 +260,59 @@ describe("boundTableTypeFindings", () => {
             subject: "orders",
             kind: "materialize",
             handling: [
-               ["id", "stored"],
-               ["day", "stored"],
+               ["id", "live"],
+               ["day", "cast"],
             ],
          },
+      ]);
+   });
+
+   it("reports a castable column live where its reader cannot cast it: in a record, or under a query time zone", () => {
+      const tzPlan = {
+         sources: {
+            "orders@m": {
+               name: "orders",
+               sourceEntityId: "vh",
+               modelPath: "m.malloy",
+               columns: [
+                  { name: "day", type: "date" },
+                  { name: "c__on", type: "date" },
+                  { name: "flag", type: "boolean" },
+               ],
+            },
+         },
+      } as unknown as BuildPlan;
+      const schema = [
+         { name: "day", type: "TIMESTAMP WITH TIME ZONE" },
+         { name: "c__on", type: "TIMESTAMP" },
+         { name: "flag", type: "INTEGER" },
+      ];
+      const handling = (zone?: string) =>
+         boundTableTypeFindings(
+            [binding({ kind: "materialize", sourceIDs: ["orders@m"], schema })],
+            tzPlan,
+            {
+               queryTimezone: () => zone,
+               materializePlans: {
+                  "orders@m": {
+                     columns: [
+                        { column: "day", dimension: "day" },
+                        { column: "c__on", dimension: "on", join: "c" },
+                        { column: "flag", dimension: "flag" },
+                     ],
+                  } as unknown as MaterializePlan,
+               },
+            },
+         )[0].mismatches.map((m) => [m.column, m.handling]);
+      expect(handling()).toEqual([
+         ["day", "cast"],
+         ["c__on", "live"],
+         ["flag", "cast"],
+      ]);
+      expect(handling("America/New_York")).toEqual([
+         ["day", "live"],
+         ["c__on", "live"],
+         ["flag", "cast"],
       ]);
    });
 

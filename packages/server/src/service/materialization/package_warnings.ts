@@ -61,11 +61,6 @@ const MISMATCH_HANDLING_TEXT: Record<
       `No cast reproduces its values faithfully, so queries that read it are ` +
       `answered live. Give the field a native cast in the model (for example ` +
       `\`::"double"\`) so the warehouse returns the declared type.`,
-   stored: (declaredType) =>
-      `It is read as its stored type, not as \`${declaredType}\`, so a ` +
-      `query that reads it can answer with a different type than live. ` +
-      `Give the field a native cast in the model so the warehouse returns ` +
-      `the declared type, and rebuild.`,
 };
 
 type ApiPackage = components["schemas"]["Package"];

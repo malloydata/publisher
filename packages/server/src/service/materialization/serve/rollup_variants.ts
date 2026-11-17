@@ -88,6 +88,7 @@ import { requireUnique, verdictOf, type KeyVerdict } from "../domain/key_check";
 import {
    givenWhereCodes,
    primaryKeyOf,
+   queryTimezoneOf,
    recordedTimezoneOf,
    timezoneOf,
 } from "../../governance/ir/compiled_model";
@@ -1586,7 +1587,12 @@ export class RollupVariantServe {
       const modelFile = path.join(packagePath, modelPath);
       const queryModelURL = pathToFileURL(`${modelFile}.rollup.malloy`);
       const reads = table.binding
-         ? storedRollupReads(plan, table.binding, this.host.modelDef())
+         ? storedRollupReads(
+              plan,
+              table.binding,
+              this.host.modelDef(),
+              declaredRollupColumns(this.host.catalog(), table.binding),
+           )
          : undefined;
       if (reads && "refusal" in reads) return { refusal: reads.refusal };
       const destinations = this.host.serveDestinationConfig();
@@ -2155,6 +2161,10 @@ interface StoredRollupReads {
  * - a grain column whose dimension live types `timestamptz`, stored with its
  *   zone, is declared `timestamptz` (a `type:` would declare the stored
  *   type's `timestamp`);
+ * - a column stored as another type than its build source declares (a grain
+ *   dimension or any partial, whatever expression it aggregates) is read
+ *   through a faithful cast ({@link storedColumnReadPlan}), or is the
+ *   refusal;
  * - a big integer (a grain dimension, or the partial of a measure live types
  *   as a `bigint` number) is read through its native type
  *   ({@link storedColumnReadPlan}): a `type:` declares it only as a `number`,
@@ -2166,6 +2176,11 @@ function storedRollupReads(
    plan: RollupVariantPlan,
    binding: Pick<Binding, "schema">,
    modelDef: unknown,
+   /**
+    * The columns the rollup's build source declares, by name: the type each
+    * stored column must serve as (`boundTableTypeFindings` reads the same).
+    */
+   declared: ReadonlyMap<string, string>,
 ): StoredRollupReads | { refusal: string } {
    const base = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
       | {
@@ -2182,20 +2197,35 @@ function storedRollupReads(
    const read = (
       column: StoredRollupReads["columns"][number],
       fieldName: string,
+      /** The type live gives the column, when it is checked; "" when not. */
+      liveType: string,
    ): string | undefined => {
       const storedColumn = stored.get(column.name);
       const field = fields.get(fieldName);
       if (storedColumn) {
          const plan = storedColumnReadPlan(
             [storedColumn],
-            [{ name: column.name, type: "", field }],
-            { dialect: base?.dialect },
+            [{ name: column.name, type: liveType, field }],
+            { dialect: base?.dialect, queryTimezone: queryTimezoneOf(base) },
          );
+         // A column whose stored type drifted from live's, with no faithful
+         // cast to read it back: never read as its stored type.
+         const [drifted] = plan.leftOut;
+         if (drifted) {
+            return `the stored \`${fieldName}\` (${drifted.storedType}) cannot be read as live's ${drifted.declaredType}`;
+         }
          if (plan.refusals.length > 0) {
             return `the stored \`${fieldName}\` (${storedColumn.type}) cannot hold live's integer exactly`;
          }
-         const [big] = plan.casts;
-         if (big) casts.set(column.name, { nativeCast: big.castTo });
+         const [read] = plan.casts;
+         if (read) {
+            casts.set(
+               column.name,
+               read.native
+                  ? { nativeCast: read.castTo }
+                  : { castTo: read.castTo === "BOOLEAN" ? "BOOLEAN" : "DATE" },
+            );
+         }
          if (
             column.kind === "dimension" &&
             field?.type === "timestamptz" &&
@@ -2210,14 +2240,22 @@ function storedRollupReads(
       return undefined;
    };
    for (const g of grainColumns(plan, modelDef)) {
-      const refusal = read({ ...g, kind: "dimension" }, g.name);
+      const refusal = read(
+         { ...g, kind: "dimension" },
+         g.name,
+         declared.get(g.name) ?? "",
+      );
       if (refusal) return { refusal };
    }
    for (const m of plan.rollupMeasures) {
       for (const p of m.partials) {
          const refusal =
             partialTypeRefusal(p, stored.get(p.column), m.name) ??
-            read({ name: p.column, notes: [], kind: "measure" }, m.name);
+            read(
+               { name: p.column, notes: [], kind: "measure" },
+               m.name,
+               declared.get(p.column) ?? "",
+            );
          if (refusal) return { refusal };
       }
    }
@@ -2225,9 +2263,28 @@ function storedRollupReads(
 }
 
 /**
+ * A `storage=` rollup's declared columns: its build source's, from the
+ * package's plan, matched by the table's content address (and its sourceID
+ * where several share it). Empty when the plan is not known: no column is
+ * then checked but a big integer's, as before.
+ */
+function declaredRollupColumns(
+   catalog: MaterializedTableCatalog | undefined,
+   binding: Pick<Binding, "virtualHandle" | "sourceIDs">,
+): ReadonlyMap<string, string> {
+   const atAddress = [...(catalog?.planned.values() ?? [])].filter(
+      (t) => t.sourceEntityId === binding.virtualHandle,
+   );
+   const table =
+      atAddress.find((t) => binding.sourceIDs?.includes(t.sourceID)) ??
+      atAddress[0];
+   return new Map((table?.columns ?? []).map((c) => [c.name, c.type]));
+}
+
+/**
  * Why a `sum` or `count` partial stored as a non-numeric type cannot merge,
- * or undefined. A `min` or `max` partial takes its argument's type, which the
- * merge's compile checks.
+ * or undefined. A `min` or `max` partial takes its argument's type, which
+ * {@link storedRollupReads} checks against the build source's declared one.
  */
 function partialTypeRefusal(
    partial: RollupVariantPlan["rollupMeasures"][number]["partials"][number],

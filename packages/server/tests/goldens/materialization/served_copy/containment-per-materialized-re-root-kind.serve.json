@@ -1,16 +1,16 @@
 {
   "problems": [
     {
-      "reason": "reroot_not_compiled",
+      "reason": "column_types",
+      "sourceName": "i_broken"
+    },
+    {
+      "reason": "column_types",
       "sourceName": "m_broken"
     },
     {
-      "reason": "reroot_not_compiled",
+      "reason": "column_types",
       "sourceName": "e_broken"
-    },
-    {
-      "reason": "reroot_not_compiled",
-      "sourceName": "i_broken"
     }
   ],
   "queries": [
