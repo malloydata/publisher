@@ -90,20 +90,19 @@ function withSettings(env: Record<string, string>): void {
    restore = installSettings({ env }).restore;
 }
 
-function plan() {
+function plan(of: Record<string, PersistSource> = sources) {
    const tables: Record<
       string,
       { source: PersistSource; target?: BuildTarget }
    > = {};
-   for (const s of Object.values(sources)) {
+   for (const s of Object.values(of)) {
       tables[s.sourceID] = { source: s, target: plannedTargetOf(s) };
    }
    const base = { tables, connectionDigests: digests };
    const tableFolds = foldDistinctTableNames(base, () => []);
    const addresses = planAddresses({ ...base, tableFolds });
-   const at = (name: string) => addresses[sources[name].sourceID] as string;
-   const plain = (name: string) =>
-      computeSourceEntityId(sources[name], digests);
+   const at = (name: string) => addresses[of[name].sourceID] as string;
+   const plain = (name: string) => computeSourceEntityId(of[name], digests);
    return { tableFolds, at, plain };
 }
 
@@ -158,5 +157,48 @@ describe("P2-21: twins built colocated and with storage=", () => {
          sources.twin_a.sourceID,
       ]);
       expect(build.dependsOn[sources.other.sourceID]).toEqual([]);
+   });
+});
+
+// The same twins with one `name=` on both: only where they build tells them
+// apart, and still only the storage= twin moves.
+describe("P2-21: twins that declare one name=", () => {
+   let named: Record<string, PersistSource>;
+   beforeAll(async () => {
+      const text = MODEL.replace(
+         "#@ persist\nsource: col_a",
+         '#@ persist name="t_a"\nsource: col_a',
+      ).replace(
+         '#@ persist storage="lake"\nsource: twin_a',
+         '#@ persist storage="lake" name="t_a"\nsource: twin_a',
+      );
+      expect(text).toContain('name="t_a"\nsource: twin_a');
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(
+            new Map([["file:///named.malloy", text]]),
+         ),
+         connections: new FixedConnectionMap(
+            new Map([["duckdb", temp.connection]]),
+            "duckdb",
+         ),
+      });
+      const model = await runtime
+         .loadModel(new URL("file:///named.malloy"))
+         .getModel();
+      named = Object.fromEntries(
+         plannedSources(await runtime.getBuildTargets(model)).map((s) => [
+            s.name,
+            s,
+         ]),
+      );
+   });
+
+   it("keep the colocated twin's address; only the storage= twin moves", () => {
+      withSettings({ PERSIST_STORAGE_MODE: "on" });
+      const { at, plain, tableFolds } = plan(named);
+      expect(at("twin_a")).not.toBe(at("col_a"));
+      expect(at("col_a")).toBe(plain("col_a"));
+      expect(tableFolds[named.col_a.sourceID]).toBeUndefined();
+      expect(tableFolds[named.twin_a.sourceID]).toBeDefined();
    });
 });

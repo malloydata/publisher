@@ -675,17 +675,21 @@ export function foldDistinctTableNames(
       // destination and the colocated one keeps the plain address. An address
       // whose sources all build in one place never moves.
       const tiers = new Set(group.map((m) => m.tier));
-      const keyOf = (m: (typeof group)[number]) => {
-         const table =
-            storesOf(m) !== "" && projections.size > 1
-               ? `${nameOf(m)}\u0000${storesOf(m)}`
-               : nameOf(m);
-         return tiers.size > 1 && m.tier !== ""
-            ? `${table}\u0003stored in: ${m.tier}`
-            : table;
-      };
+      const tableOf = (m: (typeof group)[number]) =>
+         storesOf(m) !== "" && projections.size > 1
+            ? `${nameOf(m)}\u0000${storesOf(m)}`
+            : nameOf(m);
+      const keyOf = (m: (typeof group)[number]) =>
+         tiers.size > 1 && m.tier !== ""
+            ? `${tableOf(m)}\u0003stored in: ${m.tier}`
+            : tableOf(m);
       if (new Set(group.map(keyOf)).size < 2) continue;
+      // When only where they build tells them apart (twins under one name,
+      // or none), only the stored twins move: the colocated twin keeps its
+      // plain address, whatever `name=` both declare.
+      const byTierOnly = new Set(group.map(tableOf)).size < 2;
       for (const member of group) {
+         if (byTierOnly && member.tier === "") continue;
          const key = keyOf(member);
          if (key) folds[member.sourceID] = key;
       }
@@ -695,8 +699,9 @@ export function foldDistinctTableNames(
 
 /**
  * The storage destination a source builds into, "" for its own warehouse:
- * its `storage=`, unless `PERSIST_STORAGE_MODE` is `off` (which builds it
- * colocated). An unreadable annotation reads as colocated.
+ * its `storage=`, unless `PERSIST_STORAGE_MODE` is `off`, where a `storage=`
+ * source is not built at all (it is skipped and served live), so it is no
+ * twin of anything. An unreadable annotation reads as colocated.
  */
 function storedTierOf(source: PersistSource): string {
    if (getPersistStorageMode() === "off") return "";
