@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { logger } from "./logger";
+import { lazyCounter } from "./telemetry";
+
+const unhandledRejections = lazyCounter(
+   "publisher_unhandled_rejection_total",
+   "Unhandled promise rejections caught by the process-level backstop (logged, process kept running). Main thread only.",
+);
 
 let installed: ((reason: unknown) => void) | undefined;
 
@@ -21,13 +27,14 @@ let installed: ((reason: unknown) => void) | undefined;
  * answer there.
  *
  * Idempotent: called again, it installs nothing new. Returns a function that
- * removes the listener, for tests. No metric is recorded yet; the log line is
- * the only signal.
+ * removes the listener, for tests. Each one also counts
+ * on `publisher_unhandled_rejection_total` (main thread; a worker's is only logged).
  */
 export function installProcessSafetyHandlers(): () => void {
    if (!installed) {
       const listener = (reason: unknown): void => {
          const error = reason instanceof Error ? reason : undefined;
+         unhandledRejections().add(1);
          logger.error("Unhandled promise rejection (process kept running)", {
             message: error ? error.message : String(reason),
             stack: error?.stack,

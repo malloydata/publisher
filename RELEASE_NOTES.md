@@ -13,7 +13,7 @@ The `Release (NPM + Docker + PyPI)` workflow (`.github/workflows/release.yml`) c
 
 For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — an unhandled rejection from a connection driver is logged, not fatal
 
-**Fixed: an unhandled promise rejection from a connection driver is now logged instead of crashing the server.** For example, Malloy's BigQuery connection cancels a job on abort without awaiting it, so a failed cancel (after a materialization cancel or a query timeout) could take the process down. It is now logged at error with its message and stack, on the main thread and in package-load workers. An uncaught synchronous exception still ends the process.
+**Fixed: an unhandled promise rejection from a connection driver is now logged instead of crashing the server.** For example, Malloy's BigQuery connection cancels a job on abort without awaiting it, so a failed cancel (after a materialization cancel or a query timeout) could take the process down. It is now logged at error with its message and stack, on the main thread and in package-load workers. Each one also counts on the new `publisher_unhandled_rejection_total` metric (main thread; a worker's is only logged). An uncaught synchronous exception still ends the process.
 
 ## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 

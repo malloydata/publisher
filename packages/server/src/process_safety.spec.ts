@@ -4,6 +4,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { installProcessSafetyHandlers } from "./process_safety";
+import { resetInstrumentsForTesting } from "./telemetry";
+import { startMetricsHarness } from "./test_helpers/metrics_harness";
 
 // The rejection itself is raised in a child process: bun's test runner fails
 // the running test on any unhandled rejection, listener or not, so it cannot
@@ -32,6 +34,26 @@ describe("installProcessSafetyHandlers", () => {
       expect(out).toContain("cancel failed upstream");
       expect(out).toContain("stack");
       expect(out).toContain("[eval]:");
+   });
+
+   it("counts each rejection on publisher_unhandled_rejection_total", async () => {
+      const harness = await startMetricsHarness();
+      const uninstall = installProcessSafetyHandlers();
+      try {
+         // Emitted by hand: a real unhandled rejection fails bun's running test.
+         process.emit(
+            "unhandledRejection",
+            new Error("counted"),
+            Promise.resolve(),
+         );
+         expect(
+            await harness.collectCounter("publisher_unhandled_rejection_total"),
+         ).toBe(1);
+      } finally {
+         uninstall();
+         await harness.shutdown();
+         resetInstrumentsForTesting();
+      }
    });
 
    describe("listener", () => {
