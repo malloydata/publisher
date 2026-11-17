@@ -145,7 +145,7 @@ export const EMPTY_SNAPSHOT: Snapshot = makeSnapshot(
  * past it and allowed (`stale_ok`), past it and answered live (its binding
  * kept for what a report says of it), or not bound.
  */
-type TableLookup =
+export type TableLookup =
    | { state: "fresh"; binding: Binding }
    | { state: "stale_ok"; binding: Binding }
    | { state: "stale"; binding: Binding }
@@ -168,6 +168,31 @@ export interface Pinned {
    serves(binding: Binding): boolean;
    /** The binding of `kind` storing `sourceID`, at {@link asOf}. */
    tableFor(sourceID: string, kind: BindingKind): TableLookup;
+}
+
+/**
+ * The `storage=` table a rollup, persisted view or persisted query is read
+ * from, or undefined when its tier is colocated. The binding decides the tier,
+ * not the annotation: a host may instruct a source with no `storage=` into a
+ * storage destination (a database origin whose destination the control plane
+ * chose), and the run's manifest then binds it as a storage table, which is
+ * read exactly as a `storage=` annotation's is. With no storage binding, a
+ * source annotated `storage=` is still a storage table, not built yet.
+ */
+export function storageLookupOf(
+   pinned: Pinned,
+   sourceID: string | undefined,
+   kind: BindingKind,
+   annotatedStorage: boolean,
+): TableLookup | undefined {
+   const lookup =
+      sourceID === undefined
+         ? ({ state: "not_built" } as const)
+         : pinned.tableFor(sourceID, kind);
+   if (lookup.state !== "not_built" && lookup.binding.tier === "storage") {
+      return lookup;
+   }
+   return annotatedStorage ? lookup : undefined;
 }
 
 /** The freshness facts of a binding, as the rule reads them. */

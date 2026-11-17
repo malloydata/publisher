@@ -177,7 +177,7 @@ import {
 } from "../stored_column_types";
 import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
-import { type Binding, type Pinned } from "../domain/binding";
+import { type Binding, type Pinned, storageLookupOf } from "../domain/binding";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
 import { isDeclineOf, LegDecline } from "../domain/leg_decline";
 import type { MaterializedTableCatalog } from "./query_path";
@@ -708,15 +708,10 @@ export class RollupVariantServe {
       // query source the served copy reads from that destination too; Malloy
       // joins only within one connection.
       // The destination is the rollup's table's, when it has a fresh one.
+      const stored = this.storedIn(plan, q.args.pinned);
       const inDestination =
-         plan.storage !== undefined
-            ? await this.destinationOf(
-                 this.tableOf(plan, q.args.pinned)?.binding?.destinationName ??
-                    plan.storage,
-                 q.struct,
-                 name,
-                 q.args.pinned,
-              )
+         stored !== undefined
+            ? await this.destinationOf(stored, q.struct, name, q.args.pinned)
             : undefined;
       // The build truncated and filtered times in the joined source's time
       // zone; live reads the joined rows in the query source's.
@@ -915,7 +910,7 @@ export class RollupVariantServe {
          branch,
          read,
          primaryKeyOf(childDef),
-         plan.storage !== undefined
+         this.storedIn(plan, q.args.pinned) !== undefined
             ? verdictOf(
                  this.tableOf(plan, q.args.pinned)?.binding?.primaryKeys?.[
                     plan.baseSourceID
@@ -1466,6 +1461,29 @@ export class RollupVariantServe {
          : new LegDecline("rollup_not_built", "the rollup has no fresh table");
    }
 
+   /**
+    * The storage destination the rollup's table is in, or undefined when it
+    * is colocated: its binding's, else the annotation's (storageLookupOf).
+    */
+   private storedIn(
+      plan: RollupVariantPlan,
+      pinned: Pinned,
+   ): string | undefined {
+      const lookup = storageLookupOf(
+         pinned,
+         rollupSourceID(plan),
+         "rollup",
+         plan.storage !== undefined,
+      );
+      if (!lookup) return undefined;
+      return (
+         this.tableOf(plan, pinned)?.binding?.destinationName ??
+         (lookup.state !== "not_built"
+            ? lookup.binding.destinationName
+            : plan.storage)
+      );
+   }
+
    /** The rollup's table at the pin: a fresh storage binding, or a planned colocated one. */
    private tableOf(
       plan: RollupVariantPlan,
@@ -1479,12 +1497,15 @@ export class RollupVariantServe {
         }
       | undefined {
       const sourceID = rollupSourceID(plan);
-      if (plan.storage !== undefined) {
-         // Keyed by the rollup's own `sourceID`, never by its name.
-         const lookup =
-            sourceID === undefined
-               ? undefined
-               : pinned.tableFor(sourceID, "rollup");
+      // Keyed by the rollup's own `sourceID`, never by its name; the
+      // binding decides the tier (storageLookupOf).
+      const lookup = storageLookupOf(
+         pinned,
+         sourceID,
+         "rollup",
+         plan.storage !== undefined,
+      );
+      if (lookup) {
          const binding =
             lookup?.state === "fresh" || lookup?.state === "stale_ok"
                ? lookup.binding

@@ -82,7 +82,7 @@ import {
 } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import type { Binding, Pinned } from "../domain/binding";
+import { type Binding, type Pinned, storageLookupOf } from "../domain/binding";
 import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { TIMEFRAMES } from "./served_copy";
@@ -357,11 +357,13 @@ export class PersistedViewServe {
       const planned = this.host.catalog()?.planned.get(plan.buildSourceID);
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
-      if (plan.storage !== undefined) {
-         const lookup = pinned.tableFor(
-            plan.buildSourceID,
-            isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
-         );
+      const lookup = storageLookupOf(
+         pinned,
+         plan.buildSourceID,
+         isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
+         plan.storage !== undefined,
+      );
+      if (lookup) {
          if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
          }

@@ -402,3 +402,65 @@ describe("PersistedViewServe (storage=)", () => {
       );
    });
 });
+
+/**
+ * P4-03/04/05 (F-14): a host may instruct a view with no `storage=` into a
+ * storage destination (a database origin whose destination the control plane
+ * chose), and the run's manifest binds it as a storage table. The binding
+ * decides the tier, not the annotation: the view is read from it exactly as a
+ * `storage=` view's is, rather than looked for in the colocated manifest.
+ */
+describe("PersistedViewServe (a host-chosen destination, no storage=)", () => {
+   let f: PersistedResultFixture;
+   let buildSourceID: string;
+   const schema = [
+      { name: "region", type: "VARCHAR" },
+      { name: "total", type: "DOUBLE" },
+   ];
+   beforeAll(async () => {
+      f = await persistedResultFixture(MODEL, {
+         destinations: { lake: new DuckDBConnection("lake_f14", ":memory:") },
+         noBuildPlan: true,
+      });
+      buildSourceID = f.buildSourceIDOf("orders__by_region__view");
+   });
+   afterAll(async () => {
+      await f?.cleanup();
+   });
+
+   it("P4-04: reads a fresh storage binding through virtual() on its destination", () => {
+      const table = f.views.tableOf(
+         { buildSourceID },
+         pinnedOf([storedViewBinding(buildSourceID, { schema })]),
+         undefined,
+      );
+      expect(table.tier).toBe("storage");
+      expect([table.built, table.stale]).toEqual([true, false]);
+      expect(table.quotedPath).toBe('"main"."stored_view_t"');
+   });
+
+   it("P4-04: answers an exact call from the storage binding", async () => {
+      const binding = storedViewBinding(buildSourceID, { schema });
+      const pinned = pinnedOf([binding]);
+      const query = "run: orders -> by_region";
+      const answer = await f.views.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned,
+         buildManifest: pinned.compilerManifest,
+      });
+      expect(answer.binding).toBe(binding);
+      expect(answer.table.tier).toBe("storage");
+      const { sql } = await answer.runnable.getPreparedResult({
+         virtualMap: answer.virtualMap,
+      } as never);
+      expect(sql).toContain('"main"."stored_view_t"');
+   });
+
+   it("still reads the colocated manifest when no storage binding stores it", () => {
+      expect(
+         f.views.tableOf({ buildSourceID }, pinnedOf(), undefined).tier,
+      ).toBe("colocated");
+   });
+});
