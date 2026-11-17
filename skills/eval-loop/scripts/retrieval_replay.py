@@ -218,6 +218,8 @@ def call_event(qid: str, args: dict[str, Any], payload: Any, error: str | None) 
         extra["warnings"] = [str(w) for w in warnings]
     if args.get("givens"):
         extra["givens"] = args["givens"]
+    if isinstance(payload, dict) and isinstance(payload.get("returned"), int) and isinstance(payload.get("total_available"), int):
+        extra["paging"] = {"returned": payload["returned"], "total_available": payload["total_available"]}
     return ledger.event("tool_call", qid=qid, sample=None, phase=PHASE, tool="get_context",
                         targets=search_terms(args), target_shapes=target_shapes(args),
                         search_targets=search_targets(args),
@@ -248,8 +250,16 @@ def response_checks(event: dict[str, Any], targets: list[dict[str, Any]]) -> dic
                        on that source's card.
     one_card_per_source  no source of one package is returned on two cards (a
                        source several model files import is one source).
+    cut_says_so        a response that returns fewer sources than were available
+                       (its own `returned` against `total_available`) carries a
+                       warning. Checked only when the host reports both counts.
     """
-    out: dict[str, Any] = {"not_found_says_so": None, "pinned_source_only": None, "one_card_per_source": None}
+    out: dict[str, Any] = {"not_found_says_so": None, "pinned_source_only": None, "one_card_per_source": None,
+                           "cut_says_so": None}
+    paging = event.get("paging")
+    if paging and paging["returned"] < paging["total_available"]:
+        out["cut_says_so"] = [] if event.get("warnings") else [
+            f"returned {paging['returned']} of {paging['total_available']} sources with no warning"]
     cards = (event.get("rankedSummary") or {}).get("cards")
     if cards:
         seen: dict[tuple, int] = {}
@@ -361,7 +371,7 @@ def summarize(rows: list[dict[str, Any]], skipped: int) -> dict[str, Any]:
     }
     out["per_target"] = per_target(rows)
     out["checks"] = {}
-    for name in ("not_found_says_so", "pinned_source_only", "one_card_per_source"):
+    for name in ("not_found_says_so", "pinned_source_only", "one_card_per_source", "cut_says_so"):
         seen = [(r["qid"], r["checks"][name]) for r in ok if (r.get("checks") or {}).get(name) is not None]
         broke = [(q, v) for q, v in seen if v]
         out["checks"][name] = {"checked": len(seen), "failed": len(broke),

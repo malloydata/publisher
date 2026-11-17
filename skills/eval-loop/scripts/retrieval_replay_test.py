@@ -325,6 +325,16 @@ class Checks(unittest.TestCase):
         once = rr.score(case, rr.call_event("q1", args, {"sources": [card("a.malloy")]}, None))
         self.assertEqual(once["checks"]["one_card_per_source"], [])
 
+    def test_a_cut_response_must_carry_a_warning(self):
+        case = a_case("q1", required=[SALES])
+        args = rr.request_for(case, {"environment": "e", "package": "p"})
+        card = {"source_info": {"resource_id": {"source": "order_items", "package": "p"}}, "entities": [{"entity_id": SALES}]}
+        run = lambda extra: rr.score(case, rr.call_event("q1", args, {"sources": [card], **extra}, None))["checks"]["cut_says_so"]
+        self.assertEqual(run({"returned": 1, "total_available": 4}), ["returned 1 of 4 sources with no warning"])
+        self.assertEqual(run({"returned": 1, "total_available": 4, "warnings": ["Returned 1 of 4 sources."]}), [])
+        self.assertIsNone(run({"returned": 1, "total_available": 1}))
+        self.assertIsNone(run({}))
+
     def test_the_summary_counts_checked_and_broken_responses(self):
         rows = [dict(self.row(["Something unrelated."]), latency_s=1.0),
                 dict(self.row(["No field was found for target 2 (dimension: 'shipping carrier')."]), latency_s=1.0)]

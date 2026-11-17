@@ -128,7 +128,7 @@ targets and a case with one otherwise weigh the same:
 `latency_p50_s` and `latency_p95_s` are the request times as the replay saw
 them, one request at a time.
 
-`checks` counts three promises that hold for every response whatever the labels
+`checks` counts four promises that hold for every response whatever the labels
 say, each as responses checked and responses that broke it, with examples:
 
 | check | holds when |
@@ -136,6 +136,7 @@ say, each as responses checked and responses that broke it, with examples:
 | `not_found_says_so` | every target that returned nothing is named in one of the response's `warnings`, by its search text or as "target N". Counted only on a host that returns `warnings` |
 | `pinned_source_only` | with a scope that pins one source, every returned entity is on that source's card |
 | `one_card_per_source` | no source of one package comes back on two cards. A source that several model files import is one source |
+| `cut_says_so` | a response that returns fewer sources than were available (`returned` under `total_available`) carries a warning. Counted only on a host that reports both |
 
 `by_tag` repeats the pooled numbers for each tag, with its own `per_target`. `events.jsonl` holds one
 `tool_call` event per case, in the shape an answer run writes, with every

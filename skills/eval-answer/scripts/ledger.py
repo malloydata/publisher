@@ -123,6 +123,10 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      # get_context's own `warnings`, as returned. A replay reads
                      # them to check that a target with no result was told so.
                      "warnings",
+                     # get_context's `returned` and `total_available`, when the
+                     # host reports both. A replay reads them to check that a
+                     # cut response said so.
+                     "paging",
                      # Where an execute_query ran, from its own arguments.
                      "environment", "package", "version",
                      "at"},
