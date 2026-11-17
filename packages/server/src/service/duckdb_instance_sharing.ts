@@ -235,8 +235,9 @@ export function installDuckDBInstanceSharing(): void {
 
    // An instance Malloy locks (the sandboxed and local tiers) turns external
    // access off before any Publisher code runs on it, after which no extension
-   // can load; `excel` is not built in, so it is loaded here, on the fresh
-   // connection, or `.xlsx` reads would break.
+   // can load; `excel` is not built in (nor are `json` and `icu` everywhere),
+   // so they are loaded here, on the fresh connection, or `.xlsx` reads, and
+   // Malloy's own baseline, would break.
    const initThenPreload = function (
       this: DuckDBConnectionInternals,
    ): Promise<void> {
@@ -272,6 +273,12 @@ export function installDuckDBInstanceSharing(): void {
                         .join(",")}]`,
                   )
                   .catch(() => {});
+            }
+            // Malloy's baseline extensions too: a build that does not link
+            // them in (Windows) loads them from disk, which external access,
+            // off before Malloy's baseline loads them, would refuse.
+            for (const extension of ["json", "icu"]) {
+               await raw.run(`LOAD ${extension}`).catch(() => {});
             }
             await preloadExcel((sql) => raw.run(sql));
          }

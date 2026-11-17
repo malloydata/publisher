@@ -405,8 +405,10 @@ What it does not cover, so a multi-tenant deployment still has to:
   from a directory nothing else reads. A relative glob over the package's top level
   (`'*.csv'`) is refused, because it lists the working directory; a glob in a subdirectory
   (`'data/*.csv'`), a named file, or an absolute path reads.
-- **Windows** has no `sandboxed` policy: the package sandbox runs under Malloy's `local` policy (no
-  network, no extension install, locked configuration), without directory confinement.
+- **Windows** has no `sandboxed` policy (Malloy refuses it off POSIX, and its `local` policy
+  refuses every file). There the package sandbox is confined to its package the way an
+  environment connection with only `setupSQL` is: an allowlist, external access off, and the
+  lock.
 - **Malloy's restricted mode** remains the control for caller-supplied Malloy on a shared worker:
   it refuses `.sql()`, `.table()`, raw SQL functions, `import` and `##!` flags, and the query path
   uses it via `loadRestrictedQuery`. The DuckDB lockdown bounds what the SQL that remains can reach;

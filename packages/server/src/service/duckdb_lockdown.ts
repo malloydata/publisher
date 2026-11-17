@@ -19,8 +19,8 @@
  *   only `setupSQL` (which the sandbox refuses) gets the same confinement
  *   spelled as options: an allowlist, external access off, then its
  *   `setupSQL`, then the lock. Windows has no sandboxed policy (Malloy refuses
- *   it off POSIX), so the sandbox falls back to `"local"` there: no network
- *   and a locked configuration, but no directory confinement.
+ *   it off POSIX, and its `"local"` policy refuses every file), so there the
+ *   sandbox gets the environment connection's confinement as options instead.
  *
  * - **Networked readers** ({@link networkedDuckDBOptions},
  *   {@link lockDownDuckDBSession}). DuckLake catalogs, attached databases,
@@ -188,8 +188,9 @@ export function supportsSandboxedPolicy(): boolean {
 
 /**
  * Options for a DuckDB connection with no network whose data is `root`: the
- * package sandbox. Malloy's `sandboxed` policy on POSIX; `local` (no network,
- * no directory confinement) on Windows, where `sandboxed` is refused.
+ * package sandbox. Malloy's `sandboxed` policy on POSIX; on Windows, where
+ * `sandboxed` is refused, the same confinement as options
+ * ({@link confinedOptions}).
  */
 export function sandboxedDuckDBOptions(root: string): Record<string, unknown> {
    // Named by the package's top-level entries too: the relative-read entries
@@ -210,14 +211,18 @@ export function sandboxedDuckDBOptions(root: string): Record<string, unknown> {
       ...memoryLimitOption(),
    };
    if (!supportsSandboxedPolicy()) {
+      // Malloy refuses `sandboxed` off POSIX, and its `local` policy turns
+      // external access off with no allowlist, which refuses every file, the
+      // package's own included. The same confinement is spelled as options
+      // instead, as for an environment connection with setupSQL.
       if (!warnedNonPosix) {
          warnedNonPosix = true;
-         logger.warn(
-            "DuckDB sandboxed policy is POSIX-only: package sandboxes run under the " +
-               "'local' policy here (no network, but no directory confinement)",
+         logger.info(
+            "DuckDB sandboxed policy is POSIX-only: package sandboxes are confined " +
+               "to their package through an allowlist and a configuration lock instead",
          );
       }
-      return { ...base, securityPolicy: "local" };
+      return confinedOptions(root, temp);
    }
    return {
       ...base,
@@ -237,9 +242,20 @@ export function sandboxedDuckDBOptions(root: string): Record<string, unknown> {
 export function localLockedDuckDBOptions(
    root: string,
 ): Record<string, unknown> {
-   const temp = privateTempDirectory(
-      `${LOCKED_TEMP_PREFIX}local-${digest(canonicalDirectory(root))}`,
+   return confinedOptions(
+      root,
+      privateTempDirectory(
+         `${LOCKED_TEMP_PREFIX}local-${digest(canonicalDirectory(root))}`,
+      ),
    );
+}
+
+/**
+ * Confinement to `root` (and the private `temp`) spelled as Malloy options,
+ * without its `sandboxed` policy: an allowlist, external access off,
+ * extensions frozen, then `lock_configuration` once any setupSQL has run.
+ */
+function confinedOptions(root: string, temp: string): Record<string, unknown> {
    return {
       workingDirectory: root,
       tempDirectory: temp,

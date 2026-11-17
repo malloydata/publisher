@@ -610,37 +610,41 @@ describe("a connection edit to a file-backed DuckDB connection", () => {
          },
       }) as never;
 
-   it("opens an edit of the attached databases afresh once the draining one releases the file", async () => {
-      setDuckDBLockedReopenWaitMsForTesting(10_000);
-      const env = await Environment.create("testEnv", envPath, [
-         withBucket("k1"),
-      ]);
-      try {
-         const before = (await env.getMalloyConnection(
-            "duck",
-         )) as unknown as DuckDBConnection;
-         await before.runSQL("CREATE TABLE t AS SELECT 7 AS v");
-
-         await env.update({
-            name: "testEnv",
-            connections: [withBucket("k2")],
-         } as never);
-         // A locked instance cannot take another setup (duckdb_lockdown.ts),
-         // so the edited connection waits for the draining generation, which
-         // keeps answering until it lets the file go.
-         const after = env.getMalloyConnection("duck");
-         const draining = await before.runSQL("SELECT v FROM t");
-         expect(draining.rows).toEqual([{ v: 7 }]);
-         await before.close();
-         const edited = (await after) as unknown as DuckDBConnection;
-         expect((await edited.runSQL("SELECT v FROM t")).rows).toEqual([
-            { v: 7 },
+   // Reopening a file in the same process needs `canReopenAfterClose`.
+   it.skipIf(!canReopenAfterClose)(
+      "opens an edit of the attached databases afresh once the draining one releases the file",
+      async () => {
+         setDuckDBLockedReopenWaitMsForTesting(10_000);
+         const env = await Environment.create("testEnv", envPath, [
+            withBucket("k1"),
          ]);
-      } finally {
-         setDuckDBLockedReopenWaitMsForTesting(undefined);
-         await env.closeAllConnections();
-      }
-   });
+         try {
+            const before = (await env.getMalloyConnection(
+               "duck",
+            )) as unknown as DuckDBConnection;
+            await before.runSQL("CREATE TABLE t AS SELECT 7 AS v");
+
+            await env.update({
+               name: "testEnv",
+               connections: [withBucket("k2")],
+            } as never);
+            // A locked instance cannot take another setup (duckdb_lockdown.ts),
+            // so the edited connection waits for the draining generation, which
+            // keeps answering until it lets the file go.
+            const after = env.getMalloyConnection("duck");
+            const draining = await before.runSQL("SELECT v FROM t");
+            expect(draining.rows).toEqual([{ v: 7 }]);
+            await before.close();
+            const edited = (await after) as unknown as DuckDBConnection;
+            expect((await edited.runSQL("SELECT v FROM t")).rows).toEqual([
+               { v: 7 },
+            ]);
+         } finally {
+            setDuckDBLockedReopenWaitMsForTesting(undefined);
+            await env.closeAllConnections();
+         }
+      },
+   );
 
    it("refuses an edit of the attached databases when the file is never released", async () => {
       setDuckDBLockedReopenWaitMsForTesting(200);

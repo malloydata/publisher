@@ -291,7 +291,13 @@ describe("package sandbox: Malloy's sandboxed policy", () => {
 
    it("puts the policy in the options both share keys digest", () => {
       const options = sandboxedDuckDBOptions(path.join(root, "pkg"));
-      expect(options.securityPolicy).toBe("sandboxed");
+      // Off POSIX, the same confinement as options (no `sandboxed` there).
+      if (process.platform === "win32") {
+         expect(options.lockConfiguration).toBe(true);
+         expect(options.enableExternalAccess).toBe(false);
+      } else {
+         expect(options.securityPolicy).toBe("sandboxed");
+      }
       expect(options.allowedDirectories).toContain(path.join(root, "pkg"));
       expect(options.setupSQL).toBeUndefined();
    });
