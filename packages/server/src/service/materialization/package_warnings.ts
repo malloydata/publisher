@@ -665,3 +665,37 @@ function servedCopyProblemMessage(
          );
    }
 }
+
+/** The code of the warning for a bound database table the bind could not read. */
+export const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
+
+/**
+ * One warning per bound database table whose columns the bind could not read
+ * (missing, unreadable, slower than the bound, or named in more than one
+ * schema): its sources answer live until a read succeeds. Named by the
+ * source a query names (a rollup's base), in the model that declares it.
+ */
+export function databaseTableUnreadWarnings(
+   unread: readonly { sourceEntityId: string; reason: string }[],
+   plan: BuildPlan | null,
+   retryPending: boolean,
+): ApiPackageWarning[] {
+   const warnings: ApiPackageWarning[] = [];
+   const sources = Object.values(plan?.sources ?? {});
+   for (const { sourceEntityId, reason } of unread) {
+      const source = sources.find((s) => s.sourceEntityId === sourceEntityId);
+      const name = source?.preaggregate?.baseSourceName ?? source?.name;
+      warnings.push({
+         ...(source?.modelPath ? { model: source.modelPath } : {}),
+         ...(name ? { subject: name } : {}),
+         code: DATABASE_TABLE_UNREAD_CODE,
+         severity: "warn",
+         message:
+            `The table of ${name ? `\`${name}\`` : "a source"} in its database could not be read when it was bound (${reason}), so its queries are answered live. ` +
+            (retryPending
+               ? "A retry is pending."
+               : "It is read again at the next bind or manifest poll."),
+      });
+   }
+   return warnings;
+}

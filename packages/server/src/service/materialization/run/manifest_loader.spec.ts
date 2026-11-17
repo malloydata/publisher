@@ -283,3 +283,51 @@ describe("splitManifestEntries", () => {
       }
    });
 });
+
+describe("splitManifestEntries: table names it cannot read safely", () => {
+   const entry = (physicalTableName: string, storage?: string) =>
+      ({
+         sourceEntityId: "x",
+         sourceName: "s",
+         physicalTableName,
+         connectionName: "duckdb",
+         ...(storage ? { storageDestinationName: storage } : {}),
+      }) as never;
+
+   for (const from of ["host", "store"] as const) {
+      it(`refuses a backslash, or quotes that do not parse, from the ${from}, on either tier`, () => {
+         const split = splitManifestEntries(
+            {
+               a: entry("t\\'; DROP TABLE x --"),
+               b: entry('"s.t'),
+               c: entry('s"x.t'),
+               d: entry("sch\\.t", "lake"),
+               e: entry('"s"x'),
+            },
+            "test",
+            from,
+         );
+         expect(split.tableNameManifest).toEqual({});
+         expect(split.storageEntries).toEqual({});
+      });
+
+      it(`keeps an author's quoted name= and a plain name, from the ${from}`, () => {
+         const split = splitManifestEntries(
+            {
+               a: entry('"My Schema"."T x"'),
+               b: entry("s.t"),
+               c: entry("`proj.ds.t`"),
+               d: entry("it's.t"),
+            },
+            "test",
+            from,
+         );
+         expect(Object.keys(split.tableNameManifest).sort()).toEqual([
+            "a",
+            "b",
+            "c",
+            "d",
+         ]);
+      });
+   }
+});

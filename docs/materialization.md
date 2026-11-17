@@ -571,10 +571,10 @@ type its build source declares, whatever expression it aggregates), declines its
 query (`MISSING_FIELD`), which is answered live. A rollup is named by its base source, and a view
 or query by its build source.
 
-**A colocated table altered outside a build.** A colocated table (no `storage=`: a `#@ persist`, a
-`#(materialize)` or a rollup in the source's own warehouse) is read with the column types its
+**A database table altered outside a build.** A table in the source's own database (no `storage=`: a
+`#@ persist`, a `#(materialize)` or a rollup) is read with the column types its
 warehouse holds when it is bound, not only those its build wrote. Each bind (after a run, a reload,
-a restart, or a rebind from the store) reads every bound colocated table's columns, never per query:
+a restart, or a rebind from the store) reads every bound database table's columns, never per query:
 one catalog query per schema or dataset (`information_schema.columns`), one for every Postgres
 table, and DuckDB's in-process `DESCRIBE` per table, at most four at once, each bounded by 15
 seconds. A column whose type has changed since the build (an `ALTER TABLE` outside Publisher),
@@ -589,9 +589,10 @@ table answered live, and counts in the same
 is reported too; one whose new type still reads as its declared type is not. Rebuilding the table
 clears it. The log line has the same code and names each changed column. A table
 whose columns cannot be read at the bind (missing, unreadable, or slower than the bound) is answered
-live, with a warning in the log, and read again with backoff (after 1 second, doubling to at most a
-minute, ten times), and by any later poll of an unchanged manifest, until a read succeeds. A change
-made after a bind is read at the next one.
+live, with a `database-table-unread` package warning that names the reason and whether a retry is
+pending, and read again with backoff (after 1 second, doubling to at most a
+minute, ten times), and by any later poll of an unchanged manifest, until a read succeeds, when the
+warning clears. A change made after a bind is read at the next one.
 
 **Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has

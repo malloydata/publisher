@@ -359,7 +359,7 @@ function verdictFor(
             // gate's shape can change there.
             tier === "storage"
                ? "Materialize the source without storage= (colocated), where the gate is kept."
-               : "Make the gate the entry point's own row-level gate, which a colocated table keeps.",
+               : "Make the gate the entry point's own row-level gate, which a table in the source's database keeps.",
             "Or publish an ungated entry point over it, for the queries that need no gate.",
          ],
       );
