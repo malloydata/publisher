@@ -137,6 +137,9 @@ describe("injectAfterHeadStart", () => {
          ["repeated unclosed scripts", fill("<script ")],
          ["unclosed closing tags in a script", `<script>${fill("</script ")}`],
          ["repeated unclosed metas", fill("<meta ")],
+         ["repeated unclosed quoted attributes", fill('<a x="')],
+         ["repeated charset metas", fill("<meta charset=")],
+         ["repeated closed-attribute charset metas", fill("<meta charset=x ")],
          ["repeated unclosed heads", fill("<head ")],
          ["repeated unclosed titles", fill("<title>")],
       ];
@@ -156,6 +159,10 @@ describe("injectAfterHeadStart", () => {
          ["<style>", "</style>"],
          ["<title>", "</title>"],
          ["<textarea>", "</textarea>"],
+         ["<noscript>", "</noscript>"],
+         ["<xmp>", "</xmp>"],
+         ["<iframe>", "</iframe>"],
+         ["<noembed>", "</noembed>"],
          ["<!--", "-->"],
       ]) {
          const decoy = `${open}<head><meta charset="x">${close}`;
@@ -163,6 +170,31 @@ describe("injectAfterHeadStart", () => {
             `<!doctype html>${decoy}<head>${SNIPPET}<p>`,
          );
       }
+   });
+
+   it("treats a plaintext element as text to the end of the document", () => {
+      expect(inject("<!doctype html><plaintext><head><meta charset=x>")).toBe(
+         `<!doctype html>${SNIPPET}<plaintext><head><meta charset=x>`,
+      );
+   });
+
+   it("does not take a tag inside a quoted attribute value for a live one", () => {
+      expect(
+         inject(
+            '<!doctype html><html data-x="<script>"><head><meta charset=utf-8>',
+         ),
+      ).toBe(
+         `<!doctype html><html data-x="<script>"><head><meta charset=utf-8>${SNIPPET}`,
+      );
+      expect(inject(`<!doctype html><p a='<!--'><head><i>`)).toBe(
+         `<!doctype html><p a='<!--'><head>${SNIPPET}<i>`,
+      );
+   });
+
+   it("falls back to scanning on from a tag that never closes", () => {
+      expect(inject(`<!doctype html><p a="${"x".repeat(3000)}"><head>`)).toBe(
+         `<!doctype html><p a="${"x".repeat(3000)}"><head>${SNIPPET}`,
+      );
    });
 
    it("does not insert after an unclosed raw-text element or inside its text", () => {

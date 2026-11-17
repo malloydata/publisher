@@ -14,7 +14,7 @@ import type { Dirent, Stats } from "fs";
 import * as fsp from "fs/promises";
 import * as path from "path";
 import { API_PREFIX } from "../constants";
-import { internalErrorToHttpError } from "../errors";
+import { BadRequestError, internalErrorToHttpError } from "../errors";
 import {
    droppedFrameAncestorSources,
    frameAncestorHostOrigins,
@@ -30,6 +30,7 @@ import {
    injectAfterHeadStart,
    MAX_INJECTABLE_HTML_BYTES,
    nonTagTextEnd,
+   openTagEnd,
 } from "./html_inject";
 import { apiRoute } from "./json_route";
 import {
@@ -92,6 +93,9 @@ function sendNotFound(res: express.Response): void {
    }
 }
 
+// Bump when what an HTML response is built from changes, so a cached 304 never outlives the old rules.
+const ETAG_FORMAT = 1;
+
 const isHtmlFile = (file: string) => /\.html?$/i.test(file);
 
 // Containment is lexical, so it answers the same before the package's real public/ is known.
@@ -99,9 +103,16 @@ const LEXICAL_PUBLIC_ROOT = path.join(path.sep, "public");
 
 /**
  * The request's path under `public/`, normalized and confined to it (400 on a
- * step outside); empty for `public/` itself, with a trailing slash kept.
+ * step outside, including `..` segments that climb above `public/` and walk
+ * back in); empty for `public/` itself, with a trailing slash kept.
  */
 function containedSubPath(raw: string): string {
+   let depth = 0;
+   for (const segment of raw.split("/")) {
+      if (segment === "..") depth--;
+      else if (segment !== "" && segment !== ".") depth++;
+      if (depth < 0) throw new BadRequestError("Path is outside of public/");
+   }
    const joined = safeJoinUnderRoot(LEXICAL_PUBLIC_ROOT, raw);
    const rel = path
       .relative(LEXICAL_PUBLIC_ROOT, joined)
@@ -308,7 +319,7 @@ async function sendHtmlWithContext(
    res.setHeader(
       "ETag",
       `W/"${createHash("sha256")
-         .update(`${stat.size}:${stat.mtimeMs}:${stat.ino}:${snippet}`)
+         .update(`${ETAG_FORMAT}:${stat.size}:${stat.mtimeMs}:${snippet}`)
          .digest("hex")}"`,
    );
    res.setHeader("Cache-Control", "no-cache");
@@ -488,7 +499,7 @@ function stripNonTagText(input: string): string {
    for (let i = input.indexOf("<"); i !== -1; ) {
       const end = nonTagTextEnd(input, i);
       if (end === undefined) {
-         i = input.indexOf("<", i + 1);
+         i = input.indexOf("<", openTagEnd(input, i) ?? i + 1);
          continue;
       }
       kept += input.slice(copied, i);

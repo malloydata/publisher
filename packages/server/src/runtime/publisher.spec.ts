@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import fs from "fs";
 import { Window } from "happy-dom";
 import path from "path";
@@ -1077,6 +1077,47 @@ describe("held givens", () => {
    });
 });
 
+describe("held givens on a page with no package", () => {
+   it("warns once that they are not sent, and still sends opts.givens", async () => {
+      const page = boot({ context: null, url: `${PAGE}/standalone.html` });
+      const warn = spyOn(page.win.console, "warn").mockImplementation(() => {});
+      page.Publisher.setGivens({ region: "EMEA" });
+      page.Publisher.setGivens({ region: "APAC" });
+      const warnings = warn.mock.calls.map((c) => String(c[0]));
+      warn.mockRestore();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("opts.givens");
+      await page.Publisher.query("m.malloy", "run: x", {
+         environment: "e",
+         package: "p",
+      });
+      expect(page.fetched[0].init.body).not.toContain("givens");
+      await page.Publisher.query("m.malloy", "run: x", {
+         environment: "e",
+         package: "p",
+         givens: { region: "APAC" },
+      });
+      expect(JSON.parse(page.fetched[1].init.body).givens).toEqual({
+         region: "APAC",
+      });
+   });
+
+   it("does not warn when the page names its package, or when the store does not change", () => {
+      const named = boot();
+      const unchanged = boot({ context: null, url: `${PAGE}/standalone.html` });
+      const warn = spyOn(named.win.console, "warn").mockImplementation(
+         () => {},
+      );
+      const quiet = spyOn(unchanged.win.console, "warn").mockImplementation(
+         () => {},
+      );
+      named.Publisher.setGivens({ a: 1 });
+      unchanged.Publisher.setGivens({});
+      expect(warn).not.toHaveBeenCalled();
+      expect(quiet).not.toHaveBeenCalled();
+   });
+});
+
 describe("query.ran", () => {
    it("reports what ran once bound", async () => {
       const page = boundPage();
@@ -1346,6 +1387,10 @@ describe("auth over the bus", () => {
       await flush();
       await page.clock.advance(4999);
       expect(page.fetched).toHaveLength(1);
+      let early = false;
+      settled.then(() => (early = true));
+      await flush();
+      expect(early).toBe(false);
       await page.clock.advance(1);
       expect((await settled).status).toBe(401);
       expect(page.posted).toEqual([]);

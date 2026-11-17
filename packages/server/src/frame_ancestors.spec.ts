@@ -161,6 +161,7 @@ describe("hostOriginPattern", () => {
 describe("droppedFrameAncestorSources", () => {
    it("names the sources the bus cannot use, and none for a usable list or the default", () => {
       expect(droppedFrameAncestorSources(undefined)).toEqual([]);
+      expect(droppedFrameAncestorSources("'none'")).toEqual([]);
       expect(
          droppedFrameAncestorSources("'self' https://*.app.example.com"),
       ).toEqual([]);

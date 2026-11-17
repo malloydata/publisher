@@ -149,7 +149,7 @@ and adds nothing to the page's markup.
 | `Publisher.emit` | `(type, payload?)` | `true` if the event was posted, `false` if there is no host to hear it |
 | `Publisher.givens` | property | a copy of the page's givens store |
 | `Publisher.setGivens` | `(givens)` | `undefined`; merges `givens` into the store, notifies `onGivensChange` listeners, emits `givens.changed`. Does nothing when the store would not change |
-| `Publisher.onGivensChange` | `(fn)` | an unsubscribe function; `fn(givens)` runs after every `setGivens` |
+| `Publisher.onGivensChange` | `(fn)` | an unsubscribe function; `fn(givens)` runs after a `setGivens` that changes the store |
 
 `on`, `emit` and the givens members are the page's side of the [host
 bus](#talking-to-the-host); they do nothing visible on a page that nobody embeds.
@@ -230,6 +230,10 @@ a command from the host (`givens.set`, below) take one path. The store rides
 along only once it is non-empty, so a page that never calls `setGivens` sends
 exactly the request it always did, and only on queries to the page's own
 package: a query aimed at another package carries just its own `opts.givens`.
+A page served from outside any package (its `Publisher.context` is empty, so
+its queries name `opts.environment` and `opts.package`) has no own package, so
+it never sends the store: it must pass `opts.givens` on every query, and
+`setGivens` on such a page logs a one-time console warning.
 Publisher rejects a given name a model does not declare, so **every model of
 the page's own package that the page queries must declare every given the store
 holds**; a model that does not answers `400`. Keep a given a model does not
@@ -349,12 +353,13 @@ are written as `\uXXXX`), so no name can close the element and the page's charse
 does not matter. Only the first 64 KiB is scanned. The block goes after the first
 `<meta charset>` within the first 1024 bytes, else after `<head>`, else after the
 doctype, else at the start (past a UTF-8 byte-order mark) of a page that fits in
-that 64 KiB; a tag inside an HTML comment, `<script>`, `<style>`, `<title>` or
-`<textarea>` does not count. A UTF-16 page, one over 2 MiB, and one with no
+that 64 KiB; a tag inside an HTML comment, a quoted attribute value, or a
+`<script>`, `<style>`, `<title>`, `<textarea>`, `<noscript>`, `<iframe>`,
+`<noembed>`, `<xmp>` or `<plaintext>` element does not count. A UTF-16 page, one over 2 MiB, and one with no
 insertion point in its first 64 KiB are sent unchanged (the runtime still pins
 the version from the versioned path). An HTML response carries a weak `ETag`
-(a hash of the file's size, modification time and inode and of the injected
-block, so a matching `If-None-Match` is answered `304` after a `stat`, without
+(a hash of the file's size and modification time, a format version and the
+injected block, none of them replica-specific, so a matching `If-None-Match` is answered `304` after a `stat`, without
 reading the file), `Cache-Control: no-cache` so every load revalidates; a
 `Range` request gets the whole page, since byte offsets into a rewritten body
 mean nothing. Other files are sent as they are.
@@ -389,8 +394,8 @@ block: behind a gateway that renames paths (a worker that sees
 the internal ones. The block still supplies `versionId`, `apiBase` and
 `hostOrigins`, and its names are used when the URL matches neither shape.
 
-A page with no block at all (one over 2 MiB or in UTF-16, which the server sends
-unchanged, a copy cached before the server injected it, or one served through
+A page with no block at all (one over 2 MiB or in UTF-16, or with no insertion
+point in its first 64 KiB, which the server sends unchanged, a copy cached before the server injected it, or one served through
 something that rewrites it away) uses the URL alone. Served from
 `/versions/<v>/public/`, it still pins `<v>` for every query to its own package
 and never live-reloads (`latest` and `live` there name no version, so they pin
@@ -417,7 +422,8 @@ than after a wait. The runtime also accepts an `auth.token` event as the answer,
 waits at most 10 seconds for either, and retries the query once; several
 queries that fail together share one request, and a retry is never retried. A
 page with no nonce, so no host to ask (cookie auth, nothing embedding it),
-fails at once.
+fails at once. A page with a nonce whose host never binds waits those 5 seconds
+on each `401` before failing.
 `Publisher.setToken(token)` still works for a page that has a token from
 elsewhere; pass `null` to clear it and fall back to cookies.
 
@@ -549,7 +555,7 @@ cannot speak for the page.
 | `auth.token` | host → page | `{ token: string }` | Built in; the page uses it as its bearer token. Reply `{ applied: true }` |
 | `auth.token.request` | page → host | none | Request: a query got `401`. A host with `getToken` replies `{ token }`; one without replies `unhandled`, which fails the query at once. The runtime waits up to 10 seconds, and also accepts an `auth.token` event |
 | `givens.set` | host → page | `{ givens: { name: value } }` | Merges into the givens store and notifies `onGivensChange` listeners; a `null` value removes that key. Reply `{ applied: true, givens }` (the whole store). Until the page has called `onGivensChange` it is answered `unhandled` and applies nothing |
-| `givens.changed` | page → host | `{ givens }` | The whole store, after every `setGivens` |
+| `givens.changed` | page → host | `{ givens }` | The whole store, after a `setGivens` that changes the store |
 | `query.ran` | page → host | `{ model, sourceName?, queryName?, query?, givens, versionId, rowCount, ms }` | After every successful query. `query` is the first 2000 characters of the Malloy text; `rowCount` is `null` when the result shape is unknown; `versionId` is `null` when unpinned |
 | `version.unavailable` | page → host | `{ versionId, reason }` | Once, when a query at the page's own version answers `VERSION_NOT_FOUND` or `VERSION_ARCHIVED`. The query still rejects as usual |
 | `context.update` | page → host | any object | Not sent by the runtime; a name for pages that tell the host what they are showing, with `Publisher.emit` |

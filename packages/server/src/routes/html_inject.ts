@@ -23,18 +23,36 @@ const HEAD_OPEN = /<head(?=[\s/>])[^>]{0,1024}>/iy;
 const DOCTYPE = /<!doctype[^>]{0,1024}>/iy;
 
 // Elements whose content is text, never markup.
-const RAW_TEXT_OPEN = /<(script|style|title|textarea)(?=[\s/>])/iy;
+const RAW_TEXT_ELEMENTS = [
+   "script",
+   "style",
+   "title",
+   "textarea",
+   "noscript",
+   "noembed",
+   "iframe",
+   "xmp",
+];
+const RAW_TEXT_OPEN = new RegExp(
+   `<(${RAW_TEXT_ELEMENTS.join("|")}|plaintext)(?=[\\s/>])`,
+   "iy",
+);
 const RAW_TEXT_CLOSE = new Map(
-   ["script", "style", "title", "textarea"].map((name) => [
+   RAW_TEXT_ELEMENTS.map((name) => [
       name,
       new RegExp(`</${name}(?=[\\s/>])[^>]{0,1024}>`, "gi"),
    ]),
 );
 
+/** How far an open tag is followed to its closing `>`, quoted attribute values included. */
+const MAX_TAG_BYTES = 2048;
+const MAX_TAG_QUOTES = 16;
+
 /**
  * Where the text that is not markup, starting at the `<` at `at`, ends: an HTML
- * comment, or a script, style, title or textarea element through its closing
- * tag. One that is never closed runs to the end of `text`. Undefined when `at`
+ * comment, or a script, style, title, textarea, noscript, noembed, iframe or xmp
+ * element through its closing tag, or a plaintext element to the end. One that
+ * is never closed runs to the end of `text`. Undefined when `at`
  * starts neither. A forward-only scan, so a caller that continues from the
  * returned index never reads a character twice.
  */
@@ -46,10 +64,32 @@ export function nonTagTextEnd(text: string, at: number): number | undefined {
    RAW_TEXT_OPEN.lastIndex = at;
    const open = RAW_TEXT_OPEN.exec(text);
    if (!open) return undefined;
-   const closer = RAW_TEXT_CLOSE.get(open[1].toLowerCase())!;
+   const closer = RAW_TEXT_CLOSE.get(open[1].toLowerCase());
+   if (!closer) return text.length;
    closer.lastIndex = at + open[0].length;
    const close = closer.exec(text);
    return close ? close.index + close[0].length : text.length;
+}
+
+/**
+ * Where the open tag at the `<` at `at` ends, past its closing `>` with quoted
+ * attribute values honored, so a `<` inside one is not taken for markup.
+ * Undefined when `at` starts no tag or none closes within MAX_TAG_BYTES and
+ * MAX_TAG_QUOTES quoted values.
+ */
+export function openTagEnd(text: string, at: number): number | undefined {
+   if (!/[a-z]/i.test(text[at + 1] ?? "")) return undefined;
+   const span = text.slice(at + 1, at + MAX_TAG_BYTES);
+   const stop = /["'>]/g;
+   for (let p = 0, quoted = 0; quoted++ <= MAX_TAG_QUOTES; ) {
+      stop.lastIndex = p;
+      const m = stop.exec(span);
+      if (!m) return undefined;
+      if (m[0] === ">") return at + 1 + m.index + 1;
+      p = span.indexOf(m[0], m.index + 1) + 1;
+      if (p === 0) return undefined;
+   }
+   return undefined;
 }
 
 function stickyEnd(pattern: RegExp, text: string, at: number) {
@@ -67,7 +107,7 @@ function stickyEnd(pattern: RegExp, text: string, at: number) {
  * bytes (so the meta stays inside the prescan window), else after `<head>`,
  * else after the doctype, else, for a document that fits the scan, at the
  * start past any UTF-8 byte-order mark. Text that is not markup (comments,
- * script, style, title, textarea) holds no tag.
+ * script, style, title, textarea) holds no tag, nor does a quoted attribute value.
  */
 export function injectAfterHeadStart(
    html: Buffer,
@@ -79,19 +119,25 @@ export function injectAfterHeadStart(
    let head: number | undefined;
    let doctype: number | undefined;
    let i = text.indexOf("<");
-   while (i !== -1 && charset === undefined) {
+   while (
+      i !== -1 &&
+      charset === undefined &&
+      !(i >= CHARSET_PRESCAN_BYTES && head !== undefined)
+   ) {
       const skipped = nonTagTextEnd(text, i);
       if (skipped !== undefined) {
          i = text.indexOf("<", skipped);
          continue;
       }
-      const metaEnd = stickyEnd(CHARSET_META, text, i);
-      if (metaEnd !== undefined && metaEnd <= CHARSET_PRESCAN_BYTES) {
-         charset = metaEnd;
+      if (i < CHARSET_PRESCAN_BYTES) {
+         const metaEnd = stickyEnd(CHARSET_META, text, i);
+         if (metaEnd !== undefined && metaEnd <= CHARSET_PRESCAN_BYTES) {
+            charset = metaEnd;
+         }
       }
       head ??= stickyEnd(HEAD_OPEN, text, i);
       doctype ??= stickyEnd(DOCTYPE, text, i);
-      i = text.indexOf("<", i + 1);
+      i = text.indexOf("<", openTagEnd(text, i) ?? i + 1);
    }
    const at =
       charset ??

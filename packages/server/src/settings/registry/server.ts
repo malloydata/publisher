@@ -77,7 +77,7 @@ export const server = [
       default: "'self'",
       description:
          "The Content-Security-Policy frame-ancestors source list: who may embed the app.",
-      notes: "`Content-Security-Policy: frame-ancestors` value sent on **every** document this server returns -- the Console and in-package `public/` files alike -- controlling which origins may embed a page in an iframe. Defaults to same-origin only; set it to the origins that embed you (`https://app.example.com`), or to `*` to restore the previous any-origin behaviour. A data app's host bus talks only to the sources that name one origin (`'self'`, `https://app.example.com`, `https://*.example.com`); the others still apply to the CSP, and startup logs a warning naming each source the bus drops.",
+      notes: "`Content-Security-Policy: frame-ancestors` value sent on **every** document this server returns -- the Console and in-package `public/` files alike -- controlling which origins may embed a page in an iframe. Defaults to same-origin only; set it to the origins that embed you (`https://app.example.com`), or to `*` to restore the previous any-origin behaviour. A data app's host bus talks only to the sources that name an origin or a subdomain wildcard of one (`'self'`, `https://app.example.com`, `https://*.example.com`); the others (`*`, a bare scheme, a source with a path) still apply to the CSP, and startup logs a warning naming each source the bus drops (`'none'` is no source and is not named).",
       aliases: { env: ["PUBLISHER_FRAME_ANCESTORS"] },
    }),
    setting({

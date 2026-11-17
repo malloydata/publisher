@@ -266,6 +266,7 @@
    var givensListeners = [];
    var readyScheduled = false;
    var boundWaiters = [];
+   var unscopedWarned = false;
    var tokenWait = null;
    var tokenSettle = null;
    var tokenRequestId = null;
@@ -417,6 +418,12 @@
       });
       if (sameValue(next, givensStore)) return;
       givensStore = next;
+      if (!unscopedWarned && !(ctx.environment && ctx.package)) {
+         unscopedWarned = true;
+         console.warn(
+            "Publisher.setGivens: this page names no environment/package, so held givens are not sent with queries; pass opts.givens to each query.",
+         );
+      }
       givensListeners.slice().forEach(function (fn) {
          try {
             fn(cloneGivens(givensStore));
@@ -475,7 +482,8 @@
       if (!busEnabled) return Promise.resolve(false);
       return new Promise(function (resolve) {
          var timer = setTimeout(function () {
-            boundWaiters.splice(boundWaiters.indexOf(bound), 1);
+            var queued = boundWaiters.indexOf(bound);
+            if (queued !== -1) boundWaiters.splice(queued, 1);
             resolve(false);
          }, BIND_WAIT_MS);
          function bound() {

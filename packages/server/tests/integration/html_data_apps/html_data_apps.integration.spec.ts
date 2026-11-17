@@ -324,6 +324,18 @@ describe("In-package HTML data apps (E2E)", () => {
       }
    });
 
+   it("400s a path whose .. segments climb above public/ and walk back in", async () => {
+      for (const p of [
+         "..%2f..%2f..%2f..%2fpublic%2findex.html",
+         "sub%2f..%2f..%2fpublic%2findex.html",
+      ]) {
+         const res = await fetch(
+            `${baseUrl}/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/${p}`,
+         );
+         expect(res.status).toBe(400);
+      }
+   });
+
    itEscape(
       "rejects a symlink in public/ that escapes the package with 403",
       async () => {
@@ -362,6 +374,7 @@ describe("In-package HTML data apps (E2E)", () => {
          "Upper.HTML",
          "barehtml.html",
          "bodymeta.html",
+         "fitattr.html",
          "fitcomment.html",
          "index.html",
          "nohead.html",
@@ -398,6 +411,12 @@ describe("In-package HTML data apps (E2E)", () => {
       // </head>/<body> boundary must keep that literal from truncating the scan
       // and hiding the real tag (it must still opt in).
       expect(dataApps.find((a) => a.path === "fitcomment.html")?.fit).toBe(
+         "viewport",
+      );
+
+      // fitattr.html has a `<script>` literal inside an attribute value of
+      // <html>; it is not a live tag, so it must not hide the real meta.
+      expect(dataApps.find((a) => a.path === "fitattr.html")?.fit).toBe(
          "viewport",
       );
 

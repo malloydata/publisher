@@ -69,7 +69,8 @@ It adds one global, `window.Publisher`:
 - `Publisher.context` is `{ environment, package }`, inferred from the page URL
   (else taken from the context Publisher injects into the page).
 - `Publisher.on`, `emit`, `givens`, `setGivens` and `onGivensChange` are the page's side
-  of the host bus; they do nothing on a page nobody embeds.
+  of the host bus. `on` and `emit` do nothing on a page nobody embeds; the givens store
+  (`setGivens`, `givens`, `onGivensChange`) works with or without a host.
 - `Publisher.setToken(token | null)` sets a bearer token used by all later
   queries on the page; `null` reverts to cookies.
 

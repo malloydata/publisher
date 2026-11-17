@@ -79,10 +79,12 @@ export function frameAncestorHostOrigins(raw: string | undefined): string[] {
    return [...new Set(patterns)];
 }
 
-/** The configured sources {@link hostOriginPattern} drops: they stay in the CSP but never become bus origins. */
+/** The configured sources {@link hostOriginPattern} drops: they stay in the CSP but never become bus origins. `'none'` is no source, so it is never reported. */
 export function droppedFrameAncestorSources(raw: string | undefined): string[] {
    return frameAncestorSources(raw).filter(
-      (source) => hostOriginPattern(source) === undefined,
+      (source) =>
+         source.toLowerCase() !== "'none'" &&
+         hostOriginPattern(source) === undefined,
    );
 }
 
