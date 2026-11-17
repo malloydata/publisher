@@ -221,6 +221,21 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
     warehouse in its own types, so only a column its DuckLake catalog holds as a float, as the
     bind reads it, is judged inexact. Such a query answers live. A Postgres `storage=` build that
     cannot read the warehouse's column types fails rather than store a `numeric` as a float.
+  - A `storage=` table compares a string column byte-exact, and the source compares it under
+    its own collation. So a gate, or a `where:` the copy re-applies, that compares a string column
+    is read from a `storage=` table only when the source's comparison is known to match: on
+    BigQuery always; on a DuckDB-dialect source when the instance sets no `default_collation`
+    and no `COLLATE` appears in the query's SQL or in any table or view the instance holds; on
+    Postgres, for `=`, `!=` and `in`, when the column's collation is deterministic (the database
+    default included), and for any other comparison (an ordering, a pattern, a function's value)
+    only under `C` or `POSIX`. Anything else, every other dialect included, answers live, and so
+    does a Postgres scope read from a composite member, a join or a query-shaped source's base
+    (its column has no path to probe). The path report says `row_level_gate` past a gate, and
+    `served_copy_not_served` (or the rollup's `CONTRACT`) for a scope on an ungated source. The
+    cost: a gated or scoped `storage=` source on Snowflake, MySQL, SQL Server, Trino, Presto or
+    Databricks whose gate or scope compares a string column answers live. A gate column stored
+    as `TIMESTAMP WITH TIME ZONE` answers live too: the destination compares it in its own
+    session's zone.
 
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to

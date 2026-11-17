@@ -105,7 +105,10 @@ import {
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
-import { canonicalAuthorizeRoute } from "../../authorize_routes";
+import {
+   ACCESS_FILTER_ROUTE,
+   canonicalAuthorizeRoute,
+} from "../../authorize_routes";
 import {
    PREAGGREGATE_INVALID_CODE,
    PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
@@ -882,6 +885,8 @@ interface RollupFacts {
    joinUsage: ReturnType<SourceMap["fieldJoinsOf"]>;
    declaredName: string;
    gate: ReturnType<typeof gateFieldNames>;
+   /** The base is a composite source (`compose(…)`, or an extension of one). */
+   composite: boolean;
    /** The source's rows read the current time (S25b). */
    windowed: boolean;
    /**
@@ -1050,6 +1055,7 @@ function rollupFactsOf(
       scope,
       joinsRead,
       dialect: typeof def.dialect === "string" ? def.dialect : undefined,
+      composite: (def as { type?: unknown }).type === "composite",
       unservable,
    };
 }
@@ -1174,6 +1180,16 @@ function declarationRefusal(
          decl,
          // malloy-text: a warning message for a person, not Malloy
          `the source's \`where:\` reads a given and ${[...new Set(ungrained)].map((c) => `\`${c}\``).join(", ")}, which the grain does not keep, so it could not be re-applied to the rollup's rows per caller`,
+      );
+   }
+   // A composite source's own row filter is not grafted on live (the
+   // filter binding guard denies every caller), so a rollup of it would
+   // answer what live refuses: it is not built.
+   if (gate.declared && gate.rowFilter && facts.composite) {
+      return unservable(
+         gate.reason.base,
+         decl,
+         "the source is a composite with a row-level gate (`#(access_filter)`), which live refuses every caller, so no rollup of it is read",
       );
    }
    // Row 21: a gated base's rollup is built only where a query can read
@@ -1459,6 +1475,8 @@ function gateFieldNames(
    dimensions: string[];
    unkeepable: string[];
    declared: boolean;
+   /** A gate is a row filter (`#(access_filter)`), not a lock. */
+   rowFilter: boolean;
    joinGated: boolean;
    /** Every gate is the base's own: none inherited, none from a derivation. */
    own: boolean;
@@ -1510,6 +1528,9 @@ function gateFieldNames(
       dimensions: [...dimensions].sort(byCodepoint),
       unkeepable: [...unkeepable].sort(byCodepoint),
       declared: entries.length > 0,
+      rowFilter: entries.some(
+         (e) => canonicalAuthorizeRoute(e.route) === ACCESS_FILTER_ROUTE,
+      ),
       joinGated,
       reason: {
          base: gateRefusalReason(entries.map((e) => e.route)),
