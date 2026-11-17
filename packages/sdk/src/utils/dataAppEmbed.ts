@@ -5,7 +5,10 @@
 //
 // Both the Publisher SPA host (DataAppViewer.tsx, Package.tsx) and the
 // build-step-free browser runtime (packages/server/src/runtime/publisher.js)
-// speak this protocol. publisher.js cannot import from here — it ships as
+// speak the resize part of this protocol. The SPA does not subscribe to query
+// reports: "publisher:subscribe" and "publisher:query" are for other hosts that
+// frame a data app, such as a chat beside it, so nothing in this repo sending
+// or reading them does not make them unused. publisher.js cannot import from here — it ships as
 // standalone vanilla JS — so it carries a cross-reference comment pointing at
 // this file as the single source of truth. Keep the two in sync.
 
@@ -58,7 +61,9 @@ export interface PublisherSubscribeMessage {
  * {@link PublisherSubscribeMessage}, in the in-app viewer only (never on a
  * hosted `/apps/` embed surface). Payload shape is
  * {@link PublisherQueryMessage}. A host uses it to say what the reader is
- * looking at, e.g. to a chat beside the app.
+ * looking at, e.g. to a chat beside the app. A report the runtime cannot build,
+ * or that does not fit in 16,000 characters even cut down, is not sent, and its
+ * `seq` goes unused, so a gap in `seq` is not a lost message.
  */
 export const PUBLISHER_QUERY_MESSAGE_TYPE = "publisher:query";
 
@@ -80,9 +85,20 @@ export interface PublisherQueryMessage {
    /** A named source and view, when the page ran one instead of query text. */
    sourceName?: string;
    queryName?: string;
-   /** The filters and givens the page applied. */
+   /** The filters and givens the page passed. */
    filterParams?: Record<string, unknown>;
+   /**
+    * True when the page asked the server to skip its filters, so the rows are
+    * not filtered by `filterParams`.
+    */
+   bypassFilters?: boolean;
    givens?: Record<string, unknown>;
+   /**
+    * The published version the query ran against: the one the page named, or
+    * the page's own pinned version for a query on its own package. Absent, the
+    * package's latest.
+    */
+   versionId?: string;
    /** Rows returned, when the query succeeded and returned rows. */
    rowCount?: number;
    /**
@@ -93,9 +109,10 @@ export interface PublisherQueryMessage {
    /** The error message, when the query failed. */
    error?: string;
    /**
-    * True when the report reached 16,000 characters serialized with no rows
-    * left to drop, so the query text or error was cut short, or the givens and
-    * filterParams were left out, to fit.
+    * True when what the page asked did not fit in 16,000 characters serialized
+    * even with no rows, so the largest of the query text, error, givens and
+    * filterParams was cut short, or left out when it is not text, until the
+    * rest fit.
     */
    truncated?: boolean;
 }

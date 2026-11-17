@@ -45,7 +45,7 @@ iframe.addEventListener("load", () => {
 });
 ```
 
-The runtime accepts that only from its parent window, then posts a `publisher:query` message after each query to the origin the subscribe came from, never to `"*"`. The latest reports from before the subscribe, at most 10, are sent in order when it arrives; a frame nobody subscribes to sends nothing. Reports arrive in the order queries finish, and each carries a `seq` numbering the order they started in, so a host that keeps one report per view keeps the one with the highest `seq`. Reports are never posted on a hosted embed surface (`/apps/...`) or by a page opened in its own tab.
+The runtime accepts that only from its parent window, then posts a `publisher:query` message after each query to the origin the subscribe came from, never to `"*"`. The latest reports from before the subscribe, at most 10, are sent in order when it arrives; a frame nobody subscribes to sends nothing. Reports arrive in the order queries finish, and each carries a `seq` numbering the order they started in, so a host that keeps one report per view keeps the one with the highest `seq`. Reports are never posted on a hosted embed surface (`/apps/...`) or by a page opened in its own tab. A report the runtime cannot build, or that does not fit in 16,000 characters even with its largest fields cut, is not sent and its `seq` goes unused, so a gap in `seq` is not a lost message. A report says `bypassFilters: true` when the page skipped its filters, and names the `versionId` the query ran against.
 
 The app's author writes none of this; pass filters as `givens` or `filterParams` rather than baking them into query text, so the host can name them.
 

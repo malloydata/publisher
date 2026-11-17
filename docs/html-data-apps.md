@@ -330,6 +330,17 @@ look like a broken page rather than a policy. Set `PUBLISHER_FRAME_ANCESTORS` to
 the host page's origin on the deployment being embedded. If an embed is blank,
 check the browser console first -- it names `frame-ancestors`.
 
+**A framing page can also ask what the page queries.** After it posts
+`{ type: "publisher:subscribe" }` to the iframe on each load, the runtime posts
+it a `publisher:query` report after each query: the model, query, filters,
+givens and version, and the row count with the first rows or the error.
+`Publisher.embed` does not subscribe; a host that wants the reports does it
+itself. The handshake and the report's fields are in the
+`malloy-html-data-apps` skill's `reference/embedding.md` and in
+`PublisherQueryMessage` (`packages/sdk/src/utils/dataAppEmbed.ts`). Only sites
+`PUBLISHER_FRAME_ANCESTORS` allows can frame the page, so that list is also who
+can read its reports.
+
 ## Live reload
 
 When the server runs with `--watch-env <env>` (or `PUBLISHER_WATCH=<env>`),

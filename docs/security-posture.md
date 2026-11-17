@@ -276,6 +276,12 @@ same origin as the REST API. The consequences follow from that and are all inten
   wherever a gateway has established one.
 - The only CSP on these documents is `frame-ancestors`. There is no `script-src`, so a page may
   load and run anything, including third-party scripts.
+- A framed page under `/environments/<env>/packages/<pkg>/` reports its queries to the page that
+  frames it, once that page posts `publisher:subscribe`: the query text, filters, givens, the
+  version, the row count and up to 20 rows, plus up to 10 reports from before the subscribe. So
+  every site `PUBLISHER_FRAME_ANCESTORS` lets frame a page can also read the results of the
+  queries it runs for the viewer. Before this, the browser kept a site framing another origin's
+  page from reading it. A hosted embed surface (`/apps/...`) and an unframed page never report.
 - The routes are unauthenticated, and only `public/` is reachable. Path traversal is blocked
   lexically and again by the package's own path walk, which never looks outside the package.
   `public/` itself is resolved against the package root: a `public/` that is a link out of the
@@ -304,7 +310,9 @@ same policy as in-package `public/` files — `PUBLISHER_FRAME_ANCESTORS` finall
 says ([#930](https://github.com/malloydata/publisher/issues/930)). The default is now `'self'`
 rather than `*`, so a deployment is closed to cross-origin framing unless it opts in. A
 deployment that embeds Publisher elsewhere sets that variable to its origins, or to `*` to
-restore the previous behaviour deliberately.
+restore the previous behaviour deliberately. With `*`, any site can also subscribe to a framed
+page's query reports and read its results (see the HTML data apps list above), so name the
+origins instead.
 
 **2. There is a token-shaped thing that authenticates nothing.** `Publisher.embed` appends an
 `embed_token` query parameter, and `Publisher.setToken` attaches an `Authorization: Bearer`
@@ -325,7 +333,10 @@ A new markdown surface should go through `Prose` rather than call the library di
 (`packages/server/src/runtime/publisher.js`) and the Console's data-app viewer
 (`DataAppViewer.tsx`) validate `event.source` against the iframe's `contentWindow` but never
 `event.origin`. Source-matching is the stronger of the two checks and the payload is a single
-number, so the exposure is bounded, but the check is one line.
+number, so the exposure is bounded, but the check is one line. The runtime's `publisher:subscribe`
+handler checks the same way: the message must come from the page's parent window, and any origin
+but `null` is accepted. Its reports carry query results, not a number, so for them
+`PUBLISHER_FRAME_ANCESTORS` is the control on who can read them.
 
 **5. MCP has no tenant scoping, so a directly-reachable worker must be single-tenant.** Every
 MCP tool takes `environmentName` and `packageName` as ordinary arguments, and the two discovery

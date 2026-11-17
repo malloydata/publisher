@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import vm from "vm";
+import { isPublisherQueryMessage } from "../../../sdk/src/utils/dataAppEmbed";
 
 /**
  * The runtime's "publisher:query" report: evaluates the real publisher.js in a vm context that
@@ -22,6 +23,7 @@ type Answer = { ok: boolean; status: number; body: unknown };
 
 function runtime({
    pathname = "/environments/sales-env/packages/sales/index.html",
+   search = "",
    framed = true,
    answer = {
       ok: true,
@@ -30,12 +32,16 @@ function runtime({
    },
 }: {
    pathname?: string;
+   /** The page URL's query string, such as `?versionId=1.0.0`. */
+   search?: string;
    framed?: boolean;
    /** The server's answer to every query, or a function of the request body. */
    answer?: Answer | ((body: Message) => Answer | Promise<Answer>);
 } = {}) {
    // Every postMessage the page makes, to its parent or to itself, with its target origin.
    const posted: { message: Message; targetOrigin: string }[] = [];
+   // Every query request body the page sends to the server.
+   const queried: Message[] = [];
    const record = (message: Message, targetOrigin: string) =>
       posted.push({ message, targetOrigin });
    const parent = { postMessage: record };
@@ -44,13 +50,21 @@ function runtime({
       location: {
          pathname,
          origin: "https://acme.data.example.com",
-         search: "",
+         search,
       },
-      fetch: async (_url: string, init: { body: string }) => {
+      fetch: async (url: string, init: { body?: string }) => {
+         // The read of the page's own package at its version: the package has it.
+         if (!init.body) {
+            const versionId = new URL(url, "https://x").searchParams.get(
+               "versionId",
+            );
+            return { ok: true, status: 200, json: async () => ({ versionId }) };
+         }
          const a =
             typeof answer === "function"
                ? await answer(JSON.parse(init.body))
                : answer;
+         queried.push(JSON.parse(init.body));
          return {
             ok: a.ok,
             status: a.status,
@@ -94,7 +108,7 @@ function runtime({
    }: { data?: unknown; source?: unknown; origin?: string } = {}) => {
       for (const fn of listeners.message ?? []) fn({ data, source, origin });
    };
-   return { Publisher, reports, sent, deliver };
+   return { Publisher, reports, sent, deliver, queried };
 }
 
 describe("publisher:query reports", () => {
@@ -283,7 +297,7 @@ describe("publisher:query reports", () => {
       expect(reports()[0].rows).toEqual(many.slice(0, 20));
    });
 
-   it("drops rows one at a time from the end until the whole report fits", async () => {
+   it("keeps the longest run of leading rows that fits in the report", async () => {
       const wide = Array.from({ length: 20 }, (_, i) => ({
          i,
          note: "x".repeat(2000),
@@ -334,18 +348,34 @@ describe("publisher:query reports", () => {
       expect(report.givens).toEqual({ region: "EMEA" });
    });
 
-   it("drops givens and filters too large to fit, and says so", async () => {
+   it("leaves out givens too large to fit before the query, the filters or the rows, and says so", async () => {
       const { Publisher, reports, deliver } = runtime();
       deliver();
-      await Publisher.query("sales.malloy", "run: x", {
-         givens: { note: "x".repeat(30000) },
+      await Publisher.query("sales.malloy", "run: orders -> by_region", {
+         givens: { ids: "x".repeat(17000) },
          filterParams: { region: "EMEA" },
       });
       const report = reports()[0];
       expect(JSON.stringify(report).length).toBeLessThanOrEqual(16000);
       expect(report.truncated).toBe(true);
       expect(report).not.toHaveProperty("givens");
-      expect(report).not.toHaveProperty("filterParams");
+      expect(report.query).toBe("run: orders -> by_region");
+      expect(report.filterParams).toEqual({ region: "EMEA" });
+      expect(report.rows).toEqual([{ region: "EMEA", revenue: 120 }]);
+   });
+
+   it("cuts the largest of what the page asked first, keeping the rest whole", async () => {
+      const longQuery = "run: orders -> { where: " + "x".repeat(20000) + " }";
+      const { Publisher, reports, deliver } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", longQuery, {
+         givens: { note: "y".repeat(5000) },
+      });
+      const report = reports()[0];
+      expect(JSON.stringify(report).length).toBeLessThanOrEqual(16000);
+      expect(report.truncated).toBe(true);
+      expect(report.givens).toEqual({ note: "y".repeat(5000) });
+      expect((report.query as string).endsWith("\u2026")).toBe(true);
    });
 
    it("sends no report it cannot fit, and still answers the page", async () => {
@@ -357,6 +387,57 @@ describe("publisher:query reports", () => {
       });
       expect(rows).toEqual([{ region: "EMEA", revenue: 120 }]);
       expect(sent()).toEqual([]);
+   });
+
+   it("says when the page bypassed its filters, and the version the query ran against", async () => {
+      const { Publisher, reports, deliver, queried } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {
+         filterParams: { region: "EMEA" },
+         bypassFilters: true,
+         versionId: "2.0.0",
+      });
+      expect(queried[0]).toMatchObject({
+         bypassFilters: true,
+         versionId: "2.0.0",
+      });
+      expect(reports()[0]).toMatchObject({
+         filterParams: { region: "EMEA" },
+         bypassFilters: true,
+         versionId: "2.0.0",
+      });
+   });
+
+   it("names the page's own pinned version, and none for another package's latest", async () => {
+      const { Publisher, reports, deliver, queried } = runtime({
+         search: "?versionId=1.0.0",
+      });
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {});
+      await Publisher.query("other.malloy", "run: y", { package: "other" });
+      expect(queried.map((q) => q.versionId)).toEqual(["1.0.0", undefined]);
+      expect(reports()[0].versionId).toBe("1.0.0");
+      expect(reports()[1]).not.toHaveProperty("versionId");
+      expect(reports()[0]).not.toHaveProperty("bypassFilters");
+   });
+
+   it("sends reports the SDK's isPublisherQueryMessage accepts", async () => {
+      const { Publisher, reports, deliver } = runtime({
+         answer: { ok: false, status: 500, body: { message: "boom" } },
+      });
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {}).catch(() => {});
+      const {
+         Publisher: ok,
+         reports: okReports,
+         deliver: okDeliver,
+      } = runtime();
+      okDeliver();
+      await ok.query("sales.malloy", "run: x", { givens: { region: "EMEA" } });
+      const all = [...reports(), ...okReports()];
+      expect(all).toHaveLength(2);
+      for (const report of all)
+         expect(isPublisherQueryMessage(report)).toBe(true);
    });
 
    it("posts nothing on a hosted embed surface, even to a subscriber", async () => {
