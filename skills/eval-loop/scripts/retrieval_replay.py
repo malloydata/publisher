@@ -203,11 +203,47 @@ def call_event(qid: str, args: dict[str, Any], payload: Any, error: str | None) 
         ranked = {"entityIds": ids, "hits": entity_hits(payload or {}), "resultCount": len(ids),
                   "docTokens": doc_tokens(payload or {})}
     mode = payload.get("retrieval") if isinstance(payload, dict) else None
+    warnings = payload.get("warnings") if isinstance(payload, dict) else None
+    extra: dict[str, Any] = {}
+    if isinstance(warnings, list):
+        extra["warnings"] = [str(w) for w in warnings]
+    if args.get("givens"):
+        extra["givens"] = args["givens"]
     return ledger.event("tool_call", qid=qid, sample=None, phase=PHASE, tool="get_context",
                         targets=search_terms(args), target_shapes=target_shapes(args),
                         search_targets=search_targets(args),
                         scopes=args["scopes"], retrieval_mode=mode, rankedSummary=ranked,
-                        error=error)
+                        error=error, **extra)
+
+
+def response_checks(event: dict[str, Any], targets: list[dict[str, Any]]) -> dict[str, Any]:
+    """Promises that hold for every response, whatever the labels say. Each
+    check is `None` when this response gives it nothing to check, else a list of
+    what broke it (empty = it held).
+
+    not_found_says_so  a target that returned nothing is named in a warning: by
+                       its search text, or as "target N". Checked only when the
+                       host returns a `warnings` list at all.
+    pinned_source_only when the scope pins one source, every returned entity is
+                       on that source's card.
+    """
+    out: dict[str, Any] = {"not_found_says_so": None, "pinned_source_only": None}
+    warnings = event.get("warnings")
+    if isinstance(warnings, list):
+        text = " \n ".join(warnings).lower()
+        empty = [t for t in targets if t["n_returned"] == 0 and t.get("search_text")]
+        if empty:
+            out["not_found_says_so"] = [
+                f"target {t['index']} ({t['target_type']}: {t['search_text']})" for t in empty
+                if t["search_text"].lower() not in text and f"target {t['index']} " not in text
+                and f"target {t['index']}:" not in text]
+    pins = {s.get("source") for s in event.get("scopes") or [] if isinstance(s, dict) and s.get("source")}
+    if len(pins) == 1:
+        (pin,) = pins
+        hits = (event.get("rankedSummary") or {}).get("hits") or []
+        out["pinned_source_only"] = sorted({h["entity_id"] for h in hits
+                                            if h.get("source") and h["source"] != pin})
+    return out
 
 
 def recall_exact(labels: dict[str, Any], route: dict[str, str]) -> float | None:
@@ -237,6 +273,7 @@ def score(case: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     # Every target is sent as written, so each one is asked; a target with no
     # key of its own has no recall here and still counts in the case's labels.
     out["targets"] = target_outcomes.outcomes(case, event)
+    out["checks"] = response_checks(event, out["targets"])
     out["retrieval_mode"] = event.get("retrieval_mode")
     return out
 
@@ -295,6 +332,12 @@ def summarize(rows: list[dict[str, Any]], skipped: int) -> dict[str, Any]:
         **pooled(rows),
     }
     out["per_target"] = per_target(rows)
+    out["checks"] = {}
+    for name in ("not_found_says_so", "pinned_source_only"):
+        seen = [(r["qid"], r["checks"][name]) for r in ok if (r.get("checks") or {}).get(name) is not None]
+        broke = [(q, v) for q, v in seen if v]
+        out["checks"][name] = {"checked": len(seen), "failed": len(broke),
+                               "examples": [{"qid": q, "what": v[:3]} for q, v in broke[:5]]}
     tags = sorted({t for r in rows for t in r.get("tags") or []}
                   | {g for r in rows for t in r.get("targets") or [] for g in t.get("tags") or []})
     out["by_tag"] = {t: {"cases": sum(1 for r in rows if t in r["tags"]),
@@ -423,6 +466,10 @@ def print_report(rows: list[dict[str, Any]], s: dict[str, Any], mode: str) -> No
     pt = s["per_target"]
     print(f"per target ({pt['labelled']} labelled of {pt['targets']}): {target_line(pt)}")
     print(f"latency p50 {fmt(s['latency_p50_s'])} s   p95 {fmt(s['latency_p95_s'])} s")
+    for name, c in (s.get("checks") or {}).items():
+        if c["checked"]:
+            print(f"check {name}: {c['failed']} of {c['checked']} responses broke it"
+                  + (f", e.g. {c['examples'][0]['qid']}: {c['examples'][0]['what'][0]}" if c["examples"] else ""))
     for t, v in s["by_tag"].items():
         if v["cases"]:
             print(f"  tag {t:28s} scored {v['scored']:3d} of {v['cases']:3d}  recall exact {fmt(v['recall_exact'])}  "

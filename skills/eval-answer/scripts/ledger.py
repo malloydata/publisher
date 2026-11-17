@@ -120,6 +120,9 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      "error", "traceId",
                      "query", "modelPath", "givens", "filterParams",
                      "retrieval_mode",
+                     # get_context's own `warnings`, as returned. A replay reads
+                     # them to check that a target with no result was told so.
+                     "warnings",
                      # Where an execute_query ran, from its own arguments.
                      "environment", "package", "version",
                      "at"},

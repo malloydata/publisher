@@ -271,6 +271,48 @@ class PerTarget(unittest.TestCase):
         self.assertEqual(rr.summarize([row], 0)["per_target"]["not_found"], 1.0)
 
 
+class Checks(unittest.TestCase):
+    def case(self):
+        case = a_case("q1", required=[SALES])
+        case["searchTargets"].append({"target_type": "dimension", "search_text": "shipping carrier",
+                                      "expectedEntities": {"absent": True}})
+        return case
+
+    def row(self, warnings, scope=None, ids=(SALES,)):
+        case = self.case()
+        if scope:
+            case["scope"] = scope
+        body = {"sources": [{"source_info": {"resource_id": {"source": i.split(":")[1]}}, "entities": [
+            {"entity_id": i, "relevance": 0.9, "matched_targets": [{"search_text": "revenue", "relevance": 0.9}]}]}
+            for i in ids]}
+        if warnings is not None:
+            body["warnings"] = warnings
+        args = rr.request_for(case, {"environment": "e", "package": "p"})
+        return rr.score(case, rr.call_event("q1", args, body, None))
+
+    def test_a_target_with_no_result_must_be_named_in_a_warning(self):
+        said = self.row(["No field was found for target 2 (dimension: 'shipping carrier')."])
+        self.assertEqual(said["checks"]["not_found_says_so"], [])
+        silent = self.row(["Something unrelated."])
+        self.assertEqual(silent["checks"]["not_found_says_so"], ["target 2 (dimension: shipping carrier)"])
+
+    def test_a_host_with_no_warnings_field_is_not_checked(self):
+        self.assertIsNone(self.row(None)["checks"]["not_found_says_so"])
+
+    def test_a_pinned_source_admits_only_its_own_card(self):
+        scope = {"environment": "e", "package": "p", "source": "order_items"}
+        self.assertEqual(self.row([], scope)["checks"]["pinned_source_only"], [])
+        leak = self.row([], scope, ids=(SALES, PCAT))
+        self.assertEqual(leak["checks"]["pinned_source_only"], sorted({PCAT, "source:products:products"}))
+        self.assertIsNone(self.row([])["checks"]["pinned_source_only"])
+
+    def test_the_summary_counts_checked_and_broken_responses(self):
+        rows = [dict(self.row(["Something unrelated."]), latency_s=1.0),
+                dict(self.row(["No field was found for target 2 (dimension: 'shipping carrier')."]), latency_s=1.0)]
+        c = rr.summarize(rows, 0)["checks"]["not_found_says_so"]
+        self.assertEqual((c["checked"], c["failed"], c["examples"][0]["qid"]), (2, 1, "q1"))
+
+
 class Compare(unittest.TestCase):
     def rows(self, *ids):
         """One case with a required measure, a two-answer dimension target and an absent target."""
