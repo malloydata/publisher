@@ -1201,7 +1201,7 @@ function declarationRefusal(
       gate.declared &&
       !(
          ctx.readUnderGates ??
-         rollupsServeGatedBases(decl, gate.own, gate.lockOnly)
+         rollupsServeGatedBases(decl, gate.own, lockOnlyAt(decl, facts))
       )
    ) {
       return unservable(
@@ -1393,7 +1393,7 @@ function rollupPlanOf(
       rollupMeasures: sorted,
       baseGated: gate.declared,
       ...(gate.declared && gate.own ? { baseGateOwn: true as const } : {}),
-      ...(gate.declared && gate.lockOnly
+      ...(gate.declared && lockOnlyAt(decl, facts)
          ? { baseGateLocksOnly: true as const }
          : {}),
       internalGrain: decl.grain.filter(
@@ -1554,6 +1554,24 @@ function gateFieldNames(
          entries.every((e) => !e.selfContained && e.struct !== undefined) &&
          gateNotesDeclaredBy(def, scope),
    };
+}
+
+/**
+ * Whether a rollup at `decl`'s placement is read past its base's locks as a
+ * lock-only base's ({@link locksReadNoRowField}). On `storage=`, only when
+ * the base re-applies no given-reading `where:` of its own: the router counts
+ * such a term's columns as gate columns (`serve/gate_reads.ts`), so an entry
+ * point with one is not a lock-only answer there and every query would
+ * answer live. Colocated, the router keeps any answer, so the terms do not
+ * matter.
+ */
+function lockOnlyAt(
+   decl: Pick<Declaration, "storage">,
+   facts: Pick<RollupFacts, "gate" | "given">,
+): boolean {
+   if (!facts.gate.lockOnly) return false;
+   if (decl.storage === undefined) return true;
+   return !("terms" in facts.given) || facts.given.terms.length === 0;
 }
 
 /**
