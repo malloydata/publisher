@@ -172,9 +172,24 @@ describe("Materialization REST API: single-call (E2E)", () => {
             expect(values[0].sourceName).toBe("order_summary");
             expect(values[0].realization).toBe("COPY");
 
-            // Cleanup: delete the record and drop the self-built table.
-            const deleteRes = await fetch(
+            // A delete is record-only: one that still asks to drop the
+            // tables is refused, naming the parameter, and deletes nothing.
+            const refused = await fetch(
                url(`/materializations/${id}?dropTables=true`),
+               { method: "DELETE" },
+            );
+            expect(refused.status).toBe(400);
+            expect(
+               ((await refused.json()) as { message: string }).message,
+            ).toContain("dropTables=true is no longer supported");
+            expect((await fetch(url(`/materializations/${id}`))).status).toBe(
+               200,
+            );
+
+            // Cleanup: delete the record, as an older client does, with
+            // dropTables=false, which asks for what a delete does.
+            const deleteRes = await fetch(
+               url(`/materializations/${id}?dropTables=false`),
                { method: "DELETE" },
             );
             expect(deleteRes.status).toBe(204);
@@ -233,12 +248,10 @@ describe("Materialization REST API: single-call (E2E)", () => {
             expect(entry.physicalTableName).toBe(physicalTableName);
             expect(entry.sourceName).toBe("order_summary");
 
-            // A terminal materialization can be deleted; dropTables=true also
-            // drops the physical table this run produced.
-            const deleteRes = await fetch(
-               url(`/materializations/${id}?dropTables=true`),
-               { method: "DELETE" },
-            );
+            // A terminal materialization can be deleted (record-only).
+            const deleteRes = await fetch(url(`/materializations/${id}`), {
+               method: "DELETE",
+            });
             expect(deleteRes.status).toBe(204);
 
             // It's gone.
@@ -344,12 +357,11 @@ describe("Materialization REST API: single-call (E2E)", () => {
             expect(routedExecuted).toContain('"order_summary"');
             expect(routedCompiled).toContain('"order_summary"');
 
-            // Cleanup: drop the table + record, then reload back to live so the
+            // Cleanup: delete the record, then reload back to live so the
             // dangling binding doesn't leak into later groups.
-            const deleteRes = await fetch(
-               url(`/materializations/${id}?dropTables=true`),
-               { method: "DELETE" },
-            );
+            const deleteRes = await fetch(url(`/materializations/${id}`), {
+               method: "DELETE",
+            });
             expect(deleteRes.status).toBe(204);
             await fetch(`${baseUrl}${API}?reload=true`);
          },
@@ -382,9 +394,7 @@ describe("Materialization REST API: single-call (E2E)", () => {
       }
 
       async function dropRun(id: string): Promise<void> {
-         await fetch(url(`/materializations/${id}?dropTables=true`), {
-            method: "DELETE",
-         });
+         await fetch(url(`/materializations/${id}`), { method: "DELETE" });
          await fetch(`${baseUrl}${API}?reload=true`);
       }
 

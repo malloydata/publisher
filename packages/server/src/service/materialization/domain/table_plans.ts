@@ -394,8 +394,8 @@ export interface MaterializePlan {
     */
    pairFullRefresh?: string;
    /**
-    * The table takes the source's own name because the declaration has no
-    * `name=`, which the refusal of a colliding table name says (see
+    * The table takes Publisher's readable default name because the
+    * declaration has no `name=`, which the refusal of a colliding table name says (see
     * `refuseCollidingMaterialize`).
     */
    nameDefaulted?: true;

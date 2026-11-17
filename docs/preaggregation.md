@@ -327,9 +327,12 @@ tables, and a rollup goes to a destination because its own line says so. That is
 common case: a rollup's base is usually a table extended with measures, and Malloy admits
 only query-shaped sources as build roots, so most bases cannot carry `#@ persist` at all.
 
-**A rollup over a stored base builds and serves.** A rollup over a `storage=` base is built
-from the author's rows, never from its base's stored table (a colocated one over a colocated
-base may read the base's table; see below), so a `#@ preaggregate` on a source that is itself
+**A rollup over a stored base builds and serves.** A rollup over a `storage=` base is planned
+over the author's rows. A `storage=` rollup may build from its base's stored table instead,
+with the same rows, when the base's own `#@ persist storage=` names the same destination and
+the run holds that table (see **A rollup builds from its base's table when it can**, below);
+a rollup in the source's own database does the same only over a base stored there. So
+a `#@ preaggregate` on a source that is itself
 `#@ persist storage=` is planned, built and served exactly as the `#(preaggregate)` it
 reads as. Each grain is one table, in the destination its own line names or, with no
 `storage=`, alongside the base in the warehouse the base reads from, under the rollup's

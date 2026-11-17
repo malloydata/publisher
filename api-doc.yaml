@@ -4092,31 +4092,16 @@ paths:
       summary: Delete a materialization
       description: |
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
-        materialization record. By default this removes the publisher's record
-        only; the caller owns table GC. Set dropTables=true to also drop
-        the physical tables this run produced (from the materialization's
-        manifest) as a best-effort cleanup.
+        materialization record. A delete is record-only: it never drops a
+        table, and the caller owns table GC. To drop a table this run produced,
+        check that no remaining run, of any version, names a table with that
+        name in any place, then drop it through its connection.
+        `dropTables=true` is refused with 400 and deletes nothing;
+        `dropTables=false`, which older clients send, is accepted and ignored.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
         - $ref: "#/components/parameters/materializationId"
-        - name: dropTables
-          in: query
-          required: false
-          description: |
-            When true, also drop the physical tables recorded in the
-            materialization's manifest before deleting the record. Defaults to
-            false (record-only delete; the caller owns table GC). A table
-            whose table segment another committed run of the package names,
-            in any place or container, is kept: it may be that run's table
-            reached under another name (two names for one DuckLake).
-
-            Only `true` and `false` are accepted. Any other value is refused
-            with 400 rather than read as `false`, which would delete the record,
-            leave the tables on disk, and still answer 204.
-          schema:
-            type: boolean
-            default: false
         - $ref: "#/components/parameters/versionId"
       responses:
         "204":
@@ -6024,7 +6009,7 @@ components:
                   be the very table served, so it is never dropped).
                   Listed on the newest run's
                   `metadata.keptTables` until no committed run names it in
-                  its place (its runs deleted, with or without `dropTables`),
+                  its place (its runs deleted; a delete is record-only),
                   a run finds it dropped by hand (never on Snowflake or
                   MySQL, whose catalogs hide tables), or its name is used
                   again in its own place

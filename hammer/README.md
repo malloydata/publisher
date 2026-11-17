@@ -357,7 +357,7 @@ hammer/
     server.ts          # build + spawn a real Publisher server process
     config.ts          # generate publisher.config.json (connections + packages)
     packages.ts        # write generated Malloy packages to disk
-    rest.ts            # REST client: build, poll, query (SQL + row values), bind, republish, reclaim
+    rest.ts            # REST client: build, poll, query (SQL + row values), bind, republish, delete
     scenario_md.ts     # the markdown scenario interpreter (parse -> Scenario)
     scenario_md.spec.ts # grammar tests — a malformed scenario must fail loudly
   scenarios/

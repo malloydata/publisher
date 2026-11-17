@@ -1786,9 +1786,10 @@ function placedPersistOf(
    if (placed.placement.tier === "storage") {
       persist.storage = placed.placement.destination;
    }
-   // Without `name=`, the table takes the source's own name (made plain
-   // when it is not, see materializeTableName), which the self-instructed
-   // run gives its package's or version's suffix (run_instructions.ts). A
+   // Without `name=`, the source's own name (made plain when it is not, see
+   // materializeTableName) is only a placeholder: the self-instructed run
+   // replaces it with the readable `<package>__<file>__<source>__p<8 hex>`
+   // name (selfTableName, run_instructions.ts). A
    // source is planned in the model that declares it (see
    // `declaredHere`), so its name here is the name its author gave it.
    // With `name=`, the table is the author's: written at that name (its
