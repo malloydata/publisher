@@ -16,8 +16,9 @@
  * unknown, is `unread`: the bind leaves it out and its sources answer live
  * (fail safe). Never throws.
  *
- * A table on a DuckLake connection whose catalog names a 128-bit integer
- * column is read as holding a DOUBLE, which its Parquet files do
+ * A table in a DuckLake catalog (a `ducklake` connection's, or one a DuckDB
+ * connection attached) whose catalog names a 128-bit integer column is read
+ * as holding a DOUBLE, which its Parquet files do
  * (`ducklakeStoresAsDouble`), so the bind never reads it as exact.
  */
 
@@ -104,8 +105,9 @@ export async function observedDatabaseColumns(args: {
             });
          }
       }
-      // DuckLake writes a 128-bit integer to Parquet as a DOUBLE.
-      const ducklake = connectionTypeOf(connection) === "ducklake";
+      // DuckLake writes a 128-bit integer to Parquet as a DOUBLE: decided
+      // per table, from the catalog it is in.
+      const ducklake = await ducklakeTablesOf(connection, dialect, tables);
       for (const batch of batches) {
          tasks.push(() =>
             readBatch(
@@ -123,12 +125,58 @@ export async function observedDatabaseColumns(args: {
    return out;
 }
 
+/**
+ * The keys of `tables` that live in a DuckLake catalog. Every table of a
+ * `ducklake` connection does; on a DuckDB connection, a table does when its
+ * catalog (its path's first part, else the session's current database) is
+ * one DuckDB attached as DuckLake, as a `setupSQL` that attaches and USEs a
+ * lake makes it. Read from `duckdb_databases()` once per connection; a read
+ * that fails counts every table of a DuckDB connection as DuckLake (fail
+ * safe: a 128-bit column then answers live).
+ */
+async function ducklakeTablesOf(
+   connection: ReadConnection,
+   dialect: string,
+   tables: readonly CatalogTable[],
+): Promise<Set<string>> {
+   const all = new Set(tables.map((t) => t.key));
+   if (connectionTypeOf(connection) === "ducklake") return all;
+   if (dialect !== "duckdb" || tables.length === 0) return new Set();
+   let rows: Record<string, unknown>[];
+   try {
+      rows = (
+         await connection.runSQL(
+            "SELECT database_name, type, current_database() AS current FROM duckdb_databases()",
+            { rowLimit: NATIVE_SCHEMA_ROW_LIMIT },
+         )
+      ).rows as Record<string, unknown>[];
+   } catch {
+      return all;
+   }
+   const lakes = new Set(
+      rows
+         .filter((r) => String(r.type).toLowerCase() === "ducklake")
+         .map((r) => String(r.database_name).toLowerCase()),
+   );
+   if (lakes.size === 0) return new Set();
+   const current = String(rows[0]?.current ?? "").toLowerCase();
+   return new Set(
+      tables
+         .filter((t) =>
+            lakes.has(
+               (t.parts.length >= 3 ? t.parts[0] : current).toLowerCase(),
+            ),
+         )
+         .map((t) => t.key),
+   );
+}
+
 /** Run one batch and record each of its keys' answer. */
 async function readBatch(
    connection: ReadConnection,
    dialect: string,
-   /** A DuckLake connection's table: a 128-bit integer holds a DOUBLE. */
-   ducklake: boolean,
+   /** The keys of tables in a DuckLake catalog: a 128-bit integer holds a DOUBLE. */
+   ducklake: ReadonlySet<string>,
    batch: CatalogBatch,
    timeoutMs: number,
    out: Map<string, ObservedColumns>,
@@ -168,7 +216,10 @@ async function readBatch(
                : {
                     dialect,
                     columns: named.map((c) => {
-                       if (ducklake && ducklakeStoresAsDouble(c.type)) {
+                       if (
+                          ducklake.has(key) &&
+                          ducklakeStoresAsDouble(c.type)
+                       ) {
                           return {
                              name: c.name,
                              type: "DOUBLE",

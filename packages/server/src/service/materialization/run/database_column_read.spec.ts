@@ -69,7 +69,13 @@ describe("observedDatabaseColumns on DuckDB", () => {
          connectionNameOf: () => "duckdb",
          connection: async () => connection,
       });
-      expect(statements).toHaveLength(3);
+      // One DESCRIBE per table, and one read of which catalogs are DuckLake.
+      expect(
+         statements.filter((sql) => !sql.includes("duckdb_databases()")),
+      ).toHaveLength(3);
+      expect(
+         statements.filter((sql) => sql.includes("duckdb_databases()")),
+      ).toHaveLength(1);
       const a = observed.get("ida") as {
          columns: { name: string; type?: string }[];
       };
@@ -238,7 +244,9 @@ describe("observedDatabaseColumns: batched, bounded, timed out", () => {
          connectionNameOf: () => "d",
          connection: async () => r.connection,
       });
-      expect(r.statements).toHaveLength(10);
+      expect(
+         r.statements.filter((sql) => !sql.includes("duckdb_databases()")),
+      ).toHaveLength(10);
       expect(r.maxInFlight()).toBe(4);
    });
 
@@ -370,6 +378,66 @@ describe("observedDatabaseColumns: a DuckLake 128-bit integer (P4-01)", () => {
          expect(columns[0]).toMatchObject({ name: "h", nativeType: "HUGEINT" });
       } finally {
          await c.close();
+      }
+   });
+});
+
+/**
+ * P4-01: the guard is decided per table, from its catalog: a DuckDB
+ * connection whose setup attached a DuckLake writes lake tables while it
+ * reports `duckdb`.
+ */
+describe("observedDatabaseColumns: a DuckLake catalog on a duckdb connection (P4-01)", () => {
+   it("reads a lake table's 128-bit integer as a DOUBLE, and a native table's as itself", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "observed-lake-"));
+      const c = recordConnectionType(
+         new DuckDBConnection("attached_lake", path.join(dir, "db.duckdb")),
+         "duckdb",
+      );
+      try {
+         await c.runSQL("INSTALL ducklake");
+         await c.runSQL("LOAD ducklake");
+         await c.runSQL(
+            `ATTACH 'ducklake:${path.join(dir, "m.ducklake")}' AS lake (DATA_PATH '${path.join(dir, "data")}/')`,
+         );
+         await c.runSQL("CREATE TABLE lake.main.lt AS SELECT 1::HUGEINT AS h");
+         await c.runSQL("CREATE TABLE nt AS SELECT 1::HUGEINT AS h");
+         const observed = await observedDatabaseColumns({
+            entries: {
+               lake: { tableName: "lake.main.lt" },
+               native: { tableName: "nt" },
+            },
+            connectionNameOf: () => "w",
+            connection: async () => c,
+         });
+         expect(
+            (observed.get("lake") as { columns: unknown[] }).columns,
+         ).toEqual([
+            {
+               name: "h",
+               type: "DOUBLE",
+               nativeType: "DOUBLE",
+               storedAsDouble: true,
+            },
+         ]);
+         expect(
+            (observed.get("native") as { columns: unknown[] }).columns,
+         ).toEqual([{ name: "h", type: "BIGINT", nativeType: "HUGEINT" }]);
+         // A USE of the lake makes an unqualified name a lake table.
+         await c.runSQL("USE lake");
+         await c.runSQL("CREATE TABLE ut AS SELECT 1::HUGEINT AS h");
+         const used = await observedDatabaseColumns({
+            entries: { used: { tableName: "ut" } },
+            connectionNameOf: () => "w",
+            connection: async () => c,
+         });
+         expect(
+            (used.get("used") as { columns: { storedAsDouble?: true }[] })
+               .columns[0].storedAsDouble,
+         ).toBe(true);
+      } finally {
+         await c.close();
+         fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 });
