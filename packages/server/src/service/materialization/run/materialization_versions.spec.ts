@@ -500,6 +500,48 @@ describe('scope "version": each version builds and serves its own tables', () =>
       ).toEqual(["2.0.0"]);
    });
 
+   it("archiving a version keeps a table whose name another version's committed run names in another container", async () => {
+      // On DuckDB `main.summary_t` and `<catalog>.summary_t` are one table:
+      // a table's name does not say where it is, so the reclaim judges by
+      // its last segment and keeps it.
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      const v1 = await build({ versionId: VersionRef.parse("1.0.0") });
+      const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
+      const [{ db: catalog }] = await warehouseSQL(
+         "SELECT current_database() AS db",
+      );
+      await warehouseSQL("CREATE TABLE summary_t AS SELECT 7 AS answer");
+      const naming = async (
+         run: Materialization,
+         physicalTableName: string,
+      ) => {
+         const entries = run.manifest!.entries as Record<
+            string,
+            Record<string, unknown>
+         >;
+         await repo.updateMaterialization(run.id, {
+            manifest: {
+               ...run.manifest!,
+               entries: Object.fromEntries(
+                  Object.entries(entries).map(([id, e]) => [
+                     id,
+                     { ...e, physicalTableName },
+                  ]),
+               ),
+            } as never,
+         });
+      };
+      await naming(v1, "main.summary_t");
+      await naming(v2, `${String(catalog)}.summary_t`);
+
+      await env.getVersionService()!.setArchiveStatus(PKG, "1.0.0", "archive");
+      await Promise.all(reclaims);
+
+      expect(await repo.getMaterializationById(v1.id)).toBeNull();
+      expect(await warehouseTables()).toContain("summary_t");
+   });
+
    it("two packages at one version build tables of their own, so archiving one leaves the other's", async () => {
       // Both declare `persist name="summary"` on the environment's shared
       // connection and are at 1.0.0. Named for the version alone, they built
@@ -1191,7 +1233,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
       expect(refused).toBeInstanceOf(MaterializationConflictError);
    });
 
-   it("a run with instructions that rebuilds another version's table leaves that version serving live", async () => {
+   it("a run with instructions makes its version the host's, which serves live, whoever rebuilds its table", async () => {
       await publish("1.0.0", 1, "package");
       await publish("2.0.0", 2, "package");
       const instruct = async (versionId: string) => {
@@ -1217,11 +1259,55 @@ describe('scope "package": the versions share the package\'s tables', () => {
       env = await newEnvironment();
       service = newService(env);
       await tamper("host_t", 202);
+      // The host built 2.0.0, so it owns it: with no manifest bound it
+      // serves live, never the table its run left in the store.
+      expect(await answerOf("2.0.0")).toBe(2);
+
+      // 1.0.0's caller names the same table, from 1.0.0's definition: 2.0.0
+      // still serves live, at once and after a restart.
+      expect((await instruct("1.0.0")).status).toBe("MANIFEST_FILE_READY");
+      expect(await answerOf("2.0.0")).toBe(2);
+      env = await newEnvironment();
+      service = newService(env);
+      expect(await answerOf("2.0.0")).toBe(2);
+   });
+
+   it("a run with instructions that rebuilds another version's table leaves that version serving live", async () => {
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      // 2.0.0 builds and serves a table of its own.
+      const auto = await build({ versionId: VersionRef.parse("2.0.0") });
+      expect(auto.status).toBe("MANIFEST_FILE_READY");
+      const table = Object.values(
+         (
+            auto.manifest as {
+               entries: Record<string, { physicalTableName: string }>;
+            }
+         ).entries,
+      )[0].physicalTableName;
+      await tamper(table, 202);
       expect(await answerOf("2.0.0")).toBe(202);
 
-      // 1.0.0's caller names the same table, from 1.0.0's definition: 2.0.0,
+      // 1.0.0's caller names that table, from 1.0.0's definition: 2.0.0,
       // loaded and bound to it, serves live at once, and after a restart.
-      expect((await instruct("1.0.0")).status).toBe("MANIFEST_FILE_READY");
+      const plan = (
+         await env.getPackage(parsePackageName(PKG), false, {
+            versionId: VersionRef.parse("1.0.0"),
+         })
+      ).getBuildPlan()!;
+      const source = Object.values(plan.sources)[0];
+      const instructed = await build({
+         versionId: VersionRef.parse("1.0.0"),
+         buildInstructions: [
+            {
+               sourceID: source.sourceID,
+               sourceEntityId: source.sourceEntityId,
+               physicalTableName: table,
+               realization: "COPY",
+            },
+         ] as never,
+      });
+      expect(instructed.status).toBe("MANIFEST_FILE_READY");
       expect(await answerOf("2.0.0")).toBe(2);
       env = await newEnvironment();
       service = newService(env);

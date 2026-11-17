@@ -27,6 +27,7 @@ import {
    tableNameParts,
    tableNamesMeet,
 } from "../domain/table_name";
+import { isPersistedQuerySourceID } from "../domain/table_plans";
 import { getPersistStorageMode } from "../../../config";
 import {
    BadRequestError,
@@ -339,6 +340,7 @@ function labelOf(
    return sourceLabel(
       persistSource.name,
       rollup?.baseSourceName && rollup.grainDimensions ? rollup : undefined,
+      { persistedQuery: isPersistedQuerySourceID(persistSource.sourceID) },
    );
 }
 
@@ -425,6 +427,12 @@ function selfTableName(
 const READABLE_TAIL = /__p[0-9a-f]{8}$/;
 
 /**
+ * How a persisted query's readable name ended before its label dropped the
+ * build source's `__query` (`<query>__query`, sanitized to `<query>_query`).
+ */
+const LEGACY_QUERY_LABEL_END = "_query";
+
+/**
  * Whether a table an earlier run of this package built for the same source,
  * in the same destination, at `recorded`, keeps that name rather than taking
  * `fresh`: when `recorded` is a readable name this scheme gave it (all
@@ -452,6 +460,15 @@ function keepsReadableName(
       return false;
    }
    const head = (leaf: string) => leaf.replace(READABLE_TAIL, "");
+   // A persisted query's table named before its label dropped the build
+   // source's `__query` (`…__q_query__p…`): renamed, and rebuilt, once.
+   if (
+      isPersistedQuerySourceID(persistSource.sourceID) &&
+      head(was.leaf).endsWith(LEGACY_QUERY_LABEL_END) &&
+      !head(now.leaf).endsWith(LEGACY_QUERY_LABEL_END)
+   ) {
+      return false;
+   }
    // A `name=` that sets the prefix (under `scope: version`, or a rollup's
    // in any package) keeps the table's name only while the prefix is the
    // same; a readable name's own prefix (with `__`) stands for none.

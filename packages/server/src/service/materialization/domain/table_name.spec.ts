@@ -178,6 +178,16 @@ describe("the prefix shared with the control plane", () => {
       expect(readableSegment("orders__by_month")).toBe("orders_by_month");
    });
 
+   it("a persisted named query reads as the query; any other name ending __query keeps it", () => {
+      expect(
+         sourceLabel("top__query", undefined, { persistedQuery: true }),
+      ).toBe("top");
+      expect(
+         sourceLabel("top_query__query", undefined, { persistedQuery: true }),
+      ).toBe("top_query");
+      expect(sourceLabel("mine__query")).toBe("mine__query");
+   });
+
    it("budgets by dialect", () => {
       for (const d of ["postgres", "mysql", "trino", "presto", undefined]) {
          expect(leafBudget(d, false)).toBe(50);
