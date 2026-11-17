@@ -762,7 +762,7 @@ Fix the annotation each line names, then publish or reload. What fails the load:
 - A key the route does not read: every route's key set is closed (`persist-unknown-key`, `materialize-unknown-key`, `rollup-unknown-key`). A retired key, `partition=`, `sharing=` or `schedule=` (`persist-retired-key`, `materialize-retired-key`).
 - A value that is wrong as written (`persist-invalid`, `materialize-invalid`, `rollup-invalid`, `persist-view-invalid`, `persist-query-invalid`): an empty or non-text `storage=`, an `@env.` reference, an unsafe `name=` or one that ends the way Publisher names its own tables, `#(materialize)` beside the source's own `#@ persist`, an `inline=` that is not a list of joins of the source, a carried key of the wrong shape, a list `watermark=` anywhere but an incremental pair table, an incremental key on a persisted view or query, and an invalid [incremental declaration](#incremental-refresh).
 - `#@ persist` on a shape Malloy does not plan, such as a filtered pass-through, a table with only added fields (`duckdb.table('x') extend { measure: … }`), or an unbound parameterized source (`persist-not-materializable`).
-- A rollup that cannot be what it says (`preaggregate-not-a-measure`, `preaggregate-unknown-grain`, `preaggregate-not-mergeable`), on `#(rollup)` and `#@ preaggregate` alike ([preaggregation.md](preaggregation.md)).
+- A rollup that cannot be what it says (`rollup-not-a-measure`, `rollup-unknown-grain`, `rollup-not-mergeable`), on `#(rollup)` and `#@ preaggregate` alike ([preaggregation.md](preaggregation.md)).
 - Two different sources on one table in one destination, by their `name=` ([`materialization-table-collision`](#whose-table-it-is)).
 - A misspelled route or directive: `#(materialise)`, `#(Materialize)`, `#@persist`, `#@ persits`, `# persist`, `#(persist)` (`materialization-near-miss`). `#(materialize)` and `#(rollup)` spelled exactly while `PUBLISHER_MATERIALIZE=false` are ignored, not a failure.
 
@@ -772,7 +772,7 @@ The code says which outcome it is:
 
 | Outcome | Codes |
 | --- | --- |
-| Fails the load, never a warning | `*-invalid`, `*-unknown-key`, `*-retired-key`, `*-unparseable`, `persist-not-materializable`, `preaggregate-not-a-measure`, `preaggregate-unknown-grain`, `preaggregate-not-mergeable`, `materialization-table-collision`, `materialization-near-miss` |
+| Fails the load, never a warning | `*-invalid`, `*-unknown-key`, `*-retired-key`, `*-unparseable`, `persist-not-materializable`, `rollup-not-a-measure`, `rollup-unknown-grain`, `rollup-not-mergeable`, `materialization-table-collision`, `materialization-near-miss` |
 | Refused alone, severity `warn`, and a `refusedSources` record with its reason | `persist-not-built`, `materialize-not-built`, `rollup-not-built`, `persist-view-not-built`, `persist-query-not-built` |
 
 Warnings about the deployment rather than one item carry codes of their own, such as `materialization-destination-missing` and `materialization-storage-mode` (`storage=` while `PERSIST_STORAGE_MODE` is `off` or `write-only`).

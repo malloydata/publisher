@@ -146,12 +146,12 @@ source: ops is orders include {
       });
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.measure, r.tier, why(r)])).toEqual([
-         ["big", "malformed", "preaggregate-not-a-measure"],
+         ["big", "malformed", "rollup-not-a-measure"],
          ["a", "malformed", "rollup-invalid"],
          ["b", "malformed", "rollup-unknown-key"],
          ["e", "malformed", "rollup-invalid"],
-         ["c", "malformed", "preaggregate-unknown-grain"],
-         ["d", "malformed", "preaggregate-not-mergeable"],
+         ["c", "malformed", "rollup-unknown-grain"],
+         ["d", "malformed", "rollup-not-mergeable"],
       ]);
    });
 });

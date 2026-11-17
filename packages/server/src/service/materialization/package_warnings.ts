@@ -93,8 +93,7 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type Models = ReadonlyMap<string, Model>;
 
 /** The code on the warning for a rollup whose build found its join_one key repeated. */
-const PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE =
-   "preaggregate-join-one-key-repeated";
+const ROLLUP_JOIN_ONE_KEY_REPEATED_CODE = "rollup-join-one-key-repeated";
 
 /**
  * The findings on authored annotations: an unservable one (a valid
@@ -153,7 +152,7 @@ export function repeatedJoinOneKeyWarnings(
       warnings.push({
          ...(source?.modelPath ? { model: source.modelPath } : {}),
          subject: rollup.baseSourceName,
-         code: PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE,
+         code: ROLLUP_JOIN_ONE_KEY_REPEATED_CODE,
          severity: "warn",
          message:
             `holds \`${check.keyColumn}\` more than once, found by its ` +

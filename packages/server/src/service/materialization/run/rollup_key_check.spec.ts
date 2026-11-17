@@ -1179,7 +1179,7 @@ describe("the rollup key record, bound for serving", () => {
          materialization
             .repeatedJoinOneKeyWarnings()
             .map((w) => [w.subject, w.code]),
-      ).toEqual([["crew", "preaggregate-join-one-key-repeated"]]);
+      ).toEqual([["crew", "rollup-join-one-key-repeated"]]);
       materialization.forgetKeyUniqueness(["a"]);
       expect(materialization.repeatedJoinOneKeyWarnings()).toEqual([]);
    });
@@ -1396,7 +1396,7 @@ describe("the rollup key record, bound for serving", () => {
       });
       const warnings = materialization.repeatedJoinOneKeyWarnings();
       expect(warnings.map((w) => [w.subject, w.code, w.model])).toEqual([
-         ["crew", "preaggregate-join-one-key-repeated", "m.malloy"],
+         ["crew", "rollup-join-one-key-repeated", "m.malloy"],
       ]);
       expect(warnings[0].message).toContain("`flight_id` more than once");
       // A run about to rewrite the table forgets the check, and the warning.

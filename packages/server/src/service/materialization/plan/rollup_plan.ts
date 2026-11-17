@@ -822,7 +822,7 @@ function rollupDeclarationsOf(
       if (!isMeasure(field)) {
          refused.push({
             tier: "malformed",
-            code: "preaggregate-not-a-measure",
+            code: "rollup-not-a-measure",
             message: `#(rollup) is on "${name}" of source "${sourceName}", which is not a measure; it goes on the measure to store, and the dimensions to store it at go in its grain=[…]`,
             sourceName,
             measure: name,
@@ -922,7 +922,7 @@ function rollupDeclarationsOf(
    for (const note of sourceNotes) {
       refused.push({
          tier: "malformed",
-         code: "preaggregate-not-a-measure",
+         code: "rollup-not-a-measure",
          message: `${routeOfNote(note.text) === ROLLUP_ALIAS_ROUTE ? "#(preaggregate)" : "#(rollup)"} is on source "${sourceName}"; it goes on a measure, with the dimensions to store it at in its grain=[…]`,
          sourceName,
       });
@@ -1165,7 +1165,7 @@ function declarationRefusal(
       if (decl.v1) return "skip";
       return {
          tier: "malformed",
-         code: "preaggregate-unknown-grain",
+         code: "rollup-unknown-grain",
          message: `#(rollup) on measure "${decl.measure}" of source "${sourceName}": ${grainProblem}`,
          sourceName,
          measure: decl.measure,
@@ -1330,7 +1330,7 @@ function rollupMeasureOf(
       return d.kind === "not_mergeable"
          ? {
               tier: "malformed",
-              code: "preaggregate-not-mergeable",
+              code: "rollup-not-mergeable",
               message: `#(rollup) on measure "${decl.measure}" of source "${sourceName}": its partials cannot be merged (${d.detail}). Store sum, count, min and max measures, and derive the rest from them`,
               sourceName,
               measure: decl.measure,

@@ -352,14 +352,14 @@ export const PREAGG_WARN_ONLY: ReadonlyMap<
 function preaggregateViolationCode(code: PreaggregateViolationCode): string {
    if (code === "unknown_key") return "rollup-unknown-key";
    if (code === "unparseable") return "rollup-unparseable";
-   if (code === "non_additive_measure") return "preaggregate-not-mergeable";
-   if (code.startsWith("misplaced_")) return "preaggregate-not-a-measure";
+   if (code === "non_additive_measure") return "rollup-not-mergeable";
+   if (code.startsWith("misplaced_")) return "rollup-not-a-measure";
    if (
       code === "unknown_grain_dimension" ||
       code.startsWith("grain_") ||
       code === "truncation_on_non_temporal"
    ) {
-      return "preaggregate-unknown-grain";
+      return "rollup-unknown-grain";
    }
    return ROLLUP_INVALID_CODE;
 }

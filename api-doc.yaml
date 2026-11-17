@@ -5948,8 +5948,10 @@ components:
                   `materialize-unparseable`, `rollup-unparseable`,
                   `persist-view-unparseable` and `persist-query-unparseable`; `persist-not-materializable` (a
                   `#@ persist` on a shape Malloy does not plan);
-                  `preaggregate-not-a-measure`, `preaggregate-unknown-grain`
-                  and `preaggregate-not-mergeable`;
+                  `rollup-not-a-measure`, `rollup-unknown-grain` and
+                  `rollup-not-mergeable` (a rollup line on a field that is not
+                  a measure, a grain naming no dimension, a measure no rollup
+                  can merge);
                   `materialization-table-collision` (two sources whose
                   `name=` puts them on one table; under
                   `PERSIST_COLLISION_ENFORCE=false` a refusal instead); and
@@ -5958,9 +5960,13 @@ components:
                   `#@ persits`). `preaggregate-malformed` is retained and no
                   longer produced: it is `rollup-invalid` or
                   `rollup-unparseable` now. Retained, no longer produced:
-                  `preaggregate-invalid`, `preaggregate-unknown-key` and
-                  `preaggregate-unparseable`, now `rollup-invalid`,
-                  `rollup-unknown-key` and `rollup-unparseable`. A measure or
+                  `preaggregate-invalid`, `preaggregate-unknown-key`,
+                  `preaggregate-unparseable`, `preaggregate-not-a-measure`,
+                  `preaggregate-unknown-grain` and
+                  `preaggregate-not-mergeable`, now `rollup-invalid`,
+                  `rollup-unknown-key`, `rollup-unparseable`,
+                  `rollup-not-a-measure`, `rollup-unknown-grain` and
+                  `rollup-not-mergeable`. A measure or
                   source that carries both `#(rollup)` and `#(preaggregate)`
                   is `rollup-invalid`.
                   A VALID annotation Publisher cannot build here is refused
@@ -6005,6 +6011,13 @@ components:
                   the same SQL on one connection, so they share one table and
                   one boundary, where at least one is incremental (one per
                   source; `warn`).
+                  `rollup-join-one-key-repeated`: a bound rollup whose last
+                  build found the key of a `join_one` it reads repeated, so a
+                  query reading that join beside other aggregates is answered
+                  live; it clears once a build finds the key unique (one per
+                  rollup; `warn`). `preaggregate-join-one-key-repeated` is
+                  retained, no longer produced: it is
+                  `rollup-join-one-key-repeated` now.
                   `join-bypass`: an author join from a published source to one
                   with a stricter gate, which the join does not carry (one per
                   join, or one for a walk cut short at the join bound; always

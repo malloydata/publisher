@@ -479,7 +479,7 @@ source: orders is orders_raw extend {
       await freshLoadPool();
    });
 
-   it("v2 #(rollup) on avg and count_distinct: the load fails, preaggregate-not-mergeable naming both", async () => {
+   it("v2 #(rollup) on avg and count_distinct: the load fails, rollup-not-mergeable naming both", async () => {
       let error: unknown;
       try {
          const loader = await loadFixture({
@@ -497,7 +497,7 @@ source: orders is orders_raw extend {
       expect(error).toBeInstanceOf(Error);
       const lines = (error as Error).message
          .split("\n")
-         .filter((l) => l.includes("[preaggregate-not-mergeable]"));
+         .filter((l) => l.includes("[rollup-not-mergeable]"));
       expect(lines.some((l) => l.includes("avg_amount"))).toBe(true);
       expect(lines.some((l) => l.includes("customers"))).toBe(true);
    }, 120_000);
