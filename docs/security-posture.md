@@ -246,6 +246,13 @@ a source that should not answer schema questions to outsiders wants a lock as we
   accepting ACL-model disclosure: a gate reading `childtable.name` names a relationship the caller
   may not otherwise see, so a failure to attach the gate returns an opaque error naming no column,
   join, or expression — only the source.
+- **A gate is evaluated with the query it is grafted into.** A gate on a field computed from a
+  timestamp follows the query's `timezone:`, and a gate inherited through a `->` derivation filters
+  the derivation's output, after its `all()`, window functions and `limit` have run over every row.
+  For these two live behaviours served answers match a live run. Gate on a column that already
+  holds the date or key, and filter a derivation's input with a first-stage `where:` on the gate's
+  given when its global context is sensitive. See
+  [row-level-access.md § Where a gate is evaluated](row-level-access.md#where-a-gate-is-evaluated).
 - **A row-level gate's given values land in the warehouse query log.** The filter is inlined
   (`WHERE org_id IN (7, 8)`), not parameterized, so every caller's group set appears verbatim in
   the warehouse's own query logging. Weigh that when deciding what a given carries — a group set
