@@ -1560,4 +1560,87 @@ describe("Publisher.embed (host side)", () => {
       expect(() => page.Publisher.embed("#missing", { src: SRC })).toThrow();
       expect(() => page.Publisher.embed("#slot", {})).toThrow();
    });
+
+   describe("shared fixture with the SDK's createDataAppBridge", () => {
+      const fixture = JSON.parse(
+         fs.readFileSync(
+            path.join(
+               __dirname,
+               "../../../sdk/src/utils/dataAppBus.fixture.json",
+            ),
+            "utf8",
+         ),
+      );
+      // "$NONCE" and "$ID" in the fixture stand for the embed's nonce and the request id.
+      const fill = (v: unknown, subs: Record<string, string>): unknown => {
+         if (typeof v === "string") return subs[v] ?? v;
+         if (Array.isArray(v)) return v.map((x) => fill(x, subs));
+         if (v && typeof v === "object") {
+            return Object.fromEntries(
+               Object.entries(v).map(([k, x]) => [k, fill(x, subs)]),
+            );
+         }
+         return v;
+      };
+
+      it("is about the origin these tests mount at", () => {
+         expect(fixture.appOrigin).toBe(APP);
+      });
+
+      for (const isolate of [false, true]) {
+         for (const c of fixture.events) {
+            it(`${isolate ? "isolated: " : ""}${c.name}`, () => {
+               const m = mount(bootHost(), { isolate });
+               const seen: unknown[] = [];
+               m.handle.on("probe.event", (p: unknown) => seen.push(p));
+               m.fromChild(
+                  fill(c.message, { $NONCE: m.nonce }),
+                  c.origin,
+                  c.source === "iframe" ? m.child : { postMessage() {} },
+               );
+               expect(seen).toHaveLength(
+                  (isolate ? c.acceptIsolated : c.accept) ? 1 : 0,
+               );
+            });
+         }
+      }
+
+      for (const c of fixture.handshake) {
+         it(`handshake: ${c.name}`, async () => {
+            const m = mount(bootHost());
+            m.handle.send("probe", {}).catch(() => {});
+            m.fromChild(fill(c.message, { $NONCE: m.nonce }));
+            await flush();
+            const types = m.childPosts.map((p) => p.msg.type);
+            expect(types.includes("probe")).toBe(c.probePosted);
+            expect(types.includes("hello")).toBe(c.helloPosted);
+         });
+      }
+
+      for (const c of fixture.replies) {
+         it(`reply: ${c.name}`, async () => {
+            const page = bootHost();
+            const m = mount(page);
+            m.load();
+            helloReply(m);
+            await flush();
+            m.childPosts.length = 0;
+            const result = m.handle
+               .send("probe.request", { a: 1 })
+               .then((value: unknown) => ({ value }))
+               .catch((error: Json) => ({ error }));
+            const id = m.childPosts[0].msg.id;
+            m.fromChild(fill(c.message, { $NONCE: m.nonce, $ID: id }));
+            if ("timesOut" in c.outcome) await page.clock.advance(5000);
+            const settled: Json = await result;
+            if ("resolves" in c.outcome) {
+               expect(settled.value).toEqual(c.outcome.resolves);
+            } else if ("rejectsWithCode" in c.outcome) {
+               expect(settled.error.code).toBe(c.outcome.rejectsWithCode);
+            } else {
+               expect(settled.error.message).toContain("no reply to");
+            }
+         });
+      }
+   });
 });

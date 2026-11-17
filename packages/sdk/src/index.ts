@@ -21,4 +21,22 @@ export * from "./utils/formatting";
 // its own "this path is not a model" state has to point at the URL that does
 // serve the file, and this is the one place that string is built.
 export { packageFileUrl } from "./utils/dataAppEmbed";
+// The host side of the data-app event bus, for hosts that own their iframe.
+export {
+   createDataAppBridge,
+   PublisherBridgeError,
+   type DataAppBridge,
+   type DataAppBridgeOptions,
+   type PublisherEnvelope,
+   type PublisherErrorCode,
+   type PublisherEventType,
+   type PublisherGivensPayload,
+   type PublisherHandler,
+   type PublisherMessageMeta,
+   type PublisherPayload,
+   type PublisherPayloads,
+   type PublisherQueryRan,
+   type PublisherReply,
+   type ReadyPayload,
+} from "./utils/dataAppBridge";
 export * from "./constants/docLinks";
