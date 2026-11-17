@@ -51,7 +51,9 @@ let installed = false;
 
 /**
  * Takes the gate, or gives up when `signal` aborts first (undefined), so a
- * timed-out waiter fails at its timer instead of when the holder finishes.
+ * timed-out stream waiter fails at its timer instead of when the holder
+ * finishes. A non-stream statement can't be cancelled while queued: db-duckdb's
+ * `runSQL` ignores `abortSignal`, so it waits with no signal.
  * `async-mutex` cannot cancel one waiter, so an abandoned acquire stays queued
  * and hands its turn straight on when it arrives.
  */

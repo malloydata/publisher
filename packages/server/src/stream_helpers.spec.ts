@@ -9,6 +9,7 @@ import type {
 import { describe, expect, it } from "bun:test";
 
 import { PayloadTooLargeError } from "./errors";
+import { PUBLISHER_QUERY_TIMEOUT_REASON } from "./query_timeout";
 import { isStreamingConnection, streamSqlWithBudget } from "./stream_helpers";
 
 /**
@@ -293,7 +294,7 @@ describe("streamSqlWithBudget", () => {
             options?: RunSQLOptions,
          ): AsyncIterableIterator<QueryRecord> {
             yield { a: 1 };
-            callerAc.abort();
+            callerAc.abort(PUBLISHER_QUERY_TIMEOUT_REASON);
             if (options?.abortSignal?.aborted) return;
             yield { a: 2 };
          },
@@ -305,6 +306,6 @@ describe("streamSqlWithBudget", () => {
             { abortSignal: callerAc.signal },
             { maxRows: 10, maxBytes: 1_000 },
          ),
-      ).rejects.toThrow();
+      ).rejects.toBe(PUBLISHER_QUERY_TIMEOUT_REASON);
    });
 });
