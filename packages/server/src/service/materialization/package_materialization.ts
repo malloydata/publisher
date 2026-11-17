@@ -69,6 +69,7 @@ import * as warnings from "./package_warnings";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
+import type { KeptTable } from "./domain/types";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
@@ -141,6 +142,11 @@ export class PackageMaterialization {
     * checks included: the snapshot's `entries`. Undefined when serving live.
     */
    private colocatedEntries: FreshnessManifest | undefined;
+   /**
+    * The tables the newest auto-run lists as kept after a rename
+    * (Reclaimer.reclaimRenamedTables), set by that run.
+    */
+   private keptTables: readonly KeptTable[] = [];
    /**
     * The same entries as table names only, the manifest models hydrate with
     * and /compile reads. Surfaced on /status so the control plane can confirm
@@ -798,6 +804,15 @@ export class PackageMaterialization {
       return this.persistRefusalWarnings(
          (id) => id in this.plan.refusalNotices,
       );
+   }
+
+   /** The tables the newest auto-run lists as kept after a rename. */
+   setKeptTables(tables: readonly KeptTable[]): void {
+      this.keptTables = tables;
+   }
+
+   keptTableWarnings(): ApiPackageWarning[] {
+      return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
    }
 
    repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {

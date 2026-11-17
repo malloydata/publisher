@@ -163,3 +163,24 @@ export type FreshnessManifest = Record<string, FreshnessAwareManifestEntry>;
 export type RunManifestLoad =
    | { loaded: true }
    | { loaded: false; step: "reload" | "bind"; error: string };
+
+/** Why a table a run replaced is kept rather than reclaimed, and listed. */
+export type KeptTableReason = "author_name" | "destination_missing";
+
+/**
+ * A table an auto-run replaced and Publisher keeps, listed on the run record
+ * (`metadata.keptTables`) and raised as a package warning
+ * (`table-kept-after-rename`) until the table is dropped or the name is
+ * reused: one at an author's exact `name=` (`author_name`), which Publisher
+ * never drops, or one in a storage destination that is no longer configured
+ * (`destination_missing`), which it cannot reach.
+ */
+export interface KeptTable {
+   sourceEntityId: string;
+   sourceName?: string;
+   /** The kept table. */
+   physicalTableName: string;
+   connectionName: string;
+   storageDestinationName?: string;
+   reason: KeptTableReason;
+}

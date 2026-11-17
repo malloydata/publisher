@@ -18,6 +18,7 @@ import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
 import type { BuildPlanPackage } from "./domain/plan_input";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
+import type { KeptTable } from "./domain/types";
 import type {
    BuildPlan,
    FreshnessManifest,
@@ -62,6 +63,11 @@ interface MaterializationPackage extends BuildPlanPackage {
     * never the package's bound tables.
     */
    chainBuildText(request: ChainBuildRequest): ChainBuildText;
+   /**
+    * The tables the newest auto-run of this package lists as kept after a
+    * rename, which its warnings name (`table-kept-after-rename`).
+    */
+   setKeptTables?(tables: readonly KeptTable[]): void;
 }
 
 /** The part of an environment's version registry a run consults. */

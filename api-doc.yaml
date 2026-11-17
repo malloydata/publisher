@@ -5985,6 +5985,16 @@ components:
                   view's or query's build source, the message naming the
                   column, both types and which applies; `warn`; see
                   docs/materialization.md).
+                  `table-kept-after-rename`: a table an auto-run replaced
+                  when its source's table was renamed or moved, which
+                  Publisher keeps rather than drops: one at an author's exact
+                  `name=` (never dropped), or one in a storage destination
+                  that is no longer configured. Listed on the newest run's
+                  `metadata.keptTables` until the table is dropped or its
+                  name is used again (one per table, `model` the model
+                  declaring the source, `subject` the source or a rollup's
+                  base, the message naming the table and where it is;
+                  `warn`; see docs/materialization.md).
                   `stored-native-schema-missing`: a colocated table is bound
                   with no captured warehouse type (its manifest entry's
                   `nativeSchema`) for a column whose field Malloy types as a big

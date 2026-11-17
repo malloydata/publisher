@@ -39,7 +39,11 @@ import {
    writeTargetsIn,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
-import { ManifestEntry } from "../domain/types";
+import {
+   type KeptTable,
+   type KeptTableReason,
+   ManifestEntry,
+} from "../domain/types";
 import { ColocatedTier } from "./colocated_build_strategy";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
@@ -59,7 +63,12 @@ import { packageOwner } from "./table_mark_sql";
 import { ownedElsewhere } from "./table_ownership";
 import { atTableSite } from "./table_site";
 import type { RunLifecycle } from "./run_lifecycle";
-import type { RenamedTable } from "./run_instructions";
+import {
+   mayBeOneTable,
+   previousDestinationOf,
+   type RenamedTable,
+} from "./run_instructions";
+import { hasReservedTableSuffix } from "../domain/table_name";
 
 /** The tiers a drop reaches a table through. */
 const COLOCATED = new ColocatedTier();
@@ -73,11 +82,83 @@ function tableKey(destination: string, physicalTableName: string): string {
 }
 
 /**
- * Where a run records the tables it built under readable names in place of
- * tables earlier runs built under the names Publisher gave them before (see
+ * Where a run records the tables it built under new names or in new places
+ * in place of tables earlier runs built for the same sources (see
  * Reclaimer.reclaimRenamedTables), until each is dropped or kept.
  */
 export const RENAMED_TABLES_KEY = "renamedTables";
+
+/**
+ * Where a run lists the tables it replaced and keeps ({@link KeptTable}):
+ * free-form run metadata, carried forward by each later run of the serving
+ * line until the table is dropped or its name is reused.
+ */
+export const KEPT_TABLES_KEY = "keptTables";
+
+/** The {@link KeptTable}s a run's metadata lists, or empty. */
+function keptTablesIn(metadata: Record<string, unknown> | null): KeptTable[] {
+   const tables = metadata?.[KEPT_TABLES_KEY];
+   if (!Array.isArray(tables)) return [];
+   return tables.filter(
+      (t): t is KeptTable =>
+         typeof t === "object" &&
+         t !== null &&
+         typeof (t as KeptTable).sourceEntityId === "string" &&
+         typeof (t as KeptTable).physicalTableName === "string" &&
+         typeof (t as KeptTable).connectionName === "string" &&
+         ((t as KeptTable).reason === "author_name" ||
+            (t as KeptTable).reason === "destination_missing"),
+   );
+}
+
+/**
+ * The newest committed run `reader` reads that lists kept tables (an empty
+ * list included), among `runs`, committed no later than `until` and other
+ * than `except`, if given.
+ */
+function newestListing(
+   runs: Materialization[],
+   reader: ServingReader,
+   options: { until?: Materialization; except?: string } = {},
+): Materialization | undefined {
+   let newest: Materialization | undefined;
+   for (const m of runs) {
+      if (m.id === options.except || m.status !== "MANIFEST_FILE_READY") {
+         continue;
+      }
+      if (!readsRun(m, reader) || !Array.isArray(m.metadata?.[KEPT_TABLES_KEY]))
+         continue;
+      if (options.until && committedAt(m) > committedAt(options.until)) {
+         continue;
+      }
+      if (!newest || committedAt(m) > committedAt(newest)) newest = m;
+   }
+   return newest;
+}
+
+/**
+ * How a loaded package finds, in the store, the tables its serving line's
+ * newest auto-run lists as kept after a rename, for its warnings: read again
+ * whenever the package (re)loads, as its served tables are.
+ */
+export function keptTablesResolverFor(
+   repository: Pick<ResourceRepository, "listMaterializations">,
+   environmentId: string,
+): (packageName: string, reader: ServingReader) => Promise<KeptTable[]> {
+   return async (packageName, reader) => {
+      const runs = await repository.listMaterializations(
+         environmentId,
+         packageName,
+         reader.owned !== undefined ? { version: reader.owned } : undefined,
+      );
+      return keptTablesIn(newestListing(runs ?? [], reader)?.metadata ?? null);
+   };
+}
+
+/** One kept table, wherever it is listed. */
+function keptKey(t: KeptTable): string {
+   return `${t.connectionName}\u0000${t.storageDestinationName ?? ""}\u0000${t.physicalTableName}`;
+}
 
 /** The {@link RenamedTable}s a run's metadata records, or empty. */
 function renamedTablesIn(
@@ -107,14 +188,22 @@ const TRANSIENT_GUARDS: ReadonlySet<string> = new Set([
    "still-referenced",
 ]);
 
-/** One old table, wherever it is recorded. */
+/** One old table, wherever it is recorded: where it is, and its name. */
 function renamedKey(
    t: Pick<
       RenamedTable,
-      "previousName" | "connectionName" | "storageDestinationName"
+      | "previousName"
+      | "connectionName"
+      | "storageDestinationName"
+      | "previousPlace"
    >,
 ): string {
-   return `${t.connectionName}\u0000${t.storageDestinationName ?? ""}\u0000${t.previousName}`;
+   return `${t.connectionName}\u0000${previousDestinationOf(t) ?? ""}\u0000${t.previousName}`;
+}
+
+/** When a committed run committed; the serving line is ordered by it. */
+function committedAt(m: Materialization): number {
+   return (m.completedAt ?? m.createdAt).getTime();
 }
 
 /**
@@ -483,6 +572,86 @@ function entryRenamedKey(entry: ManifestEntry): string {
    });
 }
 
+/** Whether a storage destination is configured, so a drop can reach it. */
+function destinationConfigured(
+   environment: MaterializationEnvironment,
+   destinationName: string,
+): boolean {
+   try {
+      environment.getStorageDestination(destinationName);
+      return true;
+   } catch {
+      return false;
+   }
+}
+
+/** The {@link KeptTable} a reclaimable entry is, kept for `reason`. */
+function keptOf(entry: ManifestEntry, reason: KeptTableReason): KeptTable {
+   return {
+      sourceEntityId: entry.sourceEntityId,
+      physicalTableName: entry.physicalTableName,
+      connectionName: entry.connectionName ?? "",
+      ...(entry.storageDestinationName
+         ? { storageDestinationName: entry.storageDestinationName }
+         : {}),
+      reason,
+   };
+}
+
+/** The reclaim's "kept" log line, for a table a guard after the decision kept. */
+function logKept(entry: ManifestEntry, guard: KeptTableReason): void {
+   logger.info("Keeping a table a readable name replaced", {
+      physicalTableName: entry.physicalTableName,
+      guard,
+   });
+}
+
+/**
+ * The tables `run` lists as kept: those the serving line's newest run
+ * before it that lists any (an empty list included) listed, and `fresh`,
+ * less any no committed run of the package names any more (dropped with
+ * its runs) and any whose name a table of `run` may take (reused). `write`
+ * says whether the list goes on the run: when it lists any, or when the run
+ * before it listed any, so a list that emptied is written empty once and
+ * stops being carried.
+ */
+function keptAfter(
+   run: Materialization,
+   runs: Materialization[],
+   reader: ServingReader,
+   fresh: KeptTable[],
+): { tables: KeptTable[]; write: boolean } {
+   const before = newestListing(runs, reader, { until: run, except: run.id });
+   const carried = [
+      ...keptTablesIn(before?.metadata ?? null),
+      ...keptTablesIn(run.metadata ?? null),
+   ];
+   const at = (t: KeptTable, e: ManifestEntry): boolean =>
+      (e.connectionName ?? "") === t.connectionName &&
+      (e.storageDestinationName ?? undefined) ===
+         (t.storageDestinationName ?? undefined) &&
+      !!e.physicalTableName &&
+      mayBeOneTable(e.physicalTableName, t.physicalTableName);
+   const named = (t: KeptTable) =>
+      runs.some(
+         (m) =>
+            m.status === "MANIFEST_FILE_READY" &&
+            Object.values(m.manifest?.entries ?? {}).some((e) => at(t, e)),
+      );
+   const reused = (t: KeptTable) =>
+      Object.values(run.manifest?.entries ?? {}).some((e) => at(t, e));
+   const byKey = new Map<string, KeptTable>();
+   for (const t of [...carried, ...fresh]) byKey.set(keptKey(t), t);
+   const tables = [...byKey.values()].filter((t) => named(t) && !reused(t));
+   return {
+      tables,
+      write:
+         tables.length > 0 ||
+         keptTablesIn(before?.metadata ?? null).length > 0 ||
+         Array.isArray(run.metadata?.[KEPT_TABLES_KEY]),
+   };
+}
+
 /** A drop of a run's manifest entries; see {@link Reclaimer.dropManifestEntries}. */
 type DropManifestEntries = Reclaimer["dropManifestEntries"];
 
@@ -748,35 +917,51 @@ export class Reclaimer {
    }
 
    /**
-    * Drop the tables auto-runs replaced with tables under readable names, once
-    * a run has committed and every loaded copy of the package is bound to it.
-    * The tables come from the runs' own records (RENAMED_TABLES_KEY): this
-    * run's, and any an earlier run of the same serving line recorded and
-    * could not finish (a crash between its commit and its drops, a failed
-    * drop, a bind that failed). Each table is dropped only when every guard
-    * holds, and is otherwise left and logged; a table Publisher cannot prove
-    * is its own is never dropped:
+    * The one rename rule: once an auto-run has committed and every loaded
+    * copy of the package is bound to it, drop each table it, or an earlier
+    * run of the same serving line, replaced (RENAMED_TABLES_KEY: a table
+    * renamed, moved to another container or another `storage=`
+    * destination, or named before readable names) that Publisher can prove
+    * is its own, and list the ones it keeps at an author's `name=`
+    * (KEPT_TABLES_KEY). A table is dropped only when every guard holds,
+    * and is otherwise left and logged; a table Publisher cannot prove is
+    * its own is never dropped:
     *
-    * 1. It is a name Publisher gave this package's table before readable
-    *    names: re-derived exactly from the environment, the package and the
-    *    version (deriveSelfInstructions only offers such a table), never an
-    *    author's `name=`, which could not end that way.
-    * 2. Its replacement committed: this run's manifest has the same source,
-    *    at the same connection or destination, under its readable name.
-    * 3. This package's own records name it: an earlier committed run that
-    *    `reader` reads built it for the same source and place.
-    * 4. No other package has marked it as its own since (`ownedElsewhere`,
+    * 1. Publisher named it: its table segment ends in one of Publisher's
+    *    own suffixes (`__p<8 hex>`, `__v<version>_<8 hex>`), which an
+    *    author's `name=` is refused. A table without one is an author's
+    *    exact `name=` (or a name from before package-owned names), never
+    *    dropped: kept, listed, and logged as `author_name`.
+    * 2. This package's records say so: an earlier committed auto-run that
+    *    `reader` reads built it for the same source, on the same connection
+    *    and in the same destination. A host-instructed run's tables are the
+    *    host's, and never count.
+    * 3. No other package has marked it as its own since (`ownedElsewhere`,
     *    checked by the drop).
-    * 5. Nothing still serves it: this run is the newest `reader` serves from,
-    *    and no run `reader` does not read (another version's own, an
-    *    orchestrated run of another version) names it.
+    * 4. Its replacement is live: this run's manifest has the source at its
+    *    new name and place, and this run is the newest `reader` serves
+    *    from.
+    * 5. Nothing else names it: no source the package serves now is at a
+    *    name that may be it, and no run `reader` does not read (another
+    *    version's own, an orchestrated run of another version) names it.
     *
-    * A table is forgotten once it is dropped, or kept by a guard that cannot
-    * come to pass (guard 3); one whose drop failed or was left in place, or
-    * that a guard a later run may find passing kept, stays recorded, for the
-    * next run to try. Best-effort
-    * throughout. Within one server: the guards read this server's records,
-    * so servers that share a schema must move to readable names together.
+    * A table in a storage destination that is no longer configured cannot
+    * be reached: kept and listed, `destination_missing`.
+    *
+    * A table is forgotten once it is dropped, or decided by a guard that
+    * cannot come to pass (2, a name another source serves, or a kept
+    * table, which moves to the list); one whose drop failed or was left in
+    * place, or that a guard a later run may find passing kept, stays
+    * recorded, for the next run to try. While the package is not bound to
+    * this run (`ensureBound` false) nothing is dropped and every reclaimable
+    * table stays recorded. Best-effort throughout. Within one server: the
+    * guards read this server's records, so servers that share a schema
+    * must move to this release together.
+    *
+    * Returns the tables this run lists as kept (carried forward from the
+    * serving line's run before it, less any dropped since or whose name a
+    * table of this run takes), for the package's warnings; undefined when
+    * the run did not commit or the step did not complete.
     */
    async reclaimRenamedTables(
       environmentName: string,
@@ -790,7 +975,7 @@ export class Reclaimer {
        * rebind.
        */
       ensureBound: () => Promise<boolean>,
-   ): Promise<void> {
+   ): Promise<KeptTable[] | undefined> {
       try {
          const environmentId = await this.resolveEnvironmentId(environmentName);
          const runs =
@@ -799,7 +984,7 @@ export class Reclaimer {
                packageName,
             )) ?? [];
          const run = runs.find((m) => m.id === runId);
-         if (run?.status !== "MANIFEST_FILE_READY") return;
+         if (run?.status !== "MANIFEST_FILE_READY") return undefined;
          // Where each table was recorded, so a decided one can be forgotten.
          const recordedOn = runs.filter(
             (m) =>
@@ -807,35 +992,56 @@ export class Reclaimer {
                (m.id === runId || readsRun(m, reader)) &&
                renamedTablesIn(m.metadata ?? null).length > 0,
          );
-         if (recordedOn.length === 0) return;
-         const { decided, retried, reclaimable } = this.decideRenamedTables(
-            recordedOn,
-            run,
-            runs,
-            reader,
-         );
-         let owed: ManifestEntry[] = [];
-         const skipped: ManifestEntry[] = [];
-         if (reclaimable.length > 0 && !(await ensureBound())) {
+         const { decided, retried, reclaimable, kept } =
+            this.decideRenamedTables(recordedOn, run, runs, reader);
+         let toDrop = reclaimable;
+         let environment: MaterializationEnvironment | undefined;
+         // A table in a destination no longer configured cannot be reached.
+         if (toDrop.some((e) => e.storageDestinationName)) {
+            environment = await this.deps.host.getEnvironment(
+               parseEnvironmentName(environmentName),
+               false,
+            );
+            const reachable: ManifestEntry[] = [];
+            for (const entry of toDrop) {
+               if (
+                  entry.storageDestinationName &&
+                  !destinationConfigured(
+                     environment,
+                     entry.storageDestinationName,
+                  )
+               ) {
+                  logKept(entry, "destination_missing");
+                  kept.push(keptOf(entry, "destination_missing"));
+                  continue;
+               }
+               reachable.push(entry);
+            }
+            toDrop = reachable;
+         }
+         if (toDrop.length > 0 && !(await ensureBound())) {
             logger.warn(
                "Keeping the tables readable names replaced: a loaded copy of the package did not rebind",
                { packageName },
             );
-            return;
+            for (const entry of toDrop) retried.add(entryRenamedKey(entry));
+            toDrop = [];
          }
-         if (reclaimable.length > 0) {
-            const environment = await this.deps.host.getEnvironment(
+         let owed: ManifestEntry[] = [];
+         const skipped: ManifestEntry[] = [];
+         if (toDrop.length > 0) {
+            environment ??= await this.deps.host.getEnvironment(
                parseEnvironmentName(environmentName),
                false,
             );
-            // 4 is checked by the drop, table by table.
+            // 3 is checked by the drop, table by table.
             owed = await this.deps.dropManifestEntries(
                environment,
                environmentName,
                packageName,
                runId,
                "reclaim",
-               reclaimable,
+               toDrop,
                new Set(),
                await this.connectionResolverFor(
                   environment,
@@ -857,15 +1063,19 @@ export class Reclaimer {
          // Owed, or left in place by the drop: not dropped.
          await this.forgetBoundaries(
             environmentId,
-            reclaimable.filter(
+            toDrop.filter(
                (e) =>
                   !owedKeys.has(entryRenamedKey(e)) &&
                   !skippedKeys.has(entryRenamedKey(e)),
             ),
          );
+         const listed = keptAfter(run, runs, reader, kept);
          // Forget what was decided; keep what a drop still owes, what it left
          // in place, and what a passing guard may yet let a later run drop.
-         for (const m of recordedOn) {
+         // This run lists what it keeps.
+         for (const m of new Set([...recordedOn, run])) {
+            const metadata = { ...(m.metadata ?? {}) };
+            let changed = false;
             const tables = renamedTablesIn(m.metadata ?? null);
             const left = tables.filter(
                (t) =>
@@ -874,24 +1084,34 @@ export class Reclaimer {
                   skippedKeys.has(renamedKey(t)) ||
                   retried.has(renamedKey(t)),
             );
-            if (left.length === tables.length) continue;
-            const metadata = { ...(m.metadata ?? {}) };
-            if (left.length > 0) metadata[RENAMED_TABLES_KEY] = left;
-            else delete metadata[RENAMED_TABLES_KEY];
-            await this.repository.updateMaterialization(m.id, { metadata });
+            if (left.length !== tables.length) {
+               if (left.length > 0) metadata[RENAMED_TABLES_KEY] = left;
+               else delete metadata[RENAMED_TABLES_KEY];
+               changed = true;
+            }
+            if (m.id === runId && listed.write) {
+               metadata[KEPT_TABLES_KEY] = listed.tables;
+               changed = true;
+            }
+            if (changed) {
+               await this.repository.updateMaterialization(m.id, { metadata });
+            }
          }
+         return listed.tables;
       } catch (err) {
          logger.warn(
             "Reclaiming tables readable names replaced did not complete",
             { error: errMessage(err) },
          );
+         return undefined;
       }
    }
 
    /**
     * Decide each table recorded on `recordedOn` once: kept by a guard of
-    * {@link reclaimRenamedTables} (logged, and `retried` when a later run may
-    * find that guard passing), else reclaimable.
+    * {@link reclaimRenamedTables} (logged, `retried` when a later run may
+    * find that guard passing, and `kept` when it is listed), else
+    * reclaimable, as an entry at its old place.
     */
    private decideRenamedTables(
       recordedOn: Materialization[],
@@ -902,37 +1122,46 @@ export class Reclaimer {
       decided: Set<string>;
       retried: Set<string>;
       reclaimable: ManifestEntry[];
+      kept: KeptTable[];
    } {
       const decided = new Set<string>();
       const retried = new Set<string>();
       const reclaimable: ManifestEntry[] = [];
+      const kept: KeptTable[] = [];
       for (const table of recordedOn.flatMap((m) =>
          renamedTablesIn(m.metadata ?? null),
       )) {
          const key = renamedKey(table);
          if (decided.has(key)) continue;
-         const kept = this.renamedTableGuard(table, run, runs, reader);
+         const guard = this.renamedTableGuard(table, run, runs, reader);
          decided.add(key);
-         // A guard that a later run may find passing keeps the record.
-         if (kept && TRANSIENT_GUARDS.has(kept)) retried.add(key);
-         if (kept) {
-            logger.info("Keeping a table a readable name replaced", {
-               physicalTableName: table.previousName,
-               replacedBy: table.physicalTableName,
-               guard: kept,
-            });
-            continue;
-         }
-         reclaimable.push({
+         const entry: ManifestEntry = {
             sourceEntityId: table.sourceEntityId,
             physicalTableName: table.previousName,
             connectionName: table.connectionName,
-            ...(table.storageDestinationName
-               ? { storageDestinationName: table.storageDestinationName }
+            ...(previousDestinationOf(table)
+               ? { storageDestinationName: previousDestinationOf(table) }
                : {}),
+         };
+         if (guard === undefined) {
+            reclaimable.push(entry);
+            continue;
+         }
+         // A guard that a later run may find passing keeps the record.
+         if (TRANSIENT_GUARDS.has(guard)) retried.add(key);
+         logger.info("Keeping a table a readable name replaced", {
+            physicalTableName: table.previousName,
+            replacedBy: table.physicalTableName,
+            guard,
          });
+         if (guard === "author_name") {
+            kept.push({
+               ...keptOf(entry, "author_name"),
+               ...(table.sourceName ? { sourceName: table.sourceName } : {}),
+            });
+         }
       }
-      return { decided, retried, reclaimable };
+      return { decided, retried, reclaimable, kept };
    }
 
    /** Forget the incremental boundaries of dropped tables; best-effort. */
@@ -963,7 +1192,8 @@ export class Reclaimer {
 
    /**
     * Which guard of {@link reclaimRenamedTables} keeps `table`, or undefined
-    * when none does (guard 4 is the drop's).
+    * when none does (guard 3 is the drop's, and a missing destination the
+    * caller's). `author_name` is the one that lists it as kept.
     */
    private renamedTableGuard(
       table: RenamedTable,
@@ -975,7 +1205,11 @@ export class Reclaimer {
          connectionName?: string | null;
          storageDestinationName?: string | null;
       }) => `${e.connectionName ?? ""}\u0000${e.storageDestinationName ?? ""}`;
-      // 2: the replacement committed, at the same place.
+      const oldPlace = place({
+         connectionName: table.connectionName,
+         storageDestinationName: previousDestinationOf(table),
+      });
+      // 4: the replacement committed, at its new name and place.
       const replacement = run.manifest?.entries?.[table.sourceEntityId];
       if (
          replacement?.physicalTableName !== table.physicalTableName ||
@@ -983,19 +1217,20 @@ export class Reclaimer {
       ) {
          return "replacement-not-committed";
       }
-      // 5: this run is what the package serves from now.
+      // 4: this run is what the package serves from now.
+      const serving = newestServingEntries(runs, reader);
       if (
-         newestServingEntries(runs, reader)[table.sourceEntityId]
-            ?.physicalTableName !== table.physicalTableName
+         serving[table.sourceEntityId]?.physicalTableName !==
+         table.physicalTableName
       ) {
          return "not-serving-replacement";
       }
-      // 3: an earlier run of this package built it for this source.
+      // 2: an earlier auto-run of this package built it for this source,
+      // there. A host's run named its tables itself.
       const builtIt = (m: Materialization) => {
          const e = m.manifest?.entries?.[table.sourceEntityId];
          return (
-            e?.physicalTableName === table.previousName &&
-            place(e) === place(table)
+            e?.physicalTableName === table.previousName && place(e) === oldPlace
          );
       };
       if (
@@ -1003,27 +1238,33 @@ export class Reclaimer {
             (m) =>
                m.id !== run.id &&
                m.status === "MANIFEST_FILE_READY" &&
+               m.metadata?.mode !== "orchestrated" &&
                readsRun(m, reader) &&
                builtIt(m),
          )
       ) {
          return "not-in-package-records";
       }
+      const namesIt = (e: ManifestEntry) =>
+         place(e) === oldPlace &&
+         !!e.physicalTableName &&
+         mayBeOneTable(e.physicalTableName, table.previousName);
+      // 5: no table the package serves now may be it (another source's,
+      // or the replacement itself under a name that may meet it).
+      if (Object.values(serving).some(namesIt)) return "still-served";
       // 5: no run this run does not supersede still names it.
       if (
          runs.some(
             (m) =>
                m.status === "MANIFEST_FILE_READY" &&
                !readsRun(m, reader) &&
-               Object.values(m.manifest?.entries ?? {}).some(
-                  (e) =>
-                     e.physicalTableName === table.previousName &&
-                     place(e) === place(table),
-               ),
+               Object.values(m.manifest?.entries ?? {}).some(namesIt),
          )
       ) {
          return "still-referenced";
       }
+      // 1: an author's exact name= is never dropped.
+      if (!hasReservedTableSuffix(table.previousName)) return "author_name";
       return undefined;
    }
 

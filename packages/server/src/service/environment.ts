@@ -87,6 +87,7 @@ import {
    type FetchedManifest,
 } from "./materialization/run/manifest_loader";
 import type { RunManifestLoad } from "./materialization/domain/types";
+import type { KeptTable } from "./materialization/domain/types";
 import { ApiConnection } from "./model";
 import { destinationOverlaps } from "./destination_overlap";
 import type { PackageMaterialization } from "./materialization";
@@ -540,6 +541,13 @@ export class Environment {
       packageName: string,
       reader: ServingReader,
    ) => Promise<Record<string, ManifestEntry>>;
+   // The tables a package's newest auto-run lists as kept after a rename
+   // (Reclaimer.reclaimRenamedTables), which its warnings name, read again
+   // whenever the package (re)loads. Undefined ⇒ none.
+   private keptTablesResolver?: (
+      packageName: string,
+      reader: ServingReader,
+   ) => Promise<readonly KeptTable[]>;
    // Whether an UNVERSIONED package restores its serve bindings from the local
    // store when it loads. Only an environment reloaded from the database at
    // startup does, exactly as before versions existed; one created at runtime
@@ -2049,6 +2057,16 @@ export class Environment {
       }
    }
 
+   /** See {@link keptTablesResolver}. */
+   public setKeptTablesResolver(
+      resolver: (
+         packageName: string,
+         reader: ServingReader,
+      ) => Promise<readonly KeptTable[]>,
+   ): void {
+      this.keptTablesResolver = resolver;
+   }
+
    /** See {@link storageBindingResolver}. */
    public setStorageBindingResolver(
       resolver: (
@@ -2225,6 +2243,19 @@ export class Environment {
    private async rebindServeBindingsFromLocalStore(
       pkg: Package,
    ): Promise<void> {
+      if (this.keptTablesResolver) {
+         await this.keptTablesResolver(
+            pkg.getPackageName(),
+            servingReaderOf(pkg),
+         )
+            .then((kept) => pkg.setKeptTables(kept))
+            .catch((err) =>
+               logger.warn("Failed to read the tables kept after a rename", {
+                  packageName: pkg.getPackageName(),
+                  error: errMessage(err),
+               }),
+            );
+      }
       if (!this.storageBindingResolver) return;
       if (
          pkg.getVersionId() === undefined &&
