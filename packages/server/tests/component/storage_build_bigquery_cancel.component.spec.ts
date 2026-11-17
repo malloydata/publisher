@@ -98,7 +98,7 @@ describe.skipIf(!hasCredentials())(
             );
 
             // The read's job, running, found by the text only this build sends.
-            job = await until(
+            const found = await until(
                async () => {
                   const [jobs] = await client.getJobs({
                      projection: "full",
@@ -114,6 +114,7 @@ describe.skipIf(!hasCredentials())(
                60_000,
                "the build's BigQuery job to start",
             );
+            job = found;
 
             const cancelledAt = Date.now();
             run.abort();
@@ -124,18 +125,18 @@ describe.skipIf(!hasCredentials())(
             const status = await until(
                async () => {
                   // The listed job carries its location, which the lookup needs.
-                  const [metadata] = await job.getMetadata();
+                  const [metadata] = await found.getMetadata();
                   return metadata.status?.state === "DONE"
                      ? metadata.status
                      : undefined;
                },
                STOPPED_WITHIN_MS,
-               `job ${job.id} to reach DONE`,
+               `job ${found.id} to reach DONE`,
             );
             const stoppedMs = Date.now() - cancelledAt;
             console.log(
                `F-22 live cancel: build ended ${buildEndedMs} ms and job ` +
-                  `${job.id} reached DONE ${stoppedMs} ms after the abort`,
+                  `${found.id} reached DONE ${stoppedMs} ms after the abort`,
             );
             expect(status.errorResult?.reason).toBe("stopped");
             expect(stoppedMs).toBeLessThan(STOPPED_WITHIN_MS);
