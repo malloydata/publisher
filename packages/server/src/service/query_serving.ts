@@ -33,6 +33,8 @@ import {
    type GateReads,
    gateColumnTypesOf,
    gateReadsOfQuery,
+   storedTypeIsString,
+   stringGateCollationRefusal,
 } from "./materialization/serve/gate_reads";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
@@ -145,7 +147,14 @@ export function variantsOf(
                answer.gateTablesRead ?? answer.tablesRead ?? [],
                gateReadsOnce,
             );
-            if (gateLeg === "rollup" && readsZonedGateColumn(tables)) {
+            if (
+               (await storedComparisonRefusal(
+                  tables,
+                  facts.authorRunnable,
+                  gateReadsOnce,
+                  facts.givens as Record<string, unknown> | undefined,
+               )) !== undefined
+            ) {
                return false;
             }
             return answerKeepsGates(
@@ -157,8 +166,14 @@ export function variantsOf(
          },
          attempt: async () => {
             const answer = await leg.attempt(facts, pinned);
-            if (leg.kind === "served") {
-               await assertRowScopeExact(answer, gateReadsOnce);
+            if (leg.kind === "served" || leg.kind === "rollup") {
+               await assertRowScopeExact(
+                  answer,
+                  gateReadsOnce,
+                  facts.authorRunnable,
+                  leg.kind,
+                  facts.givens as Record<string, unknown> | undefined,
+               );
             }
             if (leg.kind === "served") {
                logger.debug("Serving query from the served copy (virtual)", {
@@ -175,25 +190,6 @@ export function variantsOf(
          onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
       };
    });
-}
-
-/** A stored type that carries a zone: compared in the reading session's zone. */
-const ZONED_STORED_TYPE = /\b(TIMESTAMP\s+WITH\s+TIME\s+ZONE|TIMESTAMPTZ)\b/i;
-
-/**
- * Whether a `storage=` rollup an answer read holds a gate column with a zone
- * (the zone checks' family, with a query's own `timezone:`): the destination
- * compares it in its session's zone, not the warehouse's, so a gate over it
- * may admit other rows than live's. Such an answer is not kept, and the query
- * answers live. A gate column whose types are not listed is judged by the
- * exactness rule, which keeps no `storage=` table for it.
- */
-function readsZonedGateColumn(tables: readonly TableRead[]): boolean {
-   return tables.some(
-      (t) =>
-         t.tier === "storage" &&
-         (t.gateColumnTypes ?? []).some((type) => ZONED_STORED_TYPE.test(type)),
-   );
 }
 
 /**
@@ -266,6 +262,9 @@ async function withGateColumnTypes(
 async function assertRowScopeExact(
    answer: LegAnswer,
    gateReadsOnce: () => Promise<GateReads | undefined>,
+   authorRunnable: QueryMaterializer,
+   leg: "served" | "rollup",
+   givens: Record<string, unknown> | undefined,
 ): Promise<void> {
    const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
    const judged = await withGateColumnTypes(tables, gateReadsOnce);
@@ -274,11 +273,65 @@ async function assertRowScopeExact(
    // A gated entry point's scope is judged by the gate policy, past the gate
    // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
    if (reads !== undefined && (!reads.scoped || reads.gated)) return;
-   if (judged.every(gateColumnsExact)) return;
-   throw new LegDecline(
-      "served_copy_not_served",
-      "the query's source scopes its rows by a column a stored table does not hold exactly",
-   );
+   const decline = (why: string) =>
+      leg === "served"
+         ? new LegDecline("served_copy_not_served", why)
+         : new LegDecline("rollup_contract", why, { shapeCheck: true });
+   // The exactness rule is the served copy's; the rollup leg judges its own
+   // stored columns (`storedRollupReads`), so it is asked only the
+   // comparison rules below.
+   if (leg === "served" && !judged.every(gateColumnsExact)) {
+      throw decline(
+         "the query's source scopes its rows by a column a stored table does not hold exactly",
+      );
+   }
+   if (
+      (await storedComparisonRefusal(
+         judged,
+         authorRunnable,
+         gateReadsOnce,
+         givens,
+      )) !== undefined
+   ) {
+      throw decline(
+         "the query's source scopes its rows by a column a stored table does not compare as its source does",
+      );
+   }
+}
+
+/** A stored type that carries a zone: compared in the reading session's zone. */
+const ZONED_STORED_TYPE = /\b(TIMESTAMP\s+WITH\s+TIME\s+ZONE|TIMESTAMPTZ)\b/i;
+
+/**
+ * Why a `storage=` table an answer read does not compare the columns the
+ * entry point's gates and scopes read as the source compares them, or
+ * undefined when it does (the comparison rules, beside the exactness rule):
+ *
+ * - a column stored with a zone (`TIMESTAMP WITH TIME ZONE`) is compared in
+ *   the destination session's zone, not the source's;
+ * - a string column is compared byte-exact, which matches the source only
+ *   under its collation's terms (`serve/gate_collation.ts`).
+ *
+ * A database table is compared by its own warehouse and is not judged here.
+ */
+async function storedComparisonRefusal(
+   tables: readonly TableRead[],
+   authorRunnable: QueryMaterializer,
+   gateReadsOnce: () => Promise<GateReads | undefined>,
+   givens: Record<string, unknown> | undefined,
+): Promise<string | undefined> {
+   const stored = tables.filter((t) => t.tier === "storage");
+   if (stored.length === 0) return undefined;
+   const types = stored.flatMap((t) => t.gateColumnTypes ?? []);
+   if (types.some((type) => ZONED_STORED_TYPE.test(type))) {
+      return "a gate column stored with a zone";
+   }
+   return stringGateCollationRefusal({
+      authorRunnable,
+      reads: await gateReadsOnce(),
+      stringStored: types.some(storedTypeIsString),
+      ...(givens ? { givens } : {}),
+   });
 }
 
 /** The answer the router's decision describes, before anything runs. */
