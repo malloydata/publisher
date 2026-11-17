@@ -868,19 +868,21 @@ export function storageRefreshFor(params: {
    const { context, lineage, persistSource, instruction } = params;
    return {
       plan: async ({ session, sourceType, handle, quotedTablePath }) => {
-         const { target, readCost } = storageDeltaTarget({
-            session,
-            sourceType,
-            handle,
-            destinationName: params.destinationName,
-            destinationSchema: params.destinationSchema,
-            physicalTableName: params.physicalTableName,
-            quotedTablePath,
-            lineage,
-            persistSource,
-            buildSQL: params.buildSQL,
-            queryMetadata: params.queryMetadata,
-         });
+         const { target, readCost, numericColumnsStoredAsDouble } =
+            storageDeltaTarget({
+               session,
+               sourceType,
+               handle,
+               destinationName: params.destinationName,
+               destinationSchema: params.destinationSchema,
+               physicalTableName: params.physicalTableName,
+               quotedTablePath,
+               lineage,
+               persistSource,
+               buildSQL: params.buildSQL,
+               queryMetadata: params.queryMetadata,
+            });
+         const reseeding = instruction.reseed || context.forceRefresh;
          // A table an older build typed (incremental_recast.spec.ts): a delta
          // only INSERTs into the columns it has, so only a re-seed's CTAS casts
          // them.
@@ -889,6 +891,10 @@ export function storageRefreshFor(params: {
             quotedTablePath,
             persistSource,
          );
+         // A Postgres numeric a build before the decimal-precision fix stored
+         // as DOUBLE, which serves float sums until the table is seeded again
+         // (postgres_numeric_precision.ts); a seed now stores it exactly.
+         const doubles = reseeding ? [] : await numericColumnsStoredAsDouble();
          // The stored table's columns, under the names the delta's SQL
          // emits them (a renamed field's column under its own name), so a
          // delta of a source with a `rename:` matches the table.
@@ -900,17 +906,34 @@ export function storageRefreshFor(params: {
             columns: deriveColumns(persistSource).map((c) =>
                toStored(String(c.name)),
             ),
-            reseed: instruction.reseed || recast.length > 0,
+            reseed:
+               instruction.reseed || recast.length > 0 || doubles.length > 0,
          });
-         if (
-            recast.length > 0 &&
-            step.mode === "seed" &&
-            step.reasonCode === "forced" &&
-            !instruction.reseed &&
-            !context.forceRefresh
-         ) {
+         const recastOnly =
+            step.mode === "seed" && step.reasonCode === "forced" && !reseeding;
+         if (recastOnly && doubles.length > 0) {
+            // No metric label of its own: the stored column's shape cannot
+            // hold the source's exact values, as a decimal delta that does
+            // not fit re-seeds, and the reason names the cause.
             step = {
-               ...step,
+               mode: "seed",
+               reasonCode: "shape_mismatch",
+               reason:
+                  `the stored table holds the Postgres numeric ${doubles
+                     .map((c) => `\`${c}\``)
+                     .join(", ")} as DOUBLE, which serves float sums ` +
+                  `where live is exact; a rebuild stores it as DECIMAL, ` +
+                  `and a delta cannot change a column's type`,
+            };
+            logger.info("Re-seeding to store Postgres numerics exactly", {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               sourceName: persistSource.name,
+               columns: doubles,
+            });
+         } else if (recastOnly && recast.length > 0) {
+            step = {
+               mode: "seed",
+               reasonCode: "forced",
                reason:
                   `the stored table holds ${recast
                      .map((m) => `\`${m.column}\` as ${m.storedType}`)
