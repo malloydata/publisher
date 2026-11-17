@@ -576,6 +576,33 @@ describe("bigIntegerReads (known limitation 12)", () => {
       }
    });
 
+   it("P4-01: a DuckLake table's 128-bit column is left out whatever its field's type or its dialect", () => {
+      for (const dialect of ["duckdb", "postgres"]) {
+         const plan = storedColumnReadPlan(
+            [
+               { name: "h", type: "HUGEINT" },
+               { name: "i", type: "HUGEINT" },
+               { name: "b", type: "BIGINT" },
+            ],
+            [
+               { name: "h", type: "number", field: big },
+               {
+                  name: "i",
+                  type: "number",
+                  field: { name: "i", type: "number", numberType: "integer" },
+               },
+               { name: "b", type: "number", field: big },
+            ],
+            { dialect, ducklake: true },
+         );
+         expect(plan.leftOut.map((m) => m.column)).toEqual(["h", "i"]);
+         expect(plan.refusals).toEqual([]);
+         expect(plan.casts.map((c) => c.column)).toEqual(
+            dialect === "duckdb" ? ["b"] : [],
+         );
+      }
+   });
+
    it("P4-01: the read plan refuses a storage= 128-bit integer and still reads BIGINT and DECIMAL(38,0) exactly", () => {
       const plan = storedColumnReadPlan(
          [

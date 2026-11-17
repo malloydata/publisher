@@ -610,7 +610,7 @@ describe.skipIf(process.platform === "win32")(
                   });
                   if (c.leg !== "materialized") {
                      expect(t.detail).toMatch(
-                        /\(HUGEINT\) cannot hold live's integer exactly/,
+                        /\(HUGEINT\) cannot (hold live's integer exactly|be read as live's)/,
                      );
                   }
                }

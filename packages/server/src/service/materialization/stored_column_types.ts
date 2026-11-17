@@ -492,14 +492,40 @@ interface StoredColumnReadPlan {
 export function storedColumnReadPlan(
    schema: readonly { name: string; type: string }[],
    declared: readonly DeclaredRead[],
-   options: BuildCastOptions & Partial<BigIntegerReadOptions> = {},
+   options: BuildCastOptions &
+      Partial<BigIntegerReadOptions> & {
+         /**
+          * The table is in DuckLake (a `storage=` destination): a 128-bit
+          * integer column holds a DOUBLE's digits
+          * ({@link ducklakeStoresAsDouble}), so it is left out whatever its
+          * field's type, never read or re-aggregated.
+          */
+         ducklake?: boolean;
+      } = {},
 ): StoredColumnReadPlan {
-   const mismatches = storedColumnTypeMismatches(schema, declared);
+   const lossy: StoredColumnTypeMismatch[] = [];
+   if (options.ducklake) {
+      for (const column of schema) {
+         if (!ducklakeStoresAsDouble(column.type)) continue;
+         const d = declaredFor(column.name, declared);
+         if (d) {
+            lossy.push({
+               column: d.name,
+               storedType: column.type,
+               declaredType: d.type || "number",
+            });
+         }
+      }
+   }
+   const lost = new Set(lossy.map((m) => m.column));
+   const mismatches = storedColumnTypeMismatches(schema, declared).filter(
+      (m) => !lost.has(m.column),
+   );
    const { casts, unservable } = serveTypePlan(mismatches, options);
    const refusals: StoredColumnReadPlan["refusals"] = [];
    const cast = new Set(casts.map((c) => c.column));
    for (const d of declared) {
-      if (!("field" in d) || cast.has(d.name)) continue;
+      if (!("field" in d) || cast.has(d.name) || lost.has(d.name)) continue;
       const stored = schema.find((s) => s.name === d.name);
       if (!stored) continue;
       const big = bigIntegerReadOf(d.field, stored, {
@@ -514,7 +540,12 @@ export function storedColumnReadPlan(
          refusals.push({ column: d.name, storedType: stored.type });
       }
    }
-   return { mismatches, casts, leftOut: unservable, refusals };
+   return {
+      mismatches: [...lossy, ...mismatches],
+      casts,
+      leftOut: [...lossy, ...unservable],
+      refusals,
+   };
 }
 
 /**

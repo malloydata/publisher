@@ -2913,6 +2913,7 @@ function materializedColumnsOf(
             : [];
       }),
       def,
+      !isColocated(binding),
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [
@@ -3000,7 +3001,7 @@ function materializedColumnsOf(
             type: "",
             field: fields.find((f) => fieldNameOf(f) === c.name),
          })),
-         readOptions,
+         { ...readOptions, ducklake: !isColocated(binding) },
       );
    });
    // A joined field live types as a warehouse-native type has no
@@ -3011,7 +3012,12 @@ function materializedColumnsOf(
          liveTypesAsNative(fields.find((f) => fieldNameOf(f) === c.name)),
       );
    });
-   if (joinedNative || joinedReads.some((plan) => plan.refusals.length > 0)) {
+   if (
+      joinedNative ||
+      joinedReads.some(
+         (plan) => plan.refusals.length > 0 || plan.leftOut.length > 0,
+      )
+   ) {
       problems.push({
          sourceName,
          sourceID: node.sourceID,
@@ -3042,6 +3048,8 @@ function materializedColumnsOf(
 export function materializedReadPlan(
    schema: readonly { name: string; type: string }[],
    def: { fields?: unknown[] } | undefined,
+   /** A `storage=` (DuckLake) table: a 128-bit integer column is left out. */
+   ducklake = false,
 ): ReturnType<typeof storedColumnReadPlan> {
    const live = new Map<string, string>();
    for (const f of (def?.fields ?? []) as {
@@ -3066,7 +3074,7 @@ export function materializedReadPlan(
    return storedColumnReadPlan(
       own,
       own.map((c) => ({ name: c.name, type: live.get(c.name) as string })),
-      { queryTimezone: queryTimezoneOf(def) },
+      { queryTimezone: queryTimezoneOf(def), ducklake },
    );
 }
 
@@ -3111,7 +3119,7 @@ function v1ColumnsOf(
    const typePlan = storedColumnReadPlan(
       narrowed,
       declaredColumnsOf(def.fields),
-      { queryTimezone: queryTimezoneOf(def) },
+      { queryTimezone: queryTimezoneOf(def), ducklake: !isColocated(binding) },
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [

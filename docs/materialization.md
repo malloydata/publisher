@@ -670,11 +670,16 @@ cannot tell which it has. A plain DuckDB table keeps every digit. So:
   stored upstream, or a stored rollup) stores each 128-bit integer column it computes as
   `DECIMAL(38,0)`, which Parquet keeps exactly and the serve side reads with every digit. A value
   past 38 digits fails that cast, and the build stores the 128-bit type instead.
-- A 128-bit integer column in a `storage=` table, or in a database table on a `ducklake`
-  connection, is never read as exact. A `#@ persist` or `#(materialize)` table leaves the column out,
-  so only a query that reads it is answered live. A rollup, persisted view or persisted query whose
-  table stores one answers live; the path report skips that table with `MISSING_FIELD` and says the
-  stored column cannot hold live's integer exactly.
+- A 128-bit integer column in a `storage=` table, or in a database table in a DuckLake catalog (on
+  a `ducklake` connection, or one a DuckDB connection attached), is never read as exact or
+  re-aggregated, whatever its field's type or the source's dialect. A `#@ persist` or
+  `#(materialize)` table leaves the column out, so only a query that reads it is answered live
+  (an inlined join holding one leaves its source live). A rollup, persisted view or persisted query
+  whose table stores one answers live; the path report skips that table with `MISSING_FIELD` and
+  names the stored column. The package reports each such column with
+  `storage-column-type-mismatch`, handled live.
+- A chained build never stacks on a table holding such a column: the downstream recomputes from
+  its raw source, so the rounded values are never stored again as exact.
 - A table built before this change keeps the 128-bit column, answered live, until its next full
   build; nothing forces that rebuild. (An incremental source is always a passthrough read, whose
   columns arrive in the warehouse's own types, so it never stores such a column.)

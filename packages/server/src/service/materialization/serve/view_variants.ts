@@ -936,6 +936,8 @@ export function storedColumnCasts(
    const plan = storedColumnReadPlan(schema, declared, {
       queryTimezone: shape.queryTimezone,
       dialect: shape.dialect,
+      // A storage destination is DuckLake.
+      ducklake: true,
    });
    const [unservable] = plan.leftOut;
    if (unservable) {

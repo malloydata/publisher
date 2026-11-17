@@ -2263,7 +2263,12 @@ function storedRollupReads(
          const plan = storedColumnReadPlan(
             [storedColumn],
             [{ name: column.name, type: liveType, field }],
-            { dialect: base?.dialect, queryTimezone: queryTimezoneOf(base) },
+            {
+               dialect: base?.dialect,
+               queryTimezone: queryTimezoneOf(base),
+               // A storage destination is DuckLake.
+               ducklake: true,
+            },
          );
          // A column whose stored type drifted from live's, with no faithful
          // cast to read it back: never read as its stored type.
