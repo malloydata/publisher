@@ -1014,6 +1014,70 @@ describe("applyObservedColumns", () => {
          ]);
       });
 
+      // F-40: the table is as built, but its source now declares another
+      // type (a warehouse column retyped upstream since the build).
+      it("treats a column its source now declares as another type than the table holds as moved", () => {
+         const run = (declaredType: string) =>
+            applyObservedColumns({
+               entries: {
+                  v1: {
+                     tableName: "t",
+                     connectionName: "duckdb",
+                     schema: [
+                        { name: "cat", type: "VARCHAR" },
+                        { name: "total", type: "BIGINT" },
+                     ],
+                  },
+               },
+               bindings: [],
+               observed: new Map([
+                  [
+                     "v1",
+                     {
+                        dialect: "duckdb",
+                        columns: [
+                           { name: "cat", type: "VARCHAR" },
+                           { name: "total", type: "BIGINT" },
+                        ],
+                     },
+                  ],
+               ]),
+               declared: () => ({
+                  columns: [
+                     { name: "cat", type: "string" },
+                     { name: "total", type: declaredType },
+                  ],
+                  connectionName: "duckdb",
+               }),
+            });
+         const moved = run("string");
+         expect(moved.drifted).toEqual([
+            {
+               sourceEntityId: "v1",
+               columns: [
+                  {
+                     column: "total",
+                     builtType: "BIGINT",
+                     observedType: "BIGINT",
+                     declaredMoved: true,
+                     leftOut: true,
+                  },
+               ],
+            },
+         ]);
+         // Read through the table's held types, the column marked moved, so
+         // the leg checks it against live's type.
+         expect(moved.entries.v1?.heldRead?.columns).toContainEqual({
+            name: "total",
+            type: "BIGINT",
+            moved: true,
+         });
+         // Declared as built: nothing moved, the entry read as it is.
+         const unchanged = run("number");
+         expect(unchanged.drifted).toEqual([]);
+         expect(unchanged.entries.v1?.heldRead).toBeUndefined();
+      });
+
       // C1/H1: a move inside one Malloy type that may round a value is left
       // out; only a widening that loses nothing is read as it is.
       for (const [built, now, kept] of [

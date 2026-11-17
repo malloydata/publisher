@@ -68,7 +68,11 @@ import { VersionRef } from "./identity";
 import { Model } from "./model";
 import { ModelPolicy } from "./model_policy";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
-import type { PackageMaterialization } from "./materialization";
+import {
+   loadVerdictOfPlan,
+   type PackageMaterialization,
+} from "./materialization";
+import { getPersistCollisionEnforce } from "../config";
 import { Package } from "./package";
 import {
    carriesArtifactTag,
@@ -719,8 +723,117 @@ function gateCompiledRunnable(
  * Scope "file": the source is compiled AS the target model file. The file
  * is the author's, so its data roots are not gated (see compileAppend).
  */
-function compileFile(ctx: CompileContext): Promise<CompileSourceResult> {
-   return compileVirtualFile(ctx);
+async function compileFile(ctx: CompileContext): Promise<CompileSourceResult> {
+   const result = await compileVirtualFile(ctx);
+   if (result.problems.some((p) => p.severity === "error")) return result;
+   if (!declaresMaterialization(ctx)) return result;
+   // What the load would refuse or warn of the package with this file in
+   // it: the same plan a reload derives, so a draft the load refuses never
+   // compiles clean. Its near misses are the file's own scan's (above).
+   let outcome: Awaited<ReturnType<typeof loadPackageInWorker>>;
+   try {
+      outcome = await loadPackageInWorker(ctx);
+   } catch (error) {
+      if (error instanceof ServiceUnavailableError) {
+         return {
+            ...result,
+            problems: [
+               ...result.problems,
+               ...ctx.tagProblems([materializationCheckSkipped(error.message)]),
+            ],
+         };
+      }
+      // The file compiled on its own; another file's problem is the package
+      // scope's to report.
+      return result;
+   }
+   const { collect, problems } = problemCollector(ctx.tagProblems);
+   collect(result.problems);
+   collect(loadVerdictProblems(ctx, outcome, { withNearMiss: false }));
+   return { ...result, problems };
+}
+
+/** A materialization route, written anywhere in a file's text. */
+const MATERIALIZATION_ROUTE =
+   /#\(\s*(?:preaggregate|materialize)\b|#@\s*(?:persist|preaggregate)\b/;
+
+/**
+ * Whether the file-scope compile runs the load's materialization checks: the
+ * file names a route, or the package already plans a table (which another
+ * file may declare over this one's sources).
+ */
+function declaresMaterialization(ctx: CompileContext): boolean {
+   return (
+      MATERIALIZATION_ROUTE.test(ctx.fullSource) ||
+      ctx.pkg.getBuildPlan() !== null
+   );
+}
+
+/** The warning that the load's materialization checks did not run. */
+function materializationCheckSkipped(reason: string): LogMessage {
+   return {
+      severity: "warn",
+      message:
+         "The materialization checks a load runs did not run, so their " +
+         `findings are unknown rather than clean (${reason}). Compile at ` +
+         'scope "package" or reload the package to see them.',
+   } as LogMessage;
+}
+
+/**
+ * The load's verdict on the package's materialization annotations, read off
+ * the plan the dry-run's worker derived: each line the load fails with as an
+ * error, each valid annotation the load leaves unbuilt as a warning.
+ * `withNearMiss: false` leaves out the near misses a file's own scan reports.
+ */
+function loadVerdictProblems(
+   ctx: CompileContext,
+   outcome: Awaited<ReturnType<typeof loadPackageInWorker>>,
+   { withNearMiss }: { withNearMiss: boolean },
+): LogMessage[] {
+   const workerPlan = outcome.buildPlan;
+   if (!workerPlan) {
+      // A model that did not compile is reported on its own; otherwise the
+      // worker left the plan for the main thread, which a compile skips.
+      return outcome.models.some((m) => m.compilationError)
+         ? []
+         : [materializationCheckSkipped("the compile ran out of time")];
+   }
+   if (!workerPlan.ok) return [materializationCheckSkipped(workerPlan.error)];
+   const plan = workerPlan.outcome;
+   const { refusals, warnings } = loadVerdictOfPlan(
+      withNearMiss
+         ? plan
+         : {
+              ...plan,
+              modelGateLines: {
+                 preaggregate: plan.modelGateLines.preaggregate,
+                 nearMiss: [],
+              },
+           },
+      {
+         enforceCollisions: getPersistCollisionEnforce(),
+         versionScoped:
+            ctx.pkg.getPackageMetadata().scope === "version" &&
+            ctx.pkg.getVersionId() !== undefined,
+      },
+   );
+   return [
+      ...refusals.map((line) => {
+         const model = /^([^\s:]+\.malloy): /.exec(line)?.[1];
+         const code = / \[([a-z0-9-]+)\]$/.exec(line)?.[1];
+         return {
+            severity: "error",
+            message: line,
+            ...(code ? { code } : {}),
+            ...(model ? { model } : {}),
+         } as LogMessage;
+      }),
+      ...warnings.map((w) => ({
+         ...warningAsProblem(w, w.code ?? UNCODED_REPORT_FINDING),
+         ...(w.model ? { model: w.model } : {}),
+      })),
+   ];
 }
 
 /**
@@ -1196,6 +1309,13 @@ async function compilePackageDryRun(
          warning.model,
       );
    }
+   // What the load refuses or warns of the package's materialization
+   // annotations (an unmergeable rollup, a table name that never builds).
+   for (const problem of loadVerdictProblems(ctx, outcome, {
+      withNearMiss: true,
+   })) {
+      collect([problem], (problem as { model?: string }).model);
+   }
    if (source !== undefined && outcome.replacementMatchedExisting === false) {
       collect(
          [
@@ -1260,6 +1380,11 @@ async function loadPackageInWorker(ctx: CompileContext) {
          defaultConnectionName: "duckdb",
          buildManifest: ctx.boundManifestEntries,
          collectProblems: true,
+         // The load's materialization verdict is read off this plan.
+         computeBuildPlan: true,
+         ...(ctx.pkg.getVersionId() !== undefined
+            ? { publishedVersion: true }
+            : {}),
          // The lint below reports the entities' findings, as a reload does.
          withEntities: true,
          replacement:

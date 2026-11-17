@@ -528,6 +528,12 @@ export interface ObservedDrift {
       leftOut?: true;
       /** A 128-bit integer a DuckLake table holds as a DOUBLE. */
       storedAsDouble?: true;
+      /**
+       * The table holds the type its build wrote, but its source now
+       * declares another: what the source reads changed type since the
+       * build ({@link declaredMoves}).
+       */
+      declaredMoved?: true;
    }[];
 }
 
@@ -624,15 +630,18 @@ export function applyObservedColumns(args: {
          : // A build that captured only native types (a warehouse whose
            // schema reader refused the name): those are what moved or not.
            nativeDriftOf(entry.nativeSchema ?? [], read);
+      // Read by Malloy's manifest substitution alone, a table no compile
+      // re-types: a column whose source now declares a type the table's
+      // value does not read as (a warehouse column retyped upstream since the
+      // build) has moved as surely as one altered in the table.
+      const declaration = served.has(id) ? undefined : args.declared?.(id);
+      if (declaration) {
+         columns.push(...declaredMoves(entry, read, declaration, columns));
+      }
       if (columns.length > 0 && !served.has(id)) {
-         // Read by Malloy's manifest substitution alone: each moved column
-         // cast in a projection substituted for the table, or left out.
-         const substituted = substitutedRead(
-            entry,
-            columns,
-            read,
-            args.declared?.(id),
-         );
+         // Each moved column cast in a projection substituted for the table,
+         // or left out.
+         const substituted = substitutedRead(entry, columns, read, declaration);
          drifted.push({
             sourceEntityId: id,
             columns: substituted?.columns ?? columns,
@@ -717,6 +726,49 @@ export function applyObservedColumns(args: {
       ];
    });
    return { entries, bindings, drifted, unread };
+}
+
+/**
+ * The columns of a substituted table that have not moved in the table but
+ * whose build source now declares another type than the one its build wrote,
+ * and that the value the table holds does not read as ({@link driftedColumnRead}
+ * declines it as is): what its source reads changed type since the build,
+ * which leaves its content address, and so its table, where they were.
+ * Reported as any drift is, so the leg casts or leaves each out and the
+ * package warns.
+ */
+function declaredMoves(
+   entry: FreshnessManifest[string],
+   read: Extract<ObservedColumns, { columns: unknown }>,
+   declaration: DriftDeclaration,
+   already: readonly ObservedDrift["columns"][number][],
+): ObservedDrift["columns"] {
+   const reported = new Set(already.map((c) => c.column));
+   return (entry.schema ?? []).flatMap((built) => {
+      if (reported.has(built.name)) return [];
+      const declared = declaration.columns.find(
+         (c) => c.name === built.name,
+      )?.type;
+      if (declared === undefined || declared === "") return [];
+      const builtAs = storedMalloyType(built.type) ?? built.type;
+      if (builtAs === declared) return [];
+      const now = columnNamed(read.columns, built.name);
+      if (now?.type === undefined) return [];
+      const report = {
+         column: built.name,
+         builtType: built.type,
+         observedType: now.type,
+         declaredMoved: true as const,
+      };
+      const how = driftedColumnRead(
+         report,
+         declared,
+         declaration.queryTimezone
+            ? { queryTimezone: declaration.queryTimezone }
+            : {},
+      );
+      return how.read === "as_is" ? [] : [report];
+   });
 }
 
 /** What a substituted table's moved columns must read as. */
