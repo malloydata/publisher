@@ -681,7 +681,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
   "reasons": [
     {
       "name": "secret_rollup",
-      "reason": "given_in_persisted_query",
+      "reason": "reads_given",
       "message": "Source 'secret_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read."
     }
   ]

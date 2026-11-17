@@ -363,7 +363,7 @@ source: orders is raw extend {
             // inlined, so `b`'s build would read `a` (a reference join is not
             // built); a given read through an inlined join refuses `b` at plan
             // (P9), before the eligibility gate that refused it as
-            // `given_in_persisted_query` would see its build.
+            // `reads_given` would see its build.
             const text = `${HEAD}
 #(materialize) storage="lake"
 source: a is raw extend { where: org_id = $ORG_ID }

@@ -81,9 +81,6 @@ const DRIFT_HANDLING_TEXT: Record<
    live: () =>
       `No cast reads it as declared, so queries that read it are answered ` +
       `live until the table is rebuilt.`,
-   table: () =>
-      `This table is read without a cast, so every query on it is answered ` +
-      `live until it is rebuilt.`,
 };
 
 type ApiPackage = components["schemas"]["Package"];

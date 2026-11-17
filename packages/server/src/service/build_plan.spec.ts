@@ -960,7 +960,7 @@ source: mz_free(threshold::number) is base -> { aggregate: c is count() }
          const byName = Object.fromEntries(refused.map((r) => [r.name, r]));
          expect(byName.mz_given).toMatchObject({
             tier: "storage",
-            reason: "given_in_persisted_query",
+            reason: "reads_given",
          });
          expect(byName.mz_given.message).toMatch(/given/i);
          expect(byName.mz_free).toMatchObject({
@@ -999,7 +999,7 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
          expect(refused).toMatchObject({
             name: "mz_given",
             tier: "storage",
-            reason: "given_in_persisted_query",
+            reason: "reads_given",
          });
          // No SQL/content-address fields leak onto the refused entry — it is
          // a genuinely different wire shape, not `PersistSourcePlan` with two

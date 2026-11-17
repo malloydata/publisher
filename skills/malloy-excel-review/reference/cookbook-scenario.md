@@ -881,7 +881,7 @@ the given, which is what the `absolute` regions already list.
 `#@ persist name="compounding_tbl"` to
 `source: persisted_compounding is compounding -> { select: * }`, where `compounding` is the
 recursion in `translate-formulas.md` (it reads its givens through `%{ }`). The package's
-build plan listed it under `refusedSources` with `reason: given_in_persisted_query` and the
+build plan listed it under `refusedSources` with `reason: reads_given` and the
 message that a given in a persisted query "is substituted at BUILD time, so the table
 would hold the default's rows and serve them to every caller". The same shape of
 recursion with its numbers written as literals was accepted into the build plan. Only

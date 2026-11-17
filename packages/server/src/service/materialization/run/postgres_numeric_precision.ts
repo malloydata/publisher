@@ -40,6 +40,7 @@ import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
 import { errorCodeOf } from "./error_code";
 import { fromSubselect } from "../subselect";
+import { errMessage } from "../../../utils";
 
 /** DuckDB's widest DECIMAL. */
 const DECIMAL_MAX_PRECISION = 38;
@@ -128,8 +129,13 @@ export function numericAsTextSQL(
  * The columns of `innerSQL` that DuckDB would read as DOUBLE although Postgres
  * types them `numeric`, with every column's name in order. Nothing runs in
  * Postgres: the session describes the passthrough (Postgres prepares it), and
- * the type probe reads a `LIMIT 0`. A probe that fails leaves the read as it
- * was, logged.
+ * the type probe reads a `LIMIT 0`.
+ *
+ * A describe or probe that fails throws, and the build fails: without the
+ * types, any DOUBLE column may be an exact `numeric` the passthrough would
+ * round, and a rounded key or gate column stored past 2^53 matches its
+ * neighbours (two tenants' ids read as one). Storing it as DOUBLE anyway would
+ * serve rows live never returns, so the source is not built and answers live.
  */
 export async function postgresNumericColumns(
    session: DuckDBConnection,
@@ -171,13 +177,18 @@ export async function postgresNumericColumns(
       return { columns, numeric, described };
    } catch (err) {
       logger.warn(
-         "Could not read a Postgres storage build's column types; numeric columns keep the passthrough's DOUBLE",
+         "Could not read a Postgres storage build's column types; the build fails rather than store a numeric column as DOUBLE",
          {
             code: STORED_COLUMN_TYPE_MISMATCH_CODE,
             errorCode: errorCodeOf(err),
          },
       );
-      return { columns: [], numeric: [] };
+      // The cause keeps the driver's own error, which says whether a retry
+      // could succeed (`build_failure_class.ts`).
+      throw new Error(
+         `Could not read the Postgres column types this storage build needs to store a numeric column exactly: ${errMessage(err)}`,
+         { cause: err },
+      );
    }
 }
 

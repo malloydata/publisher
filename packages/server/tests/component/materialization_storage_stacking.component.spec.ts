@@ -39,6 +39,7 @@ import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
+import * as numericPrecision from "../../src/service/materialization/run/postgres_numeric_precision";
 import { StorageBuildStrategy } from "../../src/service/materialization/run/storage_build_strategy";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type {
@@ -110,6 +111,46 @@ source: child is parent extend {
 };
 const CHAIN_QUERY =
    "run: child -> { group_by: label, big; aggregate: total, n }";
+
+/** A `storage=` rollup over a `#(materialize) storage=` base, at `grain`. */
+const materializeRollupModel = (grain = "cat", rollupExtra = "") => {
+   const rollup = `#(rollup) grain=["${grain}"] storage="${LAKE}"${rollupExtra}`;
+   return `##! experimental.persistence
+source: raw is ${RAW}
+
+#(materialize) storage="${LAKE}"
+source: orders is raw extend {
+  dimension: upper_cat is upper(cat)
+  ${rollup}
+  measure: grand is amt.sum()
+  ${rollup}
+  measure: rows is count()
+  ${rollup}
+  measure: least is amt.min()
+}
+`;
+};
+const MATERIALIZE_ROLLUP_QUERY =
+   "run: orders -> { group_by: cat; aggregate: grand, rows, least }";
+
+/** A `storage=` child in b.malloy over `parent` in a.malloy, through c.malloy. */
+const THROUGH_THIRD = {
+   "a.malloy": CHAIN_FILES["a.malloy"],
+   "c.malloy": `import "a.malloy"
+source: mid is parent extend {
+  dimension: sub_up is upper(sub)
+}
+`,
+   "b.malloy": `import "c.malloy"
+
+#(materialize) storage="${LAKE}"
+source: child is mid extend {
+  where: cat != 'c'
+  dimension: label is concat(cat, '-', sub_up)
+  measure: n is count()
+}
+`,
+};
 
 type Entry = {
    sourceName: string;
@@ -305,6 +346,12 @@ describe.skipIf(process.platform === "win32")(
                );
                return { handle: "warehouse", sourceType };
             }),
+            // The stand-in warehouse is DuckDB, which has no Postgres type
+            // catalog to probe; it holds no numeric to read as text.
+            spyOn(
+               numericPrecision,
+               "postgresNumericColumns",
+            ).mockImplementation(async () => ({ columns: [], numeric: [] })),
             {
                mockRestore: recordConnectionsAsForTests({
                   warehouse: "postgres",
@@ -560,6 +607,227 @@ describe.skipIf(process.platform === "win32")(
          const served = await answer("b.malloy", CHAIN_QUERY);
          expect(served.servedBy).toBe("materialized");
          expect(served.rows).toEqual(live.rows);
+      });
+
+      /** The child stacked on the parent's table: never the warehouse. */
+      async function expectStackedChild(m: Materialization) {
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const parent = entryOf(m, "parent");
+         const child = entryOf(m, "child");
+         expect(child.upstreamReuse).toBe("reused");
+         expect(warehouseReads()).toHaveLength(1);
+         expect(createdBy(child.physicalTableName)).not.toContain(RAW_MARK);
+         expect(createdBy(child.physicalTableName)).toContain(
+            parent.physicalTableName,
+         );
+         expect(await storedRows(child.physicalTableName)).toEqual(
+            await plannedRows(child),
+         );
+      }
+
+      /** The child built from the warehouse, with the warehouse build's rows. */
+      async function expectWarehouseChild(m: Materialization) {
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const child = entryOf(m, "child");
+         expect(child.upstreamReuse).not.toBe("reused");
+         expect(createdBy(child.physicalTableName)).toContain(RAW_MARK);
+         expect(await storedRows(child.physicalTableName)).toEqual(
+            await plannedRows(child),
+         );
+      }
+
+      const THIRD_QUERY =
+         "run: child -> { group_by: label, big; aggregate: total, n }";
+
+      it("builds a storage= extension over its parent's stored table through a third file", async () => {
+         await setUp(THROUGH_THIRD);
+         const live = await answer("b.malloy", THIRD_QUERY);
+         expect(live.servedBy).toBe("live");
+         await expectStackedChild(await build());
+         const served = await answer("b.malloy", THIRD_QUERY);
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it("builds a storage= extension over its parent's stored table through two files between", async () => {
+         await setUp({
+            "a.malloy": CHAIN_FILES["a.malloy"],
+            "c.malloy": THROUGH_THIRD["c.malloy"],
+            "d.malloy": `import "c.malloy"
+source: mid2 is mid extend {
+  measure: avg_amt is amt.avg()
+}
+`,
+            "b.malloy": THROUGH_THIRD["b.malloy"]
+               .replace('import "c.malloy"', 'import "d.malloy"')
+               .replace("child is mid extend", "child is mid2 extend"),
+         });
+         const query =
+            "run: child -> { group_by: label; aggregate: total, n, avg_amt }";
+         const live = await answer("b.malloy", query);
+         await expectStackedChild(await build());
+         const served = await answer("b.malloy", query);
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it("builds a storage= extension from the warehouse when a file between reads what its parent's stored table does not hold", async () => {
+         // `mid` reads a join of the parent's, which the destination does not
+         // hold: the chain does not compile over the parent's stored table.
+         await setUp({
+            ...THROUGH_THIRD,
+            "a.malloy": `source: raw is ${RAW}
+source: cats is raw -> { group_by: cat } extend { primary_key: cat }
+
+#(materialize) storage="${LAKE}"
+source: parent is raw extend {
+  join_one: k is cats on cat = k.cat
+  dimension: big is amt > 2
+  measure: total is amt.sum()
+}
+`,
+            "c.malloy": `import "a.malloy"
+source: mid is parent extend {
+  dimension: sub_up is upper(k.cat)
+}
+`,
+         });
+         const live = await answer("b.malloy", THIRD_QUERY);
+         const m = await build();
+         await expectWarehouseChild(m);
+         const served = await answer("b.malloy", THIRD_QUERY);
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      it("builds a storage= extension from the warehouse when a file on the chain imports the next one selectively", async () => {
+         await setUp({
+            ...THROUGH_THIRD,
+            "b.malloy": THROUGH_THIRD["b.malloy"].replace(
+               'import "c.malloy"',
+               'import { mid } from "c.malloy"',
+            ),
+         });
+         await expectWarehouseChild(await build());
+      });
+
+      it("builds a storage= rollup over its #(materialize) base's stored table, reading the warehouse once for both", async () => {
+         await setUp({ "m.malloy": materializeRollupModel() });
+         const live = await answer("m.malloy", MATERIALIZE_ROLLUP_QUERY);
+         expect(live.servedBy).toBe("live");
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const base = entryOf(m, "orders");
+         const rollup = entryOf(m, /^orders__rollup__/);
+         expect(rollup.storageDestinationName).toBe(LAKE);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(warehouseReads()).toHaveLength(1);
+         expect(warehouseReads()[0]).toContain(base.physicalTableName);
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
+         expect(createdBy(rollup.physicalTableName)).toContain(
+            base.physicalTableName,
+         );
+         expect(await storedRows(rollup.physicalTableName)).toEqual(
+            await plannedRows(rollup),
+         );
+         const served = await answer("m.malloy", MATERIALIZE_ROLLUP_QUERY);
+         expect(served.servedBy).toBe("rollup");
+         expect(served.rows).toEqual(live.rows);
+      });
+
+      /**
+       * Build once, record the base's carried table as holding `column` as
+       * `type`, and regrain the rollup, so the next run rebuilds the rollup
+       * alone over that carried table.
+       */
+      async function carriedBaseHolding(column: string, type: string) {
+         await setUp({ "m.malloy": materializeRollupModel() });
+         const first = await build();
+         expect(first.status).toBe("MANIFEST_FILE_READY");
+         const manifest = first.manifest as {
+            entries: Record<
+               string,
+               Entry & { schema?: { name: string; type: string }[] }
+            >;
+         };
+         for (const e of Object.values(manifest.entries)) {
+            if (e.sourceName !== "orders") continue;
+            e.schema = e.schema!.map((c) =>
+               c.name === column ? { ...c, type } : c,
+            );
+         }
+         await repo.updateMaterialization(first.id, { manifest } as never);
+         fs.writeFileSync(
+            path.join(envPath, PKG, "m.malloy"),
+            materializeRollupModel("sub"),
+         );
+         await env.getPackage(parsePackageName(PKG), true);
+         await reopenServe();
+         return build();
+      }
+
+      async function expectWarehouseRollup(m: Materialization) {
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const rollup = entryOf(m, /^orders__rollup__/);
+         expect(rollup.upstreamReuse).toBeUndefined();
+         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(await storedRows(rollup.physicalTableName)).toEqual(
+            await plannedRows(rollup),
+         );
+      }
+
+      it("builds a storage= rollup from the warehouse when its #(materialize) base's carried table holds another type", async () => {
+         // Text, where the planned build writes a number.
+         await expectWarehouseRollup(
+            await carriedBaseHolding("amt", "VARCHAR"),
+         );
+      });
+
+      it("never stacks a storage= rollup on a #(materialize) base's table holding a 128-bit integer", async () => {
+         // DuckLake holds a HUGEINT as a DOUBLE: its digits are rounded.
+         await expectWarehouseRollup(await carriedBaseHolding("id", "HUGEINT"));
+      });
+
+      it("never stacks a storage= rollup on a gated #(materialize) base's table", async () => {
+         await setUp({
+            "m.malloy": materializeRollupModel()
+               .replace(
+                  "##! experimental.persistence",
+                  "##! experimental { persistence givens }\ngiven: CAT :: string",
+               )
+               .replace(
+                  '#(materialize) storage="lake"',
+                  '#(access_filter) cat = $CAT\n#(materialize) storage="lake"',
+               ),
+         });
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         // Its table holds every caller's rows: no rollup is grouped from it.
+         for (const e of entriesOf(m)) {
+            if (/^orders__rollup__/.test(e.sourceName)) {
+               expect(e.upstreamReuse).toBeUndefined();
+            }
+         }
+      });
+
+      it("builds a windowed storage= rollup from the warehouse over a #(materialize) base's table of unknown age", async () => {
+         await setUp({ "m.malloy": materializeRollupModel() });
+         const first = await build();
+         expect(first.status).toBe("MANIFEST_FILE_READY");
+         fs.writeFileSync(
+            path.join(envPath, PKG, "m.malloy"),
+            materializeRollupModel("sub", ' freshness.window="1h"'),
+         );
+         await env.getPackage(parsePackageName(PKG), true);
+         await reopenServe();
+         const second = await build();
+         expect([second.status, second.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const rollup = entryOf(second, /^orders__rollup__/);
+         expect(rollup.upstreamReuse).toBeUndefined();
+         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(await storedRows(rollup.physicalTableName)).toEqual(
+            await plannedRows(rollup),
+         );
       });
    },
 );

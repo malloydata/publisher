@@ -55,6 +55,7 @@ import {
 import { observedDatabaseColumns } from "./run/database_column_read";
 import {
    applyObservedColumns,
+   type DriftDeclaration,
    bindDatabaseEntries,
    bindStorageEntries,
    deriveDatabaseServeBindings,
@@ -381,6 +382,7 @@ export class PackageMaterialization {
          entries: this.databaseEntries ?? {},
          bindings: this.databaseServeBindings(),
          observed: this.observedColumns,
+         declared: (id) => this.driftDeclaration(id),
       });
       this.observedOutcome = {
          drifted: observed.drifted,
@@ -455,6 +457,18 @@ export class PackageMaterialization {
    markManifestBound(uri: string): void {
       this.boundManifestUri = uri;
       this.manifestBindingStatus = "bound";
+   }
+
+   /**
+    * Record that no manifest is bound and the package serves live: a cleared
+    * `manifestLocation` with nothing taking its place. The status otherwise
+    * keeps naming a manifest that bound nothing (an empty one) or did not
+    * bind (a failed fetch). Binds nothing; a caller with tables bound drops
+    * them too.
+    */
+   markServingLive(): void {
+      this.boundManifestUri = null;
+      this.manifestBindingStatus = "unbound";
    }
 
    /**
@@ -659,7 +673,7 @@ export class PackageMaterialization {
             logger.warn(
                "A DuckLake table holds a 128-bit integer column as a DOUBLE, so it is never read as exact: each such column is answered live where live keeps more digits",
                {
-                  code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+                  code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
                   packageName: this.owner.packageName(),
                   sourceEntityId: drift.sourceEntityId,
                   columns: asDouble,
@@ -670,7 +684,7 @@ export class PackageMaterialization {
          logger.warn(
             "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
             {
-               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
                packageName: this.owner.packageName(),
                sourceEntityId: drift.sourceEntityId,
                columns: drift.columns.filter((c) => !c.storedAsDouble),
@@ -1104,21 +1118,45 @@ export class PackageMaterialization {
     * build, as the `storage-column-type-mismatch` warning reports them.
     */
    private databaseDriftFindings(): DatabaseDriftFinding[] {
-      const { bindings } = this.snapshot();
+      this.snapshot();
       const { drifted } = this.observedOutcome;
       if (drifted.length === 0) return [];
       return databaseDriftFindings(drifted, this.plan.buildPlan, {
-         servedCopy: (id) =>
-            bindings.some(
-               (b) => b.tier === "database" && b.virtualHandle === id,
-            ),
-         queryTimezone: (sourceID, source) =>
-            queryTimezoneOf(
-               source.preaggregate
-                  ? this.baseDeclaration(source)
-                  : this.declarationLookup(sourceID),
-            ),
+         queryTimezone: this.driftQueryTimezone,
       });
+   }
+
+   /** The time zone a moved column of `source`'s table is read in. */
+   private readonly driftQueryTimezone = (
+      sourceID: string,
+      source: NonNullable<NonNullable<BuildPlan>["sources"]>[string],
+   ): string | undefined =>
+      queryTimezoneOf(
+         source.preaggregate
+            ? this.baseDeclaration(source)
+            : this.declarationLookup(sourceID),
+      );
+
+   /**
+    * What a substituted database table's moved columns must read as, by its
+    * content address: its build source's declared columns and reader's time
+    * zone, the inputs {@link databaseDriftFindings} reads, so the bind and
+    * the warning decide each column alike.
+    */
+   private driftDeclaration(
+      sourceEntityId: string,
+   ): DriftDeclaration | undefined {
+      const found = Object.entries(this.plan.buildPlan?.sources ?? {}).find(
+         ([, s]) => s.sourceEntityId === sourceEntityId,
+      );
+      if (!found) return undefined;
+      const [sourceID, source] = found;
+      const queryTimezone = this.driftQueryTimezone(sourceID, source);
+      return {
+         columns: source.columns ?? [],
+         connectionName: source.connectionName,
+         ...(queryTimezone ? { queryTimezone } : {}),
+      };
    }
 
    /**

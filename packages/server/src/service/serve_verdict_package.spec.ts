@@ -249,7 +249,7 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
       expect(refused[0]).toMatchObject({
          subject: "orders",
          severity: "warn",
-         reason: "given_in_persisted_query",
+         reason: "reads_given",
       });
       // 0.14's one-release alias is gone.
       expect(

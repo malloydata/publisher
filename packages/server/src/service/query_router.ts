@@ -112,7 +112,7 @@ export interface Variant<Extra = unknown> {
     * tables it may read (the served copy, judged by the tables its answer
     * read). Absent: every answer keeps them.
     */
-   keepsContractsFor?(extra: Extra): boolean;
+   keepsContractsFor?(extra: Extra): boolean | Promise<boolean>;
 }
 
 export type { VariantSkipExplanation };
@@ -265,7 +265,7 @@ async function decideRoute<Extra>(
          if (
             veto === "entry_point" &&
             variant.keepsContractsFor &&
-            !variant.keepsContractsFor(answer.extra)
+            !(await variant.keepsContractsFor(answer.extra))
          ) {
             considered.push({
                kind: variant.kind,

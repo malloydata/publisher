@@ -64,7 +64,7 @@
         "modelPath": "hbi.malloy",
         "name": "scoped_rollup",
         "origin": "persist",
-        "reason": "given_in_persisted_query",
+        "reason": "reads_given",
         "sourceID": "scoped_rollup@<hammer>/hbi/hbi.malloy",
         "tier": "storage"
       }

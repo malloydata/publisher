@@ -163,7 +163,13 @@ describe("the gate policy at the router", () => {
    const NO_G3 = { databaseReadsKeepGates: false };
    const OFF = { ...ON, gatedSources: false };
    const database = [{ tier: "database" as const }];
-   const mixed = [{ tier: "database" as const }, { tier: "storage" as const }];
+   // A `storage=` read carries its gate columns' stored types, as the router
+   // lists them.
+   const exact = { gateColumnTypes: ["BIGINT"] };
+   const mixed = [
+      { tier: "database" as const },
+      { tier: "storage" as const, ...exact },
+   ];
 
    it("lets every leg past a gate under the gated-sources switch", () => {
       for (const leg of ["view", "rollup", "served"] as const) {
@@ -189,8 +195,8 @@ describe("the gate policy at the router", () => {
    });
 
    it("counts a storage= table admitted past its own gate as a G3 table, and no other storage= table", () => {
-      const own = { tier: "storage" as const, ownGateKept: true };
-      const other = { tier: "storage" as const };
+      const own = { tier: "storage" as const, ownGateKept: true, ...exact };
+      const other = { tier: "storage" as const, ...exact };
       expect(answerKeepsGates("served", [own], OFF, G3)).toBe(true);
       expect(answerKeepsGates("served", [own, ...database], OFF, G3)).toBe(
          true,
@@ -201,6 +207,54 @@ describe("the gate policy at the router", () => {
       expect(answerKeepsGates("served", [own], OFF, NO_G3)).toBe(false);
       expect(answerKeepsGates("view", [own], OFF, G3)).toBe(false);
       expect(answerKeepsGates("rollup", [own], OFF, G3)).toBe(false);
+   });
+
+   it("L2: keeps no answer whose gate column is stored inexactly, under any switch", () => {
+      const own = (gateColumnTypes?: string[]) => ({
+         tier: "storage" as const,
+         ownGateKept: true,
+         ...(gateColumnTypes ? { gateColumnTypes } : {}),
+      });
+      for (const inexact of [
+         ["DOUBLE"],
+         ["BIGINT", "FLOAT"],
+         ["REAL"],
+         ["HUGEINT"],
+         ["UHUGEINT"],
+         ["STRUCT(acct DOUBLE, region VARCHAR)"],
+      ]) {
+         for (const sw of [ON, OFF]) {
+            expect(answerKeepsGates("served", [own(inexact)], sw, G3)).toBe(
+               false,
+            );
+         }
+         expect(answerKeepsGates("rollup", [own(inexact)], ON, G3)).toBe(false);
+         expect(answerKeepsGates("view", [own(inexact)], ON, G3)).toBe(false);
+         expect(
+            answerKeepsGates(
+               "served",
+               [{ tier: "database", gateColumnTypes: inexact }],
+               ON,
+               G3,
+            ),
+         ).toBe(false);
+      }
+      // Types that could not be listed: a storage= table keeps nothing, a
+      // database table (built in the source's own types) keeps its gate.
+      expect(answerKeepsGates("served", [own()], OFF, G3)).toBe(false);
+      expect(answerKeepsGates("served", [own()], ON, G3)).toBe(false);
+      expect(answerKeepsGates("served", database, OFF, G3)).toBe(true);
+      // Exact types keep it, as before.
+      for (const exactTypes of [
+         ["BIGINT"],
+         ["DECIMAL(38,0)"],
+         ["VARCHAR", "DATE", "TIMESTAMP"],
+         [],
+      ]) {
+         expect(answerKeepsGates("served", [own(exactTypes)], OFF, G3)).toBe(
+            true,
+         );
+      }
    });
 
    it("fails closed on a leg with no row", () => {

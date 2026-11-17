@@ -2300,7 +2300,8 @@ function sameColumns(a: PersistSource, b: PersistSource): boolean {
  * warehouse as planned. Only when every one of these holds:
  *
  *  - the plan offers it: a `storage=` rollup over a base whose own
- *    `#@ persist` stores it in the same destination (rollup_compile.ts);
+ *    `#@ persist`, or `#(materialize)` planned as a plain table, stores it
+ *    in the same destination, with no gate (rollup_compile.ts);
  *  - the run's entries hold the base's table at the address the plan gives
  *    it, built this run or carried, in that destination, at the tier the
  *    base declares now, with the column list its build reads it by. Nothing
@@ -2322,7 +2323,11 @@ function storedRollupBase(
    const destination = gated.instruction.destination;
    if (!destination) return undefined;
    const base = compiled.tables[table.storedBase.baseSourceID];
-   if (!base || base.kind !== "persist") return undefined;
+   // A `#@ persist` base, or a `#(materialize)` base's plain table (a pair
+   // table holds a row per pair, never the base's rows).
+   if (!base || (base.kind !== "persist" && base.kind !== "materialize")) {
+      return undefined;
+   }
    let address: string;
    try {
       address = computeSourceEntityId(
