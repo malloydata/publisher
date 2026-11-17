@@ -265,7 +265,19 @@ export function isCredentialRejection(error: unknown): boolean {
  * 500, a refused socket) is not a refusal of access.
  */
 const OBJECT_STORE_REFUSAL =
-   /HTTP (?:[A-Z]+ )?error (?:on|reading) '(?:gs|gcs|s3|s3a|s3n|r2|az|azure|abfss|https?):\/\/[^']*'[^\n(]*\(HTTP (?:401|403)\b/i;
+   /HTTP (?:[A-Z]+ )?error (?:on|reading) '((?:gs|gcs|s3|s3a|s3n|r2|az|azure|abfss|https?):\/\/[^']*)'[^\n(]*\(HTTP (?:401|403)\b/i;
+
+/**
+ * The same refusal in the forms other DuckDB extensions raise it: the Azure
+ * extension's (`… 'az://…' … 403 …`, `AuthorizationFailure`,
+ * `AuthorizationPermissionMismatch`) and the double-quoted `Unable to
+ * connect to URL "<url>": 403 (Forbidden)`.
+ */
+const OTHER_OBJECT_STORE_REFUSALS = [
+   /Unable to connect to URL "((?:gs|gcs|s3|s3a|s3n|r2|az|azure|abfss|https?):\/\/[^"]*)":\s*40[13]\b/i,
+   /'((?:az|azure|abfss):\/\/[^']*)'[^\n]*?\b(?:40[13]\b|AuthorizationFailure|AuthorizationPermissionMismatch|AuthenticationFailed)/i,
+   /((?:https?):\/\/[a-z0-9-]+\.(?:blob|dfs)\.core\.windows\.net\/[^\s'"]*)[^\n]*?\b(?:40[13]\b|AuthorizationFailure|AuthorizationPermissionMismatch|AuthenticationFailed)/i,
+];
 
 /**
  * Whether `error` is an object store refusing to let the database read the
@@ -275,8 +287,77 @@ const OBJECT_STORE_REFUSAL =
  * raises it with no code.
  */
 export function isObjectStoreRefusal(error: unknown): boolean {
+   return objectStoreRefusalUrl(error) !== undefined;
+}
+
+/** The URL an object store refused ({@link isObjectStoreRefusal}), or undefined. */
+export function objectStoreRefusalUrl(error: unknown): string | undefined {
    for (const current of causeChain(error)) {
-      if (OBJECT_STORE_REFUSAL.test(current.message)) return true;
+      for (const pattern of [
+         OBJECT_STORE_REFUSAL,
+         ...OTHER_OBJECT_STORE_REFUSALS,
+      ]) {
+         const match = pattern.exec(current.message);
+         if (match) return match[1];
+      }
    }
-   return false;
+   return undefined;
+}
+
+/** A storage URL as its bucket (or account and container) and object path. */
+function storageLocationOf(
+   url: string,
+): { bucket: string; path: string } | undefined {
+   let u: URL;
+   try {
+      u = new URL(url);
+   } catch {
+      return undefined;
+   }
+   const segments = u.pathname.split("/").filter(Boolean);
+   const scheme = u.protocol.replace(/:$/, "").toLowerCase();
+   const host = u.hostname.toLowerCase();
+   if (["gs", "gcs", "s3", "s3a", "s3n", "r2"].includes(scheme)) {
+      return { bucket: host, path: segments.join("/") };
+   }
+   if (["az", "azure", "abfss"].includes(scheme)) {
+      // abfss://container@account.dfs.core.windows.net/path
+      const container = u.username || segments.shift() || "";
+      return { bucket: container, path: segments.join("/") };
+   }
+   if (host === "storage.googleapis.com" || /^s3[.-]/.test(host)) {
+      const bucket = segments.shift() ?? "";
+      return { bucket, path: segments.join("/") };
+   }
+   const s3 =
+      /^(.+)\.s3[.-][a-z0-9.-]*amazonaws\.com$/.exec(host) ??
+      /^(.+)\.s3\.amazonaws\.com$/.exec(host);
+   if (s3) return { bucket: s3[1], path: segments.join("/") };
+   if (/\.(blob|dfs)\.core\.windows\.net$/.test(host)) {
+      const bucket = segments.shift() ?? "";
+      return { bucket, path: segments.join("/") };
+   }
+   return { bucket: host, path: segments.join("/") };
+}
+
+/**
+ * Whether `url` lies under one of `locations` (a storage destination's or a
+ * DuckLake catalog's data path), across the spellings one location has
+ * (`gs://b/p` and `https://storage.googleapis.com/b/p`, `s3://b/p` and
+ * `https://b.s3.amazonaws.com/p`).
+ */
+export function isUnderStorageLocation(
+   url: string,
+   locations: readonly string[],
+): boolean {
+   const at = storageLocationOf(url);
+   if (!at) return false;
+   return locations.some((location) => {
+      const root = storageLocationOf(location);
+      if (!root || root.bucket !== at.bucket) return false;
+      const prefix = root.path.replace(/\/+$/, "");
+      return (
+         prefix === "" || at.path === prefix || at.path.startsWith(`${prefix}/`)
+      );
+   });
 }

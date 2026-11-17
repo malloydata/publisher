@@ -1492,6 +1492,7 @@ export class ServedCopyServe {
          fieldsByName,
          timeframeOf,
          problems,
+         storesOutputNames: !plan,
       };
       if (plan) {
          const stored = materializedColumnsOf(subject, plan);
@@ -1615,6 +1616,7 @@ export class ServedCopyServe {
          ...(!plan
             ? {
                  keepsIncludes: true as const,
+                 outputNames: queryOutputNames(def.fields),
                  ...(refinesUnfilteredBase(map.node(node.sourceID), map)
                     ? { refinementRooted: true as const }
                     : {}),
@@ -1646,6 +1648,7 @@ export class ServedCopyServe {
          def.fields,
          def,
          binding,
+         subject.storesOutputNames,
          this.host.readsStoredIntegers,
       );
       columns = columns.flatMap((c) => {
@@ -2947,6 +2950,12 @@ interface RerootSubject {
    /** The timeframe a truncation carries, to restore on the field. */
    timeframeOf(name: string): { timeframe?: string };
    problems: ServedCopyProblem[];
+   /**
+    * The table stores each column under its query's output name (a v1
+    * table, no `#(materialize)` plan), not under the field's own name
+    * after its renames (`BigIntegerReadOptions.storesOutputNames`).
+    */
+   storesOutputNames: boolean;
 }
 
 /**
@@ -4377,14 +4386,17 @@ function bigIntegerReadsOf(
    fields: readonly unknown[] | undefined,
    def: unknown,
    binding: Binding,
+   /** The table stores its query's output names (a v1 table). */
+   storesOutputNames: boolean,
    /** A build reads the stored column in SQL, where no digit is lost. */
    asStored?: boolean,
 ): Map<string, string | undefined> {
    if (asStored) return new Map();
    return new Map(
-      bigIntegerReads(columns, fields, bigIntegerOptionsOf(def, binding)).map(
-         (r) => [r.column, r.castTo] as const,
-      ),
+      bigIntegerReads(columns, fields, {
+         ...bigIntegerOptionsOf(def, binding),
+         storesOutputNames,
+      }).map((r) => [r.column, r.castTo] as const),
    );
 }
 
@@ -4765,6 +4777,28 @@ export function chainBuildText(
    return request.rollup
       ? copy.rollupBuildFiles(request.rollup, request.downstream.name, bindings)
       : copy.chainBuildFiles(request.downstream.sourceID, bindings);
+}
+
+/**
+ * A query-shaped source's output names: each field its query outputs, by the
+ * name it has before its `extend` renames it (`name`, beside `as`). A
+ * dimension the `extend` computes (`e`) is none.
+ */
+function queryOutputNames(fields: readonly unknown[] | undefined): string[] {
+   return (fields ?? []).flatMap((f) => {
+      const { name, e, join, type } = (f ?? {}) as {
+         name?: unknown;
+         e?: unknown;
+         join?: unknown;
+         type?: unknown;
+      };
+      return typeof name === "string" &&
+         e === undefined &&
+         join === undefined &&
+         type !== "turtle"
+         ? [name]
+         : [];
+   });
 }
 
 /** Whether a stale binding stores a source on `chain` (the queried source's). */
