@@ -25,6 +25,7 @@ import {
 } from "../../governance/ir/prepared_query";
 import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import { malloyIdentifiers } from "../../query_text";
+import { readsAGiven } from "../../governance/ir/compiled_model";
 
 /** Every field path an expression reads (`node: "field"`), at any depth. */
 export function fieldPathsIn(
@@ -118,6 +119,12 @@ export interface GateReads {
     * that judges the columns must fail closed.
     */
    readonly unresolved: boolean;
+   /**
+    * The entry point (or a member of its composite) has a `where:` term that
+    * reads a given: a row scope decided per caller, whose columns are read
+    * here as a gate's are.
+    */
+   readonly scoped: boolean;
 }
 
 interface FieldLike {
@@ -155,6 +162,12 @@ export function gateReads(
    struct: unknown,
    exprs: readonly string[],
    modelDef?: unknown,
+   /**
+    * Which of the source's own `where:` terms are read too: `"given"`, each
+    * that reads a given (the row scope, held to a gate's rules), the
+    * default; `"all"`, every term (for the readers that decline on a name).
+    */
+   filters: "given" | "all" = "given",
 ): GateReads {
    const names = new Set<string>();
    const columns: string[][] = [];
@@ -299,20 +312,61 @@ export function gateReads(
    const read = gatePaths(exprs);
    if (read.unresolved) unresolved = true;
    for (const p of read.paths) resolve(struct, p, []);
-   return { names, columns, unresolved };
+   let scoped = false;
+   for (const term of whereTerms(struct)) {
+      let given: boolean;
+      try {
+         given = readsAGiven(term.e);
+      } catch {
+         // Too deep to read: counted as the row scope it may be.
+         given = true;
+      }
+      if (given) scoped = true;
+      if (!given && filters === "given") continue;
+      for (const p of fieldPathsIn(term.e)) resolve(term.source, p, []);
+   }
+   return { names, columns, unresolved, scoped };
 }
 
 /**
- * Every name the gates (`exprs`) read from `struct`, and every field each of
- * those is computed from ({@link gateReads}), for the readers that decline on
- * a match.
+ * Each `where:` term that applies to `struct` when it is queried, with the
+ * source whose fields it reads: its own `filterList`, which already holds
+ * the terms of each source it extends, and, for a composite, each member's
+ * (a member of a nested composite included), since the member answering a
+ * query brings its terms with it.
+ */
+function whereTerms(
+   struct: unknown,
+   depth = 0,
+): { source: unknown; e: unknown }[] {
+   if (depth > 32 || struct === null || typeof struct !== "object") return [];
+   const s = struct as {
+      filterList?: unknown;
+      type?: unknown;
+      sources?: unknown;
+   };
+   const own = (Array.isArray(s.filterList) ? s.filterList : []).map((f) => ({
+      source: struct,
+      e: (f as { e?: unknown }).e,
+   }));
+   const members =
+      s.type === "composite" && Array.isArray(s.sources)
+         ? s.sources.flatMap((m) => whereTerms(m, depth + 1))
+         : [];
+   return [...own, ...members];
+}
+
+/**
+ * Every name the gates (`exprs`) and every `where:` term of `struct` read,
+ * and every field each of those is computed from ({@link gateReads}), for
+ * the readers that decline on a match.
  */
 export function gateReadNames(
    struct: unknown,
    exprs: readonly string[],
    modelDef?: unknown,
 ): Set<string> {
-   const names = new Set(gateReads(struct, exprs, modelDef).names);
+   const names = new Set(gateReads(struct, exprs, modelDef, "all").names);
    // Every identifier the text names too, fields or not: an extra name can
    // only send an answer live.
    for (const id of gateIdentifiers(exprs)) names.add(id);

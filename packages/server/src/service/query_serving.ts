@@ -24,6 +24,7 @@ import { gateSwitches, getPersistStorageMode } from "../config";
 import {
    answerKeepsGates,
    GATE_LEGS,
+   gateColumnsExact,
    legMayPassGate,
    SERVING_GATE_CONTEXT,
    type TableRead,
@@ -45,6 +46,7 @@ import type { ServedCopyServe } from "./materialization/serve/served_copy_serve"
 import {
    explanationOfDecline,
    isDeclineOf,
+   LegDecline,
 } from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
@@ -151,6 +153,9 @@ export function variantsOf(
          attempt: async () => {
             const answer = await leg.attempt(facts, pinned);
             if (leg.kind === "served") {
+               await assertRowScopeExact(answer, gateReadsOnce);
+            }
+            if (leg.kind === "served") {
                logger.debug("Serving query from the served copy (virtual)", {
                   modelPath: args.modelPath,
                   tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
@@ -177,12 +182,12 @@ export function variantsOf(
 async function withGateColumnTypes(
    tables: readonly TableRead[],
    gateReadsOnce: () => Promise<GateReads | undefined>,
-): Promise<TableRead[]> {
+): Promise<readonly TableRead[]> {
    const retyped = (t: TableRead) =>
       (t as Partial<Pick<Binding, "retypedColumns">>).retypedColumns ?? [];
    const storage = tables.filter((t) => t.tier === "storage");
    if (storage.length === 0 && !tables.some((t) => retyped(t).length > 0)) {
-      return [...tables];
+      return tables;
    }
    const reads = await gateReadsOnce();
    // Judged together: a gate column held by none of the storage tables the
@@ -211,6 +216,30 @@ async function withGateColumnTypes(
          ).map((c) => c.type),
       };
    });
+}
+
+/**
+ * A served answer over a source whose `where:` reads a given (a row scope
+ * decided per caller, with or without a gate) is kept only when the columns
+ * that scope reads are stored exactly, by the gate policy's own rule
+ * (`gateColumnsExact`): the policy itself is asked only past an entry-point
+ * gate, and a scope on a column stored as a float admits a neighbour's rows.
+ * Fails closed on a source whose reads cannot be listed.
+ */
+async function assertRowScopeExact(
+   answer: LegAnswer,
+   gateReadsOnce: () => Promise<GateReads | undefined>,
+): Promise<void> {
+   const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
+   const judged = await withGateColumnTypes(tables, gateReadsOnce);
+   if (judged === tables) return;
+   const reads = await gateReadsOnce();
+   if (reads !== undefined && !reads.scoped) return;
+   if (judged.every(gateColumnsExact)) return;
+   throw new LegDecline(
+      "served_copy_not_served",
+      "the query's source scopes its rows by a column a stored table does not hold exactly",
+   );
 }
 
 /** The answer the router's decision describes, before anything runs. */

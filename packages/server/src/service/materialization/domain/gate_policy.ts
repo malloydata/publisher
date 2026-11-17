@@ -246,7 +246,7 @@ export function gateColumnTypeExact(type: string): boolean {
  * admits live. Fail closed: a `storage=` table whose gate columns could not
  * be listed is not.
  */
-function gateColumnsExact(t: TableRead): boolean {
+export function gateColumnsExact(t: TableRead): boolean {
    if (t.gateColumnTypes === undefined) return t.tier === "colocated";
    return t.gateColumnTypes.every(gateColumnTypeExact);
 }

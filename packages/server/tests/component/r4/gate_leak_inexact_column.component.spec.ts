@@ -55,8 +55,9 @@ source: accounts_bigint is duckdb.sql("""
 """) extend { primary_key: id }
 `;
 
-const MODEL = `##! experimental { givens persistence access_modifiers }
+const MODEL = `##! experimental { givens persistence access_modifiers composite_sources }
 given: ACCT :: number
+given: ROLE :: string
 ${ACCOUNTS}
 
 #(access_filter) acct = $ACCT
@@ -88,6 +89,18 @@ source: ub_dim is ub extend { dimension: k2 is acct }
 #(access_filter) u.acct = $ACCT
 source: via_join is accounts extend { join_one: u is ub on id = u.id }
 
+// The row scope in a where: that reads a given: under a lock that reads
+// only a given, in a composite's member, and with no gate at all. An exact
+// stored base scoped the same way is the control, still served.
+#(authorize) 'analyst' = $ROLE
+source: w_lock is ub extend { where: acct = $ACCT }
+#(authorize) 'analyst' = $ROLE
+source: w_comp is compose(ub extend { where: acct = $ACCT }, ub)
+source: w_plain is ub extend { where: acct = $ACCT }
+#(materialize) name="acct_ub_exact" storage="${LAKE}"
+source: ub_exact is accounts -> { where: id > -9; select: * } extend { measure: n is count() }
+source: w_plain_exact is ub_exact extend { where: acct = $ACCT }
+
 // Database tables whose exact gate column is altered to DOUBLE in the
 // warehouse after the build, and rebound: the bind observes the drift.
 #(access_filter) acct = $ACCT
@@ -102,6 +115,9 @@ source: acct_db_mz_bigint is accounts_bigint -> { where: id > -7; select: * }
 #(access_filter) acct = $ACCT
 #@ persist name="acct_db_v1_bigint"
 source: acct_db_v1_bigint is accounts_bigint -> { where: id > -8; select: id, acct, region, amount }
+// The control: an ungated database table altered the same way, still served.
+#(materialize) name="acct_db_open"
+source: acct_db_open is accounts -> { where: id > -10; select: * }
 `;
 
 /** The tables whose gate column is altered to DOUBLE after the build. */
@@ -115,8 +131,27 @@ const DB_ALTERED = [
    "acct_db_v1_bigint",
 ];
 
+/**
+ * An altered database table whose gate column the served copy still reads (a
+ * DECIMAL): the gate policy's exactness rule is what sends it live, so the
+ * path report names the served copy skipped for its gate (`CONTRACT`), not
+ * the copy's own decline (`WARNED`) that a BIGINT one, left out of the copy
+ * as a float, gets with or without that rule. (The `#@ persist` table's path
+ * report names no served-copy skip; that it answers live is what this spec
+ * holds it to.)
+ */
+const DB_ALTERED_DECIMAL = ["acct_db_mz"];
+
 /** Entry points that read an inexact table's gate column under another shape. */
-const OVER_INEXACT = ["renamed", "renamed_grouped", "ub_ext", "ub_dim"];
+const OVER_INEXACT = [
+   "renamed",
+   "renamed_grouped",
+   "ub_ext",
+   "ub_dim",
+   "w_lock",
+   "w_comp",
+   "w_plain",
+];
 
 const QUERIES: { source: string; malloy: string }[] = [
    ...["acct_mz", "acct_v1", "acct_exact"].map((source) => ({
@@ -131,7 +166,7 @@ const QUERIES: { source: string; malloy: string }[] = [
       source: "acct_exact",
       malloy: "run: acct_exact -> { group_by: region; aggregate: n }",
    },
-   ...DB_ALTERED.map((source) => ({
+   ...[...DB_ALTERED, "acct_db_open", "w_plain_exact"].map((source) => ({
       source,
       malloy: `run: ${source} -> { select: id, region; order_by: id }`,
    })),
@@ -143,10 +178,13 @@ const QUERIES: { source: string; malloy: string }[] = [
 
 // Big ids are sent as strings: a JSON number cannot carry 2^53 + 1.
 const CALLERS: Record<string, Record<string, string>> = {
-   "the ...992 caller": { ACCT: "9007199254740992" },
-   "the ...993 caller": { ACCT: "9007199254740993" },
-   "the ...994 caller (no rows)": { ACCT: "9007199254740994" },
-   "the ...995 caller": { ACCT: "9007199254740995" },
+   "the ...992 caller": { ACCT: "9007199254740992", ROLE: "analyst" },
+   "the ...993 caller": { ACCT: "9007199254740993", ROLE: "analyst" },
+   "the ...994 caller (no rows)": {
+      ACCT: "9007199254740994",
+      ROLE: "analyst",
+   },
+   "the ...995 caller": { ACCT: "9007199254740995", ROLE: "analyst" },
 };
 const ORDER = [...Object.keys(CALLERS), ...Object.keys(CALLERS).reverse()];
 
@@ -216,7 +254,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
       const warehouse = (await loader.pkg.getMalloyConnection(
          "duckdb",
       )) as unknown as { runSQL(sql: string): Promise<unknown> };
-      for (const name of DB_ALTERED) {
+      for (const name of [...DB_ALTERED, "acct_db_open"]) {
          await warehouse.runSQL(
             `ALTER TABLE "${name}" ALTER COLUMN acct TYPE DOUBLE`,
          );
@@ -316,9 +354,14 @@ describe("L2: a gate over a column stored inexactly is never read from the table
                if (!("answer" in got)) return;
                if (goesLive) {
                   expect(got.answer.servedBy).toBe("live");
+                  if (DB_ALTERED_DECIMAL.includes(q.source)) {
+                     expect(got.answer.servedSkip?.reason).toBe("CONTRACT");
+                  }
                } else {
                   expect(got.answer.via).toBe("served_copy");
-                  expect(got.answer.servedFrom).toBe("storage");
+                  expect(got.answer.servedFrom).toBe(
+                     q.source === "acct_db_open" ? "database" : "storage",
+                  );
                }
             });
          }
