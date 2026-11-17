@@ -962,10 +962,9 @@ The `mcp` block of `publisher.config.json` holds settings for the MCP server. It
   the parameter from the tool's schema, so an agent is never offered it. The REST parameter of the
   same name does not depend on this setting.
 - The value is read once, at startup. Restart the server after changing it.
-- Write `true` or `false`. A string another boolean setting reads as on, such as `"yes"`, is read as off
-  here, as it always has been, with a warning; a later release refuses it. A value no boolean reader
-  accepts fails startup.
-- An `mcp` that is not an object is warned about and ignored.
+- Write `true` or `false`. Any other value fails startup, a string included: `"yes"`, which another
+  boolean setting reads as on, was read as off here.
+- An `mcp` that is not an object fails startup.
 
 ## Theming
 
