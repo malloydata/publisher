@@ -681,6 +681,21 @@ cannot tell which it has. A plain DuckDB table keeps every digit. So:
 - A colocated build on a `ducklake` connection still stores the 128-bit type, which is answered
   live as above.
 
+**Snowflake: live and served differences.** Two Snowflake answers differ between live and served
+today, and in both the served answer is the right one; each needs a fix in Malloy's Snowflake
+connector, not in Publisher.
+
+- *Integers past 2^53.* Malloy's Snowflake dialect says live keeps every digit of a `NUMBER(p,0)`, so
+  a stored read keeps them too (above). Live does not, on any connection Publisher configures: the
+  connector gives snowflake-sdk the configured options without its own `jsTreatIntegerAsBigInt`
+  default, so the driver returns the integer as a JavaScript number. A `sum()` over a
+  `NUMBER(38,0)` past 2^53, such as 4530000000000225187, comes back rounded live
+  (4530000000000225300) and exact served. Publisher does not round the served answer to match.
+- *`TIMESTAMP_TZ`.* The connector pins the session's text format for `TIMESTAMP_NTZ` and
+  `TIMESTAMP_LTZ`, not for `TIMESTAMP_TZ`, so live renders a zoned value in the account's own format
+  and offset (`2026-01-15 10:00:00.000 -0800`), and served renders the same instant in UTC ISO form
+  (`2026-01-15T18:00:00.000Z`). The instant is the same; only the text differs.
+
 A run's record (`GET …/packages/{packageName}/materializations/{materializationId}`, and the
 listing) returns its build manifest. Each entry names the physical table it built, and a colocated
 entry's `nativeSchema` lists every column of that table with its warehouse type, including columns
