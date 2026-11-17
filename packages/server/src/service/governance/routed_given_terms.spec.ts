@@ -43,6 +43,20 @@ source: both is duckdb.table('accounts') extend {
   where: region = $REGION
   where: org_id = $ORG
 }
+source: not_region is duckdb.table('accounts') extend {
+  where: region != $REGION
+}
+
+// A source joining a given-reading source, and its twin joining it re-pointed
+// at one that left the term out (a join to a rollup that does not carry it).
+source: kids is duckdb.table('child') extend {
+  primary_key: id
+  join_many: accts is scoped on accts.child_id = id
+}
+source: kids_open is duckdb.table('child') extend {
+  primary_key: id
+  join_many: accts is unscoped on accts.child_id = id
+}
 `;
 
 /** The model's own compile of `run: <source> -> { select: id }`. */
@@ -61,6 +75,7 @@ async function governRouted(
    routed: string,
    live: string | undefined,
    givens: Record<string, GivenValue>,
+   bypassAuthorize = false,
 ): Promise<number[]> {
    const governor = governorOf(loaded.model);
    const graftScope = (
@@ -76,6 +91,7 @@ async function governRouted(
             ),
          graftScope,
          reprovesGivenTerms: true,
+         ...(bypassAuthorize ? { bypassAuthorize } : {}),
       },
       {
          runnable,
@@ -131,6 +147,38 @@ describe("govern(): a routed answer re-applies the live run target's given terms
          await expectDenied(governRouted(loaded, "by_org", "scoped", givens));
          await expectDenied(governRouted(loaded, "both", "scoped", givens));
          await expectDenied(governRouted(loaded, "scoped", "both", givens));
+      });
+   });
+
+   it("denies a routed compile reading the same given in another expression", async () => {
+      await withAuthorizeModel(MODEL, async (loaded) => {
+         await expectDenied(
+            governRouted(loaded, "not_region", "scoped", { REGION: "east" }),
+         );
+      });
+   });
+
+   it("denies a routed compile whose join lost its source's given term", async () => {
+      await withAuthorizeModel(MODEL, async (loaded) => {
+         const givens = { REGION: "east" };
+         expect(await governRouted(loaded, "kids", "kids", givens)).toEqual([
+            1, 2,
+         ]);
+         await expectDenied(governRouted(loaded, "kids_open", "kids", givens));
+      });
+   });
+
+   it("re-proves under the authorize bypass too: it is the model's meaning, not access", async () => {
+      await withAuthorizeModel(MODEL, async (loaded) => {
+         await expectDenied(
+            governRouted(
+               loaded,
+               "unscoped",
+               "scoped",
+               { REGION: "east" },
+               true,
+            ),
+         );
       });
    });
 

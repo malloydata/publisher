@@ -193,8 +193,8 @@ const MISTAKES: Mistake[] = [
             '#(materialize) name="t__p0123abcd"',
             "materialize-invalid",
          ],
-         // A rollup's name= places its table and its leaf is Publisher's:
-         // one with no container places nothing, so it is invalid there.
+         // A rollup's name= leaf starts its table's name, which Publisher
+         // ends with its own hash: a leaf already ending so is invalid.
          preaggregate: [
             '#(preaggregate) grain=["category"] name="t__p0123abcd"',
             "preaggregate-invalid",
