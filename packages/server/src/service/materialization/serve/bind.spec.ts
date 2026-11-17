@@ -801,7 +801,7 @@ describe("applyObservedColumns", () => {
 
    // P4-01: a DuckLake table's 128-bit integer holds a DOUBLE's digits
    // (the bind's read marks it `storedAsDouble`), whatever its build wrote.
-   it("P4-01: reads a DuckLake 128-bit integer as the DOUBLE it holds, and leaves out a rollup that stores one", () => {
+   it("P4-01: reads a DuckLake 128-bit integer as the DOUBLE it holds, and leaves it out of a rollup that stores one", () => {
       const huge = [
          { name: "id", type: "HUGEINT" },
          { name: "amt", type: "DOUBLE" },
@@ -823,6 +823,7 @@ describe("applyObservedColumns", () => {
             addr1: { tableName: "orders_t", schema: huge },
             rollup1: {
                tableName: "orders_by_d",
+               connectionName: "lake",
                schema: [{ name: "total__partial", type: "HUGEINT" }],
             },
          },
@@ -836,7 +837,15 @@ describe("applyObservedColumns", () => {
       expect(out.bindings[0].nativeSchema).toEqual([
          { name: "id", type: "DOUBLE" },
       ]);
-      expect(Object.keys(out.entries)).toEqual(["addr1"]);
+      // The rollup keeps its table, its 128-bit partial left out: a query
+      // reading it answers live, never the DOUBLE's rounded digits.
+      expect(out.entries.rollup1).toEqual({
+         tableName: "orders_by_d",
+         connectionName: "lake",
+         schema: [{ name: "total__partial", type: "HUGEINT" }],
+         heldRead: { connectionName: "lake", columns: [] },
+         leftOutColumns: ["total__partial"],
+      });
       expect(out.drifted.map((d) => d.columns)).toEqual([
          [
             {
@@ -852,12 +861,13 @@ describe("applyObservedColumns", () => {
                builtType: "HUGEINT",
                observedType: "DOUBLE",
                storedAsDouble: true,
+               leftOut: true,
             },
          ],
       ]);
    });
 
-   it("leaves out a substituted table (a rollup) whose column drifted: no cast reaches it", () => {
+   it("keeps a substituted table (a rollup) whose column no cast reads, with that column left out", () => {
       const out = applyObservedColumns({
          entries,
          bindings: [binding],
@@ -868,9 +878,162 @@ describe("applyObservedColumns", () => {
                { columns: [{ name: "total__partial", type: "VARCHAR" }] },
             ],
          ]),
+         declared: () => ({ columns: [], connectionName: "pg" }),
       });
-      expect(Object.keys(out.entries)).toEqual(["addr1"]);
+      // Held as it is now, for the read plan, which reads no text as a
+      // number: the warning's column is left out.
+      expect(out.entries).toEqual({
+         addr1: entries.addr1,
+         rollup1: {
+            ...entries.rollup1,
+            heldRead: {
+               connectionName: "pg",
+               columns: [{ name: "total__partial", type: "VARCHAR" }],
+            },
+         },
+      });
       expect(out.bindings).toEqual([binding]);
+      expect(out.drifted[0].columns).toEqual([
+         {
+            column: "total__partial",
+            builtType: "DOUBLE",
+            observedType: "VARCHAR",
+            leftOut: true,
+         },
+      ]);
+   });
+
+   describe("a substituted table (a rollup, a persisted view or query) whose columns moved", () => {
+      const view = {
+         tableName: '"s"."by_day"',
+         schema: [
+            { name: "flag", type: "BOOLEAN" },
+            { name: "d2", type: "DATE" },
+            { name: "n", type: "BIGINT" },
+            { name: "amt", type: "DOUBLE" },
+            { name: "gone", type: "VARCHAR" },
+         ],
+      };
+      const observed = (dialect: string) =>
+         new Map([
+            [
+               "v1",
+               {
+                  dialect,
+                  columns: [
+                     { name: "flag", type: "INTEGER" },
+                     { name: "d2", type: "TIMESTAMP" },
+                     { name: "n", type: "DECIMAL(10,2)" },
+                     { name: "amt", type: "VARCHAR" },
+                     { name: "other", type: "VARCHAR" },
+                  ],
+               },
+            ],
+         ]);
+
+      it("records the columns it holds now for a typed read, leaving out those no read gives live's values", () => {
+         const out = applyObservedColumns({
+            entries: { v1: view },
+            bindings: [],
+            observed: observed("postgres"),
+            declared: () => ({ columns: [], connectionName: "pg" }),
+         });
+         // A boolean now an integer, and a date now a timestamp, are held
+         // for the read plan's faithful cast; text where a number was, and a
+         // gone column, are left out.
+         expect(out.entries.v1).toEqual({
+            ...view,
+            heldRead: {
+               connectionName: "pg",
+               columns: [
+                  { name: "flag", type: "INTEGER" },
+                  { name: "d2", type: "TIMESTAMP" },
+                  { name: "n", type: "DECIMAL(10,2)" },
+                  { name: "amt", type: "VARCHAR" },
+                  { name: "other", type: "VARCHAR" },
+               ],
+            },
+            leftOutColumns: ["gone"],
+         });
+         // `n` still a number: not drift. `amt` is held, but no cast reads
+         // it as declared: the warning's and the read plan's left out.
+         expect(
+            out.drifted[0].columns.map((c) => [c.column, c.leftOut ?? false]),
+         ).toEqual([
+            ["flag", false],
+            ["d2", false],
+            ["amt", true],
+            ["gone", true],
+         ]);
+      });
+
+      it("answers live, whole, a table whose connection is not known (fail safe)", () => {
+         const out = applyObservedColumns({
+            entries: { v1: view },
+            bindings: [],
+            observed: observed("duckdb"),
+         });
+         expect(out.entries).toEqual({});
+         expect(out.drifted).toHaveLength(1);
+      });
+
+      it("takes each column's declared type and reader's time zone from its build source", () => {
+         const out = applyObservedColumns({
+            entries: {
+               v1: {
+                  tableName: "t",
+                  schema: [{ name: "d", type: "DATE" }],
+               },
+            },
+            bindings: [],
+            observed: new Map([
+               [
+                  "v1",
+                  {
+                     dialect: "duckdb",
+                     columns: [{ name: "d", type: "TIMESTAMP WITH TIME ZONE" }],
+                  },
+               ],
+            ]),
+            // An instant's date in a query time zone is not UTC's: no cast.
+            declared: () => ({
+               columns: [{ name: "d", type: "date" }],
+               connectionName: "duckdb",
+               queryTimezone: "America/New_York",
+            }),
+         });
+         expect(out.drifted[0].columns).toEqual([
+            {
+               column: "d",
+               builtType: "DATE",
+               observedType: "TIMESTAMP WITH TIME ZONE",
+               leftOut: true,
+            },
+         ]);
+      });
+
+      it("keeps the bare table when every moved column still reads as declared", () => {
+         const out = applyObservedColumns({
+            entries: {
+               v1: { tableName: "t", schema: [{ name: "n", type: "INTEGER" }] },
+            },
+            bindings: [],
+            observed: new Map([
+               [
+                  "v1",
+                  {
+                     dialect: "duckdb",
+                     columns: [{ name: "n", type: "BIGINT" }],
+                  },
+               ],
+            ]),
+         });
+         expect(out.entries.v1).toEqual({
+            tableName: "t",
+            schema: [{ name: "n", type: "INTEGER" }],
+         });
+         expect(out.drifted).toEqual([]);
+      });
    });
 
    it("leaves out a table that was not read, binding and entry alike (fail safe)", () => {
@@ -970,11 +1133,12 @@ describe("applyObservedColumns", () => {
       expect(read("duckdb").bindings[0].schema).toEqual(ts.schema);
    });
 
-   it("leaves out a rollup whose big integer's native type moved", () => {
+   it("leaves a rollup's big integer now held as a float out of its reads", () => {
       const out = applyObservedColumns({
          entries: {
             rollup1: {
                tableName: "orders_by_d",
+               connectionName: "pg",
                schema: [{ name: "total__partial", type: "BIGINT" }],
                nativeSchema: [{ name: "total__partial", type: "bigint" }],
             },
@@ -996,7 +1160,8 @@ describe("applyObservedColumns", () => {
             ],
          ]),
       });
-      expect(out.entries).toEqual({});
+      // Its digits past 2^53 are lost: left out, never read as exact.
+      expect(out.entries.rollup1?.leftOutColumns).toEqual(["total__partial"]);
    });
 
    it("passes a storage binding through untouched", () => {

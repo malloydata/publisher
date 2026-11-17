@@ -105,6 +105,7 @@ import {
    wideIntegerColumns,
 } from "../../../src/service/materialization/stored_column_types";
 import type {
+   FreshnessAwareManifestEntry,
    KeyUniqueness,
    ManifestEntry,
 } from "../../../src/service/materialization/domain/types";
@@ -604,6 +605,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          tableName: string;
          keyUniqueness?: KeyUniqueness;
          schema?: { name: string; type: string }[];
+         heldRead?: FreshnessAwareManifestEntry["heldRead"];
+         leftOutColumns?: string[];
       }
    > = {};
    // The join_ones a package's build reads the rollups' key checks for.
@@ -1373,7 +1376,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          });
          bindings.splice(0, bindings.length, ...applied.bindings);
          for (const id of Object.keys(colocatedEntries)) {
-            if (!(id in applied.entries)) delete colocatedEntries[id];
+            const kept = applied.entries[id];
+            if (!kept) {
+               delete colocatedEntries[id];
+               continue;
+            }
+            // A substituted table whose columns moved: read through a typed
+            // source over what it holds now, its left-out columns declined
+            // per query.
+            const { heldRead, leftOutColumns } = kept;
+            Object.assign(colocatedEntries[id], {
+               ...(heldRead ? { heldRead } : {}),
+               ...(leftOutColumns ? { leftOutColumns } : {}),
+            });
          }
          return { drifted: applied.drifted, unread: applied.unread };
       },

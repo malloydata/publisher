@@ -27,7 +27,12 @@
 
 import { freshnessOf, type Freshness } from "./freshness";
 import { storageTablePath } from "./storage_table_path";
-import type { BuildManifest, FreshnessManifest, ManifestEntry } from "./types";
+import type {
+   BuildManifest,
+   FreshnessAwareManifestEntry,
+   FreshnessManifest,
+   ManifestEntry,
+} from "./types";
 
 /** What a stored table holds, from the plan: never read off a name. */
 export type BindingKind =
@@ -118,6 +123,35 @@ export function isColocated(b: Pick<Binding, "tier">): boolean {
  * compiler manifest substitutes; `bindings` are the tables the served copy and the
  * `storage=` legs read.
  */
+/**
+ * A database table read by Malloy's build-manifest substitution, altered
+ * outside its build (its entry's `heldRead`): read instead as a `storage=`
+ * table is, through a typed `virtual()` source over the columns it holds now,
+ * on its own connection. Its handle is its content address. Undefined when
+ * the bind recorded no `heldRead`.
+ */
+export function heldReadBinding(
+   kind: BindingKind,
+   sourceEntityId: string,
+   entry: FreshnessAwareManifestEntry,
+): Binding | undefined {
+   const held = entry.heldRead;
+   if (!held) return undefined;
+   const nativeSchema = held.columns.flatMap((c) =>
+      c.nativeType !== undefined ? [{ name: c.name, type: c.nativeType }] : [],
+   );
+   return {
+      kind,
+      tier: "colocated",
+      sourceName: sourceEntityId,
+      destinationName: held.connectionName,
+      virtualHandle: sourceEntityId,
+      tablePath: entry.tableName,
+      schema: held.columns.map(({ name, type }) => ({ name, type })),
+      ...(nativeSchema.length > 0 ? { nativeSchema } : {}),
+   };
+}
+
 export interface Snapshot {
    readonly bindings: readonly Binding[];
    readonly entries: Readonly<FreshnessManifest>;

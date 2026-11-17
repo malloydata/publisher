@@ -38,6 +38,8 @@ import {
 } from "../domain/table_plans";
 import { capabilitiesOf } from "../domain/dialect";
 import {
+   driftDeclaredType,
+   driftedColumnRead,
    storedColumnsOfOutput,
    storedMalloyType,
 } from "../stored_column_types";
@@ -544,9 +546,13 @@ export interface ObservedDrift {
  * - a served-copy binding (`#(materialize)`, `#@ persist`) declares each
  *   drifted column with its observed type, and the one stored-column read
  *   plan casts it or leaves it out (a gone column is left out);
- * - an entry read by Malloy's build-manifest substitution alone (a rollup, a
- *   persisted view or query), which no cast reaches, is left out of the
- *   entries, so its leg finds no table and the query answers live;
+ * - an entry read by Malloy's build-manifest substitution (a rollup, a
+ *   persisted view or query), which no cast reaches, records the columns its
+ *   table holds now (`heldRead`) and those it left out (`leftOutColumns`):
+ *   its leg then reads it through a typed source as a `storage=` table is
+ *   read, each moved column cast faithfully or left out by the same rule
+ *   ({@link driftedColumnRead}), so only a query reading a left-out column
+ *   answers live;
  * - a table whose read failed (`unread`), or that was not read, is left out
  *   of both: it answers live (fail safe).
  *
@@ -556,6 +562,12 @@ export function applyObservedColumns(args: {
    entries: FreshnessManifest;
    bindings: readonly Binding[];
    observed: ReadonlyMap<string, ObservedColumns> | undefined;
+   /**
+    * The columns a substituted entry's build source declares, by name, and
+    * the time zone its reader reads it in: what a drifted column must read
+    * as. Without it, each column's declared type is the one its build wrote.
+    */
+   declared?: (sourceEntityId: string) => DriftDeclaration | undefined;
 }): {
    entries: FreshnessManifest;
    bindings: Binding[];
@@ -610,14 +622,23 @@ export function applyObservedColumns(args: {
          : // A build that captured only native types (a warehouse whose
            // schema reader refused the name): those are what moved or not.
            nativeDriftOf(entry.nativeSchema ?? [], read);
-      if (columns.length > 0) {
-         drifted.push({ sourceEntityId: id, columns });
-         // Read by Malloy's manifest substitution alone: no cast reaches it.
-         if (!served.has(id)) {
-            left.add(id);
-            continue;
-         }
+      if (columns.length > 0 && !served.has(id)) {
+         // Read by Malloy's manifest substitution alone: each moved column
+         // cast in a projection substituted for the table, or left out.
+         const substituted = substitutedRead(
+            entry,
+            columns,
+            read,
+            args.declared?.(id),
+         );
+         drifted.push({
+            sourceEntityId: id,
+            columns: substituted?.columns ?? columns,
+         });
+         if (substituted) entries[id] = substituted.entry;
+         continue;
       }
+      if (columns.length > 0) drifted.push({ sourceEntityId: id, columns });
       entries[id] = entry;
    }
    const bindings = args.bindings.flatMap((b): Binding[] => {
@@ -675,7 +696,109 @@ export function applyObservedColumns(args: {
    return { entries, bindings, drifted, unread };
 }
 
-/** The built native columns whose native type moved, or that are gone. */
+/** What a substituted table's moved columns must read as. */
+export interface DriftDeclaration {
+   /** The build source's declared columns, with their Malloy types. */
+   columns: readonly { name?: string; type?: string }[];
+   /** The connection its table is on, when its entry does not name it. */
+   connectionName?: string;
+   /** The time zone its reader reads it in ({@link BuildCastOptions}). */
+   queryTimezone?: string;
+}
+
+/**
+ * A table read by Malloy's build-manifest substitution whose columns moved,
+ * each column left out where the bind's own rule leaves it out (gone, a type
+ * Malloy reads as no basic type, a zone gained or lost off DuckDB), or where
+ * its digits are lost (a 128-bit integer a DuckLake table holds as a DOUBLE,
+ * a big integer now a float). Its leg reads the rest as they are now
+ * (`heldRead`), through the one stored-column read plan, which casts a moved
+ * column faithfully or leaves it out ({@link driftedColumnRead}). Each column
+ * report carries `leftOut` as {@link driftedColumnRead} decides it, for the
+ * warning. Undefined when the table's connection is not known: it answers
+ * live (fail safe).
+ */
+function substitutedRead(
+   entry: FreshnessManifest[string],
+   columns: ObservedDrift["columns"],
+   read: Extract<ObservedColumns, { columns: unknown }>,
+   declared: DriftDeclaration | undefined,
+):
+   | { entry: FreshnessManifest[string]; columns: ObservedDrift["columns"] }
+   | undefined {
+   const connectionName = entry.connectionName ?? declared?.connectionName;
+   if (!connectionName) return undefined;
+   const leftOut: string[] = [];
+   const decided = columns.map((c) => {
+      const lost =
+         c.leftOut ||
+         c.storedAsDouble ||
+         roundsBigInteger(c) ||
+         !c.observedType;
+      if (lost) leftOut.push(c.column);
+      // Decided on the type as the build's capture spells it, whatever the
+      // report names (a warehouse's own spelling, when the build captured
+      // only those).
+      const spelled = columnNamed(read.columns, c.column)?.type;
+      const how = lost
+         ? ({ read: "left_out" } as const)
+         : driftedColumnRead(
+              { ...c, ...(spelled ? { observedType: spelled } : {}) },
+              driftDeclaredType(
+                 declared?.columns,
+                 c.column,
+                 storedMalloyType(c.builtType) ?? c.builtType,
+              ),
+              declared?.queryTimezone
+                 ? { queryTimezone: declared.queryTimezone }
+                 : {},
+           );
+      return how.read === "left_out" ? { ...c, leftOut: true as const } : c;
+   });
+   const out = new Set(leftOut.map((c) => c.toLowerCase()));
+   const held = read.columns.flatMap((c) =>
+      c.type !== undefined && !out.has(c.name.toLowerCase())
+         ? [
+              {
+                 name: c.name,
+                 type: c.type,
+                 ...(c.nativeType !== undefined
+                    ? { nativeType: c.nativeType }
+                    : {}),
+              },
+           ]
+         : [],
+   );
+   return {
+      entry: {
+         ...entry,
+         heldRead: { connectionName, columns: held },
+         ...(leftOut.length > 0 ? { leftOutColumns: leftOut } : {}),
+      },
+      columns: decided,
+   };
+}
+
+/**
+ * A 64- or 128-bit integer now held as a float: its digits past 2^53 are
+ * already lost, so no read gives live's exact integer (the stored-column read
+ * plan's refusal of a big integer stored as a float).
+ */
+function roundsBigInteger(c: ObservedDrift["columns"][number]): boolean {
+   return (
+      /^(BIGINT|HUGEINT|UBIGINT|UHUGEINT|INT8|LONG)$/i.test(
+         c.builtType.trim(),
+      ) &&
+      /^(DOUBLE|FLOAT|REAL|FLOAT4|FLOAT8)$/i.test((c.observedType ?? "").trim())
+   );
+}
+
+/**
+ * The built native columns whose native type moved, or that are gone, each
+ * left out as {@link columnDrift} leaves one out: gone, now a type Malloy
+ * reads as no basic type, or a timestamp that gained or lost its zone off
+ * DuckDB.
+ */
 function nativeDriftOf(
    built: readonly { name: string; type: string }[],
    read: Extract<ObservedColumns, { columns: unknown }>,
@@ -690,13 +813,36 @@ function nativeDriftOf(
             : {}),
          ...(now?.storedAsDouble ? { storedAsDouble: true as const } : {}),
       };
-      if (!now) return [{ ...report, gone: true as const }];
+      if (!now)
+         return [{ ...report, gone: true as const, leftOut: true as const }];
       if (now.storedAsDouble) return [report];
-      return now.nativeType !== undefined &&
-         normalizedType(now.nativeType) !== normalizedType(c.type)
-         ? [report]
-         : [];
+      if (
+         now.nativeType === undefined ||
+         normalizedType(now.nativeType) === normalizedType(c.type)
+      ) {
+         return [];
+      }
+      const zoneMoved =
+         isNativeTimestamp(c.type) &&
+         isNativeTimestamp(now.nativeType) &&
+         isNativeZoned(c.type) !== isNativeZoned(now.nativeType);
+      if (zoneMoved && capabilitiesOf(read.dialect).utcSessions) return [];
+      return now.type === undefined || zoneMoved
+         ? [{ ...report, leftOut: true as const }]
+         : [report];
    });
+}
+
+/** A timestamp, as a warehouse's catalog names it. */
+function isNativeTimestamp(type: string): boolean {
+   return /^(timestamp|datetime)/i.test(type.trim());
+}
+
+/** A zoned timestamp, as a warehouse's catalog names it. */
+function isNativeZoned(type: string): boolean {
+   return /with time zone|^timestamptz|^timestamp_tz|^timestamp_ltz/i.test(
+      type.trim(),
+   );
 }
 
 /** A column's type as the build's native capture named it, by name. */

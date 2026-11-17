@@ -108,6 +108,24 @@ export interface BuildManifest {
 export interface FreshnessAwareManifestEntry {
    tableName: string;
    /**
+    * Set by the bind for a database table read by Malloy's build-manifest
+    * substitution (a rollup, a persisted view or query) whose columns moved
+    * since its build: the columns it holds now, on its connection, but those
+    * the bind left out. Its leg reads it through a typed `virtual()` source
+    * over them, each moved column read by the one stored-column read plan (a
+    * faithful cast, or left out), as a `storage=` table is read; Malloy's
+    * substitution, which no cast reaches, is never used for it. Internal,
+    * never on the wire.
+    */
+   heldRead?: HeldRead;
+   /**
+    * Set by the bind beside {@link heldRead}: the stored columns it left out
+    * (gone, a type Malloy reads as no basic type, a timestamp that gained or
+    * lost its zone off DuckDB, a big integer now a float). Each leg declines
+    * only a query that reads one. Internal, never on the wire.
+    */
+   leftOutColumns?: string[];
+   /**
     * The connection the physical table lives on, carried from the run
     * manifest so the bind step can quote `tableName` for that connection's
     * dialect (see Package.quoteBoundTableNames). Absent on entries whose
@@ -137,6 +155,14 @@ export interface FreshnessAwareManifestEntry {
     * on the wire; absent (unknown) on every entry a host's manifest binds.
     */
    keyUniqueness?: KeyUniqueness;
+}
+
+/** See {@link FreshnessAwareManifestEntry.heldRead}. */
+interface HeldRead {
+   /** The connection the table is on: its build source's. */
+   connectionName: string;
+   /** Each column it holds now, in DuckDB's spelling, with its native type. */
+   columns: { name: string; type: string; nativeType?: string }[];
 }
 
 /** See {@link FreshnessAwareManifestEntry.keyUniqueness}. */
