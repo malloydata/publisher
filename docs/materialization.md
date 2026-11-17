@@ -655,10 +655,13 @@ which table it wrote). A colocated column whose type its build did not record is
 on BigQuery: BigQuery has exactly one integer type, so the column is read as `INT64` and still
 serves. Either way the package reports the source as a warning with code
 `stored-native-schema-missing`, naming its columns and whether each is read as `INT64` or answered
-live; the next full rebuild records the types and clears it. Served never exceeds live: on a source whose live answer itself rounds such values
-(Postgres returns its rows through JSON), a `storage=` table reads the column as a plain number,
-which rounds the same way, and a colocated one reads it through Postgres's own `bigint` type, on
-live's own path ([known limitation 12](materialization-v2-plan.md#known-limitations-to-revisit)).
+live; the next full rebuild records the types and clears it. Served never exceeds live where Malloy's dialect says live rounds: on a source whose live answer
+itself rounds such values (Postgres returns its rows through JSON), a `storage=` table reads the
+column as a plain number, which rounds the same way, and a colocated one reads it through
+Postgres's own `bigint` type, on live's own path ([known limitation
+12](materialization-v2-plan.md#known-limitations-to-revisit)). Where the dialect says live keeps
+every digit but the connector does not, served is the exact answer and live rounds: Snowflake's
+`NUMBER(p,0)` today (see "Snowflake: live and served differences" below).
 
 **A 128-bit integer in DuckLake.** DuckLake (DuckDB 1.5) writes a `HUGEINT` or `UHUGEINT` column to
 its Parquet files as a `DOUBLE`, while its catalog still reports the 128-bit type, so a value past
