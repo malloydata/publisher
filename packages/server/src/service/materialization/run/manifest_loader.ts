@@ -14,6 +14,7 @@
  */
 
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
+import { tablePathParts } from "../../quoting";
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import * as fs from "fs/promises";
@@ -112,6 +113,17 @@ export async function fetchManifestEntries(
 }
 
 /**
+ * Whether a manifest's table name is one this server reads: no backslash
+ * anywhere, and any quote in it forming whole quoted parts
+ * ({@link tablePathParts}).
+ */
+function isUsableTableName(name: string): boolean {
+   if (name.includes("\\")) return false;
+   if (!name.includes('"') && !name.includes("`")) return true;
+   return tablePathParts(name, "") !== undefined;
+}
+
+/**
  * Split a manifest entry map by tier into {@link FetchedManifest}. A colocated
  * entry's wire `physicalTableName` becomes the runtime's `tableName`, keeping
  * the freshness fields (gated per query) and `connectionName` (for
@@ -150,6 +162,19 @@ export function splitManifestEntries(
                source,
                sourceEntityId,
             });
+         }
+         continue;
+      }
+      // A name this server would put in SQL it cannot read safely: a
+      // backslash anywhere (an escape in several dialects' literals and
+      // identifiers), or a quote that does not form quoted parts. An
+      // author's quoted `name=` (`"My Schema".t`) parses and is kept.
+      if (!isUsableTableName(physicalTableName)) {
+         if (!quiet) {
+            logger.warn(
+               "Manifest entry names a table this server cannot read safely (a backslash, or quotes that do not parse); skipping, so its source answers live",
+               { source, sourceEntityId },
+            );
          }
          continue;
       }
