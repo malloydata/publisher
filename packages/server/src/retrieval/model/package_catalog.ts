@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { redactStorageUrls } from "../../pg_helpers";
 import type { EnvironmentCatalog } from "../../service/environment_ports";
 import { logger } from "../../logger";
 import { parseEnvironmentName } from "../../service/identity";
@@ -71,11 +72,17 @@ export async function readPackageCatalog(
             packages.push({
                name: pkg.name,
                ...(pkg.description ? { description: pkg.description } : {}),
-               ...(stale ? { error: stale.message, stale: true as const } : {}),
+               // A load error can quote a storage URL: never in an answer.
+               ...(stale
+                  ? {
+                       error: redactStorageUrls(stale.message),
+                       stale: true as const,
+                    }
+                  : {}),
             });
          }
          for (const [failed, message] of environment.getFailedPackages()) {
-            packages.push({ name: failed, error: message });
+            packages.push({ name: failed, error: redactStorageUrls(message) });
          }
          results.push({ name, packages });
       } catch (error) {
@@ -86,7 +93,11 @@ export async function readPackageCatalog(
             environmentName: name,
             error: message,
          });
-         results.push({ name, error: message, packages: [] });
+         results.push({
+            name,
+            error: redactStorageUrls(message),
+            packages: [],
+         });
       }
    }
    return results;

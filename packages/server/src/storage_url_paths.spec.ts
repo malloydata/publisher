@@ -11,7 +11,8 @@
 import { MalloyError } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import { CompileController } from "./controller/compile.controller";
-import { internalErrorToHttpError } from "./errors";
+import { internalErrorToHttpError, ModelCompilationError } from "./errors";
+import { readPackageCatalog } from "./retrieval/model/package_catalog";
 import { EnvironmentStore } from "./service/environment_store";
 import { notServed } from "./service/materialization/run/manifest_committer";
 import { redactConnectionSecrets } from "./service/materialization/run/materialization_run_support";
@@ -85,5 +86,37 @@ describe("P6-21: no storage URL reaches a caller", () => {
       ).addStatusProblems.call(store, status);
       expect(status.loadErrors?.[0].message).toContain("<storage path>");
       expect(status.loadErrors?.[0].message).not.toMatch(LEAKS);
+   });
+
+   it("in a failed package load's 424 body (REST package and model routes)", () => {
+      const answer = internalErrorToHttpError(
+         new ModelCompilationError({ message: URL_TEXT }),
+         { log: false },
+      );
+      expect(answer.status).toBe(424);
+      expect(answer.json.message).toContain("<storage path>");
+      expect(answer.json.message).not.toMatch(LEAKS);
+   });
+
+   it("in MCP list_packages: a failed, a stale and an unlistable package", async () => {
+      const catalog = await readPackageCatalog({
+         listEnvironments: async () => [{ name: "ok" }, { name: "broken" }],
+         getEnvironment: async (name: string) => {
+            if (name === "broken") throw new Error(URL_TEXT);
+            return {
+               getStaleCompileErrors: () =>
+                  new Map([["stale", { message: URL_TEXT }]]),
+               listPackages: async () => [{ name: "stale" }],
+               getFailedPackages: () => new Map([["failed", URL_TEXT]]),
+            };
+         },
+      } as never);
+      const text = JSON.stringify(catalog);
+      expect(text).toContain("<storage path>");
+      expect(text).not.toMatch(LEAKS);
+      expect(catalog.flatMap((e) => e.packages.map((p) => p.name))).toEqual([
+         "stale",
+         "failed",
+      ]);
    });
 });

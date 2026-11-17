@@ -1977,6 +1977,8 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    },
    model_compilation: {
       status: 424,
+      // A failed load can quote a driver's text, a storage URL with it.
+      message: (error) => redactStorageUrls(error.message),
       mcp: { advice: "malloy" },
       mcpSetup: "resource",
    },
