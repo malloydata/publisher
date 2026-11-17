@@ -159,7 +159,13 @@ export interface KeyUniqueness {
  * or why they could not be read, in which case the table answers live.
  */
 export type ObservedColumns =
-   | { columns: { name: string; type: string }[] }
+   | {
+        /**
+         * Each column, `type` absent for one whose warehouse type Malloy
+         * reads as no basic type (a struct, an array): never a drift.
+         */
+        columns: { name: string; type?: string }[];
+     }
    | { unread: string };
 
 /** Full (unfiltered) manifest map keyed by sourceEntityId. */

@@ -10,17 +10,19 @@
  * text, which differs by dialect, is warehouse_sql.ts's.
  */
 
-import type { Connection as MalloyConnection } from "@malloydata/malloy";
+import {
+   type Connection as MalloyConnection,
+   getDialect,
+} from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "./error_code";
 import { errMessage } from "../../../utils";
-import {
-   quoteManifestTablePath,
-   quoteRenameTarget,
-   quoteTablePath,
-} from "../../quoting";
+import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
-import { capturedNativeSchema } from "./colocated_native_types";
+import {
+   capturedNativeSchema,
+   NATIVE_SCHEMA_ROW_LIMIT,
+} from "./colocated_native_types";
 import type {
    FreshnessManifest,
    ManifestEntry,
@@ -44,7 +46,7 @@ import {
    resetLedger,
 } from "./incremental_build";
 import { backupSuffix, stagingSuffix } from "./materialization_run_support";
-import { transactionalSwapSql } from "./warehouse_sql";
+import { nativeTypeCatalogRead, transactionalSwapSql } from "./warehouse_sql";
 
 /**
  * A full rebuild of a colocated table in the source's own warehouse: COPY into
@@ -271,7 +273,7 @@ export async function capturedColocatedSchema(args: {
    try {
       const read = await args.connection.fetchSchemaForTables(
          { [key]: tablePath },
-         { refreshTimestamp: nextRefreshTimestamp() },
+         { refreshTimestamp: Date.now() },
       );
       const fields = read.schemas[key]?.fields;
       if (!fields?.length) {
@@ -304,28 +306,19 @@ export async function capturedColocatedSchema(args: {
    }
 }
 
-/** The last schema-read instant {@link nextRefreshTimestamp} handed out. */
-let lastRefreshTimestamp = 0;
-
-/**
- * A refresh instant later than every one before it: a connection's schema
- * cache answers a read whose instant is not past its entry's, so two binds in
- * one millisecond would read the first one's columns.
- */
-function nextRefreshTimestamp(): number {
-   lastRefreshTimestamp = Math.max(Date.now(), lastRefreshTimestamp + 1);
-   return lastRefreshTimestamp;
-}
-
 /**
  * The columns of each bound colocated table as its warehouse holds them now,
- * read at a bind: one schema read per table (DuckDB's `DESCRIBE`,
- * `information_schema` elsewhere, through the connection's own reader, past
- * its schema cache), spelled as the build's capture is
- * ({@link capturedColocatedSchema}), so the two compare column for column.
+ * read at a bind: one catalog query per table (DuckDB's `DESCRIBE`,
+ * Postgres's `format_type`, `information_schema.columns` elsewhere; the read
+ * `colocated_native_types.ts` makes after a build), each type then spelled as
+ * the build's capture spells it ({@link capturedColocatedSchema}: what Malloy
+ * reads it as, in DuckDB's spelling), so the two compare column for column. A
+ * type Malloy reads as no basic type (a struct, an array) has no spelling and
+ * is reported without one: never a drift.
  *
- * A table whose read fails, or whose connection is unknown, is `unread`: the
- * bind leaves it out and its sources answer live (fail safe). Never throws.
+ * A table whose read fails, finds nothing, finds the name in more than one
+ * schema, or whose connection is unknown, is `unread`: the bind leaves it out
+ * and its sources answer live (fail safe). Never throws.
  */
 export async function observedColocatedColumns(args: {
    entries: FreshnessManifest;
@@ -333,66 +326,63 @@ export async function observedColocatedColumns(args: {
    connectionNameOf: (sourceEntityId: string) => string | undefined;
    connection: (
       connectionName: string,
-   ) => Promise<Pick<MalloyConnection, "fetchSchemaForTables" | "dialectName">>;
+   ) => Promise<Pick<MalloyConnection, "runSQL" | "dialectName">>;
 }): Promise<Map<string, ObservedColumns>> {
    const out = new Map<string, ObservedColumns>();
-   const byConnection = new Map<string, [string, string][]>();
    for (const [id, entry] of Object.entries(args.entries)) {
       const name = args.connectionNameOf(id);
       if (!name) {
          out.set(id, { unread: "the table's connection is not known" });
          continue;
       }
-      byConnection.set(name, [
-         ...(byConnection.get(name) ?? []),
-         [id, entry.tableName],
-      ]);
-   }
-   for (const [connectionName, tables] of byConnection) {
-      let connection: Awaited<ReturnType<typeof args.connection>>;
       try {
-         connection = await args.connection(connectionName);
+         const connection = await args.connection(name);
+         out.set(id, await observedColumnsOf(connection, entry.tableName));
       } catch (err) {
-         for (const [id] of tables) out.set(id, { unread: errMessage(err) });
-         continue;
-      }
-      const dialect = connection.dialectName;
-      // One read per table, keyed by its sourceEntityId; a manifest's name
-      // may already be quoted, which the manifest quoting passes through.
-      const paths = Object.fromEntries(
-         tables.map(([id, table]) => [
-            id,
-            quoteManifestTablePath(table, dialect),
-         ]),
-      );
-      try {
-         const read = await connection.fetchSchemaForTables(paths, {
-            refreshTimestamp: nextRefreshTimestamp(),
-         });
-         for (const [id] of tables) {
-            const fields = read.schemas[id]?.fields;
-            const columns = fields?.length
-               ? storedColumnsOfOutput(fields, {
-                    nested: capabilitiesOf(dialect).nestedColumns,
-                    bigint: true,
-                    timestamptz: true,
-                 })
-               : [];
-            out.set(
-               id,
-               columns.length > 0
-                  ? { columns }
-                  : {
-                       unread:
-                          read.errors[id] ?? "the table's columns read empty",
-                    },
-            );
-         }
-      } catch (err) {
-         for (const [id] of tables) out.set(id, { unread: errMessage(err) });
+         out.set(id, { unread: errMessage(err) });
       }
    }
    return out;
+}
+
+/** One table's {@link observedColocatedColumns}: one catalog query. */
+async function observedColumnsOf(
+   connection: Pick<MalloyConnection, "runSQL" | "dialectName">,
+   tableName: string,
+): Promise<ObservedColumns> {
+   const dialect = connection.dialectName;
+   // A manifest's name may be quoted already; the catalog read quotes it.
+   const read = nativeTypeCatalogRead(unquotedTablePath(tableName), dialect);
+   if (!read) return { unread: "the table's name gives no catalog to read" };
+   const result = await connection.runSQL(read.sql, {
+      rowLimit: NATIVE_SCHEMA_ROW_LIMIT,
+   });
+   const rows = result.rows as Record<string, unknown>[];
+   if (read.tableOf && new Set(rows.map(read.tableOf)).size > 1) {
+      return { unread: "the table's name matched more than one table" };
+   }
+   const malloy = getDialect(dialect);
+   const columns = rows
+      .map(read.read)
+      .filter((c) => c.name !== "" && c.type !== "")
+      .map((c) => {
+         const [spelled] = storedColumnsOfOutput(
+            [{ name: c.name, ...malloy.sqlTypeToMalloyType(c.type) }],
+            { nested: false, bigint: true, timestamptz: true },
+         );
+         return spelled ?? { name: c.name };
+      });
+   return columns.length > 0
+      ? { columns }
+      : { unread: "the table's columns read empty" };
+}
+
+/** A table path with each part's identifier quotes removed. */
+function unquotedTablePath(path: string): string {
+   return path
+      .split(".")
+      .map((part) => part.replace(/^["`[](.*)["`\]]$/, "$1"))
+      .join(".");
 }
 
 /**

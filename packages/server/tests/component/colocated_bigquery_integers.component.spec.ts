@@ -48,23 +48,18 @@ function standInBigQuery(name: string): Connection {
             { name: "n", type: "INT64", mode: "NULLABLE" },
          ],
       }),
-      runSQL: async () => ({ rows: [], totalRows: 0 }),
-      // The bind's read of the stored table's columns, as BigQuery types
-      // them: a string and a 64-bit integer.
-      fetchSchemaForTables: async (tables: Record<string, string>) => ({
-         schemas: Object.fromEntries(
-            Object.keys(tables).map((key) => [
-               key,
-               {
-                  fields: [
-                     { name: "k", type: "string" },
-                     { name: "total", type: "number", numberType: "bigint" },
-                  ],
-               },
-            ]),
-         ),
-         errors: {},
-      }),
+      // The bind's catalog read of the stored table's columns, as BigQuery
+      // types them; every other statement returns nothing.
+      runSQL: async (sql: string) =>
+         sql.includes("INFORMATION_SCHEMA.COLUMNS")
+            ? {
+                 rows: [
+                    { column_name: "k", data_type: "STRING" },
+                    { column_name: "total", data_type: "INT64" },
+                 ],
+                 totalRows: 2,
+              }
+            : { rows: [], totalRows: 0 },
    });
    return connection;
 }
@@ -118,7 +113,7 @@ async function bindWithoutNativeSchema(
    const [source] = sources;
    // The stored table, for the bind to read its columns: on DuckDB it is
    // created on the source's connection; the BigQuery stand-in answers the
-   // read itself.
+   // catalog read itself.
    if (source.connectionName === "duckdb") {
       const duckdb = await pkg.getMalloyConnection("duckdb");
       await duckdb.runSQL("CREATE SCHEMA IF NOT EXISTS scratch");

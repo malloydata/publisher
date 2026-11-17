@@ -517,7 +517,7 @@ export function applyObservedColumns(args: {
    const drifted: ObservedDrift[] = [];
    const unread: { sourceEntityId: string; reason: string }[] = [];
    const left = new Set<string>();
-   const schemas = new Map<string, { name: string; type: string }[]>();
+   const schemas = new Map<string, { name: string; type?: string }[]>();
    const served = new Set(
       args.bindings
          .filter((b) => b.tier === "colocated")
@@ -561,7 +561,12 @@ export function applyObservedColumns(args: {
             if (!built.has(c.name)) extra.push({ column: c.name, builtType });
             return [];
          }
-         if (typeFamily(now.type) === typeFamily(builtType)) return [c];
+         if (
+            now.type === undefined ||
+            typeFamily(now.type) === typeFamily(builtType)
+         ) {
+            return [c];
+         }
          moved = true;
          if (!built.has(c.name)) {
             extra.push({ column: c.name, builtType, observedType: now.type });
@@ -590,12 +595,13 @@ export function applyObservedColumns(args: {
 /** The columns of `built` whose observed type reads as another Malloy type, or that are gone. */
 function driftOf(
    built: readonly { name: string; type: string }[],
-   observed: readonly { name: string; type: string }[],
+   observed: readonly { name: string; type?: string }[],
 ): ObservedDrift["columns"] {
    return built.flatMap((c) => {
       const now = columnNamed(observed, c.name);
       if (!now) return [{ column: c.name, builtType: c.type }];
-      return typeFamily(now.type) === typeFamily(c.type)
+      return now.type === undefined ||
+         typeFamily(now.type) === typeFamily(c.type)
          ? []
          : [{ column: c.name, builtType: c.type, observedType: now.type }];
    });
@@ -605,10 +611,10 @@ function driftOf(
  * A column by name: exactly, else by a unique case-insensitive match (a
  * warehouse may fold the case its catalog reports).
  */
-function columnNamed(
-   columns: readonly { name: string; type: string }[],
+function columnNamed<C extends { name: string }>(
+   columns: readonly C[],
    name: string,
-): { name: string; type: string } | undefined {
+): C | undefined {
    const exact = columns.find((c) => c.name === name);
    if (exact) return exact;
    const folded = columns.filter(
