@@ -87,8 +87,20 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 ## Environment variables & CLI flags
 
 Every setting below is one entry in the settings registry (`packages/server/src/settings/registry`),
-and this table is generated from it. The names are today's; the configuration design
-([#1474](https://github.com/malloydata/publisher/pull/1474)) gives each one a derived name in a later step.
+and this table is generated from it. Each setting's variable, flag and file key are derived from its key,
+as the configuration design ([#1474](https://github.com/malloydata/publisher/pull/1474)) sets out. A
+deprecated name still works, with a warning, until a later release removes it.
+
+Startup fails, with a message saying what to change, on any of these:
+
+- a value that does not parse;
+- an unknown flag, an unknown key in the file, or a section of the file that is not an object;
+- a flag with no value after it, or a switch given one (write `--no-x` to turn `x` off);
+- a launch setting (`root`, `config`, `useBundledDefault`, `initializeStorage`, `watchEnvironments`)
+  in the file;
+- an old name and a new one given different values;
+- a deprecated boolean name given a value it has always read differently from every other boolean,
+  such as `INITIALIZE_STORAGE=1`, which it read as off. Write `true` or `false`.
 
 <!-- settings-reference:start (generated from src/settings/registry; run `bun run generate-settings-reference`) -->
 

@@ -92,6 +92,12 @@ export class Settings {
       readonly warnings: readonly SettingWarning[],
       /** The deprecated names this startup used, for the deprecated-usage metric. */
       readonly deprecatedNames: readonly string[],
+      /**
+       * What fails startup without belonging to one setting: an unknown flag, a
+       * flag with no value or with a value it does not take, and a key the file
+       * holds that no setting reads.
+       */
+      private readonly problems: readonly Error[] = [],
    ) {}
 
    static load(input: LoadInput = {}): Settings {
@@ -102,6 +108,7 @@ export class Settings {
          loaded.fileError,
          loaded.warnings,
          loaded.deprecated,
+         loaded.problems,
       );
    }
 
@@ -152,7 +159,10 @@ export class Settings {
       return "shadowed" in slot ? slot.shadowed : [];
    }
 
-   /** Every setting that did not parse, each error once. */
+   /**
+    * Every setting that did not parse, each error once, then what failed
+    * without belonging to one setting.
+    */
    errors(): Error[] {
       return [
          ...new Set(
@@ -160,6 +170,7 @@ export class Settings {
                "error" in slot ? [slot.error] : [],
             ),
          ),
+         ...this.problems,
       ];
    }
 
@@ -315,6 +326,7 @@ class Loader {
    private readonly slots = new Map<string, Slot>();
    private readonly resolving = new Set<string>();
    private readonly warnings: SettingWarning[] = [];
+   private readonly problems: Error[] = [];
    private readonly deprecated = new Set<string>();
    private readonly unknownFlags: string[] = [];
    private readonly flagsWithoutValue: string[] = [];
@@ -342,6 +354,7 @@ class Loader {
       fileError: Error | undefined;
       warnings: SettingWarning[];
       deprecated: string[];
+      problems: Error[];
    } {
       this.readFlags();
       // The launch settings say which file to read and have no file key. One
@@ -357,14 +370,15 @@ class Loader {
          );
       }
       for (const entry of this.registry) this.resolve(entry);
-      this.warnAboutFlags();
-      this.warnAboutFileKeys();
+      this.refuseFlags();
+      this.refuseFileKeys();
       return {
          slots: this.slots,
          configPath: this.configPath,
          fileError: this.fileError,
          warnings: this.warnings,
          deprecated: [...this.deprecated],
+         problems: this.problems,
       };
    }
 
@@ -439,20 +453,20 @@ class Loader {
       }
    }
 
-   private warnAboutFlags(): void {
+   private refuseFlags(): void {
       const current = [...this.byFlag]
          .filter(([, flag]) => !flag.old)
          .map(([name]) => name);
       for (const name of this.unknownFlags) {
          const suggestion = nearest(name, current);
-         this.warnings.push({
-            message: `Unknown flag ${name}, so it is ignored.${suggestion ? ` Did you mean ${suggestion}?` : ""}`,
-         });
+         this.problems.push(
+            new Error(
+               `Unknown flag ${name}.${suggestion ? ` Did you mean ${suggestion}?` : ""}`,
+            ),
+         );
       }
       for (const name of this.flagsWithoutValue) {
-         this.warnings.push({
-            message: `${name} has no value after it, so it is ignored.`,
-         });
+         this.problems.push(new Error(`${name} has no value after it.`));
       }
       for (const { name, flag, next } of this.valuesAfterSwitches) {
          const on = flag.switches!;
@@ -462,14 +476,14 @@ class Loader {
                this.byFlag.get(other.name)?.switches === !on &&
                this.byFlag.get(other.name)?.entry === flag.entry,
          );
-         this.warnings.push({
-            key: flag.entry.key,
-            message:
-               `${name} takes no value, so the "${next}" after it is ignored and ${name} turns ${flag.entry.key} ${on ? "on" : "off"}.` +
-               (opposite
-                  ? ` To turn it ${on ? "off" : "on"}, write ${opposite.name}.`
-                  : ""),
-         });
+         this.problems.push(
+            new Error(
+               `${name} takes no value, so it cannot be given "${next}": ${name} alone turns ${flag.entry.key} ${on ? "on" : "off"}.` +
+                  (opposite
+                     ? ` To turn it ${on ? "off" : "on"}, write ${opposite.name}.`
+                     : ""),
+            ),
+         );
       }
    }
 
@@ -479,7 +493,7 @@ class Loader {
     * in each section that holds settings; a structured setting's own keys are
     * its parser's to check.
     */
-   private warnAboutFileKeys(): void {
+   private refuseFileKeys(): void {
       const read = this.registry.flatMap((entry) =>
          this.filePaths(entry).map(({ path }) => path),
       );
@@ -505,18 +519,22 @@ class Loader {
             }
             const launch = this.byKey.get(key);
             if (launch?.kind === "launch") {
-               this.warnings.push({
-                  message: `"${key}" in ${file} is ignored: it decides which file is read, or must not come from one, so it is a variable or a flag only (${derivedEnvName(key)}, ${derivedFlagName(key)}).`,
-               });
+               this.problems.push(
+                  new Error(
+                     `"${key}" in ${file} cannot be set there: it decides which file is read, or must not come from one, so it is a variable or a flag only (${derivedEnvName(key)}, ${derivedFlagName(key)}).`,
+                  ),
+               );
                continue;
             }
             const siblings = read
                .filter((path) => parentOf(path) === prefix)
                .map((path) => path.slice(prefix ? prefix.length + 1 : 0));
             const suggestion = nearest(name, siblings);
-            this.warnings.push({
-               message: `${file} has "${key}", which no setting reads, so it is ignored.${suggestion ? ` Did you mean "${prefix ? `${prefix}.` : ""}${suggestion}"?` : ""}`,
-            });
+            this.problems.push(
+               new Error(
+                  `${file} has "${key}", which no setting reads.${suggestion ? ` Did you mean "${prefix ? `${prefix}.` : ""}${suggestion}"?` : ""}`,
+               ),
+            );
          }
       };
       visit(this.file, "");
@@ -698,31 +716,23 @@ class Loader {
          return { value: this.negate(entry, candidate, value) };
       } catch (error) {
          if (!(error instanceof Mismatch)) return { error: error as Error };
-         const mismatch = new SettingError(
-            entry.key,
-            source,
-            this.typeExpected(entry, candidate),
-            candidate.raw,
-            entry.secret,
-            serviceLinkHint(candidate),
-         );
-         if (candidate.today && today.invalid === "warn") {
-            const fallback = this.defaultOf(entry);
-            this.warnings.push({
-               key: entry.key,
-               message: `${mismatch.message}; using its default, ${JSON.stringify(fallback)}.`,
-            });
-            return { value: fallback };
-         }
-         return { error: mismatch };
+         return {
+            error: new SettingError(
+               entry.key,
+               source,
+               this.typeExpected(entry, candidate),
+               candidate.raw,
+               entry.secret,
+               serviceLinkHint(candidate),
+            ),
+         };
       }
    }
 
    /**
-    * Step 1's rule for a boolean today reads its own way, still in force for
-    * today's names: a value the common reader does not accept fails; one
-    * today's reader refuses is still refused; and where the two read it
-    * differently, today's meaning stays, with a warning.
+    * A boolean today's name reads its own way: a value the common reader does
+    * not accept fails; one today's reader refuses is refused; and one the two
+    * read differently is refused too, so it cannot change meaning.
     */
    private readBoolean(entry: RegisteredSetting, candidate: Candidate): Parsed {
       const source = sourceOf(candidate);
@@ -747,20 +757,12 @@ class Loader {
          today = this.parseToday(entry, candidate) as boolean;
       } catch (error) {
          if (!(error instanceof Mismatch)) return { error: error as Error };
-         if (entry.aliases.today?.invalid !== "warn") {
-            return refusal(this.expected(entry, candidate));
-         }
-         today = this.negate(
-            entry,
-            candidate,
-            this.defaultOf(entry),
-         ) as boolean;
+         return refusal(this.expected(entry, candidate));
       }
       if (today !== common) {
-         this.warnings.push({
-            key: entry.key,
-            message: disagreement(entry.key, candidate, today, common),
-         });
+         return {
+            error: new Error(disagreement(entry.key, candidate, today, common)),
+         };
       }
       return { value: this.negate(entry, candidate, today) };
    }
@@ -835,9 +837,9 @@ class Loader {
 
    /** A section of the file that should hold settings but is not an object. */
    private notAnObject(section: string): void {
-      const message = `Invalid "${section}" in ${PUBLISHER_CONFIG_NAME}: expected an object. Ignoring.`;
-      if (!this.warnings.some((warning) => warning.message === message)) {
-         this.warnings.push({ message });
+      const message = `Invalid "${section}" in ${PUBLISHER_CONFIG_NAME}: expected an object.`;
+      if (!this.problems.some((problem) => problem.message === message)) {
+         this.problems.push(new Error(message));
       }
    }
 
@@ -893,8 +895,19 @@ class Loader {
       return (fallback as (resolving: Resolving) => unknown)(resolving);
    }
 
+   /**
+    * What today's reading accepts, where it is narrower than the type: the
+    * common reader's spellings would name values this reading refuses.
+    */
    private expected(entry: RegisteredSetting, candidate: Candidate): string {
-      return entry.aliases.today?.reads === "on-off"
+      const today = entry.aliases.today;
+      if (candidate.kind === "file" && today?.file === "json-boolean") {
+         return "true or false as a JSON boolean, not a string";
+      }
+      if (candidate.kind === "file" && today?.file === "boolean-or-reference") {
+         return "true or false as a JSON boolean, or a ${VAR} reference to one";
+      }
+      return today?.reads === "on-off"
          ? 'one of "on" or "off"'
          : this.typeExpected(entry, candidate);
    }
@@ -1028,9 +1041,9 @@ function disagreement(
          : `${candidate.name}=${typeof candidate.raw === "string" ? candidate.raw : raw}`;
    const onOff = (value: boolean) => (value ? "on" : "off");
    return (
-      `${key}: ${given} is read as ${onOff(today)}, as it always has been, ` +
-      `though other boolean settings read ${raw} as ${onOff(common)}. ` +
-      `Write true or false: a later release refuses ${raw} here.`
+      `${key}: ${given} is refused: it has always been read as ${onOff(today)} ` +
+      `here, but every other boolean setting reads ${raw} as ${onOff(common)}. ` +
+      `Write true or false.`
    );
 }
 

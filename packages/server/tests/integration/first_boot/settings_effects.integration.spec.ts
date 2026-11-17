@@ -138,16 +138,13 @@ describe("settings in a running server", () => {
          expect(body.frozenConfig).toBe(true);
       });
 
-      it('keeps the string "false" freezing the server, and warns', async () => {
-         const server = await boot({
+      it('refuses the string "false", which used to freeze the server', async () => {
+         const stderr = await refused({
             config: { frozenConfig: "false", environments: [] },
          });
-         const body = (await (
-            await fetch(`${server.baseUrl}/api/v0/status`)
-         ).json()) as { frozenConfig: boolean };
-         expect(body.frozenConfig).toBe(true);
-         expect(server.output()).toContain('"frozenConfig": "false"');
-         expect(server.output()).toContain("a later release refuses");
+         expect(stderr).toContain('"frozenConfig": "false"');
+         expect(stderr).toContain("is refused");
+         expect(stderr).toContain("PUBLISHER_INIT_FAILED");
       });
    });
 
@@ -325,12 +322,10 @@ describe("settings in a running server", () => {
          expect(server.output()).not.toContain("Publisher server listening at");
       });
 
-      it("warns about a level it does not know, and logs everything", async () => {
-         const server = await boot({ env: { LOG_LEVEL: "loud" } });
-         expect(server.output()).toContain(
+      it("refuses to start on a level it does not know", async () => {
+         expect(await refused({ env: { LOG_LEVEL: "loud" } })).toContain(
             'logging.level from LOG_LEVEL: expected one of "error", "warn", "info", "verbose", "debug" or "silly", got "loud"',
          );
-         expect(server.output()).toContain("Publisher server listening at");
       });
    });
 
@@ -359,22 +354,20 @@ describe("settings in a running server", () => {
    });
 
    describe("initializeStorage", () => {
-      it("keeps INITIALIZE_STORAGE=1 off, and warns", async () => {
-         const server = await boot({ env: { INITIALIZE_STORAGE: "1" } });
-         expect(server.output()).toContain(
-            "INITIALIZE_STORAGE=1 is read as off, as it always has been",
+      it("refuses INITIALIZE_STORAGE=1, which was off where every other boolean reads it as on", async () => {
+         expect(await refused({ env: { INITIALIZE_STORAGE: "1" } })).toContain(
+            "INITIALIZE_STORAGE=1 is refused: it has always been read as off here",
          );
       });
    });
 
    describe("the config file", () => {
-      it("names the key a typo meant", async () => {
-         const server = await boot({
-            config: { adminApiEnable: false, environments: [] },
-         });
-         expect(server.output()).toContain(
-            'which no setting reads, so it is ignored. Did you mean "adminApiEnabled"?',
-         );
+      it("refuses a key no setting reads, naming the one a typo meant", async () => {
+         expect(
+            await refused({
+               config: { adminApiEnable: false, environments: [] },
+            }),
+         ).toContain('which no setting reads. Did you mean "adminApiEnabled"?');
       });
    });
 });

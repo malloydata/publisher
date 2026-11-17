@@ -60,7 +60,7 @@ export const access = [
       default: "debug",
       description: "Least severe level logged.",
       notes: "One of `error`, `warn`, `info`, `verbose`, `debug`, `silly`.",
-      aliases: { env: ["LOG_LEVEL"], today: { invalid: "warn" } },
+      aliases: { env: ["LOG_LEVEL"] },
    }),
    setting({
       key: "logging.responseBodiesEnabled",

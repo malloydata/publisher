@@ -528,13 +528,12 @@ describe("execute_query includeHiddenFilesAndSources", () => {
    it("is not offered, and true is ignored, unless the config turns it on", async () => {
       // No config file is what every server without the block gets, an
       // eval's included: an agent answering over the curated surface must not
-      // be able to leave it. A non-boolean value is warned about and ignored.
+      // be able to leave it. A non-boolean value fails startup instead, which
+      // the settings contract covers.
       for (const mcp of [
          undefined,
          {},
          { includeHiddenFilesAndSources: false },
-         { includeHiddenFilesAndSources: "true" },
-         "on",
       ]) {
          for (const call of calls) {
             const { store, capturedPrivileges } = storeCapturingMetadata();

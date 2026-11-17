@@ -494,10 +494,19 @@ describe("assembleEnvironmentConnections — publisher", () => {
          );
       });
 
-      it("denies for any non-'true' value (fail-closed)", () => {
+      it("denies for a value that reads as off (fail-closed)", () => {
+         for (const value of ["false", "0"]) {
+            installEnv({ PUBLISHER_ALLOW_PROXY_CONNECTIONS: value });
+            expect(() => assembleEnvironmentConnections([validBase])).toThrow(
+               "is disabled in this deployment",
+            );
+         }
+      });
+
+      it("refuses a value its old reading took as off and every other boolean reads as on", () => {
          installEnv({ PUBLISHER_ALLOW_PROXY_CONNECTIONS: "1" });
          expect(() => assembleEnvironmentConnections([validBase])).toThrow(
-            "is disabled in this deployment",
+            "PUBLISHER_ALLOW_PROXY_CONNECTIONS=1 is refused",
          );
       });
 

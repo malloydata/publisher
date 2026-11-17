@@ -70,21 +70,19 @@ describe("settings at startup", () => {
       );
    });
 
-   it("warns about a flag it does not know and a flag missing its value, and starts", async () => {
+   it("refuses a flag it does not know and a flag missing its value, naming both", async () => {
       server = await spawnServer({
          // A misspelled flag, then a known flag with nothing after it.
          args: ["--mcp_prot", "1", "--admin_port"],
       });
 
-      const line = await waitForReady();
-      expect(line).toContain(`mcp=http://127.0.0.1:${server.mcpPort} `);
-      await server.waitUntilServing();
-      expect(server.output()).toContain(
-         "Unknown flag --mcp_prot, so it is ignored. Did you mean --mcp-port?",
+      expect(await server.waitForExit()).not.toBe(0);
+      const stderr = server.stderr();
+      expect(stderr).toContain(
+         "Unknown flag --mcp_prot. Did you mean --mcp-port?",
       );
-      expect(server.output()).toContain(
-         "--admin_port has no value after it, so it is ignored.",
-      );
+      expect(stderr).toContain("--admin_port has no value after it.");
+      expect(stderr).toContain("PUBLISHER_INIT_FAILED");
    });
 
    it("fails startup on bad values, naming every one, before anything binds", async () => {
