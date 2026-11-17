@@ -643,7 +643,7 @@
         },
         {
           "name": "orders",
-          "type": "HUGEINT"
+          "type": "DECIMAL(38,0)"
         }
       ]
     },
