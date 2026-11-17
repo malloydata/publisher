@@ -40,6 +40,7 @@ import {
    disposeScenarios,
    rowDifference,
    type R4Fixture,
+   type Row,
 } from "./harness";
 
 const seedSql = [
@@ -202,11 +203,21 @@ for (const storage of [false, true]) {
        * binding): each run on its own, so a denial is reported on the leg
        * that gave it.
        */
-      const both = async (malloy: string, givens: Givens) => {
-         const attempt = async (served: boolean) => {
+      type Both =
+         | {
+              run: { live: Row[]; served: Row[]; servedBy?: { kind: string } };
+              live?: undefined;
+              served?: undefined;
+           }
+         | { run?: undefined; live: string; served: string };
+      const both = async (malloy: string, givens: Givens): Promise<Both> => {
+         type Attempt =
+            | Awaited<ReturnType<R4Fixture["runAsIs"]>>
+            | { error: string };
+         const attempt = async (served: boolean): Promise<Attempt> => {
             fixture.setBindings(served ? fixture.bindings : []);
             try {
-               return { answer: await fixture.runAsIs(malloy, givens) };
+               return await fixture.runAsIs(malloy, givens);
             } catch (error) {
                return {
                   error: error instanceof Error ? error.message : String(error),
@@ -223,9 +234,9 @@ for (const storage of [false, true]) {
          }
          return {
             run: {
-               live: live.answer.rows,
-               served: served.answer.rows,
-               servedBy: served.answer.path?.servedBy,
+               live: live.rows,
+               served: served.rows,
+               servedBy: served.path?.servedBy,
             },
          };
       };
@@ -256,7 +267,7 @@ for (const storage of [false, true]) {
             for (const givens of [...kase.callers, ...kase.callers]) {
                const out = await both(kase.malloy, givens);
                // Every caller here is admitted: a denial is a defect.
-               if (!("run" in out)) {
+               if (out.run === undefined) {
                   throw new Error(`live: ${out.live}; served: ${out.served}`);
                }
                const { run } = out;
@@ -279,8 +290,8 @@ for (const storage of [false, true]) {
             ["run: locked_flights -> { aggregate: segments.seg_miles }", BB],
          ] as const) {
             const out = await both(malloy, givens);
-            expect("live" in out).toBe(true);
-            if ("live" in out) expect(out.served).toBe(out.live);
+            expect(out.run).toBeUndefined();
+            expect(out.served).toBe(out.live);
          }
       });
 
@@ -289,13 +300,13 @@ for (const storage of [false, true]) {
             "run: flights -> { group_by: carrier; aggregate: segments.seg_miles, t is all(segments.seg_miles) }";
          for (const givens of [AA, BB]) {
             const out = await both(malloy, givens);
-            if (!("run" in out)) {
+            if (out.run === undefined) {
                throw new Error(`live: ${out.live}; served: ${out.served}`);
             }
             expect(rowDifference(out.run.live, out.run.served)).toBeUndefined();
          }
          const aa = await both(malloy, AA);
-         if (!("run" in aa)) throw new Error(aa.live);
+         if (aa.run === undefined) throw new Error(aa.live);
          // AA's flights 1 and 2 have 2 + 3 + 4 + 1.5 miles.
          expect(aa.run.served.map((r) => r.t)).toEqual([10.5]);
       });
@@ -305,7 +316,7 @@ for (const storage of [false, true]) {
             "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }",
             BB,
          );
-         if (!("run" in out)) {
+         if (out.run === undefined) {
             throw new Error(`live: ${out.live}; served: ${out.served}`);
          }
          expect(out.run.servedBy?.kind === "rollup").toBe(!storage);
