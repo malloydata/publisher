@@ -116,6 +116,49 @@ export function chainBuildFileSet(args: {
 }
 
 /**
+ * The files a rollup's build over its base's stored table compiles from
+ * (`storage=`, rollup_compile.ts), before the base is re-rooted in them: the
+ * base's file and every file it reaches by import, each with only the base's
+ * declaration kept (nothing else of the author's model is read: the rollup
+ * groups the base's rows alone). Declines, with why, when the base's
+ * declaration cannot be found or a file cannot be read.
+ */
+export function rollupBuildFileSet(args: {
+   lift: AuthorModelLift;
+   baseSourceID: string;
+   /** The base's re-root, where it is declared. */
+   reroot: { url?: string; range?: unknown };
+   /** The files a file imports, as the compile resolved them. */
+   importsOf(url: string): string[];
+}): { declined: string } | { files: Map<string, string> } {
+   const { lift } = args;
+   const baseName = lift.sourceNameById.get(args.baseSourceID);
+   const location =
+      baseName === undefined ? undefined : lift.contents[baseName]?.location;
+   const start = (args.reroot.range as { start?: Position } | undefined)?.start;
+   if (!location?.url || !args.reroot.url || !start) {
+      return { declined: "the base's declaration could not be found" };
+   }
+   const files = new Map<string, string>();
+   const pending = [location.url];
+   while (pending.length > 0) {
+      const url = pending.pop()!;
+      if (files.has(url)) continue;
+      const text = lift.fileText(url);
+      const kept =
+         text === undefined
+            ? undefined
+            : keepDeclarations(text, url === args.reroot.url ? [start] : []);
+      if (text === undefined || kept === undefined) {
+         return { declined: `a file it reaches could not be read (${url})` };
+      }
+      files.set(url, kept);
+      pending.push(...args.importsOf(url));
+   }
+   return { files };
+}
+
+/**
  * `files` with `##! experimental.persistence` prepended to the entry file
  * when it lacks one, and each re-rooted span in it shifted past the flag.
  */

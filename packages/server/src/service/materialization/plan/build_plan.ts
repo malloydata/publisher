@@ -104,7 +104,14 @@ import {
    pairFullRefreshFinding,
 } from "./materialize_plan";
 import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
-import { tryCompileMaterializeCompanion } from "./materialize_compile";
+import {
+   tryCompileMaterializeCompanion,
+   type CrossFileCompanions,
+} from "./materialize_compile";
+export {
+   newCrossFileCompanions,
+   type CrossFileCompanions,
+} from "./materialize_compile";
 import {
    persistedQueryRefusalFinding,
    persistedQueryRefusalKey,
@@ -775,6 +782,7 @@ async function collectGeneratedMaterialize(
       malloyModel: MalloyModel;
       materializer: ModelMaterializer;
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
+      crossFileCompanions?: CrossFileCompanions;
    },
 ): Promise<MaterializedBases | undefined> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
@@ -783,6 +791,8 @@ async function collectGeneratedMaterialize(
          ...args,
          contents: authorDef.contents ?? {},
          givens: authorDef.givens ?? {},
+         sourceRegistry: (authorDef as { sourceRegistry?: unknown })
+            .sourceRegistry,
          // P9's probes compile against the author's model, never run.
          probe: args.materializer,
       },
@@ -814,7 +824,16 @@ async function collectGeneratedMaterialize(
    // free: a source that is both `#@ persist` and `#(materialize)` is refused.
    const generatedPlans = new Map<PersistSource, MaterializePlan>();
    const rename = new Map<string, string>();
+   // A build source of another file's companion, which a cross-file
+   // extension's build reads (P10): that file plans its table, and this
+   // model's builds name it by the author's source, so the extension orders
+   // after it.
+   const ownIDs = new Set(generated.plans.map((p) => p.sourceID));
+   for (const [from, to] of generated.renames) {
+      if (!ownIDs.has(to)) rename.set(from, to);
+   }
    for (const source of plannedSources(targets)) {
+      if (rename.has(source.sourceID)) continue;
       const plan = planByName.get(source.name);
       if (!plan) continue;
       generatedPlans.set(source, plan);
@@ -965,6 +984,9 @@ async function collectGeneratedRollups(
                  overStoredBase: async () =>
                     (await generated.overStoredBases()).get(source.sourceID),
               }
+            : {}),
+         ...(generated.storedBaseBuilds.has(source.sourceID)
+            ? { storedBase: generated.storedBaseBuilds.get(source.sourceID) }
             : {}),
          gate: await classifyPersistSourceGate(
             source,
@@ -1283,6 +1305,12 @@ export async function collectModelBuildPlan(
        * worker, whose plan crosses to the main thread as data.
        */
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
+      /**
+       * The package plan's companions of cross-file parents' files
+       * (materialize_compile.ts), shared by every model the plan collects;
+       * absent, each model compiles its own.
+       */
+      crossFileCompanions?: CrossFileCompanions;
    },
 ): Promise<void> {
    await collectGeneratedTables(parts, args);
@@ -1321,6 +1349,7 @@ async function collectGeneratedTables(
       malloyModel,
       getRuntime,
       keyCheckCompilers,
+      crossFileCompanions,
    } = args;
    // The model's own load-failure lines, read off the author's model as the
    // load reads them (Model.preaggregateViolations, annotationNearMisses).
@@ -1371,6 +1400,7 @@ async function collectGeneratedTables(
          malloyModel,
          materializer,
          keyCheckCompilers,
+         crossFileCompanions,
       });
       // `#@ persist` on a view (P14), under the same switch.
       await collectGeneratedPersistedViews(parts, {

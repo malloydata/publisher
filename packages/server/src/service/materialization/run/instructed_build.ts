@@ -58,7 +58,14 @@ import {
    UnquotableIdentifierError,
 } from "../../quoting";
 import { ColocatedTier } from "./colocated_build_strategy";
-import { StorageBuildStrategy } from "./storage_build_strategy";
+import {
+   StorageBuildStrategy,
+   type StoredRollupBase,
+} from "./storage_build_strategy";
+import {
+   storageBuildCasts,
+   storedColumnTypeMismatches,
+} from "../stored_column_types";
 import {
    computeSourceEntityId,
    deriveAnnotationFields,
@@ -709,7 +716,10 @@ export class InstructedBuild {
             // every other table has, so a base this run builds is there
             // to read. Nothing a run builds reads a rollup's table.
             const table = tables[persistSource.sourceID];
-            if (table?.kind === "rollup" && table.overStoredBase) {
+            if (
+               table?.kind === "rollup" &&
+               (table.overStoredBase || table.storedBase)
+            ) {
                deferred.push({
                   persistSource,
                   connectionName: build.connectionName,
@@ -825,6 +835,15 @@ export class InstructedBuild {
       if (!gated) return;
       const { instruction, sourceEntityId, target } = gated;
       const { compiled } = run;
+      // Set by the `storage=` build when it grouped the base's stored table.
+      let stacked = false;
+      const offered = storedRollupBase(run, persistSource, gated);
+      const storedBase = offered && {
+         ...offered,
+         onStacked: () => {
+            stacked = true;
+         },
+      };
       const built = await this.buildGatedSource(
          run,
          (await overStoredBaseSource(run, persistSource, gated)) ??
@@ -832,8 +851,14 @@ export class InstructedBuild {
          graphConnectionName,
          connection,
          gated,
+         storedBase,
       );
       if (!built) return;
+      // A `storage=` rollup that grouped its base's stored table is anchored
+      // at that table, as a colocated one is.
+      if (storedBase && stacked) {
+         (run.readFrom ??= new Map()).set(sourceEntityId, [storedBase.address]);
+      }
       const entry = withRollupUpstreamReuse(
          run,
          persistSource,
@@ -1029,6 +1054,7 @@ export class InstructedBuild {
       graphConnectionName: string,
       connection: MalloyConnection,
       { instruction, orchestrated, sourceEntityId, target }: GatedSource,
+      storedBase?: StoredRollupBase,
    ): Promise<ManifestEntry | undefined> {
       const { compiled } = run;
       // An auto-run's table at the author's own `name=`, which another
@@ -1101,6 +1127,10 @@ export class InstructedBuild {
             contentSourceEntityId: sourceEntityId,
             planFacts: run.planFacts,
             ...(replacesView ? { replacesView } : {}),
+            ...(storedBase ? { storedBase } : {}),
+            ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
+               ? { rollup: true }
+               : {}),
          });
          // A manifest travels without its build plan, so this is the only
          // signal that a table belongs to a rollup in no model file; served
@@ -2241,6 +2271,86 @@ function sameColumns(a: PersistSource, b: PersistSource): boolean {
 }
 
 /**
+ * The base a `storage=` rollup may build over in its destination
+ * (storage_build_strategy.ts), or undefined, and the rollup builds from the
+ * warehouse as planned. Only when every one of these holds:
+ *
+ *  - the plan offers it: a `storage=` rollup over a base whose own
+ *    `#@ persist` stores it in the same destination (rollup_compile.ts);
+ *  - the run's entries hold the base's table at the address the plan gives
+ *    it, built this run or carried, in that destination, at the tier the
+ *    base declares now, with the column list its build reads it by. Nothing
+ *    gated is planned there (no `storage=` rollup over a gated source is);
+ *  - with a declared window, the base's table is new enough
+ *    ({@link baseFreshEnough}), whoever instructed the run.
+ *
+ * The build keeps the table only when it has the columns, and their types,
+ * the planned build writes; the address is the planned one either way.
+ */
+function storedRollupBase(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   gated: Pick<GatedSource, "instruction" | "sourceEntityId">,
+): StoredRollupBase | undefined {
+   const { compiled } = run;
+   const table = compiled.tables[persistSource.sourceID];
+   if (table?.kind !== "rollup" || !table.storedBase) return undefined;
+   const destination = gated.instruction.destination;
+   if (!destination) return undefined;
+   const base = compiled.tables[table.storedBase.baseSourceID];
+   if (!base || base.kind !== "persist") return undefined;
+   let address: string;
+   try {
+      address = computeSourceEntityId(
+         base.source,
+         compiled.connectionDigests,
+         base.target,
+         compiled.tableFolds,
+      );
+   } catch {
+      return undefined;
+   }
+   const entry = run.entries[address];
+   if (
+      !entry?.physicalTableName ||
+      entry.storageDestinationName !== destination ||
+      !entry.schema?.length ||
+      !upstreamEntryIsCurrent(address, entry, run.planFacts)
+   ) {
+      return undefined;
+   }
+   if (!baseFreshEnough(run, gated.sourceEntityId, address, entry)) {
+      return undefined;
+   }
+   // The table must hold every column the base's current build writes, each
+   // of a physical type that serves as its declared type: a carried table
+   // whose types drifted is not grouped as if it were the base.
+   let declared: ReturnType<typeof storageBuildCasts>["declaredColumns"];
+   try {
+      declared = storageBuildCasts(base.source).declaredColumns;
+   } catch {
+      return undefined;
+   }
+   const stored = entry.schema.flatMap((c) =>
+      c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+   );
+   const storedNames = new Set(stored.map((c) => c.name));
+   if (
+      declared.some((c) => !storedNames.has(c.name)) ||
+      storedColumnTypeMismatches(stored, declared).length > 0
+   ) {
+      return undefined;
+   }
+   return {
+      baseSourceID: table.storedBase.baseSourceID,
+      baseName: base.source.name,
+      address,
+      entry,
+      companion: table.storedBase.companion,
+   };
+}
+
+/**
  * A colocated rollup's entry with `upstreamReuse` saying what its build read: `reused`
  * when it built from its base's stored table ({@link overStoredBaseSource}),
  * absent when it built from the warehouse. Its build source names the base
@@ -2255,7 +2365,8 @@ function withRollupUpstreamReuse(
    address: string,
    entry: ManifestEntry,
 ): ManifestEntry {
-   // A `storage=` build reports what it stacked on itself (stackOnParents).
+   // A `storage=` build reports what it read itself: `reused` only when it
+   // stacked on a stored table (storage_build_strategy.ts, `rollup`).
    if (
       run.compiled.tables[persistSource.sourceID]?.kind !== "rollup" ||
       entry.storageDestinationName
