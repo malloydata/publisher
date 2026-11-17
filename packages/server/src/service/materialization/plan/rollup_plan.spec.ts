@@ -306,6 +306,48 @@ source: open is ${ROWS} extend {
       );
    });
 
+   it("plans none over a gate a query-shaped base derives from, beside a gate of its own", async () => {
+      // Its own note is declared by its own statement, but the walk also
+      // reads the derivation base's filter (not the base's own): G3 keeps
+      // only a base's own gates.
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental.givens
+given: REGION :: string is 'x'
+given: CAT :: string is 'A'
+#(access_filter) region = $REGION
+source: gated is ${ROWS}
+#(access_filter) category = $CAT
+source: orders is gated -> { select: * } extend {
+  #(preaggregate) grain=["category", "region"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
+      // The same with the switch's test seam proves the gates themselves
+      // are exact on the grain: only their ownership refuses it.
+      expect(
+         (
+            await plan(
+               {
+                  "orders.malloy": `##! experimental.givens
+given: REGION :: string is 'x'
+given: CAT :: string is 'A'
+#(access_filter) region = $REGION
+source: gated is ${ROWS}
+#(access_filter) category = $CAT
+source: orders is gated -> { select: * } extend {
+  #(preaggregate) grain=["category", "region"]
+  measure: total is amount.sum()
+}`,
+               },
+               undefined,
+               true,
+            )
+         ).plans.map((p) => p.baseGateOwn),
+      ).toEqual([undefined]);
+   });
+
    it("plans none in a storage destination, whose gate awaits its review", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
@@ -318,6 +360,53 @@ source: orders is ${ROWS} extend {
       });
       expect(plans).toEqual([]);
       expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
+   });
+});
+
+describe("a storage= rollup whose grain no stored read declares", () => {
+   const EXOTIC = `duckdb.sql("""
+  SELECT 1 AS id, 10 AS amount, 'ab'::BLOB AS b, INTERVAL 2 DAY AS iv,
+    MAP {'k': 1} AS m, '{"a": 1}'::JSON AS j, uuid() AS u
+""")`;
+   const rollup = (grain: string, storage: string) => ({
+      "orders.malloy": `source: orders is ${EXOTIC} extend {
+  #(preaggregate) grain=["${grain}"]${storage}
+  measure: total is amount.sum()
+}`,
+   });
+
+   it("refuses a BLOB, INTERVAL, MAP or JSON grain at plan, as unreadable_grain", async () => {
+      for (const grain of ["b", "iv", "m", "j"]) {
+         const { plans, refused } = await plan(
+            rollup(grain, ' storage="lake"'),
+         );
+         expect(plans).toEqual([]);
+         expect(refused.map((r) => why(r))).toEqual(["unreadable_grain"]);
+         expect(refused[0]?.message).toContain(`\`${grain}\``);
+      }
+   });
+
+   it("refuses a dimension that reads such a column, which keeps its type", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `source: orders is ${EXOTIC} extend {
+  dimension: bb is b
+  #(preaggregate) grain=["bb"] storage="lake"
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual(["unreadable_grain"]);
+   });
+
+   it("plans a UUID grain in storage, and every one of them colocated", async () => {
+      expect((await plan(rollup("u", ' storage="lake"'))).plans).toHaveLength(
+         1,
+      );
+      for (const grain of ["b", "iv", "m", "j", "u"]) {
+         const { plans, refused } = await plan(rollup(grain, ""));
+         expect(refused).toEqual([]);
+         expect(plans).toHaveLength(1);
+      }
    });
 });
 

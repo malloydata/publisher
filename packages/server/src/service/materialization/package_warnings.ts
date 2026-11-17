@@ -25,7 +25,12 @@ import { preaggregateGateLines, refusalCodeOf } from "./plan/load_gate_text";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
 import type { MaterializePlan } from "./domain/table_plans";
-import type { BuildPlan, FreshnessManifest } from "./domain/types";
+import type {
+   BuildPlan,
+   FreshnessManifest,
+   KeptTable,
+   UnreadReason,
+} from "./domain/types";
 import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
@@ -46,6 +51,7 @@ import {
 } from "./stored_column_types";
 import type {
    BoundTableTypeFinding,
+   DatabaseDriftFinding,
    MismatchHandling,
 } from "./serve/storage_bindings";
 
@@ -61,6 +67,22 @@ const MISMATCH_HANDLING_TEXT: Record<
       `No cast reproduces its values faithfully, so queries that read it are ` +
       `answered live. Give the field a native cast in the model (for example ` +
       `\`::"double"\`) so the warehouse returns the declared type.`,
+};
+
+/**
+ * What a database-table drift warning says of how the column is read: the table
+ * was altered outside a build, so rebuilding it is the fix.
+ */
+const DRIFT_HANDLING_TEXT: Record<
+   DatabaseDriftFinding["mismatches"][number]["handling"],
+   (declaredType: string) => string
+> = {
+   cast: (declaredType) =>
+      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
+      `from the table; rebuilding the table clears this.`,
+   live: () =>
+      `No cast reads it as declared, so queries that read it are answered ` +
+      `live until the table is rebuilt.`,
 };
 
 type ApiPackage = components["schemas"]["Package"];
@@ -141,6 +163,76 @@ export function repeatedJoinOneKeyWarnings(
       });
    }
    return warnings;
+}
+
+/** The code on the warning for a table a rename left that Publisher keeps. */
+export const TABLE_KEPT_AFTER_RENAME_CODE = "table-kept-after-rename";
+
+/** Why a kept table stays, and what to do about it. */
+const KEPT_REASON_TEXT: Record<KeptTable["reason"], string> = {
+   author_name:
+      "It is at a name= the author chose, which Publisher never drops, since " +
+      "a reader outside Malloy may rely on it. Drop it yourself once nothing " +
+      "reads it: check that no remaining run, of any version, names a table " +
+      "with that name in any place, then drop it through its connection.",
+   destination_missing:
+      "Its storage destination is no longer configured under that name, so " +
+      "Publisher cannot reach it to drop it. If the destination was renamed " +
+      "rather than removed, this may be a table the package still serves " +
+      "under the new name: check that before dropping anything. Configure " +
+      "the destination again for the next run to decide it.",
+   may_be_served:
+      "A table's name does not say where it is: two places can reach one " +
+      "table (two names for one DuckLake, a connection that reaches the " +
+      "destination, or on DuckDB a catalog and a schema of one database). " +
+      "So this may be the very table the package serves now, and Publisher " +
+      "never drops it. Check whether it is before doing anything with it. " +
+      "To clear this warning, delete the runs that built it here (a delete " +
+      "is record-only); the next auto-run stops listing it.",
+};
+
+/**
+ * One warning per table the newest auto-run lists as kept after a rename
+ * (Reclaimer.reclaimRenamedTables), which Publisher does not drop: the
+ * source no longer reads it, or (`may_be_served`) it may be the very table
+ * the source reads now. `subject` the source (a rollup's base), the
+ * message naming the table and where it is. Cleared once the run that lists
+ * it no longer does: the table was dropped, or its name taken again.
+ */
+export function keptTableWarnings(
+   plan: BuildPlan | null,
+   kept: readonly KeptTable[],
+): ApiPackageWarning[] {
+   if (kept.length === 0) return [];
+   const bySourceEntity = new Map(
+      Object.values(plan?.sources ?? {}).flatMap((source) =>
+         source.sourceEntityId ? [[source.sourceEntityId, source]] : [],
+      ),
+   );
+   return kept.map((table) => {
+      const source = bySourceEntity.get(table.sourceEntityId);
+      const subject =
+         source?.preaggregate?.baseSourceName ??
+         source?.name ??
+         table.sourceName;
+      const where = table.storageDestinationName
+         ? `in storage destination \`${table.storageDestinationName}\``
+         : `on connection \`${table.connectionName}\``;
+      return {
+         ...(source?.modelPath ? { model: source.modelPath } : {}),
+         ...(subject ? { subject } : {}),
+         code: TABLE_KEPT_AFTER_RENAME_CODE,
+         severity: "warn" as const,
+         message:
+            (table.reason === "may_be_served"
+               ? `table \`${table.physicalTableName}\` ${where} was kept: ` +
+                 `the package now serves a table of the same name from ` +
+                 `another place or container. `
+               : `table \`${table.physicalTableName}\` ${where} is no longer ` +
+                 `read: the source's table was renamed or moved, and its new ` +
+                 `table serves now. `) + KEPT_REASON_TEXT[table.reason],
+      };
+   });
 }
 
 /**
@@ -267,7 +359,14 @@ export function storageWarnings(
  * compile, a join it moved across connections reads a source that is not
  * stored, or a source could not be re-rooted. Those sources answer live.
  */
-export function servedCopyWarnings(models: Models): ApiPackageWarning[] {
+export function servedCopyWarnings(
+   models: Models,
+   /**
+    * Whether a source's declaration takes `inline=`, by sourceID: only a
+    * `#(materialize)` one does. Absent, every source is advised to inline.
+    */
+   takesInline?: (sourceID: string) => boolean,
+): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    for (const [modelPath, model] of models) {
       const problems = model.servedCopyProblems() ?? [];
@@ -288,6 +387,9 @@ export function servedCopyWarnings(models: Models): ApiPackageWarning[] {
             message: servedCopyProblemMessage(
                p,
                keptInline.has(`${p.sourceName}\u0000${p.join}`),
+               p.sourceID === undefined || !takesInline
+                  ? true
+                  : takesInline(p.sourceID),
             ),
          });
          // The coded warning the compile of record's own check raises.
@@ -309,12 +411,14 @@ export function servedCopyWarnings(models: Models): ApiPackageWarning[] {
  * Warnings for stored columns whose type does not serve as the type Malloy
  * declares, one per source and column, read from the bindings bound now:
  * each model's `#@ persist` sources', then every other `storage=` table's
- * (`bound`). Keyed by the source's sourceID, so two models' same-named
+ * (`bound`), then each database table's whose columns moved outside a build
+ * (`database`). Keyed by the source's sourceID, so two models' same-named
  * sources both report and a source several models import reports once.
  */
 export function storedColumnTypeWarnings(
    models: Models,
    bound: readonly BoundTableTypeFinding[],
+   database: readonly DatabaseDriftFinding[] = [],
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
    const seen = new Set<string>();
@@ -350,6 +454,28 @@ export function storedColumnTypeWarnings(
    for (const finding of bound) {
       for (const m of finding.mismatches) {
          add(finding.modelPath ?? "", finding.subject, finding.sourceID, m);
+      }
+   }
+   for (const finding of database) {
+      for (const m of finding.mismatches) {
+         const key = `${finding.sourceID}\u0000${m.column}`;
+         if (seen.has(key)) continue;
+         seen.add(key);
+         warnings.push({
+            model: finding.modelPath ?? "",
+            subject: finding.subject,
+            code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+            severity: "warn",
+            message:
+               (m.gone
+                  ? `no longer has column \`${m.column}\` (declared Malloy ` +
+                    `type \`${m.declaredType}\`): `
+                  : `stores column \`${m.column}\` as ` +
+                    `${m.storedType ?? "a type Malloy reads as no basic type"}, ` +
+                    `not its declared Malloy type \`${m.declaredType}\`: `) +
+               `its table was altered outside a build. ` +
+               DRIFT_HANDLING_TEXT[m.handling](m.declaredType),
+         });
       }
    }
    return warnings;
@@ -536,6 +662,8 @@ function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
 function servedCopyProblemMessage(
    problem: ServedCopyProblem,
    inlinedButKept = false,
+   /** Whether the source's declaration takes `inline=` (a `#(materialize)` one). */
+   takesInline = true,
 ): string {
    const { reason, join } = problem;
    switch (reason) {
@@ -585,8 +713,11 @@ function servedCopyProblemMessage(
                ? "fix what keeps the inlined join from being answered from its stored columns (the warning on " +
                  "this join says what), materialize the joined source into the same destination, or keep this " +
                  "source colocated."
-               : "inline the join (inline=), materialize the joined source into the same destination, or keep " +
-                 "this source colocated.")
+               : takesInline
+                 ? "inline the join (inline=), materialize the joined source into the same destination, or keep " +
+                   "this source colocated."
+                 : // `#@ persist` takes no `inline=`.
+                   "materialize the joined source into the same destination, or keep this source colocated.")
          );
       case "inline_join_kept":
          return (
@@ -605,4 +736,59 @@ function servedCopyProblemMessage(
             [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
          );
    }
+}
+
+/** The code of the warning for a bound database table the bind could not read. */
+export const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
+
+/** What a `database-table-unread` warning says of each reason. */
+const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {
+   connection_failed: "its connection could not be opened",
+   timed_out: "the catalog read timed out",
+   catalog_query_failed: "the catalog query failed",
+   not_found: "it was not found in its database's catalog",
+   ambiguous: "its name matches more than one table",
+   unparseable: "its name does not name a table the catalog can read",
+   not_read: "it was not read at this bind",
+};
+
+/**
+ * One warning per bound database table whose columns the bind could not read
+ * (`database-table-unread`): its sources answer live until a read succeeds.
+ * The reason is a fixed class, never the driver's text (the log has that).
+ * Named by the table, and by the source a query names (a rollup's base), in
+ * the model that declares it.
+ */
+export function databaseTableUnreadWarnings(
+   unread: readonly {
+      sourceEntityId: string;
+      reason: UnreadReason;
+      tableName?: string;
+   }[],
+   plan: BuildPlan | null,
+   retryPending: boolean,
+): ApiPackageWarning[] {
+   const warnings: ApiPackageWarning[] = [];
+   const sources = Object.values(plan?.sources ?? {});
+   for (const { sourceEntityId, reason, tableName } of unread) {
+      const source = sources.find((s) => s.sourceEntityId === sourceEntityId);
+      const name = source?.preaggregate?.baseSourceName ?? source?.name;
+      const table = source?.preaggregate
+         ? `The rollup \`${source.name}\``
+         : tableName
+           ? `The table \`${tableName}\``
+           : "A table";
+      warnings.push({
+         ...(source?.modelPath ? { model: source.modelPath } : {}),
+         ...(name ? { subject: name } : {}),
+         code: DATABASE_TABLE_UNREAD_CODE,
+         severity: "warn",
+         message:
+            `${table}${name ? ` of \`${name}\`` : ""} could not be read in its database when it was bound (${UNREAD_REASON_TEXT[reason]}), so its queries are answered live. ` +
+            (retryPending
+               ? "A retry is pending."
+               : "It is read again at the next bind or manifest poll."),
+      });
+   }
+   return warnings;
 }

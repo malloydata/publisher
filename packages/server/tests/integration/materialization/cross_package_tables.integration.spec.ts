@@ -241,15 +241,14 @@ describe.skipIf(!url)("tables of packages that share a schema", () => {
       );
    });
 
-   it("deleting a refused package's runs with their tables leaves the other package's table", async () => {
+   it("deleting a refused package's runs leaves the other package's table", async () => {
       const list = (await (
          await fetch(`${api("e1", "pb")}/materializations`)
       ).json()) as { id: string; status: string }[];
       for (const m of list.filter((r) => r.status !== "PENDING")) {
-         await fetch(
-            `${api("e1", "pb")}/materializations/${m.id}?dropTables=true`,
-            { method: "DELETE" },
-         );
+         await fetch(`${api("e1", "pb")}/materializations/${m.id}`, {
+            method: "DELETE",
+         });
       }
       const tables = (
          await pgRows(

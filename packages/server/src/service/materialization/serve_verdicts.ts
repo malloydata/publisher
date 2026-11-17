@@ -44,7 +44,23 @@ import {
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import { previewNativeSchema } from "./stored_column_types";
-import { reachableSourceIDs } from "./text/source_map";
+import { reachableSourceIDs, SourceMap } from "./text/source_map";
+import {
+   entryPointGateExprs,
+   gateColumnTypesOf,
+   gateReads,
+} from "./serve/gate_reads";
+import { ownLevelNotes, type AnnotationsDef } from "../annotations";
+import { routeOfNote } from "../annotation_reader";
+
+/** Whether a compiled source's own statement carries `#(materialize)`. */
+function declaresMaterialize(def: unknown): boolean {
+   const annotations = (def as { annotations?: AnnotationsDef } | undefined)
+      ?.annotations;
+   return ownLevelNotes(annotations).some(
+      (n) => routeOfNote(n.text) === "materialize",
+   );
+}
 
 /**
  * What the environment answers about where a package's tables can be written
@@ -105,6 +121,14 @@ const PREVIEW_STORED_TYPES: Readonly<Record<string, string>> = {
 };
 
 export class ServeVerdicts {
+   /**
+    * Whether a refused source is declared with `#(materialize)`, by sourceID,
+    * read once per plan (the plan is replaced wholesale, and with it the
+    * models it was planned from).
+    */
+   private declaredMaterializeMemo:
+      | { plan: unknown; models: unknown; ids: Map<string, boolean> }
+      | undefined;
    private tableCatalogCache:
       | {
            plan: unknown;
@@ -285,6 +309,36 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
+      // The stored types of the columns a bound `storage=` table's own gate
+      // reads, for the policy's exactness rule; the router reads each
+      // query's. A table not bound yet has none to read, and is judged once
+      // it is bound.
+      const ownGateColumnTypes = (sourceID: string): string[] | undefined => {
+         const bound = storageBindings.filter((b) =>
+            b.sourceIDs?.includes(sourceID),
+         );
+         if (bound.length === 0) return [];
+         for (const model of models.values()) {
+            const modelDef = model.getModelDef();
+            const def = modelDef
+               ? SourceMap.of(modelDef).node(sourceID)?.def
+               : undefined;
+            if (def === undefined) continue;
+            const exprs = entryPointGateExprs(def, modelDef);
+            const reads =
+               exprs === undefined
+                  ? undefined
+                  : gateReads(def, exprs, modelDef);
+            const types = gateColumnTypesOf(
+               reads,
+               bound.map((b) => b.schema),
+            );
+            return types.some((t) => t === undefined)
+               ? undefined
+               : types.flatMap((t) => t ?? []);
+         }
+         return undefined;
+      };
       const switches = gateSwitches();
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(host.snapshot(), new Date());
@@ -324,6 +378,9 @@ export class ServeVerdicts {
                   {
                      tier,
                      ownGateKept: tier === "storage" && ownGateKept(sourceID),
+                     ...(tier === "storage"
+                        ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
+                        : {}),
                   },
                ],
                switches,
@@ -349,11 +406,29 @@ export class ServeVerdicts {
                : "not_served";
          },
          persistedViewOf: (sourceID) => persistedViews.get(sourceID),
+         declaredMaterialize: (sourceID) =>
+            this.declaredMaterialize(buildPlan, sourceID),
          views,
          destinationConfigured: (name) => this.destinationConfigured(name),
          connectionCanHoldTable: (name) =>
             host.deploymentFacts()?.connectionCanHoldTable(name),
       });
+   }
+
+   /** {@link declaredMaterializeMemo}'s read. */
+   private declaredMaterialize(plan: unknown, sourceID: string): boolean {
+      const models = this.host.models();
+      let memo = this.declaredMaterializeMemo;
+      if (!memo || memo.plan !== plan || memo.models !== models) {
+         memo = { plan, models, ids: new Map() };
+         this.declaredMaterializeMemo = memo;
+      }
+      let declared = memo.ids.get(sourceID);
+      if (declared === undefined) {
+         declared = declaresMaterialize(this.host.declarationOf(sourceID));
+         memo.ids.set(sourceID, declared);
+      }
+      return declared;
    }
 
    /**

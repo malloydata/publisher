@@ -55,7 +55,11 @@
  * - **Given-reading terms.** A `where:` of the base's own that reads a given,
  *   over grain dimensions only, is left out of the build (its build copy
  *   replaces it by `true`) and written again on the variant, where each
- *   caller's givens bind it; any other is `reads_given`.
+ *   caller's givens bind it; any other is refused with the reason the one
+ *   classifier gives it on `#(materialize)`: `inherited_where_with_given`
+ *   for an inherited one, `given_where_over_unstored_field` for one over a
+ *   field the grain drops, `reads_given` for one the build
+ *   would read.
  * - **A6, fan-out grains.** A grain dimension read through a join_many or
  *   join_cross is recorded as a fan-out dimension; the serve side reads the
  *   rollup only for a query that fixes it at every aggregating level.
@@ -80,6 +84,10 @@ import {
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
 import { gateSwitches } from "../../../config";
 import { tableKeepsGates } from "../domain/gate_policy";
+import {
+   gateRefusalReason,
+   type GateRefusalReason,
+} from "../domain/gate_refusal";
 import { byReadCost } from "../domain/read_cost";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { hasFanoutJoin } from "./preaggregation_validation";
@@ -108,6 +116,8 @@ import {
    type RefusalKey,
 } from "../../annotation_reader";
 import type { RefusedReason } from "../domain/types";
+import { STORAGE_DIALECT } from "../domain/dialect";
+import { storedMalloyType } from "../stored_column_types";
 import {
    destinationOf,
    placementOf,
@@ -322,6 +332,8 @@ interface FieldLike {
    join?: unknown;
    expressionType?: unknown;
    accessModifier?: unknown;
+   /** A `sql native` field's warehouse type. */
+   rawType?: unknown;
    annotations?: Parameters<typeof ownLevelNotes>[0] & { inherits?: unknown };
 }
 
@@ -330,6 +342,7 @@ interface SourceLike {
    annotations?: Parameters<typeof ownLevelNotes>[0];
    fields?: unknown[];
    queryTimezone?: unknown;
+   dialect?: unknown;
 }
 
 const fieldNameOf = (f: FieldLike): string | undefined =>
@@ -412,6 +425,8 @@ interface Declaration {
    namespace?: string;
    /** {@link namespace} was written as the deprecated `namespace=`. */
    deprecatedNamespace?: true;
+   /** Its `name=`'s leaf, the readable prefix of its table's name. */
+   prefix?: string;
    /** Its `freshness` group (freshness_declaration.ts). */
    freshness?: DeclaredFreshness;
    /**
@@ -523,6 +538,7 @@ function readDeclaration(
       ...(storage !== undefined ? { storage } : {}),
       ...(namespace !== undefined ? { namespace } : {}),
       ...(placedIn.deprecatedNamespace ? { deprecatedNamespace: true } : {}),
+      ...(placedIn.prefix !== undefined ? { prefix: placedIn.prefix } : {}),
       ...(fresh.freshness ? { freshness: fresh.freshness } : {}),
    };
 }
@@ -688,6 +704,18 @@ export function planSourceRollups(
          }
          continue;
       }
+      // One table has one name: measures at one grain and placement that
+      // write different `name=` leaves are malformed.
+      const prefixes = new Set(group.declarations.map((d) => d.prefix ?? ""));
+      if (prefixes.size > 1) {
+         refused.push({
+            tier: "malformed",
+            code: PREAGGREGATE_INVALID_CODE,
+            message: `rollups of source "${sourceName}" name different tables (name=) on measures at the grain [${group.decl.grain.join(", ")}]; one grain is one rollup table, so give every measure at it the same name=`,
+            sourceName,
+         });
+         continue;
+      }
       const freshness = rollupSourceFreshness(merged.freshness, baseFreshness);
       plans.push({
          ...rollupPlanOf(group, node, facts, ctx),
@@ -823,6 +851,9 @@ function rollupDeclarationsOf(
                   ...(grain.deprecatedNamespace
                      ? { deprecatedNamespace: true }
                      : {}),
+                  ...(grain.prefix !== undefined
+                     ? { prefix: grain.prefix }
+                     : {}),
                }),
             );
          }
@@ -857,7 +888,16 @@ interface RollupFacts {
     * The base's own given-reading `where:` terms, re-applied on the variant
     * (each over grain dimensions only), or why they cannot be.
     */
-   given: { terms: GivenReadTerm[] } | { refused: string };
+   given:
+      | { terms: GivenReadTerm[] }
+      | {
+           refused: string;
+           /** The shared classifier's reason (`readTimeTermsOf`), as on `#(materialize)`. */
+           reason:
+              | "inherited_where_with_given"
+              | "reads_given"
+              | "given_where_over_unstored_field";
+        };
    /** Where the base is declared, for its build copy's edits. */
    declaration: TermUse | undefined;
    timeFields: ReturnType<typeof currentTimeFields>;
@@ -869,6 +909,8 @@ interface RollupFacts {
    scope: Parameters<typeof decomposeMeasure>[1];
    /** The joins a field path reads, or undefined when unknown. */
    joinsRead(path: readonly string[]): string[] | undefined;
+   /** The base's dialect. */
+   dialect: string | undefined;
    unservable(
       reason: RefusedReason,
       decl: Declaration,
@@ -907,8 +949,10 @@ function rollupFactsOf(
    const timeFields = currentTimeFields(def.fields);
    // A given-reading `where:` of the base's own, over its dimensions, is left
    // out of the build and written again on the variant, as the served copy
-   // re-applies one (P2); an inherited one, or one over anything else, is
-   // refused (`reads_given`), as on `#(materialize)`.
+   // re-applies one (P2); an inherited one (`inherited_where_with_given`), one
+   // over a field that is not a dimension (`given_where_over_unstored_field`),
+   // or one the build would read (`reads_given`), is refused by
+   // the one classifier `#(materialize)` reads, with its reason.
    const read = readTimeTermsOf(
       def as SourceDefLike,
       classifyWhereTerms(def).filter((t) => t.dependsOn.kind === "given"),
@@ -918,7 +962,9 @@ function rollupFactsOf(
       ((map.model() as { givens?: Record<string, unknown> } | undefined)
          ?.givens ?? {}) as Record<string, unknown>,
    );
-   const given = read.ok ? { terms: read.terms } : { refused: read.reason };
+   const given = read.ok
+      ? { terms: read.terms }
+      : { refused: read.reason, reason: read.refusal };
    const declaration = declarationOf(def as SourceDefLike);
    // A source that sets its own `timezone:` (or inherits one) built its
    // times in that zone, and the base branch reads no query on it from a
@@ -1003,6 +1049,7 @@ function rollupFactsOf(
       readInZone,
       scope,
       joinsRead,
+      dialect: typeof def.dialect === "string" ? def.dialect : undefined,
       unservable,
    };
 }
@@ -1011,7 +1058,8 @@ function rollupFactsOf(
  * Why `decl` is not built, as a refusal; `skip` for one v1's own validation
  * already reports; undefined when it may be built. Checked in order: a hidden
  * measure, a grain that is not the source's dimensions, the current time, the
- * source's own time zone, a hidden grain dimension, and the source's gates.
+ * source's own time zone, a hidden grain dimension, a `storage=` grain no
+ * stored read declares, and the source's gates.
  */
 function declarationRefusal(
    decl: Declaration,
@@ -1101,15 +1149,28 @@ function declarationRefusal(
          `its grain dimension \`${hiddenGrain}\` is private on a source it extends, which a rollup's build cannot read`,
       );
    }
+   const unreadableGrain =
+      decl.storage === undefined
+         ? undefined
+         : unreadableStoredGrain(decl.grain, byName, facts.dialect);
+   if (unreadableGrain) {
+      return unservable(
+         "unreadable_grain",
+         decl,
+         `its grain dimension \`${unreadableGrain.name}\` is stored as ${unreadableGrain.storedType}, which no read of a storage destination declares, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse, which reads it`,
+      );
+   }
    if ("refused" in facts.given) {
-      return unservable("reads_given", decl, facts.given.refused);
+      return unservable(facts.given.reason, decl, facts.given.refused);
    }
    const ungrained = facts.given.terms
       .flatMap((t) => t.columns)
       .filter((c) => !decl.grain.includes(c));
    if (ungrained.length > 0) {
+      // A given-reading `where:` over a field the table does not store, as
+      // the classifier names it on `#(materialize)`: the fix is the grain.
       return unservable(
-         "reads_given",
+         "given_where_over_unstored_field",
          decl,
          // malloy-text: a warning message for a person, not Malloy
          `the source's \`where:\` reads a given and ${[...new Set(ungrained)].map((c) => `\`${c}\``).join(", ")}, which the grain does not keep, so it could not be re-applied to the rollup's rows per caller`,
@@ -1123,7 +1184,7 @@ function declarationRefusal(
       !(ctx.readUnderGates ?? rollupsServeGatedBases(decl, gate.own))
    ) {
       return unservable(
-         "access_filter",
+         gate.reason.base,
          decl,
          decl.storage !== undefined
             ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
@@ -1134,7 +1195,7 @@ function declarationRefusal(
    // rollup is not built (A4, fail closed).
    if (gate.declared && gate.joinGated) {
       return unservable(
-         "access_filter",
+         gate.reason.joined,
          decl,
          "a source it joins has a row-level gate, which a rollup cannot re-apply to its rows",
       );
@@ -1148,11 +1209,36 @@ function declarationRefusal(
    ];
    if (ungated.length > 0) {
       return unservable(
-         "access_filter",
+         gate.reason.base,
          decl,
          // malloy-text: a warning message for a person, not Malloy
          `the source's access filter reads ${ungated.map((g) => `\`${g}\``).join(", ")}, which the grain does not keep, so the rollup's rows could not be filtered per caller`,
       );
+   }
+   return undefined;
+}
+
+/**
+ * The first grain dimension a `storage=` rollup's table would store as a type
+ * no stored read declares ({@link storedMalloyType}: a BLOB, an INTERVAL, a
+ * MAP or a JSON), with that type. Every read of the rollup groups by its
+ * grain, so such a table is never read. Judged only for a DuckDB-dialect
+ * base, whose warehouse type is the type the destination stores; another
+ * warehouse's native type may arrive as another type, which serve judges.
+ */
+function unreadableStoredGrain(
+   grain: readonly string[],
+   byName: ReadonlyMap<string, FieldLike>,
+   dialect: string | undefined,
+): { name: string; storedType: string } | undefined {
+   if (dialect !== STORAGE_DIALECT) return undefined;
+   for (const name of grain) {
+      const f = byName.get(name);
+      if (f?.type !== "sql native" || typeof f.rawType !== "string") continue;
+      const storedType = f.rawType.toUpperCase();
+      if (storedMalloyType(storedType) === undefined) {
+         return { name, storedType };
+      }
    }
    return undefined;
 }
@@ -1276,6 +1362,7 @@ function rollupPlanOf(
       grainDimensions: decl.grain,
       ...(decl.storage !== undefined ? { storage: decl.storage } : {}),
       ...(decl.namespace !== undefined ? { namespace: decl.namespace } : {}),
+      ...(decl.prefix !== undefined ? { prefix: decl.prefix } : {}),
       // The v1 shape the build plan's wire entry reads (measure names).
       measures: sorted.map((m) => ({
          name: m.name,
@@ -1375,6 +1462,8 @@ function gateFieldNames(
    joinGated: boolean;
    /** Every gate is the base's own: none inherited, none from a derivation. */
    own: boolean;
+   /** The refusal name for the base's own gates, and for its joins' ({@link gateRefusalReason}). */
+   reason: { base: GateRefusalReason; joined: GateRefusalReason };
 } {
    const dimensions = new Set<string>();
    const unkeepable = new Set<string>();
@@ -1413,14 +1502,19 @@ function gateFieldNames(
          }
       }
    }
-   const joinGated = ((def.fields ?? []) as FieldLike[]).some(
-      (f) => f.join !== undefined && gatedJoin(f, modelDef),
+   const joinedRoutes = ((def.fields ?? []) as FieldLike[]).flatMap((f) =>
+      f.join !== undefined ? joinGateRoutes(f, modelDef) : [],
    );
+   const joinGated = joinedRoutes.length > 0;
    return {
       dimensions: [...dimensions].sort(byCodepoint),
       unkeepable: [...unkeepable].sort(byCodepoint),
       declared: entries.length > 0,
       joinGated,
+      reason: {
+         base: gateRefusalReason(entries.map((e) => e.route)),
+         joined: gateRefusalReason(joinedRoutes),
+      },
       own:
          entries.length > 0 &&
          unkeepable.size === 0 &&
@@ -1445,19 +1539,20 @@ function gateNotesDeclaredBy(def: SourceLike, scope: SourceScope): boolean {
    return gates.length > 0 && gates.every((n) => declared.has(n));
 }
 
-/** Whether a joined source carries a row-level gate (fails closed). */
-function gatedJoin(join: FieldLike, modelDef: unknown): boolean {
+/**
+ * The routes of the row-level gates a joined source carries, empty when it
+ * carries none (fails closed: an unreadable one reads as a lock).
+ */
+function joinGateRoutes(join: FieldLike, modelDef: unknown): string[] {
    try {
-      return (
-         collectEntryPointGates(
-            join as unknown as SourceDef,
-            modelDef as ModelDef,
-            new Set(),
-            true,
-         ).length > 0
-      );
+      return collectEntryPointGates(
+         join as unknown as SourceDef,
+         modelDef as ModelDef,
+         new Set(),
+         true,
+      ).map((g) => g.route);
    } catch {
-      return true;
+      return ["authorize"];
    }
 }
 

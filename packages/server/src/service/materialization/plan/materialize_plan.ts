@@ -535,7 +535,7 @@ function callerDependentDimensions(
                `inline= names ${quotedName(j)}, through which a given is read, ` +
                "so its stored columns would hold one caller's values; " +
                "reference the join instead",
-            refusal: "given_in_persisted_query",
+            refusal: "reads_given",
          };
       }
    }
@@ -1786,9 +1786,10 @@ function placedPersistOf(
    if (placed.placement.tier === "storage") {
       persist.storage = placed.placement.destination;
    }
-   // Without `name=`, the table takes the source's own name (made plain
-   // when it is not, see materializeTableName), which the self-instructed
-   // run gives its package's or version's suffix (run_instructions.ts). A
+   // Without `name=`, the source's own name (made plain when it is not, see
+   // materializeTableName) is only a placeholder: the self-instructed run
+   // replaces it with the readable `<package>__<file>__<source>__p<8 hex>`
+   // name (selfTableName, run_instructions.ts). A
    // source is planned in the model that declares it (see
    // `declaredHere`), so its name here is the name its author gave it.
    // With `name=`, the table is the author's: written at that name (its
@@ -1946,7 +1947,8 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key"];
  * source (P10) its `buildsOver`. The ancestor is the first planned source up
  * the chain, reached through `extend` and renames only (a query-shaped hop
  * starts a new segment, which the build cannot re-root on a table), declared
- * in the same file (the build copy re-roots it in that file's text), as is
+ * in the same file (the build copy re-roots it in that file's text; one in
+ * another file is the companion compiler's, `crossFileEntries`), as is
  * every declaration between them (`path`). Both must be on one tier (both
  * colocated, or both `storage=` the same destination), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
@@ -1982,24 +1984,7 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       ) {
          continue;
       }
-      // One tier on both sides: colocated, whose build reads the parent's
-      // build source in its own warehouse, or one storage destination, whose
-      // build reads the parent's table there (see `overStored`).
-      if (plan.persist.storage !== parent.persist.storage) continue;
-      const incremental = (p: MaterializePlan) =>
-         Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
-      if (incremental(plan) || incremental(parent)) continue;
-      // A table that stacks several inlined paths is a SQL source over the
-      // author's model: neither builds over the other's build source.
-      if (plan.pairBlocks || parent.pairBlocks) continue;
-      // A pair table holds its source once per child of the inlined
-      // join_many, not once per row: an extension built over it would store
-      // (and its served copy count) each parent once per child.
-      if (parent.pair) continue;
-      if (givenReadTerms(parent).length > 0) continue;
-      // The re-rooted parent keeps its `where:` as written, so a term its
-      // table leaves out would be applied to the extension's build.
-      if (leftOutWindowTerms(parent.readTimeTerms).length > 0) continue;
+      if (!chainsOver(plan, parent)) continue;
       plan.buildsOver = {
          sourceID: parent.sourceID,
          sourceName: parent.sourceName,
@@ -2007,6 +1992,189 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
          path: path as TermUse[],
       };
    }
+}
+
+/**
+ * Whether an extension's plan may build over its parent's build source
+ * (P10), whichever file declares the parent: both on one tier (both
+ * colocated, whose build reads the parent's build source in its own
+ * warehouse, or one storage destination, whose build reads the parent's
+ * table there, see `overStored`), neither incremental, neither a table of
+ * several inlined paths, the parent no pair table, and the parent with no
+ * given-reading `where:` and no current-time `where:` its build leaves out.
+ */
+export function chainsOver(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+): boolean {
+   if (plan.persist.storage !== parent.persist.storage) return false;
+   const incremental = (p: MaterializePlan) =>
+      Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
+   if (incremental(plan) || incremental(parent)) return false;
+   // A table that stacks several inlined paths is a SQL source over the
+   // author's model: neither builds over the other's build source.
+   if (plan.pairBlocks || parent.pairBlocks) return false;
+   // A pair table holds its source once per child of the inlined
+   // join_many, not once per row: an extension built over it would store
+   // (and its served copy count) each parent once per child.
+   if (parent.pair) return false;
+   if (givenReadTerms(parent).length > 0) return false;
+   // The re-rooted parent keeps its `where:` as written, so a term its
+   // table leaves out would be applied to the extension's build.
+   if (leftOutWindowTerms(parent.readTimeTerms).length > 0) return false;
+   return true;
+}
+
+/**
+ * For each plan with no parent in its own file, where its chain enters
+ * another file (P10 across files): the first source it is built on, through
+ * `extend` and renames only as {@link chainExtensionTables} walks a chain,
+ * that is declared in another file, with the declarations from just below
+ * it down to the plan's own, all in the plan's file. The walk stops at a
+ * declaration of the plan's own file that declares `#(materialize)`: that
+ * one is this file's to chain on. Which source of the other file the plan
+ * builds over is that file's to say ({@link chainWithinFile}). Plans whose
+ * chain never enters another file are not listed.
+ */
+export function crossFileEntries(
+   plans: readonly MaterializePlan[],
+   contents: Record<string, unknown>,
+): {
+   plan: MaterializePlan;
+   entry: { sourceID: string; url: string };
+   path: TermUse[];
+}[] {
+   const map = SourceMap.of({ contents });
+   const declarationOfID = (sourceID: string) => {
+      const def = map.node(sourceID)?.def as SourceDefLike | undefined;
+      return def ? declarationOf(def) : undefined;
+   };
+   const declares = (sourceID: string) =>
+      declaresMaterialize(map, contents, sourceID);
+   const out: ReturnType<typeof crossFileEntries> = [];
+   for (const plan of plans) {
+      if (plan.buildsOver) continue;
+      const own = declarationOfID(plan.sourceID);
+      if (!own) continue;
+      let node = map.node(plan.sourceID);
+      const below: string[] = [];
+      for (let hops = 0; node && hops < 64; hops++) {
+         const base = node.base;
+         if (!base || base.hop === "query" || base.sourceID === undefined) {
+            break;
+         }
+         below.push(node.sourceID);
+         const url = splitSourceID(base.sourceID)?.url;
+         if (url === undefined) break;
+         if (url !== own.url) {
+            const path = below.reverse().map(declarationOfID);
+            if (path.every((d) => d !== undefined && d.url === own.url)) {
+               out.push({
+                  plan,
+                  entry: { sourceID: base.sourceID, url },
+                  path: path as TermUse[],
+               });
+            }
+            break;
+         }
+         if (declares(base.sourceID)) break;
+         node = map.node(base.sourceID);
+      }
+   }
+   return out;
+}
+
+/**
+ * Whether the source `sourceID` declares `#(materialize)` itself, planned or
+ * refused; an unreadable declaration counts as one. A chain walk stops at
+ * such a source: whether it is a parent is its own file's plan to say.
+ */
+function declaresMaterialize(
+   map: SourceMap,
+   contents: Record<string, unknown>,
+   sourceID: string,
+): boolean {
+   const def = map.node(sourceID)?.def as PlannedDef | undefined;
+   if (!def) return false;
+   try {
+      return readMaterializeDeclaration(def, contents) !== undefined;
+   } catch {
+      return true;
+   }
+}
+
+/**
+ * The sources of one file a chain entering it at `entrySourceID` is built
+ * on (P10 across files), nearest first, read in that file's own compile:
+ * the entry, then each source it is built on through `extend` and renames
+ * only, declared in the same file. Each with its declaration and the
+ * declarations from just below it down to the entry (root first), which
+ * the chain's path in the importing file continues.
+ */
+export function chainWithinFile(
+   modelDef: { contents?: unknown; sourceRegistry?: unknown },
+   entrySourceID: string,
+): { sourceID: string; declaration: TermUse; path: TermUse[] }[] {
+   const map = SourceMap.of(modelDef);
+   const declarationOfID = (sourceID: string) => {
+      const def = map.node(sourceID)?.def as SourceDefLike | undefined;
+      return def ? declarationOf(def) : undefined;
+   };
+   const out: ReturnType<typeof chainWithinFile> = [];
+   const url = splitSourceID(entrySourceID)?.url;
+   const below: TermUse[] = [];
+   let sourceID: string | undefined = entrySourceID;
+   for (let hops = 0; sourceID !== undefined && hops < 64; hops++) {
+      const declaration = declarationOfID(sourceID);
+      if (!declaration || declaration.url !== url) break;
+      out.push({ sourceID, declaration, path: [...below].reverse() });
+      below.push(declaration);
+      const base: { hop: string; sourceID: string | undefined } | undefined =
+         map.node(sourceID)?.base;
+      if (!base || base.hop === "query") break;
+      sourceID = base.sourceID;
+   }
+   return out;
+}
+
+/**
+ * A file a chain passes through on its way to a parent in a file beyond it
+ * (P10 across files), read in that file's own compile from the source the
+ * chain enters it at: the declarations of the sources it walks there
+ * ({@link chainWithinFile}), root first; whether any of them declares
+ * `#(materialize)` itself (`declares`), planned or refused, so the file is no
+ * pass-through; and the source the walk leaves the file at, by `extend` or a
+ * rename, when it does (`next`). No `next` means the chain ends in the file,
+ * at a table or a query-shaped hop.
+ */
+export function chainThroughFile(
+   modelDef: { contents?: unknown; sourceRegistry?: unknown },
+   entrySourceID: string,
+): {
+   declarations: TermUse[];
+   declares: boolean;
+   next?: { sourceID: string; url: string };
+} {
+   const walked = chainWithinFile(modelDef, entrySourceID);
+   const map = SourceMap.of(modelDef);
+   const contents = (modelDef.contents ?? {}) as Record<string, unknown>;
+   const declarations = walked.map((w) => w.declaration).reverse();
+   const declares = walked.some((w) =>
+      declaresMaterialize(map, contents, w.sourceID),
+   );
+   const last = walked[walked.length - 1];
+   const base = last ? map.node(last.sourceID)?.base : undefined;
+   const url =
+      base && base.hop !== "query" && base.sourceID !== undefined
+         ? splitSourceID(base.sourceID)?.url
+         : undefined;
+   return {
+      declarations,
+      declares,
+      ...(url !== undefined && url !== last?.declaration.url
+         ? { next: { sourceID: base!.sourceID!, url } }
+         : {}),
+   };
 }
 
 /**

@@ -1,8 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { QueryMaterializer, VirtualMap } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import {
+   type QueryMaterializer,
+   SingleConnectionRuntime,
+   type VirtualMap,
+} from "@malloydata/malloy";
+import { afterAll, describe, expect, it } from "bun:test";
 import {
    type Binding,
    EMPTY_SNAPSHOT,
@@ -29,6 +34,32 @@ import { answerOf, recordingManifest, variantsOf } from "./query_serving";
 const runnable = { tag: "routed" } as unknown as QueryMaterializer;
 const virtualMap = new Map() as unknown as VirtualMap;
 
+// The author's compile the router reads an entry point's gate columns from:
+// `gated` reads `acct`, `open` has no gate.
+const authorConnection = new DuckDBConnection("duckdb", ":memory:");
+const authorModel = new SingleConnectionRuntime({
+   connection: authorConnection,
+}).loadModel(`##! experimental { givens }
+given: ACCT :: number
+#(access_filter) acct = $ACCT
+source: gated is duckdb.sql("SELECT 1 AS id, CAST(2 AS DECIMAL(20,0)) AS acct")
+source: open is duckdb.sql("SELECT 1 AS id, CAST(2 AS DECIMAL(20,0)) AS acct")
+#(access_filter) k = $ACCT
+source: renamed is open -> { select: id, k is acct }
+#(access_filter) k = $ACCT
+source: renamed_twice is open -> { select: id, k1 is acct } -> { select: id, k is k1 }
+given: ROLE :: string
+#(authorize) 'analyst' = $ROLE
+source: locked is open
+`);
+const author = (
+   source: "gated" | "open" | "renamed" | "renamed_twice" | "locked",
+): QueryMaterializer =>
+   authorModel.loadQuery(`run: ${source} -> { select: id }`);
+afterAll(async () => {
+   await authorConnection.close();
+});
+
 const binding = (sourceName: string, extra: Partial<Binding> = {}): Binding =>
    ({
       kind: "persist",
@@ -37,7 +68,8 @@ const binding = (sourceName: string, extra: Partial<Binding> = {}): Binding =>
       destinationName: "lake",
       virtualHandle: `eid-${sourceName}`,
       tablePath: `lake.t_${sourceName}`,
-      schema: [],
+      // The gate column of the author compile below, stored exactly.
+      schema: [{ name: "acct", type: "DECIMAL(38,0)" }],
       ...extra,
    }) as unknown as Binding;
 
@@ -282,14 +314,14 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
          {
             queryString: "run: orders -> { aggregate: total }",
             givens: undefined,
-            authorRunnable: runnable,
+            authorRunnable: author("gated"),
          },
          pinned,
          { modelPath: "m.malloy" },
       ).find((c) => c.kind === "rollup");
 
    for (const on of [true, false]) {
-      it(`is tried past the gate with gated sources ${on ? "on" : "off (G3)"}, and keeps it off only for a colocated rollup`, () => {
+      it(`is tried past the gate with gated sources ${on ? "on" : "off (G3)"}, and keeps it off only for a colocated rollup`, async () => {
          const { restore } = installSettings({
             env: {
                PUBLISHER_MATERIALIZE: "true",
@@ -303,11 +335,18 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
                candidate?.keepsContractsFor?.({
                   runnable,
                   tablesRead: undefined,
-                  gateTablesRead: [{ tier }],
+                  gateTablesRead: [
+                     tier === "storage"
+                        ? {
+                             tier,
+                             schema: [{ name: "acct", type: "DECIMAL(38,0)" }],
+                          }
+                        : { tier },
+                  ],
                   shapeBindings: [],
                } as never);
-            expect(read("colocated")).toBe(true);
-            expect(read("storage")).toBe(on);
+            expect(await read("colocated")).toBe(true);
+            expect(await read("storage")).toBe(on);
          } finally {
             restore();
          }
@@ -366,7 +405,10 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
    // `"main"."s_tbl"` (sqlTableReads ignores case), so it finds only "c_tbl".
    const sql =
       'SELECT 1 FROM "c_tbl" AS base LEFT JOIN main.s_tbl AS j ON j.id = base.id';
-   const servedCandidate = (gateTablesRead: Binding[] | undefined) =>
+   const servedCandidate = (
+      gateTablesRead: Binding[] | undefined,
+      authorRunnable: QueryMaterializer = author("gated"),
+   ) =>
       variantsOf(
          makeLegs(pinned, {
             servedCopy: {
@@ -385,7 +427,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          {
             queryString: "run: gated -> { aggregate: n }",
             givens: undefined,
-            authorRunnable: runnable,
+            authorRunnable,
          },
          pinned,
          { modelPath: "m.malloy" },
@@ -418,7 +460,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          const routed = await candidate.attempt();
          // …but the answer it produced reads a storage table: not kept.
          expect(routed.extra?.gateTablesRead).toEqual([colocated, storage]);
-         expect(candidate.keepsContractsFor!(routed.extra!)).toBe(false);
+         expect(await candidate.keepsContractsFor!(routed.extra!)).toBe(false);
       });
    });
 
@@ -426,7 +468,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
       await withG3(async () => {
          const candidate = servedCandidate([colocated]);
          const routed = await candidate.attempt();
-         expect(candidate.keepsContractsFor!(routed.extra!)).toBe(true);
+         expect(await candidate.keepsContractsFor!(routed.extra!)).toBe(true);
       });
    });
 
@@ -445,7 +487,9 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          ] as const) {
             const candidate = servedCandidate([...read]);
             const routed = await candidate.attempt();
-            expect(candidate.keepsContractsFor!(routed.extra!)).toBe(keeps);
+            expect(await candidate.keepsContractsFor!(routed.extra!)).toBe(
+               keeps,
+            );
          }
          // The kept table found, the other spelled another way: the fail
          // closed read still counts the other, so the answer stays live.
@@ -455,8 +499,121 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
          expect(judged).toEqual([kept, other]);
          const candidate = servedCandidate(judged);
          expect(
-            candidate.keepsContractsFor!((await candidate.attempt()).extra!),
+            await candidate.keepsContractsFor!(
+               (await candidate.attempt()).extra!,
+            ),
          ).toBe(false);
       });
+   });
+
+   it("L2: keeps no answer whose gate column a storage table stores as a float, under any switch", async () => {
+      const stored = (type: string) =>
+         binding("s", {
+            kind: "materialize",
+            tablePath: "main.s_tbl",
+            ownGateKept: true,
+            schema: [
+               { name: "id", type: "BIGINT" },
+               { name: "acct", type },
+            ],
+         });
+      for (const gatedSources of ["false", "true"]) {
+         const { restore } = installSettings({
+            env: {
+               PUBLISHER_MATERIALIZE: "true",
+               PUBLISHER_MATERIALIZE_GATED_SOURCES: gatedSources,
+            },
+         });
+         try {
+            for (const [type, keeps] of [
+               ["DECIMAL(38,0)", true],
+               ["BIGINT", true],
+               ["DOUBLE", false],
+               ["FLOAT", false],
+               ["HUGEINT", false],
+            ] as const) {
+               const candidate = servedCandidate([stored(type)]);
+               expect(
+                  await candidate.keepsContractsFor!(
+                     (await candidate.attempt()).extra!,
+                  ),
+                  `${type}, gated sources ${gatedSources}`,
+               ).toBe(keeps);
+            }
+            // An entry point whose gate reads no float column is unaffected.
+            const open = servedCandidate([stored("DOUBLE")], author("open"));
+            expect(
+               await open.keepsContractsFor!((await open.attempt()).extra!),
+            ).toBe(true);
+            // A query-shaped entry point whose gate reads a renamed stage
+            // output: followed back to the stored column it renames.
+            for (const source of ["renamed", "renamed_twice"] as const) {
+               for (const [type, keeps] of [
+                  ["DOUBLE", false],
+                  ["DECIMAL(38,0)", true],
+               ] as const) {
+                  const c = servedCandidate([stored(type)], author(source));
+                  expect(
+                     await c.keepsContractsFor!((await c.attempt()).extra!),
+                     `${source} over ${type}`,
+                  ).toBe(keeps);
+               }
+            }
+            // A gate column the table does not hold under any name: unproven.
+            const missing = servedCandidate([
+               binding("s", {
+                  kind: "materialize",
+                  tablePath: "main.s_tbl",
+                  ownGateKept: true,
+                  schema: [{ name: "id", type: "BIGINT" }],
+               }),
+            ]);
+            expect(
+               await missing.keepsContractsFor!(
+                  (await missing.attempt()).extra!,
+               ),
+            ).toBe(false);
+            // A lock reads no column: nothing to prove.
+            const lock = servedCandidate(
+               [
+                  binding("s", {
+                     kind: "materialize",
+                     tablePath: "main.s_tbl",
+                     ownGateKept: true,
+                     schema: [{ name: "id", type: "DOUBLE" }],
+                  }),
+               ],
+               author("locked"),
+            );
+            expect(
+               await lock.keepsContractsFor!((await lock.attempt()).extra!),
+            ).toBe(true);
+            // A database table on a DuckLake catalog that holds the gate's
+            // column as a DOUBLE (a 128-bit integer): live. Another column
+            // held so leaves the gate alone.
+            // A database table whose gate column the bind found altered
+            // since its build: judged by the type it holds now.
+            for (const [moved, keeps] of [
+               [[{ name: "acct", type: "DOUBLE" }], false],
+               [[{ name: "acct", type: "double precision" }], false],
+               [[{ name: "acct", type: "DECIMAL(38,0)" }], true],
+               [[{ name: "total", type: "DOUBLE" }], true],
+            ] as const) {
+               const lake = servedCandidate([
+                  { ...colocated, retypedColumns: [...moved] },
+               ]);
+               expect(
+                  await lake.keepsContractsFor!((await lake.attempt()).extra!),
+               ).toBe(keeps);
+            }
+            // An author's compile that cannot be read: the served copy is
+            // never answered from (its composite member cannot be checked).
+            await expect(
+               servedCandidate([stored("DECIMAL(38,0)")], runnable).attempt(),
+            ).rejects.toThrow(/composite source/);
+         } finally {
+            restore();
+         }
+      }
    });
 });

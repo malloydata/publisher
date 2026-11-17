@@ -265,9 +265,10 @@ export interface QueryPathInput {
 }
 
 /**
- * Assemble the path report. Order in `considered` follows the order Publisher
- * tries the tiers: `storage=` tables, then colocated rollups, then colocated
- * `#@ persist` tables nearest first.
+ * Assemble the path report. `considered` lists `storage=` tables, then
+ * colocated rollups, then colocated tables nearest first: not the order the
+ * router tries the legs (`makeLegs`: persisted results, then rollups, then
+ * the served copy).
  */
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
@@ -303,6 +304,7 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
       tally,
       tables,
       rollupDecision,
+      rollupMemberDeclines(input.considered),
       storageAnswered,
    );
    const { considered, tierOf, markUsed, skip } = tally;
@@ -570,14 +572,33 @@ function storageTableDecisions(
 }
 
 /**
+ * Each rollup's own decline, by synthesized source name, from every rollup
+ * leg that tried it (the v1 and `#(preaggregate)` legs share the kind).
+ */
+function rollupMemberDeclines(
+   considered: readonly ConsideredVariant[],
+): ReadonlyMap<string, { code: string; callerDetail?: string }> {
+   const out = new Map<string, { code: string; callerDetail?: string }>();
+   for (const c of considered) {
+      if (c.kind !== "rollup" || !c.members) continue;
+      for (const [name, member] of Object.entries(c.members)) {
+         if (!out.has(name)) out.set(name, member);
+      }
+   }
+   return out;
+}
+
+/**
  * Rollups the rollup leg decides: colocated ones, and `#(preaggregate)` ones
- * on either tier. Returns whether a rollup answered.
+ * on either tier. A rollup the leg tried carries its own reason; one it never
+ * tried, the leg's. Returns whether a rollup answered.
  */
 function colocatedRollupDecisions(
    input: QueryPathInput,
    tally: PathTally,
    tables: readonly TableState[],
    rollupDecision: ConsideredVariant | undefined,
+   memberDeclines: ReadonlyMap<string, { code: string; callerDetail?: string }>,
    storageAnswered: boolean,
 ): boolean {
    const { markUsed, skip } = tally;
@@ -611,7 +632,19 @@ function colocatedRollupDecisions(
                skip(t, "GRAIN_TOO_COARSE");
             }
          } else {
-            skip(t, skipReasonOf(rollupDecision), rollupDecision.callerDetail);
+            const own =
+               t.rollupName !== undefined
+                  ? memberDeclines.get(t.rollupName)
+                  : undefined;
+            if (own) {
+               skip(t, skipReasonOf(own), own.callerDetail);
+            } else {
+               skip(
+                  t,
+                  skipReasonOf(rollupDecision),
+                  rollupDecision.callerDetail,
+               );
+            }
          }
       }
    }
@@ -775,7 +808,7 @@ function verdictWarningMessage(reason: string): string {
  * Anything unexplained is a compile failure against the stored form: almost
  * always a field or refinement the stored form does not carry.
  */
-function skipReasonOf(decision: ConsideredVariant): SkipReason {
+function skipReasonOf(decision: Pick<ConsideredVariant, "code">): SkipReason {
    return declineOfCode(decision.code)?.reason ?? "MISSING_FIELD";
 }
 

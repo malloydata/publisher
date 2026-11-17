@@ -91,7 +91,8 @@ function refusedForInheritedGate(pkg: Package, sourceName: string): boolean {
    );
    return (
       !planned &&
-      refusal?.reason === "authorize" &&
+      // An inherited row filter is a row filter: named `access_filter`.
+      refusal?.reason === "access_filter" &&
       refusal.message.includes("reads an #(access_filter) row-level gate")
    );
 }

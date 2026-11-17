@@ -308,10 +308,13 @@ source: shared_statement is duckdb.table('flights') extend {
       name: "fields inherited from a base the re-root replaces",
       scenario: {
          files: {
-            "m.malloy": `import "kept.malloy"
+            // Imported under another name, which the text cannot confirm as
+            // the base the compiled model records, so its blocks are not
+            // kept (a base imported under its own name is, P2-22).
+            "m.malloy": `import { kept_base is kept } from "kept.malloy"
 
 #(materialize) storage="lake"
-source: kept_west is kept extend {
+source: kept_west is kept_base extend {
   where: org = 'globex'
 }
 

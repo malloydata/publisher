@@ -17,7 +17,7 @@
  * Effects: logs, and the bind metrics.
  */
 
-import type { MalloyConfig } from "@malloydata/malloy";
+import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import {
@@ -52,10 +52,15 @@ import {
    pin,
    type Snapshot,
 } from "./domain/binding";
+import { observedDatabaseColumns } from "./run/database_column_read";
 import {
+   applyObservedColumns,
+   type DriftDeclaration,
    bindColocatedEntries,
    bindStorageEntries,
    deriveColocatedServeBindings,
+   type ObservedDrift,
+   type UnreadTable,
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./serve/bind";
@@ -63,18 +68,23 @@ import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
+   type DatabaseDriftFinding,
+   databaseDriftFindings,
 } from "./serve/storage_bindings";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
+import { tablePathParts } from "../quoting";
 import * as warnings from "./package_warnings";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
+import type { KeptTable } from "./domain/types";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
+   ObservedColumns,
 } from "./domain/types";
 
 type ApiPackage = components["schemas"]["Package"];
@@ -94,6 +104,18 @@ export function toTableNameManifest(
    return out;
 }
 
+/** A bound table's path as a person reads it: its parts, unquoted. */
+function tableNameOf(name: string | undefined): { tableName?: string } {
+   if (!name) return {};
+   return { tableName: (tablePathParts(name, "") ?? [name]).join(".") };
+}
+
+/** Tries to read a table a bind left unread, before polls alone retry it. */
+const UNREAD_RETRY_ATTEMPTS = 10;
+/** The first retry's delay; each next one doubles, up to {@link UNREAD_RETRY_MAX_MS}. */
+const UNREAD_RETRY_BASE_MS = 1_000;
+const UNREAD_RETRY_MAX_MS = 60_000;
+
 /** What a {@link PackageMaterialization} reads of the package that holds it. */
 export interface PackageMaterializationOwner {
    packageName(): string;
@@ -105,6 +127,8 @@ export interface PackageMaterializationOwner {
    modelPolicy(): PackageModelPolicy;
    packagePath(): string;
    malloyConfig(): MalloyConfig;
+   /** One of the package's connections, by name, for the bind's column read. */
+   connection(connectionName: string): Promise<Connection>;
    /** The package, for a main-thread build-plan compute. */
    buildPlanPackage: BuildPlanPackage;
    /**
@@ -142,11 +166,34 @@ export class PackageMaterialization {
     */
    private colocatedEntries: FreshnessManifest | undefined;
    /**
+    * The tables the newest auto-run lists as kept after a rename
+    * (Reclaimer.reclaimRenamedTables), set by that run.
+    */
+   private keptTables: readonly KeptTable[] = [];
+   /**
     * The same entries as table names only, the manifest models hydrate with
     * and /compile reads. Surfaced on /status so the control plane can confirm
     * a worker bound it.
     */
    private buildManifestEntries: BuildManifest["entries"] | undefined;
+   /**
+    * What the bind read of each database table's columns from its warehouse
+    * ({@link readDatabaseColumns}), for the entries bound with it: one read
+    * per table per bind, never per query. Undefined for a bind that read
+    * none (a hand-made bind), whose tables are read as their build wrote them.
+    */
+   private observedColumns: ReadonlyMap<string, ObservedColumns> | undefined;
+   /** What the last snapshot found of the observation: drift, and tables not read. */
+   /** The pending re-read of the tables the last read left unread. */
+   /** Set by {@link dispose}: the package is released. */
+   private disposed = false;
+   private unreadRetry:
+      | { timer: ReturnType<typeof setTimeout>; attempt: number }
+      | undefined;
+   private observedOutcome: {
+      drifted: ObservedDrift[];
+      unread: UnreadTable[];
+   } = { drifted: [], unread: [] };
    /** The `storage=` bindings a host's or a run's manifest made. */
    private storageBindings: readonly Binding[] = [];
    /** {@link snapshot}, keyed on every fact it is made from. */
@@ -316,6 +363,7 @@ export class PackageMaterialization {
       const key = [
          this.storageBindings,
          this.colocatedEntries,
+         this.observedColumns,
          plan.buildPlan,
          plan.servingPlan(),
          plan.materializePlans,
@@ -328,19 +376,32 @@ export class PackageMaterialization {
          return memo.snapshot;
       }
       const kindOf = this.bindingKinds();
+      // Each database table held to the columns its warehouse holds now.
+      const observed = applyObservedColumns({
+         entries: this.colocatedEntries ?? {},
+         bindings: this.colocatedServeBindings(),
+         observed: this.observedColumns,
+         declared: (id) => this.driftDeclaration(id),
+      });
+      this.observedOutcome = {
+         drifted: observed.drifted,
+         unread: observed.unread,
+      };
       const bindings = [
          ...this.storageBindings.map((b) => {
             const kind = kindOf(b);
             return kind === b.kind ? b : { ...b, kind };
          }),
-         ...this.colocatedServeBindings(),
+         ...observed.bindings,
       ];
       const signature = JSON.stringify(bindings);
       const snapshot = makeSnapshot(
          memo && memo.signature === signature
             ? memo.snapshot.bindings
             : Object.freeze(bindings),
-         this.colocatedEntries ?? {},
+         this.observedColumns
+            ? observed.entries
+            : (this.colocatedEntries ?? {}),
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;
@@ -400,6 +461,18 @@ export class PackageMaterialization {
    }
 
    /**
+    * Record that no manifest is bound and the package serves live: a cleared
+    * `manifestLocation` with nothing taking its place. The status otherwise
+    * keeps naming a manifest that bound nothing (an empty one) or did not
+    * bind (a failed fetch). Binds nothing; a caller with tables bound drops
+    * them too.
+    */
+   markServingLive(): void {
+      this.boundManifestUri = null;
+      this.manifestBindingStatus = "unbound";
+   }
+
+   /**
     * Mark that a configured `manifestLocation` could not be fetched/bound, so
     * the package is serving live despite intending to be materialized-routed.
     */
@@ -426,6 +499,12 @@ export class PackageMaterialization {
    bind(update: {
       colocated?: FreshnessManifest;
       colocatedAsGiven?: boolean;
+      /**
+       * What {@link readDatabaseColumns} read of `colocated`'s tables: each
+       * table is then read as its warehouse holds it now. Every server bind
+       * passes it; absent, the tables are read as their builds wrote them.
+       */
+      observed?: ReadonlyMap<string, ObservedColumns>;
       storage?: Record<string, ManifestEntry>;
       /** Models a reload just installed: publish to them even when the bindings did not move. */
       models?: "installed";
@@ -436,11 +515,195 @@ export class PackageMaterialization {
                ? update.colocated
                : this.admitColocated(update.colocated),
          );
+         this.observedColumns = update.observed;
+         this.cancelUnreadRetry();
       }
       if (update.storage) {
          this.storageBindings = this.admitStorage(update.storage);
       }
       this.publish(update.models);
+      if (update.colocated && update.observed) {
+         this.logObservedOutcome();
+         this.scheduleUnreadRetry(1);
+      }
+   }
+
+   /**
+    * Whether the bound database tables include one the bind could not read
+    * (it answers live): a poll that finds the manifest unchanged binds again
+    * rather than skip, so the table is read once it can be.
+    */
+   hasUnreadDatabaseTables(): boolean {
+      return this.knownUnread().length > 0;
+   }
+
+   /**
+    * The unread tables this package reads: an entry whose address its plan
+    * or a served binding names. A manifest entry for a table no source here
+    * reads (another definition's) is neither warned of nor rebound for.
+    */
+   private knownUnread(): UnreadTable[] {
+      this.snapshot();
+      // The bindings before the observation leaves the unread ones out.
+      const known = new Set<string>(
+         this.colocatedServeBindings().map((b) => b.virtualHandle),
+      );
+      for (const source of Object.values(
+         (this.plan.servingPlan() ?? this.plan.buildPlan)?.sources ?? {},
+      )) {
+         if (source.sourceEntityId) known.add(source.sourceEntityId);
+      }
+      return this.observedOutcome.unread.filter((u) =>
+         known.has(u.sourceEntityId),
+      );
+   }
+
+   /**
+    * The package is released: cancel the unread tables' retry, and schedule
+    * none after it, so no timer outlives its package.
+    */
+   dispose(): void {
+      this.disposed = true;
+      this.cancelUnreadRetry();
+   }
+
+   private cancelUnreadRetry(): void {
+      if (this.unreadRetry) clearTimeout(this.unreadRetry.timer);
+      this.unreadRetry = undefined;
+   }
+
+   /**
+    * Read again, with backoff, the tables this bind left unread (a read that
+    * failed or timed out), so a transient failure does not keep a table live
+    * until something else binds. Stops when every table is read, when a bind
+    * replaces these entries, or after {@link UNREAD_RETRY_ATTEMPTS} tries.
+    */
+   private scheduleUnreadRetry(attempt: number): void {
+      this.cancelUnreadRetry();
+      if (this.disposed) return;
+      const observed = this.observedColumns;
+      const entries = this.colocatedEntries;
+      if (!observed || !entries || attempt > UNREAD_RETRY_ATTEMPTS) return;
+      // Only tables a source here reads: another definition's never is.
+      const unread = this.knownUnread()
+         .map((u) => u.sourceEntityId)
+         .filter((id) => {
+            const o = observed.get(id);
+            return (
+               o !== undefined && "unread" in o && Object.hasOwn(entries, id)
+            );
+         });
+      if (unread.length === 0) return;
+      const delay = Math.min(
+         UNREAD_RETRY_BASE_MS * 2 ** (attempt - 1),
+         UNREAD_RETRY_MAX_MS,
+      );
+      const timer = setTimeout(() => {
+         void this.retryUnread(entries, observed, unread, attempt);
+      }, delay);
+      (timer as { unref?: () => void }).unref?.();
+      this.unreadRetry = { timer, attempt };
+   }
+
+   private async retryUnread(
+      entries: FreshnessManifest,
+      observed: ReadonlyMap<string, ObservedColumns>,
+      unread: string[],
+      attempt: number,
+   ): Promise<void> {
+      const current = () =>
+         !this.disposed &&
+         this.colocatedEntries === entries &&
+         this.observedColumns === observed;
+      if (!current()) return;
+      const reread = await this.readDatabaseColumns(
+         Object.fromEntries(unread.map((id) => [id, entries[id]])),
+      );
+      // A bind while the read ran replaced what it was reading for.
+      if (!current()) return;
+      const next = new Map(observed);
+      for (const [id, o] of reread) next.set(id, o);
+      this.observedColumns = next;
+      this.publish();
+      // Only what this retry read: the rest was logged and counted already.
+      this.logObservedOutcome(new Set(unread));
+      this.scheduleUnreadRetry(attempt + 1);
+   }
+
+   /**
+    * Read each database table's columns from its warehouse, for a bind of
+    * `entries` ({@link bind}'s `observed`): one schema read per table, on
+    * the connection its entry names (else its plan source's). A table whose
+    * read fails is answered live at that bind, with a warning.
+    */
+   async readDatabaseColumns(
+      entries: FreshnessManifest,
+   ): Promise<ReadonlyMap<string, ObservedColumns>> {
+      const planConnections = new Map<string, string>();
+      for (const source of Object.values(this.plan.buildPlan?.sources ?? {})) {
+         if (source.sourceEntityId && source.connectionName) {
+            planConnections.set(source.sourceEntityId, source.connectionName);
+         }
+      }
+      return observedDatabaseColumns({
+         entries,
+         connectionNameOf: (id) =>
+            entries[id]?.connectionName ?? planConnections.get(id),
+         connection: (name) => this.owner.connection(name),
+      });
+   }
+
+   /**
+    * Log and count what the bind's column read found: drifted tables, each
+    * column of them the package warning reports counted as a `storage=`
+    * table's is, and tables it could not read. `only`: the tables a retry
+    * read again, so a table is counted and logged once per read of it.
+    */
+   private logObservedOutcome(only?: ReadonlySet<string>): void {
+      const read = (id: string) => only === undefined || only.has(id);
+      for (const finding of this.databaseDriftFindings()) {
+         if (!read(finding.sourceEntityId)) continue;
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+      }
+      for (const drift of this.observedOutcome.drifted) {
+         if (!read(drift.sourceEntityId)) continue;
+         const asDouble = drift.columns.filter((c) => c.storedAsDouble);
+         if (asDouble.length > 0) {
+            logger.warn(
+               "A DuckLake table holds a 128-bit integer column as a DOUBLE, so it is never read as exact: each such column is answered live where live keeps more digits",
+               {
+                  code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+                  packageName: this.owner.packageName(),
+                  sourceEntityId: drift.sourceEntityId,
+                  columns: asDouble,
+               },
+            );
+            if (asDouble.length === drift.columns.length) continue;
+         }
+         logger.warn(
+            "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               packageName: this.owner.packageName(),
+               sourceEntityId: drift.sourceEntityId,
+               columns: drift.columns.filter((c) => !c.storedAsDouble),
+            },
+         );
+      }
+      for (const miss of this.observedOutcome.unread) {
+         if (!read(miss.sourceEntityId)) continue;
+         logger.warn(
+            "Could not read a database table's column types at bind; its sources answer live, and it is read again",
+            {
+               packageName: this.owner.packageName(),
+               sourceEntityId: miss.sourceEntityId,
+               reason: miss.reason,
+               ...(miss.detail !== undefined ? { error: miss.detail } : {}),
+            },
+         );
+      }
    }
 
    /** The colocated entries bound now, by identity: a bind replaces them wholesale. */
@@ -800,6 +1063,15 @@ export class PackageMaterialization {
       );
    }
 
+   /** The tables the newest auto-run lists as kept after a rename. */
+   setKeptTables(tables: readonly KeptTable[]): void {
+      this.keptTables = tables;
+   }
+
+   keptTableWarnings(): ApiPackageWarning[] {
+      return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
+   }
+
    repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {
       return warnings.repeatedJoinOneKeyWarnings(
          this.plan.buildPlan,
@@ -828,13 +1100,80 @@ export class PackageMaterialization {
    }
 
    servedCopyWarnings(): ApiPackageWarning[] {
-      return warnings.servedCopyWarnings(this.owner.models());
+      const materialized = this.plan.materializePlans;
+      return warnings.servedCopyWarnings(this.owner.models(), (sourceID) =>
+         Object.hasOwn(materialized, sourceID),
+      );
    }
 
    storedColumnTypeWarnings(): ApiPackageWarning[] {
       return warnings.storedColumnTypeWarnings(
          this.owner.models(),
          this.boundTypeFindings,
+         this.databaseDriftFindings(),
+      );
+   }
+
+   /**
+    * The colocated tables whose columns the last bind found moved outside a
+    * build, as the `storage-column-type-mismatch` warning reports them.
+    */
+   private databaseDriftFindings(): DatabaseDriftFinding[] {
+      this.snapshot();
+      const { drifted } = this.observedOutcome;
+      if (drifted.length === 0) return [];
+      return databaseDriftFindings(drifted, this.plan.buildPlan, {
+         queryTimezone: this.driftQueryTimezone,
+      });
+   }
+
+   /** The time zone a moved column of `source`'s table is read in. */
+   private readonly driftQueryTimezone = (
+      sourceID: string,
+      source: NonNullable<NonNullable<BuildPlan>["sources"]>[string],
+   ): string | undefined =>
+      queryTimezoneOf(
+         source.preaggregate
+            ? this.baseDeclaration(source)
+            : this.declarationLookup(sourceID),
+      );
+
+   /**
+    * What a substituted database table's moved columns must read as, by its
+    * content address: its build source's declared columns and reader's time
+    * zone, the inputs {@link databaseDriftFindings} reads, so the bind and
+    * the warning decide each column alike.
+    */
+   private driftDeclaration(
+      sourceEntityId: string,
+   ): DriftDeclaration | undefined {
+      const found = Object.entries(this.plan.buildPlan?.sources ?? {}).find(
+         ([, s]) => s.sourceEntityId === sourceEntityId,
+      );
+      if (!found) return undefined;
+      const [sourceID, source] = found;
+      const queryTimezone = this.driftQueryTimezone(sourceID, source);
+      return {
+         columns: source.columns ?? [],
+         connectionName: source.connectionName,
+         ...(queryTimezone ? { queryTimezone } : {}),
+      };
+   }
+
+   /**
+    * A warning per bound database table the bind could not read, while it
+    * is unread (`database-table-unread`).
+    */
+   databaseTableUnreadWarnings(): ApiPackageWarning[] {
+      return warnings.databaseTableUnreadWarnings(
+         this.knownUnread().map((u) => ({
+            ...u,
+            ...tableNameOf(
+               this.colocatedEntries?.[u.sourceEntityId]?.tableName,
+            ),
+         })),
+         this.plan.servingPlan() ?? this.plan.buildPlan,
+         this.unreadRetry !== undefined,
       );
    }
 

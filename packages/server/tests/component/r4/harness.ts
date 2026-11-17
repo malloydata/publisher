@@ -49,12 +49,15 @@ import {
 import { storageTablePath } from "../../../src/service/materialization/domain/storage_table_path";
 import type { ServedCopyServe } from "../../../src/service/materialization/serve/served_copy_serve";
 import {
+   applyObservedColumns,
    deriveColocatedServeBindings,
    kindFromPlan,
+   type ObservedDrift,
    v1StoredColumnsOf,
 } from "../../../src/service/materialization/serve/bind";
 import { capturedNativeSchema } from "../../../src/service/materialization/run/colocated_native_types";
 import { capturedColocatedSchema } from "../../../src/service/materialization/run/colocated_build_strategy";
+import { observedDatabaseColumns } from "../../../src/service/materialization/run/database_column_read";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as fs from "fs";
 import * as os from "os";
@@ -96,10 +99,13 @@ import {
 import { declarableColumns } from "../../../src/service/materialization/stored_column_types";
 import {
    castToDeclaredTypes,
+   isCastConversionError,
    persistSourceDeclaredColumns,
    persistSourceQueryTimezone,
+   wideIntegerColumns,
 } from "../../../src/service/materialization/stored_column_types";
 import type {
+   FreshnessAwareManifestEntry,
    KeyUniqueness,
    ManifestEntry,
 } from "../../../src/service/materialization/domain/types";
@@ -330,6 +336,16 @@ export interface R4Fixture {
    rollupRefusals: { reason: string; sourceName: string }[];
    /** For a `#(materialize)` scenario: each source's plan, by its name. */
    materializePlans: Record<string, MaterializePlan>;
+   /**
+    * Read every colocated table's columns from the scenario's database, as a
+    * package's bind reads them, and hold the bindings and the build manifest
+    * to them (`applyObservedColumns`): for a test that alters a table after
+    * its build. Returns what the read found.
+    */
+   observeDatabaseColumns(): Promise<{
+      drifted: ObservedDrift[];
+      unread: { sourceEntityId: string; reason: string }[];
+   }>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
       sql: (table: (sourceName: string) => string) => string,
@@ -564,7 +580,8 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       );
    }
    // A rollup whose build reads a given is left out, as the package's build
-   // plan leaves it out (`preaggregate-not-built`, reason `reads_given`).
+   // plan leaves it out (`preaggregate-not-built`, reason
+   // `reads_given`).
    const allRollupTargets = rollups?.generated
       ? await rollups.generated.runtime.getBuildTargets(rollups.generated.model)
       : undefined;
@@ -584,7 +601,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // build manifest keyed by its build id.
    const colocatedEntries: Record<
       string,
-      { tableName: string; keyUniqueness?: KeyUniqueness }
+      {
+         tableName: string;
+         keyUniqueness?: KeyUniqueness;
+         schema?: { name: string; type: string }[];
+         heldRead?: FreshnessAwareManifestEntry["heldRead"];
+         leftOutColumns?: string[];
+      }
    > = {};
    // The join_ones a package's build reads the rollups' key checks for.
    const joinOneKeys = joinOneKeysOf(SourceMap.of(authorDef));
@@ -621,7 +644,17 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          await duckdb.runSQL(
             `CREATE TABLE ${table} AS ${target.buildSQL({ entries: {} })}`,
          );
-         colocatedEntries[target.buildId] = { tableName: table };
+         // Its columns, captured as a colocated build captures them.
+         const rollupSchema = await capturedColocatedSchema({
+            connection: duckdb,
+            physicalTableName: table,
+            dialect: duckdb.dialectName,
+            sourceName: source.name,
+         });
+         colocatedEntries[target.buildId] = {
+            tableName: table,
+            ...(rollupSchema ? { schema: rollupSchema } : {}),
+         };
          const check = plan.keyCheck;
          const checks = scenario.rollupKeyChecks ?? true;
          if (
@@ -952,16 +985,32 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          built = { sql: planned.sql, source: planned.downstream };
          storedBuildSQL[source.name] = planned.sql;
       }
-      // Cast to the declared types as the storage build does.
+      const origin = connections.get(source.connectionName);
+      // Cast to the declared types as the storage build does, a 128-bit
+      // integer computed in DuckDB stored as DECIMAL(38,0) (P4-01).
+      const computedInDuckDB = !origin || origin === duckdb;
       const select = scenario.uncast
          ? built.sql
          : castToDeclaredTypes(
               built.sql,
               persistSourceDeclaredColumns(built.source),
-              { queryTimezone: persistSourceQueryTimezone(built.source) },
+              {
+                 queryTimezone: persistSourceQueryTimezone(built.source),
+                 exactIntegers: computedInDuckDB
+                    ? wideIntegerColumns(
+                         (
+                            await duckdb.runSQL(`DESCRIBE (${built.sql})`, {
+                               rowLimit: 10_000,
+                            })
+                         ).rows.map((r) => ({
+                            name: String(r.column_name),
+                            type: String(r.column_type),
+                         })),
+                      )
+                    : [],
+              },
            );
       builtSQL[source.name] = select;
-      const origin = connections.get(source.connectionName);
       if (origin && origin !== duckdb) {
          // Built on its origin, its rows copied into the destination.
          const file = path.join(dir, `${table}.parquet`);
@@ -970,9 +1019,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             `CREATE TABLE ${DESTINATION}.${table} AS SELECT * FROM read_parquet('${file}')`,
          );
       } else {
-         await duckdb.runSQL(
-            `CREATE TABLE ${DESTINATION}.${table} AS ${select}`,
-         );
+         try {
+            await duckdb.runSQL(
+               `CREATE TABLE ${DESTINATION}.${table} AS ${select}`,
+            );
+         } catch (err) {
+            // As the storage build does: a value the casts cannot convert
+            // stores the computed types instead.
+            if (!isCastConversionError(err)) throw err;
+            builtSQL[source.name] = built.sql;
+            await duckdb.runSQL(
+               `CREATE TABLE ${DESTINATION}.${table} AS ${built.sql}`,
+            );
+         }
       }
       // runSQL returns 10 rows unless told otherwise: one per column here.
       const described = await duckdb.runSQL(
@@ -1295,6 +1354,43 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;
+      },
+      async observeDatabaseColumns() {
+         // Each entry with what its build captured and its connection, as a
+         // run's manifest entry carries them.
+         const all = Object.fromEntries(
+            Object.entries(colocatedEntries).map(([id, e]) => [
+               id,
+               { ...e, ...colocatedServeEntries[id] },
+            ]),
+         );
+         const observed = await observedDatabaseColumns({
+            entries: all,
+            connectionNameOf: (id) => all[id]?.connectionName ?? "duckdb",
+            connection: async (name) => connections.get(name) ?? duckdb,
+         });
+         const applied = applyObservedColumns({
+            entries: all,
+            bindings,
+            observed,
+         });
+         bindings.splice(0, bindings.length, ...applied.bindings);
+         for (const id of Object.keys(colocatedEntries)) {
+            const kept = applied.entries[id];
+            if (!kept) {
+               delete colocatedEntries[id];
+               continue;
+            }
+            // A substituted table whose columns moved: read through a typed
+            // source over what it holds now, its left-out columns declined
+            // per query.
+            const { heldRead, leftOutColumns } = kept;
+            Object.assign(colocatedEntries[id], {
+               ...(heldRead ? { heldRead } : {}),
+               ...(leftOutColumns ? { leftOutColumns } : {}),
+            });
+         }
+         return { drifted: applied.drifted, unread: applied.unread };
       },
       async storedSQL(sql) {
          const text = sql((sourceName) => {

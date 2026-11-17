@@ -18,7 +18,11 @@
  */
 
 import type { GivenValue } from "@malloydata/malloy";
-import { BadRequestError, ModelNotFoundError } from "../errors";
+import {
+   BadRequestError,
+   ModelNotFoundError,
+   StorageAccessDeniedError,
+} from "../errors";
 import type { QuerySlotHandle, QuerySlots } from "../query_concurrency";
 import {
    type AccessIdentity,
@@ -329,12 +333,8 @@ export class QueryUseCase {
                          sourceName: command.sourceName,
                          queryName: command.queryName,
                       };
-               const result = await runModelQuery(
-                  audit,
-                  pkg,
-                  command.modelPath,
-                  model,
-                  {
+               const result = await withStorageRefusalJudged(environment, () =>
+                  runModelQuery(audit, pkg, command.modelPath, model, {
                      ...target,
                      filterParams: command.filterParams,
                      bypassFilters: command.bypassFilters,
@@ -347,7 +347,7 @@ export class QueryUseCase {
                      includeHiddenFilesAndSources:
                         command.includeHiddenFilesAndSources,
                      clientSignal: command.clientSignal,
-                  },
+                  }),
                );
                return await present({ pkg, version, result });
             } finally {
@@ -376,5 +376,27 @@ export class QueryUseCase {
       error: Error,
    ): Promise<void> {
       return recordRefusal(accessBase(command), error);
+   }
+}
+
+/**
+ * Run `query`, judging a storage refusal it throws against `environment`: a
+ * path the environment configures is the storage credentials' fault, any
+ * other perhaps a path the query names (StorageAccessDeniedError.managed).
+ */
+async function withStorageRefusalJudged<T>(
+   environment: Pick<Environment, "isConfiguredStorageUrl">,
+   query: () => Promise<T>,
+): Promise<T> {
+   try {
+      return await query();
+   } catch (error) {
+      if (
+         error instanceof StorageAccessDeniedError &&
+         error.url !== undefined
+      ) {
+         error.managed = environment.isConfiguredStorageUrl(error.url);
+      }
+      throw error;
    }
 }

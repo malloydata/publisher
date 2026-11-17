@@ -24,6 +24,9 @@ const DECIDED: Record<Flag, DialectName[]> = {
    merge: ["duckdb", "postgres", "snowflake", "standardsql"],
    mergeGatedByServerVersion: ["postgres"],
    pairDelta: ["duckdb"],
+   passthroughNumericAsDouble: ["postgres"],
+   // A kept table a probe cannot see may be hidden by a grant, not gone.
+   catalogHidesTables: ["mysql", "snowflake"],
    transactionalSwap: ["duckdb", "postgres"],
    dependencyGuard: ["postgres"],
    relationProbe: [
@@ -61,6 +64,7 @@ const DECIDED: Record<Flag, DialectName[]> = {
    ],
    onlyBigIntegerType: ["standardsql"],
    foldsTableNameCase: ["databricks", "duckdb", "presto", "sqlserver", "trino"],
+   utcSessions: ["duckdb"],
 };
 
 /** Each dialect's leaf budget, as decided (`domain/table_name.ts`). */

@@ -104,11 +104,19 @@ import {
    pairFullRefreshFinding,
 } from "./materialize_plan";
 import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
-import { tryCompileMaterializeCompanion } from "./materialize_compile";
+import {
+   tryCompileMaterializeCompanion,
+   type CrossFileCompanions,
+} from "./materialize_compile";
+export {
+   newCrossFileCompanions,
+   type CrossFileCompanions,
+} from "./materialize_compile";
 import {
    persistedQueryRefusalFinding,
    persistedQueryRefusalKey,
    persistedViewRefusalFinding,
+   planModelPersistedViews,
 } from "./persisted_view";
 import {
    declaredPersistQueries,
@@ -119,7 +127,10 @@ import {
 } from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { deletingWindowsOf } from "./rolling_window";
-import { tryCompileRollupCompanion } from "./rollup_compile";
+import {
+   tryCompileRollupCompanion,
+   type MaterializedBases,
+} from "./rollup_compile";
 import { compileV1BuildCompanion } from "./v1_build_companion";
 import { measureRefusalKey, rollupGateEnforcedAtRead } from "./rollup_plan";
 import { rollupRefusalFinding } from "./rollup_plan";
@@ -162,6 +173,7 @@ import {
    EligibilityCheckFailed,
    planVerdicts,
    refuseCollidingMaterialize,
+   refuseRewrittenNames,
    sharedTables,
    withoutSources,
    type ColocatedSourceEligibility,
@@ -757,6 +769,8 @@ function gateDepsFor(
  * source orders after a persisted source it reads), and only the generated
  * sources as planned sources, under the AUTHOR's model path, where the
  * annotation is changed. Each is judged by the same gates as any persist source.
+ * Returns the companion's plans and files, which the model's rollup companion
+ * reads (a rollup over a stored `#(materialize)` base), or undefined.
  */
 async function collectGeneratedMaterialize(
    parts: BuildPlanParts,
@@ -768,14 +782,17 @@ async function collectGeneratedMaterialize(
       malloyModel: MalloyModel;
       materializer: ModelMaterializer;
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
+      crossFileCompanions?: CrossFileCompanions;
    },
-): Promise<void> {
+): Promise<MaterializedBases | undefined> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
    const { generated, refused, omitted } = await tryCompileMaterializeCompanion(
       {
          ...args,
          contents: authorDef.contents ?? {},
          givens: authorDef.givens ?? {},
+         sourceRegistry: (authorDef as { sourceRegistry?: unknown })
+            .sourceRegistry,
          // P9's probes compile against the author's model, never run.
          probe: args.materializer,
       },
@@ -785,7 +802,7 @@ async function collectGeneratedMaterialize(
       refused.map((r) => materializeRefusalFinding(r, args.modelPath)),
       omitted,
    );
-   if (!generated) return;
+   if (!generated) return undefined;
    for (const [key, compile] of generated.checkCompilers) {
       args.keyCheckCompilers?.set(key, compile);
    }
@@ -807,7 +824,16 @@ async function collectGeneratedMaterialize(
    // free: a source that is both `#@ persist` and `#(materialize)` is refused.
    const generatedPlans = new Map<PersistSource, MaterializePlan>();
    const rename = new Map<string, string>();
+   // A build source of another file's companion, which a cross-file
+   // extension's build reads (P10): that file plans its table, and this
+   // model's builds name it by the author's source, so the extension orders
+   // after it.
+   const ownIDs = new Set(generated.plans.map((p) => p.sourceID));
+   for (const [from, to] of generated.renames) {
+      if (!ownIDs.has(to)) rename.set(from, to);
+   }
    for (const source of plannedSources(targets)) {
+      if (rename.has(source.sourceID)) continue;
       const plan = planByName.get(source.name);
       if (!plan) continue;
       generatedPlans.set(source, plan);
@@ -845,6 +871,7 @@ async function collectGeneratedMaterialize(
          }),
       };
    }
+   return { plans: generated.plans, files: generated.files };
 }
 
 /**
@@ -893,6 +920,7 @@ async function collectGeneratedRollups(
       packagePath: string;
       getRuntime: SynthesizedRuntimeFactory;
       modelDef: unknown;
+      materialized?: MaterializedBases;
    },
 ): Promise<void> {
    const { generated, refused, omitted } =
@@ -927,6 +955,8 @@ async function collectGeneratedRollups(
                      sourceID: source.sourceID,
                      name: source.name,
                      tier: "preaggregate",
+                     // A given read while the stored relation is built,
+                     // as every other mechanism names it.
                      reason: "reads_given",
                   },
                },
@@ -954,6 +984,9 @@ async function collectGeneratedRollups(
                  overStoredBase: async () =>
                     (await generated.overStoredBases()).get(source.sourceID),
               }
+            : {}),
+         ...(generated.storedBaseBuilds.has(source.sourceID)
+            ? { storedBase: generated.storedBaseBuilds.get(source.sourceID) }
             : {}),
          gate: await classifyPersistSourceGate(
             source,
@@ -1170,6 +1203,62 @@ function collectPersistQueryFindings(
    }
 }
 
+/**
+ * With PUBLISHER_MATERIALIZE off, the findings on the `#@ persist` views a
+ * model file DECLARES, read from the declarations alone (nothing is
+ * compiled): an invalid line (one that does not parse, a misspelled or
+ * retired key, an incremental key, `@env.`) fails the load, as with the
+ * switch on, and every valid one warns `persist-view-not-built` with reason
+ * `materialization_off`, as a persisted query's does.
+ */
+function collectPersistViewFindingsSwitchedOff(
+   parts: BuildPlanParts,
+   args: { modelPath: string; packagePath: string; malloyModel: MalloyModel },
+): void {
+   const modelFile = path.resolve(args.packagePath, args.modelPath);
+   // Not caught: a declaration that cannot be read must not load as if it
+   // were absent (load versus refused), so the load fails, as it does with
+   // the switch on.
+   const planned = planModelPersistedViews(
+      modelDefIfAny(args.malloyModel),
+      (url) => {
+         try {
+            return path.resolve(fileURLToPath(url)) === modelFile;
+         } catch {
+            return false;
+         }
+      },
+   );
+   const off = {
+      reason: "persisted views are built only with PUBLISHER_MATERIALIZE on",
+      outcome: { refused: "materialization_off" as const },
+   };
+   for (const refusal of planned.refused) {
+      addAnnotationFinding(
+         parts,
+         persistedViewRefusalFinding(
+            "malformed" in refusal.outcome ? refusal : { ...refusal, ...off },
+            args.modelPath,
+         ),
+      );
+   }
+   for (const plan of planned.plans) {
+      addAnnotationFinding(
+         parts,
+         persistedViewRefusalFinding(
+            {
+               sourceID: plan.sourceID,
+               sourceName: plan.sourceName,
+               viewName: plan.viewName,
+               ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
+               ...off,
+            },
+            args.modelPath,
+         ),
+      );
+   }
+}
+
 /** The destination a persisted query's `#@ persist storage=` names. */
 function queryStorage(query: DeclaredPersistQuery): string | undefined {
    const tag = readNotesIfAny(query.notes, "@");
@@ -1216,6 +1305,12 @@ export async function collectModelBuildPlan(
        * worker, whose plan crosses to the main thread as data.
        */
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
+      /**
+       * The package plan's companions of cross-file parents' files
+       * (materialize_compile.ts), shared by every model the plan collects;
+       * absent, each model compiles its own.
+       */
+      crossFileCompanions?: CrossFileCompanions;
    },
 ): Promise<void> {
    await collectGeneratedTables(parts, args);
@@ -1254,6 +1349,7 @@ async function collectGeneratedTables(
       malloyModel,
       getRuntime,
       keyCheckCompilers,
+      crossFileCompanions,
    } = args;
    // The model's own load-failure lines, read off the author's model as the
    // load reads them (Model.preaggregateViolations, annotationNearMisses).
@@ -1285,14 +1381,26 @@ async function collectGeneratedTables(
       malloyModel,
       notBuilt: !getMaterializeEnabled(),
    });
+   // `#@ persist` on a view, read in both modes as a query's line is: with
+   // the switch off nothing is compiled, but an invalid line still fails the
+   // load and a valid one warns that it is not built.
+   if (!getMaterializeEnabled()) {
+      collectPersistViewFindingsSwitchedOff(parts, {
+         modelPath,
+         packagePath,
+         malloyModel,
+      });
+   }
+   let materialized: MaterializedBases | undefined;
    if (getMaterializeEnabled()) {
-      await collectGeneratedMaterialize(parts, {
+      materialized = await collectGeneratedMaterialize(parts, {
          modelPath,
          packagePath,
          getRuntime,
          malloyModel,
          materializer,
          keyCheckCompilers,
+         crossFileCompanions,
       });
       // `#@ persist` on a view (P14), under the same switch.
       await collectGeneratedPersistedViews(parts, {
@@ -1311,6 +1419,7 @@ async function collectGeneratedTables(
       packagePath,
       getRuntime,
       modelDef: modelDefOf(malloyModel),
+      materialized,
    });
 }
 
@@ -1878,7 +1987,8 @@ export interface RefusedRollup {
  * both plan paths (compilePackageBuildPlan on the main thread, and the load
  * worker): each author `name=` its own table, decided over every source
  * before any is refused, and every address once, then the sources refused
- * alone, in one order: an author collision first
+ * alone, in one order: a `name=` the readable name would rewrite
+ * ({@link refuseRewrittenNames}, invalid), an author collision
  * ({@link refuseCollidingMaterialize}, invalid whatever else is wrong with
  * the source), then a valid incremental declaration this deployment cannot
  * honour.
@@ -1911,11 +2021,13 @@ export function finishBuildPlan(
    };
    // Each `storage=` source's stored columns read as its build writes them.
    const tableFolds = foldDistinctTableNames(plan, storedColumnNames);
-   const refused = refuseCollidingMaterialize({
-      ...plan,
-      tableFolds,
-      addresses: planAddresses({ ...plan, tableFolds }),
-   });
+   const refused = refuseCollidingMaterialize(
+      refuseRewrittenNames({
+         ...plan,
+         tableFolds,
+         addresses: planAddresses({ ...plan, tableFolds }),
+      }),
+   );
    return ctx.keepIncrementalUnbuildable
       ? refused
       : refuseIncrementalUnbuildable(refused);

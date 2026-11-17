@@ -40,7 +40,6 @@ const deleteMaterialization = mock(
       _environmentName: string,
       _packageName: string,
       _materializationId: string,
-      _dropTables?: boolean,
       _versionId?: string,
    ) => Promise.resolve({ data: undefined }),
 );
@@ -138,6 +137,12 @@ async function deleteTheRun(resourceUri: string) {
    await waitFor(() => expect(deleteMaterialization).toHaveBeenCalled());
 }
 
+it("deletes a run with no table option: the dialog offers none", async () => {
+   await deleteTheRun("publisher://environments/env/packages/pkg");
+
+   expect(screen.queryByRole("checkbox")).toBeNull();
+});
+
 it("lists and deletes a pinned version's run by that version", async () => {
    await deleteTheRun("publisher://environments/env/packages/pkg?versionId=v2");
 
@@ -146,7 +151,6 @@ it("lists and deletes a pinned version's run by that version", async () => {
       "env",
       "pkg",
       "run-1",
-      false,
       "v2",
    ]);
 });
@@ -158,7 +162,6 @@ it("deletes with no version when none is pinned, as before", async () => {
       "env",
       "pkg",
       "run-1",
-      false,
       undefined,
    ]);
 });

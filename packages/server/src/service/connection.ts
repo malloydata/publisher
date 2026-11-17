@@ -97,6 +97,7 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { recordConnectionType } from "./connection_type";
+import { installDuckDBStatementGate } from "./duckdb_statement_gate";
 import {
    hardCloseOwnedDuckDBConnections,
    installDuckDBHardClose,
@@ -107,6 +108,9 @@ import { quoteIdentifier } from "./quoting";
 
 // One DuckDB instance per database file (duckdb_instance_sharing.ts).
 installDuckDBInstanceSharing();
+// One statement at a time per DuckDB connection (duckdb_statement_gate.ts),
+// installed before the hard close so that counts queued statements.
+installDuckDBStatementGate();
 // Retired DuckDB connections free their native database at once
 // (duckdb_hard_close.ts).
 installDuckDBHardClose();

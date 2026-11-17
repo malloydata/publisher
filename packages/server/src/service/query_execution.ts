@@ -19,7 +19,12 @@ import {
 import type { GovernedRunnable } from "./governance/governed_runnable";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { getDefaultQueryRowLimit } from "../config";
-import { BadRequestError, databaseAccessFailure } from "../errors";
+import {
+   BadRequestError,
+   databaseAccessFailure,
+   storageAccessFailure,
+} from "../errors";
+import { redactStorageUrls } from "../pg_helpers";
 import { logger } from "../logger";
 import { type QueryCapSource } from "../query_cap_metrics";
 import { bigIntReplacer } from "../json_utils";
@@ -170,6 +175,11 @@ interface RunErrorContext {
    modelPath: string;
    /** Prefix of the generic 400's message, e.g. `Query execution failed`. */
    failurePrefix: string;
+   /**
+    * What the caller read, in its own terms (the run target's source), for
+    * an answer that may not quote the driver's text.
+    */
+   subject?: string;
    /** Error classes that keep their own status rather than becoming a 400. */
    passThrough: readonly ErrorClass[];
    /** Logs an unclassified failure just before it becomes the generic 400. */
@@ -223,6 +233,10 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
    // ran, so a 400 would wrongly tell the caller to fix it.
    const accessFailure = databaseAccessFailure(err);
    if (accessFailure) throw accessFailure;
+   // The storage behind a table refused the read (403): the driver's text
+   // quotes the object's URL, so the answer names the source instead.
+   const storageFailure = storageAccessFailure(err, ctx.subject);
+   if (storageFailure) throw storageFailure;
 
    if (
       ctx.benignMessage !== undefined &&
@@ -231,7 +245,10 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
       return;
    }
    ctx.logFailure(errorMessage, err);
-   throw new BadRequestError(`${ctx.failurePrefix}: ${errorMessage}`);
+   // Driver text in a 4xx body names no storage path.
+   throw new BadRequestError(
+      redactStorageUrls(`${ctx.failurePrefix}: ${errorMessage}`),
+   );
 }
 
 /**

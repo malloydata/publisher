@@ -57,6 +57,7 @@ import { packageFiles } from "../text/package_files";
 import { SourceMap } from "../text/source_map";
 import {
    chainBuildFileSet,
+   rollupBuildFileSet,
    withPersistenceFlag,
 } from "../text/chain_build_files";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
@@ -71,6 +72,7 @@ import {
    type BigIntegerReadOptions,
    nativeTypeLookup,
    declaredColumnsOf,
+   holdsDucklakeDouble,
    liveKeepsBigIntegers,
    storedColumnReadPlan,
    storedTypeServesAs,
@@ -102,6 +104,7 @@ import {
    buildVirtualMap,
    optsOutOfPersist,
 } from "./bindings";
+import { entryPointGateExprs, gateReadNames } from "./gate_reads";
 import {
    type Binding,
    bindingServesModelSource,
@@ -611,7 +614,7 @@ function rerootFailureKey(
  * What a served copy's compile reads of a binding: everything but how fresh
  * the table is (`freshAsOf`, its window and fallback, which decide only
  * whether the pin reads it) and what the router reads of it beside the copy
- * (`ownGateKept`, a rollup's key check). A field added to `Binding` is read
+ * (`ownGateKept`, `retypedColumns`, a rollup's key check). A field added to `Binding` is read
  * here until it is listed, so a new input recompiles rather than reuses.
  * Memoized per binding, which is replaced, never edited.
  */
@@ -624,6 +627,7 @@ export function compileInputOf(b: Binding): string {
          freshnessWindowSeconds: _window,
          freshnessFallback: _fallback,
          ownGateKept: _gateKept,
+         retypedColumns: _retyped,
          rollupKey: _rollupKey,
          ...read
       } = b;
@@ -1013,6 +1017,7 @@ export class ServedCopyServe {
       await this.checkGateGraft(attempt);
       await checkOptOut(attempt);
       const { sql, tablesRead } = await readsRerootedTables(attempt);
+      await checkGateColumnsKept(attempt, tablesRead);
       await checkSourceZone(attempt);
       await this.checkResultShape(attempt, tablesRead);
       const pairsRead = await pairsReadPerTable(
@@ -1490,6 +1495,7 @@ export class ServedCopyServe {
          fieldsByName,
          timeframeOf,
          problems,
+         storesOutputNames: !plan,
       };
       if (plan) {
          const stored = materializedColumnsOf(subject, plan);
@@ -1510,7 +1516,7 @@ export class ServedCopyServe {
          columns,
          def,
          fieldsByName,
-         chainZoneOf(map, def),
+         chainZoneOf(map, def) ?? inlineBaseZoneOf(def),
       );
       if (zoned.leftOut.length > 0) {
          // Left out like any column no read gives exactly, with its own
@@ -1607,10 +1613,13 @@ export class ServedCopyServe {
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
+         // An `except:` naming a column the table does not store has nothing
+         // to exclude on any re-root, v1 or `#(materialize)` (P2-29).
+         dropsUnstoredExcepts: true as const,
          ...(!plan
             ? {
                  keepsIncludes: true as const,
-                 dropsUnstoredExcepts: true as const,
+                 outputNames: queryOutputNames(def.fields),
                  ...(refinesUnfilteredBase(map.node(node.sourceID), map)
                     ? { refinementRooted: true as const }
                     : {}),
@@ -1642,6 +1651,7 @@ export class ServedCopyServe {
          def.fields,
          def,
          binding,
+         subject.storesOutputNames,
          this.host.readsStoredIntegers,
       );
       columns = columns.flatMap((c) => {
@@ -1743,9 +1753,10 @@ export class ServedCopyServe {
    }
 
    /**
-    * The trailing `extend` runs of a `#(materialize)` source's ancestors in
-    * its own file, root first ({@link keptAncestorChain}, confirmed against
-    * the file's text), which its re-root keeps ahead of its own blocks. Kept
+    * The trailing `extend` runs of a `#(materialize)` source's ancestors, in
+    * its own file or the files it imports, root first
+    * ({@link keptAncestorChain}, confirmed against each file's
+    * text), which its re-root keeps ahead of its own blocks. Kept
     * for an extension table (P10), whose table holds every one of their rows
     * and stored columns, so it loses no measure, join or view any of them
     * declares; and for one whose bases declare a measure, view or join it
@@ -1762,10 +1773,12 @@ export class ServedCopyServe {
    ): string | undefined {
       const plan = this.materializePlans[reroot.sourceID];
       if (!plan) return undefined;
-      const text = fileText(reroot.url);
-      if (text === undefined) return undefined;
+      // Across files: an extension in a file that imports its base's file
+      // keeps that base's blocks too, so it is re-rooted on its own table
+      // rather than left reading its base's (P2-22).
       const confirmed = confirmedAncestors(
-         text,
+         fileText,
+         reroot.url,
          reroot.range,
          keptAncestorChain(map, reroot.sourceID, reroot.url),
       );
@@ -1779,9 +1792,7 @@ export class ServedCopyServe {
          confirmed.some((a) => declaresBlocks(map.node(a.sourceID)?.def));
       if (!needed) return undefined;
       return confirmed
-         .flatMap((a) =>
-            a.run ? [text.slice(a.run.start, a.run.end).trimEnd()] : [],
-         )
+         .flatMap((a) => (a.runText ? [a.runText] : []))
          .reverse()
          .join(" ");
    }
@@ -1866,6 +1877,87 @@ export class ServedCopyServe {
          connection: aliased[0].destinationName,
          virtualMap: buildVirtualMap(aliased),
          rerooted: candidates.map((c) => c.reroot.sourceName),
+         rerootedSpans,
+      };
+   }
+
+   /**
+    * The text a `storage=` rollup's build over its base's stored table
+    * compiles from on the destination alone: the base re-rooted on that
+    * table as this served copy re-roots it for a query, nothing else of the
+    * author's files, and the rollup's generated build file as the entry, so
+    * the rollup groups exactly the rows a query of the base reads there.
+    * Declines when the base does not re-root on one of `bindings`.
+    */
+   rollupBuildFiles(
+      rollup: NonNullable<ChainBuildRequest["rollup"]>,
+      downstreamName: string,
+      bindings: readonly Binding[],
+   ): ChainBuildText {
+      const modelDef = this.host.modelDef();
+      const map = SourceMap.of(modelDef);
+      const lift = authorModelLiftContext(
+         modelDef,
+         compiledTextReader(modelDef, this.packagePath),
+      );
+      const problems: ServedCopyProblem[] = [];
+      const { candidates } = this.rerootCandidates(
+         bindings.filter((b) => b.kind !== "rollup"),
+         map,
+         lift,
+         problems,
+         0,
+      );
+      const base = candidates.find(
+         (c) => c.reroot.sourceID === rollup.baseSourceID,
+      );
+      if (!base) {
+         return {
+            declined:
+               problems.length > 0
+                  ? `the base did not re-root on its stored table (${problems
+                       .map((p) => `'${p.sourceName}': ${p.reason}`)
+                       .join(", ")})`
+                  : "the base did not re-root on its stored table",
+         };
+      }
+      const set = rollupBuildFileSet({
+         lift,
+         baseSourceID: rollup.baseSourceID,
+         reroot: base.reroot,
+         importsOf: compiledImports(modelDef),
+      });
+      if ("declined" in set) return set;
+      const blanked = set.files;
+      const copy = buildServedCopy([base.reroot], (u) => blanked.get(u));
+      if (copy.refused.length > 0) {
+         return {
+            declined: `the base did not re-root (${copy.refused
+               .map((r) => `'${r.sourceName}': ${r.reason}`)
+               .join(", ")})`,
+         };
+      }
+      const files = new Map(blanked);
+      for (const [url, text] of copy.files) files.set(url, text);
+      files.set(rollup.companion.url, rollup.companion.text);
+      const rerootedSpans = [...copy.spans].flatMap(([url, list]) =>
+         list.map((span) => ({
+            url,
+            start: span.declaration.start,
+            end: span.declaration.end,
+         })),
+      );
+      const aliased = {
+         ...base.binding,
+         destinationName: servedConnectionOf(base.binding),
+      };
+      return {
+         files,
+         entry: rollup.companion.url,
+         downstreamName,
+         connection: aliased.destinationName,
+         virtualMap: buildVirtualMap([aliased]),
+         rerooted: [base.reroot.sourceName],
          rerootedSpans,
       };
    }
@@ -2861,6 +2953,12 @@ interface RerootSubject {
    /** The timeframe a truncation carries, to restore on the field. */
    timeframeOf(name: string): { timeframe?: string };
    problems: ServedCopyProblem[];
+   /**
+    * The table stores each column under its query's output name (a v1
+    * table, no `#(materialize)` plan), not under the field's own name
+    * after its renames (`BigIntegerReadOptions.storesOutputNames`).
+    */
+   storesOutputNames: boolean;
 }
 
 /**
@@ -2912,6 +3010,7 @@ function materializedColumnsOf(
             : [];
       }),
       def,
+      !isColocated(binding),
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [
@@ -2999,7 +3098,7 @@ function materializedColumnsOf(
             type: "",
             field: fields.find((f) => fieldNameOf(f) === c.name),
          })),
-         readOptions,
+         { ...readOptions, ducklake: !isColocated(binding) },
       );
    });
    // A joined field live types as a warehouse-native type has no
@@ -3010,7 +3109,12 @@ function materializedColumnsOf(
          liveTypesAsNative(fields.find((f) => fieldNameOf(f) === c.name)),
       );
    });
-   if (joinedNative || joinedReads.some((plan) => plan.refusals.length > 0)) {
+   if (
+      joinedNative ||
+      joinedReads.some(
+         (plan) => plan.refusals.length > 0 || plan.leftOut.length > 0,
+      )
+   ) {
       problems.push({
          sourceName,
          sourceID: node.sourceID,
@@ -3041,6 +3145,8 @@ function materializedColumnsOf(
 export function materializedReadPlan(
    schema: readonly { name: string; type: string }[],
    def: { fields?: unknown[] } | undefined,
+   /** A `storage=` (DuckLake) table: a 128-bit integer column is left out. */
+   ducklake = false,
 ): ReturnType<typeof storedColumnReadPlan> {
    const live = new Map<string, string>();
    for (const f of (def?.fields ?? []) as {
@@ -3065,7 +3171,7 @@ export function materializedReadPlan(
    return storedColumnReadPlan(
       own,
       own.map((c) => ({ name: c.name, type: live.get(c.name) as string })),
-      { queryTimezone: queryTimezoneOf(def) },
+      { queryTimezone: queryTimezoneOf(def), ducklake },
    );
 }
 
@@ -3110,7 +3216,7 @@ function v1ColumnsOf(
    const typePlan = storedColumnReadPlan(
       narrowed,
       declaredColumnsOf(def.fields),
-      { queryTimezone: queryTimezoneOf(def) },
+      { queryTimezone: queryTimezoneOf(def), ducklake: !isColocated(binding) },
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [
@@ -3361,6 +3467,20 @@ function chainZoneOf(map: SourceMap, struct: unknown): string | undefined {
          .map((id) => queryTimezoneOf(map.node(id)?.def))
          .find((z) => z !== undefined)
    );
+}
+
+/**
+ * The zone of the base a query-shaped source's query runs on when that base
+ * is written inline (`ev extend { timezone: … } -> { … }`): it has no
+ * `sourceID` of its own, so {@link chainZoneOf} never reaches it, yet the
+ * query's stage computes in it.
+ */
+function inlineBaseZoneOf(def: unknown): string | undefined {
+   const base = (def as { query?: { structRef?: unknown } } | undefined)?.query
+      ?.structRef;
+   return base !== null && typeof base === "object"
+      ? queryTimezoneOf(base)
+      : undefined;
 }
 
 /**
@@ -4283,14 +4403,17 @@ function bigIntegerReadsOf(
    fields: readonly unknown[] | undefined,
    def: unknown,
    binding: Binding,
+   /** The table stores its query's output names (a v1 table). */
+   storesOutputNames: boolean,
    /** A build reads the stored column in SQL, where no digit is lost. */
    asStored?: boolean,
 ): Map<string, string | undefined> {
    if (asStored) return new Map();
    return new Map(
-      bigIntegerReads(columns, fields, bigIntegerOptionsOf(def, binding)).map(
-         (r) => [r.column, r.castTo] as const,
-      ),
+      bigIntegerReads(columns, fields, {
+         ...bigIntegerOptionsOf(def, binding),
+         storesOutputNames,
+      }).map((r) => [r.column, r.castTo] as const),
    );
 }
 
@@ -4611,11 +4734,29 @@ export function chainBuildText(
       model.modelDef,
       compiledTextReader(model.modelDef, model.context[0]),
    );
-   if (!lift.sourceNameById.has(request.downstream.sourceID)) return undefined;
+   if (
+      !lift.sourceNameById.has(
+         request.rollup?.baseSourceID ?? request.downstream.sourceID,
+      )
+   ) {
+      return undefined;
+   }
    const entries: Record<string, ManifestEntry> = {};
    const aliases: Record<string, string[]> = {};
    const sourceIDs = new Map<string, readonly string[] | undefined>();
    for (const upstream of request.upstreams) {
+      // An upstream table holding a 128-bit integer (a list's or struct's
+      // leaf included) holds its digits rounded
+      // (DuckLake stores it as a DOUBLE, P4-01): never stacked on, so the
+      // downstream recomputes from its raw source rather than storing those
+      // rounded values as exact. Its text then reads the upstream as written.
+      if (
+         (upstream.entry.schema ?? []).some((c) =>
+            holdsDucklakeDouble(c.type ?? ""),
+         )
+      ) {
+         continue;
+      }
       const address = upstream.entry.sourceEntityId;
       entries[address] = upstream.entry;
       const names = Object.keys(upstream.names);
@@ -4650,7 +4791,31 @@ export function chainBuildText(
       readsStoredIntegers: true,
    });
    copy.setContext(...model.context);
-   return copy.chainBuildFiles(request.downstream.sourceID, bindings);
+   return request.rollup
+      ? copy.rollupBuildFiles(request.rollup, request.downstream.name, bindings)
+      : copy.chainBuildFiles(request.downstream.sourceID, bindings);
+}
+
+/**
+ * A query-shaped source's output names: each field its query outputs, by the
+ * name it has before its `extend` renames it (`name`, beside `as`). A
+ * dimension the `extend` computes (`e`) is none.
+ */
+function queryOutputNames(fields: readonly unknown[] | undefined): string[] {
+   return (fields ?? []).flatMap((f) => {
+      const { name, e, join, type } = (f ?? {}) as {
+         name?: unknown;
+         e?: unknown;
+         join?: unknown;
+         type?: unknown;
+      };
+      return typeof name === "string" &&
+         e === undefined &&
+         join === undefined &&
+         type !== "turtle"
+         ? [name]
+         : [];
+   });
 }
 
 /** Whether a stale binding stores a source on `chain` (the queried source's). */
@@ -4712,7 +4877,15 @@ function zonedTruncations(
  * reads in. A column of the table the query runs on is read by a field path of
  * one name; a joined table's, by a longer path ending in its name (an
  * unrelated field of the same name is declined too, never served wrong).
- * Fails closed on a query whose field reads cannot be listed.
+ *
+ * The entry point's row-level gate reads columns too, and is grafted on this
+ * compile after the check, in the query's zone: a gate over a stored
+ * truncation (`dday = $ON_DAY`) would compare the value truncated again in
+ * the caller's zone, which can be the next day's, so it admits another
+ * partition's rows. Every name the gates read, and every field those are
+ * computed from ({@link gateReadNames}), is a read here, on any table.
+ * Fails closed on a query whose field reads, or whose gates, cannot be
+ * listed.
  */
 async function checkZonedColumns(
    attempt: AnswerAttempt,
@@ -4733,6 +4906,16 @@ async function checkZonedColumns(
    if (usage === undefined) {
       decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
    }
+   const gates = gateNamesOf(compiled, view);
+   if (gates === undefined) {
+      decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
+   }
+   for (const b of elsewhere) {
+      const names = zonedOf(b) ?? new Set<string>();
+      if ([...gates!].some((n) => readsColumn(names, n))) {
+         decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
+      }
+   }
    // A table reached only through one of the query's source's joins is read
    // by a path through that join, never by a field path of one name. Any
    // other table may be the query's own (an extension of a table-backed or
@@ -4750,6 +4933,67 @@ async function checkZonedColumns(
          decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
       }
    }
+}
+
+/**
+ * A row-level gate that reads a column the copy leaves out of a table's type
+ * (a truncation stored in another zone than any read's, a type no read gives
+ * exactly) cannot be grafted here, and the graft would deny every caller where
+ * live answers: the query is declined and live answers it under the author's
+ * gate. Fails closed on gates that cannot be read.
+ */
+async function checkGateColumnsKept(
+   attempt: AnswerAttempt,
+   tablesRead: readonly Binding[],
+): Promise<void> {
+   const { compiled, decline, prepared } = attempt;
+   const leftOut = new Set(
+      tablesRead.flatMap(
+         (b) => compiled.leftOutColumns?.get(b.sourceIDs?.[0] ?? "") ?? [],
+      ),
+   );
+   if (leftOut.size === 0) return;
+   const gates = gateNamesOf(compiled, await prepared());
+   const zoned = new Set(
+      tablesRead.flatMap((b) => [
+         ...(compiled.zonedLeftOut?.get(b.sourceIDs?.[0] ?? "") ?? []),
+      ]),
+   );
+   const read =
+      gates === undefined
+         ? [...leftOut]
+         : [...leftOut].filter((n) => gates.has(n));
+   if (read.length === 0) return;
+   if (read.every((n) => zoned.has(n))) {
+      decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
+   }
+   decline(
+      "a row-level gate reads a column the served copy leaves out of a stored table's type",
+      "served_copy_not_served",
+   );
+}
+
+/**
+ * Every name the queried source's entry-point gates read on the served copy
+ * ({@link gateReadNames}), or undefined when its gates cannot be read.
+ */
+function gateNamesOf(
+   compiled: Compiled,
+   view: Pick<PreparedQueryView, "structRef">,
+): Set<string> | undefined {
+   let struct: unknown;
+   try {
+      struct = resolveStructRefSource(
+         view.structRef as never,
+         compiled.modelDef as never,
+      );
+   } catch {
+      return undefined;
+   }
+   const exprs = entryPointGateExprs(struct, compiled.modelDef);
+   return exprs === undefined
+      ? undefined
+      : gateReadNames(struct, exprs, compiled.modelDef);
 }
 
 /**

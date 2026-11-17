@@ -42,6 +42,7 @@ import type { ConsideredVariant } from "../../query_router";
 import { type Binding, isColocated, type Pinned } from "../domain/binding";
 import type { BuildManifest } from "../domain/types";
 import type { TableRead } from "../domain/gate_policy";
+import { assertSameCompositeMember } from "./composite_member";
 import type { RollupVariantServe } from "./rollup_variants";
 import type { ServedCopyServe } from "./served_copy_serve";
 import type { PersistedViewServe, ViewTable } from "./view_variants";
@@ -273,6 +274,8 @@ function servedLeg(servedCopy: ServedCopyServe): Leg {
             // A table the query would read, left out of the pin as stale.
             throw await servedCopy.staleDeclineFor(err, q.authorRunnable, p);
          }
+         // A composite answers from the member live resolves to, or live.
+         await assertSameCompositeMember(q.authorRunnable, served.runnable);
          return {
             runnable: served.runnable,
             tablesRead: served.tablesRead,
@@ -322,6 +325,12 @@ export function servedFromOf(answer: Answer): ServedFrom | undefined {
          ? "database"
          : "storage";
    }
+   // Decided by the table's own tier: a database table altered outside its
+   // build is read through `virtual()` too, on its own connection, and is
+   // still a database read, as the path report's `servedBy.tier` says.
+   const tier =
+      answer.answer.viewTable?.tier ?? answer.answer.gateTablesRead?.[0]?.tier;
+   if (tier !== undefined) return tier === "storage" ? "storage" : "database";
    // A `storage=` persisted view or rollup reads through `virtual()`; a
    // colocated one through the build manifest.
    return virtualMap !== undefined ? "storage" : "database";
@@ -352,8 +361,9 @@ function bindingsAllowDegradeToLive(bindings: readonly Binding[]): boolean {
  * `freshnessFallback=live` marks the tier as an optimisation, not a
  * dependency. Deliberately narrow: only an answer read through a virtual map,
  * only per {@link bindingsAllowDegradeToLive} over the bindings that produced
- * THIS shape (a sibling source must not decide), never for a client error (a
- * bad given) or an abort.
+ * THIS shape (a sibling source must not decide), or for DECIMAL arithmetic the
+ * destination cannot hold ({@link isStoredDecimalArithmeticError}), never for
+ * a client error (a bad given) or an abort.
  */
 export function canDegradeToLive(
    answer: Answer,
@@ -368,7 +378,24 @@ export function canDegradeToLive(
       !String((error as { code?: string })?.code ?? "").startsWith(
          "runtime-given-",
       ) &&
-      bindingsAllowDegradeToLive(answer.answer.shapeBindings)
+      (bindingsAllowDegradeToLive(answer.answer.shapeBindings) ||
+         isStoredDecimalArithmeticError(error))
+   );
+}
+
+/**
+ * Whether `error` is DuckDB refusing DECIMAL arithmetic past its 38 digits: a
+ * product whose scale exceeds 38 (`DECIMAL(38,20) * DECIMAL(38,20)`), or a
+ * product, sum or addition that overflows. A Postgres `numeric` is stored as
+ * the exact DECIMAL(38, s) that holds it (`run/postgres_numeric_precision.ts`),
+ * where live's arbitrary precision has room the destination's arithmetic does
+ * not. The table is right and only the arithmetic ran out, so such an answer
+ * degrades to live whatever the bindings' `freshnessFallback` says.
+ */
+export function isStoredDecimalArithmeticError(error: unknown): boolean {
+   const message = error instanceof Error ? error.message : String(error);
+   return /Out of Range Error: (Needed scale .*DECIMAL|Overflow in [^\n]*DECIMAL|Overflow in HUGEINT)/.test(
+      message,
    );
 }
 

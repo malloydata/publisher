@@ -264,7 +264,8 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
          "planned | colocated | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
       views__by_region_col__view: "planned | colocated | not_built",
-      views__by_region_sto__view: "refused authorize | storage | live refused",
+      views__by_region_sto__view:
+         "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize on, gated sources off": {
       mat_col: "planned | colocated | not_built",
@@ -279,18 +280,27 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       "roll.total_sto": "refused access_filter | colocated | live refused",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
       views__by_region_col__view:
-         "refused authorize | colocated | live refused",
-      views__by_region_sto__view: "refused authorize | storage | live refused",
+         "refused access_filter | colocated | live refused",
+      views__by_region_sto__view:
+         "refused access_filter | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources on": {
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
    "a gate on the declared source, materialize off, gated sources off": {
       persist_col: "planned | colocated | not_built",
       persist_sto: "planned | storage | not_built",
       roll_v1__rollup__region__b3ca2623: "planned | colocated | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize on, gated sources on": {
       mat_col: "planned | colocated | not_built",
@@ -335,6 +345,10 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
          "planned | colocated | live row_level_gate",
       secure_persist_col: "planned | colocated | not_built",
       secure_persist_sto: "planned | storage | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
    "a gate above it, materialize off, gated sources off": {
       persist_col: "planned | colocated | not_built",
@@ -343,6 +357,10 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
          "planned | colocated | live row_level_gate",
       secure_persist_col: "planned | colocated | not_built",
       secure_persist_sto: "planned | storage | not_built",
+      views__by_region_col__view:
+         "refused materialization_off | colocated | live refused",
+      views__by_region_sto__view:
+         "refused materialization_off | storage | live refused",
    },
 };
 
@@ -723,12 +741,14 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tier: "colocated" | "storage";
       sourceName: string;
       tablePath: string;
+      schema: { name: string; type: string }[];
       ownGateKept?: boolean;
    } => ({
       kind: "materialize",
       tier,
       sourceName: `t_${tier}`,
       tablePath: `t_${tier}`,
+      schema: [{ name: "id", type: "BIGINT" }],
    });
    const reads: Record<string, ReturnType<typeof table>[]> = {
       "colocated tables": [table("colocated")],
@@ -746,6 +766,28 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       "no table": [],
    };
    const runnable = {} as never;
+   // The author's compile the router lists the gate's columns from: a source
+   // whose stored columns the gate reads none of, so every table's gate
+   // columns are exact and the rows below are the policy's by tier alone.
+   const authorRunnable = {
+      getPreparedQuery: async () => ({
+         _query: { structRef: "s" },
+         _modelDef: {
+            name: "m",
+            exports: [],
+            contents: {
+               s: {
+                  type: "table",
+                  name: "s",
+                  tablePath: "s",
+                  connection: "duckdb",
+                  dialect: "duckdb",
+                  fields: [{ name: "id", type: "number" }],
+               },
+            },
+         },
+      }),
+   } as never;
 
    function host(tables: ReturnType<typeof table>[]): Required<LegContext> {
       return {
@@ -808,7 +850,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
                      {
                         queryString: "run: s -> v",
                         givens: undefined,
-                        authorRunnable: runnable,
+                        authorRunnable,
                      },
                      pinned,
                      { modelPath: "m.malloy" },

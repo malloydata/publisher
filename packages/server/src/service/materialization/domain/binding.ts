@@ -27,7 +27,12 @@
 
 import { freshnessOf, type Freshness } from "./freshness";
 import { storageTablePath } from "./storage_table_path";
-import type { BuildManifest, FreshnessManifest, ManifestEntry } from "./types";
+import type {
+   BuildManifest,
+   FreshnessAwareManifestEntry,
+   FreshnessManifest,
+   ManifestEntry,
+} from "./types";
 
 /** What a stored table holds, from the plan: never read off a name. */
 export type BindingKind =
@@ -82,6 +87,16 @@ export interface Binding {
     */
    ownGateKept?: boolean;
    /**
+    * A database table's columns whose type the bind found moved since its
+    * build, each with the type the warehouse holds it as now (its native
+    * type when known): a column altered in the warehouse, and a 128-bit
+    * integer a DuckLake catalog holds as a DOUBLE (`storedAsDouble`). A
+    * row-level gate over one is judged by that type, so one now stored
+    * inexactly is not read from the table (`domain/gate_policy.ts`,
+    * `gateColumnTypes`). Set by the bind.
+    */
+   retypedColumns?: { name: string; type: string }[];
+   /**
     * The storage destination the table lives in; for a colocated table, the
     * source's own connection.
     */
@@ -118,6 +133,45 @@ export function isColocated(b: Pick<Binding, "tier">): boolean {
  * compiler manifest substitutes; `bindings` are the tables the served copy and the
  * `storage=` legs read.
  */
+/**
+ * A database table read by Malloy's build-manifest substitution, altered
+ * outside its build (its entry's `heldRead`): read instead as a `storage=`
+ * table is, through a typed `virtual()` source over the columns it holds now,
+ * on its own connection. Its handle is its content address. Undefined when
+ * the bind recorded no `heldRead`.
+ *
+ * The rollup leg hands this binding to the gate policy (`gateTablesRead`),
+ * so a gate over a held table is judged on it. It does not set
+ * `retypedColumns` (a binding's columns retyped since the build, with the
+ * type held now, which the gate policy's `gateColumnTypes` judges a gate
+ * column by): that field is not on `Binding` here. The held read's `moved`
+ * columns are what it would carry (`{ name, type: nativeType ?? type }`),
+ * and whichever change lands second wires the two together. Until then a
+ * moved column is read as it is only on a lossless widening, so a gate over
+ * a held column never compares a rounded value.
+ */
+export function heldReadBinding(
+   kind: BindingKind,
+   sourceEntityId: string,
+   entry: FreshnessAwareManifestEntry,
+): Binding | undefined {
+   const held = entry.heldRead;
+   if (!held) return undefined;
+   const nativeSchema = held.columns.flatMap((c) =>
+      c.nativeType !== undefined ? [{ name: c.name, type: c.nativeType }] : [],
+   );
+   return {
+      kind,
+      tier: "colocated",
+      sourceName: sourceEntityId,
+      destinationName: held.connectionName,
+      virtualHandle: sourceEntityId,
+      tablePath: entry.tableName,
+      schema: held.columns.map(({ name, type }) => ({ name, type })),
+      ...(nativeSchema.length > 0 ? { nativeSchema } : {}),
+   };
+}
+
 export interface Snapshot {
    readonly bindings: readonly Binding[];
    readonly entries: Readonly<FreshnessManifest>;
@@ -168,6 +222,31 @@ export interface Pinned {
    serves(binding: Binding): boolean;
    /** The binding of `kind` storing `sourceID`, at {@link asOf}. */
    tableFor(sourceID: string, kind: BindingKind): TableLookup;
+}
+
+/**
+ * The `storage=` table a rollup, persisted view or persisted query is read
+ * from, or undefined when its tier is colocated. The binding decides the tier,
+ * not the annotation: a host may instruct a source with no `storage=` into a
+ * storage destination (a database origin whose destination the control plane
+ * chose), and the run's manifest then binds it as a storage table, which is
+ * read exactly as a `storage=` annotation's is. With no storage binding, a
+ * source annotated `storage=` is still a storage table, not built yet.
+ */
+export function storageLookupOf(
+   pinned: Pinned,
+   sourceID: string | undefined,
+   kind: BindingKind,
+   annotatedStorage: boolean,
+): TableLookup | undefined {
+   const lookup =
+      sourceID === undefined
+         ? ({ state: "not_built" } as const)
+         : pinned.tableFor(sourceID, kind);
+   if (lookup.state !== "not_built" && lookup.binding.tier === "storage") {
+      return lookup;
+   }
+   return annotatedStorage ? lookup : undefined;
 }
 
 /** The freshness facts of a binding, as the rule reads them. */

@@ -9,8 +9,13 @@ import {
    causeChain,
    isConnectionFailure,
    isCredentialRejection,
+   objectStoreRefusalUrl,
 } from "./driver_errors";
-import { redactPgSecrets } from "./pg_helpers";
+import {
+   redactPgSecrets,
+   redactSignedUrlParams,
+   redactStorageUrls,
+} from "./pg_helpers";
 import { RetrievalSettingsError } from "./settings/errors";
 
 export { isConnectionFailure, isCredentialRejection };
@@ -58,7 +63,9 @@ const MAX_LOGGED_DETAIL_CHARS = 2000;
  * - Control characters, NEL and U+2028/U+2029 are stripped so caller text
  *   cannot forge log lines; `format.json()` does not escape the latter three.
  * - Postgres passwords and URI userinfo are redacted: a failed DuckLake attach
- *   echoes the metadata connection string, password included.
+ *   echoes the metadata connection string, password included. So is a signed
+ *   URL's signature, credential or token (`redactSignedUrlParams`): an object
+ *   store's refusal quotes the URL it read.
  * - `level` is `warn` for upstream failures, which a caller can drive in a loop,
  *   so they do not flood the error log meant for our own bugs.
  */
@@ -79,17 +86,15 @@ export function logInternalFailure(
    const framesOnly = stack.startsWith(`${error.name}: ${message}`)
       ? stack.slice(`${error.name}: ${message}`.length).replace(/^\r?\n/, "")
       : stack;
+   // A signed URL's signature or token is masked; its bucket and path stay,
+   // for the operator.
+   const redact = (value: string): string =>
+      redactSignedUrlParams(redactPgSecrets(value));
    logger[level](summary, {
       error: {
          name: error.name,
-         message: redactPgSecrets(strip(message)).slice(
-            0,
-            MAX_LOGGED_DETAIL_CHARS,
-         ),
-         stack: redactPgSecrets(strip(framesOnly)).slice(
-            0,
-            MAX_LOGGED_DETAIL_CHARS,
-         ),
+         message: redact(strip(message)).slice(0, MAX_LOGGED_DETAIL_CHARS),
+         stack: redact(strip(framesOnly)).slice(0, MAX_LOGGED_DETAIL_CHARS),
       },
    });
 }
@@ -108,6 +113,9 @@ export type ErrorReason =
    | "CONNECTION_AUTH_FAILED"
    // 424: the model names a connection the environment does not have.
    | "CONNECTION_NOT_FOUND"
+   // 403: the object store behind a table refused the database's read of its
+   // files; the query and the model are fine.
+   | "STORAGE_ACCESS_DENIED"
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
@@ -832,6 +840,85 @@ export class ConnectionAuthError extends Error {
    }
 }
 
+/**
+ * The object store behind a table (a DuckLake data path, a bucket a file is
+ * read from) refused the database's read of its files: 403, `reason:
+ * STORAGE_ACCESS_DENIED`. The query ran and the model is fine; the storage
+ * credentials the database reads with are not. The driver's text quotes the
+ * object's URL (bucket, organization and database paths), so it is this
+ * error's message, which is logged, and the answer names only `subject`, the
+ * source or connection the caller asked for.
+ */
+export class StorageAccessDeniedError extends Error {
+   get kind(): "storage_access_denied" {
+      return "storage_access_denied";
+   }
+
+   /**
+    * The refused URL lies under a storage destination's or a DuckLake
+    * catalog's configured data path, so the fault is the database's storage
+    * credentials, not the query. Set by the layer that holds the environment
+    * (`Environment.isConfiguredStorageUrl`); unset, the answer does not claim
+    * the query is fine: the URL may be one the query names itself.
+    */
+   managed = false;
+
+   constructor(
+      message: string,
+      /** What the caller read, in its own terms: a source or a connection. */
+      readonly subject?: string,
+      /** The refused URL, for {@link managed}; never sent. */
+      readonly url?: string,
+      /** Whether {@link subject} names a source (the query route) or a connection (`sqlQuery`). */
+      readonly subjectKind: "source" | "connection" = "source",
+   ) {
+      super(message);
+   }
+
+   /** The answer's message: no URL, no driver text. */
+   get callerMessage(): string {
+      const reads =
+         this.subject === undefined
+            ? "the query reads"
+            : this.subjectKind === "connection"
+              ? `this query reads through connection "${this.subject}"`
+              : `source "${this.subject}" reads`;
+      return this.managed
+         ? `The storage holding the data ${reads} refused the database's read (HTTP 403). The query and the model are fine; the database's storage credentials are not.`
+         : `The storage at a path ${reads} refused access (HTTP 403).`;
+   }
+
+   /** What an agent should do next, by {@link managed}. */
+   get suggestions(): string[] {
+      return this.managed
+         ? [
+              "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the storage credentials are fixed.",
+              "Report that the database's credentials for the storage holding this table's data were refused.",
+           ]
+         : [
+              "Check the path the query or the model reads (a file or table URL) and that the database may read it. Retrying unchanged fails the same way.",
+           ];
+   }
+}
+
+/**
+ * `error` as a {@link StorageAccessDeniedError} when it is an object store
+ * refusing a read ({@link isObjectStoreRefusal}), naming `subject`; undefined
+ * otherwise. One classifier for the query route and the raw `sqlQuery`
+ * route.
+ */
+export function storageAccessFailure(
+   error: unknown,
+   subject?: string,
+   subjectKind: "source" | "connection" = "source",
+): StorageAccessDeniedError | undefined {
+   if (error instanceof StorageAccessDeniedError) return error;
+   const url = objectStoreRefusalUrl(error);
+   if (url === undefined) return undefined;
+   const message = error instanceof Error ? error.message : String(error);
+   return new StorageAccessDeniedError(message, subject, url, subjectKind);
+}
+
 // A reachable catalog whose on-disk format the pinned DuckLake extension cannot
 // attach (see ducklake_version.ts). 422, so it does not read as a credentials
 // problem.
@@ -903,6 +990,13 @@ export class MaterializationEligibilityError extends Error {
    }
 
    readonly reason?: EligibilityRefusalReason;
+
+   /**
+    * When a run refused every source it was asked to build: each source's
+    * own refusal, by sourceEntityId, which the FAILED run records on its
+    * manifest (`failedRunManifestOf`, materialization/run).
+    */
+   runFailures?: Record<string, object>;
 
    constructor(error: { message: string; reason?: EligibilityRefusalReason }) {
       super(error.message);
@@ -1415,6 +1509,7 @@ interface ErrorByKind {
    storage_destination_not_found: StorageDestinationNotFoundError;
    storage_catalog_not_found: StorageCatalogNotFoundError;
    connection_auth: ConnectionAuthError;
+   storage_access_denied: StorageAccessDeniedError;
    unsupported_catalog_format: UnsupportedCatalogFormatError;
    model_compilation: ModelCompilationError;
    version_files_missing: VersionFilesMissingError;
@@ -1498,6 +1593,7 @@ const ERROR_CLASSES: {
    storage_destination_not_found: StorageDestinationNotFoundError,
    storage_catalog_not_found: StorageCatalogNotFoundError,
    connection_auth: ConnectionAuthError,
+   storage_access_denied: StorageAccessDeniedError,
    unsupported_catalog_format: UnsupportedCatalogFormatError,
    model_compilation: ModelCompilationError,
    version_files_missing: VersionFilesMissingError,
@@ -1583,7 +1679,7 @@ export type McpAdvice<E> =
    | {
         advice: "fixed";
         message?: (error: E, site: McpSite) => string;
-        suggestions: readonly string[];
+        suggestions: readonly string[] | ((error: E) => readonly string[]);
         log?: string;
      }
    | { advice: "not_found" }
@@ -1772,7 +1868,12 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       problems: (error) => error.problems.map(toQueryTextProblem),
       mcp: { advice: "malloy" },
    },
-   malloy: { status: 400, mcp: { advice: "malloy" } },
+   malloy: {
+      status: 400,
+      // A Malloy error can carry the driver's text, a storage URL with it.
+      message: (error) => redactStorageUrls(error.message),
+      mcp: { advice: "malloy" },
+   },
    table_not_found: {
       status: 404,
       reason: "TABLE_NOT_FOUND",
@@ -1824,6 +1925,20 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
          log: "Connection credentials rejected",
       },
    },
+   storage_access_denied: {
+      // The driver's text quotes the object's URL: logged in full, never
+      // sent. warn: the storage credentials are the operator's to fix.
+      status: 403,
+      message: (error) => error.callerMessage,
+      reason: "STORAGE_ACCESS_DENIED",
+      log: { summary: "Storage access denied", level: "warn" },
+      mcp: {
+         advice: "fixed",
+         message: (error) => error.callerMessage,
+         suggestions: (error) => error.suggestions,
+         log: "Storage access denied",
+      },
+   },
    connection_failed: {
       // ConnectionError's 502 and logging, plus the reason that says the
       // database is down. The driver's text can name an internal host.
@@ -1862,6 +1977,8 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    },
    model_compilation: {
       status: 424,
+      // A failed load can quote a driver's text, a storage URL with it.
+      message: (error) => redactStorageUrls(error.message),
       mcp: { advice: "malloy" },
       mcpSetup: "resource",
    },

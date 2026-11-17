@@ -16,8 +16,9 @@
  *   written again on the variant, where each caller's givens bind it (the
  *   pre-proof and `govern()` re-prove it, as a gate). Two callers,
  *   interleaved and repeated, each get exactly their own rows. A term over a
- *   field the grain does not keep, or one inherited from another source, is
- *   refused (`reads_given`) and answered live.
+ *   field the grain does not keep (`given_where_over_unstored_field`), or one
+ *   inherited from another source (`inherited_where_with_given`), is refused
+ *   and answered live.
  * - **A zoned query that reads no time.** A query that sets its own
  *   `timezone:` is read from the rollup when nothing it reads depends on the
  *   zone; one reading a stored truncation is still answered live.
@@ -43,6 +44,7 @@ const seedSql = [
       (5, 12.5, 'C', 'west', 't1', TIMESTAMP '2026-01-01 23:30:00'),
       (6,  7.5, 'C', 'east', 't2', TIMESTAMP '2026-02-01 12:00:00')
     ) AS t(id, amount, category, region, tenant, order_time)`,
+   `CREATE TABLE cats_raw AS SELECT DISTINCT category FROM orders_raw`,
 ];
 
 const model = (p: string) => `##! experimental { givens access_modifiers }
@@ -75,6 +77,13 @@ source: scoped is duckdb.table('orders_raw') extend {
   #(preaggregate) grain=["category", "region"]${p}
   measure: n is count()
 }
+// A parent joining it: the join reads the rollup's every-caller groups
+// unless the term goes with it, so the join branch is refused (live).
+source: cats is duckdb.table('cats_raw') extend {
+  primary_key: category
+  join_many: scoped on scoped.category = category
+}
+
 // Over a field the grain does not keep: refused.
 source: scoped_outside is duckdb.table('orders_raw') extend {
   where: region = $REGION
@@ -318,14 +327,84 @@ for (const placement of ["colocated", "storage"] as const) {
             fixture.setBindings(fixture.bindings);
          });
 
+         it("answers a parent joining it live, never from its rollup through the join, each caller's rows", async () => {
+            for (const region of ["east", "west", "east", "west"]) {
+               const run = await fixture.run({
+                  name: `cats ${region}`,
+                  malloy:
+                     "run: cats -> { group_by: category; aggregate: t is scoped.total }",
+                  givens: { REGION: region },
+                  truthSql: `SELECT c.category, CAST(SUM(o.amount) AS DOUBLE) AS t FROM cats_raw c LEFT JOIN orders_raw o ON o.category = c.category AND o.region = '${region}' GROUP BY 1`,
+                  expectLive: true,
+               });
+               expectLive(run);
+               expect(
+                  rowDifference(run.truth ?? [], run.served),
+               ).toBeUndefined();
+            }
+            // Refused for its re-applied term, not by chance.
+            fixture.setBindings(fixture.bindings);
+            const { path } = await fixture.runAsIs(
+               "run: cats -> { group_by: category; aggregate: t is scoped.total }",
+               { REGION: "east" },
+            );
+            expect(JSON.stringify(path?.considered ?? [])).toContain(
+               "re-applies a `where:` that reads a given",
+            );
+         });
+
+         // In a destination the join branch needs the parent stored beside it,
+         // which `cats` is not, so it declines there before any variant.
+         it.skipIf(placement === "storage")(
+            "denies a join answer that reaches it past the leg's refusal (govern(), the second layer)",
+            async () => {
+               const { allowGivenTermJoinsForTests } = await import(
+                  "../../../src/service/materialization/serve/join_rollup"
+               );
+               const { AccessDeniedError } = await import(
+                  "../../../src/errors"
+               );
+               // The join branches are planned once per model: forget them, so
+               // they are planned again under the seam (and after it).
+               const forget = () => {
+                  (
+                     fixture.model as unknown as {
+                        rollupVariants: { planMemo?: unknown };
+                     }
+                  ).rollupVariants.planMemo = undefined;
+               };
+               const restoreSeam = allowGivenTermJoinsForTests();
+               forget();
+               try {
+                  fixture.setBindings(fixture.bindings);
+                  await expect(
+                     fixture.runAsIs(
+                        "run: cats -> { group_by: category; aggregate: t is scoped.total }",
+                        { REGION: "east" },
+                     ),
+                  ).rejects.toThrow(AccessDeniedError);
+               } finally {
+                  restoreSeam();
+                  forget();
+                  fixture.setBindings(fixture.bindings);
+               }
+            },
+         );
+
          it("refuses a term over a field the grain does not keep, and one inherited, and answers both live", async () => {
             expect(
                fixture.rollupRefusals
                   .filter((r) => r.sourceName.startsWith("scoped_"))
                   .sort((a, b) => a.sourceName.localeCompare(b.sourceName)),
             ).toEqual([
-               { reason: "reads_given", sourceName: "scoped_inherited" },
-               { reason: "reads_given", sourceName: "scoped_outside" },
+               {
+                  reason: "inherited_where_with_given",
+                  sourceName: "scoped_inherited",
+               },
+               {
+                  reason: "given_where_over_unstored_field",
+                  sourceName: "scoped_outside",
+               },
             ]);
             for (const source of ["scoped_outside", "scoped_inherited"]) {
                expectLive(

@@ -111,7 +111,7 @@ export interface Variant<Extra = unknown> {
     * tables it may read (the served copy, judged by the tables its answer
     * read). Absent: every answer keeps them.
     */
-   keepsContractsFor?(extra: Extra): boolean;
+   keepsContractsFor?(extra: Extra): boolean | Promise<boolean>;
 }
 
 export type { VariantSkipExplanation };
@@ -131,6 +131,11 @@ export interface ConsideredVariant {
    code?: string;
    /** With {@link code}: a detail safe to show the caller. */
    callerDetail?: string;
+   /**
+    * The rollup leg's own decline for each rollup it tried, by synthesized
+    * source name ({@link VariantSkipExplanation.members}).
+    */
+   members?: VariantSkipExplanation["members"];
 }
 
 /**
@@ -258,7 +263,7 @@ async function decideRoute<Extra>(
          if (
             veto === "entry_point" &&
             variant.keepsContractsFor &&
-            !variant.keepsContractsFor(answer.extra)
+            !(await variant.keepsContractsFor(answer.extra))
          ) {
             considered.push({
                kind: variant.kind,
@@ -294,7 +299,7 @@ async function decideRoute<Extra>(
 function explanationOf(
    variant: Variant<unknown>,
    error: unknown,
-): Partial<Pick<ConsideredVariant, "code" | "callerDetail">> {
+): Partial<Pick<ConsideredVariant, "code" | "callerDetail" | "members">> {
    try {
       const explained = variant.explain?.(error);
       if (!explained) return {};
@@ -303,6 +308,7 @@ function explanationOf(
          ...(explained.callerDetail
             ? { callerDetail: explained.callerDetail }
             : {}),
+         ...(explained.members ? { members: explained.members } : {}),
       };
    } catch {
       return {};

@@ -24,11 +24,18 @@ import { gateSwitches, getPersistStorageMode } from "../config";
 import {
    answerKeepsGates,
    GATE_LEGS,
+   gateColumnsExact,
    legMayPassGate,
    SERVING_GATE_CONTEXT,
+   type TableRead,
 } from "./materialization/domain/gate_policy";
+import {
+   type GateReads,
+   gateColumnTypesOf,
+   gateReadsOfQuery,
+} from "./materialization/serve/gate_reads";
 import { logger } from "../logger";
-import { sourceChain } from "./materialization/text/source_map";
+import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
    type Binding,
    isColocated,
@@ -36,7 +43,11 @@ import {
    type Snapshot,
 } from "./materialization/domain/binding";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
-import { isDeclineOf } from "./materialization/domain/leg_decline";
+import {
+   explanationOfDecline,
+   isDeclineOf,
+   LegDecline,
+} from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
    buildQueryPath,
@@ -111,6 +122,11 @@ export function variantsOf(
    args: { modelPath: string },
 ): Variant<LegAnswer>[] {
    const switches = gateSwitches();
+   // What the entry point's gates read, from the author's compile: read once
+   // per query, and only when an answer past a gate read a `storage=` table.
+   let reads: Promise<GateReads | undefined> | undefined;
+   const gateReadsOnce = () =>
+      (reads ??= gateReadsOfQuery(facts.authorRunnable));
    return legs.map((leg) => {
       // A leg with no row in the gate policy (the query leg) is never tried
       // past an entry-point gate: the policy fails closed.
@@ -123,16 +139,22 @@ export function variantsOf(
          keepsContracts:
             gateLeg !== undefined &&
             legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
-         keepsContractsFor: (answer: LegAnswer) =>
+         keepsContractsFor: async (answer: LegAnswer) =>
             gateLeg !== undefined &&
             answerKeepsGates(
                gateLeg,
-               answer.gateTablesRead ?? answer.tablesRead ?? [],
+               await withGateColumnTypes(
+                  answer.gateTablesRead ?? answer.tablesRead ?? [],
+                  gateReadsOnce,
+               ),
                switches,
                SERVING_GATE_CONTEXT,
             ),
          attempt: async () => {
             const answer = await leg.attempt(facts, pinned);
+            if (leg.kind === "served") {
+               await assertRowScopeExact(answer, gateReadsOnce);
+            }
             if (leg.kind === "served") {
                logger.debug("Serving query from the served copy (virtual)", {
                   modelPath: args.modelPath,
@@ -143,16 +165,85 @@ export function variantsOf(
          },
          explain: (err): VariantSkipExplanation | undefined =>
             isDeclineOf(err, DECLINING_LEG[leg.kind])
-               ? {
-                    code: err.code,
-                    ...(err.callerDetail
-                       ? { callerDetail: err.callerDetail }
-                       : {}),
-                 }
+               ? explanationOfDecline(err)
                : undefined,
          onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
       };
    });
+}
+
+/**
+ * Each `storage=` table an answer read, with the stored types of the columns
+ * the entry point's gates read (`gateColumnTypes`), for the gate policy's
+ * exactness rule: a gate column stored as a float, which an exact number
+ * rounds to, admits a neighbour's rows. A database table is built in the
+ * source's own types and is left as it is.
+ */
+async function withGateColumnTypes(
+   tables: readonly TableRead[],
+   gateReadsOnce: () => Promise<GateReads | undefined>,
+): Promise<readonly TableRead[]> {
+   const retyped = (t: TableRead) =>
+      (t as Partial<Pick<Binding, "retypedColumns">>).retypedColumns ?? [];
+   const storage = tables.filter((t) => t.tier === "storage");
+   if (storage.length === 0 && !tables.some((t) => retyped(t).length > 0)) {
+      return tables;
+   }
+   const reads = await gateReadsOnce();
+   // Judged together: a gate column held by none of the storage tables the
+   // answer read leaves every one of them unproven.
+   const types = gateColumnTypesOf(
+      reads,
+      storage.map((t) => (t as Partial<Pick<Binding, "schema">>).schema),
+   );
+   const typeOf = new Map(storage.map((t, i) => [t, types[i]]));
+   const held = new Set((reads?.columns ?? []).flat());
+   return tables.map((t) => {
+      if (t.tier === "storage") {
+         return { ...t, gateColumnTypes: typeOf.get(t) };
+      }
+      // A database table is built in the source's own types, so only a
+      // column the bind found moved since then (altered in the warehouse, or
+      // a 128-bit integer its DuckLake catalog holds as a DOUBLE) is judged,
+      // by the type it holds now. Unreadable gates judge every such column.
+      const moved = retyped(t);
+      if (moved.length === 0) return t;
+      return {
+         ...t,
+         gateColumnTypes: (reads === undefined || reads.unresolved
+            ? moved
+            : moved.filter((c) => held.has(c.name))
+         ).map((c) => c.type),
+      };
+   });
+}
+
+/**
+ * A served answer over a source whose rows a `where:` scopes (its own, one it
+ * extends, a composite member's, a query-shaped source's base's or stage's,
+ * gated or not) is kept only when the columns that scope reads are stored
+ * exactly, by the gate policy's own rule (`gateColumnsExact`): the policy
+ * itself is asked only past an entry-point gate, and a scope on a column
+ * stored as a float admits a neighbour's rows. Every term counts, not only one
+ * that reads a given: a scope written as a literal merges neighbours too.
+ * Fails closed on a source whose reads cannot be listed.
+ */
+async function assertRowScopeExact(
+   answer: LegAnswer,
+   gateReadsOnce: () => Promise<GateReads | undefined>,
+): Promise<void> {
+   const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
+   const judged = await withGateColumnTypes(tables, gateReadsOnce);
+   if (judged === tables) return;
+   const reads = await gateReadsOnce();
+   // A gated entry point's scope is judged by the gate policy, past the gate
+   // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
+   if (reads !== undefined && (!reads.scoped || reads.gated)) return;
+   if (judged.every(gateColumnsExact)) return;
+   throw new LegDecline(
+      "served_copy_not_served",
+      "the query's source scopes its rows by a column a stored table does not hold exactly",
+   );
 }
 
 /** The answer the router's decision describes, before anything runs. */
@@ -344,7 +435,7 @@ export async function queryPathFor(
       return buildQueryPath({
          shape,
          modelPath: host.modelPath,
-         chain: sourceChain(struct, modelDef),
+         chain: chainOfQuerySource(struct, modelDef, host.modelDef()),
          catalog,
          freshColocated: pinned.hasEntries
             ? new Set(Object.keys(pinned.compilerManifest.entries))
@@ -413,4 +504,24 @@ export async function queryPathFor(
       });
       return undefined;
    }
+}
+
+/**
+ * The queried source's chain ({@link sourceChain}), walked on the model's own
+ * definition when it declares the source: the query's compile may not carry
+ * the model's imports, and an extension of a table-backed source declared in
+ * another file finds its base only through them (P2-41). Otherwise on the
+ * query's.
+ */
+function chainOfQuerySource(
+   struct: unknown,
+   queryModelDef: unknown,
+   modelDef: unknown,
+): string[] {
+   const id = (struct as { sourceID?: unknown } | undefined)?.sourceID;
+   const own =
+      typeof id === "string" && modelDef !== queryModelDef
+         ? SourceMap.of(modelDef).node(id)?.def
+         : undefined;
+   return own ? sourceChain(own, modelDef) : sourceChain(struct, queryModelDef);
 }

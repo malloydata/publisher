@@ -30,6 +30,7 @@ function row(versionId: string): Version {
       contentHash: "hash",
       sourceLocation: null,
       manifestPath: null,
+      hostOwned: false,
       archiveStatus: "unarchive",
       archivedAt: null,
       promotedAt: null,

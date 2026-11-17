@@ -60,6 +60,11 @@ import {
    RefusedSource,
 } from "../domain/types";
 import {
+   type BuildRunFailedError,
+   failedRunManifestOf,
+   withFailedRunManifest,
+} from "./build_failure_class";
+import {
    incrementalRunContext,
    type IncrementalRunContext,
 } from "./incremental_build";
@@ -351,6 +356,26 @@ export class MaterializationService {
          lifecycle: this.lifecycle,
          dropManifestEntries: (...args) =>
             this.collaborators.dropManifestEntries(...args),
+         // The locks a run's start takes for its active-run check, in the
+         // same order (see createMaterialization), so a reclaim never
+         // decides while a run starts, and never waits on a run's start
+         // while holding a lock that start needs.
+         withRunLock: (
+            environment,
+            environmentId,
+            packageName,
+            versionId,
+            fn,
+         ) => {
+            if (versionId === undefined) {
+               return environment.withPackageLock(packageName, fn);
+            }
+            const versions = environment.getVersionService();
+            if (!versions) return fn();
+            return versions.withVersionLock(packageName, versionId, () =>
+               this.claims.withTableLock(environmentId, packageName, fn),
+            );
+         },
       });
       const real = this.realCollaborators();
       this.collaborators = {
@@ -717,19 +742,24 @@ export class MaterializationService {
       const buildInstructions = options.buildInstructions;
       const orchestrated = buildInstructions !== undefined;
       // A package or version bound to a host manifest serves the host's
-      // tables, and a run's own tables are never applied to it
-      // (Environment.loadRunManifest), so an auto-run would build tables it
-      // cannot serve. Refused before anything is built, as the scheduler
-      // skips it; a host building into tables it names (buildInstructions)
-      // is what such a package's runs are for.
-      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
-      if (!orchestrated && manifestLocation) {
+      // tables, and a version a host has bound serves its manifest or live
+      // (Environment.isHostOwned): a run's own tables are never applied to
+      // either (Environment.loadRunManifest), so an auto-run would build
+      // tables it cannot serve. Refused before anything is built, as the
+      // scheduler skips it; a host building into tables it names
+      // (buildInstructions) is what such a package's runs are for.
+      if (!orchestrated && environment.isHostOwned(pkg)) {
+         const manifestLocation = pkg.getPackageMetadata().manifestLocation;
          const target =
             version !== null
                ? `Version ${version} of package ${packageName}`
                : `Package ${packageName}`;
          throw new MaterializationConflictError(
-            `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`,
+            manifestLocation
+               ? version !== null
+                  ? `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Pass buildInstructions to build into tables the host names.`
+                  : `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`
+               : `${target} has been bound or built by a host: it serves the host's manifest or live, never a local run's tables, so a local run would build tables it cannot serve. Pass buildInstructions to build into tables the host names.`,
          );
       }
       const versions = environment.getVersionService();
@@ -1059,6 +1089,18 @@ export class MaterializationService {
          markRunFailureReported(err);
          if (state.packagePath !== undefined && err instanceof Error) {
             err.message = packageRelativeText(err.message, state.packagePath);
+            // Each source's reason on the failed run's manifest, as a
+            // committed run names them.
+            const failed = failedRunManifestOf(err);
+            if (failed) {
+               // failedRunManifestOf found it on an error that carries one.
+               withFailedRunManifest(err as BuildRunFailedError, {
+                  failures: packageRelativeRun(
+                     { entries: {}, failures: failed.failures, refused: {} },
+                     state.packagePath,
+                  ).failures,
+               });
+            }
          }
          if (state.markedShared && opts.version !== null) {
             // The run may have rebuilt some shared tables before it failed.
@@ -1494,6 +1536,14 @@ export class MaterializationService {
               new Date(startedAt),
               built.readFrom,
            );
+      // A host built this version: it owns it from now on, as a bind would
+      // make it (Environment.isHostOwned), so a clear, reload or restart
+      // never binds what this server's store holds for it. Marked before
+      // the commit, so no load or settle in between binds this run's own
+      // tables from the store.
+      if (orchestrated && versionId !== undefined) {
+         await environment.markVersionHostOwned(packageName, versionId);
+      }
       const served = await this.collaborators.commitManifest(
          id,
          committedEntries,
@@ -1625,25 +1675,29 @@ export class MaterializationService {
       // copy of the package has rebound from the store: one that did not
       // (a version an earlier run's failed load left on the old table)
       // still reads it.
+      // Unbound, nothing is dropped, but the tables it keeps are still
+      // listed (Reclaimer.reclaimRenamedTables).
       if (!orchestrated) {
-         if (bound) {
-            await this.reclaimer.reclaimRenamedTables(
-               environmentName,
-               packageName,
-               id,
-               reader,
-               () =>
-                  this.committer.rebindLoadedVersions(
-                     environmentName,
-                     packageName,
-                  ),
-            );
-         } else if (renamed.length > 0) {
+         if (!bound && renamed.length > 0) {
             logger.warn(
                "Keeping the tables readable names replaced: the package did not bind to this run",
                { packageName, tables: renamed.map((t) => t.previousName) },
             );
          }
+         const kept = await this.reclaimer.reclaimRenamedTables(
+            environmentName,
+            packageName,
+            id,
+            reader,
+            bound
+               ? () =>
+                    this.committer.rebindLoadedVersions(
+                       environmentName,
+                       packageName,
+                    )
+               : async () => false,
+         );
+         if (kept !== undefined) pkg.setKeptTables?.(kept);
       }
 
       // Carried forward, so never in the build loop: counted once the run
@@ -1763,14 +1817,14 @@ export class MaterializationService {
 
    /**
     * Delete a terminal materialization record; an active run must be stopped
-    * first. Physical-table GC is the caller's, unless `dropTables` asks for a
-    * best-effort drop of the run's tables (a failure never blocks the delete).
+    * first. Record-only: it never drops a table. Physical-table GC is the
+    * caller's, through the connection.
     */
    async deleteMaterialization(
       environmentName: string,
       packageName: string,
       id: string,
-      options: { dropTables?: boolean; versionId?: VersionRef } = {},
+      options: { versionId?: VersionRef } = {},
    ): Promise<void> {
       const m = await this.getMaterialization(
          environmentName,
@@ -1785,14 +1839,6 @@ export class MaterializationService {
          );
       }
 
-      if (options.dropTables) {
-         await this.reclaimer.dropMaterializedTables(
-            environmentName,
-            packageName,
-            m,
-         );
-      }
-
       // The record is part of what proves a recorded uniqueness pass still
       // holds: once it goes, an older run's pass could read as the newest
       // over a table this run rewrote. Forgotten first, so a failure leaves
@@ -1800,7 +1846,7 @@ export class MaterializationService {
       await this.forgetUniquenessPasses(m.environmentId, packageName, id);
       await this.repository.deleteMaterialization(id);
 
-      // The deleted run may have been the one serving (and its tables dropped);
+      // The deleted run may have been the one serving;
       // routing has no run-time fallback, so rebind to the next-latest
       // generation, or clear to serve live.
       // (Mirrors the load-time Environment.rebindServeBindingsFromLocalStore;

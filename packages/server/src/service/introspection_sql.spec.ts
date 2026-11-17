@@ -26,6 +26,12 @@ describe("runIntrospectionSQL", () => {
       warn = sinon.stub(logger, "warn");
    });
    afterEach(() => warn.restore());
+   /**
+    * This module's own warnings: the stub is the shared logger's, so a
+    * timer another spec file left running may log into it too.
+    */
+   const rowCapWarnings = () =>
+      warn.getCalls().filter((c) => /row cap/.test(String(c.args[0])));
 
    it("runs the query with the introspection row cap rather than the driver's default, and returns its result", async () => {
       // The driver default is 10 rows on DuckDB, BigQuery and Trino, which
@@ -40,7 +46,7 @@ describe("runIntrospectionSQL", () => {
          "SELECT * FROM cols",
          { rowLimit: INTROSPECTION_ROW_LIMIT },
       ]);
-      expect(warn.called).toBe(false);
+      expect(rowCapWarnings()).toEqual([]);
    });
 
    it.each([
@@ -53,8 +59,7 @@ describe("runIntrospectionSQL", () => {
 
          await runIntrospectionSQL(connection, "SELECT 1");
 
-         expect(warn.calledOnce).toBe(true);
-         expect(String(warn.firstCall.args[0])).toMatch(/row cap/);
+         expect(rowCapWarnings()).toHaveLength(1);
       },
    );
 
@@ -65,6 +70,6 @@ describe("runIntrospectionSQL", () => {
       await expect(runIntrospectionSQL(connection, "SELECT 1")).rejects.toBe(
          failure,
       );
-      expect(warn.called).toBe(false);
+      expect(rowCapWarnings()).toEqual([]);
    });
 });
