@@ -145,7 +145,7 @@ export const EMPTY_SNAPSHOT: Snapshot = makeSnapshot(
  * past it and allowed (`stale_ok`), past it and answered live (its binding
  * kept for what a report says of it), or not bound.
  */
-export type TableLookup =
+type TableLookup =
    | { state: "fresh"; binding: Binding }
    | { state: "stale_ok"; binding: Binding }
    | { state: "stale"; binding: Binding }

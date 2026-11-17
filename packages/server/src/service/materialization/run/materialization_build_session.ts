@@ -185,10 +185,8 @@ function orderByExpressions(
  */
 async function alignSnowflakeSession(
    session: DuckDBConnection,
-   sourceType: FederatedSourceType,
    handle: string,
 ): Promise<void> {
-   if (sourceType !== "snowflake") return;
    for (const sql of snowflakeSessionParitySQL(handle)) {
       try {
          await session.runSQL(sql);
@@ -222,6 +220,8 @@ async function tagSnowflakeSession(
    queryMetadata: QueryMetadata | undefined,
 ): Promise<void> {
    if (sourceType !== "snowflake") return;
+   // Malloy's session settings first, so the build reads as live does.
+   await alignSnowflakeSession(session, handle);
    const sql = snowflakeSetQueryTagSQL(queryMetadata, handle);
    if (sql === undefined) return;
    try {
@@ -987,7 +987,6 @@ async function buildOnFederatedSession(
       queryMetadata,
    } = params;
    const read = params.deps?.read ?? issuePassthroughRead;
-   await alignSnowflakeSession(session, sourceType, handle);
    await tagSnowflakeSession(session, sourceType, handle, queryMetadata);
 
    // Qualified with the destination catalog: an unqualified name would land
