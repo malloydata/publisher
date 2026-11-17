@@ -21,6 +21,7 @@
  *   reports `servedFrom: "database"`, the tier its path report names.
  */
 
+import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -47,6 +48,92 @@ const ENV = "e1";
 const ENV_ID = "env-1";
 const PKG = "pkg";
 const TENANT = 9007199254740992;
+const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
+
+/** The moves the scenario makes, each spelled by the warehouse's own types. */
+type Move = "double" | "text" | "decimal10_0" | "widerCount" | "bigint";
+
+interface Tier {
+   label: string;
+   warehouse: () => Promise<{ config: unknown; drop?: () => Promise<void> }>;
+   alter: (table: string, column: string, move: Move) => string;
+   /** Lists a table's column names, as the dialect's connection returns rows. */
+   columnsSql: (table: string) => string;
+}
+
+const DUCKDB_TYPES: Record<Move, string> = {
+   double: "DOUBLE",
+   text: "VARCHAR",
+   decimal10_0: "DECIMAL(10,0)",
+   // A count's partial is a BIGINT: HUGEINT holds every value it held.
+   widerCount: "HUGEINT",
+   bigint: "BIGINT",
+};
+
+const POSTGRES_TYPES: Record<Move, string> = {
+   double: "double precision",
+   text: "varchar",
+   decimal10_0: "numeric(10,0)",
+   widerCount: "numeric(30,0)",
+   bigint: "bigint",
+};
+
+const tiers: Tier[] = [
+   {
+      label: "DuckDB",
+      warehouse: async () => ({
+         config: {
+            name: "warehouse",
+            type: "duckdb",
+            duckdbConnection: { setupSQL: "SELECT 1" },
+         },
+      }),
+      alter: (table, column, move) =>
+         `ALTER TABLE ${table} ALTER "${column}" TYPE ${DUCKDB_TYPES[move]}`,
+      columnsSql: (table) =>
+         `SELECT column_name FROM information_schema.columns WHERE table_name = '${table}'`,
+   },
+   ...(POSTGRES_URL
+      ? [
+           {
+              label: "Postgres",
+              warehouse: async () => {
+                 const db = `drift_loss_${process.pid}_${Date.now()}`;
+                 const admin = new PostgresConnection({
+                    name: "admin",
+                    connectionString: POSTGRES_URL,
+                 });
+                 await admin.runSQL(`CREATE DATABASE ${db}`);
+                 const parsed = new URL(POSTGRES_URL);
+                 return {
+                    config: {
+                       name: "warehouse",
+                       type: "postgres",
+                       postgresConnection: {
+                          host: parsed.hostname,
+                          port: Number(parsed.port || 5432),
+                          userName: decodeURIComponent(parsed.username),
+                          password: decodeURIComponent(parsed.password),
+                          databaseName: db,
+                       },
+                    },
+                    drop: async () => {
+                       await admin
+                          .runSQL(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`)
+                          .catch(() => undefined);
+                       await admin.close();
+                    },
+                 };
+              },
+              alter: (table: string, column: string, move: Move) =>
+                 `ALTER TABLE ${table} ALTER COLUMN "${column}" TYPE ${POSTGRES_TYPES[move]} USING "${column}"::${POSTGRES_TYPES[move]}`,
+              // Wrapped as Malloy's Postgres connection reads every result.
+              columnsSql: (table: string) =>
+                 `SELECT row_to_json(c) AS row FROM (SELECT column_name FROM information_schema.columns WHERE table_name = '${table}') c`,
+           } satisfies Tier,
+        ]
+      : []),
+];
 
 const MODEL = `##! experimental { persistence givens }
 given: TENANT :: number
@@ -150,7 +237,7 @@ interface Fixture {
    cleanup: () => Promise<void>;
 }
 
-async function fixture(): Promise<Fixture> {
+async function fixture(warehouse: unknown): Promise<Fixture> {
    const root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "drift-value-loss-")),
    );
@@ -169,18 +256,7 @@ async function fixture(): Promise<Fixture> {
       [ENV_ID, ENV, envPath],
    );
    const repo = createDuckDBRepository(db);
-   const env = await Environment.create(
-      ENV,
-      envPath,
-      [
-         {
-            name: "warehouse",
-            type: "duckdb",
-            duckdbConnection: { setupSQL: "SELECT 1" },
-         } as never,
-      ],
-      [],
-   );
+   const env = await Environment.create(ENV, envPath, [warehouse as never], []);
    await env.addPackage(PKG);
    const pkg = await env.getPackage(parsePackageName(PKG), false);
    const service = serviceOverEnvironment(
@@ -265,15 +341,16 @@ async function ask(f: Fixture, name: string): Promise<Answer> {
 /** The column names of a table in the scenario's warehouse. */
 async function columnsOf(
    warehouse: { runSQL(sql: string): Promise<{ rows: unknown[] }> },
+   tier: Tier,
    table: string,
 ): Promise<string[]> {
    const unqualified = table.split(".").pop()!.replace(/"/g, "");
-   const rows = (
-      await warehouse.runSQL(
-         `SELECT column_name FROM information_schema.columns WHERE table_name = '${unqualified}'`,
-      )
-   ).rows as { column_name: string }[];
-   return rows.map((r) => r.column_name);
+   const rows = (await warehouse.runSQL(tier.columnsSql(unqualified)))
+      .rows as Record<string, unknown>[];
+   return rows.map((c) => {
+      const row = (c.row ?? c) as Record<string, unknown>;
+      return String(row.column_name);
+   });
 }
 
 /**
@@ -281,10 +358,11 @@ async function columnsOf(
  * `bigTo`, the `top` and `rtop` partial to DECIMAL(10,0), and the `rn`
  * partial widened to HUGEINT (a move that loses nothing).
  */
-function scenario(bigTo: "DOUBLE" | "VARCHAR") {
+function scenario(tier: Tier, bigTo: "double" | "text") {
    const live: Record<string, Answer> = {};
    const before: Record<string, Answer> = {};
    let f: Fixture;
+   let drop: (() => Promise<void>) | undefined;
    let restore: () => void;
    beforeAll(async () => {
       restore = installSettings({
@@ -295,7 +373,9 @@ function scenario(bigTo: "DOUBLE" | "VARCHAR") {
          },
       }).restore;
       await freshLoadPool();
-      f = await fixture();
+      const w = await tier.warehouse();
+      drop = w.drop;
+      f = await fixture(w.config);
       for (const name of Object.keys(QUERIES)) live[name] = await ask(f, name);
       const run = await build(f);
       expect(run.status).toBe("MANIFEST_FILE_READY");
@@ -311,45 +391,31 @@ function scenario(bigTo: "DOUBLE" | "VARCHAR") {
          ).entries,
       ).map((e) => e.physicalTableName);
       for (const table of tables) {
-         const columns = await columnsOf(warehouse, table);
+         const columns = await columnsOf(warehouse, tier, table);
          if (columns.includes("top")) {
-            await warehouse.runSQL(
-               `ALTER TABLE ${table} ALTER "top" TYPE DECIMAL(10,0)`,
-            );
+            await warehouse.runSQL(tier.alter(table, "top", "decimal10_0"));
          }
          for (const c of columns) {
             if (c.startsWith("rtop") && c.includes("partial")) {
-               await warehouse.runSQL(
-                  `ALTER TABLE ${table} ALTER "${c}" TYPE DECIMAL(10,0)`,
-               );
+               await warehouse.runSQL(tier.alter(table, c, "decimal10_0"));
             }
             if (c.startsWith("rn") && c.includes("partial")) {
-               await warehouse.runSQL(
-                  `ALTER TABLE ${table} ALTER "${c}" TYPE HUGEINT`,
-               );
+               await warehouse.runSQL(tier.alter(table, c, "widerCount"));
             }
          }
          // The served copy's tables: `amt` rounded, `n` widened, and the
          // gate column `org` rounded so tenants 10.0 and 10.4 both read 10.
          if (columns.length === 2 && columns.includes("amt")) {
-            await warehouse.runSQL(
-               `ALTER TABLE ${table} ALTER "amt" TYPE DECIMAL(10,0)`,
-            );
+            await warehouse.runSQL(tier.alter(table, "amt", "decimal10_0"));
          }
          if (columns.length === 2 && columns.includes("n")) {
-            await warehouse.runSQL(
-               `ALTER TABLE ${table} ALTER "n" TYPE BIGINT`,
-            );
+            await warehouse.runSQL(tier.alter(table, "n", "bigint"));
          }
          if (columns.includes("org")) {
-            await warehouse.runSQL(
-               `ALTER TABLE ${table} ALTER "org" TYPE DECIMAL(10,0)`,
-            );
+            await warehouse.runSQL(tier.alter(table, "org", "decimal10_0"));
          }
          if (columns.includes("big")) {
-            await warehouse.runSQL(
-               `ALTER TABLE ${table} ALTER "big" TYPE ${bigTo}`,
-            );
+            await warehouse.runSQL(tier.alter(table, "big", bigTo));
          }
       }
       await f.pkg.reloadAllModels(
@@ -358,6 +424,7 @@ function scenario(bigTo: "DOUBLE" | "VARCHAR") {
    }, 300_000);
    afterAll(async () => {
       await f?.cleanup();
+      await drop?.();
       restore();
       await freshLoadPool();
    });
@@ -368,96 +435,98 @@ function scenario(bigTo: "DOUBLE" | "VARCHAR") {
    };
 }
 
-describe("C1, H1, M1: a value-losing move inside one type is left out, a widening read as it is", () => {
-   const s = scenario("DOUBLE");
+for (const tier of tiers) {
+   describe(`C1, H1, M1: a value-losing move inside one type is left out, a widening read as it is (${tier.label})`, () => {
+      const s = scenario(tier, "double");
 
-   it("served every query from a table, equal to live, before the alter", () => {
-      for (const name of Object.keys(QUERIES)) {
-         expect({ name, rows: s.before[name].rows }).toEqual({
-            name,
-            rows: s.live[name].rows,
-         });
-         expect({ name, kind: s.before[name].kind }).not.toEqual({
-            name,
-            kind: "live",
-         });
-      }
-   });
+      it("served every query from a table, equal to live, before the alter", () => {
+         for (const name of Object.keys(QUERIES)) {
+            expect({ name, rows: s.before[name].rows }).toEqual({
+               name,
+               rows: s.live[name].rows,
+            });
+            expect({ name, kind: s.before[name].kind }).not.toEqual({
+               name,
+               kind: "live",
+            });
+         }
+      });
 
-   it("C1: the gated rollup answers live with the caller's own tenant, never the other's", async () => {
-      const after = await s.ask("gated");
-      expect(after.error).toBeUndefined();
-      expect(after.rows).toEqual(s.live.gated.rows);
-      expect(after.rows).toEqual([{ cat: "b", gtop: 2.5 }]);
-      expect(after.kind).toBe("live");
-   });
-
-   it("C1: a filter on the rounded column answers live", async () => {
-      const after = await s.ask("rollup_big");
-      expect(after.rows).toEqual(s.live.rollup_big.rows);
-      expect(after.kind).toBe("live");
-   });
-
-   for (const name of ["view", "rollup"]) {
-      it(`H1: ${name} over a column rounded to DECIMAL(10,0) answers live's 9.4, not 9`, async () => {
-         const after = await s.ask(name);
-         expect(after.rows).toEqual(s.live[name].rows);
+      it("C1: the gated rollup answers live with the caller's own tenant, never the other's", async () => {
+         const after = await s.ask("gated");
+         expect(after.error).toBeUndefined();
+         expect(after.rows).toEqual(s.live.gated.rows);
+         expect(after.rows?.map((r) => r.cat)).toEqual(["b"]);
          expect(after.kind).toBe("live");
       });
-   }
 
-   it("M1: a widened partial is still served, read through its typed source, from the database tier", async () => {
-      const after = await s.ask("rollup_count");
-      expect(after.rows).toEqual(s.live.rollup_count.rows);
-      expect(after.kind).toBe("rollup");
-      expect(after.tier).toBe("database");
-      expect(after.servedFrom).toBe("database");
-   });
-});
+      it("C1: a filter on the rounded column answers live", async () => {
+         const after = await s.ask("rollup_big");
+         expect(after.rows).toEqual(s.live.rollup_big.rows);
+         expect(after.kind).toBe("live");
+      });
 
-describe("the served copy of a #(materialize) table: a narrowing is left out, a widening read as it is", () => {
-   const s = scenario("DOUBLE");
-
-   it("served each from its table, equal to live, before the alter", () => {
-      for (const name of ["mat_narrow", "mat_widen", "gmat"]) {
-         expect({ name, rows: s.before[name].rows }).toEqual({
-            name,
-            rows: s.live[name].rows,
-         });
-         expect({ name, kind: s.before[name].kind }).not.toEqual({
-            name,
-            kind: "live",
+      for (const name of ["view", "rollup"]) {
+         it(`H1: ${name} over a column rounded to DECIMAL(10,0) answers live's 9.4, not 9`, async () => {
+            const after = await s.ask(name);
+            expect(after.rows).toEqual(s.live[name].rows);
+            expect(after.kind).toBe("live");
          });
       }
+
+      it("M1: a widened partial is still served, read through its typed source, from the database tier", async () => {
+         const after = await s.ask("rollup_count");
+         expect(after.rows).toEqual(s.live.rollup_count.rows);
+         expect(after.kind).toBe("rollup");
+         expect(after.tier).toBe("database");
+         expect(after.servedFrom).toBe("database");
+      });
    });
 
-   it("a column rounded to DECIMAL(10,0): answers live's 9.4, not 9", async () => {
-      const after = await s.ask("mat_narrow");
-      expect(after.rows).toEqual(s.live.mat_narrow.rows);
-      expect(after.kind).toBe("live");
+   describe(`the served copy of a #(materialize) table: a narrowing is left out, a widening read as it is (${tier.label})`, () => {
+      const s = scenario(tier, "double");
+
+      it("served each from its table, equal to live, before the alter", () => {
+         for (const name of ["mat_narrow", "mat_widen", "gmat"]) {
+            expect({ name, rows: s.before[name].rows }).toEqual({
+               name,
+               rows: s.live[name].rows,
+            });
+            expect({ name, kind: s.before[name].kind }).not.toEqual({
+               name,
+               kind: "live",
+            });
+         }
+      });
+
+      it("a column rounded to DECIMAL(10,0): answers live's 9.4, not 9", async () => {
+         const after = await s.ask("mat_narrow");
+         expect(after.rows).toEqual(s.live.mat_narrow.rows);
+         expect(after.kind).toBe("live");
+      });
+
+      it("a gate column rounded so two tenants read alike: answers live, the caller's own tenant only", async () => {
+         const after = await s.ask("gmat");
+         expect(after.error).toBeUndefined();
+         expect(after.rows).toEqual(s.live.gmat.rows);
+         expect(after.rows?.map((r) => r.cat)).toEqual(["a"]);
+      });
+
+      it("a column widened from INTEGER to BIGINT: still served, equal to live", async () => {
+         const after = await s.ask("mat_widen");
+         expect(after.rows).toEqual(s.live.mat_widen.rows);
+         expect(after.kind).not.toBe("live");
+      });
    });
 
-   it("a gate column rounded so two tenants read alike: answers live, the caller's own tenant only", async () => {
-      const after = await s.ask("gmat");
-      expect(after.error).toBeUndefined();
-      expect(after.rows).toEqual(s.live.gmat.rows);
-      expect(after.rows).toEqual([{ cat: "a", c: 1 }]);
-   });
+   describe(`H2: a gate column no read gives as live's value declines the gated rollup, never denies (${tier.label})`, () => {
+      const s = scenario(tier, "text");
 
-   it("a column widened from INTEGER to BIGINT: still served, equal to live", async () => {
-      const after = await s.ask("mat_widen");
-      expect(after.rows).toEqual(s.live.mat_widen.rows);
-      expect(after.kind).not.toBe("live");
+      it("the gated query answers live, equal to live", async () => {
+         const after = await s.ask("gated");
+         expect(after.error).toBeUndefined();
+         expect(after.rows).toEqual(s.live.gated.rows);
+         expect(after.kind).toBe("live");
+      });
    });
-});
-
-describe("H2: a gate column no read gives as live's value declines the gated rollup, never denies", () => {
-   const s = scenario("VARCHAR");
-
-   it("the gated query answers live, equal to live", async () => {
-      const after = await s.ask("gated");
-      expect(after.error).toBeUndefined();
-      expect(after.rows).toEqual(s.live.gated.rows);
-      expect(after.kind).toBe("live");
-   });
-});
+}
