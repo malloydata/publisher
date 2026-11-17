@@ -99,6 +99,7 @@ import {
    type EligibilityRefusalReason,
 } from "../materialization_metrics";
 import { logger } from "../logger";
+import { installProcessSafetyHandlers } from "../process_safety";
 import type { SynthesizedRuntimeFactory } from "../service/materialization";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
@@ -151,6 +152,10 @@ if (!parentPort) {
 acceptBundledExperimentalDialects();
 
 const port = parentPort;
+
+// An unhandled rejection in a worker would otherwise end the thread and fail
+// the job in flight. Logged instead, like on the main thread.
+installProcessSafetyHandlers();
 
 // ──────────────────────────────────────────────────────────────────────
 // RPC plumbing for worker → main calls

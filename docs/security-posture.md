@@ -302,6 +302,8 @@ declarative artifact still carries author-controlled HTML.
 
 ## Known gaps
 
+An unhandled promise rejection from a dependency (a connection driver's fire-and-forget cancel, for one) is logged at error and the server keeps running; an uncaught synchronous exception still ends the process.
+
 Ordered by how much they would matter on a deployment that has put a gateway in front of
 Publisher. Gap 1 is now fixed and is kept here, struck through, because the reasoning about
 ordering is what the rest of the list is measured against; the others remain open.
