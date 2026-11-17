@@ -14,12 +14,11 @@
 //               package at that version by default. givens is a name→value map bound as
 //               Malloy given: runtime parameters for this query (safe parameterization,
 //               not string interpolation) — see the malloy-html-data-apps skill (reference/runtime.md).
-//   - Publisher.embed(selector, { src, height?, token?, getToken?, isolate? })
+//   - Publisher.embed(selector, { src, height?, token?, getToken? })
 //       → { iframe, destroy(), send(type, payload) → Promise, on(type, fn) → unsubscribe }.
 //       getToken() (a string or a Promise) feeds the page its bearer token over the bus:
 //       first on ready, again whenever the page asks. `token` appends ?embed_token= to
-//       the URL instead and is deprecated. isolate drops allow-same-origin from the
-//       sandbox. Every embed adds a random #publisher-nonce=<n> to src; the host accepts
+//       the URL instead and is deprecated. Every embed adds a random #publisher-nonce=<n> to src; the host accepts
 //       bus messages only from that window, at src's origin, echoing that nonce. The host
 //       never sends the nonce: a document that navigated into the frame cannot learn it.
 //   - Publisher.context  ({ environment, package } from the injected page context, else inferred from URL)
@@ -29,12 +28,16 @@
 //   - Publisher.emit(type, payload)  (page → host event; dropped until the host has said hello)
 //   - Publisher.givens (a copy), setGivens(g), onGivensChange(fn) → unsubscribe
 //       A page-held name→value map, merged under opts.givens of every query once non-empty.
+//       A null value removes its key.
 //
 // Server-injected context: Publisher serves every data-app HTML page with
 // <script type="application/json" id="publisher-context"> carrying
-// { v, environment, package, versionId|null, apiBase, hostOrigins }. When present it
-// replaces the URL guessing and the ?versionId= probe: a versionId pins every query to
-// the page's own package, and a versioned page never live-reloads.
+// { v, environment, package, versionId|null, apiBase, hostOrigins }. Names parsed from
+// the page's own URL win (a gateway may rename paths, so the context's names are the
+// ones behind it); the context's names are used only when the URL has none. Its
+// versionId replaces the ?versionId= probe: it pins every query to the page's own
+// package, and a versioned page never live-reloads. A page served from
+// /environments/<e>/packages/<p>/versions/<v>/public/ pins <v> even with no context.
 //
 // Host bus (only in an iframe whose context has hostOrigins, patterns from the server's
 // frame-ancestors setting). Envelope { protocol: "publisher", v: 1, type, id?, nonce?,
@@ -42,13 +45,15 @@
 // The host sends `hello`; the runtime binds to that message's origin, replies with
 // { handles, runtime }, and from then on posts only to that origin. Inbound messages are
 // accepted from window.parent at an allowed origin only. Every page → host envelope
-// echoes the nonce from #publisher-nonce= when the URL has one; host → page ones carry
-// none. Page → host events: ready, query.ran,
-// givens.changed, auth.token.request, version.unavailable. Host → page: auth.token (built
-// in), givens.set (built in; advertised once the page calls onGivensChange), and whatever
-// the page registers with on(). A request nobody handles gets error "unhandled".
-// On a 401 with the bus bound, the runtime asks for a token, waits up to 10 s, and
-// retries the query once.
+// echoes the nonce from #publisher-nonce= when the URL has one (read once, then removed
+// from the URL; restored before the runtime's own reload); host → page ones carry none.
+// Page → host events: ready, query.ran, givens.changed, version.unavailable. Host → page:
+// auth.token (built in), givens.set (built in; advertised once the page calls
+// onGivensChange), and whatever the page registers with on(). A request nobody handles
+// gets error "unhandled".
+// On a 401 with the bus bound, the runtime sends the request auth.token.request, which the
+// host answers with { token } (or "unhandled" when it has no getToken, which fails the
+// query at once), waits up to 10 s for that or an auth.token event, and retries once.
 //
 // When loaded inside an iframe served from /environments/<env>/packages/<pkg>/...,
 // the runtime auto-subscribes to a Server-Sent Events live-reload stream
@@ -103,31 +108,32 @@
       }
    }
    var pageContext = readPageContext();
-   var ctx =
-      pageContext &&
-      isString(pageContext.environment) &&
-      isString(pageContext.package) &&
-      pageContext.environment &&
-      pageContext.package
-         ? {
-              environment: pageContext.environment,
-              package: pageContext.package,
-           }
-         : pathMatch
-           ? {
-                environment: safeDecode(pathMatch[1]),
-                package: safeDecode(pathMatch[2]),
-             }
-           : {};
-   var contextVersion =
+   // The URL's names win: behind a gateway that renames paths they are the ones the API knows.
+   var ctx = pathMatch
+      ? {
+           environment: safeDecode(pathMatch[1]),
+           package: safeDecode(pathMatch[2]),
+        }
+      : pageContext &&
+          isString(pageContext.environment) &&
+          isString(pageContext.package) &&
+          pageContext.environment &&
+          pageContext.package
+        ? {
+             environment: pageContext.environment,
+             package: pageContext.package,
+          }
+        : {};
+   // A version in the path never changes, so it pins queries and needs no live reload, context or not.
+   var pathVersion = location.pathname.match(
+      /^\/environments\/[^/]+\/packages\/[^/]+\/versions\/([^/]+)\/public\//,
+   );
+   var fixedVersion =
       pageContext && isString(pageContext.versionId) && pageContext.versionId
          ? pageContext.versionId
-         : undefined;
-   // A versioned path never changes, so it needs no live reload even without a context.
-   var versionedPath =
-      /^\/environments\/[^/]+\/packages\/[^/]+\/versions\/[^/]+\/public\//.test(
-         location.pathname,
-      );
+         : pathVersion
+           ? safeDecode(pathVersion[1])
+           : undefined;
 
    // Only a same-origin path is honored: the API base is never taken from another origin.
    var configuredApiBase = pageContext && pageContext.apiBase;
@@ -168,7 +174,7 @@
    var pageVersion = pageVersionParam();
    var pagePin = null;
    function pinnedVersion() {
-      if (contextVersion) return Promise.resolve(contextVersion);
+      if (fixedVersion) return Promise.resolve(fixedVersion);
       if (!pageVersion || !ctx.environment || !ctx.package) {
          return Promise.resolve(undefined);
       }
@@ -207,11 +213,45 @@
       pageContext && Array.isArray(pageContext.hostOrigins)
          ? pageContext.hostOrigins.filter(isString)
          : [];
-   // Read once at load; the host puts it in the fragment so it never reaches a log or Referer.
+   // `fragment` (no leading #) without the nonce parameter, every other byte untouched.
+   function withoutNonce(fragment) {
+      return fragment
+         .replace(/(^|&)publisher-nonce=[^&]*/g, "")
+         .replace(/^&/, "");
+   }
+   function setFragment(fragment) {
+      try {
+         history.replaceState(
+            history.state,
+            "",
+            location.pathname +
+               location.search +
+               (fragment ? "#" + fragment : ""),
+         );
+      } catch (_e) {
+         /* a frame that cannot rewrite its URL keeps the nonce in it */
+      }
+   }
+   // Read once at load; the host puts it in the fragment so it never reaches a log or Referer,
+   // and the page drops it from the URL so its own scripts and router never see it.
    var pageNonce = (function () {
       var m = /[#&]publisher-nonce=([^&]*)/.exec(location.hash || "");
-      return m && m[1] ? safeDecode(m[1]) : null;
+      if (!m || !m[1]) return null;
+      setFragment(withoutNonce(location.hash.slice(1)));
+      return safeDecode(m[1]);
    })();
+   // A reload re-reads the URL, so the nonce goes back into it first.
+   function reloadWithNonce() {
+      if (pageNonce) {
+         var rest = location.hash.slice(1);
+         setFragment(
+            (rest ? rest + "&" : "") +
+               "publisher-nonce=" +
+               encodeURIComponent(pageNonce),
+         );
+      }
+      location.reload();
+   }
    var busEnabled =
       inIframe &&
       hostOrigins.length > 0 &&
@@ -222,7 +262,9 @@
    var givensListeners = [];
    var readyScheduled = false;
    var tokenWait = null;
-   var tokenArrived = null;
+   var tokenSettle = null;
+   var tokenRequestId = null;
+   var requestSeq = 0;
    var versionUnavailableSent = false;
 
    // 'self' is this page's origin; `https://*.suffix[:port]` matches the scheme, the port and
@@ -344,7 +386,11 @@
       if (!g || typeof g !== "object" || Array.isArray(g)) {
          throw new TypeError("Publisher.setGivens(g): g must be an object");
       }
-      Object.assign(givensStore, cloneGivens(g));
+      var next = cloneGivens(g);
+      Object.keys(next).forEach(function (k) {
+         if (next[k] === null) delete givensStore[k];
+         else givensStore[k] = next[k];
+      });
       givensListeners.slice().forEach(function (fn) {
          try {
             fn(cloneGivens(givensStore));
@@ -381,10 +427,24 @@
          throw new TypeError("auth.token needs payload.token (a string)");
       }
       bearerToken = token;
-      if (tokenArrived) tokenArrived();
+      if (tokenSettle) tokenSettle(true);
       return { applied: true };
    }
-   // Resolves true when a token arrives, false after TOKEN_WAIT_MS. Concurrent callers share one wait.
+   // The host's answer to our auth.token.request: { token }, or an error ("unhandled" when it has no token to give).
+   function onHostReply(m) {
+      if (m.type !== "auth.token.request" || m.id !== tokenRequestId) return;
+      if (m.error) {
+         if (tokenSettle) tokenSettle(false);
+         return;
+      }
+      try {
+         applyAuthToken(m.payload);
+      } catch (_e) {
+         if (tokenSettle) tokenSettle(false);
+      }
+   }
+   // Resolves true when a token arrives (as the reply or an auth.token event), false on an error
+   // reply or after TOKEN_WAIT_MS. Concurrent callers share one wait.
    function awaitToken() {
       if (!tokenWait) {
          tokenWait = new Promise(function (resolve) {
@@ -394,14 +454,14 @@
             function settle(ok) {
                clearTimeout(timer);
                tokenWait = null;
-               tokenArrived = null;
+               tokenSettle = null;
+               tokenRequestId = null;
                resolve(ok);
             }
-            tokenArrived = function () {
-               settle(true);
-            };
+            tokenSettle = settle;
          });
-         emit("auth.token.request");
+         tokenRequestId = "p" + ++requestSeq;
+         post("auth.token.request", undefined, { id: tokenRequestId });
       }
       return tokenWait;
    }
@@ -417,7 +477,11 @@
       if (e.source !== window.parent || !originAllowed(e.origin)) return;
       if (boundOrigin && e.origin !== boundOrigin) return;
       var m = e.data;
-      if (!isEnvelope(m) || m.reply) return;
+      if (!isEnvelope(m)) return;
+      if (m.reply) {
+         if (boundOrigin) onHostReply(m);
+         return;
+      }
       var isRequest = m.id !== undefined;
       if (m.type === "hello") {
          boundOrigin = e.origin;
@@ -559,7 +623,7 @@
          if (
             isOwnPackage &&
             versionId &&
-            versionId === (contextVersion || pageVersion) &&
+            versionId === (fixedVersion || pageVersion) &&
             json &&
             (json.reason === "VERSION_NOT_FOUND" ||
                json.reason === "VERSION_ARCHIVED") &&
@@ -644,13 +708,7 @@
    function embedUrl(src, token, nonce) {
       var hash = src.indexOf("#");
       var base = hash === -1 ? src : src.slice(0, hash);
-      var fragment =
-         hash === -1
-            ? ""
-            : src
-                 .slice(hash + 1)
-                 .replace(/(^|&)publisher-nonce=[^&]*/g, "")
-                 .replace(/^&/, "");
+      var fragment = hash === -1 ? "" : withoutNonce(src.slice(hash + 1));
       if (token) {
          base +=
             (base.indexOf("?") === -1 ? "?" : "&") +
@@ -679,12 +737,10 @@
          throw new Error("Publisher.embed: opts.src is required");
       }
       var nonce = randomNonce();
-      // An isolated frame has an opaque origin: its messages say "null", and a post to it can
-      // only use "*" (it carries nothing until the frame has proved the nonce).
-      var pageOrigin = options.isolate
-         ? "null"
-         : new URL(options.src, location.href).origin;
-      var targetOrigin = options.isolate ? "*" : pageOrigin;
+      var pageOrigin = new URL(options.src, location.href).origin;
+      if (pageOrigin === "null") {
+         throw new Error("Publisher.embed: opts.src needs an http(s) origin");
+      }
       var iframe = document.createElement("iframe");
       iframe.src = embedUrl(options.src, options.token, nonce);
       iframe.style.border = "0";
@@ -701,9 +757,7 @@
       if (options.allow) iframe.allow = options.allow;
       iframe.setAttribute(
          "sandbox",
-         options.isolate
-            ? "allow-scripts allow-forms"
-            : "allow-scripts allow-same-origin allow-forms",
+         "allow-scripts allow-same-origin allow-forms",
       );
 
       var pending = {};
@@ -714,7 +768,7 @@
       var helloTimer = null;
       var seq = 0;
       var gone = false;
-      // Bumped on every load and on destroy: an async answer is dropped if the frame moved on while it was pending.
+      // Bumped on every load and on destroy: a token or a reply to a page request is dropped if the frame moved on while it was pending.
       var generation = 0;
 
       function hostPost(type, payload, extra) {
@@ -726,7 +780,7 @@
          }
          if (payload !== undefined) msg.payload = payload;
          try {
-            iframe.contentWindow.postMessage(msg, targetOrigin);
+            iframe.contentWindow.postMessage(msg, pageOrigin);
             return true;
          } catch (_e) {
             return false;
@@ -758,6 +812,18 @@
                   /* the page's own 401 handling surfaces a missing token */
                },
             );
+      }
+
+      // The reply to the page's auth.token.request; a getToken that fails answers with handler_error.
+      function answerTokenRequest() {
+         return Promise.resolve()
+            .then(function () {
+               return options.getToken();
+            })
+            .then(function (token) {
+               if (!token) throw new Error("no token");
+               return { token: String(token) };
+            });
       }
 
       function onReady() {
@@ -800,8 +866,8 @@
             sayHello();
          }
          var list = (hostHandlers[m.type] || []).slice();
-         if (m.type === "auth.token.request" && options.getToken) {
-            list.unshift(sendToken);
+         if (m.type === "auth.token.request" && isRequest && options.getToken) {
+            list.unshift(answerTokenRequest);
          }
          if (list.length === 0) {
             if (isRequest) {
@@ -918,9 +984,9 @@
                   );
                }, SEND_TIMEOUT_MS);
                pending[id] = { resolve: resolve, reject: reject, timer: timer };
-               var gen = generation;
+               // Not generation-guarded: a queued send posts once the current document has proved itself.
                function go() {
-                  if (pending[id] && gen === generation) hostPost(type, payload, { id: id });
+                  if (pending[id]) hostPost(type, payload, { id: id });
                }
                if (ready) go();
                else readyWaiters.push(go);
@@ -1064,7 +1130,7 @@
    function setUpLiveReload() {
       if (!inAppMatch) return;
       if (!ctx.environment || !ctx.package) return;
-      if (contextVersion || versionedPath) return; // a version never changes
+      if (fixedVersion) return; // a version never changes
       if (typeof EventSource === "undefined") return;
       var url =
          apiBase +
@@ -1080,9 +1146,7 @@
             if (pending) return;
             pending = true;
             // Tiny debounce to coalesce a flurry of saves
-            setTimeout(function () {
-               location.reload();
-            }, 100);
+            setTimeout(reloadWithNonce, 100);
          });
          es.onerror = function () {
             // Browser will auto-reconnect; nothing to do.

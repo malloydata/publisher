@@ -96,17 +96,23 @@ export interface DataAppBridgeOptions {
    src?: string;
    /** The page's origin, when `src` is not at hand. */
    origin?: string;
-   /** The frame is sandboxed without allow-same-origin: it speaks as "null", and posts go to "*". */
-   isolate?: boolean;
-   /** The bearer token for the page: sent once the page proves the nonce, and whenever it asks. */
+   /**
+    * The bearer token for the page: pushed once the page proves the nonce, and returned in
+    * the reply to the page's `auth.token.request`. Without it that request is answered
+    * `unhandled`, so the page's 401 fails at once instead of waiting.
+    */
    getToken?: () => string | Promise<string>;
-   /** Defaults to a fresh random value. */
+   /**
+    * Defaults to a fresh random value. Pass the nonce the iframe's `src` already carries
+    * when the bridge is created again for the same iframe (a React effect that re-runs):
+    * the page reads its nonce once, so a new random one would never match it.
+    */
    nonce?: string;
 }
 
 export interface DataAppBridge {
    nonce: string;
-   /** `src` with the nonce in its fragment; the iframe must load this URL. */
+   /** `withDataAppNonce(src, nonce)`: `src` with this bridge's nonce in its fragment. */
    srcWithNonce(src: string): string;
    /** A request to the page. Waits for the page to be ready; rejects after 5 s. */
    send<T extends PublisherEventType>(
@@ -134,10 +140,28 @@ const HELLO_TRIES = 5;
 const HELLO_INTERVAL_MS = 500;
 const SEND_TIMEOUT_MS = 5000;
 
-function randomNonce(): string {
+/** A fresh random nonce. Make it before the iframe's `src`, and hand the same one to `createDataAppBridge`. */
+export function createDataAppNonce(): string {
    const bytes = new Uint8Array(16);
    crypto.getRandomValues(bytes);
    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * `src` with the nonce in its fragment, merged with any fragment it already has (an old
+ * nonce is replaced). The iframe must load this URL: the page reads the nonce from it.
+ */
+export function withDataAppNonce(src: string, nonce: string): string {
+   const hash = src.indexOf("#");
+   const base = hash === -1 ? src : src.slice(0, hash);
+   const fragment =
+      hash === -1
+         ? ""
+         : src
+              .slice(hash + 1)
+              .replace(/(^|&)publisher-nonce=[^&]*/g, "")
+              .replace(/^&/, "");
+   return `${base}#${fragment ? `${fragment}&` : ""}publisher-nonce=${nonce}`;
 }
 
 function isEnvelope(m: unknown): m is PublisherEnvelope & {
@@ -173,19 +197,19 @@ export function createDataAppBridge(
    opts: DataAppBridgeOptions = {},
 ): DataAppBridge {
    const win = iframe.ownerDocument.defaultView ?? window;
-   const isolate = opts.isolate === true;
    const source = opts.origin ?? opts.src;
-   if (!isolate && source === undefined) {
+   if (source === undefined) {
       throw new TypeError(
          "createDataAppBridge: opts.src or opts.origin is required",
       );
    }
-   // A sandboxed frame's messages say "null", and a post to it can only use "*".
-   const pageOrigin = isolate
-      ? "null"
-      : new URL(source ?? "", win.location.href).origin;
-   const targetOrigin = isolate ? "*" : pageOrigin;
-   const nonce = opts.nonce ?? randomNonce();
+   const pageOrigin = new URL(source, win.location.href).origin;
+   if (pageOrigin === "null") {
+      throw new TypeError(
+         "createDataAppBridge: the page needs an http(s) origin",
+      );
+   }
+   const nonce = opts.nonce ?? createDataAppNonce();
 
    const pending = new Map<
       string,
@@ -202,7 +226,7 @@ export function createDataAppBridge(
    let isReady = false;
    let readySettled = false;
    let gone = false;
-   // Bumped on every load and on destroy: an async answer is dropped if the frame moved on while it was pending.
+   // Bumped on every load and on destroy: a token or a reply to a page request is dropped if the frame moved on while it was pending.
    let generation = 0;
    let helloTries = 0;
    let helloTimer: ReturnType<typeof setTimeout> | undefined;
@@ -236,7 +260,7 @@ export function createDataAppBridge(
       if (extra?.error) msg.error = extra.error;
       if (payload !== undefined) msg.payload = payload;
       try {
-         iframe.contentWindow?.postMessage(msg, targetOrigin);
+         iframe.contentWindow?.postMessage(msg, pageOrigin);
          return true;
       } catch {
          return false;
@@ -266,6 +290,13 @@ export function createDataAppBridge(
                /* the page's own 401 handling surfaces a missing token */
             },
          );
+   }
+
+   // The reply to the page's auth.token.request; a getToken that fails answers with handler_error.
+   async function answerTokenRequest() {
+      const token = await opts.getToken?.();
+      if (!token) throw new Error("no token");
+      return { token: String(token) };
    }
 
    function noteReady(payload: unknown) {
@@ -327,8 +358,8 @@ export function createDataAppBridge(
          }
       }
       const list = (handlers.get(m.type) ?? []).slice();
-      if (m.type === "auth.token.request" && opts.getToken) {
-         list.unshift(sendToken);
+      if (m.type === "auth.token.request" && isRequest && opts.getToken) {
+         list.unshift(answerTokenRequest);
       }
       if (list.length === 0) {
          if (isRequest) {
@@ -389,21 +420,13 @@ export function createDataAppBridge(
 
    win.addEventListener("message", onMessage);
    iframe.addEventListener("load", onLoad);
+   // Created after the frame loaded (an effect that re-runs): no load event is coming, so greet it now.
+   const loaded = iframe.getAttribute("src");
+   if (loaded && loaded !== "about:blank") sayHello();
 
    return {
       nonce,
-      srcWithNonce(src) {
-         const hash = src.indexOf("#");
-         const base = hash === -1 ? src : src.slice(0, hash);
-         const fragment =
-            hash === -1
-               ? ""
-               : src
-                    .slice(hash + 1)
-                    .replace(/(^|&)publisher-nonce=[^&]*/g, "")
-                    .replace(/^&/, "");
-         return `${base}#${fragment ? `${fragment}&` : ""}publisher-nonce=${nonce}`;
-      },
+      srcWithNonce: (src) => withDataAppNonce(src, nonce),
       send(type, payload) {
          return new Promise((resolve, reject) => {
             if (gone) {
@@ -420,11 +443,9 @@ export function createDataAppBridge(
                );
             }, SEND_TIMEOUT_MS);
             pending.set(id, { resolve, reject, timer });
-            const gen = generation;
+            // Not generation-guarded: a queued send posts once the current document has proved itself.
             const go = () => {
-               if (pending.has(id) && gen === generation) {
-                  post(type, payload, { id });
-               }
+               if (pending.has(id)) post(type, payload, { id });
             };
             if (isReady) go();
             else readyWaiters.push(go);

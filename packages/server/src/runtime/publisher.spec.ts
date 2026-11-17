@@ -75,6 +75,15 @@ function makeClock() {
          now = target;
       },
       pending: () => timers.size,
+      // happy-dom schedules a hashchange for history.replaceState; a browser fires none.
+      runDue() {
+         for (const [id, t] of [...timers]) {
+            if (t.at <= now) {
+               timers.delete(id);
+               t.fn();
+            }
+         }
+      },
    };
 }
 
@@ -166,14 +175,18 @@ function boot(
    if (opts.eventSource) {
       win.EventSource = class {
          static created: string[] = [];
+         static listeners: Record<string, () => void> = {};
          constructor(url: string) {
             (win.EventSource as Json).created.push(url);
          }
-         addEventListener() {}
+         addEventListener(name: string, fn: () => void) {
+            (win.EventSource as Json).listeners[name] = fn;
+         }
       };
    }
 
    win.eval(SOURCE);
+   clock.runDue();
 
    const send = (data: unknown, origin = HOST, source: unknown = parent) => {
       win.dispatchEvent(
@@ -218,22 +231,69 @@ function boundPage(opts: Parameters<typeof boot>[0] = {}) {
 }
 
 describe("page context", () => {
-   it("takes environment, package, version and apiBase from the injected context", async () => {
+   it("takes version and apiBase from the injected context, and names from the URL", async () => {
       const page = boot({
          url: `${PAGE}/environments/urlenv/packages/urlpkg/index.html`,
          context: { ...CONTEXT, apiBase: "/gateway/api/v0/" },
          fetchReplies: [rowsResult(1)],
       });
       expect(plain(page.Publisher.context)).toEqual({
-         environment: "env1",
-         package: "pkg1",
+         environment: "urlenv",
+         package: "urlpkg",
       });
       await page.Publisher.query("m.malloy", "run: x");
       expect(page.fetched).toHaveLength(1); // no pinnedVersion probe
       expect(page.fetched[0].url).toBe(
-         `${PAGE}/gateway/api/v0/environments/env1/packages/pkg1/models/m.malloy/query`,
+         `${PAGE}/gateway/api/v0/environments/urlenv/packages/urlpkg/models/m.malloy/query`,
       );
       expect(JSON.parse(page.fetched[0].init.body).versionId).toBe("1.0.3");
+   });
+
+   it("lets the URL's names win on every path shape the runtime knows", () => {
+      for (const path of [
+         "/environments/urlenv/packages/urlpkg/index.html",
+         "/environments/urlenv/packages/urlpkg/versions/1.0.3/public/index.html",
+         "/apps/urlenv/urlpkg/index.html",
+      ]) {
+         const page = boot({ url: `${PAGE}${path}` });
+         expect(plain(page.Publisher.context)).toEqual({
+            environment: "urlenv",
+            package: "urlpkg",
+         });
+      }
+   });
+
+   it("uses the context's names only when the URL matches no known shape", async () => {
+      const page = boot({ url: `${PAGE}/index.html` });
+      expect(plain(page.Publisher.context)).toEqual({
+         environment: "env1",
+         package: "pkg1",
+      });
+      await page.Publisher.query("m.malloy", "run: x");
+      expect(page.fetched[0].url).toBe(QUERY_URL);
+   });
+
+   it("pins the version named in a versioned path when no context was injected", async () => {
+      const page = boot({
+         context: null,
+         url: `${PAGE}/environments/env1/packages/pkg1/versions/1.0.3/public/index.html`,
+         fetchReplies: [rowsResult(1)],
+      });
+      await page.Publisher.query("m.malloy", "run: x");
+      expect(page.fetched).toHaveLength(1); // no ?versionId= probe
+      expect(JSON.parse(page.fetched[0].init.body).versionId).toBe("1.0.3");
+      // another package is not pinned to this page's version
+      await page.Publisher.query("m.malloy", "run: x", { package: "other" });
+      expect(JSON.parse(page.fetched[1].init.body).versionId).toBeUndefined();
+   });
+
+   it("prefers the context's version over the path's", async () => {
+      const page = boot({
+         context: { ...CONTEXT, versionId: "1.0.9" },
+         url: `${PAGE}/environments/env1/packages/pkg1/versions/1.0.3/public/index.html`,
+      });
+      await page.Publisher.query("m.malloy", "run: x");
+      expect(JSON.parse(page.fetched[0].init.body).versionId).toBe("1.0.9");
    });
 
    it("never takes an apiBase that is not a same-origin path", async () => {
@@ -526,6 +586,88 @@ describe("handshake", () => {
       expect(page.posted[0].msg.nonce).toBeUndefined();
    });
 
+   describe("the nonce in the URL", () => {
+      const at = (hash: string) =>
+         `${PAGE}/environments/env1/packages/pkg1/index.html${hash}`;
+
+      for (const [before, after] of [
+         ["#publisher-nonce=abc", ""],
+         ["#/route&publisher-nonce=abc", "#/route"],
+         ["#/route?tab=2&publisher-nonce=abc", "#/route?tab=2"],
+         ["#sec&publisher-nonce=abc", "#sec"],
+         ["#publisher-nonce=abc&sec", "#sec"],
+         ["#a=1&publisher-nonce=abc&b=2", "#a=1&b=2"],
+      ]) {
+         it(`removes it from ${before}, keeping the rest exactly, and still echoes it`, () => {
+            const page = boot({ url: at(before) });
+            expect(page.win.location.hash).toBe(after);
+            expect(page.win.location.href).toBe(at(after));
+            expect(page.readyPosts()[0].msg.nonce).toBe("abc");
+            page.hello();
+            expect(page.postedOfType("hello").at(-1)!.msg.nonce).toBe("abc");
+         });
+      }
+
+      it("leaves a fragment without a nonce alone", () => {
+         const page = boot({ url: at("#sec") });
+         expect(page.win.location.hash).toBe("#sec");
+         expect(page.readyPosts()[0].msg.nonce).toBeUndefined();
+      });
+
+      function reloadable(hash: string) {
+         const page = boot({
+            url: at(hash),
+            eventSource: true,
+            context: { ...CONTEXT, versionId: null },
+         });
+         let reloads = 0;
+         let hashAtReload = "";
+         Object.defineProperty(page.win.location, "reload", {
+            value: () => {
+               reloads++;
+               hashAtReload = page.win.location.hash;
+            },
+         });
+         const changed = async () => {
+            page.win.EventSource.listeners.changed();
+            await page.clock.advance(100);
+         };
+         return {
+            page,
+            changed,
+            reloads: () => reloads,
+            hashAtReload: () => hashAtReload,
+         };
+      }
+
+      for (const [before, atReload] of [
+         ["#publisher-nonce=abc", "#publisher-nonce=abc"],
+         ["#/route&publisher-nonce=abc", "#/route&publisher-nonce=abc"],
+         ["#sec&publisher-nonce=abc", "#sec&publisher-nonce=abc"],
+      ]) {
+         it(`puts it back before the runtime reloads the page (${before})`, async () => {
+            const r = reloadable(before);
+            expect(r.page.win.location.hash).not.toContain("publisher-nonce");
+            await r.changed();
+            expect(r.reloads()).toBe(1);
+            expect(r.hashAtReload()).toBe(atReload);
+         });
+      }
+
+      it("restores it after whatever fragment the page has moved to", async () => {
+         const r = reloadable("#publisher-nonce=abc");
+         r.page.win.location.hash = "#/other";
+         await r.changed();
+         expect(r.hashAtReload()).toBe("#/other&publisher-nonce=abc");
+      });
+
+      it("reloads a page with no nonce without touching its fragment", async () => {
+         const r = reloadable("#sec");
+         await r.changed();
+         expect(r.hashAtReload()).toBe("#sec");
+      });
+   });
+
    it("ignores non-hello messages until bound", () => {
       const page = boot();
       let calls = 0;
@@ -673,6 +815,26 @@ describe("givens store", () => {
       });
       expect(() => page.Publisher.setGivens(null)).toThrow();
       expect(() => page.Publisher.setGivens([1])).toThrow();
+   });
+
+   it("removes a key set to null, through setGivens and givens.set alike", async () => {
+      const page = boundPage();
+      page.Publisher.setGivens({ a: 1, b: 2, c: 3 });
+      page.Publisher.setGivens({ a: null, d: undefined });
+      expect(plain(page.Publisher.givens)).toEqual({ b: 2, c: 3 });
+      page.Publisher.onGivensChange(() => {});
+      page.send(
+         envelope("givens.set", { id: "r1", payload: { givens: { b: null } } }),
+      );
+      await flush();
+      expect(plain(page.Publisher.givens)).toEqual({ c: 3 });
+      const reply = page.posted.filter((p) => p.msg.reply).at(-1)!;
+      expect(reply.msg.payload).toEqual({ applied: true, givens: { c: 3 } });
+      expect(page.postedOfType("givens.changed").at(-1)!.msg.payload).toEqual({
+         givens: { c: 3 },
+      });
+      await page.Publisher.query("m.malloy", "run: x");
+      expect(JSON.parse(page.fetched[0].init.body).givens).toEqual({ c: 3 });
    });
 
    it("notifies listeners with a copy, tolerates a throwing one, and unsubscribes", () => {
@@ -904,13 +1066,88 @@ describe("auth over the bus", () => {
       await flush();
       expect(page.fetched).toHaveLength(1);
       expect(page.postedOfType("auth.token.request")).toHaveLength(1);
-      expect(page.postedOfType("auth.token.request")[0].msg.id).toBeUndefined();
+      expect(page.postedOfType("auth.token.request")[0].msg.id).toBe("p1");
       page.send(envelope("auth.token", { payload: { token: "tok-1" } }));
       expect(await pending).toEqual([{ i: 0 }]);
       expect(page.fetched).toHaveLength(2);
       expect(page.fetched[1].init.headers.Authorization).toBe("Bearer tok-1");
       expect(page.fetched[0].init.headers.Authorization).toBeUndefined();
       expect(page.clock.pending()).toBe(0); // the wait timer was cleared
+   });
+
+   const tokenReply = (page: Boot, id: string, extra: Json) =>
+      page.send(envelope("auth.token.request", { id, reply: true, ...extra }));
+
+   it("takes the token from the host's reply to auth.token.request", async () => {
+      const page = boundPage();
+      page.replies.push(unauthorized, rowsResult(1));
+      const pending = page.Publisher.query("m.malloy", "run: x");
+      await flush();
+      tokenReply(page, "p1", { payload: { token: "tok-r" } });
+      expect(await pending).toEqual([{ i: 0 }]);
+      expect(page.fetched[1].init.headers.Authorization).toBe("Bearer tok-r");
+      expect(page.clock.pending()).toBe(0);
+   });
+
+   it("fails at once, with the 401, when the host answers the request with an error", async () => {
+      const page = boundPage();
+      page.replies.push(unauthorized);
+      const settled = page.Publisher.query("m.malloy", "run: x").catch(
+         (e: Json) => e,
+      );
+      await flush();
+      tokenReply(page, "p1", {
+         error: { code: "unhandled", message: "No handler" },
+      });
+      const err = await settled;
+      expect(err.status).toBe(401);
+      expect(page.fetched).toHaveLength(1);
+      expect(page.clock.pending()).toBe(0); // no 10 s wait left behind
+      // a later 401 asks again, with a new request id
+      page.replies.push(unauthorized);
+      page.Publisher.query("m.malloy", "run: x").catch(() => {});
+      await flush();
+      expect(
+         page.postedOfType("auth.token.request").map((p) => p.msg.id),
+      ).toEqual(["p1", "p2"]);
+   });
+
+   it("fails at once on a reply with no usable token, and ignores a reply for another id or after the wait", async () => {
+      const page = boundPage();
+      page.replies.push(unauthorized);
+      const settled = page.Publisher.query("m.malloy", "run: x").catch(
+         (e: Json) => e,
+      );
+      await flush();
+      tokenReply(page, "other", { payload: { token: "nope" } }); // not ours
+      expect(page.clock.pending()).toBe(1);
+      tokenReply(page, "p1", { payload: { token: 5 } });
+      expect((await settled).status).toBe(401);
+      tokenReply(page, "p1", { payload: { token: "late" } }); // the wait is over
+      page.replies.push(rowsResult(1));
+      await page.Publisher.query("m.malloy", "run: x");
+      expect(page.fetched.at(-1)!.init.headers.Authorization).toBeUndefined();
+   });
+
+   it("ignores a reply from the wrong origin", async () => {
+      const page = boundPage();
+      page.replies.push(unauthorized);
+      const settled = page.Publisher.query("m.malloy", "run: x").catch(
+         (e: Json) => e,
+      );
+      await flush();
+      page.send(
+         envelope("auth.token.request", {
+            id: "p1",
+            reply: true,
+            payload: { token: "evil" },
+         }),
+         "https://evil.example.com",
+      );
+      expect(page.clock.pending()).toBe(1);
+      await page.clock.advance(10000);
+      expect((await settled).status).toBe(401);
+      expect(page.fetched).toHaveLength(1);
    });
 
    it("shares one token request across concurrent 401s", async () => {
@@ -1194,14 +1431,20 @@ describe("Publisher.embed (host side)", () => {
       );
    });
 
-   it("sandboxes with same-origin by default and without it when isolated", () => {
+   it("sandboxes with same-origin and has no isolate option", () => {
       const page = bootHost();
-      expect(mount(page).handle.iframe.getAttribute("sandbox")).toBe(
-         "allow-scripts allow-same-origin allow-forms",
-      );
-      expect(
-         mount(page, { isolate: true }).handle.iframe.getAttribute("sandbox"),
-      ).toBe("allow-scripts allow-forms");
+      for (const options of [{}, { isolate: true }]) {
+         expect(
+            mount(page, options).handle.iframe.getAttribute("sandbox"),
+         ).toBe("allow-scripts allow-same-origin allow-forms");
+      }
+   });
+
+   it("refuses a src without an http(s) origin, so no post could need *", () => {
+      const page = bootHost();
+      expect(() =>
+         page.Publisher.embed("#slot", { src: "data:text/html,hi" }),
+      ).toThrow("http(s) origin");
    });
 
    it("says hello on load, retries a few times, and stops once the page replies", async () => {
@@ -1279,7 +1522,7 @@ describe("Publisher.embed (host side)", () => {
       expect(plainEmbed.childPosts).toEqual([]);
    });
 
-   it("answers auth.token.request with a fresh token, tolerating a failing getToken", async () => {
+   it("answers the request auth.token.request with a fresh token, and with handler_error when getToken fails", async () => {
       const page = bootHost();
       let n = 0;
       let fail = false;
@@ -1294,17 +1537,41 @@ describe("Publisher.embed (host side)", () => {
       await flush();
       await flush();
       m.childPosts.length = 0;
-      m.fromChild(m.msg("auth.token.request"));
+      m.fromChild(m.msg("auth.token.request", { id: "p1" }));
       await flush();
       await flush();
-      expect(m.childPosts.map((p) => p.msg.payload)).toEqual([
-         { token: "tok-2" },
+      expect(m.childPosts).toEqual([
+         {
+            targetOrigin: APP,
+            msg: {
+               protocol: "publisher",
+               v: 1,
+               type: "auth.token.request",
+               id: "p1",
+               reply: true,
+               payload: { token: "tok-2" },
+            },
+         },
       ]);
       fail = true;
-      m.fromChild(m.msg("auth.token.request"));
+      m.childPosts.length = 0;
+      m.fromChild(m.msg("auth.token.request", { id: "p2" }));
       await flush();
       await flush();
       expect(m.childPosts).toHaveLength(1);
+      expect(m.childPosts[0].msg.error.code).toBe("handler_error");
+   });
+
+   it("answers a token request unhandled when there is no getToken, so the page fails at once", async () => {
+      const m = mount(bootHost());
+      m.load();
+      helloReply(m);
+      m.childPosts.length = 0;
+      m.fromChild(m.msg("auth.token.request", { id: "p1" }));
+      await flush();
+      expect(m.childPosts).toHaveLength(1);
+      expect(m.childPosts[0].msg.reply).toBe(true);
+      expect(m.childPosts[0].msg.error.code).toBe("unhandled");
    });
 
    describe("never posting across a reload", () => {
@@ -1431,8 +1698,14 @@ describe("Publisher.embed (host side)", () => {
       });
       await flush();
       expect(tokens).toBe(0);
-      m.fromChild(m.msg("auth.token.request"), "https://evil.example.com");
-      m.fromChild({ ...m.msg("auth.token.request"), nonce: "wrong" });
+      m.fromChild(
+         m.msg("auth.token.request", { id: "p1" }),
+         "https://evil.example.com",
+      );
+      m.fromChild({
+         ...m.msg("auth.token.request", { id: "p2" }),
+         nonce: "wrong",
+      });
       await flush();
       expect(tokens).toBe(0);
    });
@@ -1468,6 +1741,41 @@ describe("Publisher.embed (host side)", () => {
       expect(await ok).toEqual({ applied: true });
       const err = await bad.catch((e: Json) => e);
       expect(err.code).toBe("unhandled");
+   });
+
+   it("send() issued before the frame's first load still posts once the page replies", async () => {
+      const page = bootHost();
+      const m = mount(page);
+      const sent = m.handle.send("ping", { a: 1 });
+      m.load();
+      helloReply(m);
+      await flush();
+      const ping = m.childPosts.filter((p) => p.msg.type === "ping");
+      expect(ping).toHaveLength(1);
+      m.fromChild(
+         m.msg("ping", { id: ping[0].msg.id, reply: true, payload: "pong" }),
+      );
+      expect(await sent).toBe("pong");
+   });
+
+   it("a send queued across a reload posts to the document that answers", async () => {
+      const page = bootHost();
+      const m = mount(page);
+      m.load();
+      helloReply(m);
+      await flush();
+      m.load(); // navigated: not ready again until the new document answers
+      m.childPosts.length = 0;
+      const sent = m.handle.send("ping");
+      expect(m.childPosts.map((p) => p.msg.type)).toEqual([]);
+      helloReply(m);
+      await flush();
+      const ping = m.childPosts.filter((p) => p.msg.type === "ping");
+      expect(ping).toHaveLength(1);
+      m.fromChild(
+         m.msg("ping", { id: ping[0].msg.id, reply: true, payload: 1 }),
+      );
+      expect(await sent).toBe(1);
    });
 
    it("send() rejects after 5 s and ignores a late reply", async () => {
@@ -1531,34 +1839,35 @@ describe("Publisher.embed (host side)", () => {
       expect(m.handle.iframe.style.height).toBe("321px");
    });
 
-   it("never sends the nonce, in either mode and for every kind of post", async () => {
-      for (const isolate of [false, true]) {
-         const page = bootHost();
-         const m = mount(page, { isolate, getToken: () => "tok" });
-         const origin = isolate ? "null" : APP;
-         m.load();
-         m.fromChild(m.msg("hello", { id: "hello-1", reply: true }), origin);
-         m.handle.on("chat.ask", () => 1);
-         const sent = m.handle.send("ping");
-         m.fromChild(m.msg("auth.token.request"), origin);
-         m.fromChild(m.msg("chat.ask", { id: "p1" }), origin);
-         m.fromChild(m.msg("nobody.ask", { id: "p2" }), origin);
-         await flush();
-         await flush();
-         const types = new Set(m.childPosts.map((p) => p.msg.type));
-         for (const t of [
-            "hello",
-            "auth.token",
-            "ping",
-            "chat.ask",
-            "nobody.ask",
-         ]) {
-            expect(types.has(t)).toBe(true);
-         }
-         for (const p of m.childPosts) expect("nonce" in p.msg).toBe(false);
-         m.handle.destroy();
-         await sent.catch(() => {});
+   it("never sends the nonce, and targets the page's exact origin, for every kind of post", async () => {
+      const page = bootHost();
+      const m = mount(page, { getToken: () => "tok" });
+      m.load();
+      helloReply(m);
+      m.handle.on("chat.ask", () => 1);
+      const sent = m.handle.send("ping");
+      m.fromChild(m.msg("auth.token.request", { id: "p0" }));
+      m.fromChild(m.msg("chat.ask", { id: "p1" }));
+      m.fromChild(m.msg("nobody.ask", { id: "p2" }));
+      await flush();
+      await flush();
+      const types = new Set(m.childPosts.map((p) => p.msg.type));
+      for (const t of [
+         "hello",
+         "auth.token",
+         "auth.token.request",
+         "ping",
+         "chat.ask",
+         "nobody.ask",
+      ]) {
+         expect(types.has(t)).toBe(true);
       }
+      for (const p of m.childPosts) {
+         expect("nonce" in p.msg).toBe(false);
+         expect(p.targetOrigin).toBe(APP);
+      }
+      m.handle.destroy();
+      await sent.catch(() => {});
    });
 
    it("rejects a page that has not proved the nonce after a reload, and sends it no token", async () => {
@@ -1597,26 +1906,6 @@ describe("Publisher.embed (host side)", () => {
       await flush();
       await flush();
       expect(tokens).toBe(2);
-   });
-
-   it("isolate accepts only the null origin and posts with *", async () => {
-      const page = bootHost();
-      let tokens = 0;
-      const m = mount(page, {
-         isolate: true,
-         getToken: () => String(++tokens),
-      });
-      m.load();
-      expect(m.childPosts[0].targetOrigin).toBe("*");
-      helloReply(m); // from the app's origin: not what a sandboxed frame reports
-      await flush();
-      expect(tokens).toBe(0);
-      m.fromChild(m.msg("hello", { id: "hello-1", reply: true }), "null");
-      await flush();
-      await flush();
-      expect(tokens).toBe(1);
-      expect(m.childPosts.at(-1)!.msg.type).toBe("auth.token");
-      expect(m.childPosts.at(-1)!.targetOrigin).toBe("*");
    });
 
    it("re-handshakes when the frame reloads", async () => {
@@ -1685,33 +1974,75 @@ describe("Publisher.embed (host side)", () => {
          expect(fixture.appOrigin).toBe(APP);
       });
 
-      for (const isolate of [false, true]) {
-         for (const c of fixture.events) {
-            it(`${isolate ? "isolated: " : ""}${c.name}`, () => {
-               const m = mount(bootHost(), { isolate });
-               const seen: unknown[] = [];
-               m.handle.on("probe.event", (p: unknown) => seen.push(p));
-               m.fromChild(
-                  fill(c.message, { $NONCE: m.nonce }),
-                  c.origin,
-                  c.source === "iframe" ? m.child : { postMessage() {} },
-               );
-               expect(seen).toHaveLength(
-                  (isolate ? c.acceptIsolated : c.accept) ? 1 : 0,
-               );
-            });
-         }
+      for (const c of fixture.events) {
+         it(c.name, () => {
+            const m = mount(bootHost());
+            const seen: unknown[] = [];
+            m.handle.on("probe.event", (p: unknown) => seen.push(p));
+            m.fromChild(
+               fill(c.message, { $NONCE: m.nonce }),
+               c.origin,
+               c.source === "iframe" ? m.child : { postMessage() {} },
+            );
+            expect(seen).toHaveLength(c.accept ? 1 : 0);
+         });
       }
 
       for (const c of fixture.handshake) {
          it(`handshake: ${c.name}`, async () => {
             const m = mount(bootHost());
-            m.handle.send("probe", {}).catch(() => {});
+            const probe = m.handle
+               .send("probe", {})
+               .then((value: unknown) => ({ value }))
+               .catch((error: Json) => ({ error }));
+            if (c.loadFirst) m.load();
             m.fromChild(fill(c.message, { $NONCE: m.nonce }));
             await flush();
             const types = m.childPosts.map((p) => p.msg.type);
             expect(types.includes("probe")).toBe(c.probePosted);
             expect(types.includes("hello")).toBe(c.helloPosted);
+            if (c.loadFirst && c.probePosted) {
+               const id = m.childPosts.find((p) => p.msg.type === "probe")!.msg
+                  .id;
+               m.fromChild(m.msg("probe", { id, reply: true, payload: "ok" }));
+               expect(await probe).toEqual({ value: "ok" });
+            }
+         });
+      }
+
+      for (const c of fixture.tokenRequests) {
+         it(`token request: ${c.name}`, async () => {
+            const getToken =
+               c.getToken === "throws"
+                  ? () => {
+                       throw new Error("no token");
+                    }
+                  : c.getToken
+                    ? () => c.getToken
+                    : undefined;
+            const m = mount(bootHost(), getToken ? { getToken } : {});
+            m.load();
+            helloReply(m);
+            await flush();
+            await flush();
+            m.childPosts.length = 0;
+            m.fromChild(fill(c.message, { $NONCE: m.nonce }));
+            await flush();
+            await flush();
+            if (c.reply === null) {
+               expect(m.childPosts).toEqual([]);
+               return;
+            }
+            expect(m.childPosts).toHaveLength(1);
+            const posted = m.childPosts[0].msg;
+            expect(posted.type).toBe("auth.token.request");
+            expect(posted.id).toBe(c.message.id);
+            expect(posted.reply).toBe(true);
+            if (c.reply.payload) {
+               expect(posted.payload).toEqual(c.reply.payload);
+            } else {
+               expect(posted.error.code).toBe(c.reply.error.code);
+            }
          });
       }
 

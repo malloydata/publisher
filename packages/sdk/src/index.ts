@@ -24,6 +24,7 @@ export { packageFileUrl } from "./utils/dataAppEmbed";
 // The host side of the data-app event bus, for hosts that own their iframe.
 export {
    createDataAppBridge,
+   createDataAppNonce,
    PublisherBridgeError,
    type DataAppBridge,
    type DataAppBridgeOptions,
@@ -38,5 +39,6 @@ export {
    type PublisherQueryRan,
    type PublisherReply,
    type ReadyPayload,
+   withDataAppNonce,
 } from "./utils/dataAppBridge";
 export * from "./constants/docLinks";

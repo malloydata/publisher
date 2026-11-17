@@ -4,8 +4,10 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import {
    createDataAppBridge,
+   createDataAppNonce,
    type DataAppBridge,
    type DataAppBridgeOptions,
+   withDataAppNonce,
 } from "./dataAppBridge";
 import fixture from "./dataAppBus.fixture.json";
 
@@ -26,7 +28,7 @@ const plain = (v: unknown): Json => JSON.parse(JSON.stringify(v));
 
 // A fake contentWindow with a postMessage spy, and hand-built MessageEvents: the DOM's own
 // postMessage would check origins and stamp source and origin itself.
-function mount(opts: DataAppBridgeOptions = { src: SRC }) {
+function mount(opts: DataAppBridgeOptions = { src: SRC }, iframeSrc?: string) {
    const posts: Posted[] = [];
    const child = {
       postMessage(msg: unknown, targetOrigin: string) {
@@ -35,10 +37,11 @@ function mount(opts: DataAppBridgeOptions = { src: SRC }) {
    };
    const iframe = document.createElement("iframe");
    Object.defineProperty(iframe, "contentWindow", { value: child });
+   if (iframeSrc !== undefined) iframe.setAttribute("src", iframeSrc);
    const bridge = createDataAppBridge(iframe, opts);
    const fromChild = (
       data: unknown,
-      origin: string = opts.isolate ? "null" : APP,
+      origin: string = APP,
       source: unknown = child,
    ) =>
       window.dispatchEvent(
@@ -100,12 +103,16 @@ afterEach(() => {
 });
 
 describe("createDataAppBridge", () => {
-   it("needs an origin unless isolated", () => {
+   it("needs an origin, and one a post can name", () => {
       const iframe = document.createElement("iframe");
       expect(() => createDataAppBridge(iframe)).toThrow(TypeError);
       expect(() =>
-         createDataAppBridge(iframe, { isolate: true }).destroy(),
-      ).not.toThrow();
+         createDataAppBridge(iframe, { src: "data:text/html,hi" }),
+      ).toThrow("http(s) origin");
+      // there is no isolate option: it neither relaxes the origin nor makes a post go to "*"
+      expect(() =>
+         createDataAppBridge(iframe, { isolate: true } as DataAppBridgeOptions),
+      ).toThrow(TypeError);
    });
 
    it("takes the origin from src or from origin", async () => {
@@ -146,6 +153,37 @@ describe("srcWithNonce", () => {
    });
 });
 
+describe("the nonce helpers", () => {
+   it("createDataAppNonce is random hex", () => {
+      expect(createDataAppNonce()).toMatch(/^[0-9a-f]{32}$/);
+      expect(createDataAppNonce()).not.toBe(createDataAppNonce());
+   });
+
+   it("withDataAppNonce keeps every other fragment byte and replaces an old nonce", () => {
+      expect(withDataAppNonce(SRC, "n1")).toBe(`${SRC}#publisher-nonce=n1`);
+      expect(withDataAppNonce(`${SRC}#/route`, "n1")).toBe(
+         `${SRC}#/route&publisher-nonce=n1`,
+      );
+      expect(
+         withDataAppNonce(`${SRC}?x=1#a=1&publisher-nonce=old&b=2`, "n1"),
+      ).toBe(`${SRC}?x=1#a=1&b=2&publisher-nonce=n1`);
+      expect(withDataAppNonce(`${SRC}#publisher-nonce=old`, "n1")).toBe(
+         `${SRC}#publisher-nonce=n1`,
+      );
+   });
+
+   it("a bridge made with a nonce and its src agree, so a recreated bridge still matches the page", async () => {
+      const nonce = createDataAppNonce();
+      const src = withDataAppNonce(SRC, nonce);
+      const first = mount({ src, nonce }, src);
+      first.bridge.destroy();
+      const second = track(mount({ src, nonce }, src));
+      expect(second.bridge.srcWithNonce(SRC)).toBe(src);
+      second.helloReply();
+      await expect(second.bridge.ready).resolves.toBeDefined();
+   });
+});
+
 describe("handshake", () => {
    it("says hello on load, retries every 500 ms up to five times, and stops once the page replies", () => {
       const m = track(mount());
@@ -165,6 +203,21 @@ describe("handshake", () => {
       m.helloReply();
       advance(10000);
       expect(m.ofType("hello")).toHaveLength(2);
+   });
+
+   it("greets a frame that had already loaded when the bridge was created", () => {
+      const m = track(mount({ src: SRC }, `${SRC}#publisher-nonce=n`));
+      expect(m.ofType("hello")).toHaveLength(1);
+      expect(m.posts[0].targetOrigin).toBe(APP);
+      m.helloReply();
+      advance(10000);
+      expect(m.ofType("hello")).toHaveLength(1);
+   });
+
+   it("does not greet a frame with no src, or one still on about:blank", () => {
+      expect(track(mount({ src: SRC })).posts).toEqual([]);
+      expect(track(mount({ src: SRC }, "")).posts).toEqual([]);
+      expect(track(mount({ src: SRC }, "about:blank")).posts).toEqual([]);
    });
 
    it("gives up after five hellos", () => {
@@ -222,34 +275,74 @@ describe("handshake", () => {
 });
 
 describe("what the host accepts, from the shared fixture", () => {
-   for (const isolate of [false, true]) {
-      for (const c of fixture.events) {
-         it(`${isolate ? "isolated: " : ""}${c.name}`, () => {
-            const m = track(mount({ src: SRC, isolate }));
-            const seen: unknown[] = [];
-            m.bridge.on("probe.event", (p) => seen.push(p));
-            const other = { postMessage() {} };
-            m.fromChild(
-               fill(c.message, { $NONCE: m.bridge.nonce }),
-               c.origin,
-               c.source === "iframe" ? m.child : other,
-            );
-            expect(seen).toHaveLength(
-               (isolate ? c.acceptIsolated : c.accept) ? 1 : 0,
-            );
-         });
-      }
+   for (const c of fixture.events) {
+      it(c.name, () => {
+         const m = track(mount({ src: SRC }));
+         const seen: unknown[] = [];
+         m.bridge.on("probe.event", (p) => seen.push(p));
+         const other = { postMessage() {} };
+         m.fromChild(
+            fill(c.message, { $NONCE: m.bridge.nonce }),
+            c.origin,
+            c.source === "iframe" ? m.child : other,
+         );
+         expect(seen).toHaveLength(c.accept ? 1 : 0);
+      });
    }
 
    for (const c of fixture.handshake) {
       it(`handshake: ${c.name}`, async () => {
          const m = track(mount());
-         const probe = m.bridge.send("probe", {});
-         probe.catch(() => {});
+         const probe = m.bridge
+            .send("probe", {})
+            .then((value) => ({ value }))
+            .catch((error: Json) => ({ error }));
+         if ("loadFirst" in c && c.loadFirst) m.load();
          m.fromChild(fill(c.message, { $NONCE: m.bridge.nonce }));
          await flush();
          expect(m.ofType("probe").length > 0).toBe(c.probePosted);
          expect(m.ofType("hello").length > 0).toBe(c.helloPosted);
+         if ("loadFirst" in c && c.loadFirst && c.probePosted) {
+            const id = m.ofType("probe")[0].msg.id;
+            m.fromChild(m.msg("probe", { id, reply: true, payload: "ok" }));
+            expect(await probe).toEqual({ value: "ok" });
+         }
+      });
+   }
+
+   for (const c of fixture.tokenRequests) {
+      it(`token request: ${c.name}`, async () => {
+         const getToken =
+            c.getToken === "throws"
+               ? () => {
+                    throw new Error("no token");
+                 }
+               : c.getToken
+                 ? () => c.getToken as string
+                 : undefined;
+         const m = track(
+            mount(getToken ? { src: SRC, getToken } : { src: SRC }),
+         );
+         m.load();
+         m.helloReply();
+         await flush();
+         m.posts.length = 0;
+         m.fromChild(fill(c.message, { $NONCE: m.bridge.nonce }));
+         await flush();
+         if (c.reply === null) {
+            expect(m.posts).toEqual([]);
+            return;
+         }
+         expect(m.posts).toHaveLength(1);
+         const posted = m.posts[0].msg;
+         expect(posted.type).toBe("auth.token.request");
+         expect(posted.id).toBe((c.message as Json).id);
+         expect(posted.reply).toBe(true);
+         if ("payload" in c.reply) {
+            expect(posted.payload).toEqual(c.reply.payload);
+         } else {
+            expect(posted.error.code).toBe(c.reply.error.code);
+         }
       });
    }
 
@@ -279,60 +372,42 @@ describe("what the host accepts, from the shared fixture", () => {
 });
 
 describe("what the host sends", () => {
-   it("never includes the nonce, in either mode and for every kind of post", async () => {
-      for (const isolate of [false, true]) {
-         const m = track(mount({ src: SRC, isolate, getToken: () => "tok" }));
-         m.load();
-         m.helloReply();
-         m.bridge.on("chat.ask", () => 1);
-         const sent = m.bridge.send("ping");
-         m.fromChild(m.msg("auth.token.request"));
-         m.fromChild(m.msg("chat.ask", { id: "p1" }));
-         m.fromChild(m.msg("nobody.ask", { id: "p2" }));
-         await flush();
-         const types = new Set(m.posts.map((p) => p.msg.type));
-         for (const t of [
-            "hello",
-            "auth.token",
-            "ping",
-            "chat.ask",
-            "nobody.ask",
-         ]) {
-            expect(types.has(t)).toBe(true);
-         }
-         for (const p of m.posts) expect("nonce" in p.msg).toBe(false);
-         m.bridge.destroy();
-         await sent.catch(() => {});
-      }
-   });
-
-   it("posts to the page's origin, or to * when isolated", async () => {
-      const plainFrame = track(mount());
-      plainFrame.load();
-      expect(plainFrame.posts[0].targetOrigin).toBe(APP);
-
-      const isolated = track(mount({ isolate: true, getToken: () => "t" }));
-      isolated.load();
-      isolated.helloReply();
-      await flush();
-      expect(isolated.posts.length).toBeGreaterThan(1);
-      for (const p of isolated.posts) expect(p.targetOrigin).toBe("*");
-   });
-
-   it("accepts only the null origin when isolated", async () => {
-      let tokens = 0;
-      const m = track(
-         mount({ isolate: true, getToken: () => String(++tokens) }),
-      );
+   it("never includes the nonce, and posts to the page's exact origin, for every kind of post", async () => {
+      const m = track(mount({ src: SRC, getToken: () => "tok" }));
       m.load();
-      // From the app's origin: not what a sandboxed frame reports.
-      m.fromChild(m.msg("hello", { id: "hello-1", reply: true }), APP);
+      m.helloReply();
+      m.bridge.on("chat.ask", () => 1);
+      const sent = m.bridge.send("ping");
+      m.fromChild(m.msg("auth.token.request", { id: "p0" }));
+      m.fromChild(m.msg("chat.ask", { id: "p1" }));
+      m.fromChild(m.msg("nobody.ask", { id: "p2" }));
       await flush();
-      expect(tokens).toBe(0);
+      const types = new Set(m.posts.map((p) => p.msg.type));
+      for (const t of [
+         "hello",
+         "auth.token",
+         "auth.token.request",
+         "ping",
+         "chat.ask",
+         "nobody.ask",
+      ]) {
+         expect(types.has(t)).toBe(true);
+      }
+      for (const p of m.posts) {
+         expect("nonce" in p.msg).toBe(false);
+         expect(p.targetOrigin).toBe(APP);
+      }
+      m.bridge.destroy();
+      await sent.catch(() => {});
+   });
+
+   it("rejects a message from a sandboxed (null-origin) document", async () => {
+      let tokens = 0;
+      const m = track(mount({ src: SRC, getToken: () => String(++tokens) }));
+      m.load();
       m.fromChild(m.msg("hello", { id: "hello-1", reply: true }), "null");
       await flush();
-      expect(tokens).toBe(1);
-      expect(m.posts.at(-1)!.msg.type).toBe("auth.token");
+      expect(tokens).toBe(0);
    });
 });
 
@@ -366,6 +441,39 @@ describe("send", () => {
       expect(await ok).toEqual({ applied: true });
       const err = (await bad.catch((e: Json) => e)) as Json;
       expect(err.code).toBe("unhandled");
+   });
+
+   it("issued before the frame's first load, still posts once the page replies", async () => {
+      const m = track(mount());
+      const sent = m.bridge.send("ping", { a: 1 });
+      m.load();
+      m.helloReply();
+      await flush();
+      const ping = m.ofType("ping");
+      expect(ping).toHaveLength(1);
+      m.fromChild(
+         m.msg("ping", { id: ping[0].msg.id, reply: true, payload: "pong" }),
+      );
+      expect(await sent).toBe("pong");
+   });
+
+   it("queued across a reload, posts to the document that answers", async () => {
+      const m = track(mount());
+      m.load();
+      m.helloReply();
+      await flush();
+      m.load(); // navigated: not ready again until the new document answers
+      m.posts.length = 0;
+      const sent = m.bridge.send("ping");
+      expect(m.ofType("ping")).toEqual([]);
+      m.helloReply();
+      await flush();
+      const ping = m.ofType("ping");
+      expect(ping).toHaveLength(1);
+      m.fromChild(
+         m.msg("ping", { id: ping[0].msg.id, reply: true, payload: 1 }),
+      );
+      expect(await sent).toBe(1);
    });
 
    it("rejects after 5 s and ignores a late reply", async () => {
@@ -461,7 +569,7 @@ describe("the token", () => {
       expect(bare.posts).toEqual([]);
    });
 
-   it("answers auth.token.request with a fresh token, tolerating a failing getToken", async () => {
+   it("answers the request auth.token.request with a fresh token, and with handler_error when getToken fails", async () => {
       let n = 0;
       let fail = false;
       const m = track(
@@ -477,13 +585,39 @@ describe("the token", () => {
       m.helloReply();
       await flush();
       m.posts.length = 0;
-      m.fromChild(m.msg("auth.token.request"));
+      m.fromChild(m.msg("auth.token.request", { id: "p1" }));
       await flush();
-      expect(m.posts.map((p) => p.msg.payload)).toEqual([{ token: "tok-2" }]);
+      expect(m.posts).toEqual([
+         {
+            targetOrigin: APP,
+            msg: {
+               protocol: "publisher",
+               v: 1,
+               type: "auth.token.request",
+               id: "p1",
+               reply: true,
+               payload: { token: "tok-2" },
+            },
+         },
+      ]);
       fail = true;
-      m.fromChild(m.msg("auth.token.request"));
+      m.posts.length = 0;
+      m.fromChild(m.msg("auth.token.request", { id: "p2" }));
       await flush();
       expect(m.posts).toHaveLength(1);
+      expect(m.posts[0].msg.error.code).toBe("handler_error");
+   });
+
+   it("answers a token request unhandled when there is no getToken, so the page fails at once", async () => {
+      const m = track(mount());
+      m.load();
+      m.helloReply();
+      m.posts.length = 0;
+      m.fromChild(m.msg("auth.token.request", { id: "p1" }));
+      await flush();
+      expect(m.posts).toHaveLength(1);
+      expect(m.posts[0].msg.reply).toBe(true);
+      expect(m.posts[0].msg.error.code).toBe("unhandled");
    });
 
    it("is withheld from a request that does not carry the nonce", async () => {
@@ -494,8 +628,11 @@ describe("the token", () => {
       await flush();
       expect(tokens).toBe(1);
       m.posts.length = 0;
-      m.fromChild({ ...m.msg("auth.token.request"), nonce: undefined });
-      m.fromChild(m.msg("auth.token.request", { nonce: "wrong" }));
+      m.fromChild({
+         ...m.msg("auth.token.request", { id: "p1" }),
+         nonce: undefined,
+      });
+      m.fromChild(m.msg("auth.token.request", { id: "p2", nonce: "wrong" }));
       await flush();
       expect(tokens).toBe(1);
       expect(m.posts).toEqual([]);
@@ -520,7 +657,7 @@ describe("the token", () => {
          m.msg("hello", { id: "hello-1", reply: true, nonce: "wrong" }),
       );
       m.fromChild(stranger("ready"));
-      m.fromChild(stranger("auth.token.request"));
+      m.fromChild(stranger("auth.token.request", { id: "p1" }));
       const queued = m.bridge.send("secret", {});
       queued.catch(() => {});
       await flush();

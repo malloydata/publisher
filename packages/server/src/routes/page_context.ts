@@ -4,8 +4,9 @@
 /**
  * The context Publisher hands a data-app page: which environment, package and
  * version it was served from, where the API lives, and which hosts may embed
- * it. Injected into the page's HTML as a JSON data block, so the runtime reads
- * it instead of guessing from the URL.
+ * it. Injected into the page's HTML as a JSON data block. The runtime takes
+ * the version, API base and hosts from it, and the names only when its URL has
+ * none (a gateway may rename paths, so the URL's names win).
  */
 
 import { hostOriginPattern } from "../frame_ancestors";
