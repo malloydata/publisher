@@ -627,8 +627,8 @@ the query reads, in a `storage=` table and a colocated one (a database origin) a
 
 The answers are live's, so nothing is wrong, only slower. Each query's path report says
 `servedBy: live` and skips the table as `WARNED` with code `served-copy-not-served`; the package
-warning of that code names the reason. A v1 `#@ persist` source leaves such a column out per query
-instead. An `except:` of the struct on the materialized source does not change this.
+warning of that code names the reason; the path report itself does not. A v1 `#@ persist`
+`storage=` source stores a struct column of its own and serves it from the table.
 
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
 reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A
