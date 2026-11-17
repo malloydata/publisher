@@ -39,7 +39,7 @@ type MaterializationRunsListProps = {
    mutable: boolean;
    isMutating: boolean;
    onStop: (materialization: Materialization) => void;
-   onDelete: (materialization: Materialization, dropTables: boolean) => void;
+   onDelete: (materialization: Materialization) => void;
    onViewDetails: (materialization: Materialization) => void;
 };
 
@@ -115,7 +115,7 @@ function MaterializationRow({
    mutable: boolean;
    isMutating: boolean;
    onStop: (materialization: Materialization) => void;
-   onDelete: (materialization: Materialization, dropTables: boolean) => void;
+   onDelete: (materialization: Materialization) => void;
    onViewDetails: (materialization: Materialization) => void;
 }) {
    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
@@ -230,9 +230,7 @@ function MaterializationRow({
                            materialization={materialization}
                            isMutating={isMutating}
                            onCloseDialog={handleMenuClose}
-                           onDelete={(dropTables) =>
-                              onDelete(materialization, dropTables)
-                           }
+                           onDelete={() => onDelete(materialization)}
                         />
                      )}
                   </Menu>

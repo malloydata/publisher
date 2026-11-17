@@ -31,7 +31,7 @@ malloy-pub list materialization --environment my-environment --package my-packag
 malloy-pub materialize --environment my-environment --package my-package --wait
 malloy-pub get materialization <id> --environment my-environment --package my-package
 malloy-pub stop-materialization <id> --environment my-environment --package my-package
-malloy-pub delete materialization <id> --environment my-environment --package my-package --drop-tables
+malloy-pub delete materialization <id> --environment my-environment --package my-package
 
 # Build manifest (the tables a materialization produced)
 malloy-pub get manifest --environment my-environment --package my-package
@@ -71,7 +71,7 @@ Resource (CRUD) verbs:
 - `malloy-pub get <resource> [name]` - Get resource details (environment, package, connection, materialization, model, notebook, manifest)
 - `malloy-pub create <resource> [name]` - Create a resource (environment, package, connection)
 - `malloy-pub update <resource> [name]` - Update a resource (environment, package, connection)
-- `malloy-pub delete <resource> [name]` - Delete a resource (environment, package, connection, materialization). `delete materialization <id> [--drop-tables]` also drops the materialized physical tables — including tables built into a `storage=` DuckDB/DuckLake destination (a destination-aware drop), not just in-warehouse tables.
+- `malloy-pub delete <resource> [name]` - Delete a resource (environment, package, connection, materialization). `delete materialization <id>` deletes the run's record only; the tables it built stay, so drop any you no longer need through their connection after checking that no remaining run still serves them.
 
 Action commands:
 
