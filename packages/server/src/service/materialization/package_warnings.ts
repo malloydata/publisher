@@ -176,9 +176,8 @@ const KEPT_REASON_TEXT: Record<KeptTable["reason"], string> = {
    author_name:
       "It is at a name= the author chose, which Publisher never drops, since " +
       "a reader outside Malloy may rely on it. Drop it yourself once nothing " +
-      "reads it, or delete the runs that built it with dropTables=true, " +
-      "which drops it only while no other committed run of the package " +
-      "names a table of that name, in any place.",
+      "reads it: check that no remaining run, of any version, names a table " +
+      "with that name in any place, then drop it through its connection.",
    destination_missing:
       "Its storage destination is no longer configured under that name, so " +
       "Publisher cannot reach it to drop it. If the destination was renamed " +
@@ -190,10 +189,9 @@ const KEPT_REASON_TEXT: Record<KeptTable["reason"], string> = {
       "table (two names for one DuckLake, a connection that reaches the " +
       "destination, or on DuckDB a catalog and a schema of one database). " +
       "So this may be the very table the package serves now, and Publisher " +
-      "never drops it, in a reclaim or when a run is deleted with " +
-      "dropTables=true. Check whether it is before doing anything with it. " +
-      "To clear this warning, delete the runs that built it here without " +
-      "dropTables (a record-only delete); the next auto-run stops listing it.",
+      "never drops it. Check whether it is before doing anything with it. " +
+      "To clear this warning, delete the runs that built it here (a delete " +
+      "is record-only); the next auto-run stops listing it.",
 };
 
 /**

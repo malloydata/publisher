@@ -60,6 +60,25 @@ describe("a malformed boolean query param answers { code, message }", () => {
    });
 });
 
+describe("dropTables=true on a materialization delete answers { code, message }", () => {
+   it.each([`${PKG}/materializations/m1`, `${LEGACY_PKG}/materializations/m1`])(
+      "DELETE %s?dropTables=true",
+      async (path) => {
+         const res = await request(app).delete(`${path}?dropTables=true`);
+         expect(res.status).toBe(400);
+         expect(res.body).toEqual({
+            code: 400,
+            message:
+               "dropTables=true is no longer supported: deleting a " +
+               "materialization is record-only and never drops a table. " +
+               "Delete without dropTables, and drop any table you want gone " +
+               "yourself through its connection, after checking that no " +
+               "remaining run, of any version, names a table with that name.",
+         });
+      },
+   );
+});
+
 describe("reload on a collection answers { code, message }", () => {
    it.each([
       [
