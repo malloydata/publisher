@@ -10472,7 +10472,10 @@ components:
             `retryable`, keyed by sourceEntityId, and whose `entries` is
             empty. A run interrupted at MANIFEST_ROWS_READY (the server
             stopped while it loaded its manifest) ends FAILED with its
-            manifest. A FAILED run's manifest is never served or bound.
+            manifest. Publisher never serves or binds a FAILED run's
+            manifest; a host may still bind the sources it reused, from its
+            own records. Such a manifest has no `builtAt`, since nothing was
+            built; the run's `completedAt` says when it ended.
         startedAt:
           type: ["string", "null"]
           format: date-time
@@ -10495,8 +10498,9 @@ components:
             nothing, the whole run's answer beside each source's own in
             `manifest.failures`: `false` when every source failed
             deterministically or was refused, `true` when any failure was
-            transient, with the same rules as `SourceFailure.retryable`. Absent when unclassified, for a
-            cancelled run, and from a Publisher that predates it.
+            transient, with the same rules as `SourceFailure.retryable`.
+            Absent when unclassified, for a cancelled run, and from a
+            Publisher that predates it.
             `errorAtCancel` (string) is set on a CANCELLED run whose last
             error was not the cancellation itself: the message of the failure
             the cancel raced, which `error` reports only as "Cancelled".

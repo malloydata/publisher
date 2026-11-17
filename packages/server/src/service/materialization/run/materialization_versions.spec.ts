@@ -905,6 +905,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
       expect(failed.error).toBe("summary: Binder Error: no column x");
       expect(failed.metadata?.errorRetryable).toBe(false);
       expect(failed.manifest?.entries).toEqual({});
+      expect(failed.manifest?.builtAt).toBeUndefined();
       expect(failed.manifest?.failures).toEqual({
          bsummary: {
             sourceEntityId: "bsummary",

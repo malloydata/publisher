@@ -904,6 +904,13 @@ export class MaterializationEligibilityError extends Error {
 
    readonly reason?: EligibilityRefusalReason;
 
+   /**
+    * When a run refused every source it was asked to build: each source's
+    * own refusal, by sourceEntityId, which the FAILED run records on its
+    * manifest (`failedRunManifestOf`, materialization/run).
+    */
+   runFailures?: Record<string, object>;
+
    constructor(error: { message: string; reason?: EligibilityRefusalReason }) {
       super(error.message);
       this.name = "MaterializationEligibilityError";

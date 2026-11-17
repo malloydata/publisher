@@ -281,6 +281,8 @@ export function combineRetryable(
  */
 export class BuildRunFailedError extends Error {
    readonly retryable: BuildRetryable;
+   /** Each source's own failure, by sourceEntityId ({@link withFailedRunManifest}). */
+   runFailures?: Record<string, SourceFailure>;
 
    constructor(message: string, retryable: BuildRetryable) {
       super(message);
@@ -292,22 +294,30 @@ export class BuildRunFailedError extends Error {
 /**
  * What a run that built nothing records as its manifest: each source's own
  * failure, keyed by its address, and no entries. Recorded on the FAILED run
- * so a consumer can attribute the failure per source; never served, since
- * every reader that binds or reuses a run counts MANIFEST_FILE_READY runs
- * only.
+ * so a consumer can attribute the failure per source; Publisher never serves
+ * or binds it, since every reader that binds or reuses a run counts
+ * MANIFEST_FILE_READY runs only.
  */
 export interface FailedRunManifest {
    failures: Record<string, SourceFailure>;
 }
 
-const failedRunManifests = new WeakMap<object, FailedRunManifest>();
+/** An error a run that built nothing throws, which carries its failures. */
+type CarriesRunFailures = BuildRunFailedError | MaterializationEligibilityError;
+
+function carriesRunFailures(err: unknown): err is CarriesRunFailures {
+   return (
+      err instanceof BuildRunFailedError ||
+      err instanceof MaterializationEligibilityError
+   );
+}
 
 /** `err`, carrying the manifest its failed run records. */
-export function withFailedRunManifest<E extends Error>(
+export function withFailedRunManifest<E extends CarriesRunFailures>(
    err: E,
    manifest: FailedRunManifest,
 ): E {
-   failedRunManifests.set(err, manifest);
+   err.runFailures = manifest.failures;
    return err;
 }
 
@@ -315,9 +325,10 @@ export function withFailedRunManifest<E extends Error>(
 export function failedRunManifestOf(
    err: unknown,
 ): FailedRunManifest | undefined {
-   return typeof err === "object" && err !== null
-      ? failedRunManifests.get(err)
-      : undefined;
+   if (!carriesRunFailures(err) || err.runFailures === undefined) {
+      return undefined;
+   }
+   return { failures: err.runFailures as Record<string, SourceFailure> };
 }
 
 /** Whether retrying a whole run that threw `err` could succeed. */

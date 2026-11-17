@@ -164,8 +164,9 @@ export class RunLifecycle {
             // failed run commits no manifest. Omitted when unclassified, and
             // for a cancel, which was asked for.
             const retryable = cancelled ? undefined : classifyRunFailure(err);
-            // Never served: every reader that binds or reuses a run counts
-            // MANIFEST_FILE_READY runs only.
+            // Publisher never serves or binds it: every reader that binds or
+            // reuses a run counts MANIFEST_FILE_READY runs only. A host may
+            // still bind the sources it reused, from its own records.
             const failed = cancelled ? undefined : failedRunManifestOf(err);
             const extra: Record<string, unknown> = {
                ...(retryable !== undefined
@@ -230,8 +231,9 @@ export class RunLifecycle {
                         ...(metadata ? { metadata } : {}),
                         ...(failed
                            ? {
+                                // No `builtAt`: nothing was built. The
+                                // run's `completedAt` says when it ended.
                                 manifest: {
-                                   builtAt: new Date().toISOString(),
                                    entries: {},
                                    failures: failed.failures,
                                    strict: false,

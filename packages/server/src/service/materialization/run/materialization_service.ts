@@ -60,6 +60,7 @@ import {
    RefusedSource,
 } from "../domain/types";
 import {
+   type BuildRunFailedError,
    failedRunManifestOf,
    withFailedRunManifest,
 } from "./build_failure_class";
@@ -1067,7 +1068,8 @@ export class MaterializationService {
             // committed run names them.
             const failed = failedRunManifestOf(err);
             if (failed) {
-               withFailedRunManifest(err, {
+               // failedRunManifestOf found it on an error that carries one.
+               withFailedRunManifest(err as BuildRunFailedError, {
                   failures: packageRelativeRun(
                      { entries: {}, failures: failed.failures, refused: {} },
                      state.packagePath,

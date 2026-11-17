@@ -1353,7 +1353,9 @@ function settleRefusals(run: InstructedRun): {
  * generation's, so neither belongs to this run, and deleting its record must
  * never drop them.
  */
-function failedRunError<E extends Error>(run: InstructedRun, err: E): E {
+function failedRunError<
+   E extends BuildRunFailedError | MaterializationEligibilityError,
+>(run: InstructedRun, err: E): E {
    return withFailedRunManifest(err, { failures: { ...run.failures } });
 }
 

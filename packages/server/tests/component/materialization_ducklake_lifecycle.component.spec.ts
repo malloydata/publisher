@@ -2013,7 +2013,11 @@ describe.skipIf(process.platform === "win32")(
          );
          expect(failed.status).toBe("FAILED");
          // Each source's own reason, and no entry: the run names no table.
+         // This is the full service path, so a failure dropped anywhere
+         // between the build and the record fails here.
          expect(failed.manifest?.entries).toEqual({});
+         // Nothing was built, so no build time: `completedAt` says when.
+         expect(failed.manifest?.builtAt).toBeUndefined();
          expect(
             Object.values(failed.manifest?.failures ?? {})
                .map((f) => [f.sourceName, f.reason])
