@@ -2765,6 +2765,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * package's and stay open.
     */
    public releaseConnections(): Promise<void> {
+      // Nothing of this package's runs after it is released: its unread
+      // tables' retry timer goes too.
+      this.mz.dispose();
       return closeMalloyConfig(this.malloyConfig);
    }
 
