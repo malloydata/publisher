@@ -202,7 +202,7 @@ Step 2 of the configuration design. Every setting now has one name of each kind,
 
 ## [Unreleased] — a framed data app can save files, copy, go full screen and open new tabs
 
-The frame that the Console's data app viewer and `Publisher.embed` create now adds `allow-downloads allow-popups` to its sandbox and delegates `clipboard-write; fullscreen`, so a page can save a file, open a link in a new tab, copy text and go full screen. A tab it opens keeps the sandbox: in Firefox a tab that escaped it could redirect the host page. Hosts that call `Publisher.embed` get this on upgrade with no change of their own. A host that passes `allow` replaces the default, and `allow: ""` turns it off; the sandbox tokens are not configurable. Top navigation and modal dialogs stay off.
+The frame that the Console's data app viewer and `Publisher.embed` create now adds `allow-downloads allow-popups` to its sandbox and delegates `clipboard-write; fullscreen`, so a page can save a file, open a link in a new tab, copy text and go full screen. A tab it opens keeps the sandbox: in Firefox a tab that escaped it could redirect the host page. Hosts that call `Publisher.embed` get this on upgrade with no change of their own. A host that passes `allow` replaces the default, and `allow: ""` turns it off; `null` takes the default. A host that passes `sandbox` replaces the sandbox tokens, so `sandbox: "allow-scripts allow-same-origin allow-forms"` keeps the old frame. With the defaults, top navigation and modal dialogs stay off.
 
 ## [Unreleased] — a run's own published version is no longer reloaded a second time after its manifest commits
 

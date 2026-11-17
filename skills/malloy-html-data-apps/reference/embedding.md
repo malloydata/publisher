@@ -22,7 +22,7 @@ SPDX-License-Identifier: MIT
 </script>
 ```
 
-`embed(selector, options)` returns `{ iframe, destroy() }`. Options: `src` (required), `token` (a signed token for cross-origin auth, appended as `embed_token`), `height` (omit to auto-size; a number is treated as pixels), and `allow` (the iframe permissions policy; `clipboard-write; fullscreen` when omitted, `""` for none).
+`embed(selector, options)` returns `{ iframe, destroy() }`. Options: `src` (required), `token` (a signed token for cross-origin auth, appended as `embed_token`), `height` (omit to auto-size; a number is treated as pixels), `allow` (the iframe permissions policy; `clipboard-write; fullscreen` when omitted, `""` for none) and `sandbox` (the iframe sandbox tokens, replacing the default below).
 
 ## Sizing and the resize contract
 

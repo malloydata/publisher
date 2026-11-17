@@ -83,4 +83,21 @@ describe("Publisher.embed frame permissions", () => {
       expect(embedFrame({ allow: "fullscreen" }).allow).toEqual(["fullscreen"]);
       expect(embedFrame({ allow: "" }).allow).toEqual([]);
    });
+
+   it("reads a null allow as the default, not as a policy named null", () => {
+      expect(embedFrame({ allow: null }).allow).toEqual([
+         "clipboard-write",
+         "fullscreen",
+      ]);
+   });
+
+   it("takes the host's own sandbox, so a host can keep the old frame", () => {
+      expect(
+         embedFrame({ sandbox: "allow-scripts allow-same-origin allow-forms" })
+            .sandbox,
+      ).toEqual(["allow-scripts", "allow-same-origin", "allow-forms"]);
+      expect(embedFrame({ sandbox: null }).sandbox).toEqual(
+         expect.arrayContaining(["allow-downloads", "allow-popups"]),
+      );
+   });
 });

@@ -237,14 +237,15 @@
       // host page away, or modal dialogs, and an opened tab keeps the sandbox:
       // in Firefox one that escaped it could redirect the host page. Same as
       // Publisher's own viewer (DataAppViewer).
-      // A host passes its own `allow`, or "" for none, to replace the default.
+      // A host passes its own `allow` or `sandbox`, or "" for none, to replace
+      // the default.
       iframe.allow =
-         options.allow !== undefined
-            ? options.allow
-            : "clipboard-write; fullscreen";
+         options.allow == null ? "clipboard-write; fullscreen" : options.allow;
       iframe.setAttribute(
          "sandbox",
-         "allow-scripts allow-same-origin allow-forms allow-downloads allow-popups",
+         options.sandbox == null
+            ? "allow-scripts allow-same-origin allow-forms allow-downloads allow-popups"
+            : options.sandbox,
       );
 
       // Resize listener
