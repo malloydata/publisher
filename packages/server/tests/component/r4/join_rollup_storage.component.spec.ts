@@ -312,6 +312,7 @@ for (const [kind, model, materialize] of [
          expect(path?.considered).toContainEqual({
             tableId: fixture.tableIds.flights,
             kind: "materialized",
+            origin: "persist",
             outcome: "used",
          });
       });

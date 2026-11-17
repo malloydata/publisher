@@ -132,7 +132,13 @@ type Entry = {
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
-   servedBy: { kind: string; tableId?: string; tier?: string; via?: string };
+   servedBy: {
+      kind: string;
+      origin?: string;
+      tableId?: string;
+      tier?: string;
+      via?: string;
+   };
 };
 
 describe.skipIf(process.platform === "win32")(
@@ -561,10 +567,12 @@ describe.skipIf(process.platform === "win32")(
          }
          expect((await ask("daily")).servedBy).toMatchObject({
             kind: "materialized",
+            origin: "persist",
             via: "served_copy",
          });
          expect((await ask("orders")).servedBy).toMatchObject({
             kind: "materialized",
+            origin: "materialize",
             via: "served_copy",
          });
          expect((await ask("sales")).servedBy.kind).toBe("rollup");
@@ -1472,6 +1480,7 @@ source: events is warehouse.sql("""
          expect(served.servedFrom).toBe("storage");
          expect(served.servedBy).toMatchObject({
             kind: "materialized",
+            origin: "materialize",
             tableId: address,
          });
          expect(served.rows).toEqual(live.rows);
@@ -2223,12 +2232,14 @@ describe.skipIf(process.platform === "win32")(
          }
          expect((await lake.ask(QUERIES.view)).servedBy).toEqual({
             kind: "view",
+            origin: "view",
             tableId: entries.ops__by_cat__view.sourceEntityId,
             tier: "storage",
          });
          for (const name of ["pairs", "parent", "child"] as const) {
             expect((await lake.ask(QUERIES[name])).servedBy).toEqual({
                kind: "materialized",
+               origin: "materialize",
                tableId: entries[name].sourceEntityId,
                tier: "storage",
                via: "served_copy",

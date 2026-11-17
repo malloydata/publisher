@@ -56,6 +56,7 @@ import {
    LIVE_ANSWER,
    type QueryFacts,
 } from "./materialization/serve/leg";
+import { originOfTable } from "./materialization/domain/table_plans";
 import {
    readPreparedQuery,
    resolveStructRefSource,
@@ -334,7 +335,7 @@ export async function queryPathFor(
       const toTable = (b: Binding): StorageTable => ({
          sourceName: b.sourceName,
          sourceIDs: b.sourceIDs,
-         origin: b.kind === "rollup" ? "preaggregate" : "persist",
+         origin: originOfTable(b.kind, b.sourceIDs?.[0] ?? ""),
          tablePath: b.tablePath,
          freshAsOf: b.freshAsOf,
          ...(isColocated(b) ? { colocated: true as const } : {}),

@@ -60,6 +60,7 @@ describe("a refused rollup's serve verdict", () => {
             expect(refused.length).toBe(1);
             const [sourceID, record] = refused[0];
             expect(record.reason).toBe("hidden_field");
+            expect(record.origin).toBe("preaggregate");
             const verdict = loader.pkg
                .materialization()
                .serveVerdicts()

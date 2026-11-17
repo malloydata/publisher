@@ -61,6 +61,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "131306c8b9be0ddadfbb34a5dbe0b7554c1d3ebf27c2c572eac40b1caccd1031"
           }
@@ -69,6 +70,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "cart_rows",
             "tableId": "e12bf1e1b807417625a7648c73111597f4d49379378e6807b8a8bb105f5ae6a4"
@@ -86,6 +88,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "131306c8b9be0ddadfbb34a5dbe0b7554c1d3ebf27c2c572eac40b1caccd1031",
           "tier": "database",
           "via": "served_copy"
@@ -143,6 +146,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "e12bf1e1b807417625a7648c73111597f4d49379378e6807b8a8bb105f5ae6a4"
           }
@@ -151,6 +155,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "cart_totals",
             "tableId": "131306c8b9be0ddadfbb34a5dbe0b7554c1d3ebf27c2c572eac40b1caccd1031"
@@ -168,6 +173,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "e12bf1e1b807417625a7648c73111597f4d49379378e6807b8a8bb105f5ae6a4",
           "tier": "database",
           "via": "served_copy"
@@ -222,6 +228,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "131306c8b9be0ddadfbb34a5dbe0b7554c1d3ebf27c2c572eac40b1caccd1031"
           }
@@ -230,6 +237,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "cart_rows",
             "tableId": "e12bf1e1b807417625a7648c73111597f4d49379378e6807b8a8bb105f5ae6a4"
@@ -247,6 +255,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "131306c8b9be0ddadfbb34a5dbe0b7554c1d3ebf27c2c572eac40b1caccd1031",
           "tier": "database",
           "via": "served_copy"
@@ -304,6 +313,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "e12bf1e1b807417625a7648c73111597f4d49379378e6807b8a8bb105f5ae6a4"
           }
@@ -312,6 +322,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "cart_totals",
             "tableId": "131306c8b9be0ddadfbb34a5dbe0b7554c1d3ebf27c2c572eac40b1caccd1031"
@@ -329,6 +340,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "e12bf1e1b807417625a7648c73111597f4d49379378e6807b8a8bb105f5ae6a4",
           "tier": "database",
           "via": "served_copy"

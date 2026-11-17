@@ -242,6 +242,7 @@ function gateSources(
                        ? "storage"
                        : "database",
                   compiled.tables[persistSource.sourceID]?.modelPath,
+                  compiled.tables[persistSource.sourceID]?.kind,
                );
                // A refused rollup never fails the run: the author asked for
                // nothing they can see.
@@ -521,6 +522,7 @@ function tableNameCollision(
            ? "storage"
            : "database",
       compiled.tables[persistSource.sourceID]?.modelPath,
+      compiled.tables[persistSource.sourceID]?.kind,
    );
 }
 

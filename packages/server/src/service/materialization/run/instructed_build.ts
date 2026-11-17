@@ -1539,6 +1539,7 @@ function recordPendingRefusal(
               ? "storage"
               : "database",
          run.compiled.tables[persistSource.sourceID]?.modelPath,
+         run.compiled.tables[persistSource.sourceID]?.kind,
       ),
       sourceID: persistSource.sourceID,
       own,

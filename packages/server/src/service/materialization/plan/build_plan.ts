@@ -57,6 +57,7 @@ import {
    authoredNotes,
 } from "../../annotation_near_miss";
 import {
+   MATERIALIZE_NOT_BUILT_CODE,
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
    PREAGGREGATE_NOT_BUILT_CODE,
@@ -92,7 +93,9 @@ import type { RollupPlan } from "../domain/rollup_measures";
 import {
    isPersistedResultSourceID,
    materializeKindOf,
+   originOfTable,
    splitSourceID,
+   type TableOrigin,
    type MaterializePlan,
    type PersistedQueryPlan,
    type PersistSourceGateClassification,
@@ -113,12 +116,14 @@ export {
    type CrossFileCompanions,
 } from "./materialize_compile";
 import {
+   PERSIST_VIEW_NOT_BUILT,
    persistedQueryRefusalFinding,
    persistedQueryRefusalKey,
    persistedViewRefusalFinding,
    planModelPersistedViews,
 } from "./persisted_view";
 import {
+   PERSIST_QUERY_NOT_BUILT,
    declaredPersistQueries,
    persistQueryInvalidFindings,
    persistQueryKeyFindings,
@@ -1791,7 +1796,7 @@ function wireSourceOf(
       sourceID: source.sourceID,
       connectionName: source.connectionName,
       dialect: source.dialectName,
-      origin: rollup ? "preaggregate" : "persist",
+      origin: originOfTable(table.kind, source.sourceID),
       preaggregate: rollup
          ? {
               baseSourceName: rollup.baseSourceName,
@@ -1844,7 +1849,7 @@ function refuseColocatedTablesSharedWithARefusal(
    const v1 = (id: string) => !tables[id]?.materialize;
    const colocated = Object.entries(wireSources).filter(
       ([id, s]) =>
-         s.origin === "persist" && !s.annotationFields?.storage && v1(id),
+         s.origin !== "preaggregate" && !s.annotationFields?.storage && v1(id),
    );
    if (colocated.length === 0) return;
    const refusals = colocatedRefusalsByAddress(
@@ -2073,13 +2078,18 @@ export function deriveBuildPlanOutcome(
          : deriveBuildPlan(compiled, materializationConfig, verdicts);
    // A collision this deployment refuses alone, rather than failing the
    // load, is a refusal record like any other.
-   const { plan, annotationFindings, refusalNotices, rollupTiers } =
-      projectRefusals(
-         derived,
-         compiled.annotationFindings.map((f) =>
-            relaxedCollision(f, getPersistCollisionEnforce()),
-         ),
-      );
+   const projected = projectRefusals(
+      derived,
+      compiled.annotationFindings.map((f) =>
+         relaxedCollision(f, getPersistCollisionEnforce()),
+      ),
+   );
+   const { annotationFindings, refusalNotices, rollupTiers } = projected;
+   const plan = withRefusalOrigins(
+      projected.plan,
+      compiled.tables,
+      refusalNotices,
+   );
    return {
       plan,
       droppedPersistSources: compiled.droppedPersistSources,
@@ -2221,6 +2231,51 @@ function persistedViewOf(
    if (!isPersistedResultSourceID(source.sourceID)) return undefined;
    const match = /^(.+)__(.+)__view$/.exec(source.name);
    return match ? { sourceName: match[1], viewName: match[2] } : undefined;
+}
+
+/** The mechanism a refusal's `*-not-built` warning code names. */
+const ORIGIN_OF_NOT_BUILT_CODE: Readonly<Record<string, TableOrigin>> = {
+   [PERSIST_NOT_BUILT_CODE]: "persist",
+   [MATERIALIZE_NOT_BUILT_CODE]: "materialize",
+   [PERSIST_VIEW_NOT_BUILT]: "view",
+   [PERSIST_QUERY_NOT_BUILT]: "query",
+   [PREAGGREGATE_NOT_BUILT_CODE]: "preaggregate",
+};
+
+/**
+ * The plan with each refusal record's `origin`, the mechanism that declared
+ * it, read off the plan and never off a name: a rollup's record (`tier`
+ * `preaggregate`), a persisted view's or query's generated build source, the
+ * planned table's kind, and, for a declaration refused before it was
+ * planned, the mechanism its `*-not-built` warning names.
+ */
+function withRefusalOrigins(
+   plan: BuildPlan | null,
+   tables: Readonly<Record<string, Pick<TablePlan, "kind">>>,
+   notices: RefusalNotices,
+): BuildPlan | null {
+   const refused = plan?.refusedSources;
+   if (!plan || !refused || Object.keys(refused).length === 0) return plan;
+   const originOf = (sourceID: string, tier: string): TableOrigin => {
+      if (tier === "preaggregate") return "preaggregate";
+      if (isPersistedResultSourceID(sourceID)) {
+         return originOfTable("view", sourceID);
+      }
+      const table = tables[sourceID];
+      if (table) return originOfTable(table.kind, sourceID);
+      return (
+         ORIGIN_OF_NOT_BUILT_CODE[notices[sourceID]?.code ?? ""] ?? "persist"
+      );
+   };
+   return {
+      ...plan,
+      refusedSources: Object.fromEntries(
+         Object.entries(refused).map(([sourceID, r]) => [
+            sourceID,
+            { ...r, origin: originOf(sourceID, r.tier) },
+         ]),
+      ),
+   };
 }
 
 /** {@link BuildPlanOutcome.refusedRollupTiers}. */

@@ -70,6 +70,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -88,6 +89,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "database"
         },
@@ -146,6 +148,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -164,6 +167,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "database"
         },
@@ -217,6 +221,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -234,6 +239,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "database"
         },
@@ -292,6 +298,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -310,6 +317,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "database"
         },
@@ -368,6 +376,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -386,6 +395,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "database"
         },
@@ -444,6 +454,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -462,6 +473,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "database"
         },
@@ -515,6 +527,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -532,6 +545,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "database"
         },
@@ -590,6 +604,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -608,6 +623,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "database"
         },

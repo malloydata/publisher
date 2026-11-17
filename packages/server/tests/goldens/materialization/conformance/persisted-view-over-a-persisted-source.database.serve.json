@@ -61,6 +61,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
           }
@@ -78,6 +79,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
           "tier": "database",
           "via": "served_copy"
@@ -132,6 +134,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
           }
@@ -149,6 +152,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
           "tier": "database",
           "via": "served_copy"
@@ -203,6 +207,7 @@
         "considered": [
           {
             "kind": "view",
+            "origin": "view",
             "outcome": "used",
             "tableId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b"
           }
@@ -220,6 +225,7 @@
         },
         "servedBy": {
           "kind": "view",
+          "origin": "view",
           "tableId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b",
           "tier": "database"
         },
@@ -273,6 +279,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
           }
@@ -290,6 +297,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
           "tier": "database",
           "via": "served_copy"

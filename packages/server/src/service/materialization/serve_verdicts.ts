@@ -189,8 +189,7 @@ export class ServeVerdicts {
             name: source.name,
             sourceEntityId: source.sourceEntityId,
             ...(compilerKey ? { compilerKey } : {}),
-            origin:
-               source.origin === "preaggregate" ? "preaggregate" : "persist",
+            origin: source.origin ?? "persist",
             ...(source.modelPath ? { modelPath: source.modelPath } : {}),
             ...(source.origin === "preaggregate"
                ? { columns: declaredColumnsOfPlan(source.columns) }

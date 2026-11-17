@@ -39,6 +39,15 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 `RefusedSource.tier` still says `preaggregate` for a rollup for one more release, so a control plane that checks `tier == preaggregate` keeps working.
 
+**Contract change: `origin` names the mechanism on every surface that reports a table.** `ServeVerdict.origin` already said `persist`, `materialize`, `view`, `query` or `preaggregate`. The other surfaces now say the same:
+
+- `PersistSourcePlan.origin` (`buildPlan.sources`) and `StorageServeBinding.origin` widen from `persist` \| `preaggregate` to all five. An entry that is not a rollup used to say `persist`.
+- `ManifestEntry.origin` accepts all five. `persist` or an absent value stays valid for every entry that is not a rollup, and Publisher still reads only whether an entry is a rollup.
+- `RefusedSource` gains `origin`. Read it, not `tier`, to tell a rollup's refusal.
+- The path report's `servedBy`, `considered[]` and `notConsidered[]` gain `origin`. Their `kind: materialized` is `origin` `persist` or `materialize`, and is not extended. The access record's `path.servedBy` keeps `origin` and `tier`.
+
+A strict client must add the three new values (`materialize`, `view`, `query`) to the plan, binding and manifest enums, or read an unknown value as an entry that is not a rollup.
+
 **Fixed: a refused `storage=` rollup's serve verdict said `tier: colocated`.** The verdict mapped every refusal-record tier that was not `storage` to the database tier, and a rollup's record says `preaggregate`. A refused rollup's verdict now gives the tier its own `storage=` puts it in, `storage` or `database`. Its `RefusedSource.tier` still says `preaggregate`.
 
 ## [Unreleased] — database-table drift reported like `storage=`; DOUBLE incremental tables re-seed; unreadable rollup grains refused at plan

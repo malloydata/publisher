@@ -33,6 +33,7 @@ import { recordedTimezoneOf } from "../../governance/ir/compiled_model";
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
 import type { FreshnessManifest } from "../domain/types";
+import type { TableOrigin } from "../domain/table_plans";
 import { forEachFieldPath } from "../../governance/ir/array_query";
 import { declineOfCode } from "../domain/leg_decline";
 
@@ -54,7 +55,7 @@ export interface PlannedTable {
    name: string;
    /** The content address: the table's `tableId` in the path report. */
    sourceEntityId: string;
-   origin: "persist" | "preaggregate";
+   origin: TableOrigin;
    /**
     * The key Malloy files the table under in a build manifest, where it is
     * not `sourceEntityId` (an address foldDistinctTableNames moved): a
@@ -126,7 +127,7 @@ export interface StorageTable {
    /** The source it materializes, or a rollup's synthesized name. */
    sourceName: string;
    sourceIDs?: readonly string[];
-   origin?: "persist" | "preaggregate";
+   origin?: TableOrigin;
    tablePath: string;
    freshAsOf?: string;
    /**
@@ -160,6 +161,8 @@ interface TableState {
     */
    tableId?: string;
    kind: "materialized" | "rollup" | "view" | "query";
+   /** The mechanism that declared it, when known. */
+   origin?: TableOrigin;
    tier: "storage" | "database";
    /** Built and bound, but withheld by its freshness window. */
    stale: boolean;
@@ -323,6 +326,7 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
             considered.push({
                tableId: t.tableId,
                kind: t.kind,
+               ...originField(t),
                outcome: "used",
             });
          }
@@ -385,6 +389,13 @@ interface PathTally {
    ): void;
 }
 
+/** A table's `origin` on the wire, when its mechanism is known. */
+function originField(t: Pick<TableState, "origin">): {
+   origin?: TableOrigin;
+} {
+   return t.origin ? { origin: t.origin } : {};
+}
+
 /** An empty tally: nothing considered, the query answered live. */
 function pathTally(): PathTally {
    const considered: ApiCandidate[] = [];
@@ -394,10 +405,16 @@ function pathTally(): PathTally {
    let servedBy: ApiServer = { kind: "live" };
    const markUsed = (t: TableState) => {
       if (t.tableId) {
-         considered.push({ tableId: t.tableId, kind: t.kind, outcome: "used" });
+         considered.push({
+            tableId: t.tableId,
+            kind: t.kind,
+            ...originField(t),
+            outcome: "used",
+         });
       }
       servedBy = {
          kind: t.kind,
+         ...originField(t),
          ...(t.tableId ? { tableId: t.tableId } : {}),
          // The wire names the colocated tier by where it lives.
          tier: t.tier === "database" ? "database" : "storage",
@@ -414,6 +431,7 @@ function pathTally(): PathTally {
       const candidate: ApiCandidate = {
          tableId: t.tableId,
          kind: t.kind,
+         ...originField(t),
          outcome: "skipped",
          reason,
          ...(code ? { code } : {}),
@@ -452,6 +470,7 @@ function viewTableDecision(
          key: `persisted-view/${input.view.tableId ?? ""}`,
          ...(input.view.tableId ? { tableId: input.view.tableId } : {}),
          kind: input.view.kind ?? "view",
+         origin: input.view.kind ?? "view",
          tier: input.view.tier,
          stale: input.view.stale,
          unbuilt: !input.view.built,
@@ -852,7 +871,7 @@ function tablesFor(
       );
       addSource(
          binding,
-         plan?.origin === "persist" ? plan : undefined,
+         plan?.origin !== "preaggregate" ? plan : undefined,
          "materialized",
       );
    }
@@ -939,6 +958,7 @@ function storageState(
       key: `${binding.colocated ? "database" : "storage"}:${binding.tablePath}`,
       ...(plan ? { tableId: plan.sourceEntityId } : {}),
       kind,
+      ...originField({ origin: plan?.origin ?? binding.origin }),
       tier: binding.colocated ? "database" : "storage",
       stale: !fresh.has(binding.tablePath),
       unbuilt: false,
@@ -957,6 +977,7 @@ function colocatedState(
       key: `colocated:${plan.sourceEntityId}`,
       tableId: plan.sourceEntityId,
       kind,
+      origin: plan.origin,
       tier: "database",
       // Bound, but left out of this query's build manifest by its window.
       stale:
@@ -1023,6 +1044,7 @@ function nearbyTables(
       found.push({
          tableId: table.sourceEntityId,
          kind,
+         origin: table.origin,
          sourceName,
          relationship,
          built:
@@ -1034,7 +1056,7 @@ function nearbyTables(
       });
    };
    for (const p of input.catalog.planned.values()) {
-      if (p.origin === "persist") {
+      if (p.origin !== "preaggregate") {
          consider(p.sourceID, p, "materialized", p.name);
       }
    }

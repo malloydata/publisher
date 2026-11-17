@@ -127,7 +127,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "pv_base__by_region__view",
-        "origin": "persist",
+        "origin": "view",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

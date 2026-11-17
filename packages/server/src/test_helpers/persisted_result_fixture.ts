@@ -91,8 +91,7 @@ export async function persistedResultFixture(
             name: source.name,
             sourceEntityId: source.sourceEntityId,
             ...(compilerKey ? { compilerKey } : {}),
-            origin:
-               source.origin === "preaggregate" ? "preaggregate" : "persist",
+            origin: source.origin ?? "persist",
          });
       }
    }

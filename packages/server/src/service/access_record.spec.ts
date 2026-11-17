@@ -530,6 +530,30 @@ describe("accessPathOf", () => {
       });
    });
 
+   it("keeps the answering table's origin and tier, and only known values", () => {
+      const of = (origin: string, tier: string) =>
+         accessPathOf({
+            servedBy: { kind: "materialized", origin, tier, tableId: "abc" },
+            considered: [
+               { tableId: "abc", kind: "materialized", outcome: "used" },
+            ],
+         })?.servedBy;
+      expect(of("materialize", "database")).toEqual({
+         kind: "materialized",
+         origin: "materialize",
+         tier: "database",
+         tableId: "abc",
+      });
+      expect(of("preaggregate", "storage")).toMatchObject({
+         origin: "preaggregate",
+         tier: "storage",
+      });
+      expect(of("free text", "colocated")).toEqual({
+         kind: "materialized",
+         tableId: "abc",
+      });
+   });
+
    it("keeps that the served copy answered, and no other via", () => {
       const of = (via: string) =>
          accessPathOf({

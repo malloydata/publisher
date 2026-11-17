@@ -62,6 +62,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909"
           }
@@ -79,6 +80,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909",
           "tier": "storage",
           "via": "served_copy"
@@ -139,6 +141,7 @@
           {
             "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "CROSS_CONNECTION",
             "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909"
@@ -214,6 +217,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909"
           }
@@ -232,6 +236,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909",
           "tier": "storage",
           "via": "served_copy"
@@ -286,6 +291,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909"
           }
@@ -303,6 +309,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909",
           "tier": "storage",
           "via": "served_copy"
@@ -363,6 +370,7 @@
           {
             "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "CROSS_CONNECTION",
             "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909"
@@ -438,6 +446,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909"
           }
@@ -456,6 +465,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "58628af49b4e48235c69d52e03ffa558cec96f5ed8cc67b5c1622215e2bf6909",
           "tier": "storage",
           "via": "served_copy"

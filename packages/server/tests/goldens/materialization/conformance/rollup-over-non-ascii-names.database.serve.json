@@ -70,6 +70,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
           }
@@ -88,6 +89,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323",
           "tier": "database"
         },
@@ -146,6 +148,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "preaggregate",
             "outcome": "used",
             "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323"
           }
@@ -164,6 +167,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "preaggregate",
           "tableId": "d670287e216cd08c509b60bdc2522c5aca3f578822c264f6556c51d147200323",
           "tier": "database"
         },

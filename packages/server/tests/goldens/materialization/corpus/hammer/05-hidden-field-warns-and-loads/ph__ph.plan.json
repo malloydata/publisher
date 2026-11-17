@@ -33,6 +33,7 @@
         "message": "Measure `total` on `orders` carries `#@ preaggregate`, but the source does not publicly expose it. A rollup stores the measure's partial aggregate and serves it back under the measure's name, without the source's field visibility applying to the stored table — so no rollup is built for it here. If it should be pre-aggregated on `orders`, expose it publicly; if this source deliberately hides a measure it inherited the annotation with, nothing is wrong and the rollup on the source that exposes it is unaffected.",
         "modelPath": "ph.malloy",
         "name": "orders.total",
+        "origin": "preaggregate",
         "reason": "hidden_field",
         "sourceID": "orders.total@<hammer>/ph/ph.malloy.preaggregate.malloy",
         "tier": "preaggregate"

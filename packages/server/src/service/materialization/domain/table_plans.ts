@@ -633,6 +633,40 @@ export interface PersistSourceGateOutcome {
  */
 type TableKind = "persist" | "materialize" | "pair" | "rollup" | "view";
 
+/**
+ * The mechanism that declared a stored table, in its annotation's words: the
+ * `origin` the wire reports on a plan entry, a refusal record, a storage
+ * binding and the path report. `persist` is `#@ persist` on a source,
+ * `materialize` is `#(materialize)`, `view` and `query` are `#@ persist` on
+ * a view or a named query, and `preaggregate` is a rollup.
+ */
+export type TableOrigin =
+   | "persist"
+   | "materialize"
+   | "view"
+   | "query"
+   | "preaggregate";
+
+/** A table's origin, from its kind and its sourceID (a view's or a query's). */
+export function originOfTable(
+   kind: TableKind | "query",
+   sourceID: string,
+): TableOrigin {
+   switch (kind) {
+      case "rollup":
+         return "preaggregate";
+      case "materialize":
+      case "pair":
+         return "materialize";
+      case "query":
+         return "query";
+      case "view":
+         return isPersistedQuerySourceID(sourceID) ? "query" : "view";
+      default:
+         return "persist";
+   }
+}
+
 /** What every planned table carries, whatever its kind. */
 interface TablePlanFacts {
    /** The planned source, as Malloy's persistence planner planned it. */

@@ -13,7 +13,7 @@ import {
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import {
-   buildQueryPath,
+   buildQueryPath as buildQueryPathWithOrigins,
    MAX_NOT_CONSIDERED,
    type MaterializedTableCatalog,
    type PlannedTable,
@@ -22,6 +22,21 @@ import {
    type StorageTable,
 } from "./query_path";
 import { sourceChain } from "../text/source_map";
+
+/**
+ * The report with every `origin` set aside: the cases below pin what each
+ * table's kind, outcome and reason are; `origin` has cases of its own
+ * ("names each table's origin").
+ */
+function buildQueryPath(
+   ...args: Parameters<typeof buildQueryPathWithOrigins>
+): ReturnType<typeof buildQueryPathWithOrigins> {
+   return JSON.parse(
+      JSON.stringify(buildQueryPathWithOrigins(...args), (k, v) =>
+         k === "origin" ? undefined : v,
+      ),
+   );
+}
 
 const shape = {
    sourceName: "daily",
@@ -80,6 +95,46 @@ describe("buildQueryPath", () => {
          considered: [],
          notConsidered: [],
          warnings: [],
+      });
+   });
+
+   it("names each table's origin: the mechanism that declared it, beside its kind", () => {
+      const daily = storageOf("daily");
+      const tables = [planned("daily", "materialize"), planned("orders")];
+      const report = buildQueryPathWithOrigins(
+         input({
+            catalog: catalog(tables, { id_orders: "orders_built" }),
+            storage: { all: [daily], fresh: [daily] },
+            considered: [{ kind: "served", outcome: "used" }],
+            storageTablesRead: [daily],
+         }),
+      );
+      // The plan's origin wins over the binding's for one table.
+      expect(report.servedBy).toMatchObject({
+         kind: "materialized",
+         origin: "materialize",
+         tier: "storage",
+      });
+      expect(report.considered[0]).toMatchObject({
+         tableId: "id_daily",
+         origin: "materialize",
+      });
+      const query = buildQueryPathWithOrigins(
+         input({
+            view: {
+               kind: "query",
+               tableId: "id_q",
+               tier: "database",
+               built: true,
+               stale: false,
+            },
+            considered: [{ kind: "query", outcome: "used" }],
+         }),
+      );
+      expect(query.servedBy).toMatchObject({ kind: "query", origin: "query" });
+      // A live answer names no origin.
+      expect(buildQueryPathWithOrigins(input({})).servedBy).toEqual({
+         kind: "live",
       });
    });
 

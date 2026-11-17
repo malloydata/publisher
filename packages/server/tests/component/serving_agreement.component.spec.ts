@@ -137,11 +137,17 @@ describe("a rollup on a source an index.malloy re-exports", () => {
          expect(JSON.stringify(result)).toContain("built_rollup");
          expect(result.path?.servedBy).toEqual({
             kind: "rollup",
+            origin: "preaggregate",
             tier: "database",
             tableId: rollupId,
          });
          expect(result.path?.considered).toEqual([
-            { tableId: rollupId, kind: "rollup", outcome: "used" },
+            {
+               tableId: rollupId,
+               kind: "rollup",
+               origin: "preaggregate",
+               outcome: "used",
+            },
          ]);
       }
       // The verdict agrees with the path report.
@@ -261,6 +267,7 @@ describe("serving after a connection edit and a rebuild", () => {
       expect(JSON.stringify(second)).toContain("built_after");
       expect(second.path?.servedBy).toEqual({
          kind: "materialized",
+         origin: "persist",
          tier: "database",
          tableId: after,
          via: "served_copy",

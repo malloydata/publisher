@@ -167,6 +167,8 @@ describe("the access record's copy of the path report", () => {
       expect(audit.path).toEqual({
          servedBy: {
             kind: "materialized",
+            origin: "persist",
+            tier: "database",
             tableId: entityIdOf(pkg, "daily"),
             via: "served_copy",
          },
@@ -206,6 +208,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "NOT_BUILT",
          },
@@ -229,6 +232,7 @@ describe("the path report over colocated #@ persist", () => {
       );
       expect(report.servedBy).toEqual({
          kind: "materialized",
+         origin: "persist",
          tier: "database",
          tableId: entityIdOf(pkg, "daily"),
          dataAsOf: "2026-11-01T00:00:00.000Z",
@@ -238,6 +242,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "used",
          },
       ]);
@@ -252,6 +257,7 @@ describe("the path report over colocated #@ persist", () => {
       );
       expect(report.servedBy).toMatchObject({
          kind: "materialized",
+         origin: "persist",
          tableId: entityIdOf(pkg, "daily"),
       });
       // Persistence is inherited, and an extension that adds only a dimension
@@ -261,6 +267,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "used",
          },
       ]);
@@ -285,6 +292,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "STALE",
          },
@@ -304,6 +312,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "by_region"),
             kind: "materialized",
+            origin: "persist",
             sourceName: "by_region",
             relationship: "below",
             built: true,
@@ -311,6 +320,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             sourceName: "daily",
             relationship: "below",
             built: false,
@@ -346,6 +356,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             sourceName: "daily",
             relationship: "sibling",
             built: false,
@@ -385,6 +396,7 @@ describe("the path report reading the serve verdicts", () => {
          {
             tableId: entityIdOf(pkg, "by_region"),
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "WARNED",
             code: "unreachable",
@@ -441,11 +453,17 @@ describe("the path report over a colocated rollup", () => {
       );
       expect(report.servedBy).toEqual({
          kind: "rollup",
+         origin: "preaggregate",
          tableId: rollupId,
          tier: "database",
       });
       expect(report.considered).toEqual([
-         { tableId: rollupId, kind: "rollup", outcome: "used" },
+         {
+            tableId: rollupId,
+            kind: "rollup",
+            origin: "preaggregate",
+            outcome: "used",
+         },
       ]);
    });
 
@@ -460,6 +478,7 @@ describe("the path report over a colocated rollup", () => {
          {
             tableId: rollupId,
             kind: "rollup",
+            origin: "preaggregate",
             outcome: "skipped",
             reason: "COUNT_SEMANTICS",
             // The rollup leg's reason: the count reads the rollup's rows.
@@ -480,6 +499,7 @@ describe("the path report over a colocated rollup", () => {
          {
             tableId: rollupId,
             kind: "rollup",
+            origin: "preaggregate",
             outcome: "skipped",
             reason: "GRAIN_TOO_COARSE",
             detail: expect.stringContaining("`amount`"),
@@ -592,6 +612,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          expect(res.path?.considered).toContainEqual({
             tableId: staleId,
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "STALE",
          });
@@ -652,6 +673,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          ] as never);
          expect(res.path?.servedBy).toMatchObject({
             kind: "materialized",
+            origin: "persist",
             tableId: dailyId,
          });
       }, 60_000);
@@ -694,6 +716,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          );
          expect(rolled.path?.servedBy).toMatchObject({
             kind: "rollup",
+            origin: "preaggregate",
             tableId: rollupId,
          });
          expect(rolled.result.sql).toContain("built_rollup");
@@ -729,6 +752,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          const called = await run(pkg, "run: orders -> by_region");
          expect(called.path?.servedBy).toMatchObject({
             kind: "view",
+            origin: "view",
             tableId: viewId,
          });
          expect(called.result.sql).toContain("built_view");

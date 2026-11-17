@@ -35,6 +35,7 @@ import {
    isPersistedQuerySourceID,
    type MaterializePlan,
    type StoredColumn,
+   type TableOrigin,
 } from "../domain/table_plans";
 import { capabilitiesOf } from "../domain/dialect";
 import {
@@ -304,7 +305,7 @@ interface ColocatedPlanSource {
    sourceEntityId: string;
    connectionName: string;
    dialect?: string;
-   origin?: "persist" | "preaggregate";
+   origin?: TableOrigin;
    annotationFields?: Record<string, string>;
 }
 

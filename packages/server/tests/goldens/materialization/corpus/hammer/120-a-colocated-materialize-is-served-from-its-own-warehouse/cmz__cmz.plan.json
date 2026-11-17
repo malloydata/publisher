@@ -126,7 +126,7 @@
         "freshness": null,
         "modelPath": "cmz.malloy",
         "name": "big_orders",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

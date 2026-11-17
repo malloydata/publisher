@@ -18,7 +18,11 @@
  */
 
 import { generatedNameOwner } from "../plan/build_file_generator";
-import { type MaterializePlan } from "../domain/table_plans";
+import {
+   isPersistedResultSourceID,
+   type MaterializePlan,
+   originOfTable,
+} from "../domain/table_plans";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
@@ -904,8 +908,20 @@ export function refusalRecord(
    err: MaterializationEligibilityError,
    tier: RefusedSource["tier"],
    modelPath: string | undefined,
+   /** Its planned table's kind, which names its mechanism (`origin`). */
+   kind?: Parameters<typeof originOfTable>[0],
 ): RefusedSource {
    return {
+      origin:
+         tier === "preaggregate"
+            ? "preaggregate"
+            : originOfTable(
+                 kind ??
+                    (isPersistedResultSourceID(persistSource.sourceID)
+                       ? "view"
+                       : "persist"),
+                 persistSource.sourceID,
+              ),
       name: persistSource.name,
       sourceID: persistSource.sourceID,
       ...(modelPath ? { modelPath } : {}),

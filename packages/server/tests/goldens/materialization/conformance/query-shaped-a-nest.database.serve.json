@@ -56,6 +56,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732"
           }
@@ -73,6 +74,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
           "tier": "database",
           "via": "served_copy"
@@ -131,6 +133,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732"
           }
@@ -148,6 +151,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
           "tier": "database",
           "via": "served_copy"
@@ -202,6 +206,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732"
           }
@@ -219,6 +224,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
           "tier": "database",
           "via": "served_copy"
@@ -277,6 +283,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732"
           }
@@ -294,6 +301,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
           "tier": "database",
           "via": "served_copy"

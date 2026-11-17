@@ -5215,13 +5215,16 @@ components:
             package's models and reading a miss as corruption.
         origin:
           type: string
-          enum: [persist, preaggregate]
+          enum: [persist, materialize, view, query, preaggregate]
           default: persist
           description: >-
-            What the bound source IS: `persist` for one a modeler annotated,
-            which is the meaning of an absent value, and `preaggregate` for
-            a rollup the publisher synthesized from `#@ preaggregate`
-            measures. Mirrors `ManifestEntry.origin`.
+            The mechanism that declared the bound table: `persist` for
+            `#@ persist` on a source, which is the meaning of an absent
+            value, `materialize` for `#(materialize)`, `view` and `query` for
+            `#@ persist` on a view or a named query, and `preaggregate` for a
+            rollup. Releases before this one said `persist` for every table
+            that was not a rollup; a client must accept a value it does not
+            know as a table that is not a rollup.
         storageDestinationName:
           type: string
           description: >-
@@ -8781,6 +8784,14 @@ components:
       properties:
         kind:
           $ref: "#/components/schemas/QueryPathTableKind"
+        origin:
+          type: string
+          enum: [persist, materialize, view, query, preaggregate]
+          description: >-
+            The mechanism that declared the table, as `PersistSourcePlan.origin`
+            names it. `kind: materialized` is `persist` or `materialize`.
+            Absent when `kind` is `live`, or when the table's mechanism is not
+            known.
         tableId:
           type: string
           description: The table that answered. Absent when `kind` is `live`.
@@ -8815,6 +8826,14 @@ components:
           type: string
         kind:
           $ref: "#/components/schemas/QueryPathTableKind"
+        origin:
+          type: string
+          enum: [persist, materialize, view, query, preaggregate]
+          description: >-
+            The mechanism that declared the table, as `PersistSourcePlan.origin`
+            names it. `kind: materialized` is `persist` or `materialize`.
+            Absent when `kind` is `live`, or when the table's mechanism is not
+            known.
         outcome:
           type: string
           enum: [used, skipped]
@@ -8850,6 +8869,14 @@ components:
           type: string
         kind:
           $ref: "#/components/schemas/QueryPathTableKind"
+        origin:
+          type: string
+          enum: [persist, materialize, view, query, preaggregate]
+          description: >-
+            The mechanism that declared the table, as `PersistSourcePlan.origin`
+            names it. `kind: materialized` is `persist` or `materialize`.
+            Absent when `kind` is `live`, or when the table's mechanism is not
+            known.
         sourceName:
           type: string
           description: The source the table materializes; for a rollup, the source it rolls up.
@@ -8870,7 +8897,8 @@ components:
         What kind of answer: `view`, a persisted view's table; `query`, a
         persisted named query's table (`#@ persist` on a top-level `query:`);
         `rollup`, a pre-aggregation; `materialized`, a materialized source's
-        table; `live`, the source's own warehouse. A client treats a kind it
+        table (`origin` `persist` or `materialize`; this kind is not
+        extended); `live`, the source's own warehouse. A client treats a kind it
         does not know as a materialized table it cannot name.
 
     SkipReason:
@@ -10693,6 +10721,15 @@ components:
         `storage`/`colocated` where a refusal means absence from `sources`.
       required: [name, sourceID, tier, reason, message]
       properties:
+        origin:
+          type: string
+          enum: [persist, materialize, view, query, preaggregate]
+          description: >-
+            The mechanism that declared it, as `PersistSourcePlan.origin` names
+            it: `persist`, `materialize`, `view`, `query`, or `preaggregate` for
+            a rollup. Read this, not `tier`, to tell a rollup's refusal: a
+            later release gives a rollup's `tier` its real placement. Absent on
+            a record a release before this one wrote.
         name:
           type: string
           description: >-
@@ -10983,15 +11020,19 @@ components:
           type: string
         origin:
           type: string
-          enum: [persist, preaggregate]
+          enum: [persist, materialize, view, query, preaggregate]
           default: persist
           description: >-
             Which authoring annotation produced this plan entry. `persist` — the
-            modeler wrote `#@ persist` on the source; every entry on a deployment
-            that uses no pre-aggregation, and the meaning of an absent value.
-            `preaggregate` — the modeler wrote `#@ preaggregate` on measures of
+            modeler wrote `#@ persist` on the source, and the meaning of an
+            absent value. `materialize` — `#(materialize)` on the source.
+            `view` and `query` — `#@ persist` on a view or a named `query:`,
+            whose generated build source this entry is. `preaggregate` — the
+            modeler wrote `#(preaggregate)` or `#@ preaggregate` on measures of
             `preaggregate.baseSourceName`, and the publisher SYNTHESIZED this
-            rollup source to serve them.
+            rollup source to serve them. Releases before this one said
+            `persist` for every entry that was not a rollup; a client must
+            accept a value it does not know as an entry that is not a rollup.
 
 
             Note that BOTH kinds carry a `#@ persist` annotation by the time they
@@ -11774,13 +11815,18 @@ components:
             treat a miss as a corrupt manifest.
         origin:
           type: string
-          enum: [persist, preaggregate]
+          enum: [persist, materialize, view, query, preaggregate]
           default: persist
           description: >-
             Mirrors `PersistSourcePlan.origin` for the source this entry was built
             from: `persist` for a source the modeler wrote `#@ persist` on, which
             is the meaning of an absent value, and `preaggregate` for a rollup
-            synthesized from `#@ preaggregate` measures. Repeated here because a
+            synthesized from `#(preaggregate)` or `#@ preaggregate` measures. The
+            plan's other values (`materialize`, `view`, `query`) are accepted;
+            `persist` or an absent value stays valid for every entry that is not
+            a rollup, since a host echoes the entries it stored, and Publisher
+            reads only whether an entry is a rollup, taking the mechanism from
+            its own plan. Repeated here because a
             manifest travels without its build plan, and a consumer holding only
             the manifest otherwise cannot tell why it holds a table for a source
             that does not appear in the package.

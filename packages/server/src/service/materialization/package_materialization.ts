@@ -77,6 +77,7 @@ import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
 import type { KeptTable } from "./domain/types";
+import { originOfTable } from "./domain/table_plans";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
@@ -298,7 +299,7 @@ export class PackageMaterialization {
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
          storageServeBindings: this.storageBindings.map((b) => ({
-            origin: b.kind === "rollup" ? "preaggregate" : "persist",
+            origin: originOfTable(b.kind, b.sourceIDs?.[0] ?? ""),
             sourceName: b.sourceName,
             storageDestinationName: b.destinationName,
             tablePath: b.tablePath,
