@@ -715,7 +715,10 @@ export async function applyDeltaScript(
    statements: string[],
    /**
     * The run's cancel signal: given to the delta's script, which reads the
-    * warehouse, never to its rollback.
+    * warehouse inside a transaction, never to its rollback. A cancelled
+    * script fails like any other and is rolled back here. Snowflake's
+    * single-statement block has no separate rollback, so its caller passes
+    * none there (incremental_delta_strategy.ts).
     */
    abortSignal?: AbortSignal,
 ): Promise<void> {

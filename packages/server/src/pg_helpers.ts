@@ -302,3 +302,21 @@ export function redactStorageUrls(s: string): string {
       return REDACTED_STORAGE_URL + trailing;
    });
 }
+
+/**
+ * Query parameters that carry a credential in a signed or token-bearing URL:
+ * AWS SigV4 and GCS V4 signatures, credentials and session tokens, Azure SAS
+ * signatures (`sig`) and expiries (`se`), and bearer tokens.
+ */
+const SIGNED_URL_PARAM_PATTERN =
+   /([?&](?:x-amz-signature|x-amz-credential|x-amz-security-token|x-goog-signature|x-goog-credential|sig|se|token|access_token)=)[^&\s'"`)\]}>#]*/gi;
+
+/**
+ * `s` with the value of every credential-bearing query parameter of a signed
+ * URL masked (`X-Amz-Signature=***`), for text that is logged: the log may
+ * keep a URL's bucket and path, never a signature or token that grants
+ * access to it.
+ */
+export function redactSignedUrlParams(s: string): string {
+   return s.replace(SIGNED_URL_PARAM_PATTERN, "$1***");
+}

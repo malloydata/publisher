@@ -995,6 +995,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "424":
@@ -1421,6 +1423,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "410":
@@ -4268,12 +4272,14 @@ components:
     Forbidden:
       description: |
         Forbidden - insufficient permissions to perform the operation. With
-        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes),
-        the database ran the query and the storage holding a table's data (a
-        DuckLake data path, an object-store bucket) refused its read: the
-        query and the model are fine, and a retry fails the same way until
-        the database's storage credentials are fixed. The body names what
-        the caller read and never a storage path; the full text is logged.
+        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes,
+        and `sqlTemporaryTable`), the database ran the query and an object
+        store refused its read. Under a data path the environment configures
+        (a DuckLake catalog's), the query and the model are fine and a retry
+        fails the same way until the database's storage credentials are
+        fixed; otherwise the path the query reads refused access. The body
+        names what the caller read and never a storage path; the full text is
+        logged.
       content:
         application/json:
           schema:
@@ -9969,12 +9975,13 @@ components:
             the environment does not have, usually one deleted after the
             package was loaded.
 
-            STORAGE_ACCESS_DENIED, on a 403, means the storage holding a
-            table's data (a DuckLake data path, an object-store bucket)
-            refused the database's read. The query and the model are fine;
-            whoever configures the database's storage credentials has to fix
-            it, and retrying fails the same way. The body names the source or
-            connection the caller read and no storage path.
+            STORAGE_ACCESS_DENIED, on a 403, means an object store refused the
+            database's read. Under a data path the environment configures (a
+            DuckLake catalog's), the query and the model are fine and whoever
+            configures the database's storage credentials has to fix it;
+            otherwise the path the query reads refused access. Retrying fails
+            the same way. The body names the source or connection the caller
+            read and no storage path.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
@@ -11807,13 +11814,6 @@ components:
             own, because it may be materialized in another destination or left
             out of instructions an orchestrator fixed, so retrying the same
             instructions would not supply it.
-        cancelled:
-          type: boolean
-          description: >-
-            True when the run was cancelled while this source was building:
-            the source did not fail, the run stopped it, and its staging table
-            was dropped. Read the source as cancelled rather than failed.
-            Absent for every other failure.
 
     ManifestEntry:
       type: object
