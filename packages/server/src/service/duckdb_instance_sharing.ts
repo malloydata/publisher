@@ -277,7 +277,9 @@ export function installDuckDBInstanceSharing(): void {
             // Malloy's baseline extensions too: a build that does not link
             // them in (Windows) loads them from disk, which external access,
             // off before Malloy's baseline loads them, would refuse.
-            for (const extension of ["json", "icu"]) {
+            // And `ducklake`, for a catalog kept in a local file under the
+            // root (an env connection's setupSQL may attach one).
+            for (const extension of ["json", "icu", "ducklake"]) {
                await raw.run(`LOAD ${extension}`).catch(() => {});
             }
             await preloadExcel((sql) => raw.run(sql));
