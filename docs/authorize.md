@@ -262,21 +262,26 @@ is owner } ` compiles — there is once again a field named `org_id` for the gat
 > **Know this: a time-based gate is evaluated in the query's time zone.** In
 > `#(access_filter) dday = $ON_DAY`, where `dday is ts.day`, Malloy computes `ts.day` and the grafted
 > `where:` in the query's `timezone:`, so a query that chooses its zone shifts which rows the gate
-> admits, by up to 14 hours either side of midnight. Served answers match a live run; this is how the
-> gate is evaluated. When the gate is an access boundary, gate on a stored date or key column rather
-> than a field computed from a timestamp, or make sure the rows either side of the boundary belong to
-> the same tenant. See
+> admits, by up to 14 hours either side of midnight. For this live behaviour, served answers match a
+> live run; this is how the gate is evaluated. When the gate is an access boundary, gate on a column
+> that already holds the date or key (a `date`-typed column or a `tenant_id`), not a timestamp
+> truncated in a query stage or an `extend` dimension, or make sure the rows either side of the
+> boundary belong to the same tenant. See
 > [row-level-access.md](row-level-access.md#a-time-based-gate-is-evaluated-in-the-querys-time-zone).
 
 > **Know this: an inherited gate filters a `->` derivation's output, not its input.** Over a source
 > `sales` gated `region = $REGION`, a derivation
 > `source: shares is sales -> { group_by: region, category; aggregate: total, share is total / all(total) }`
-> computes `all()` across every region before the gate keeps the caller's rows; `exclude()`, window functions, `calculate:` and a top-N `limit` behave the same
-> way. The caller sees only their own rows, but global aggregates and ranks over rows they cannot see
-> are visible, and a top-N can come back short or empty. Served answers match a live run. When those
-> figures are sensitive, put the gate on the derivation's own output-level source, keep
-> global-context functions out of a derivation over a gated source, or compute the global context
-> explicitly from an ungated source you intend to expose. See
+> computes `all()` across every region before the gate keeps the caller's rows; `exclude()`, window
+> functions, `calculate:` and a top-N `limit` behave the same way. The caller sees only their own rows, but global aggregates and ranks over rows they cannot see
+> are visible, and a top-N can come back short or empty. For this live behaviour, served answers
+> match a live run. When those figures are sensitive, filter the derivation's input: put a `where:`
+> on the same given in its first stage
+> (`sales -> { where: region = $REGION; group_by: …; aggregate: share is total / all(total) }`), so
+> `all()`, `exclude()`, windows and `limit` see only the caller's rows; a gate declared on the derived
+> source also filters its output, so it does not do this. Otherwise keep global-context functions
+> out of a derivation over a gated source, or compute the global context explicitly from an ungated
+> source you intend to expose. See
 > [row-level-access.md](row-level-access.md#an-inherited-gate-filters-a-derivations-output-not-its-input).
 
 ### Row-level gates and colocated persistence
@@ -746,7 +751,7 @@ Two more counters cover row filters specifically:
 - **A caller-declared derivation is refused when its chain cannot be proven.** That covers a named query with no source of its own (one reached through an import), a chain of more than 64 names, and a composite whose resolved member carries a row filter. These deny rather than admit: they cost an authorized caller a 403, never a refused caller a read.
 - **A gate does not follow an author join** (see [Gates are edge controls](#gates-are-edge-controls)). This is a design property the author controls, and the one with the largest practical consequence: any model source that joins gated data and is itself ungated hands that data to every caller it admits. The `join-bypass` warning is its check. It names each such join at load, in every package; the server never refuses one, so a compliance review run in CI is the hard stop. (A join the caller writes is gated.) Treat "which sources can a caller enter through, and what does each of them reach" as part of modelling, not as something the gate handles for you.
 - **`except:`-ing, projecting away, or `accept:`-not-relisting the column a gate reads fails CLOSED** (see [Row-level gates](#row-level-gates)) — the graft cannot resolve, so the affected entry point warns at load and denies every request at 403. This is the reverse of the retired dimension form's own known gap, where the equivalent derivation dropped the gate as a plain field and served every row silently. A derivation that then re-populates the exact gated name with a _different_ column — `except:`-ing it and `rename:`-ing another field onto that name, an `accept:` list doing the equivalent, or a join (author-written or caller-written) reintroducing the name — is checked at request time against the field the declaring source actually named, not merely against the name, and is denied rather than served misbound; the same check covers a gate's condition inherited transitively through a dimension, and a plain author `where:` or a join's own filter, not only a graft. A gate on a joined field (`child.org_id in $GROUPS`) also depends on which joined row each row reaches, so the check covers the columns that join's `ON` or `with` reads and the joined source's own `where:` too. Redefining one of those in a derivation or a caller's `extend` is denied, even to an equivalent expression (`rename: raw_id is id; dimension: id is raw_id`), because the check compares definitions, not values; renaming, `except:`-ing or not re-listing one fails closed the same way. The author rule remains not to recycle a gated column's name, nor the name of a column a gated join reads — the check is the backstop, not a reason to rely on it.
-- **A gate on a field computed from a timestamp follows the query's time zone**, and **a gate inherited through `->` filters the derivation's output, so its global aggregates and ranks are computed over every row.** Both are how gates are evaluated, and served answers match a live run; see [Row-level gates](#row-level-gates) for the safe patterns.
+- **A gate on a field computed from a timestamp follows the query's time zone**, and **a gate inherited through `->` filters the derivation's output, so its global aggregates and ranks are computed over every row.** Both are how gates are evaluated, and for these two live behaviours served answers match a live run; see [Row-level gates](#row-level-gates) for the safe patterns.
 - **An extension's own gate replaces the base's** (see [above](#the-entry-point-and-only-the-entry-point)) — that is the curated-extension idiom, so pair locked bases with `private:` fields (not `internal:`, which a caller's query can re-expose) to keep the re-exposed column surface deliberate. (An extension with no gate of its own carries the base's.)
 - **A source gated ONLY by `#(access_filter)` is a schema oracle.** A filter is grafted into the query and evaluated with it, so compilation happens first, and a caller gets Malloy's own compile errors for the source even when the filter then admits them no rows: a malformed probe (`group_by: no_such_field`) returns "field is not defined", confirming whether a column exists. A `#(authorize)` lock closes this for the caller it refuses — it is decided before their query compiles — so a source that should not answer schema questions to outsiders wants a lock, not only a filter. Behind the trusted tier the exposure is a column name, not data — see [security-posture.md](security-posture.md#row-level-access-rows-are-protected-the-schema-is-not).
 - **`/compile` raw SQL is gated at `append` only.** The gate covers named Malloy sources. `/compile` at the default `append` scope now compiles under Malloy's restricted mode, the same refusal `/query` applies, so raw `duckdb.sql(...)`, `connection.table(...)`, `import` and the raw-SQL function forms are refused there, as are a `given:` declaration (a `$NAME` reference to a given the model already declares is still accepted) and a `##!` compiler-flag annotation. Text that parses only as a continuation of the model's last statement is refused too, since the check reads the fragment by itself. `file` and `package` still compile unrestricted, and `scope` is a caller-chosen request field with no authorization difference between its values, so a caller refused at `append` can ask for `file`. Restricting those two would make an ordinary package un-authorable, since that is where a model legitimately declares what it reads; containing them means authorizing the scope, which is separate work. Keep `/compile` behind the trusted tier.

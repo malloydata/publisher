@@ -138,8 +138,9 @@ expression language `where:` accepts.
 ## Where a gate is evaluated
 
 A row-level gate is grafted into the query it scopes and evaluated with that query. Two
-consequences follow for an author choosing what to gate on. Neither is a defect: in both cases
-Publisher's served answer matches a live run, because this is how gates are evaluated.
+consequences follow for an author choosing what to gate on. Neither is a defect: for both of these
+live behaviours, Publisher's served answer matches a live run, because this is how gates are
+evaluated.
 
 ### A time-based gate is evaluated in the query's time zone
 
@@ -164,8 +165,8 @@ shift by that zone's offset: up to 14 hours either side of midnight.
 
 When the gate is an access boundary:
 
-- Gate on a stored date or key column (a date written at load time, a `tenant_id`), not on a field
-  computed from a timestamp.
+- Gate on a column that already holds the date or key (a `date`-typed column or a `tenant_id`),
+  not a timestamp truncated in a query stage or an `extend` dimension.
 - Or make sure the rows either side of the boundary, within that window, belong to the same tenant,
   so a shifted day admits nothing the caller could not already see.
 
@@ -203,8 +204,10 @@ themselves stay scoped; global aggregates and ranks over rows the caller cannot 
 
 When those figures are sensitive:
 
-- Put the gate on the derivation's own output-level source: derive from a base the derivation is
-  meant to read in full, and declare the gate on the derived source callers enter.
+- Filter the derivation's input: put a `where:` on the same given in the derivation's first stage
+  (`sales -> { where: region = $REGION; group_by: …; aggregate: share is total / all(total) }`), so
+  `all()`, `exclude()`, windows and `limit` see only the caller's rows. A gate declared on the derived
+  source itself does not do this: it too filters the derivation's output.
 - Do not use global-context functions (`all()`, `exclude()`, window functions, `calculate:`, a
   ranking `limit`) in a derivation over a gated source.
 - Or compute the global context explicitly, from an ungated source you intend to expose.

@@ -249,8 +249,9 @@ a source that should not answer schema questions to outsiders wants a lock as we
 - **A gate is evaluated with the query it is grafted into.** A gate on a field computed from a
   timestamp follows the query's `timezone:`, and a gate inherited through a `->` derivation filters
   the derivation's output, after its `all()`, window functions and `limit` have run over every row.
-  Served answers match a live run in both cases; gate on a stored date or key column, and keep
-  sensitive global context out of derivations over gated sources. See
+  For these two live behaviours served answers match a live run. Gate on a column that already
+  holds the date or key, and filter a derivation's input with a first-stage `where:` on the gate's
+  given when its global context is sensitive. See
   [row-level-access.md § Where a gate is evaluated](row-level-access.md#where-a-gate-is-evaluated).
 - **A row-level gate's given values land in the warehouse query log.** The filter is inlined
   (`WHERE org_id IN (7, 8)`), not parameterized, so every caller's group set appears verbatim in
