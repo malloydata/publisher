@@ -103,9 +103,9 @@ source: typed is duckdb.sql("""
             name: "a DECIMAL sum",
             malloy:
                "run: typed -> { group_by: g; aggregate: dec_sum; order_by: g }",
-            // Its table is the BIGINT sum's (one grain, one rollup), and a rollup
-            // declines as a whole when a column it stores has no exact read.
-            expect: { database: "rollup", "database@parquet": "live" },
+            // Its table is the BIGINT sum's (one grain, one rollup), but only a
+            // query reading the column with no exact read declines (#1869).
+            expect: "rollup",
          },
          {
             name: "a DECIMAL grain",
