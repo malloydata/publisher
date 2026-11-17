@@ -509,6 +509,10 @@ export class InstructedBuild {
       };
       try {
          await this.buildEveryTable(run, builds, tables, connections);
+         // Stopped during the last source: the loop has nothing left to
+         // check before, so the run settles CANCELLED here rather than
+         // committing a partial manifest that would serve (P5-10).
+         if (run.signal?.aborted) throw new BuildCancelledError();
 
          settled = settleRefusals(run);
 
