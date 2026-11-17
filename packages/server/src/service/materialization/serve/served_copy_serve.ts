@@ -1746,9 +1746,10 @@ export class ServedCopyServe {
    }
 
    /**
-    * The trailing `extend` runs of a `#(materialize)` source's ancestors in
-    * its own file, root first ({@link keptAncestorChain}, confirmed against
-    * the file's text), which its re-root keeps ahead of its own blocks. Kept
+    * The trailing `extend` runs of a `#(materialize)` source's ancestors, in
+    * its own file or the files it imports, root first
+    * ({@link keptAncestorChain}, confirmed against each file's
+    * text), which its re-root keeps ahead of its own blocks. Kept
     * for an extension table (P10), whose table holds every one of their rows
     * and stored columns, so it loses no measure, join or view any of them
     * declares; and for one whose bases declare a measure, view or join it
@@ -1765,10 +1766,12 @@ export class ServedCopyServe {
    ): string | undefined {
       const plan = this.materializePlans[reroot.sourceID];
       if (!plan) return undefined;
-      const text = fileText(reroot.url);
-      if (text === undefined) return undefined;
+      // Across files: an extension in a file that imports its base's file
+      // keeps that base's blocks too, so it is re-rooted on its own table
+      // rather than left reading its base's (P2-22).
       const confirmed = confirmedAncestors(
-         text,
+         fileText,
+         reroot.url,
          reroot.range,
          keptAncestorChain(map, reroot.sourceID, reroot.url),
       );
@@ -1782,9 +1785,7 @@ export class ServedCopyServe {
          confirmed.some((a) => declaresBlocks(map.node(a.sourceID)?.def));
       if (!needed) return undefined;
       return confirmed
-         .flatMap((a) =>
-            a.run ? [text.slice(a.run.start, a.run.end).trimEnd()] : [],
-         )
+         .flatMap((a) => (a.runText ? [a.runText] : []))
          .reverse()
          .join(" ");
    }
