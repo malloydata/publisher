@@ -537,11 +537,19 @@ export interface RollupVariantPlan extends RollupPlan {
     */
    internalGrain: string[];
    /**
-    * Grain dimensions the base itself declares `private`: stored, read by the
+    * Grain dimensions `private` on the base, its own or declared by a source
+    * it extends in its file ({@link liftedAncestors}): stored, read by the
     * build through its build copy's lift, and redeclared `private` on the
     * variant. Absent: none.
     */
    privateGrain?: string[];
+   /**
+    * For a private grain dimension a source the base extends declares: the
+    * statements of the sources it extends, down to that one, all in the
+    * base's file, whose access modifiers its build copy lifts as well, so
+    * the build can read it. Absent: none.
+    */
+   liftedAncestors?: TermUse[];
    /**
     * The base's own given-reading `where:` terms, each over grain dimensions
     * only: left out of the build (replaced by `true` in its build copy), so

@@ -12,7 +12,11 @@ import {
    rollupGateEnforcedAtRead,
    type RollupRefusal,
 } from "./rollup_plan";
-import { emitMeasureExpr, generateRollupBuildFile } from "../text/read_text";
+import {
+   emitMeasureExpr,
+   generateRollupBuildFile,
+   rollupBuildCopyText,
+} from "../text/read_text";
 import type { RollupVariantPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 
@@ -804,6 +808,90 @@ source: orders is ${ROWS} extend {
       expect(text).toContain("include { public: * } -> {");
       // The private one is read from the base's build copy, which lifts it.
       expect(text).toContain('from "orders.malloy.orders.rollup-build.malloy"');
+   });
+
+   it("stores a private grain dimension a source it extends declares in its file, lifting each statement down to it (b-hidden)", async () => {
+      const files = {
+         "orders.malloy": `##! experimental { access_modifiers }
+source: base is ${ROWS} extend {
+  private dimension: hidden_cat is category
+}
+source: middle is base extend {
+  dimension: doubled is amount * 2
+}
+source: orders is middle extend {
+  #(preaggregate) grain=["hidden_cat", "region"]
+  measure: total is amount.sum()
+}`,
+      };
+      const { plans, refused } = await plan(files);
+      expect(refused).toEqual([]);
+      expect(plans.map((p) => p.privateGrain)).toEqual([["hidden_cat"]]);
+      // `middle` and `base`, in file order.
+      expect(plans[0]?.liftedAncestors?.map((a) => a.range.start.line)).toEqual(
+         [1, 10],
+      );
+      const copy = rollupBuildCopyText(
+         files["orders.malloy"],
+         plans[0] as RollupVariantPlan,
+         true,
+      );
+      expect("copy" in copy && copy.copy).toContain(
+         "  dimension: hidden_cat is category",
+      );
+      expect("copy" in copy && copy.copy).not.toContain("private dimension");
+      const text = generateRollupBuildFile(plans, "orders.malloy") ?? "";
+      expect(text).toContain('from "orders.malloy.orders.rollup-build.malloy"');
+   });
+
+   it("lifts only the base's own statement for a private dimension it declares itself", async () => {
+      const { plans } = await plan({
+         "orders.malloy": `##! experimental { access_modifiers }
+source: orders is ${ROWS} extend {
+  private dimension: secret is carrier
+  #(preaggregate) grain=["category", "secret"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans.map((p) => p.liftedAncestors)).toEqual([undefined]);
+   });
+
+   it("refuses a private grain dimension a source in another file declares: the build copy cannot lift it (b-hidden)", async () => {
+      const { plans, refused } = await plan(
+         {
+            "orders.malloy": `##! experimental { access_modifiers }
+import "base.malloy"
+source: orders is base extend {
+  #(preaggregate) grain=["hidden_cat", "region"]
+  measure: total is amount.sum()
+}`,
+            "base.malloy": `##! experimental { access_modifiers }
+source: base is ${ROWS} extend {
+  private dimension: hidden_cat is category
+}`,
+         },
+         "orders.malloy",
+      );
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual(["hidden_field"]);
+      expect(refused[0]?.message).toContain("another file");
+   });
+
+   it("never plans a rollup of a hidden measure, private or internal (b-hidden)", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental { access_modifiers }
+source: orders is ${ROWS} extend {
+  #(preaggregate) grain=["category"]
+  private measure: secret_total is amount.sum()
+  #(preaggregate) grain=["category"]
+  internal measure: internal_total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual([
+         "hidden_field",
+         "hidden_field",
+      ]);
    });
 
    it("walks an inherited gate as the governor does, on an extension's own rollup", async () => {

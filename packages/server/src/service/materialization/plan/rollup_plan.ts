@@ -369,13 +369,9 @@ const isDimension = (f: FieldLike) =>
 const isHidden = (f: FieldLike | undefined) =>
    f?.accessModifier != null && f.accessModifier !== "public";
 
-/** Whether `f` is declared inside the base's own statement (its location). */
-function declaredWithin(
-   f: FieldLike,
-   facts: Pick<RollupFacts, "declaration">,
-): boolean {
+/** Whether `f` is declared inside the statement at `within` (its location). */
+function declaredIn(f: FieldLike, within: TermUse | undefined): boolean {
    const at = (f as { location?: TermUse }).location;
-   const within = facts.declaration;
    if (!at?.range || !within || at.url !== within.url) return false;
    const before = (
       a: { line: number; character: number },
@@ -385,6 +381,22 @@ function declaredWithin(
       before(within.range.start, at.range.start) &&
       before(at.range.end, within.range.end)
    );
+}
+
+/**
+ * The statements a build copy lifts so its build can read the private field
+ * `f`: none when the base's own statement declares it; else the statements
+ * of the sources the base extends, nearest first, down to the one that
+ * declares it, every one in the base's file. Undefined when no such
+ * statement declares it (another file's, or one the compiler did not place).
+ */
+function privateLifts(
+   f: FieldLike,
+   facts: Pick<RollupFacts, "declaration" | "ancestors">,
+): TermUse[] | undefined {
+   if (declaredIn(f, facts.declaration)) return [];
+   const at = facts.ancestors.findIndex((a) => declaredIn(f, a));
+   return at < 0 ? undefined : facts.ancestors.slice(0, at + 1);
 }
 
 /** Every compiled source of `map`, once per map: what A1's reader looks among. */
@@ -901,6 +913,12 @@ interface RollupFacts {
         };
    /** Where the base is declared, for its build copy's edits. */
    declaration: TermUse | undefined;
+   /**
+    * Where each source the base extends is declared, nearest first, as far
+    * as each is declared in the base's own file (the file its build copy
+    * edits); the chain stops at the first that is not.
+    */
+   ancestors: TermUse[];
    timeFields: ReturnType<typeof currentTimeFields>;
    /** The time zone the source sets, and whether a source in it joins it. */
    zone: ReturnType<typeof timezoneOf>;
@@ -967,6 +985,14 @@ function rollupFactsOf(
       ? { terms: read.terms }
       : { refused: read.reason, reason: read.refusal };
    const declaration = declarationOf(def as SourceDefLike);
+   const ancestors: TermUse[] = [];
+   for (const id of map.chainOf(def).slice(1)) {
+      const at = map.node(id)
+         ? declarationOf(map.node(id)?.def as SourceDefLike)
+         : undefined;
+      if (!at || !declaration || at.url !== declaration.url) break;
+      ancestors.push(at);
+   }
    // A source that sets its own `timezone:` (or inherits one) built its
    // times in that zone, and the base branch reads no query on it from a
    // rollup (`TIME_ZONE`), whose variant is redeclared without the zone. The
@@ -1044,6 +1070,7 @@ function rollupFactsOf(
       windowed,
       given,
       declaration,
+      ancestors,
       timeFields,
       zone,
       joinedInZone: joinersInZone.length > 0,
@@ -1132,22 +1159,23 @@ function declarationRefusal(
    // A hidden grain dimension is stored and redeclared with its modifier on
    // the variant, so no query selects it, as the served copy stores a hidden
    // column: `internal` lifted by the build's `include { public: * }`,
-   // `private` by its build copy, which lifts only what the base's own
-   // statement declares. One private on a source it extends stays private,
-   // and is never stored.
+   // `private` by its build copy, which lifts the base's own statement and,
+   // for one private on a source it extends, every statement from that
+   // source down to the base ({@link privateLifts}). One the copy cannot
+   // reach (a statement in another file) is never stored.
    const hiddenGrain = decl.grain.find((g) => {
       const f = byName.get(g);
       return (
          isHidden(f) &&
          f?.accessModifier !== "internal" &&
-         !(f?.accessModifier === "private" && declaredWithin(f, facts))
+         !(f?.accessModifier === "private" && privateLifts(f, facts))
       );
    });
    if (hiddenGrain) {
       return unservable(
          "hidden_field",
          decl,
-         `its grain dimension \`${hiddenGrain}\` is private on a source it extends, which a rollup's build cannot read`,
+         `its grain dimension \`${hiddenGrain}\` is private on a source it extends, declared in another file, which a rollup's build copy cannot lift`,
       );
    }
    const unreadableGrain =
@@ -1354,6 +1382,22 @@ function rollupPlanOf(
    const privateGrain = decl.grain.filter(
       (g) => byName.get(g)?.accessModifier === "private",
    );
+   // The statements of the sources it extends that its build copy lifts too,
+   // for a private grain dimension one of them declares (in file order).
+   const inherited = new Map<string, TermUse>();
+   for (const g of privateGrain) {
+      for (const at of privateLifts(byName.get(g) as FieldLike, facts) ?? []) {
+         inherited.set(
+            `${at.range.start.line}:${at.range.start.character}`,
+            at,
+         );
+      }
+   }
+   const liftedAncestors = [...inherited.values()].sort(
+      (a, b) =>
+         a.range.start.line - b.range.start.line ||
+         a.range.start.character - b.range.start.character,
+   );
    return {
       variant: true,
       baseSourceName: sourceName,
@@ -1377,6 +1421,7 @@ function rollupPlanOf(
          (g) => byName.get(g)?.accessModifier === "internal",
       ),
       ...(privateGrain.length > 0 ? { privateGrain } : {}),
+      ...(liftedAncestors.length > 0 ? { liftedAncestors } : {}),
       ...("terms" in facts.given && facts.given.terms.length > 0
          ? { readTimeTerms: facts.given.terms }
          : {}),
