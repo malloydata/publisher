@@ -57,6 +57,7 @@ import { packageFiles } from "../text/package_files";
 import { SourceMap } from "../text/source_map";
 import {
    chainBuildFileSet,
+   rollupBuildFileSet,
    withPersistenceFlag,
 } from "../text/chain_build_files";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
@@ -1866,6 +1867,87 @@ export class ServedCopyServe {
          connection: aliased[0].destinationName,
          virtualMap: buildVirtualMap(aliased),
          rerooted: candidates.map((c) => c.reroot.sourceName),
+         rerootedSpans,
+      };
+   }
+
+   /**
+    * The text a `storage=` rollup's build over its base's stored table
+    * compiles from on the destination alone: the base re-rooted on that
+    * table as this served copy re-roots it for a query, nothing else of the
+    * author's files, and the rollup's generated build file as the entry, so
+    * the rollup groups exactly the rows a query of the base reads there.
+    * Declines when the base does not re-root on one of `bindings`.
+    */
+   rollupBuildFiles(
+      rollup: NonNullable<ChainBuildRequest["rollup"]>,
+      downstreamName: string,
+      bindings: readonly Binding[],
+   ): ChainBuildText {
+      const modelDef = this.host.modelDef();
+      const map = SourceMap.of(modelDef);
+      const lift = authorModelLiftContext(
+         modelDef,
+         compiledTextReader(modelDef, this.packagePath),
+      );
+      const problems: ServedCopyProblem[] = [];
+      const { candidates } = this.rerootCandidates(
+         bindings.filter((b) => b.kind !== "rollup"),
+         map,
+         lift,
+         problems,
+         0,
+      );
+      const base = candidates.find(
+         (c) => c.reroot.sourceID === rollup.baseSourceID,
+      );
+      if (!base) {
+         return {
+            declined:
+               problems.length > 0
+                  ? `the base did not re-root on its stored table (${problems
+                       .map((p) => `'${p.sourceName}': ${p.reason}`)
+                       .join(", ")})`
+                  : "the base did not re-root on its stored table",
+         };
+      }
+      const set = rollupBuildFileSet({
+         lift,
+         baseSourceID: rollup.baseSourceID,
+         reroot: base.reroot,
+         importsOf: compiledImports(modelDef),
+      });
+      if ("declined" in set) return set;
+      const blanked = set.files;
+      const copy = buildServedCopy([base.reroot], (u) => blanked.get(u));
+      if (copy.refused.length > 0) {
+         return {
+            declined: `the base did not re-root (${copy.refused
+               .map((r) => `'${r.sourceName}': ${r.reason}`)
+               .join(", ")})`,
+         };
+      }
+      const files = new Map(blanked);
+      for (const [url, text] of copy.files) files.set(url, text);
+      files.set(rollup.companion.url, rollup.companion.text);
+      const rerootedSpans = [...copy.spans].flatMap(([url, list]) =>
+         list.map((span) => ({
+            url,
+            start: span.declaration.start,
+            end: span.declaration.end,
+         })),
+      );
+      const aliased = {
+         ...base.binding,
+         destinationName: servedConnectionOf(base.binding),
+      };
+      return {
+         files,
+         entry: rollup.companion.url,
+         downstreamName,
+         connection: aliased.destinationName,
+         virtualMap: buildVirtualMap([aliased]),
+         rerooted: [base.reroot.sourceName],
          rerootedSpans,
       };
    }
@@ -4611,7 +4693,13 @@ export function chainBuildText(
       model.modelDef,
       compiledTextReader(model.modelDef, model.context[0]),
    );
-   if (!lift.sourceNameById.has(request.downstream.sourceID)) return undefined;
+   if (
+      !lift.sourceNameById.has(
+         request.rollup?.baseSourceID ?? request.downstream.sourceID,
+      )
+   ) {
+      return undefined;
+   }
    const entries: Record<string, ManifestEntry> = {};
    const aliases: Record<string, string[]> = {};
    const sourceIDs = new Map<string, readonly string[] | undefined>();
@@ -4650,7 +4738,9 @@ export function chainBuildText(
       readsStoredIntegers: true,
    });
    copy.setContext(...model.context);
-   return copy.chainBuildFiles(request.downstream.sourceID, bindings);
+   return request.rollup
+      ? copy.rollupBuildFiles(request.rollup, request.downstream.name, bindings)
+      : copy.chainBuildFiles(request.downstream.sourceID, bindings);
 }
 
 /** Whether a stale binding stores a source on `chain` (the queried source's). */
