@@ -107,7 +107,7 @@ export async function observedDatabaseColumns(args: {
       }
       // DuckLake writes a 128-bit integer to Parquet as a DOUBLE: decided
       // per table, from the catalog it is in.
-      const ducklake = await ducklakeTablesOf(connection, dialect, tables);
+      const ducklake = await ducklakeTablesOf(connection, batches);
       for (const batch of batches) {
          tasks.push(() =>
             readBatch(
@@ -136,19 +136,18 @@ export async function observedDatabaseColumns(args: {
  */
 async function ducklakeTablesOf(
    connection: ReadConnection,
-   dialect: string,
-   tables: readonly CatalogTable[],
+   batches: readonly CatalogBatch[],
 ): Promise<Set<string>> {
-   const all = new Set(tables.map((t) => t.key));
+   const all = new Set(batches.flatMap((b) => b.keys));
    if (connectionTypeOf(connection) === "ducklake") return all;
-   if (dialect !== "duckdb" || tables.length === 0) return new Set();
+   const probe = batches.find((b) => b.attachedCatalogs)?.attachedCatalogs;
+   if (!probe) return new Set();
    let rows: Record<string, unknown>[];
    try {
       rows = (
-         await connection.runSQL(
-            "SELECT database_name, type, current_database() AS current FROM duckdb_databases()",
-            { rowLimit: NATIVE_SCHEMA_ROW_LIMIT },
-         )
+         await connection.runSQL(probe.sql, {
+            rowLimit: NATIVE_SCHEMA_ROW_LIMIT,
+         })
       ).rows as Record<string, unknown>[];
    } catch {
       return all;
@@ -161,13 +160,12 @@ async function ducklakeTablesOf(
    if (lakes.size === 0) return new Set();
    const current = String(rows[0]?.current ?? "").toLowerCase();
    return new Set(
-      tables
-         .filter((t) =>
-            lakes.has(
-               (t.parts.length >= 3 ? t.parts[0] : current).toLowerCase(),
-            ),
-         )
-         .map((t) => t.key),
+      batches.flatMap((b) =>
+         b.attachedCatalogs &&
+         lakes.has((b.attachedCatalogs.catalog ?? current).toLowerCase())
+            ? b.keys
+            : [],
+      ),
    );
 }
 
