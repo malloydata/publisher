@@ -201,7 +201,10 @@ export async function loadStorageTable(params: {
       }
       // The reader takes caller options: confine it to the catalog's data path
       // (recorded by the attach) before it runs (duckdb_lockdown.ts).
-      await lockDownDuckDBSession(session, { lockConfiguration: false });
+      await lockDownDuckDBSession(session, {
+         allow: configuredPath ? [configuredPath] : [],
+         lockConfiguration: false,
+      });
       return await writeTableAs(session, params, reader, (error) =>
          readerRefusal(error, params.uri),
       );

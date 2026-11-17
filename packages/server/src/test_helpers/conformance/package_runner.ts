@@ -533,7 +533,11 @@ async function buildAll(
    const built: LoadedFixture["built"] = [];
    const buildErrors: Record<string, string> = {};
    const seen = new Set<string>();
-   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "conform-build-"));
+   // Inside the package: its sandbox writes the Parquet, and is confined to
+   // the package directory (duckdb_lockdown.ts).
+   const scratch = fs.mkdtempSync(
+      path.join(pkg.getPackagePath(), ".conform-build-"),
+   );
    // The declaring source first, so a table is recorded under it rather than
    // an extension that inherits its annotation.
    // Rollups only when asked (`#@ preaggregate`, `#(preaggregate)`), each

@@ -1047,7 +1047,7 @@ export async function buildSourceIntoStorage(params: {
             // or author SQL runs in DuckDB here, as the build's SQL runs in the
             // source warehouse through the passthrough.
             await lockDownDuckDBSession(session, {
-               allow: [storageDestinationRoot(params.environmentPath)],
+               allow: destinationAllowlist(params),
                lockConfiguration: false,
             });
             try {
@@ -1261,7 +1261,7 @@ async function buildSameCatalogIntoStorage(params: {
          // Confined to the catalog before the build's SQL runs, unlocked for the
          // build's own per-step options (see buildSourceIntoStorage).
          await lockDownDuckDBSession(session, {
-            allow: [storageDestinationRoot(params.environmentPath)],
+            allow: destinationAllowlist(params),
             lockConfiguration: false,
          });
          const target = quoteManifestTablePath(
@@ -1867,6 +1867,23 @@ async function attachDestinationReadWrite(
    await session.runSQL(
       `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)}`,
    );
+}
+
+/**
+ * What a build session on a destination reads and writes, beyond what its
+ * attach recorded (duckdb_lockdown.ts): the plain-DuckDB destinations' root,
+ * and the DuckLake destination's configured data path.
+ */
+function destinationAllowlist(params: {
+   destinationConnection: ApiConnection;
+   environmentPath: string;
+}): string[] {
+   const dataPath =
+      params.destinationConnection.ducklakeConnection?.storage?.bucketUrl;
+   return [
+      storageDestinationRoot(params.environmentPath),
+      ...(dataPath ? [dataPath] : []),
+   ];
 }
 
 /** Throw a clean 422 unless the destination is a supported storage type. */
