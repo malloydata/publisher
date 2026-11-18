@@ -9177,11 +9177,14 @@ components:
           description: >-
             For a `NOT_SERVED` skip, the serve verdict's reason the table
             answers no query, from the same set as `QueryPathWarning.code`;
-            for a table only the served copy reads, `served_copy` also when
-            the served copy does not re-root the queried source (the
+            for a `storage=` table only the served copy reads, `served_copy`
+            also when the served copy declined this query on it, such as
+            when it does not re-root the queried source (the
             `served-copy-not-served` package warning says why). Always
-            snake_case. An open set. Absent on any other outcome, and on a
-            `NOT_SERVED` skip whose verdict is not known.
+            snake_case. An open set. Absent on any other outcome, on a
+            `NOT_SERVED` skip whose verdict is not known, and on a database
+            table the served copy declined for this query alone (its
+            `detail` says why).
 
 
             Retained, no longer produced (shipped in 0.14.0):
@@ -9258,9 +9261,24 @@ components:
         - RUN_FAILED
       description: >-
         Why a table could not answer a query. `NOT_BUILT`, it is not bound to
-        this package yet; `NOT_SERVED`, its serve verdict is `live`, so it
-        answers no query, and the candidate's `code` names the verdict's
-        reason; `OPTED_OUT`, the queried source opts out of its tables with
+        this package yet; `NOT_SERVED`, either its serve verdict is `live`,
+        so it answers no query, and the candidate's `code` names the
+        verdict's reason, or the table otherwise serves and the served copy
+        declined this one query on it. A `storage=` table only the served
+        copy reads is then `NOT_SERVED` with `code` `served_copy` when the
+        served copy re-roots nothing the query reads, cannot graft a gate on
+        the queried source, would answer without a column a gate or the
+        result (through a wildcard) needs because it leaves that column out
+        of a stored table's type, would expose a field the compile of record
+        does not classify or carry, resolves a composite to another member
+        than live, or the source's ungated `where:` reads a column the table
+        does not hold exactly or does not compare as its source does (a
+        zoned timestamp, or a collation: on Postgres a database table's
+        stored collation that differs from its source's or cannot be read).
+        A database table is `NOT_SERVED` this way only for that last case,
+        with a `detail` and no `code`. A query that itself names a column a
+        stored table leaves out is `MISSING_FIELD`, and a gate the table
+        cannot keep is `ROW_LEVEL_GATE`; `OPTED_OUT`, the queried source opts out of its tables with
         `#@ -persist`; `MISSING_FIELD`, the query reads a field the table
         lacks (or otherwise does not compile against it); `SHAPE_MISMATCH`,
         the query is not the shape the stored result answers: it is not a
