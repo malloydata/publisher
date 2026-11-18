@@ -52,6 +52,7 @@ const DECIDED: Record<Flag, DialectName[]> = {
    needsQualifiedTable: ["standardsql"],
    nestedColumns: ["duckdb"],
    driverKeepsBigIntegers: ["duckdb"],
+   liveRoundsBigIntegersMeasured: ["postgres"],
    castsToIntegerType: [
       "databricks",
       "duckdb",
