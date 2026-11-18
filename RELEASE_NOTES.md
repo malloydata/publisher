@@ -21,6 +21,18 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Value search: index a report-gated model locally by listing the reports you work on
+
+**A source gated by `#(access_filter) report_id = $REPORT_ID` can now have its values indexed on a local server.** Until now any gated source was skipped, so on a per-report model like this, `dimensional_value` searches found nothing locally. List the reports to index in `publisher.config.json`:
+
+```json
+"retrieval": { "dimensionValues": { "givens": { "my-package": { "REPORT_ID": [123, 456] } } } }
+```
+
+Each `#(index)` dimension is read once per listed report, through its gate, and each value is stored with its report. A `get_context` call returns a value only when its `givens` name that report, as hosted Credible does. A source that filters on a given with a plain `where:` and no default is read with these givens too.
+
+With nothing listed, these sources are still skipped, and the server log now names the setting. Nothing reads every report at once: on a production model that scans the whole table, and the 5,000-value cap would leave almost every report with no values. The setting lives in the local server's config, so publishing a package never carries it. See "Dimension value search" in `docs/configuration.md`.
+
 ## [Unreleased] — Value search: `#(index)` alone decides whether values go to your provider, and 5,000 are kept per dimension
 
 **Your `#(index)` values now go to your embedding provider and LLM without a second switch.** Until now, a local Publisher sent the values of `#(index)` dimensions to the embedding provider and the LLM only when `publisher.config.json` set `retrieval.egress.preset` to `"full"`. With only `EMBEDDING_API_KEY` set, values were matched by spelling alone, and the reason appeared only in the server log. Now the `#(index)` tag decides, as it does on a hosted index: once a provider is configured, those values are embedded, so a phrase finds a value by meaning (`sneakers` finds `Athletic Shoes`), and the LLM that picks fields sees the values that matched. Values of gated sources are still never read at index time or sent anywhere. To keep values on the machine, leave `EMBEDDING_API_KEY` unset, set `retrieval.fcj.valueEmbeddings` to `false` in the package's `publisher.json`, or set `retrieval.dimensionValues.enabled` to `false`. An existing `retrieval.egress` block still loads, does nothing, and logs a warning at startup saying so.

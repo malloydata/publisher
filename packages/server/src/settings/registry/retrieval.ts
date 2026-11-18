@@ -159,6 +159,16 @@ export const retrieval = [
       },
    }),
    setting({
+      key: "retrieval.dimensionValues.givens",
+      type: structured(),
+      kind: "structured",
+      description:
+         "Local development: per package, the givens the value index reads with, so a source gated by `column = $GIVEN` is indexed for the listed values only.",
+      notes: 'An object of packages, each an object of givens, each one value or a list: `{ "<package>": { "REPORT_ID": [123, 456] } }`. Each `#(index)` dimension is read once per combination of the listed values (at most 50), through its gate. A source gated by `column = $GIVEN` is skipped unless its given is listed here. Never published with a package, and not a way to limit what hosted Credible indexes. See "Dimension value search" below.',
+      defaultText: "_unset_ (gated sources skipped)",
+      aliases: { file: ["retrieval.dimensionValues.givens"] },
+   }),
+   setting({
       key: "retrieval.embedding.apiKey",
       type: string(),
       secret: true,
