@@ -133,6 +133,17 @@ export interface ViewAnswer {
    virtualMap?: VirtualMap;
    /** For a `storage=` view: its binding. */
    binding?: Binding;
+   /**
+    * For a database view: its table, for the check that a later stage's
+    * filter compares its columns as live compares them
+    * (`gate_collation.ts`): its binding, or its path as the manifest
+    * substitutes it.
+    */
+   databaseTableRead?: {
+      tier: "database";
+      tablePath?: string;
+      destinationName?: string;
+   };
    /** Where `govern()` grafts the source's gates on the variant (R3). */
    graftScope: GraftScope;
 }
@@ -786,7 +797,6 @@ export async function readStoredVariant(args: {
       ...reported
    } = table;
    void quotedPath;
-   void databaseTable;
    void leftOut;
    return {
       runnable,
@@ -796,6 +806,22 @@ export async function readStoredVariant(args: {
       // table to the path report and the gate policy, as through the
       // substitution: only a `storage=` table's binding is reported.
       ...(binding && !isDatabase(binding) ? { binding } : {}),
+      ...(binding && isDatabase(binding)
+         ? {
+              databaseTableRead: {
+                 tier: "database" as const,
+                 tablePath: binding.tablePath,
+                 destinationName: binding.destinationName,
+              },
+           }
+         : !virtualMap && databaseTable
+           ? {
+                databaseTableRead: {
+                   tier: "database" as const,
+                   tablePath: databaseTable,
+                },
+             }
+           : {}),
       graftScope: {
          modelDef: variant.modelDef,
          materializer: variant.materializer,
