@@ -44,6 +44,7 @@ import {
    driftedColumnRead,
    storedColumnsOfOutput,
    storedMalloyType,
+   storedTypeServesAs,
 } from "../stored_column_types";
 import type {
    BuildPlan,
@@ -177,11 +178,14 @@ export function bindStorageEntries(args: {
    // sharer is served from the table because a gated sibling stores into
    // it. Nothing leaks: the SQL, and so the rows, are identical, and
    // `govern()` grafts and proves the entry point's own gate on the answer
-   // as on live. A rollup or a view is never marked (their legs pass a gate
-   // only with the switch).
+   // as on live. A `storage=` rollup plan admitted past its base's gates is
+   // marked too: its variant grafts and proves them (rollup_variants.ts). A
+   // view is never marked (its leg passes a gate only with the switch).
    const bindings = admittedBindings.map((binding) =>
       keptTables.has(binding.virtualHandle) &&
-      (binding.kind === "persist" || binding.kind === "materialize")
+      (binding.kind === "persist" ||
+         binding.kind === "materialize" ||
+         binding.kind === "rollup")
          ? { ...binding, ownGateKept: true }
          : binding,
    );
@@ -530,6 +534,17 @@ export interface ObservedDrift {
       leftOut?: true;
       /** A 128-bit integer a DuckLake table holds as a DOUBLE. */
       storedAsDouble?: true;
+      /**
+       * The table holds the type its build wrote, but its source now
+       * declares another: what the source reads changed type since the
+       * build ({@link declaredMoves}).
+       */
+      declaredMoved?: true;
+      /**
+       * Read through its faithful cast but not reported: a type a build
+       * writes for the declaration by design ({@link declaredMoves}).
+       */
+      castOnly?: true;
    }[];
 }
 
@@ -626,15 +641,18 @@ export function applyObservedColumns(args: {
          : // A build that captured only native types (a warehouse whose
            // schema reader refused the name): those are what moved or not.
            nativeDriftOf(entry.nativeSchema ?? [], read);
+      // Read by Malloy's manifest substitution alone, a table no compile
+      // re-types: a column whose source now declares a type the table's
+      // value does not read as (a warehouse column retyped upstream since the
+      // build) has moved as surely as one altered in the table.
+      const declaration = served.has(id) ? undefined : args.declared?.(id);
+      if (declaration) {
+         columns.push(...declaredMoves(entry, read, declaration, columns));
+      }
       if (columns.length > 0 && !served.has(id)) {
-         // Read by Malloy's manifest substitution alone: each moved column
-         // cast in a projection substituted for the table, or left out.
-         const substituted = substitutedRead(
-            entry,
-            columns,
-            read,
-            args.declared?.(id),
-         );
+         // Each moved column cast in a projection substituted for the table,
+         // or left out.
+         const substituted = substitutedRead(entry, columns, read, declaration);
          drifted.push({
             sourceEntityId: id,
             columns: substituted?.columns ?? columns,
@@ -651,6 +669,7 @@ export function applyObservedColumns(args: {
       const read = reads.get(b.virtualHandle);
       if (!read) return [b];
       const entry = args.entries[b.virtualHandle];
+      const declaration = args.declared?.(b.virtualHandle);
       const built = new Map((entry?.schema ?? []).map((c) => [c.name, c]));
       const extra: ObservedDrift["columns"] = [];
       let moved = false;
@@ -664,7 +683,31 @@ export function applyObservedColumns(args: {
             c.name,
          );
          const d = columnDrift(built.get(c.name) ?? c, builtNative, read);
-         if (d.kind === "none") return [c];
+         if (d.kind === "none") {
+            // The table is as built, but its source now declares a type the
+            // stored value does not read as (a column retyped upstream since
+            // the build): declared with the type it holds, so the served
+            // copy's read plan casts it or leaves it out.
+            const [declaredMove] = declaration
+               ? declaredMoves(
+                    {
+                       schema: [built.get(c.name) ?? c],
+                    } as FreshnessManifest[string],
+                    read,
+                    declaration,
+                    [],
+                 )
+               : [];
+            if (!declaredMove?.observedType) return [c];
+            extra.push(declaredMove);
+            decided.set(c.name, declaredMove);
+            moved = true;
+            movedColumns.push({
+               name: c.name,
+               type: declaredMove.observedType,
+            });
+            return [{ name: c.name, type: declaredMove.observedType }];
+         }
          moved = true;
          // With no captured type the binding's declared one stands in, which
          // is not what the build wrote when the warehouse returns a type of
@@ -719,6 +762,72 @@ export function applyObservedColumns(args: {
       ];
    });
    return { entries, bindings, drifted, unread };
+}
+
+/**
+ * The columns of a substituted table that have not moved in the table but
+ * whose build source now declares another type than the one its build wrote,
+ * and that the value the table holds does not read as ({@link driftedColumnRead}
+ * declines it as is): what its source reads changed type since the build,
+ * which leaves its content address, and so its table, where they were.
+ * Reported as any drift is, so the leg casts or leaves each out and the
+ * package warns.
+ */
+function declaredMoves(
+   entry: FreshnessManifest[string],
+   read: Extract<ObservedColumns, { columns: unknown }>,
+   declaration: DriftDeclaration,
+   already: readonly ObservedDrift["columns"][number][],
+): ObservedDrift["columns"] {
+   const reported = new Set(already.map((c) => c.column));
+   return (entry.schema ?? []).flatMap((built) => {
+      if (reported.has(built.name)) return [];
+      const declared = declaration.columns.find(
+         (c) => c.name === built.name,
+      )?.type;
+      if (declared === undefined || declared === "") return [];
+      // The type that serves the declaration: nothing to read differently.
+      if (storedTypeServesAs(built.type, declared) !== false) return [];
+      const now = columnNamed(read.columns, built.name);
+      if (now?.type === undefined) return [];
+      // A type a build writes for this declaration by design (a `date`
+      // truncation as a naive timestamp, a `boolean` flag as an integer):
+      // read through its faithful cast, which leaves a value the build wrote
+      // as it is and corrects one a retype upstream left behind, but not
+      // reported, since the manifest cannot tell the two apart.
+      const report = {
+         column: built.name,
+         builtType: built.type,
+         observedType: now.type,
+         declaredMoved: true as const,
+         ...(byDesign(built.type, declared) ? { castOnly: true as const } : {}),
+      };
+      const how = driftedColumnRead(
+         report,
+         declared,
+         declaration.queryTimezone
+            ? { queryTimezone: declaration.queryTimezone }
+            : {},
+      );
+      return how.read === "as_is" ? [] : [report];
+   });
+}
+
+/**
+ * Whether a build of a column the source declares as `declared` writes
+ * `storedType` by design, though the type does not serve it: a warehouse
+ * answers a `date` truncation (or `date + interval`) with a naive timestamp,
+ * and a `boolean` over an integer flag with the integer.
+ */
+function byDesign(storedType: string, declared: string): boolean {
+   const family = typeFamily(storedType);
+   if (declared === "date") {
+      return family === "timestamp" && !isZoned(storedType);
+   }
+   if (declared === "boolean") {
+      return family === "number" && /INT/i.test(storedType);
+   }
+   return false;
 }
 
 /** What a substituted table's moved columns must read as. */

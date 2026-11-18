@@ -91,7 +91,7 @@ still build and serve.
    ([the path report](materialization.md#which-table-answered-a-query-the-path-report)). A
    `#(materialize)` answer reads `servedBy.kind: "materialized"` with `via: "served_copy"`, a
    `#(rollup)` answer reads `kind: "rollup"`, and a persisted view reads `kind: "view"`. A
-   table that was tried and not used is in `considered` with its `reason` (and, for `WARNED`, a
+   table that was tried and not used is in `considered` with its `reason` (and, for `NOT_SERVED`, a
    `code`).
 8. **Compare served with live.** Add a scratch model file that declares one opted-out reader per
    migrated source, run the same query on the source and on its reader, and compare the rows:
@@ -121,9 +121,9 @@ still build and serve.
 | `materialize-invalid` | A value is wrong as written: an empty, non-text or `@env.` `storage=`, both `#(materialize)` and the source's own `#@ persist`, an `inline=` that is not a list of joins of the source, a carried key of the wrong shape, a list `watermark=` off an incremental pair table, an unsafe or reserved `name=`, an invalid incremental declaration. The publish and the load fail. | Fix the value it names. |
 | `materialization-table-collision` | Two different sources' `name=` puts them on one table in one destination (a source with no `name=` takes a readable name of its own, so it never collides). The publish and the load fail, unless `PERSIST_COLLISION_ENFORCE=false`, which refuses both alone as `materialize-not-built`. | Give each source its own `name=`. |
 | `materialization-near-miss` | A misspelled route, such as `#(materialise)`. The publish and the load fail. | Fix the spelling. |
-| `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message names why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
-| `stored-native-schema-missing` | A database table is bound with no recorded warehouse type for a big-integer column (a table built before Publisher recorded them). On BigQuery the column is read as `INT64` and serves; elsewhere a query that reads it is answered live. | Run a full rebuild of the source; it records the types. |
-| `table-kept-after-rename` | A source's table was renamed or moved, and its old table is kept rather than dropped: it is at an author's exact `name=`, which Publisher never drops; in a storage destination that is no longer configured; or left by a `storage=` or tier move under the name the source is served under now, which may be the very table served. The newest run lists it in `metadata.keptTables`. | For an author's `name=`: once nothing reads it, check that no remaining run, of any version, names a table with that name in any place, then drop it yourself through its connection. For a destination no longer configured: if it was renamed rather than removed, the table may still be served under the new name, so check before dropping it. For a table left under the served name (`may_be_served`): it may be the table served now; check whether its place and the served one are one before doing anything with it. Publisher never drops it. To clear the warning, delete the runs that built it (a delete is record-only); the next auto-run stops listing it. On Snowflake and MySQL, where a run never takes a kept table as gone, that is also how to clear the warning for a table dropped by hand. See [the rename rule](materialization.md#the-rename-rule). |
+| `served-copy-not-served` | The table is built, but the served copy cannot answer from it; the message and the `reason` field name why. | See [a base with measures, views or joins](#a-base-with-measures-views-or-joins) and [known limitations](#known-limitations-you-may-hit). |
+| `database-native-type-missing` | (`stored-native-schema-missing` before 0.15, still repeated for one release.) A database table is bound with no recorded warehouse type for a big-integer column (a table built before Publisher recorded them). On BigQuery the column is read as `INT64` and serves; elsewhere a query that reads it is answered live. | Run a full rebuild of the source; it records the types. |
+| `table-kept` | A source's table was renamed or moved, and its old table is kept rather than dropped: it is at an author's exact `name=`, which Publisher never drops; in a storage destination that is no longer configured; or left by a `storage=` or tier move under the name the source is served under now, which may be the very table served. The newest run lists it in `metadata.keptTables`. | For an author's `name=`: once nothing reads it, check that no remaining run, of any version, names a table with that name in any place, then drop it yourself through its connection. For a destination no longer configured: if it was renamed rather than removed, the table may still be served under the new name, so check before dropping it. For a table left under the served name (`may_be_served`): it may be the table served now; check whether its place and the served one are one before doing anything with it. Publisher never drops it. To clear the warning, delete the runs that built it (a delete is record-only); the next auto-run stops listing it. On Snowflake and MySQL, where a run never takes a kept table as gone, that is also how to clear the warning for a table dropped by hand. See [the rename rule](materialization.md#the-rename-rule). |
 | `materialize-pair-full-refresh` | An incremental pair table rebuilds in full; the message names why. | Name a watermark field on each side of the join. |
 | `persist-view-not-built` | A persisted view cannot be built. | See [persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize). |
 | `deprecated-preaggregate-annotation` | A measure still uses `#@ preaggregate`. | Rewrite it as `#(rollup)`. |
@@ -514,7 +514,7 @@ source: sales is orders extend {
 ```
 
 A refinement (`run: sales -> by_category + { limit: 2 }`) is answered live and reports the view's
-table skipped with `MISSING_FIELD`. The rules are in
+table skipped with `SHAPE_MISMATCH`. The rules are in
 [persisted views](materialization.md#persisted-views-materialization-v2-publisher_materialize).
 
 <a id="persist-opt-out"></a>
@@ -525,7 +525,7 @@ table skipped with `MISSING_FIELD`. The rules are in
 source, it makes the reader recompute rather than read the table. Keep it when you move the source
 it reads to `#(materialize)`: a materialized source serves every reader except one that opts out
 this way. The opted-out reader, and any source built on it, recomputes live, and the served copy
-declines it (its path report's skip carries the code `persist-opt-out`). It is also the
+declines it (its path report's skip carries the reason `OPTED_OUT`). It is also the
 served-versus-live check of [step 8](#the-recipe).
 
 ```malloy
@@ -618,7 +618,7 @@ source again (#1763). One case below can still differ from live when the data br
 | A dimension, or a `where:` term, that reads a given and is not written on the materialized source itself (a base in this file or another, a materialized parent) | The source is refused and serves live | Row 5 |
 | A query with its own `timezone:` over a stored truncation or rolling window | Answered live | Row 7 |
 | A hidden stored column beside your own `rename:` of a stored column, or a pair table's renames | Answered live (in the second case, the whole model's served copy) | Row 30 |
-| A query on a gated entry point, over a rollup, without `PUBLISHER_MATERIALIZE_GATED_SOURCES`, over a `storage=` rollup, or through a gate that reads a field outside the grain or through a join | Answered live (`CONTRACT`); a rollup no gated query could read is not built (`preaggregate-access-filter`) | Rows 1 and 43 |
+| A query on a gated entry point, over a rollup, without `PUBLISHER_MATERIALIZE_GATED_SOURCES`, over a `storage=` rollup, or through a gate that reads a field outside the grain or through a join | Answered live (`ROW_LEVEL_GATE`); a rollup no gated query could read is not built (`rollup-not-built`, reason `access_filter`) | Rows 1 and 43 |
 | A query through a join to a joined source's `#(rollup) storage=` rollup | Answered live (`CROSS_CONNECTION`) | Row 26 |
 | A `count()` through a join_many, against a joined source's rollup | Answered live (`COUNT_SEMANTICS`) until Publisher's Malloy carries the fix | Row 25 |
 | A query through a join that fans out across a grain dimension it neither groups nor fixes, against the joined source's rollup | Answered live (`GRAIN_TOO_COARSE`), as for the rollup's own source | — |

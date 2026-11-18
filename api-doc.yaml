@@ -3965,7 +3965,15 @@ paths:
                 $ref: "#/components/schemas/Materialization"
         "400":
           description: >-
-            The request is malformed. Among other checks, every
+            The request is malformed, with `reason: BUILD_INSTRUCTIONS_INVALID`
+            and a message naming the case: a body field of the wrong shape
+            (`forceRefresh`, `reseed`, `runContext`, `buildInstructions` and
+            its entries); a package with no persist sources; an unknown
+            `sourceEntityId`; `realization=SNAPSHOT`; one table named by two
+            instructions of a version's run; a ledger entry that appears twice,
+            names a table this run does not build, names a source that is not
+            incremental, or was measured under another definition of its
+            source. Among other checks, every
             `physicalTableName` a host supplies (a build instruction, a
             `referenceManifest` entry or a `ledger` entry) must be a usable
             table path: no empty part, no backslash or control character, and
@@ -3981,7 +3989,20 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: The package already has an active materialization, or the package or version is bound to a host manifest (`manifestLocation`), or is a version a host has bound before, and the request has no `buildInstructions` (it serves the host's tables or live, so a local run would build tables it cannot serve)
+          description: >-
+            `reason: MATERIALIZATION_CONFLICT`. Clears on its own, so retry
+            later: the package already has an active materialization, or a
+            table the run would write is being written by another run. Does
+            not clear until something changes: a table the run would write is
+            one the package's versions share, which only an auto-run of its
+            latest version rebuilds (name tables of your own in
+            `buildInstructions`); or the package or version is bound to a host
+            manifest (`manifestLocation`), or is a version a host has bound
+            before, and the request has no `buildInstructions` (it serves the
+            host's tables or live, so a local run would build tables it cannot
+            serve). `reason:
+            BUILD_PLAN_UNAVAILABLE`: the package's build plan could not be
+            derived, or it serves an older model than its files.
           content:
             application/json:
               schema:
@@ -4286,12 +4307,16 @@ components:
     Forbidden:
       description: |
         Forbidden - insufficient permissions to perform the operation. With
-        `reason: STORAGE_ACCESS_DENIED` (the query and raw `sqlQuery` routes,
-        and `sqlTemporaryTable`), the database ran the query and an object
-        store refused its read. Under a data path the environment configures
-        (a DuckLake catalog's), the query and the model are fine and a retry
-        fails the same way until the database's storage credentials are
-        fixed; otherwise the path the query reads refused access. The body
+        `reason: STORAGE_ACCESS_DENIED` or `PATH_ACCESS_DENIED` (the query and
+        raw `sqlQuery` routes, and `sqlTemporaryTable`), the database ran the
+        query and an object store refused its read. `STORAGE_ACCESS_DENIED`:
+        the URL lies under a data path the environment configures (a DuckLake
+        catalog's, a storage destination's), so the query and the model are
+        fine and a retry fails the same way until the database's storage
+        credentials are fixed. `PATH_ACCESS_DENIED`: a path the query or the
+        model reads itself refused access, so the path, or the caller's grant
+        to it, is what to fix. With `reason: ACCESS_DENIED`, a gate refused
+        the caller. The body
         names what the caller read and never a storage path; the full text is
         logged.
       content:
@@ -4825,6 +4850,16 @@ components:
               message:
                 type: string
                 description: Why it did not load.
+              codes:
+                type: array
+                items:
+                  type: string
+                description: >-
+                  The codes of the load failure's coded lines (each line of
+                  `message` that ends `[code]`, such as `persist-unknown-key` or
+                  `rollup-invalid`), in order, each once, so a client never
+                  parses the message for them. Absent when the message carries
+                  none.
               stale:
                 type: boolean
                 description:
@@ -5164,27 +5199,32 @@ components:
           type: string
           description: >-
             `serves`: its table is bound and queries can be answered from it.
-            `not_built`: nothing is bound yet; queries are answered from its
-            table once a build binds it. `live`: no query is answered from it,
-            for `reason`, until something changes.
+            `awaiting_build`: nothing is bound yet; queries are answered from
+            its table once a build binds it (unlike a `*-not-built` package
+            warning, which names a declaration that is refused and is never
+            built here). `live`: no query is answered from it, for `reason`,
+            until something changes. `not_built` is retained, no longer
+            produced: releases before this one said it for `awaiting_build`.
         reason:
           type: string
           description: >-
             For a `live` verdict, why: `refused` (the plan refused to build it),
             `storage_mode` (`storage=` while `PERSIST_STORAGE_MODE` is not
-            `on`), `rollup_over_stored_base` (retained, never reported by a
-            released server: a rollup over a `storage=` base is planned like
-            any other), `unreachable` (no source on the package's
-            published surface reads it), `row_level_gate` (every query through
-            it carries an `#(authorize)` or `#(access_filter)` gate its table
-            cannot keep yet, on either tier), `shadowed` (its storage
-            table is bound, but every model's source of that name is another
-            source), `destination_missing` (`storage=` names a destination the
-            environment does not configure), `connection_cannot_hold_table`
-            (database, on a connection whose type creates no tables),
-            `served_copy` (a `#(materialize)` source, which only the served copy
-            reads: the served copy is off, or no model's served copy reads its
-            table). An open set.
+            `on`), `unreachable` (no source on the package's published surface
+            reads it), `row_level_gate` (every query through it carries an
+            `#(authorize)` or `#(access_filter)` gate its table cannot keep
+            yet, on either tier), `stale` (its table is past its freshness
+            window, and its fallback does not serve stale), `shadowed` (its
+            storage table is bound, but every model's source of that name is
+            another source), `destination_missing` (`storage=` names a
+            destination the environment does not configure),
+            `connection_cannot_hold_table` (database, on a connection whose
+            type creates no tables), `materialization_off` (a `#(materialize)`
+            source, which only the served copy reads, and the served copy is
+            off: `PUBLISHER_MATERIALIZE`, and for `storage=`
+            `PERSIST_STORAGE_MODE`), `served_copy` (a `#(materialize)` source
+            whose table is bound, but no model's served copy re-roots it; the
+            `served-copy-not-served` warning says why). An open set.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
@@ -5193,24 +5233,41 @@ components:
           items:
             type: string
           description: For a `live` verdict, the changes that would let it serve.
+        servePath:
+          type: string
+          description: >-
+            On a dry run: the path that will answer queries on this source,
+            judged by compiling the package's served copy over bindings
+            declared from the plan's output columns (no table is built):
+            `served_copy` (the served copy re-roots it on its table, or reads
+            it through a base it re-roots), `rollup` (a rollup the rollup leg
+            reads), or `live`, with `servePathReason`. An open string, so a
+            later release can add a path; treat an unknown value as `live`.
+        servePathReason:
+          type: string
+          description: >-
+            Why the path is what it is, when that is not the source's own
+            table. With a `live` `servePath`: `refused` (the plan refused it),
+            `inherited_gate` (a row-level gate declared on a base the served
+            copy replaces, which it cannot graft), the served copy's reason
+            for leaving the source as written (`column_types`,
+            `fields_not_carried`, `read_terms_not_kept`, `compile_failed`, and
+            the like), the verdict's own `reason`, or `not_rerooted` when none
+            names one. With a `served_copy` `servePath`: `through_base` (an
+            extension of a re-rooted source, left as written, which reads that
+            source's table by name). An open string.
         cutoverPath:
           type: string
+          deprecated: true
           description: >-
-            On a dry run: the path that will answer queries on this source
-            (the v1 cutover's, now the only one),
-            judged by compiling the package's served copy over bindings declared
-            from the plan's output columns (no table is built): `served_copy`
-            (the served copy re-roots it on its table), `rollup` (a rollup the
-            rollup leg reads), or `live`, with `cutoverReason`. An open string,
-            so a later release can add a path; treat an unknown value as
-            `live`.
+            Deprecated: the same value as `servePath`, under its old name.
+            Emitted beside it for this release only.
         cutoverReason:
           type: string
+          deprecated: true
           description: >-
-            With a `live` `cutoverPath`, why: the served copy's reason for
-            leaving the source as written (`column_types`, `fields_not_carried`,
-            `read_terms_not_kept`, `compile_failed`, and the like), or
-            `not_rerooted` when it names none. An open string.
+            Deprecated: the same value as `servePathReason`, under its old
+            name. Emitted beside it for this release only.
         views:
           type: array
           description: >-
@@ -5349,14 +5406,17 @@ components:
           enum:
             - unbound
             - bound
+            - bind_failed
             - live_fallback
           description: >-
             Server-computed, read-only: whether the CONFIGURED build manifest is
             currently bound to this package's served models. `unbound` = no
             manifest configured, so the package serves live. `bound` = the
-            configured manifest was fetched and applied. `live_fallback` = a
+            configured manifest was fetched and applied. `bind_failed` = a
             `manifestLocation` is configured but its fetch/bind failed or timed
-            out, so the configured manifest is NOT applied. Lets the caller
+            out, so the configured manifest is NOT applied. `live_fallback` is
+            retained, no longer produced: releases before this one said it for
+            `bind_failed`, so a client should read both the same. Lets the caller
             confirm the publisher actually bound the configured manifest rather
             than inferring it from logs.
 
@@ -5372,7 +5432,7 @@ components:
             combination is the signature — `bound` with neither tier populated
             means the manifest carried nothing, not that the bind was missed.
 
-            `live_fallback` does NOT imply the package is serving live. It says
+            `bind_failed` does NOT imply the package is serving live. It says
             the configured manifest was not applied — not that nothing is. A
             failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
             a failed REBIND leaves the previously bound manifest in place: its
@@ -5382,7 +5442,7 @@ components:
 
             That rebind guarantee covers a failure BEFORE either tier applies —
             the manifest fetch failing or timing out, which is what produces
-            `live_fallback` in practice. A failure partway through the recompile,
+            `bind_failed` in practice. A failure partway through the recompile,
             after the new models are installed but before the binding is
             recorded, is out of scope: the new substitutions would be live while
             these fields still described the previous manifest.
@@ -5391,11 +5451,11 @@ components:
             `boundManifestUri` is a LIVE reference to the manifest whose tables
             this package is currently serving from. A caller reclaiming
             superseded physical tables must treat it as one regardless of
-            `manifestBindingStatus` — reading `live_fallback` as "not serving
+            `manifestBindingStatus` — reading `bind_failed` as "not serving
             from manifest tables" and reclaiming that generation would drop
             tables out from under a package actively serving them.
 
-            Note this value is not the `live_fallback` on a query result's
+            It is named apart from the `live_fallback` on a query result's
             `servedFrom`, which reports that ONE query degraded to the warehouse.
             This one is about the package's binding, and as above does not imply
             any query ran live.
@@ -5549,6 +5609,7 @@ components:
           enum:
             - unbound
             - bound
+            - bind_failed
             - live_fallback
           description: >-
             Whether the configured build manifest is bound to the served models.
@@ -5923,7 +5984,7 @@ components:
                   spelling it found (one per measure, `model` its file, `subject` the source and the
                   message the measure; `warn`; only while
                   `PUBLISHER_MATERIALIZE` is on).
-                  `deprecated-preaggregate-namespace`: a rollup line placed with
+                  `deprecated-rollup-namespace`: a rollup line placed with
                   `namespace=`, the deprecated spelling of its `name=`
                   container; still read, in that container under the readable
                   name (one per measure and container, `subject`
@@ -5944,10 +6005,6 @@ components:
                   cannot tell from a real de-identification, so a review has
                   to (one per field, `subject` the source; `warn`; a plain
                   copy under `#(carries)` refuses the load instead).
-                  `preaggregate-over-stored-base`: retained, never reported by a
-                  released server. A `#@ preaggregate` rollup over a
-                  `#@ persist storage=` base is planned, built and served like
-                  any other rollup.
                   Materialization codes follow one rule: the suffix tells the
                   outcome. An INVALID annotation (or invalid code it covers)
                   fails the publish and the load, on every path, so its code
@@ -6002,15 +6059,13 @@ components:
                   `subject` the view or query), and `rollup-not-built`
                   (a `#(rollup)` or `#@ preaggregate` rollup; `subject`
                   the base, or `<base>.<measure>` for one measure). The
-                  message says why; the reason is on the refusal record.
-                  `preaggregate-not-built` is retained, no longer produced:
-                  it is `rollup-not-built` now.
-                  `persist-source-refused` is `persist-not-built`'s former
-                  name: a `#@ persist` source's refusal is repeated under it,
-                  with the same message, for one release, then the repeat is
-                  removed; it never accompanies another mechanism's code, nor
-                  a refusal no earlier release raised
-                  (`storage_source_unsupported`, `incremental_unsupported`).
+                  message says why, and `reason` is the refusal record's
+                  bounded reason. `preaggregate-not-built` is
+                  `rollup-not-built`'s former name: each `rollup-not-built`
+                  warning is repeated under it, with the same message, for
+                  this release only. `persist-source-refused`, the former name
+                  of `persist-not-built` repeated beside it in 0.14.0, is no
+                  longer produced.
                   Retained, no longer produced: the rollup sub-family
                   `preaggregate-hidden-field`, `-access-filter`, `-time-zone`,
                   `-current-time`, `-reads-given`, `-unreadable-measure`,
@@ -6020,11 +6075,57 @@ components:
                   `current_time`, `reads_given`,
                   `inherited_where_with_given` or
                   `given_where_over_unstored_field`, `unreadable_measure`,
-                  `join_level` and `name_clash`.
+                  `join_not_in_grain` and `partial_name_collision`.
                   `materialization-storage-mode`: a `storage=` source the
                   deployment's `PERSIST_STORAGE_MODE` (`off` or `write-only`)
                   does not serve from storage (`subject` the source, or a
-                  rollup's base; `warn`).
+                  rollup's base; `reason` `storage_mode`; `warn`).
+                  `materialization-unreachable`,
+                  `materialization-destination-missing` and
+                  `materialization-connection-cannot-hold-table`: a source
+                  whose serve verdict is `live` for the reason each names (no
+                  published source reaches it; its `storage=` destination is not
+                  configured; its connection creates no tables), with the
+                  verdict's `message` and `fixes` (`subject` the source;
+                  `reason` the verdict's; `warn`).
+                  `materialize-pair-full-refresh`: a `#(materialize)` pair
+                  table (an inlined `join_many`) whose `refresh="incremental"`
+                  is not honoured: it is rebuilt in full on every refresh, and
+                  served (`subject` the source; `warn`).
+                  `rollup-join-one-key-repeated`: a rollup's last build found
+                  a `join_one` key repeated in the data, so queries that read
+                  that join beside other aggregates are answered live
+                  (`subject` the rollup's base; `warn`). Repeated under its
+                  former name `preaggregate-join-one-key-repeated` for this
+                  release only.
+                  `served-copy-not-served`: the served copy (the author's own
+                  files, each stored source re-rooted on its table) leaves a
+                  source as written, so it answers live, or serves it with a
+                  join read as written or left out; `reason` names why
+                  (`compile_failed`, `cross_connection_unbuilt`,
+                  `column_types`, `no_declaration`, `definition_not_parsed`,
+                  `pair_join_not_found`, `pair_not_compiled`,
+                  `fields_not_carried`, `read_terms_not_kept`,
+                  `cross_connection_join`, `inline_join_kept`,
+                  `reroot_not_compiled`, `classification_not_kept`; an open
+                  set) (`subject` the source; `warn`).
+                  `row-level-gate-unexpressible`: a row-level gate an entry
+                  point inherits, whose field it no longer carries, so that
+                  entry point denies every request; `row-level-gate-reads-no-given`:
+                  a source-line gate that reads no given, a fixed predicate
+                  rather than an access rule keyed on the caller;
+                  `row-level-gate-negated-membership`: a source-line gate that
+                  negates a membership test, which an empty given turns into
+                  match-all, or that is too deep to check for one (its message
+                  then says it is too deep to check, not that it negates one)
+                  (`model` the
+                  entry point's file, `subject` the entry point; `warn`; the
+                  model still loads).
+                  `annotation-near-miss` and `annotation-malformed-route`: an
+                  annotation whose route or directive looks like a misspelled
+                  one Publisher reads (`warn`); `annotation-gate-near-miss`: a
+                  misspelled gate annotation (`#(authorise)`), which
+                  `compile_model` refuses.
                   `persist-incremental-no-merge-key`: an incremental source
                   with no `merge_key=`, so each refresh replaces its watermark
                   range (`subject` the source; `warn`).
@@ -6054,7 +6155,13 @@ components:
                   view's or query's build source, the message naming the
                   column, both types and which applies; `warn`; see
                   docs/materialization.md).
-                  `table-kept-after-rename`: a table an auto-run replaced
+                  `database-column-type-mismatch`: a bound table in a source's
+                  own database whose column was altered, or dropped, outside a
+                  build, so it no longer stores the declared type; it is read
+                  through a cast where that is faithful, and otherwise answered
+                  live, until the table is rebuilt (one per source and column,
+                  `subject` the source; `warn`).
+                  `table-kept`: a table an auto-run replaced
                   when its source's table was renamed or moved, which
                   Publisher keeps rather than drops: one at an author's exact
                   `name=` (never dropped), one in a storage destination
@@ -6071,8 +6178,10 @@ components:
                   again in its own place
                   (one per table, `model` the model
                   declaring the source, `subject` the source or a rollup's
-                  base, the message naming the table and where it is;
-                  `warn`; see docs/materialization.md).
+                  base, the message naming the table and where it is,
+                  `reason` the kept table's `author_name`,
+                  `destination_missing` or `may_be_served`; `warn`; see
+                  docs/materialization.md).
                   `database-table-unread`: a bound table in a source's own
                   database whose columns could not be read when it was bound
                   (missing, unreadable, slower than the read's bound, or named
@@ -6086,9 +6195,11 @@ components:
                   table is read (only for a table a source of the package
                   reads; one per table, `model` the model declaring
                   its source, `subject` the source, or a rollup's base, when
-                  the plan knows the table; `warn`; see
-                  docs/materialization.md).
-                  `stored-native-schema-missing`: a database table is bound
+                  the plan knows the table; `reason` one of
+                  `connection_failed`, `timed_out`, `catalog_query_failed`,
+                  `not_found`, `ambiguous`, `unparseable`, `not_read`; `warn`;
+                  see docs/materialization.md).
+                  `database-native-type-missing`: a database table is bound
                   with no captured warehouse type (its manifest entry's
                   `nativeSchema`) for a column whose field Malloy types as a big
                   integer. On BigQuery the column is read as `INT64`, its only
@@ -6097,7 +6208,8 @@ components:
                   full rebuild captures the types (one per source, `model` the
                   first model binding it, `subject` the source, the message
                   naming the columns and which applies; `warn`; see
-                  docs/materialization.md).
+                  docs/materialization.md). Repeated under its former name
+                  `stored-native-schema-missing` for this release only.
                   `entities-…` (`entities-not-a-dimension`,
                   `entities-parameterized-source`,
                   `entities-multiple-required-filters`,
@@ -6111,6 +6223,19 @@ components:
                   curation findings (`report-on-surface`,
                   `index-is-not-a-report`). The message wording may change; the
                   code does not.
+              reason:
+                type: string
+                description: >-
+                  The bounded cause of a materialization finding, so a client
+                  branches on it rather than on the message (whose wording may
+                  change): the refusal record's `reason` on a `*-not-built`
+                  warning; the served copy's reason on
+                  `served-copy-not-served`; the unread reason on
+                  `database-table-unread`; the kept table's reason on
+                  `table-kept`; the serve verdict's reason on a
+                  `materialization-*` verdict warning; `storage_mode` on
+                  `materialization-storage-mode`. Always snake_case. An open
+                  string; absent on a finding that has none.
               severity:
                 type: string
                 enum:
@@ -6236,6 +6361,7 @@ components:
           enum:
             - unbound
             - bound
+            - bind_failed
             - live_fallback
           description: >-
             **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.manifestBindingStatus`) and the package's entry in `GET /status`. Present on a package response only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
@@ -8659,11 +8785,10 @@ components:
             `served copy cannot answer this query` line at DEBUG, carrying the
             error that declined the query and its decline code.
 
-            ⚠️ **`live_fallback` here is not `manifestBindingStatus`'s.** On this
-            field it means the store failed at run time; `manifestBindingStatus`
-            uses the same token for a configured `manifestLocation` whose fetch
-            or bind failed. Each surface is internally consistent; neither means
-            what the other does.
+            `live_fallback` here means the store failed at run time for this
+            query. A configured `manifestLocation` whose fetch or bind failed is
+            `manifestBindingStatus: bind_failed` (releases before this one
+            spelled that `live_fallback` too).
         executionTimeMs:
           type: integer
           description: >-
@@ -8765,7 +8890,7 @@ components:
         warnings:
           type: array
           description: >-
-            The serve verdicts behind this query's `WARNED` skips: one per table
+            The serve verdicts behind this query's `NOT_SERVED` skips: one per table
             on the queried source's chain that no query can be answered from,
             each with a code and a sentence for a person. A table whose source
             the caller cannot list is left out, as in `notConsidered`. Empty
@@ -8782,15 +8907,20 @@ components:
         code:
           type: string
           description: >-
-            The serve verdict's reason: `storage_mode` (built into storage, but
-            the server's PERSIST_STORAGE_MODE routes no query to it),
+            The serve verdict's reason (`ServeVerdict.reason`): `refused` (the
+            package refuses to serve it), `storage_mode` (built into storage,
+            but the server's PERSIST_STORAGE_MODE routes no query to it),
             `unreachable` (no published source reaches it), `row_level_gate`
             (every published entry point over it carries a gate it cannot keep
-            yet), `refused` (the package refuses to serve it), `shadowed` (its
-            storage table is bound to another source of the same name) or
-            `served_copy` (only the served copy reads it, and it does not answer
-            from it). An open
-            set: treat a code you do not know as a warning like any other.
+            yet), `stale` (past its freshness window, with a fallback that does
+            not serve stale), `shadowed` (its storage table is bound to another
+            source of the same name), `destination_missing` (`storage=` names
+            a destination the environment does not configure),
+            `connection_cannot_hold_table` (its connection creates no tables),
+            `materialization_off` (only the served copy reads it, and the
+            served copy is off) or `served_copy` (only the served copy reads
+            it, and the served copy does not re-root it). An open set: treat a
+            code you do not know as a warning like any other.
         tableId:
           type: string
           description: The table, as `considered` names it.
@@ -8908,13 +9038,18 @@ components:
         code:
           type: string
           description: >-
-            For a `WARNED` skip, the serve verdict's reason the table answers no
-            query: `storage_mode`, `unreachable`, `row_level_gate`, `refused`,
-            `shadowed` or `served_copy` (see `QueryPathWarning`); or, for a table only the served
-            copy reads, `served-copy-not-served` (the package warning of that
-            code) or `persist-opt-out` (the queried source opts out with
-            `#@ -persist`). An open set. Absent on any
-            other outcome, and on a `WARNED` skip whose verdict is not known.
+            For a `NOT_SERVED` skip, the serve verdict's reason the table
+            answers no query, from the same set as `QueryPathWarning.code`;
+            for a table only the served copy reads, `served_copy` also when
+            the served copy does not re-root the queried source (the
+            `served-copy-not-served` package warning says why). Always
+            snake_case. An open set. Absent on any other outcome, and on a
+            `NOT_SERVED` skip whose verdict is not known.
+
+
+            Retained, no longer produced (shipped in 0.14.0):
+            `served-copy-not-served`, now `served_copy`; `persist-opt-out`,
+            now the skip reason `OPTED_OUT`.
         detail:
           type: string
           description: >-
@@ -8970,29 +9105,46 @@ components:
       type: string
       enum:
         - NOT_BUILT
-        - WARNED
+        - NOT_SERVED
+        - OPTED_OUT
         - MISSING_FIELD
-        - CONTRACT
+        - SHAPE_MISMATCH
+        - ROW_LEVEL_GATE
         - GRAIN_TOO_COARSE
         - TIME_ZONE
         - CROSS_CONNECTION
         - COUNT_SEMANTICS
         - STALE
+        - READ_FAILED
+        - WARNED
+        - CONTRACT
         - RUN_FAILED
       description: >-
         Why a table could not answer a query. `NOT_BUILT`, it is not bound to
-        this package; `WARNED`, its annotation carries a publish warning and
-        serves live, and the candidate's `code` says which; `MISSING_FIELD`, the query reads a field the table lacks (or
-        otherwise does not compile against it); `CONTRACT`, answering from it
-        would bypass an access control on the queried source; `GRAIN_TOO_COARSE`,
-        a rollup's grain does not cover the query's groups or filters;
-        `TIME_ZONE`, it was built in another time zone than the query's;
-        `CROSS_CONNECTION`, the query needs a join the table's connection cannot
-        reach; `COUNT_SEMANTICS`, an aggregate the table cannot reproduce as the
-        live query computes it; `STALE`, it is past its freshness window;
-        `RUN_FAILED`, it was chosen but reading it failed at run time, and its
-        freshness fallback allowed live. A closed list to which codes may be
-        added, so a client treats an unknown one as a skip it cannot explain.
+        this package yet; `NOT_SERVED`, its serve verdict is `live`, so it
+        answers no query, and the candidate's `code` names the verdict's
+        reason; `OPTED_OUT`, the queried source opts out of its tables with
+        `#@ -persist`; `MISSING_FIELD`, the query reads a field the table
+        lacks (or otherwise does not compile against it); `SHAPE_MISMATCH`,
+        the query is not the shape the stored result answers: it is not a
+        call of the persisted view or query, it refines the call, or its text
+        names beside the call a name the stored result's variant takes over;
+        `ROW_LEVEL_GATE`, answering from it would bypass a row-level gate on
+        the queried source; `GRAIN_TOO_COARSE`, a rollup's grain does not
+        cover the query's groups or filters; `TIME_ZONE`, it was built in
+        another time zone than the query's; `CROSS_CONNECTION`, the query
+        needs a join the table's connection cannot reach; `COUNT_SEMANTICS`,
+        an aggregate the table cannot reproduce as the live query computes
+        it; `STALE`, it is past its freshness window; `READ_FAILED`, it was
+        chosen but reading it failed at run time, and its freshness fallback
+        allowed live.
+
+
+        Retained, no longer produced (shipped in 0.14.0): `WARNED`, now
+        `NOT_SERVED` (or `OPTED_OUT` for `#@ -persist`); `CONTRACT`, now
+        `ROW_LEVEL_GATE`; `RUN_FAILED`, now `READ_FAILED`. A closed list to
+        which codes may be added, so a client treats an unknown one as a
+        skip it cannot explain.
 
     LogMessage:
       type: object
@@ -10022,6 +10174,12 @@ components:
         details:
           type: string
           description: Additional error details or context
+        refusalReason:
+          type: string
+          description: >-
+            With `reason: MATERIALIZATION_REFUSED`: the refusal's bounded
+            reason, from the same open set as `RefusedSource.reason`. Absent
+            otherwise.
         reason:
           type: string
           description: |
@@ -10051,12 +10209,46 @@ components:
             package was loaded.
 
             STORAGE_ACCESS_DENIED, on a 403, means an object store refused the
-            database's read. Under a data path the environment configures (a
-            DuckLake catalog's), the query and the model are fine and whoever
-            configures the database's storage credentials has to fix it;
-            otherwise the path the query reads refused access. Retrying fails
-            the same way. The body names the source or connection the caller
-            read and no storage path.
+            database's read under a data path the environment configures (a
+            DuckLake catalog's, a storage destination's): the query and the
+            model are fine, and whoever configures the database's storage
+            credentials has to fix it. PATH_ACCESS_DENIED, on a 403, means the
+            object store at a path the query or the model reads itself (a file
+            or table URL) refused access: change the path, or get the caller a
+            grant to it. Retrying either fails the same way. The body names the
+            source or connection the caller read and no storage path.
+
+            ACCESS_DENIED, on a 403, means a gate (`#(authorize)` or
+            `#(access_filter)`) refused the caller. Every gate 403 carries it,
+            including a gate that could not be decided, which fails closed and
+            answers the same: only the server's metrics and log tell those
+            apart. A 403 with any other reason is not a gate's.
+
+            MATERIALIZATION_REFUSED, on a 422, means a valid materialization
+            declaration this server will not build. The body's `refusalReason`
+            is the refusal's `RefusedSource.reason`.
+
+            TABLE_OWNED_ELSEWHERE and TABLE_OWNERSHIP_UNVERIFIED, on a 400,
+            mean a build was refused before it wrote because its `name=` is
+            held by a table this package does not own, or because who holds
+            it could not be read.
+
+            BUILD_INSTRUCTIONS_INVALID, on a 400 from creating a
+            materialization, means its body or build instructions are not a
+            run this package can take (a field of the wrong shape, an unknown
+            source, a table named twice, a ledger entry that does not fit);
+            the message names which. Retrying unchanged fails the same way.
+
+            MATERIALIZATION_CONFLICT, on a 409, means a materialization run
+            conflicts with another run or with the package's binding. Two of
+            its cases clear on their own, so retry later: a run already active
+            for the package, and a table another run is writing. Two do not
+            clear until something changes, so a retry fails the same way: an
+            auto-run of a package or version a host manifest serves (pass
+            `buildInstructions`, or clear the binding), and a run of a version
+            that is not latest touching the tables a `scope: package`
+            package's versions share (name tables of its own in
+            `buildInstructions`). The message says which.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
@@ -10098,7 +10290,10 @@ components:
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
-            STORAGE_ACCESS_DENIED, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
+            STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
+            MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
+            TABLE_OWNERSHIP_UNVERIFIED, BUILD_INSTRUCTIONS_INVALID,
+            MATERIALIZATION_CONFLICT, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
             VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
             PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
@@ -10215,8 +10410,12 @@ components:
             against the replacement. It also reports the render-tag findings
             (code "render-tag") and the dashboard, given and drill findings
             (code "dashboard-lint") a reload would put on the package's
-            warnings, at their own severity and with no position. The
-            package's other warnings (storage, persist, materialization,
+            warnings, at their own severity and with no position, and the
+            load's verdict on the materialization annotations: each line a
+            load fails with as an error with its code, each annotation the
+            load leaves unbuilt as a warning ("file" reports the same verdict
+            when the file names a materialization route or the package plans
+            a table). The package's other warnings (storage, bound tables,
             explores, surface and discovery warnings, among others) are not
             reported. Package diagnostics can name
             files hidden from discovery. No rows or SQL are returned, and
@@ -10607,7 +10806,9 @@ components:
           description: >-
             Materialization metadata including build options, source counts,
             and durations. Free-form object — fields such as `trigger`
-            (ON_DEMAND | SCHEDULER) live here deliberately, so a strict-schema
+            (`on_demand` | `scheduler`, the words `RunContext.trigger` uses;
+            releases before this one wrote `ON_DEMAND` | `SCHEDULER`, which a
+            reader of older runs must still accept) live here deliberately, so a strict-schema
             client does not need to know them. Promoting any such field to a
             top-level `Materialization` property is a breaking schema change
             that orchestrated clients must adopt first; do not do it casually.
@@ -10623,7 +10824,7 @@ components:
             the cancel raced, which `error` reports only as "Cancelled".
             `keptTables` (array) is set on an auto-run that lists the tables
             a rename or move left and Publisher keeps rather than drops (see
-            the `table-kept-after-rename` warning).
+            the `table-kept` warning).
           additionalProperties: true
           properties:
             keptTables:
@@ -10910,6 +11111,7 @@ components:
               not_duckdb_portable,
               public_surface_unknown,
               read_only_dialect,
+              connection_cannot_hold_table,
               storage_source_unsupported,
               env_reference,
               rollup_name_collision,
@@ -10932,8 +11134,8 @@ components:
               access_filter,
               time_zone,
               unreadable_measure,
-              join_level,
-              name_clash,
+              join_not_in_grain,
+              partial_name_collision,
               given_where_over_unstored_field,
               unreadable_grain,
             ]
@@ -10965,9 +11167,10 @@ components:
             `#(materialize)` a field that is not a stored dimension);
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
             cannot be expressed over the stored table's own columns);
-            `read_only_dialect` (a database build on a dialect that
-            cannot create tables; SQL Server today, whose connection reports
-            `canPersist: false`); `needs_qualified_name` (a database table on
+            `connection_cannot_hold_table` (a database build on a connection
+            that cannot create tables; SQL Server today, whose connection
+            reports `canPersist: false`: the same words as the serve verdict's
+            reason for the same case); `needs_qualified_name` (a database table on
             BigQuery, where a table needs a dataset, whose `name=` names none:
             a `#@ persist` source, a persisted view or query, a
             `#(materialize)` source, or a rollup whose own `name=` and base's
@@ -11008,7 +11211,9 @@ components:
             `#@ persist`, so it is already its base's table),
             `inline_unsupported` (an `inline=` join or pair-table layout the
             build cannot store), `no_stored_columns` (the source has no
-            dimension to store), `needs_qualified_name` (as above), and
+            dimension to store), `needs_qualified_name` (as above),
+            `time_zone` (the source sets its own time zone, which its stored
+            columns cannot follow at read), and
             `generated_build_failed` (Publisher could not write or compile its
             generated build, a Publisher bug worth reporting).
 
@@ -11019,10 +11224,11 @@ components:
             row-level gate a rollup cannot re-apply to its rows, named by the
             gate's kind as on every mechanism), `time_zone` (the source sets its own
             time zone, so no query reads the rollup), `unreadable_measure` (a
-            measure definition outside what a rollup reads), `join_level` (a
-            measure that aggregates through a join its grain does not key),
-            `name_clash` (a field already takes the name of the measure's
-            stored partial), and `unreadable_grain` (a `storage=` rollup
+            measure definition outside what a rollup reads),
+            `join_not_in_grain` (a measure that aggregates through a join its
+            grain does not key, or through a fan-out join),
+            `partial_name_collision` (a field already takes the name of the
+            measure's stored partial), and `unreadable_grain` (a `storage=` rollup
             over a DuckDB source whose grain dimension is stored as a type no
             stored read declares, a BLOB, INTERVAL, MAP or JSON, so no query
             would read its table; database, it is built).
@@ -11046,8 +11252,12 @@ components:
             retired key, which fails the publish and the load as
             `persist-retired-key` or `materialize-retired-key`), `env_reference`
             and `empty_storage` (invalid annotations, which fail the publish
-            and the load), and `rollup_name_collision` (a rollup's generated
+            and the load, so no served package reports them; the plan keeps
+            refusing such a source as a backstop, so a plan computed without
+            the load's check can still carry one), and `rollup_name_collision` (a rollup's generated
             name digests its declaring source, so no two rollups share one).
+            `read_only_dialect` (shipped in 0.14.0: now
+            `connection_cannot_hold_table`).
             `public_surface_unknown` is raised by the build-time narrowing of a
             stored table to the source's public columns, never by a plan; it
             shares the enum with the eligibility metric.
@@ -11864,6 +12074,20 @@ components:
             failure. A consumer computes the same destination key a successful
             build would (`storageDestinationName ?? connectionName`) whether the
             source built or failed.
+        refusalReason:
+          type: string
+          description: >-
+            With `refused`: the refusal's bounded reason, from the same open set
+            as `RefusedSource.reason`, so a client branches on it rather than on
+            `reason`'s prose. Absent otherwise.
+        code:
+          type: string
+          description: >-
+            A bounded code for a failure a client may branch on, beside
+            `reason`'s prose: `table-owned-elsewhere` (the build's `name=` is
+            held by a table this package does not own) or
+            `table-ownership-unverified` (who holds it could not be read). An
+            open set; absent for a failure that has none.
         refused:
           type: boolean
           description: >-

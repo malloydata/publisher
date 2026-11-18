@@ -3,8 +3,8 @@
 
 /**
  * One vocabulary for why a serving leg does not answer a query: each decline
- * carries its public `SkipReason`, its code, the package warning a `WARNED`
- * decline points to, and the caller's detail, all from one table.
+ * carries its public `SkipReason`, its code, the candidate `code` a
+ * `NOT_SERVED` decline reports, and the caller's detail, all from one table.
  *
  * Thrown as a `LegDecline` by the view, rollup and served legs; read by the
  * router (query_router.ts, through `VariantSkipExplanation`) and the path
@@ -27,16 +27,24 @@ export interface VariantSkipExplanation {
     * summary.
     */
    members?: Readonly<Record<string, Omit<VariantSkipExplanation, "members">>>;
+   /**
+    * The tables the decline is about, by content address, when it is about
+    * some of the tables the leg read rather than all of them.
+    */
+   tableIds?: readonly string[];
 }
 
 type SkipReason = components["schemas"]["SkipReason"];
 
 /**
  * Every reason a leg declines a query, each with the public reason the path
- * report gives for it. A `WARNED` decline also names the package warning
- * that explains it, or the reader's own `#@ -persist`.
+ * report gives for it. A `NOT_SERVED` decline also names the candidate
+ * `code` that explains it, in the serve verdict's words.
  *
- * - `rollup_contract`: a joined source's gate, which the rollup read through
+ * - `view_shape_mismatch`, `query_shape_mismatch`: the query is not the shape
+ *   the stored result answers (not a call of it, a refined call, or text that
+ *   names beside the call a name the variant takes over).
+ * - `rollup_row_level_gate`: a joined source's gate, which the rollup read through
  *   the join does not carry; `rollup_cross_connection`: a rollup in a storage
  *   destination, across from the query source.
  * - `rollup_stale`, `served_copy_stale`: the table the leg would read is past
@@ -52,6 +60,9 @@ type SkipReason = components["schemas"]["SkipReason"];
  *   only live's join computes. `served_copy_joined_annotations`: the query
  *   returns a field of such a join that the author annotated, whose notes
  *   its record cannot carry, so the table lacks the field as live returns it.
+ * - `served_copy_column_left_out`: the query reads a stored column the
+ *   re-root leaves out of its table's type, since no cast reads what the
+ *   table holds as the source declares it.
  * - `served_copy_pair_shape`: the query aggregates a pair table (an inlined
  *   join_many, served flat) in a way that table does not reproduce exactly.
  * - `served_copy_pair_parent_only`: exact or not, a query that reads nothing
@@ -66,30 +77,29 @@ const DECLINES = {
    rollup_time_zone: { reason: "TIME_ZONE" },
    rollup_not_built: { reason: "NOT_BUILT" },
    rollup_stale: { reason: "STALE" },
-   rollup_contract: { reason: "CONTRACT" },
+   rollup_row_level_gate: { reason: "ROW_LEVEL_GATE" },
    rollup_cross_connection: { reason: "CROSS_CONNECTION" },
    view_missing_field: { reason: "MISSING_FIELD" },
+   view_shape_mismatch: { reason: "SHAPE_MISMATCH" },
    view_not_built: { reason: "NOT_BUILT" },
    view_stale: { reason: "STALE" },
    query_missing_field: { reason: "MISSING_FIELD" },
+   query_shape_mismatch: { reason: "SHAPE_MISMATCH" },
    query_not_built: { reason: "NOT_BUILT" },
    query_stale: { reason: "STALE" },
    served_copy_time_zone: { reason: "TIME_ZONE" },
    served_copy_cross_connection: { reason: "CROSS_CONNECTION" },
    served_copy_stale: { reason: "STALE" },
-   served_copy_not_served: {
-      reason: "WARNED",
-      warnedCode: "served-copy-not-served",
-   },
-   served_copy_opt_out: { reason: "WARNED", warnedCode: "persist-opt-out" },
+   // The same words as the serve verdict for a table the served copy does
+   // not re-root; the `served-copy-not-served` warning says why.
+   served_copy_not_served: { reason: "NOT_SERVED", code: "served_copy" },
+   served_copy_opt_out: { reason: "OPTED_OUT" },
    served_copy_count_semantics: { reason: "COUNT_SEMANTICS" },
    served_copy_joined_annotations: { reason: "MISSING_FIELD" },
+   served_copy_column_left_out: { reason: "MISSING_FIELD" },
    served_copy_pair_shape: { reason: "COUNT_SEMANTICS" },
    served_copy_pair_parent_only: { reason: "COUNT_SEMANTICS" },
-} as const satisfies Record<
-   string,
-   { reason: SkipReason; warnedCode?: string }
->;
+} as const satisfies Record<string, { reason: SkipReason; code?: string }>;
 
 type LegDeclineCode = keyof typeof DECLINES;
 
@@ -108,8 +118,8 @@ type DecliningLeg = "rollup" | "view" | "query" | "served_copy";
  */
 export class LegDecline extends Error {
    readonly reason: SkipReason;
-   /** The package warning a `WARNED` decline points at. */
-   readonly warnedCode?: string;
+   /** The candidate `code` a `NOT_SERVED` decline reports. */
+   readonly candidateCode?: string;
    /** Decided from the query's shape alone, before compiling against it. */
    readonly shapeCheck: boolean;
    /**
@@ -117,6 +127,8 @@ export class LegDecline extends Error {
     * synthesized source name, with that rollup's own decline.
     */
    readonly members?: ReadonlyMap<string, LegDecline>;
+   /** See {@link VariantSkipExplanation.tableIds}. */
+   readonly tableIds?: readonly string[];
 
    constructor(
       readonly code: LegDeclineCode,
@@ -127,16 +139,19 @@ export class LegDecline extends Error {
          /** For logs only, when it says more than the caller's detail. */
          message?: string;
          members?: ReadonlyMap<string, LegDecline>;
+         tableIds?: readonly string[];
       } = {},
    ) {
       super(options.message ?? callerDetail ?? code);
       if (options.members && options.members.size > 0) {
          this.members = options.members;
       }
-      const decline: { reason: SkipReason; warnedCode?: string } =
-         DECLINES[code];
+      if (options.tableIds && options.tableIds.length > 0) {
+         this.tableIds = options.tableIds;
+      }
+      const decline: { reason: SkipReason; code?: string } = DECLINES[code];
       this.reason = decline.reason;
-      this.warnedCode = decline.warnedCode;
+      this.candidateCode = decline.code;
       this.shapeCheck = options.shapeCheck ?? false;
    }
 
@@ -159,10 +174,10 @@ export function isDeclineOf(
    return error instanceof LegDecline && error.leg === leg;
 }
 
-/** The public reason and warning code of a decline the router recorded by code. */
+/** The public reason and candidate code of a decline the router recorded by code. */
 export function declineOfCode(
    code: string | undefined,
-): { reason: SkipReason; warnedCode?: string } | undefined {
+): { reason: SkipReason; code?: string } | undefined {
    return code !== undefined && Object.hasOwn(DECLINES, code)
       ? DECLINES[code as LegDeclineCode]
       : undefined;
@@ -194,6 +209,7 @@ export function explanationOfDecline(
    });
    return {
       ...one(decline),
+      ...(decline.tableIds ? { tableIds: decline.tableIds } : {}),
       ...(decline.members
          ? {
               members: Object.fromEntries(

@@ -440,9 +440,16 @@ describe("the load-versus-refused policy", () => {
                   const entry = status.loadErrors?.find(
                      (e) => e.package === c.pkg,
                   );
-                  return [c.label, !!entry?.message?.includes(`[${c.code}]`)];
+                  return [
+                     c.label,
+                     !!entry?.message?.includes(`[${c.code}]`),
+                     // The code as a field too, so no client parses it out.
+                     !!entry?.codes?.includes(c.code),
+                  ];
                });
-               expect(outcomes).toEqual(CASES.map((c) => [c.label, true]));
+               expect(outcomes).toEqual(
+                  CASES.map((c) => [c.label, true, true]),
+               );
             } finally {
                for (const environment of store.getLoadedEnvironments()) {
                   await environment.closeAllConnections();

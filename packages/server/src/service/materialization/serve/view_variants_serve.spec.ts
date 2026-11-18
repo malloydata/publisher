@@ -175,7 +175,8 @@ describe("PersistedViewServe (database)", () => {
       const decline = await declineOf(
          attemptOf(f, "run: orders -> by_region + { limit: 1 }", built),
       );
-      expect(decline.code).toBe("view_missing_field");
+      expect(decline.code).toBe("view_shape_mismatch");
+      expect(decline.reason).toBe("SHAPE_MISMATCH");
       expect(decline.callerDetail).toContain("refines `by_region`");
    });
 
@@ -183,7 +184,7 @@ describe("PersistedViewServe (database)", () => {
       const decline = await declineOf(
          attemptOf(f, "run: orders_ext -> by_region", built),
       );
-      expect(decline.code).toBe("view_missing_field");
+      expect(decline.code).toBe("view_shape_mismatch");
       expect(decline.callerDetail).toBeUndefined();
    });
 
@@ -215,6 +216,8 @@ describe("PersistedViewServe (database)", () => {
          }),
       );
       expect(decline.code).toBe("view_missing_field");
+      // A column the stored result cannot give, not a query of another shape.
+      expect(decline.reason).toBe("MISSING_FIELD");
       expect(decline.callerDetail).toBe(
          "the stored result cannot answer `grand` with live's columns: it groups by no dimension, so an empty result would come back as one row",
       );

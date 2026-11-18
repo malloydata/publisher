@@ -100,7 +100,7 @@ describe("computeServeVerdicts", () => {
          sourceName: "orders",
          tier: "database",
          origin: "persist",
-         verdict: "not_built",
+         verdict: "awaiting_build",
       });
       const [bound] = computeServeVerdicts(
          facts([plan("orders")], {
@@ -152,7 +152,7 @@ describe("computeServeVerdicts", () => {
       const [database] = computeServeVerdicts(
          facts([plan("orders")], { storageMode: "off" }),
       );
-      expect(database.verdict).toBe("not_built");
+      expect(database.verdict).toBe("awaiting_build");
    });
 
    it("names a source no published query reaches, with the fix", () => {
@@ -179,7 +179,7 @@ describe("computeServeVerdicts", () => {
          reason: "row_level_gate",
       });
       const [database] = computeServeVerdicts(facts([plan("orders")], gated));
-      expect(database.verdict).toBe("not_built");
+      expect(database.verdict).toBe("awaiting_build");
    });
 
    it("serves a gated stored source plan admitted past its own gate (G3) as a database one, and no other stored source", () => {
@@ -312,7 +312,7 @@ describe("computeServeVerdicts", () => {
          } as unknown as components["schemas"]["BuildPlan"],
       });
       expect(verdicts.map((v) => [v.sourceName, v.verdict, v.reason])).toEqual([
-         ["orders", "not_built", undefined],
+         ["orders", "awaiting_build", undefined],
          ["gated", "live", "refused"],
       ]);
       expect(verdicts[1].message).toContain("gated by #(authorize)");
@@ -396,7 +396,7 @@ describe("computeServeVerdicts", () => {
       const [verdict] = computeServeVerdicts(
          facts([plan("orders", STORAGE)], { views }),
       );
-      expect(verdict.verdict).toBe("not_built");
+      expect(verdict.verdict).toBe("awaiting_build");
       expect(verdict.views).toEqual(views.get("orders@file:///pkg/m.malloy"));
    });
 
@@ -494,7 +494,7 @@ describe("computeServeVerdicts", () => {
                   destinationConfigured: () => answer,
                }),
             );
-            expect(v.verdict).toBe("not_built");
+            expect(v.verdict).toBe("awaiting_build");
          }
       });
 
@@ -538,13 +538,13 @@ describe("computeServeVerdicts", () => {
                connectionCanHoldTable: () => false,
             }),
          );
-         expect(stored.verdict).toBe("not_built");
+         expect(stored.verdict).toBe("awaiting_build");
          const [unknown] = computeServeVerdicts(
             facts([plan("orders")], {
                connectionCanHoldTable: () => undefined,
             }),
          );
-         expect(unknown.verdict).toBe("not_built");
+         expect(unknown.verdict).toBe("awaiting_build");
       });
    });
 
@@ -593,9 +593,11 @@ describe("reachableSourceIDs", () => {
          verdict: "live",
          reason: "served_copy",
       });
+      // Two causes, two names: the served copy is off, against a bound
+      // table no served copy re-roots.
       expect(verdictWith("off")).toMatchObject({
          verdict: "live",
-         reason: "served_copy",
+         reason: "materialization_off",
       });
       // A database #(materialize) table is served by the served copy too,
       // on the source's own connection (phase 3 pull request 6).
@@ -616,12 +618,12 @@ describe("reachableSourceIDs", () => {
          reason: "served_copy",
       });
       expect(databaseWith("serves", new Set())).toMatchObject({
-         verdict: "not_built",
+         verdict: "awaiting_build",
       });
       // Off: the fix names only the materialize switch, not the storage tier.
       expect(databaseWith("off")).toMatchObject({
          verdict: "live",
-         reason: "served_copy",
+         reason: "materialization_off",
       });
       expect(JSON.stringify(databaseWith("off"))).not.toContain(
          "PERSIST_STORAGE_MODE",

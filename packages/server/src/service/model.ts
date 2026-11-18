@@ -146,7 +146,7 @@ import { type SiblingModelDefResolver } from "./filter_binding_guard";
 // Aliased with an `Impl` suffix because `Model` declares private wrapper
 // methods of the same names; without the alias, converting one of them to an
 // arrow-function property would recurse instead of delegating.
-import { extractCheckedModel } from "./model_load_checks";
+import { extractCheckedModel, type GateLoadWarning } from "./model_load_checks";
 import { translatorMalloyError } from "./translator_error";
 import {
    createModelMaterializer,
@@ -415,6 +415,11 @@ export class Model {
     * on disk is newer than the served IR.
     */
    private compiledSourceText: string | undefined;
+   /**
+    * The non-fatal gate findings this model's load made, which the package
+    * carries as warnings (`row-level-gate-*`).
+    */
+   private gateLoadWarningList: readonly GateLoadWarning[] = [];
    /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
    private reportModelFacts:
       | { value: ReportModelFacts | undefined }
@@ -865,6 +870,7 @@ export class Model {
                packageName,
                modelPath,
                sourceName: warning.sourceName,
+               code: warning.code,
             });
          }
          const modelDef = compiled?._modelDef;
@@ -894,6 +900,7 @@ export class Model {
             gateRuntime: runtime as HydrationRuntime,
          });
          model.compiledSourceText = compiledTextFor(modelURL);
+         model.gateLoadWarningList = checked?.warnings ?? [];
          return model;
       } catch (thrown) {
          if (thrown instanceof Error && thrown.stack) {
@@ -957,11 +964,17 @@ export class Model {
          ? new Map(data.filterMap as Array<[string, FilterDefinition[]]>)
          : undefined;
 
-      // Non-fatal `#(authorize)` findings from the worker, which has no logger.
+      // Non-fatal gate findings from the worker, which has no logger.
+      const gateWarnings = (data.gateWarnings ?? []) as GateLoadWarning[];
       for (const warning of options.skipAuthorizeWarningLog
          ? []
-         : (data.authorizeWarnings ?? [])) {
-         logger.warn(warning, { packageName, modelPath: data.modelPath });
+         : gateWarnings) {
+         logger.warn(warning.message, {
+            packageName,
+            modelPath: data.modelPath,
+            sourceName: warning.sourceName,
+            code: warning.code,
+         });
       }
 
       // No modelDef: an empty notebook or a corrupt payload. Queries throw a
@@ -1028,6 +1041,7 @@ export class Model {
          | { label: string; result?: Malloy.Result }[]
          | undefined;
       model.preparedRenderTagResultsDigest = data.renderTagResultsDigest;
+      model.gateLoadWarningList = gateWarnings;
       return model;
    }
 
@@ -1247,6 +1261,11 @@ export class Model {
     * Deliberately NOT curated: callers should join onto the curated
     * `getSourceInfos()` and use this only to look up fields it admitted.
     */
+   /** The non-fatal gate findings this model's load made (`row-level-gate-*`). */
+   public gateLoadWarnings(): readonly GateLoadWarning[] {
+      return this.gateLoadWarningList;
+   }
+
    public getModelDef(): ModelDef | undefined {
       return this.modelDef;
    }

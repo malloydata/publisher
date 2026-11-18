@@ -3,7 +3,7 @@
 
 /**
  * The database tables bound with no captured warehouse type for a column
- * whose read depends on one (`stored-native-schema-missing`): a column whose
+ * whose read depends on one (`database-native-type-missing`): a column whose
  * field Malloy types as a big integer is read through a cast to the type the
  * build recorded on its manifest entry (`nativeSchema`), and an entry written
  * before that capture, or one whose capture missed the column, records none.
@@ -22,7 +22,7 @@ import { SourceMap } from "../text/source_map";
 import { bigIntegerReads, nativeTypeLookup } from "../stored_column_types";
 
 /** The warning code a column read without its captured type is reported with. */
-export const NATIVE_SCHEMA_MISSING_CODE = "stored-native-schema-missing";
+export const NATIVE_SCHEMA_MISSING_CODE = "database-native-type-missing";
 
 /** One bound source's big-integer columns with no captured warehouse type. */
 export interface NativeSchemaNotice {

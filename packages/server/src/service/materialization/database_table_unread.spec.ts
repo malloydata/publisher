@@ -51,6 +51,7 @@ describe("databaseTableUnreadWarnings", () => {
             model: "m.malloy",
             subject: "orders",
             code: "database-table-unread",
+            reason: "timed_out",
             severity: "warn",
             message:
                "The table `s.orders_t` of `orders` could not be read in its database when it was bound (the catalog read timed out), so its queries are answered live. A retry is pending.",
@@ -59,6 +60,7 @@ describe("databaseTableUnreadWarnings", () => {
             model: "m.malloy",
             subject: "orders",
             code: "database-table-unread",
+            reason: "not_found",
             severity: "warn",
             message:
                "The rollup `orders__rollup__r` of `orders` could not be read in its database when it was bound (it was not found in its database's catalog), so its queries are answered live. A retry is pending.",

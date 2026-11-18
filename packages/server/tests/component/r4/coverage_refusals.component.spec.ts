@@ -448,7 +448,7 @@ source: orders is orders_raw extend {
       },
    ],
    {
-      "warns rollup-not-built (name_clash) on the clashing measure, and publish allows it":
+      "warns rollup-not-built (partial_name_collision) on the clashing measure, and publish allows it":
          (l) => {
             const clash = codes(l, "rollup-not-built");
             expect(clash.map((w) => w.subject)).toEqual(["orders.total"]);
@@ -457,7 +457,7 @@ source: orders is orders_raw extend {
                Object.values(
                   l.fixture.pkg.getBuildPlan()?.refusedSources ?? {},
                ).map((r) => r.reason),
-            ).toEqual(["name_clash"]);
+            ).toEqual(["partial_name_collision"]);
             expect(l.rejections ?? "").not.toContain("rollup-not-built");
          },
    },
@@ -920,11 +920,13 @@ source: tagged_join is orders_raw extend {
             "plain_join:live:refused",
             "tagged_join:serves",
          ]);
-         const refused = codes(l, "persist-source-refused").filter(
+         const refused = codes(l, "persist-not-built").filter(
             (w) => w.subject === "plain_join",
          );
          expect(refused).toHaveLength(1);
          expect(refused[0].message).toContain("#(authorize)");
+         // 0.14's one-release alias is gone.
+         expect(codes(l, "persist-source-refused")).toEqual([]);
       },
    },
 );

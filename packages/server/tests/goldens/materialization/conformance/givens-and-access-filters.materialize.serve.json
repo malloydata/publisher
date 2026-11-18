@@ -248,7 +248,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "CONTRACT",
+            "reason": "ROW_LEVEL_GATE",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -520,7 +520,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "CONTRACT",
+            "reason": "ROW_LEVEL_GATE",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -784,7 +784,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "CONTRACT",
+            "reason": "ROW_LEVEL_GATE",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -1056,7 +1056,7 @@
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "CONTRACT",
+            "reason": "ROW_LEVEL_GATE",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],

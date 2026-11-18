@@ -63,11 +63,11 @@ type RunTrigger = (typeof RUN_TRIGGERS)[number];
  * run a publish started, else an explicit request.
  */
 export function runTriggerOf(args: {
-   trigger: "ON_DEMAND" | "SCHEDULER";
+   trigger: "on_demand" | "scheduler";
    runContextTrigger?: string;
    orchestrated: boolean;
 }): RunTrigger {
-   if (args.trigger === "SCHEDULER" || args.runContextTrigger === "scheduler") {
+   if (args.trigger === "scheduler" || args.runContextTrigger === "scheduler") {
       return "schedule";
    }
    if (args.orchestrated) return "orchestrator";

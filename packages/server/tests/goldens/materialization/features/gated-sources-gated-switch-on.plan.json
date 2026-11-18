@@ -284,6 +284,7 @@
       },
       "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
         "baseDeclaredName": "by_lock",
+        "baseGateLocksOnly": true,
         "baseGateOwn": true,
         "baseGated": true,
         "baseSourceID": "by_lock@<pkg>/m.malloy",
