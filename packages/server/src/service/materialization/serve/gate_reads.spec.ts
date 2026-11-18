@@ -162,3 +162,107 @@ describe("gateReads: equality-only", () => {
       expect(gateReads(scopedBy(str(["late"])), []).equalityOnly).toBe(false);
    });
 });
+
+describe("gateReads: compares no string", () => {
+   const field = (path: string[]) => ({ node: "field", path });
+   const M = { node: "stringLiteral", literal: "M" };
+   const ORDERS = {
+      type: "table",
+      sourceID: "orders@m",
+      fields: [
+         { name: "region", type: "string" },
+         { name: "amount", type: "number" },
+         // `dimension: big is amount > 100`
+         {
+            name: "big",
+            type: "boolean",
+            e: {
+               node: ">",
+               kids: {
+                  left: field(["amount"]),
+                  right: { node: "numberLiteral" },
+               },
+            },
+         },
+         // `dimension: late is region > 'M'`
+         {
+            name: "late",
+            type: "boolean",
+            e: { node: ">", kids: { left: field(["region"]), right: M } },
+         },
+         // `dimension: is_m is region = 'M'`
+         {
+            name: "is_m",
+            type: "boolean",
+            e: { node: "=", kids: { left: field(["region"]), right: M } },
+         },
+         // `dimension: late_n is pick 1 when region > 'M' else 0`
+         {
+            name: "late_n",
+            type: "number",
+            e: {
+               node: "pick",
+               kids: {
+                  pickWhen: [
+                     { node: ">", kids: { left: field(["region"]), right: M } },
+                  ],
+                  pickThen: [{ node: "numberLiteral" }],
+                  pickElse: { node: "numberLiteral" },
+               },
+            },
+         },
+      ],
+   };
+   const MODEL = {
+      givens: { "flag@m": { name: "FLAG", type: { type: "boolean" } } },
+   };
+
+   it("holds for a gate over a boolean computed from no string", () => {
+      expect(gateReads(ORDERS, ["big = $FLAG"], MODEL).comparesNoString).toBe(
+         true,
+      );
+   });
+
+   it("does not hold for a gate over a dimension computed from a string", () => {
+      for (const name of ["late", "is_m", "late_n"]) {
+         expect(
+            gateReads(ORDERS, [`${name} = $FLAG`], MODEL).comparesNoString,
+            name,
+         ).toBe(false);
+      }
+   });
+
+   it("does not hold for a where: over a dimension computed from a string", () => {
+      const scoped = { ...ORDERS, filterList: [{ e: field(["is_m"]) }] };
+      expect(gateReads(scoped, []).comparesNoString).toBe(false);
+   });
+
+   it("does not hold for a computed stage output of a query-shaped source", () => {
+      const q = {
+         type: "query_result",
+         sourceID: "q@m",
+         query: {
+            structRef: ORDERS,
+            pipeline: [
+               {
+                  type: "reduce",
+                  queryFields: [
+                     {
+                        name: "late",
+                        type: "boolean",
+                        e: {
+                           node: ">",
+                           kids: { left: field(["region"]), right: M },
+                        },
+                     },
+                  ],
+               },
+            ],
+         },
+         fields: [{ name: "late", type: "boolean" }],
+      };
+      expect(gateReads(q, ["late = $FLAG"], MODEL).comparesNoString).toBe(
+         false,
+      );
+   });
+});

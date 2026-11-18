@@ -391,6 +391,9 @@ class GateReadWalk {
       const along = [...chain, name, stored];
       if (f.e !== undefined) {
          if (!this.equalityOrNotString(f.e, source)) this.equalityOnly = false;
+         // A computed field's own comparison is the gate's too: a boolean
+         // over a string (`late is region > 'M'`) orders that string.
+         if (!this.leavesNotString(f.e, source)) this.comparesNoString = false;
          for (const p of fieldPathsIn(f.e))
             this.resolve(source, p, along, joins);
          return;
@@ -445,6 +448,10 @@ class GateReadWalk {
             next.push({ path: qf.path as string[], chain });
          } else if (qf.e !== undefined) {
             if (!equalityOnlyExpr(qf.e)) this.equalityOnly = false;
+            // A stage's expression reads the stage's input, not typed here.
+            if (!this.leavesNotString(qf.e, undefined)) {
+               this.comparesNoString = false;
+            }
             const read = fieldPathsIn(qf.e);
             if (read.length === 0) this.unresolved = true;
             for (const p of read) next.push({ path: p, chain });
