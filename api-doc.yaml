@@ -12455,7 +12455,10 @@ components:
             skip reports what earlier ones found (read from the manifest
             bound when it runs), with its own findings added to `count` and
             `to` moved up, and a slice is checked once, so a row is counted
-            once. `from` is where the first such window started. Absent when
+            once, so `count` is a lower bound: a row that lands in a slice
+            already checked is not counted. It stays until a full rebuild,
+            even after a widened `lookback=` has written the rows. `from` is
+            where the first such window started. Absent when
             nothing was found since the last full rebuild. The check is
             best-effort: it gives up after 60 seconds, and one that fails is
             logged and leaves what was carried. While the run's manifest is

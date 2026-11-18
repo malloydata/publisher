@@ -318,8 +318,11 @@ export function lateRowWarnings(
                `stays until the table is rebuilt. Rebuild it once (a run ` +
                `with reseed) to recover ${them}, and, so later deltas read ` +
                `such rows, ${lookback} in its ${annotation} annotation, as ` +
-               `long as rows can arrive late. The run's manifest entry names ` +
-               `the window (\`lateRows\`).`,
+               `long as rows can arrive late. The count is a lower bound (a ` +
+               `stretch of the source is checked once), and this warning ` +
+               `stays until a full rebuild, even after a wider lookback= has ` +
+               `written the rows. The run's manifest entry names the window ` +
+               `(\`lateRows\`).`,
          },
       ];
    });

@@ -604,6 +604,39 @@ export function probeSelect(dialect: string, innerSelect: string): string {
 }
 
 /**
+ * `sql` bounded to `timeoutMs` on the warehouse itself, for a read that may be
+ * given up on (the late-row check): Postgres takes a `SET LOCAL
+ * statement_timeout` in the same simple-protocol call, which holds for that
+ * call's implicit transaction alone, because Malloy's Postgres connection
+ * cannot cancel a statement in flight. Every other dialect takes `sql` as it
+ * is: BigQuery, Snowflake and DuckDB cancel through the run options' abort
+ * signal.
+ */
+export function withStatementTimeout(
+   dialect: string,
+   sql: string,
+   timeoutMs: number,
+): string {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
+      case "postgres":
+         return `SET LOCAL statement_timeout = ${Math.max(1, Math.round(timeoutMs))}; ${sql}`;
+      case "duckdb":
+      case "standardsql":
+      case "snowflake":
+      case "databricks":
+      case "trino":
+      case "presto":
+      case "mysql":
+      case "sqlserver":
+         return sql;
+      default:
+         unregistered(knownDialect);
+         return sql;
+   }
+}
+
+/**
  * A date or timestamp watermark expression as TEXT the bound parser reads
  * (`canonicalBoundValue` in incremental_apply.ts): `YYYY-MM-DD` for a date,
  * `YYYY-MM-DD HH:MM:SS[.f]` in UTC for a timestamp, with no offset or a zero
@@ -634,9 +667,13 @@ export function watermarkTextSql(
       case "standardsql":
          return `CAST(${expression} AS STRING)`;
       case "postgres":
+         // `OF`: the session's offset, `+00` under UTC. Without it a session
+         // set to a zone with daylight saving prints the fall-back hour's two
+         // instants alike; with it, any zone but UTC is refused and the
+         // source is rebuilt rather than started an hour late.
          return malloyType === "date"
             ? `to_char(${expression}, 'YYYY-MM-DD')`
-            : `to_char(${expression}, 'YYYY-MM-DD HH24:MI:SS')`;
+            : `to_char(${expression}, 'YYYY-MM-DD HH24:MI:SSOF')`;
       case "duckdb":
       case "databricks":
       case "trino":

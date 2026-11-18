@@ -36,7 +36,8 @@ import {
 import { durationSeconds } from "../domain/freshness";
 import type { BuildPlan } from "../domain/types";
 import { lateRowWarnings } from "../package_warnings";
-import { watermarkTextSql } from "./warehouse_sql";
+import { sessionRunner } from "./incremental_storage";
+import { watermarkTextSql, withStatementTimeout } from "./warehouse_sql";
 
 const ts = (value: string): WatermarkBound => ({
    malloyType: "timestamp",
@@ -281,7 +282,13 @@ describe("probeStoredWatermark, on DuckDB", () => {
    it("spells the text read for each incremental dialect", () => {
       // An explicit format: a cast would follow the session's DateStyle.
       expect(watermarkTextSql("postgres", "timestamp", "MAX(x)")).toBe(
-         "to_char(MAX(x), 'YYYY-MM-DD HH24:MI:SS')",
+         "to_char(MAX(x), 'YYYY-MM-DD HH24:MI:SSOF')",
+      );
+      expect(withStatementTimeout("postgres", "SELECT 1", 60_000)).toBe(
+         "SET LOCAL statement_timeout = 60000; SELECT 1",
+      );
+      expect(withStatementTimeout("standardsql", "SELECT 1", 60_000)).toBe(
+         "SELECT 1",
       );
       expect(watermarkTextSql("standardsql", "date", "MAX(x)")).toBe(
          "CAST(MAX(x) AS STRING)",
@@ -454,7 +461,13 @@ describe("the late-row check, on DuckDB", () => {
       };
       const slow: DeltaTarget = {
          ...target(lineage(["id"])),
-         runner: () => new Promise(() => undefined),
+         // Never answers until it is cancelled, as a slow read would.
+         runner: (_sql, options) =>
+            new Promise((_resolve, reject) =>
+               options?.abortSignal?.addEventListener("abort", () =>
+                  reject(new Error("cancelled")),
+               ),
+            ),
       };
       const found = await countLateRows({
          target: slow,
@@ -466,6 +479,36 @@ describe("the late-row check, on DuckDB", () => {
       });
       expect(found.lateRows).toEqual(carried);
       expect(found.error).toContain("longer than 20 ms");
+   });
+
+   it("frees a storage= session when it times out: the statement is interrupted", async () => {
+      // A DuckDB session behind the storage runner, reading a window slow
+      // enough to outlast the timeout many times over.
+      const slow: DeltaTarget = {
+         ...warehouseDeltaTarget({
+            dialect: "duckdb",
+            runner: sessionRunner(duckdb),
+            quotedTablePath: TBL,
+            lineage: lineage(["id"]),
+            sourceSQL:
+               `SELECT s.id, s.region, s.loaded_at FROM ${SRC} AS s, ` +
+               `range(400000000) AS r(n) WHERE r.n % 7 = 0`,
+         }),
+      };
+      const started = Date.now();
+      const found = await countLateRows({
+         target: slow,
+         lineage: lineage(["id"]),
+         start: ts("2026-11-18 10:00:00"),
+         end: ts("2026-11-18T12:00:00"),
+         timeoutMs: 200,
+      });
+      expect(found.error).toContain("longer than 200 ms");
+      expect(Date.now() - started).toBeLessThan(5_000);
+      // The session is free at once for the build's next statement.
+      const next = Date.now();
+      await duckdb.runSQL("SELECT 1 AS one");
+      expect(Date.now() - next).toBeLessThan(1_000);
    });
 
    it("joins on the watermark's equality, which BigQuery requires of an outer join", () => {
@@ -581,6 +624,16 @@ describe("planIncrementalStep starts a time-watermark delta at the stored bounda
       expect(step).toMatchObject({
          mode: "delta",
          start: ts("2026-11-18T12:00:00"),
+      });
+   });
+
+   it("rebuilds rather than start an hour off when the session is not UTC", async () => {
+      // A Postgres session in America/New_York prints the fall-back hour's
+      // two instants with their offsets; any offset but zero is refused.
+      const { step } = await plan("2026-11-01 01:30:00-04");
+      expect(step).toMatchObject({
+         mode: "seed",
+         reasonCode: "table_unreadable",
       });
    });
 

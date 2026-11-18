@@ -385,7 +385,6 @@ export const MAX_LOOKBACK_SECONDS = 365 * 86_400;
  * At most {@link MAX_LOOKBACK_SECONDS}: past it a bound would leave the
  * range a date can hold, and every refresh would re-read a year anyway.
  */
-
 function lookbackRejections(
    d: IncrementalDeclaration,
    where: string,

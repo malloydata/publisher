@@ -39,6 +39,11 @@ import {
    disposeTempStorage,
 } from "../../src/test_helpers/temp_storage";
 import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
+import {
+   countLateRows,
+   probeStoredWatermark,
+   warehouseDeltaTarget,
+} from "../../src/service/materialization/run/incremental_apply";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
@@ -326,6 +331,85 @@ describe.skipIf(!POSTGRES_URL)(
          expect({ n: served.n, total: served.total }).toEqual(live);
          expect(live).toEqual({ n: 3, total: 430 });
          expect(entryOf(delta).lateRows).toBeUndefined();
+      });
+
+      it("stops a timed-out late-row check's statement, so it holds nothing", async () => {
+         const connection = await env.getMalloyConnection("warehouse");
+         const lineage = {
+            physicalTableName: q("ev"),
+            connectionName: "warehouse",
+            sourceEntityId: "sid",
+            watermarkName: "loaded_at",
+            watermarkType: "timestamp",
+            mergeKeys: ["id"],
+            scopeColumns: [],
+            strategy: "merge" as const,
+         };
+         const found = await countLateRows({
+            target: warehouseDeltaTarget({
+               dialect: "postgres",
+               runner: (sql, options) => connection.runSQL(sql, options),
+               quotedTablePath: q("ev"),
+               lineage,
+               // Seconds per row: far past the timeout.
+               sourceSQL: `SELECT id, loaded_at, amt, pg_sleep(3) AS s FROM ${q("ev")}`,
+            }),
+            lineage,
+            start: {
+               malloyType: "timestamp",
+               value: new Date().toISOString().slice(0, 19),
+            },
+            end: {
+               malloyType: "timestamp",
+               // A window of four hours below the start: both stored rows.
+               value: new Date(Date.now() + 4 * 3_600_000)
+                  .toISOString()
+                  .slice(0, 19),
+            },
+            timeoutMs: 300,
+         });
+         // Whichever stops it first: the check's own timer, or the
+         // statement timeout it ran under on the server.
+         expect(found.error).toMatch(/longer than 300 ms|statement timeout/);
+         // The server cancelled it: nothing of it is still running, and a
+         // rename (as a reseed's swap takes) does not wait behind it.
+         const [active] = await sql(
+            `SELECT row_to_json(t) AS "row" FROM (SELECT count(*) AS n ` +
+               `FROM pg_stat_activity WHERE state = 'active' AND ` +
+               `query LIKE '%pg_sleep(3)%' AND pid <> pg_backend_pid()) AS t`,
+         );
+         expect(Number(active.n)).toBe(0);
+         const renamed = Date.now();
+         await sql(
+            `SET LOCAL lock_timeout = '2s'; ALTER TABLE ${q("ev")} RENAME TO ev_moved`,
+         );
+         await sql(`ALTER TABLE ${SCHEMA}.ev_moved RENAME TO ev`);
+         expect(Date.now() - renamed).toBeLessThan(2_000);
+      });
+
+      it("refuses a stored watermark read in a session that is not UTC", async () => {
+         const connection = await env.getMalloyConnection("warehouse");
+         await sql(`CREATE TABLE ${q("tz")} AS SELECT * FROM (VALUES
+           (TIMESTAMPTZ '2026-11-01 05:30:00+00')) AS t(w)`);
+         const probe = (prefix: string) =>
+            probeStoredWatermark({
+               runner: (text) => connection.runSQL(prefix + text),
+               dialect: "postgres",
+               quotedTablePath: q("tz"),
+               column: "w",
+               atOrBelow: {
+                  malloyType: "timestamp",
+                  value: "2026-11-02T00:00:00",
+               },
+            });
+         // UTC, as Malloy's connection sets it: the instant itself.
+         expect(await probe("")).toEqual({
+            bound: { malloyType: "timestamp", value: "2026-11-01 05:30:00" },
+         });
+         // New York's fall-back hour: 01:30 happens twice that night, so the
+         // value is refused (and the source rebuilt), never misplaced.
+         const ny = await probe("SET LOCAL TIME ZONE 'America/New_York'; ");
+         expect(ny.unparseable).toBe(true);
       });
    },
 );

@@ -36,6 +36,7 @@ import {
    targetColumnsProbeSql,
    transactionKeywords,
    watermarkTextSql,
+   withStatementTimeout,
 } from "./warehouse_sql";
 import type { PairDelta } from "../domain/incremental";
 import type { LateRows } from "../domain/types";
@@ -1182,8 +1183,7 @@ async function resolveDeltaStart(
             "The newest stored watermark is not a UTC ISO-8601 date or " +
                "timestamp, so this incremental source is rebuilt in full on " +
                "every refresh. Check that the connection's setupSQL does not " +
-               "change the session time zone from UTC, and that the watermark " +
-               "holds no infinite value",
+               "set a session time zone other than UTC",
             {
                physicalTableName: lineage.physicalTableName,
                watermark: lineage.watermarkName,
@@ -1630,8 +1630,10 @@ function wireBoundValue(bound: WatermarkBound): string {
 
 /**
  * How long the late-row check may take before the run goes on without it.
- * The check is best-effort, so a slow read never holds up the end of a run;
- * its statement is cancelled where the connection can cancel one.
+ * The check is best-effort, so a slow read never holds up the end of a run.
+ * Its statement is stopped too: on Postgres by a statement timeout of the
+ * same length (withStatementTimeout), elsewhere by the abort signal (a
+ * `storage=` session is interrupted, sessionRunner in incremental_storage.ts).
  */
 const LATE_ROWS_CHECK_TIMEOUT_MS = 60_000;
 
@@ -1692,15 +1694,19 @@ export async function countLateRows(params: {
          ...new Set([watermark, ...matchColumns]),
       ]);
       const result = await target.runner(
-         lateRowsSql({
-            dialect: target.dialect,
-            quotedTablePath: target.quotedTablePath,
-            windowSQL,
-            watermark,
-            matchColumns,
-            from: windowFrom,
-            to: start,
-         }),
+         withStatementTimeout(
+            target.dialect,
+            lateRowsSql({
+               dialect: target.dialect,
+               quotedTablePath: target.quotedTablePath,
+               windowSQL,
+               watermark,
+               matchColumns,
+               from: windowFrom,
+               to: start,
+            }),
+            timeoutMs,
+         ),
          { abortSignal: abort.signal },
       );
       return Number(probeRows(result.rows)[0]?.["late_rows"]);
@@ -1730,8 +1736,19 @@ export async function countLateRows(params: {
          },
       };
    } catch (err) {
+      if (abort.signal.aborted) {
+         // Interrupted: let the statement wind down, briefly, so the
+         // session or connection it held is free for the run's next one.
+         await Promise.race([
+            check.catch(() => undefined),
+            new Promise((resolve) => setTimeout(resolve, LATE_ROWS_SETTLE_MS)),
+         ]);
+      }
       return { ...kept, error: errMessage(err), errorCode: errorCodeOf(err) };
    } finally {
       clearTimeout(timer);
    }
 }
+
+/** How long a timed-out late-row check is given to stop once interrupted. */
+const LATE_ROWS_SETTLE_MS = 5_000;
