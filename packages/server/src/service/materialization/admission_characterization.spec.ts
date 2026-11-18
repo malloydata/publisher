@@ -29,7 +29,7 @@ import {
    type QueryMaterializer,
    SingleConnectionRuntime,
 } from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../test_helpers/settings_env";
 import { routeQuery } from "../query_router";
 import { variantsOf } from "../query_serving";
@@ -41,6 +41,7 @@ import {
    type TableRead,
 } from "./domain/gate_policy";
 import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
+import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
 
 const DUMP = process.env.ADMISSION_DUMP;
@@ -245,6 +246,8 @@ async function routed(args: {
    tables: Binding[];
    authorCollation?: "binary" | "nocase";
    storedCollation?: "binary" | "nocase";
+   /** The router cannot read what the gates and row scope read. */
+   unreadable?: boolean;
 }): Promise<string> {
    const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
    const authorRunnable = authorOf(SHAPES[args.shape], args.authorCollation);
@@ -265,11 +268,14 @@ async function routed(args: {
       pinned,
       { modelPath: "m.malloy" },
    );
+   const unreadable = args.unreadable
+      ? spyOn(gateReads, "gateReadsOfQuery").mockResolvedValue(undefined)
+      : undefined;
    const decision = await routeQuery(
       candidates,
       async () => (GATED(args.shape) ? "entry_point" : false),
       { recordMetrics: false },
-   );
+   ).finally(() => unreadable?.mockRestore());
    const c = decision.considered[0];
    if (c.outcome === "used") {
       return decision.served === "variant" && decision.pastEntryPointGate
@@ -857,6 +863,110 @@ describe("read admission under a collation that is not binary (served leg, G3)",
    }
 });
 
+/**
+ * The row scope's two fail-closed inputs, on the ungated shapes (no gate,
+ * and a `where:` on `amount`): a database table whose columns moved since
+ * its build (`retypedColumns`, so their stored types are listed and judged,
+ * admitRead's `columnsListed`), and a compile whose gate and scope reads
+ * cannot be listed (admitRead's `reads === undefined`).
+ */
+const MOVED_READS: Record<string, Binding[]> = {
+   database: [table("database")],
+   "database, the scoped column moved to a float": [
+      table("database", {
+         retypedColumns: [{ name: "amount", type: "DOUBLE" }],
+      }),
+   ],
+   "database, an unscoped column moved to a float": [
+      table("database", { retypedColumns: [{ name: "id", type: "DOUBLE" }] }),
+   ],
+   storage: [table("storage")],
+};
+
+/** The columns each ungated shape's row scope reads, by name. */
+const SCOPE_COLUMNS: Partial<Record<Shape, string[]>> = {
+   "no gate": [],
+   "no gate, a where: on a float column": ["amount"],
+};
+
+/** shape -> "reads, leg, table read" -> outcome, G3. */
+const ROW_SCOPE: Record<string, Record<string, string>> = {
+   "no gate": {
+      "readable, served, database": "used",
+      "readable, served, database, the scoped column moved to a float": "used",
+      "readable, served, database, an unscoped column moved to a float": "used",
+      "readable, served, storage": "used",
+      "readable, rollup, database": "used",
+      "readable, rollup, database, the scoped column moved to a float": "used",
+      "readable, rollup, database, an unscoped column moved to a float": "used",
+      "readable, rollup, storage": "used",
+      "unreadable, served, database": "used",
+      "unreadable, served, database, the scoped column moved to a float":
+         "skipped does_not_answer (served_copy_not_served)",
+      "unreadable, served, database, an unscoped column moved to a float":
+         "skipped does_not_answer (served_copy_not_served)",
+      "unreadable, served, storage":
+         "skipped does_not_answer (served_copy_not_served)",
+      "unreadable, rollup, database": "used",
+      "unreadable, rollup, database, the scoped column moved to a float":
+         "used",
+      "unreadable, rollup, database, an unscoped column moved to a float":
+         "used",
+      "unreadable, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate)",
+   },
+   "no gate, a where: on a float column": {
+      "readable, served, database": "used",
+      "readable, served, database, the scoped column moved to a float":
+         "skipped does_not_answer (served_copy_not_served)",
+      "readable, served, database, an unscoped column moved to a float": "used",
+      "readable, served, storage":
+         "skipped does_not_answer (served_copy_not_served)",
+      "readable, rollup, database": "used",
+      "readable, rollup, database, the scoped column moved to a float": "used",
+      "readable, rollup, database, an unscoped column moved to a float": "used",
+      "readable, rollup, storage": "used",
+      "unreadable, served, database": "used",
+      "unreadable, served, database, the scoped column moved to a float":
+         "skipped does_not_answer (served_copy_not_served)",
+      "unreadable, served, database, an unscoped column moved to a float":
+         "skipped does_not_answer (served_copy_not_served)",
+      "unreadable, served, storage":
+         "skipped does_not_answer (served_copy_not_served)",
+      "unreadable, rollup, database": "used",
+      "unreadable, rollup, database, the scoped column moved to a float":
+         "used",
+      "unreadable, rollup, database, an unscoped column moved to a float":
+         "used",
+      "unreadable, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate)",
+   },
+};
+
+describe("read admission over moved columns and unreadable reads (G3)", () => {
+   for (const shape of Object.keys(SCOPE_COLUMNS) as Shape[]) {
+      it(shape, async () => {
+         const rows: Record<string, string> = {};
+         await withSwitches(false, async () => {
+            for (const unreadable of [false, true]) {
+               for (const leg of ["served", "rollup"] as const) {
+                  for (const [read, tables] of Object.entries(MOVED_READS)) {
+                     rows[
+                        `${unreadable ? "unreadable" : "readable"}, ${leg}, ${read}`
+                     ] = await routed({ leg, shape, tables, unreadable });
+                  }
+               }
+            }
+         });
+         if (DUMP) {
+            ((dumped.rowScope ??= {}) as Record<string, unknown>)[shape] = rows;
+         } else {
+            expect(rows).toEqual(ROW_SCOPE[shape] ?? {});
+         }
+      });
+   }
+});
+
 describe("the bind's admission marks", () => {
    it("marks a table kept past its own gate when ANY source stored at its address is (OR over sharers)", () => {
       const address = { a: "x", b: "x", c: "y" } as Record<string, string>;
@@ -1067,6 +1177,65 @@ function admitted(args: {
       : "skipped does_not_answer (rollup_row_level_gate)";
 }
 
+/**
+ * admitRead's verdict for one row of {@link ROW_SCOPE}, from what the router
+ * gathers there: a moved database column is judged by the type it holds now
+ * (only a scoped one while the reads can be listed, every one when they
+ * cannot), and so is listed (`columnsListed`); unreadable reads leave a
+ * `storage=` table's scope columns unproven, and the source side's collation
+ * probe, which cannot tell what is compared, refuses.
+ */
+function admittedOverMoves(args: {
+   leg: "served" | "rollup";
+   shape: Shape;
+   tables: Binding[];
+   unreadable: boolean;
+}): string {
+   const scoped = SCOPE_COLUMNS[args.shape] ?? [];
+   const typeOf = (name: string) =>
+      SCHEMA.find((c) => c.name === name)?.type ?? "";
+   const tables: TableRead[] = args.tables.map((t) => {
+      if (t.tier === "storage") {
+         return args.unreadable
+            ? { tier: "storage" }
+            : {
+                 tier: "storage",
+                 gateColumnTypes: scoped.map(typeOf),
+                 ...(scoped.length === 0 ? { gatesReadNoColumn: true } : {}),
+              };
+      }
+      const moved = t.retypedColumns ?? [];
+      if (moved.length === 0) return { tier: "database" };
+      return {
+         tier: "database",
+         gateColumnTypes: moved
+            .filter((c) => args.unreadable || scoped.includes(c.name))
+            .map((c) => c.type),
+      };
+   });
+   const facts: ReadFacts = {
+      pastEntryPointGate: false,
+      compositeRowFilter: false,
+      reads: args.unreadable
+         ? undefined
+         : { scoped: scoped.length > 0, gated: false },
+      columnsListed: tables.some(
+         (t) => t.tier === "storage" || t.gateColumnTypes !== undefined,
+      ),
+      sourceCollationRefusal: args.unreadable
+         ? "what the scope compares cannot be read"
+         : undefined,
+   };
+   const verdict = admitRead(args.leg, tables, facts, {
+      materialize: true,
+      gatedSources: false,
+   });
+   if (verdict.admit) return "used";
+   return args.leg === "served"
+      ? "skipped does_not_answer (served_copy_not_served)"
+      : "skipped does_not_answer (rollup_row_level_gate)";
+}
+
 describe("admitRead reproduces the router's admission", () => {
    it("for every leg, table read, gate shape and switch", () => {
       for (const shape of Object.keys(SHAPES) as Shape[]) {
@@ -1109,6 +1278,27 @@ describe("admitRead reproduces the router's admission", () => {
                   gatedSources: false,
                   ...collations,
                });
+            }
+         }
+         expect({ shape, rows }).toEqual({ shape, rows: expected });
+      }
+   });
+
+   it("over moved columns and unreadable reads", () => {
+      for (const [shape, expected] of Object.entries(ROW_SCOPE)) {
+         const rows: Record<string, string> = {};
+         for (const unreadable of [false, true]) {
+            for (const leg of ["served", "rollup"] as const) {
+               for (const [read, tables] of Object.entries(MOVED_READS)) {
+                  rows[
+                     `${unreadable ? "unreadable" : "readable"}, ${leg}, ${read}`
+                  ] = admittedOverMoves({
+                     leg,
+                     shape: shape as Shape,
+                     tables,
+                     unreadable,
+                  });
+               }
             }
          }
          expect({ shape, rows }).toEqual({ shape, rows: expected });
