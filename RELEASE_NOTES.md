@@ -21,7 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — (BREAKING) upgrading from 0.14: the checklist
+## [Unreleased] — corrections to the 0.15.0 notes
+
+The 0.15.0 notes left out two API changes, overstated two others and understated one. The behaviour shipped in 0.15.0 and is unchanged; only the record is corrected, and `api-doc.yaml` now says the same.
+
+- **`RefusedSource.reason` `rollup_name_collision` is no longer produced.** A rollup's generated name now digests its declaring source, so no two rollups share one. The value is retained in the spec for records an older server stored. Add it to the retained values you accept beside the renames in the 0.15.0 checklist.
+- **Both `sqlTemporaryTable` routes can answer 403** (`STORAGE_ACCESS_DENIED` or `PATH_ACCESS_DENIED`), like the query route and raw `sqlQuery`, when an object store refuses the database's read.
+- **A missing privilege (`42501`) is not always unclassified.** On Postgres its message says permission denied, so `SourceFailure.retryable` reads `false`, as it did in 0.14.0. A Snowflake `42501` stays unclassified.
+- **`MATERIALIZATION_REFUSED` is not answered on any route.** The eligibility gate runs inside a materialization run, after `POST …/materializations` has answered 201, so a refusal is recorded on the run: `SourceFailure.refused` and `refusalReason`, the run's `metadata.refusedSources`, or its `error`. No 0.15.0 route answers a 422 with it.
+- **A gated query source's join to an ungated source's rollup in a `storage=` destination is served from that rollup, not answered live.** The 0.15.0 section on gated entry points over ungated stored sources says it is answered live. It is served from the rollup when the query source is stored in the same destination (admitted past its own gate, or holding only ungated rows), the joined source is ungated, the gate reads only the query source's own plain columns, and those columns are stored exactly and compared as the source compares them. Otherwise it is answered live (`ROW_LEVEL_GATE`).
+
+## [0.15.0] — (BREAKING) upgrading from 0.14: the checklist
 
 This release is a breaking minor. Every item below is explained in full in its own section further down; this list is what to check, in the order to check it.
 
@@ -76,7 +86,7 @@ This release is a breaking minor. Every item below is explained in full in its o
 - A gated entry point over an ungated `storage=` table is now served from it, so its serve verdict reads `serves` where it read `NOT_SERVED` `row_level_gate`.
 - A version the host has bound or built serves live once its manifest is cleared, through reloads and restarts, and refuses a local run without `buildInstructions` with 409.
 
-## [Unreleased] — (BREAKING) one vocabulary: `database` replaces `colocated`, `#(rollup)` replaces `#(preaggregate)`, and every reason has one name
+## [0.15.0] — (BREAKING) one vocabulary: `database` replaces `colocated`, `#(rollup)` replaces `#(preaggregate)`, and every reason has one name
 
 **What changed.** Every value that named the wrong thing, or two things at once, has one name now. Each value 0.14.0 shipped is renamed with a retained alias: it stays in `api-doc.yaml` as "retained, no longer produced", Publisher still reads it on any record a client sends back or an older server stored (a manifest, a run record), and a client should accept both spellings for this release. A renamed package warning is emitted under both codes, with the same message, for this release only (the Console and the MCP tools show it once). A strict client regenerates from `api-doc.yaml` for the new values and fields.
 
@@ -160,7 +170,7 @@ For the service team to sync: `refusedSources[].reason`, the `*-not-built` recor
 
 **Unchanged, until `/api/v1`:** the run statuses (`MANIFEST_ROWS_READY`, `MANIFEST_FILE_READY`), `PersistSourcePlan.preaggregate`, `QueryPathServer.via: served_copy` and the `publisher_served_copy_bind_total` metric name.
 
-## [Unreleased] — (BREAKING) every materialization declaration Publisher does not build is one refusal record
+## [0.15.0] — (BREAKING) every materialization declaration Publisher does not build is one refusal record
 
 Every valid materialization declaration Publisher does not build is now one record in the build plan's `refusedSources`, with a bounded `RefusedSource.reason` and an `origin`, whatever its mechanism: `#@ persist`, `#(materialize)`, a persisted view or named query, and a rollup (`#(rollup)` or `#@ preaggregate`). In 0.14.0 only a `#@ persist` source a compile-time gate refused (and a rollup the eligibility gate refused) had one; the rest were package warnings alone. Each is still answered live, the package still loads, and each still carries one `warn` package warning, under its mechanism's code: `persist-not-built`, `materialize-not-built`, `persist-view-not-built`, `persist-query-not-built` or `rollup-not-built` (with `preaggregate-not-built` repeated beside it for this release only).
 
@@ -172,7 +182,7 @@ Every valid materialization declaration Publisher does not build is now one reco
 - **Newly refused at plan, with no answer changed:** a nested persisted view in the database (`persist-view-not-built`, reason `nested_result`), whose table the view leg could never read; and a `storage=` rollup over a DuckDB source whose grain dimension is a BLOB, INTERVAL, MAP or JSON column (`rollup-not-built`, reason `unreadable_grain`), which no stored read declares. Both tables were built and never read; they are no longer built.
 - **The serve verdicts list each refusal** (`live`, reason `refused`).
 
-## [Unreleased] — (BREAKING) packages that loaded on 0.14.0 and now fail to load; one code per mistake
+## [0.15.0] — (BREAKING) packages that loaded on 0.14.0 and now fail to load; one code per mistake
 
 Every case below fails the publish and the load, with one line per mistake ending in its code. Fix the line it names. `compile_model` at scope `"package"` or `"file"` now reports these before you publish (see the compile section).
 
@@ -193,7 +203,7 @@ Every case below fails the publish and the load, with one line per mistake endin
 
 **A persisted named query reports as `query`, not `view`:** `publisher_materialization_build_total{kind}` and `…_build_duration_ms{kind}` gain the value `query`, and a persisted query's decline codes are `query_missing_field`, `query_not_built` and `query_stale`, where they were the view's `view_*`. `api-doc.yaml` documents the codes, and no longer says an unrecognized `#@ persist` key rides through.
 
-## [Unreleased] — (BREAKING) every answer from a materialized table reports its tier: `servedFrom: "database"` and `path.servedBy.tier`
+## [0.15.0] — (BREAKING) every answer from a materialized table reports its tier: `servedFrom: "database"` and `path.servedBy.tier`
 
 A query answered from a table in the source's own database now reports `servedFrom: "database"`, where it reported `null`. This covers a database `#@ persist` table Malloy substituted, a database `#(materialize)` table the served copy read, and a database rollup or persisted view or query. `storage` and `live_fallback` are unchanged, and `null` now means only that no materialized table answered. The path report's `servedBy` gains `tier` (`database` or `storage`) whenever a table answered. The access record's `servedFrom`, the workload log's `served_from` and the `malloy.model.query.served_from` attribute on `malloy_model_query_duration` carry the new value too.
 
@@ -201,7 +211,7 @@ A query answered from a table in the source's own database now reports `servedFr
 - **A client that treats any non-null `servedFrom` as a storage hit** now counts database hits as well. Compare against `"storage"` to count the `storage=` tier alone.
 - **A dashboard that read database hits as live** sees them move from `null` to `database`, with no change in which table answered or what it returned.
 
-## [Unreleased] — (BREAKING) security: every DuckDB instance is locked down, and raw SQL on DuckDB runs as a single SELECT
+## [0.15.0] — (BREAKING) security: every DuckDB instance is locked down, and raw SQL on DuckDB runs as a single SELECT
 
 **Security fix.** Every DuckDB instance Publisher created ran with DuckDB's defaults. SQL that reached one, a raw `sqlQuery` (on the package `duckdb` sandbox too) or model text (`duckdb.sql(...)`, `duckdb.table(...)`), could read any local file the server process could read, use the host's ambient cloud credentials and its cloud metadata service, and load community extensions or write persistent secrets. Every instance now runs under a lockdown chosen by what it needs:
 
@@ -225,7 +235,7 @@ The lockdown is part of each instance's configuration identity, so a locked inst
 
 **Known residual:** confining a connection to its data path is not org isolation inside one shared bucket. Isolating orgs that share a bucket requires credentials the host scopes per org; see [security-posture.md](docs/security-posture.md#known-gaps), gap 6, which also lists the other limits.
 
-## [Unreleased] — (BREAKING) `dropTables` removed from the materialization delete; a delete is record-only
+## [0.15.0] — (BREAKING) `dropTables` removed from the materialization delete; a delete is record-only
 
 **What breaks: `DELETE …/materializations/{id}` no longer takes `dropTables`.** Deleting a materialization run removes its record and nothing else, every time: it never drops a table. Removed with it: the `dropTables` query parameter on the delete (on the `/environments/…` route and the legacy `/projects/…` route), the generated clients' `dropTables` argument (the TypeScript SDK's and CLI's `deleteMaterialization` lose their fourth parameter, and the Python client is generated from the same spec), the "Also drop the materialized tables this run produced" checkbox in the Console's delete dialog, and the `malloy-pub delete materialization --drop-tables` flag.
 
@@ -235,7 +245,7 @@ The lockdown is part of each instance's configuration identity, so a locked inst
 
 **What to do instead.** Delete the run, then drop the table yourself through its connection: read the run's manifest for each entry's `physicalTableName`, `connectionName` and `storageDestinationName`, check that no remaining `MANIFEST_FILE_READY` run, of any version, names a table with that name in any place (list the runs of each published version with `?versionId=`, since the runs list answers for the latest version only; an auto-run carries unchanged tables forward under the same name, so an old run's table is often still served, and two destination names can reach one DuckLake), then `DROP TABLE` in the warehouse, or, for a storage destination, use the admin API's table delete. See [Dropping a run's tables](docs/materialization.md#dropping-a-runs-tables).
 
-## [Unreleased] — (BREAKING) settings take their derived names; the old names are deprecated, and a conflict between them fails startup
+## [0.15.0] — (BREAKING) settings take their derived names; the old names are deprecated, and a conflict between them fails startup
 
 Every setting now has one name of each kind, derived from its key: a variable (`PUBLISHER_` plus the key in upper snake case), a flag (`--` plus the key in kebab case, `--no-` for a boolean) and its key in `publisher.config.json`. So `mcp.port` is `PUBLISHER_MCP_PORT`, `--mcp-port` and `{ "mcp": { "port": 4040 } }`. `docs/configuration.md` lists every setting's names, generated from the registry. To write a `publisher.config.json`, start from [`publisher.config.json.example`](publisher.config.json.example) at the repo root: it holds every setting the file can take, at its key, with its default, so a copy changes nothing.
 
@@ -258,7 +268,7 @@ Every setting now has one name of each kind, derived from its key: a variable (`
 - **A boolean flag takes no value.** `--allow-proxy-connections false` turns proxy connections on, as it did before; startup now warns that the `false` is ignored and names `--no-allow-proxy-connections`.
 - A secret has no flag, and is never logged or echoed in an error. `packageVersioning`, `packageInlineFields` and `modelPage` have no flag either.
 
-## [Unreleased] — (BREAKING) a version a host has bound keeps its manifest, and is never served from this server's own runs
+## [0.15.0] — (BREAKING) a version a host has bound keeps its manifest, and is never served from this server's own runs
 
 **Fixed: a version bound to a host manifest lost it on a reload.** A bind that recompiled or rebound a published version re-read `manifestLocation` from the version's `publisher.json`, which usually names none, so the version reported no manifest although it was serving one, and this server's own run-store entries were then laid over it, replacing the host manifest's database tables with this server's tables for the same sources. A version now keeps the manifest its registry row names through every bind, and serves the host's tables. Only servers that both bind versions to a host manifest and run materializations locally were affected.
 
@@ -276,7 +286,7 @@ A version no host has bound or built, as on a standalone server, serves what its
 
 **Also fixed:** a publish that bound a new manifest bound it a second time, and a run's own published version recompiled a second time just after `MANIFEST_FILE_READY`, changing its `servedRevision` again. Each now binds once.
 
-## [Unreleased] — (BREAKING) a storage refusal answers 403 and no storage URL reaches a caller or a log
+## [0.15.0] — (BREAKING) a storage refusal answers 403 and no storage URL reaches a caller or a log
 
 **Contract change: a storage refusal answers 403 `STORAGE_ACCESS_DENIED` or `PATH_ACCESS_DENIED`.** When an object store refuses the database's read (a DuckLake data path, a bucket, an Azure container), the query route answered a 400 quoting the object's URL and the raw `sqlQuery` route an outage's 502. Both now answer 403, naming the source or connection and no URL; the access record reads it as `error`. The reason says who fixes it: `STORAGE_ACCESS_DENIED` when the URL lies under a data path the environment configures (the operator's storage credentials), and `PATH_ACCESS_DENIED` for a path the query or the model names itself (the path, or the caller's grant to it). Other warehouse rejections on `sqlQuery` keep their status.
 
@@ -284,7 +294,7 @@ A version no host has bound or built, as on a standalone server, serves what its
 
 **The server log masks secrets on every line.** The full error text is logged, with a signed URL's signature, credential and token, and a Postgres password, masked in values and keys, nested errors and cycles included, however the URL's separators are escaped or encoded. Masking never alters a logged object, and a call to the server's logger never throws.
 
-## [Unreleased] — security fix: a stored table could answer a caller with rows live would not
+## [0.15.0] — security fix: a stored table could answer a caller with rows live would not
 
 Several cases let a stored table answer a caller with rows that live would not return to that caller, mostly past a source's own row-level gate (`#(access_filter)`, which Publisher reads past with the gated-sources switch off for a source's own gate, or with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on). Each is fixed by answering such queries live, or by reading the right column. Upgrade if any applies to you. As with every gate, these hold only behind the gateway that sets the givens from a verified identity ([operating model](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 
@@ -302,7 +312,7 @@ Several cases let a stored table answer a caller with rows that live would not r
 
 **Who was affected:** packages that serve stored tables past a row-level gate, or under a `where:` the copy re-applies, where callers can send their own query text, and composite sources over `#(materialize)` sources. Gates on a tenant, region or other column stored exactly, compared byte-exact, with no time zone involved, were not affected. **How to tell:** such queries now report `row_level_gate`, `NOT_SERVED` with code `served_copy`, or the rollup's `ROW_LEVEL_GATE` in their path report and answer live.
 
-## [Unreleased] — rollups read past a row-level gate, in the database and in a `storage=` destination
+## [0.15.0] — rollups read past a row-level gate, in the database and in a `storage=` destination
 
 **Changed: a `#(rollup)` or `#@ preaggregate` rollup over a gated base is built and read past the gate**, where 0.14.0 refused it (`rollup-not-built`). The gate is grafted on the rollup, redeclaring the queried source over the rollup in its own declaring file with its gates, and re-proven on every read, so each caller gets live's rows, and a caller the gate refuses, or one missing a given, is refused exactly as live refuses them. Which gates qualify:
 
@@ -322,7 +332,7 @@ A model with no such rollup behaves exactly as before.
 
 **How to tell:** a gated base's rollup no longer reports `rollup-not-built` for its gate, and its queries report the rollup in their path report. A query over a zoned or inexact gate column reports `row_level_gate` and answers live.
 
-## [Unreleased] — a gated entry point over an ungated stored source serves from the table on every tier
+## [0.15.0] — a gated entry point over an ungated stored source serves from the table on every tier
 
 **Changed: a gated query over an ungated `storage=` table is served from the table.** With `PUBLISHER_MATERIALIZE_GATED_SOURCES` off (the default), a query whose entry point carries an `#(access_filter)` or `#(authorize)` gate over an ungated stored source (`#(access_filter) region = $REGION` on `source: regional is orders extend {}`, with `orders` stored) was served from a database table but answered live from a `storage=` one. A `storage=` table now serves it too, as a database table does, when the plan proves that every source stored at its address holds only ungated rows: no gate beneath any of them, joins and derivations included, and a gate the walk cannot read counts as one. The gate is grafted and proven on the answer exactly as on live, so each caller gets live's rows or live's denial. A lock-only entry point (an `#(authorize)` with no row filter) is covered as well as a row filter. A table a gated source shares, a persisted view's or query's table, and an answer that also reads a `storage=` table proven neither way stay live.
 
@@ -332,7 +342,7 @@ A model with no such rollup behaves exactly as before.
 
 **How to tell:** such a query reports the stored table or rollup in its path report, and the serve verdict for a `storage=` table reached only through gated entry points reads `serves` rather than `NOT_SERVED` `row_level_gate`. No new setting, metric or code.
 
-## [Unreleased] — rollups placed by `name=`, unplaceable BigQuery tables refused at plan, and rollups that serve more shapes
+## [0.15.0] — rollups placed by `name=`, unplaceable BigQuery tables refused at plan, and rollups that serve more shapes
 
 **Contract change: one placement key.** A rollup, `#(rollup)` or `#@ preaggregate`, now takes `name=`: everything before its last dot is the schema or dataset its table is created in, and its leaf takes the place of the readable name's prefix: `name="analytics.orders_rollup"` builds `analytics.orders_rollup__p<hash>`, where the readable name is `<pkg>__<file>__<base>_by_<grain>__p<hash>`. The hash, the address and so uniqueness stay Publisher's, and a `name=` with no dot sets only the prefix. The leaf is lowercased; a leaf the name would otherwise rewrite (a space, punctuation, a leading digit, `__`), an empty leaf, a leaf ending in `__p<8 hex>`, measures at one grain naming different leaves, or `name=` beside `storage=` or `namespace=`, fails the publish and the load (`rollup-invalid`). Changing the leaf renames the table, rebuilt once, and the old table is dropped once that run commits and is served.
 
@@ -350,7 +360,7 @@ A model with no such rollup behaves exactly as before.
 
 **Fixed: a join to two rollups reported the first rollup's reason for both.** Each rollup the leg tried now carries its own `reason` and `detail` in the path report.
 
-## [Unreleased] — stored tables build from the stored tables they read
+## [0.15.0] — stored tables build from the stored tables they read
 
 Builds that re-read the warehouse now read a table the run already holds, where the result is provably the same. No setting, and every stored row is the row a build from the warehouse stores.
 
@@ -362,7 +372,7 @@ Builds that re-read the warehouse now read a table the run already holds, where 
 
 The build plan (addresses, SQL, edges) is unchanged except for the cross-file extension above.
 
-## [Unreleased] — a stored table whose column types moved is cast or answered live, never misread
+## [0.15.0] — a stored table whose column types moved is cast or answered live, never misread
 
 A stored table's columns can stop matching the model: a column altered in the warehouse after the build (`ALTER TABLE … TYPE`), a column retyped upstream while the build's SQL (and so its content address) did not move, or a table altered out of band. In 0.14.0 such a table could be served with wrong values: a `DECIMAL` altered to `VARCHAR` answered `amt.max()` as the string `"9.0"` where live answers `10`, a column retyped upstream failed the query (`Invalid string 1`), and a `DECIMAL(10,1)` altered to `DECIMAL(10,0)` answered `9` where live answers `9.4`. Now every mechanism, on both tiers, follows one rule per column:
 
@@ -378,7 +388,7 @@ A stored table's columns can stop matching the model: a column altered in the wa
 
 **Who was affected:** packages whose stored tables someone altered in the warehouse, or whose upstream columns were retyped after a build. A table whose stored types match its declared ones is unaffected, and its answers do not change.
 
-## [Unreleased] — exact numbers: Postgres `numeric` keeps its precision in `storage=`, and DuckLake integers are no longer rounded
+## [0.15.0] — exact numbers: Postgres `numeric` keeps its precision in `storage=`, and DuckLake integers are no longer rounded
 
 **Fixed: a Postgres `storage=` build stored `numeric` as a binary float.** A `storage=` table (`#@ persist`, `#(materialize)`, a rollup, a persisted view or query) built from a Postgres source with an unconstrained `numeric` column, a `numeric(p,s)` with p > 38, or any numeric expression (`a + b`, a window sum, a rollup's partial sum) stored it as DOUBLE, so `sum` of 0.1 and 0.2 served `0.30000000000000004` where live answers `0.3`. A `numeric(p,s)` with p <= 38 was already stored as `DECIMAL(p,s)` and is unchanged. The build now reads each such column as Postgres's own text and stores it as `DECIMAL(38,s)`, `s` the widest scale read. A domain over `numeric` is treated as `numeric`. A value no `DECIMAL(38,s)` holds exactly (more than 38 digits, `NaN`, `Infinity`) is stored as text and answered live, under the `storage-column-type-mismatch` warning. A `double precision` column stays DOUBLE. BigQuery and Snowflake reads already arrive as DECIMAL; a BigQuery `BIGNUMERIC` still arrives as text and is answered live. DuckDB's DECIMAL arithmetic stops at 38 digits, so a stored answer that overflows it is answered live, whatever the source's `freshnessFallback`.
 
@@ -389,7 +399,7 @@ A stored table's columns can stop matching the model: a column altered in the wa
 
 **Documented: two Snowflake live-versus-served differences.** A `NUMBER(p,0)` past 2^53 is exact served and rounded live, and a `TIMESTAMP_TZ` value is served in UTC ISO form and rendered live in the account's own format and offset. Both live gaps are in Malloy's Snowflake connector.
 
-## [Unreleased] — one freshness model on every mechanism, and a declared window now applies on a standalone server
+## [0.15.0] — one freshness model on every mechanism, and a declared window now applies on a standalone server
 
 `freshness.window=` and `freshness.fallback=` now mean the same thing on `#@ persist`, `#(materialize)` and rollups, database and `storage=`, on a standalone server and under a control plane.
 
@@ -400,7 +410,7 @@ A stored table's columns can stop matching the model: a column altered in the wa
 - **A rollup can declare freshness**, with the same keys on `#(rollup)` and `#@ preaggregate`. Undeclared, a rollup takes its base's own declaration, then the model file's and the package's, so it goes stale with its base. A control plane reading the build plan sees a rollup's `freshness` field carry its base's own window and fallback now.
 - Malformed values now fail the load (see the load-failure section).
 
-## [Unreleased] — a build that fails on a warehouse's own data or syntax error reads as not retryable
+## [0.15.0] — a build that fails on a warehouse's own data or syntax error reads as not retryable
 
 **Changed meaning: `SourceFailure.retryable` is now `false` for a deterministic warehouse error.** A build that fails because the statement itself is wrong left `retryable` absent; it now reports `false`, so a control plane can hold the build instead of rebuilding it on every scheduled run. This covers:
 
@@ -410,7 +420,7 @@ A stored table's columns can stop matching the model: a column altered in the wa
 
 Some errors are still left unclassified: a missing table or column (`42P01`, `42703`, `42S02`, `42S22`, or a BigQuery "Unrecognized name" or "Not found"), because an upstream reclaimed mid-build reads the same way, and a missing privilege (`42501`). Transient codes keep their reading: serialization failure and deadlock (`40001`, `40P01`), a lock not available, too many connections, a cancelled or timed-out statement, a lost connection, and BigQuery's backend and quota reasons are never `false`. No new values.
 
-## [Unreleased] — runs: a failed run records its manifest, tables a host stores in a destination serve, and late errors no longer overwrite a finished run
+## [0.15.0] — runs: a failed run records its manifest, tables a host stores in a destination serve, and late errors no longer overwrite a finished run
 
 **Contract change: a run where every source failed or was refused records a manifest.** It still settles `FAILED`, with its whole-run `error` and `metadata.errorRetryable`, and now records a manifest whose `failures` holds each source's own reason and `retryable`, keyed by `sourceEntityId`, with empty `entries`. A `FAILED` run's manifest is never bound or served. A consumer that reads "manifest present" as success must key on `status` instead.
 
@@ -424,7 +434,7 @@ Some errors are still left unclassified: a missing table or column (`42P01`, `42
 
 **Fixed: two packages spelling one `name=` differently could build it at once.** The per-name build lock now keys a name the way the run's table claims do (its last segment, unquoted, without letter case), so `analytics."summary"` and `analytics.summary` wait for each other. The lock covers one server process only.
 
-## [Unreleased] — one rename rule: an auto-run reclaims a renamed table it can prove is its own, and lists the tables it keeps
+## [0.15.0] — one rename rule: an auto-run reclaims a renamed table it can prove is its own, and lists the tables it keeps
 
 **Contract change: what happens to a table an auto-run renames or moves.** When an auto-run builds a source's table under a new name or in a new place, the old table is reclaimed once the run has committed and is served, whenever Publisher can prove the table is its own: its name ends in one of Publisher's own suffixes (which an author's `name=` may not), a committed auto-run of this package on the same serving line built it for the same source at the same connection and destination, no other package's ownership mark is on it, no run outside the serving line names it, and no table the package serves may be it, judged by its table segment alone (the name without containers, unquoted and case-folded). In 0.14.0 only a table named before readable names was reclaimed this way, and the rest stayed until someone dropped them. Newly reclaimed: a `name=` prefix or container change under `scope: "version"`; the readable-name table a source had before it got a `name=`; a rollup whose `name=` leaf changed; and a table left in a still-configured old `storage=` destination, or in the database, when the source moved and its table took a new name with it. The decision and the drops are made under the lock a run's start takes on this server, so a run this server commits in between is never dropped from under, an active run that has claimed the old name to write keeps it, and no reclaim reads or writes a table's comment.
 
@@ -436,7 +446,7 @@ Some errors are still left unclassified: a missing table or column (`42P01`, `42
 
 **Unchanged:** host-instructed runs (the host owns their names), the ownership mark, and which runs archive reclaim covers. A rename that comes with an edit to the source's SQL, a connection change, and a removed source still leave their tables for the operator to drop. **Servers that share a warehouse** and serve the same environment, package, model and source (blue/green, or dev beside prod) now reclaim each other's renamed tables after a `name=` edit; keep such servers on separate schemas or destinations, or move them to a `name=` change together. See [the rename rule](docs/materialization.md#the-rename-rule).
 
-## [Unreleased] — table names are quoted as each warehouse reads them, and a name that cannot be quoted is refused
+## [0.15.0] — table names are quoted as each warehouse reads them, and a name that cannot be quoted is refused
 
 **Fixed: BigQuery identifiers were escaped by doubling a backtick, which BigQuery does not read.** Inside a backtick-quoted BigQuery identifier, `\` is the escape character. Publisher doubled the backtick and left the backslash alone, so a name part holding either could end the identifier early in any BigQuery statement Publisher writes (the database build's DDL, the swap, the ownership probe and mark, reclaim, the incremental refresh, the catalog reads). BigQuery identifiers are now escaped with backslashes, and a part BigQuery cannot quote (empty, a control character, or a `.`, which BigQuery reads inside backticks as a path separator) is refused with an error naming it. NUL is refused in every dialect. MySQL and Databricks double the backtick, as their documentation says, and are unchanged.
 
@@ -446,7 +456,7 @@ Some errors are still left unclassified: a missing table or column (`42P01`, `42
 
 **Who was exposed.** An author's `name=` could never carry a quote or a backslash; names Publisher chooses are sanitized; and Credible's control plane sends only `[A-Za-z0-9_-]` names. The exposure was a host that supplies `physicalTableName` without that restriction, an author's own `manifestLocation` manifest, and a BigQuery field name with a backslash in the statements that quote column names.
 
-## [Unreleased] — the served copy: `except:` re-roots, cross-file serving, Snowflake destinations and renamed columns
+## [0.15.0] — the served copy: `except:` re-roots, cross-file serving, Snowflake destinations and renamed columns
 
 **Fixed: an `except:` on a `#(materialize)` source answered every query live.** The re-root kept the `except:` item, which names a column the table never stores, so the served copy did not compile. Every re-root now drops such an item; one naming a stored column is kept.
 
@@ -458,17 +468,17 @@ Some errors are still left unclassified: a missing table or column (`42P01`, `42
 
 **Documented: which columns send a whole `#(materialize)` source live.** A struct column the source declares itself, a column on an `inline=` join that no type can declare (such as a BigQuery `GEOGRAPHY`), or a nest of a database table outside DuckDB sends the whole source live on either tier; a list or MAP column sends only the queries that read it live. **How to tell:** the path report skips the table as `NOT_SERVED` with code `served_copy`, and the `served-copy-not-served` warning's `reason` is `fields_not_carried` or `column_types`.
 
-## [Unreleased] — cancelling a run reaches the warehouse
+## [0.15.0] — cancelling a run reaches the warehouse
 
 The CTAS, an incremental delta and a rollup's build now carry the run's cancel signal (never a swap, DROP or backup). A database build cancelled while it read drops its staging table and is not swapped in (best effort: a warehouse job the cancel did not reach may still commit), a run cancelled during its last source settles `CANCELLED`, and a `storage=` build interrupts its DuckDB session and refuses every statement after the cancel. BigQuery, Snowflake and Databricks cancel the query (not a Snowflake incremental delta, which finishes); Postgres and DuckDB do not yet, and the build stops after the statement. A `storage=` build that reads BigQuery through DuckDB cancels its BigQuery jobs too, found through BigQuery's API under the read's own key (best effort, bounded at 15 seconds; the key needs `bigquery.jobs.list`). **Cost:** each such read carries a marker unique to the build, so BigQuery's result cache no longer answers a `storage=` read, and a rebuild over unchanged data is billed again.
 
-## [Unreleased] — `compile_model` reports what a load will refuse
+## [0.15.0] — `compile_model` reports what a load will refuse
 
 **Fixed: a compile check passed a rollup the load refuses.** `compile_model` (and `POST …/compile`) at scope `"package"` or `"file"` now reads the load's own verdict off the plan its dry run derives: each line the load fails with comes back as an error with its code, and each valid annotation the load leaves unbuilt (`rollup-not-built`, `persist-not-built`, …) as a warning. At scope `"file"` the check runs when the file names a materialization route or the package already plans a table, compiling the whole package with your edit in place. Not covered yet: an unquoted or unsafe `#@ persist name=`, which the load reads off the raw text.
 
 **Changed:** the `persist-not-built` message for a `storage=` source on a `publisher` connection now says the `storage=` build runs on the host the package is published to. The code and reason (`storage_source_unsupported`) are unchanged.
 
-## [Unreleased] — materialization telemetry: standard log fields, refusal events, key-check and routing metrics
+## [0.15.0] — materialization telemetry: standard log fields, refusal events, key-check and routing metrics
 
 **Log queries may need updating.** Materialization log lines name the same things by the same fields: `runId`, `destinationName`, `error`, `environmentName`, `packageName`. Renamed: `materializationId` → `runId` (run transitions and settle warnings, every table-drop and reclaim line, the table-claim lines); `destination` and `storageDestinationName` → `destinationName`.
 
@@ -482,25 +492,25 @@ The CTAS, an incremental delta and a rollup's build now carry the run's cancel s
 
 Every materialization metric is listed, with its labels, in `docs/configuration.md` under "Materialization metrics".
 
-## [Unreleased] — an unhandled rejection from a connection driver is logged, not fatal
+## [0.15.0] — an unhandled rejection from a connection driver is logged, not fatal
 
 An unhandled promise rejection, such as a failed BigQuery job cancel after a materialization cancel or a query timeout, could take the process down. It is now logged at error and counted on the new `publisher_unhandled_rejection_total` metric, in package-load workers too. An uncaught synchronous exception still ends the process.
 
-## [Unreleased] — parallel raw SQL on a DuckDB connection no longer returns empty or short results
+## [0.15.0] — parallel raw SQL on a DuckDB connection no longer returns empty or short results
 
 Raw SQL requests (`sqlQuery` and the other connection SQL endpoints) that ran in parallel on one DuckDB or DuckLake connection could each answer 200 with zero rows, or with fewer rows than the query selects, and no error. A connection now runs one statement at a time. Two visible changes: a statement waits for an open stream on its connection to finish, and a raw SQL query on a streaming connection (DuckDB, DuckLake or Postgres) that times out, waiting or mid-stream, answers 504 instead of 200 with the rows it had. A `publisher` connection to another Publisher was affected through the remote's endpoint.
 
-## [Unreleased] — a report or notebook cell answers 403 for an unsupplied gate given, and a non-string `#(filter)` value is refused by name
+## [0.15.0] — a report or notebook cell answers 403 for an unsupplied gate given, and a non-string `#(filter)` value is refused by name
 
 A report or notebook cell on a source whose `#(access_filter)` reads a given the caller did not supply now answers 403, the same opaque `AccessDeniedError` the query path gives, instead of 400 with Malloy's message naming the missing given. The same holds for a cell under an `#(authorize)` lock and a row filter, called with only the given the lock reads. A caller who supplies every given the gates read is unaffected.
 
 A `#(filter)` value (`filterParams`, deprecated) that is not a string or an array of strings is now refused with 400 and a message naming the filter and the type it takes, on the query path and on a cell alike, where it answered 400 with an internal JavaScript type error. An array holding a non-string is refused even for a filter that reads only its first element, so `["us", 2]`, which used to be served from `"us"`, now answers 400. A `null` value still reads as no value.
 
-## [Unreleased] — a retired DuckDB instance frees its memory and threads at once
+## [0.15.0] — a retired DuckDB instance frees its memory and threads at once
 
 A DuckDB instance Publisher retires (a package's sandbox on unload, eviction or environment delete; a DuckDB, DuckLake or Azure connection when its environment is deleted or its connections change; a storage destination's serve instance when the destination list changes) now releases its native resources at retirement, instead of whenever a garbage collection runs. Under churn the old behaviour grew native memory by GiBs between collections. An instance is freed only once nothing is running on it.
 
-## [Unreleased] — the v1 cutover conformance script runs again without NODE_ENV=test
+## [0.15.0] — the v1 cutover conformance script runs again without NODE_ENV=test
 
 `bun scripts/v1-cutover-conformance.ts` runs again as a standalone CLI. In 0.14.0 it exited 3 on every package unless `NODE_ENV=test` was set. A CI job that set it as a workaround can drop it.
 
