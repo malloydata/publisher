@@ -155,7 +155,29 @@ const ctxOf = (request: Record<string, unknown> = {}) => ({
 });
 const prepared = {
    queryString: "\nrun: orders -> by_day",
-   liveRunnable: runnable("live"),
+   liveRunnable: {
+      ...runnable("live"),
+      // The author's compile the router reads a source's gates and row
+      // scope from: an ungated source with no `where:`, so a leg reading a
+      // storage table is judged on nothing it scopes.
+      getPreparedQuery: async () => ({
+         _query: { structRef: "orders" },
+         _modelDef: {
+            name: "m",
+            exports: [],
+            contents: {
+               orders: {
+                  type: "table",
+                  name: "orders",
+                  tablePath: "orders",
+                  connection: "duckdb",
+                  dialect: "duckdb",
+                  fields: [{ name: "id", type: "number" }],
+               },
+            },
+         },
+      }),
+   } as unknown as QueryMaterializer,
    surfaceGivens: undefined,
 };
 const admitted = {
