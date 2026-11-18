@@ -178,7 +178,15 @@ function denyUnlessAdmitted(
          outcome === "unresolvable" ? "denied_unresolvable" : "denied_by_lock",
          site,
       );
-      throw AccessDeniedError.forSource(label);
+      if (outcome === "unresolvable") {
+         // The caller's 403 is the same `ACCESS_DENIED` either way; the log
+         // and the metric are where a gate that could not be decided shows.
+         logger.info("A lock could not be decided; denying", {
+            source: label,
+            site,
+         });
+      }
+      throw AccessDeniedError.forSource(label, "lock");
    }
    recordLockDecision("denied_unresolvable", site);
    // Also booked on the row-level counter: a gate refused at shape resolution
@@ -186,7 +194,13 @@ function denyUnlessAdmitted(
    // `cause` is a finer label, not a substitute.
    recordRowLevelGateDecision("denied_by_gate", site);
    if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
-   throw AccessDeniedError.forSource(label);
+   logger.info("A gate could not be resolved; denying", {
+      source: label,
+      site,
+      ...(resolution.cause ? { cause: resolution.cause } : {}),
+   });
+   // Booked as a row filter's refusal, as the row-level metric books it.
+   throw AccessDeniedError.forSource(label, "row_filter");
 }
 
 /**

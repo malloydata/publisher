@@ -467,13 +467,7 @@ export const DEPRECATED_PREAGGREGATE_ANNOTATION_CODE =
  * A rollup placed with `namespace=`, the deprecated spelling of its `name=`
  * container: still read, for one release, with this warning.
  */
-export const PREAGGREGATE_NAMESPACE_DEPRECATED_CODE =
-   "deprecated-preaggregate-namespace";
-/**
- * {@link PERSIST_NOT_BUILT_CODE}'s former name, still emitted beside it for
- * one release so a client switching on it keeps working; removed after.
- */
-export const PERSIST_SOURCE_REFUSED_ALIAS_CODE = "persist-source-refused";
+export const ROLLUP_NAMESPACE_DEPRECATED_CODE = "deprecated-rollup-namespace";
 
 /**
  * A load failure's line: `text` ended with a full stop, then its `[code]`.
@@ -481,6 +475,18 @@ export const PERSIST_SOURCE_REFUSED_ALIAS_CODE = "persist-source-refused";
 export function codedLine(text: string, code: string): string {
    const trimmed = text.trimEnd();
    return `${/[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`} [${code}]`;
+}
+
+/**
+ * The codes of a load failure's {@link codedLine}s, in order, each once: what
+ * a `loadErrors` entry carries as `codes`, so a client never parses the
+ * message for them.
+ */
+export function codesOfLines(text: string): string[] {
+   const codes = [...text.matchAll(/ \[([a-z][a-z0-9-]*)\]$/gm)].map(
+      (m) => m[1],
+   );
+   return [...new Set(codes)];
 }
 
 /** One diagnostic about an annotation, with its tier from the outcome rule. */
@@ -495,6 +501,12 @@ export interface AnnotationFinding {
    tier: "malformed" | "unservable" | "deprecated";
    /** Stable, for counting and for clients: `persist-unknown-key`. */
    code: string;
+   /**
+    * For an `unservable` finding that is a refusal: its bounded
+    * `RefusedSource.reason` (`table_name_collision`), carried as the
+    * package warning's `reason`.
+    */
+   reason?: string;
    message: string;
    /** The fix, when there is one. */
    rewrite?: string;

@@ -1541,6 +1541,7 @@ function recordPendingRefusal(
          // Marks the failure permanent, so a caller that retries failures can
          // tell it from one that may clear.
          refused: true,
+         ...(err.reason ? { refusalReason: err.reason } : {}),
          retryable: false,
          connectionName: persistSource.connectionName,
          ...(instruction.destination
@@ -2303,8 +2304,9 @@ function sameColumns(a: PersistSource, b: PersistSource): boolean {
  *    in the same destination, with no gate (rollup_compile.ts);
  *  - the run's entries hold the base's table at the address the plan gives
  *    it, built this run or carried, in that destination, at the tier the
- *    base declares now, with the column list its build reads it by. Nothing
- *    gated is planned there (no `storage=` rollup over a gated source is);
+ *    base declares now, with the column list its build reads it by. A
+ *    rollup over a gated base is never planned there: it builds from the
+ *    warehouse (rollup_compile.ts's `baseGated` guard);
  *  - with a declared window, the base's table is new enough
  *    ({@link baseFreshEnough}), whoever instructed the run.
  *

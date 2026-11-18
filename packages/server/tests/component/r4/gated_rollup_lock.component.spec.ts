@@ -358,9 +358,14 @@ for (const placement of ["database", "storage"] as const) {
             }
          });
 
-         it("builds a lock beside a given-reading where: only database, and answers every caller as live does", async () => {
+         it("builds a lock beside a given-reading where: as its gates allow, and answers every caller as live does", async () => {
             const refused = fixture.rollupRefusals.map((r) => r.sourceName);
             const database = placement === "database";
+            // This harness binds no `storage=` table as plan-admitted
+            // (`ownGateKept`), so with the switch off a `storage=` answer
+            // past a column-reading gate is live here;
+            // storage_rollup_gates.component.spec.ts takes the bind.
+            const fromRollup = database || gatedSources;
             for (const [source, malloy, admitted, refusedCallers] of [
                [
                   "lw",
@@ -381,16 +386,21 @@ for (const placement of ["database", "storage"] as const) {
                   [{ ROLE: "viewer", REGION: "east" }, ADMIN],
                ],
             ] as [string, string, Givens[], Givens[]][]) {
-               expect(refused.includes(source)).toBe(!database);
+               // `lw`'s lock is its own (G3 on either tier); `inh_w`'s is
+               // inherited and, beside its `where:`, not lock-only on
+               // `storage=`, so it is built there only with the switch on.
+               expect(refused.includes(source)).toBe(
+                  source === "inh_w" && !database && !gatedSources,
+               );
                for (const givens of admitted) {
                   const run = await fixture.run({
                      name: `${source} ${JSON.stringify(givens)}`,
                      malloy,
                      givens,
-                     expectLive: !database,
+                     expectLive: !fromRollup,
                   });
                   expect(rowDifference(run.live, run.served)).toBeUndefined();
-                  if (database) expect(run.servedBy?.kind).toBe("rollup");
+                  if (fromRollup) expect(run.servedBy?.kind).toBe("rollup");
                   else expectLive(run);
                }
                for (const givens of refusedCallers) {
@@ -410,12 +420,13 @@ for (const placement of ["database", "storage"] as const) {
                   malloy:
                      "run: lock_and_filter -> { group_by: category; aggregate: total }",
                   givens,
-                  // With the switch on, a database rollup keeps an inherited
-                  // gate (row 1); elsewhere this base is not lock-only.
-                  expectLive: !(gatedSources && placement === "database"),
+                  // With the switch on, a rollup on either tier keeps an
+                  // inherited gate (row 1, and P3/P4 on `storage=`);
+                  // with it off this base is not lock-only.
+                  expectLive: !gatedSources,
                });
                expect(rowDifference(run.live, run.served)).toBeUndefined();
-               if (!(gatedSources && placement === "database")) {
+               if (!gatedSources) {
                   expectLive(run);
                }
             }
@@ -457,9 +468,13 @@ for (const placement of ["database", "storage"] as const) {
             }
          });
 
-         it("reads a storage= rollup past a row filter on a grain field only as the database tier does: never before its review", async () => {
+         it("reads a rollup past an extension's row filter on a grain field when it keeps the gate", async () => {
             for (const cat of ["A", "B", "Z"]) {
-               const servedFromRollup = placement === "database";
+               // Database always; `storage=` with the switch on. With it
+               // off, a `storage=` answer is kept only for a table the bind
+               // marks, which this harness does not run.
+               const servedFromRollup =
+                  placement === "database" || gatedSources;
                const run = await fixture.run({
                   name: `inh1_by_cat ${cat}`,
                   malloy:
@@ -495,7 +510,7 @@ for (const placement of ["database", "storage"] as const) {
  * the join leg engages: database it answers from the rollup; on `storage=`
  * this harness cannot store the DuckDB parent in the destination, so it
  * declines `CROSS_CONNECTION`. Behind a lock, own or
- * inherited, the leg declines `CONTRACT` before the gate policy is asked (its
+ * inherited, the leg declines `ROW_LEVEL_GATE` before the gate policy is asked (its
  * variant redeclares the parent around the join and carries no gate), so
  * `gatesReadNoColumn` never widens it: every caller is answered as live is.
  */
@@ -597,7 +612,7 @@ for (const placement of ["database", "storage"] as const) {
             it(`declines CONTRACT for ${source} and answers every caller as live does`, async () => {
                fixture.setBindings(fixture.bindings);
                const served = await fixture.runAsIs(query(source), ADMIN);
-               expect(rollupStep(served.path)?.reason).toBe("CONTRACT");
+               expect(rollupStep(served.path)?.reason).toBe("ROW_LEVEL_GATE");
                const run = await fixture.run({
                   name: `${source} admin`,
                   malloy: query(source),

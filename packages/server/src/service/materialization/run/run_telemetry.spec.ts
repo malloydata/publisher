@@ -65,27 +65,27 @@ describe("run telemetry vocabulary", () => {
          "auto",
          "orchestrator",
       ]);
-      expect(runTriggerOf({ trigger: "SCHEDULER", orchestrated: true })).toBe(
+      expect(runTriggerOf({ trigger: "scheduler", orchestrated: true })).toBe(
          "schedule",
       );
       expect(
          runTriggerOf({
-            trigger: "ON_DEMAND",
+            trigger: "on_demand",
             runContextTrigger: "scheduler",
             orchestrated: true,
          }),
       ).toBe("schedule");
-      expect(runTriggerOf({ trigger: "ON_DEMAND", orchestrated: true })).toBe(
+      expect(runTriggerOf({ trigger: "on_demand", orchestrated: true })).toBe(
          "orchestrator",
       );
       expect(
          runTriggerOf({
-            trigger: "ON_DEMAND",
+            trigger: "on_demand",
             runContextTrigger: "publish",
             orchestrated: false,
          }),
       ).toBe("auto");
-      expect(runTriggerOf({ trigger: "ON_DEMAND", orchestrated: false })).toBe(
+      expect(runTriggerOf({ trigger: "on_demand", orchestrated: false })).toBe(
          "api",
       );
    });

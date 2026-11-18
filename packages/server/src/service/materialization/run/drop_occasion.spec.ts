@@ -54,7 +54,7 @@ describe("a failed run's reclaim", () => {
          "publisher_materialization_drop_tables_total",
       );
       expect(drops).toEqual([
-         expect.objectContaining({ engine: "storage", occasion: "reclaim" }),
+         expect.objectContaining({ tier: "storage", occasion: "reclaim" }),
       ]);
    });
 });

@@ -232,6 +232,7 @@
       "code": "materialize-not-built",
       "message": "#(materialize) on source \"both\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
       "model": "m.malloy",
+      "reason": "inherited_where_with_given",
       "severity": "warn",
       "subject": "both"
     },
@@ -239,6 +240,7 @@
       "code": "materialize-not-built",
       "message": "#(materialize) on source \"by_base_dimension\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
       "model": "m.malloy",
+      "reason": "inherited_where_with_given",
       "severity": "warn",
       "subject": "by_base_dimension"
     },
@@ -246,6 +248,7 @@
       "code": "materialize-not-built",
       "message": "#(materialize) on source \"inherited\" is not built, so the source is served live: the dimension `at_least` reads a given and is not declared on this source, so it could not be computed over the stored table at read; the source is answered live. To serve it from a table, declare the given-reading dimension on the materialized source itself.",
       "model": "m.malloy",
+      "reason": "inherited_where_with_given",
       "severity": "warn",
       "subject": "inherited"
     }

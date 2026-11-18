@@ -135,16 +135,16 @@ source: daily is orders -> {
          );
          expect(
             await harness.collectCounter("publisher_query_route_total", {
-               leg: "served",
+               leg: "materialized",
                outcome: "skipped",
                reason: "STALE",
             }),
          ).toBe(1);
          expect(
             await harness.collectCounter("publisher_query_route_total", {
-               leg: "served",
+               leg: "materialized",
                outcome: "skipped",
-               reason: "WARNED",
+               reason: "NOT_SERVED",
             }),
          ).toBe(0);
       } finally {
@@ -173,7 +173,7 @@ source: daily is orders -> {
             kind: "materialized",
             origin: "persist",
             outcome: "skipped",
-            reason: "RUN_FAILED",
+            reason: "READ_FAILED",
          },
       ]);
       // The store's error (here a table path) is never on the wire.

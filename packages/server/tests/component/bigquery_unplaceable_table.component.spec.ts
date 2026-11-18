@@ -176,6 +176,8 @@ describe("a database BigQuery table with no dataset is refused at plan", () => {
             "materialize-not-built",
             "persist-view-not-built",
             "rollup-not-built",
+            // Its 0.14 code, repeated beside it this release only.
+            "preaggregate-not-built",
          ]),
       );
       expect(warnings.every((w) => w[2] === "warn")).toBe(true);

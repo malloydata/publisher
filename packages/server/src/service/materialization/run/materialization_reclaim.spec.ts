@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { internalErrorToHttpError } from "../../../errors";
 import { unrecordedAudit } from "../../access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
@@ -522,11 +523,19 @@ describe("reclaiming an archived version's tables", () => {
          "UPDATE materializations SET status = 'MANIFEST_ROWS_READY', active_key = ?, completed_at = NULL, error = NULL WHERE id = ?",
          [`${ENV_ID}|${PKG}@1.0.0`, built.id],
       );
-      await expect(
-         service.createMaterialization(ENV, PKG, {
+      const active = await service
+         .createMaterialization(ENV, PKG, {
             versionId: VersionRef.parse("1.0.0"),
-         }),
-      ).rejects.toThrow("already has an active materialization");
+         })
+         .then(
+            () => new Error("not refused"),
+            (error: unknown) => error as Error,
+         );
+      expect(active.message).toContain("already has an active materialization");
+      expect(internalErrorToHttpError(active).json).toMatchObject({
+         code: 409,
+         reason: "MATERIALIZATION_CONFLICT",
+      });
       // A record still running keeps its tables through an archive.
       await archive("1.0.0");
       expect(await statusOf(built.id)).toBe("MANIFEST_ROWS_READY");

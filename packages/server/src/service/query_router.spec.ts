@@ -274,7 +274,7 @@ describe("routeQuery metrics", () => {
       // Unexplained, as the path report reads it.
       expect(
          await count({
-            leg: "served",
+            leg: "materialized",
             outcome: "skipped",
             reason: "MISSING_FIELD",
          }),
@@ -307,7 +307,7 @@ describe("routeQuery metrics", () => {
       ).toBe(1);
    });
 
-   it("counts a chosen variant whose run failed as fallback RUN_FAILED, answered live", async () => {
+   it("counts a chosen variant whose run failed as fallback READ_FAILED, answered live", async () => {
       const decision = await routeQuery(
          [variant("served", "answers", [])],
          async () => false,
@@ -315,13 +315,13 @@ describe("routeQuery metrics", () => {
       );
       recordVariantRouting(decision.considered, true);
       expect(
-         await count({ leg: "served", outcome: "used", reason: "NONE" }),
+         await count({ leg: "materialized", outcome: "used", reason: "NONE" }),
       ).toBe(0);
       expect(
          await count({
-            leg: "served",
+            leg: "materialized",
             outcome: "fallback",
-            reason: "RUN_FAILED",
+            reason: "READ_FAILED",
          }),
       ).toBe(1);
       expect(
@@ -329,7 +329,7 @@ describe("routeQuery metrics", () => {
       ).toBe(1);
    });
 
-   it("counts a gated skip as CONTRACT, nothing for an inapplicable leg or a hypothetical route", async () => {
+   it("counts a gated skip as ROW_LEVEL_GATE, nothing for an inapplicable leg or a hypothetical route", async () => {
       await routeQuery([variant("rollup", "answers", [])], async () => true);
       await routeQuery([variant("rollup", "answers", [])], async () => false, {
          recordMetrics: false,
@@ -342,7 +342,7 @@ describe("routeQuery metrics", () => {
          await count({
             leg: "rollup",
             outcome: "skipped",
-            reason: "CONTRACT",
+            reason: "ROW_LEVEL_GATE",
          }),
       ).toBe(1);
       expect(

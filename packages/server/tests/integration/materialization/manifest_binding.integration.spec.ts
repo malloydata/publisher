@@ -425,7 +425,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          const failed = (await (
             await patchPackage({ manifestLocation: missing })
          ).json()) as Record<string, unknown>;
-         expect(failed.manifestBindingStatus).toBe("live_fallback");
+         expect(failed.manifestBindingStatus).toBe("bind_failed");
 
          // A pure-`storage=` manifest binds with no database entry to recompile, so
          // nothing on that path recomputes the status — the successful bind has to
@@ -472,7 +472,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          const failed = (await (
             await patchPackage({ manifestLocation: missing })
          ).json()) as Record<string, unknown>;
-         expect(failed.manifestBindingStatus).toBe("live_fallback");
+         expect(failed.manifestBindingStatus).toBe("bind_failed");
          expect(failed.manifestEntryCount).toBe(1);
          expect(failed.boundManifestUri).toBe(manifestFile);
          expect(await queryOrderSummaryStatus()).toBe(200);
@@ -537,7 +537,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       expect(patched.manifestLocation).toBe(missing);
       // The configured location is retained, but the binding is reported as a
       // degraded live fallback (not "bound") with nothing actually bound.
-      expect(patched.manifestBindingStatus).toBe("live_fallback");
+      expect(patched.manifestBindingStatus).toBe("bind_failed");
       expect(patched.manifestEntryCount).toBe(0);
       expect(patched.boundManifestUri ?? null).toBeNull();
 

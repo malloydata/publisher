@@ -11,7 +11,7 @@
  * is known exact, and the column is still left out.
  *
  * Either way the package warns once for the source
- * (`stored-native-schema-missing`), naming its columns; a table whose build
+ * (`database-native-type-missing`), naming its columns; a table whose build
  * captured the types gets no such warning.
  *
  * BigQuery is a stand-in: its schema reads come from a fixture and its SQL
@@ -148,7 +148,7 @@ async function bindWithoutNativeSchema(
    );
    return {
       notices: (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "stored-native-schema-missing",
+         (w) => w.code === "database-native-type-missing",
       ),
       problems: model_?.servedCopyProblems() ?? [],
       servedBy: result.path?.servedBy,

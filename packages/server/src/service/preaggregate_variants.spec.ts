@@ -199,7 +199,7 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
             Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
                (r) => r.reason,
             ),
-         ).toEqual(["join_level"]);
+         ).toEqual(["join_not_in_grain"]);
          expect(formatPublishRejections(pkg)).toBeUndefined();
       },
       { timeout: 60000 },

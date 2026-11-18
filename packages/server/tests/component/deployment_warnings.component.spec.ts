@@ -132,7 +132,7 @@ describe("a storage= destination the environment does not configure (P13)", () =
    it("warns nothing when the destination is configured", async () => {
       const { pkg } = await load([LAKE]);
       expect(warningsWith(pkg, DESTINATION_MISSING)).toEqual([]);
-      expect(verdictOf(pkg, "by_region")?.verdict).toBe("not_built");
+      expect(verdictOf(pkg, "by_region")?.verdict).toBe("awaiting_build");
    });
 
    it("clears once the destination is configured, with no reload, and returns when it is removed", async () => {
@@ -196,6 +196,6 @@ describe("a database source on a connection that cannot hold a table (P13)", () 
    it("reads a connection's configured type from the environment: a writable type warns nothing", async () => {
       const { pkg } = await load([LAKE]);
       expect(warningsWith(pkg, CANNOT_HOLD_TABLE)).toEqual([]);
-      expect(verdictOf(pkg, "database")?.verdict).toBe("not_built");
+      expect(verdictOf(pkg, "database")?.verdict).toBe("awaiting_build");
    });
 });

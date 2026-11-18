@@ -273,6 +273,7 @@ describe("a pair table's leaf key check, on a build", () => {
          prepareServedCopy: async () => {},
          persistedViewBuilds: () => [],
          servedCopyProblems: () => [],
+         gateLoadWarnings: () => [],
          storedColumnTypeMismatches: () => [],
       };
       const materialization = new PackageMaterialization({

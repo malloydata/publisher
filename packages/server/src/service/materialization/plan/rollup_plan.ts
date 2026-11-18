@@ -114,7 +114,7 @@ import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import {
    ROLLUP_INVALID_CODE,
    DEPRECATED_PREAGGREGATE_ANNOTATION_CODE,
-   PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+   ROLLUP_NAMESPACE_DEPRECATED_CODE,
    ROLLUP_NOT_BUILT_CODE,
    ROLLUP_ROUTE_KEYS,
    routeOfNote,
@@ -215,10 +215,9 @@ export interface ParentKeyNeed {
 
 /**
  * Whether a rollup at `placement` over a gated base may be read past its
- * base's gate (and so is worth building), by the gate policy: database,
- * under `materialize.gatedSources` or, with it off, under G3 when every gate
- * is the base's `own`; in a storage destination once the managed-tier review
- * allows it.
+ * base's gate (and so is worth building), by the gate policy: on either
+ * tier, under `materialize.gatedSources` or, with it off, under G3 when every
+ * gate is the base's `own`, or a lock reading no row field.
  */
 function rollupsServeGatedBases(
    placement: { storage?: string },
@@ -820,7 +819,7 @@ function rollupDeclarationsOf(
             deprecationWarned.add(key);
             refused.push({
                tier: "deprecated",
-               code: PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+               code: ROLLUP_NAMESPACE_DEPRECATED_CODE,
                message: `Measure "${decl.measure}" of source "${sourceName}" places its rollup with namespace="${decl.namespace}": ${namespaceRewrite(decl.namespace)}.`,
                sourceName,
                measure: decl.measure,
@@ -1296,9 +1295,7 @@ function declarationRefusal(
       return unservable(
          gate.reason.base,
          decl,
-         decl.storage !== undefined
-            ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
-            : "the source's row-level gate (`#(access_filter)` or `#(authorize)`) is inherited from a source it extends, and a rollup keeps only its base's own gate unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
+         "the source's row-level gate (`#(access_filter)` or `#(authorize)`) is inherited from a source it extends, and a rollup keeps only its base's own gate unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
       );
    }
    // A gate on a source the base joins is not the base's to graft: the
@@ -1424,7 +1421,7 @@ function rollupMeasureOf(
       if (joinProblem) break;
    }
    if (joinProblem) {
-      return unservable("join_level", decl, joinProblem);
+      return unservable("join_not_in_grain", decl, joinProblem);
    }
    const columns =
       d.leaves.length === 1
@@ -1433,7 +1430,7 @@ function rollupMeasureOf(
    const clash = columns.find((c) => byName.has(c));
    if (clash) {
       return unservable(
-         "name_clash",
+         "partial_name_collision",
          decl,
          `the source already has a field named \`${clash}\`, the column its partial is stored as`,
       );
