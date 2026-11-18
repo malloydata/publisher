@@ -73,7 +73,22 @@ not repeat is the server suites and the Linux-only e2e suite.
 PR's branch included), against a server with package versioning on (playwright.config.ts starts it
 with `PUBLISHER_PACKAGE_VERSIONING=on`). The model viewer's specs get a pass of their own, against a server started
 with `PUBLISHER_MODEL_PAGE=viewer` (`EXPECT_MODEL_PAGE=viewer`),
-because the suite's server shows the default model page, the Explorer. `python-sdk.yml` is `workflow_call`-only (plus a
+because the suite's server shows the default model page, the Explorer.
+
+The suite runs in three shards, `Playwright shard (1/3..3/3)`. Each shard is on its own runner with
+its own Publisher, and runs on one worker inside the shard, because specs share server state. The
+spec files each shard runs are listed in `packages/app/tests/playwright/shards.json`, balanced by
+measured per-file durations. Shard 2 carries the least and also runs the model viewer pass.
+`shards.mjs check` runs first in every shard. It fails the shard when a spec is in no group, is in
+two, or a group names a file that is gone, so **a new spec must be added to `shards.json`**.
+A gate job, `Playwright (packages/app)`, needs every shard and fails unless all of them passed. It is the
+**only** required check for the suite, under the name the single job had before the split, so
+regrouping never touches branch protection. Do not make the shards required, and do not give one
+that name. Chromium's headless shell is cached under `PLAYWRIGHT_BROWSERS_PATH`, keyed on the
+`@playwright/test` version. Credible's image has Chromium's system packages, so apt runs there only
+if the browser is missing a library. GitHub's image does not have them all, so it takes `--with-deps`.
+
+`python-sdk.yml` is `workflow_call`-only (plus a
 manual dispatch): it builds and verifies the Python client, for `build.yml` on every PR and for
 `release.yml`, which publishes it to PyPI from a job of its own. It has published there since
 0.10.5 (2026-10-31); *Publishing to PyPI* below covers how.
