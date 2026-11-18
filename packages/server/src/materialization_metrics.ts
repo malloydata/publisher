@@ -407,7 +407,7 @@ const scheduledFireCounter = lazyCounter(
 const queryRouteCounter = lazyCounter(
    "publisher_query_route_total",
    "The router's decision on each leg it considered for a query, counted once " +
-      "the query is answered. Labels: leg ('view'|'query'|'rollup'|'served'|'live'; " +
+      "the query is answered. Labels: leg ('view'|'query'|'rollup'|'materialized'|'live'; " +
       "'query' is a persisted named query), " +
       "outcome ('used'|'skipped'|'fallback': a chosen leg whose run failed and " +
       "was answered live), reason ('NONE' when used, else the path report's " +
@@ -420,7 +420,7 @@ const queryRouteDuration = lazyHistogram(
    "Wall-clock time the router spent choosing how to answer a query, for a " +
       "query with at least one serving leg that applied: the row-level veto " +
       "and each leg's compile, up to the leg chosen. Not the query's run. " +
-      "Label: leg ('view'|'query'|'rollup'|'served'|'live'), the one that " +
+      "Label: leg ('view'|'query'|'rollup'|'materialized'|'live'), the one that " +
       "answered.",
 );
 const keyCheckCounter = lazyCounter(
