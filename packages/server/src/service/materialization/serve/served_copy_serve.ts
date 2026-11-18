@@ -1441,11 +1441,15 @@ export class ServedCopyServe {
             ),
          };
          this.inFlightLanes.set(lane, started);
-         void started.promise.finally(() => {
-            if (this.inFlightLanes.get(lane) === started) {
-               this.inFlightLanes.delete(lane);
-            }
-         });
+         // The callers that await `started.promise` see its rejection; this
+         // derived promise only clears the slot, so its own is dropped.
+         started.promise
+            .finally(() => {
+               if (this.inFlightLanes.get(lane) === started) {
+                  this.inFlightLanes.delete(lane);
+               }
+            })
+            .catch(() => {});
          inFlight = started;
       }
       const awaited = await inFlight.promise;
