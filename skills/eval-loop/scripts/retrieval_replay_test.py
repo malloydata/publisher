@@ -470,6 +470,20 @@ class EndToEnd(unittest.TestCase):
         run = json.loads((self.d / "work" / "runs" / "r1" / "run.json").read_text())
         self.assertEqual((run["getContextUrl"], run["caseScopes"], run["target"]), (self.url, True, "platform"))
 
+    def test_a_platform_target_version_is_sent_in_the_scope(self):
+        StubMcp.rest = True
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = rr.main(["--set", str(self.d), "--get-context-url", self.url,
+                                "--environment", "org", "--package", "pk",
+                                "--target-version", "1.0.0", "--label", "r1"])
+        finally:
+            StubMcp.rest = False
+        self.assertEqual(code, 0)
+        self.assertEqual(StubMcp.seen[0][1]["scopes"][0]["version"], "1.0.0")
+        run = json.loads((self.d / "work" / "runs" / "r1" / "run.json").read_text())
+        self.assertEqual(run["packageVersion"]["id"], "1.0.0")
+
     def test_case_scopes_refuses_a_case_without_one(self):
         with self.assertRaises(SystemExit) as e, contextlib.redirect_stdout(io.StringIO()):
             rr.main(["--set", str(self.d), "--get-context-url", self.url, "--case-scopes", "--label", "r1"])

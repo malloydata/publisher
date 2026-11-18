@@ -206,6 +206,16 @@ class DerivesThroughTheRealParser(unittest.TestCase):
         self.assertEqual(att["final_query"], "run: orders -> by_month")
         self.assertEqual(att["final_model_path"], "m.malloy")
 
+    def test_a_call_with_no_logged_response_is_unmeasured_not_empty(self):
+        events = lt.build_transcript(
+            get_context=[{"request_id": "r1", "timestamp": "t",
+                          "request_payload": {"search_targets": [
+                              {"target_type": "measure",
+                               "search_text": "revenue"}]}}])
+        call = self.derive(events)["calls"][0]
+        self.assertIsNone(call["rankedSummary"])
+        self.assertIsNone(call["error"])
+
     def test_the_retrieval_response_is_read_by_the_existing_payload_parser(self):
         # mcp_payload already knows the hosted source-centric shape. This pins
         # that we hand it that shape unmodified, because re-encoding it here

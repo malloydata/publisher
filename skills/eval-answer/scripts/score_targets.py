@@ -43,14 +43,15 @@ WHAT AN ATTEMPT CARRIES
 sent) when the run recorded it; otherwise `targets` (`"measure: revenue"`)
 and `target_shapes` (for a target with no text) are read instead.
 
-Which entities a target returned comes from the server's own attribution:
-each hit's `matched_targets` names the search texts that matched it, and a
-target is credited only with the hits of a kind it can return, since the same
-text may be sent under two target types. A source
-card carries no attribution, and a lexical run carries none at all, so there a
-target is credited with every entity of a kind it can return
-(`score_retrieval.KINDS_BY_TARGET`). `attribution` on the row says which rule
-applied: `server`, or `kind`, which can only over-credit.
+Which entities a target returned is `score_retrieval.target_hits`, the rule
+a replay (`target_outcomes.py`) reads too: each hit's `matched_targets` names
+the search texts that matched it, and a target is credited only with the hits
+of a kind it can return, since the same text may be sent under two target
+types. A source card with no attribution goes to every `source` target, and a
+lexical run carries none at all, so there a target is credited with every
+entity of a kind it can return (`score_retrieval.KINDS_BY_TARGET`).
+`attribution` on the row says which rule applied: `server`, or `kind`, which
+can only over-credit.
 
 THE WORD MATCH IS A HEURISTIC
 
@@ -67,13 +68,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import re
 import sys
 from typing import Any
 
 from score_retrieval import (KINDS_BY_TARGET, PASSING, UNSCORED,  # noqa: E402
                              attempt_key, delivery, groups, read_jsonl,
-                             split_entity)
+                             target_hits)
+
+# The run summary's rule for which scores count, so this summary's decided
+# attempts are the same ones (a `verified_wrong` golden is left out).
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                       / "eval-loop" / "scripts"))
+from flip_table import counts_toward_score  # noqa: E402
 
 # Words that carry no concept. Short on purpose: a word like "total" or
 # "count" can be the whole difference between two measures, so it stays.
@@ -124,37 +132,6 @@ def agent_targets(call: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     return out, "targets"
 
 
-def returned_by(target: dict[str, Any],
-                call: dict[str, Any]) -> tuple[set[str], str]:
-    """The entities this one target returned in its call, and the rule used.
-
-    `server` when the call's hits carry `matched_targets`: the entities of a
-    kind this target type can return whose attribution names this target's
-    text, plus the source cards when the
-    target asked for sources (a card never carries attribution). `kind`
-    otherwise: every returned entity of a kind this target type can return.
-    """
-    rs = call.get("rankedSummary") or {}
-    hits = [h for h in rs.get("hits") or [] if isinstance(h, dict)]
-    kinds = KINDS_BY_TARGET.get(target["target_type"], set())
-    attributed = any(isinstance(h.get("matched_targets"), list) for h in hits)
-    text = target.get("search_text")
-    if attributed and text:
-        # Attribution names the search text, not the target type, so the same
-        # text sent as a dimension and as a measure would each be credited
-        # with the other's hits. Only hits of this target's own kinds count.
-        got = {h["entity_id"] for h in hits
-               if split_entity(h.get("entity_id", ""))[0] in kinds
-               and any(isinstance(m, dict) and m.get("search_text") == text
-                       for m in h.get("matched_targets") or [])}
-        if "source" in kinds:
-            got |= {h["entity_id"] for h in hits
-                    if split_entity(h.get("entity_id", ""))[0] == "source"}
-        return got, "server"
-    ids = [h.get("entity_id") for h in hits] or list(rs.get("entityIds") or [])
-    return {e for e in ids if e and split_entity(e)[0] in kinds}, "kind"
-
-
 def key_of(target: dict[str, Any]) -> tuple[list[list[str]], set[str]]:
     """A golden target's required groups, and every id that is not noise."""
     exp = target.get("expectedEntities") or {}
@@ -181,9 +158,13 @@ def score_attempt(case: dict[str, Any], calls: list[dict[str, Any]],
         tokens |= set(rs.get("docTokens") or [])
         targets, src = agent_targets(call)
         read_from.add(src)
+        # A response that was not recorded (`rankedSummary` null on a call
+        # that succeeded) delivered something unknown, not nothing.
+        unknown = call.get("rankedSummary") is None and not call.get("error")
         for t in targets:
-            got, rule = returned_by(t, call)
-            asked.append({**t, "call": n, "returned": got, "attribution": rule})
+            got, rule = target_hits(t, call)
+            asked.append({**t, "call": n, "returned": {e for e, _ in got},
+                          "attribution": rule, "unmeasured": unknown})
 
     used: set[int] = set()
     rows = []
@@ -211,6 +192,10 @@ def score_attempt(case: dict[str, Any], calls: list[dict[str, Any]],
         own = set().union(*(asked[j]["returned"] for j in cover)) if cover else set()
         rule = sorted({asked[j]["attribution"] for j in cover})
         hit = satisfied(req, own)
+        # Short, and precision, only where every covering response was
+        # recorded. A full recall is still full: more responses only add.
+        recorded = not any(asked[j]["unmeasured"] for j in cover)
+        known = recorded or all(hit)
         anywhere = satisfied(req, pooled, tokens)
         sent_values = " ".join(
             [str(v) for j in cover for v in asked[j].get("example_values") or []]
@@ -235,9 +220,11 @@ def score_attempt(case: dict[str, Any], calls: list[dict[str, Any]],
             "n_required": len(req),
             # Retrieval is scored only where the agent asked. A target nobody
             # searched for is a decomposition miss, not a ranking one.
-            "recall": (sum(hit) / len(req)) if (cover and req) else None,
-            "precision": (len(own & ok) / len(own)) if (cover and req and own)
+            "recall": (sum(hit) / len(req)) if (cover and req and known)
             else None,
+            "precision": (len(own & ok) / len(own))
+            if (cover and req and own and recorded) else None,
+            "unmeasured": bool(cover) and not known,
             "recall_anywhere": (sum(anywhere) / len(req)) if req else None,
             "missing": [" | ".join(grp) for grp, h in zip(req, hit) if not h]
             if cover else [],
@@ -267,6 +254,8 @@ def score_attempt(case: dict[str, Any], calls: list[dict[str, Any]],
                 all_req.append(grp)
         all_ok |= ok
     hit = satisfied(all_req, pooled, tokens)
+    recorded = not any(a["unmeasured"] for a in asked)
+    known = recorded or all(hit)
     passed = None if verdict in UNSCORED else verdict in PASSING
     return {
         "qid": case.get("qid"), "sample": key[1], "phase": key[2],
@@ -280,9 +269,9 @@ def score_attempt(case: dict[str, Any], calls: list[dict[str, Any]],
         "n_agent_targets": len(asked),
         "extras": extras,
         "targets": rows,
-        "recall": (sum(hit) / len(all_req)) if all_req else None,
+        "recall": (sum(hit) / len(all_req)) if (all_req and known) else None,
         "precision": (len(pooled & all_ok) / len(pooled))
-        if (all_req and pooled) else None,
+        if (all_req and pooled and recorded) else None,
         "n_returned": len(pooled),
     }
 
@@ -290,7 +279,8 @@ def score_attempt(case: dict[str, Any], calls: list[dict[str, Any]],
 def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
     mean = lambda xs: (sum(xs) / len(xs)) if xs else None
     targets = [t for r in rows for t in r["targets"]]
-    decided = [r for r in rows if r["verdict"] in ("match", "no_match")]
+    decided = [r for r in rows if r["verdict"] in ("match", "no_match")
+               and counts_toward_score(r.get("gold_status"))]
     full = [r for r in decided if r["n_covered"] == r["n_golden"]]
     part = [r for r in decided if r["n_covered"] < r["n_golden"]]
     return {
@@ -323,8 +313,7 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def score(events: list[dict[str, Any]],
           cases: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    verdicts = {attempt_key(e): e.get("verdict")
-                for e in events if e.get("kind") == "score"}
+    verdicts = {attempt_key(e): e for e in events if e.get("kind") == "score"}
     rows = []
     for e in events:
         if e.get("kind") != "attempt":
@@ -335,7 +324,10 @@ def score(events: list[dict[str, Any]],
         k = attempt_key(e)
         calls = [t for t in events if t.get("kind") == "tool_call"
                  and t.get("tool") == "get_context" and attempt_key(t) == k]
-        rows.append(score_attempt(case, calls, k, verdicts.get(k)))
+        v = verdicts.get(k) or {}
+        row = score_attempt(case, calls, k, v.get("verdict"))
+        row["gold_status"] = v.get("gold_status")
+        rows.append(row)
     rows.sort(key=lambda r: (str(r["qid"]), str(r["sample"])))
     return rows
 

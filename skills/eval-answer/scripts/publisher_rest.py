@@ -290,9 +290,10 @@ def served_package_dir(base: str, environment: str,
     A host commonly serves a copy rather than your working tree, so this is the
     only path whose bytes are the ones answering queries. A published version
     lives one level down, in `<package>/<version>/`, and the version answering
-    a request that names none is `latest`: that directory is the one returned.
-    Without it a versioned package's model was never found, and a run lost its
-    snapshot and its re-execution with nothing said.
+    a request that names none is `latest`: that directory is the one returned,
+    or None when it is not there. Without it a versioned package's model was
+    never found, and a run lost its snapshot and its re-execution with nothing
+    said.
     """
     try:
         for proj in get_json(base, "api/v0/projects"):
@@ -301,9 +302,14 @@ def served_package_dir(base: str, environment: str,
                 if not p.is_dir():
                     return None
                 vid = package_version(base, environment, package).get("id")
-                if vid and (p / vid).is_dir():
-                    return p / vid
-                return p
+                if not vid:
+                    return p
+                # The server's `versionDirName` (semver.ts): a version's
+                # folder is its id with every `+` made `_`. A missing folder
+                # is None, not the package root, whose bytes are not the
+                # version answering queries.
+                v = p / vid.replace("+", "_")
+                return v if v.is_dir() else None
     except (OSError, ValueError):   # unreachable or non-JSON: absence is reported
         return None
     return None

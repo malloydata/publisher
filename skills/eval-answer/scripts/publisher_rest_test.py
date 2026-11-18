@@ -76,6 +76,16 @@ class ServedPackageDirTests(unittest.TestCase):
         self.assertEqual(d, self.root / "p" / "1.0.1")
         self.assertEqual(m, self.root / "p" / "1.0.1" / "m.malloy")
 
+    def test_build_metadata_maps_to_the_server_s_folder_name(self):
+        (self.root / "p" / "1.0.0_b1").mkdir()
+        d, _ = self.resolve("1.0.0+b1")
+        self.assertEqual(d, self.root / "p" / "1.0.0_b1")
+
+    def test_a_version_whose_folder_is_missing_is_none_not_the_root(self):
+        d, m = self.resolve("2.0.0")
+        self.assertIsNone(d)
+        self.assertIsNone(m)
+
     def test_an_unversioned_package_is_its_own_directory(self):
         d, m = self.resolve(None)
         self.assertEqual(d, self.root / "p")

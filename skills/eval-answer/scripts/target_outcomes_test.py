@@ -6,6 +6,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import target_outcomes as to  # noqa: E402
+from score_retrieval import target_hits  # noqa: E402
 
 
 def hit(eid, *matches, relevance=None):
@@ -26,31 +27,31 @@ class Ranked(unittest.TestCase):
     def test_a_target_gets_only_the_hits_that_name_its_text_and_are_of_its_kind(self):
         c = call(hit("measure:o:sales", ("revenue", 0.9)), hit("measure:o:margin", ("margin", 0.9)),
                  hit("dimension:o:revenue_band", ("revenue", 0.8)))
-        got, rule = to.ranked(target("measure", "revenue"), c)
+        got, rule = target_hits(target("measure", "revenue"), c)
         self.assertEqual(([e for e, _ in got], rule), (["measure:o:sales"], "server"))
 
     def test_the_best_first_order_is_the_targets_own_relevance(self):
         c = call(hit("measure:o:a", ("revenue", 0.6)), hit("measure:o:b", ("revenue", 0.94)))
-        self.assertEqual([e for e, _ in to.ranked(target("measure", "revenue"), c)[0]],
+        self.assertEqual([e for e, _ in target_hits(target("measure", "revenue"), c)[0]],
                          ["measure:o:b", "measure:o:a"])
 
     def test_a_value_target_is_answered_by_a_dimension(self):
         c = call(hit("dimension:o:status", ("cancelled", 0.94)))
-        self.assertEqual([e for e, _ in to.ranked(target("dimensional_value", "cancelled"), c)[0]],
-                         ["dimension:o:status"])
+        t = target("dimensional_value", "cancelled", required=["dimension:o:status"])
+        self.assertEqual(to.outcome(1, t, c)["recall"], 1.0)
 
     def test_an_attributed_source_card_belongs_only_to_the_source_target_it_names(self):
         c = call(hit("source:o:o", ("orders", 0.9)), hit("source:c:c", ("customers", 0.9)),
                  hit("measure:o:sales", ("revenue", 0.9)))
-        self.assertEqual([e for e, _ in to.ranked(target("source", "orders"), c)[0]], ["source:o:o"])
+        self.assertEqual([e for e, _ in target_hits(target("source", "orders"), c)[0]], ["source:o:o"])
 
     def test_an_unattributed_card_on_an_attributed_response_goes_to_every_source_target(self):
         c = call(hit("source:o:o"), hit("measure:o:sales", ("revenue", 0.9)))
-        self.assertEqual([e for e, _ in to.ranked(target("source", "orders"), c)[0]], ["source:o:o"])
+        self.assertEqual([e for e, _ in target_hits(target("source", "orders"), c)[0]], ["source:o:o"])
 
     def test_with_no_attribution_a_target_gets_every_entity_of_its_kind(self):
         c = call(hit("measure:o:sales"), hit("measure:o:margin"), hit("dimension:o:state"))
-        got, rule = to.ranked(target("measure", "revenue"), c)
+        got, rule = target_hits(target("measure", "revenue"), c)
         self.assertEqual((len(got), rule), (2, "kind"))
 
 

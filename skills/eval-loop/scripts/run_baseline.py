@@ -65,6 +65,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1766,6 +1767,32 @@ def tag_breakdown(cases: list[dict[str, Any]],
     return {t: (p, d) for t, (p, d) in sorted(out.items())}
 
 
+# Flags whose value run.json records as what the run measured. A `--rebuild`
+# rewrites run.json from its own flags, so a recovery command that leaves one
+# out records the default instead (a `--max-turns 40` arm re-run at 30, doubled
+# to 60, and stamped `maxTurns: 30`), and accept refuses to compare it.
+RERUN_DESTS = ("model", "judge_model", "effort", "max_turns", "timeout",
+               "target", "scope", "environment", "package", "mcp_url",
+               "hosted_mcp_server", "hosted_tools", "target_version",
+               "package_skills", "model_path", "answerer_manifest",
+               "no_answerer_skills", "phase")
+
+
+def rerun_flags(ap: argparse.ArgumentParser, a: argparse.Namespace) -> str:
+    """The `RERUN_DESTS` flags this invocation set away from their default,
+    as command-line text. Read before anything fills a default in."""
+    out: list[str] = []
+    for act in ap._actions:
+        if act.dest not in RERUN_DESTS or not act.option_strings:
+            continue
+        v = getattr(a, act.dest, act.default)
+        if v == act.default:
+            continue
+        flag = act.option_strings[0]
+        out += [flag] if v is True else [flag, shlex.quote(str(v))]
+    return " ".join(out)
+
+
 def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   attempted: int, decided: int, passed: int, near: int,
                   human: int, doubted: list, vetoed: list, alt_path: int,
@@ -1777,6 +1804,7 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   recovered: list[str] | None = None,
                   contamination_reasons: dict[str, int] | None = None,
                   max_turns: int | None = None,
+                  rerun_flags: str = "",
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
                   evidence: dict | None = None,
@@ -1866,7 +1894,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   *([f"                answer them again in place, at double "
                      f"the cap:",
                      f"                  eval.py run --set {set_dir} --label "
-                     f"{out.name} --rebuild --recover"] if not left_out else
+                     f"{out.name} --rebuild --recover"
+                     + (f" {rerun_flags}" if rerun_flags else "")] if not left_out else
                     [f"                each was answered twice; raise --max-turns "
                      f"for the set, or read why the case needs so many"])]
     if contam:
@@ -2515,9 +2544,11 @@ def derive_attempt(events: list[dict[str, Any]], case: dict[str, Any],
                     # back rather than scoring the notice as an empty response.
                     if payload is None:
                         payload = offloaded_json(text)
-                    if payload is None and saved_result(text)[0] is not None:
+                    if c.get("unmeasured") or (
+                            payload is None and saved_result(text)[0] is not None):
                         # Named a file we could not read (a rebuild after the
-                        # CLI's temporary file is gone). Record NO summary
+                        # CLI's temporary file is gone), or a logged call whose
+                        # response no log held. Record NO summary
                         # rather than an empty one: unmeasured is the truth,
                         # and a zero here is a miss the run did not observe.
                         calls.append({**info,
@@ -2741,6 +2772,72 @@ def recover_voided(cases: list[dict[str, Any]], attempts: dict[str, dict[str, An
     if (a.out / "voided").is_dir() and not any((a.out / "voided").iterdir()):
         (a.out / "voided").rmdir()
     return sorted(done)
+
+
+def _answer_of(f: futures.Future, c: dict[str, Any]) -> dict[str, Any]:
+    """One answerer's attempt, or an errored attempt when it raised."""
+    try:
+        return f.result()
+    except futures.CancelledError:
+        raise
+    except Exception as e:
+        return {"qid": c["qid"], "submitted": False, "final_query": None,
+                "answer_text": "", "calls": [], "error": str(e)[:200],
+                "n_get_context": 0, "n_execute": 0, "n_execute_errors": 0,
+                "host_tool_uses": 0, "transcriptPath": None}
+
+
+def answer_all(cases: list[dict[str, Any]], a: argparse.Namespace,
+               art: pathlib.Path) -> tuple[dict[str, dict[str, Any]], bool, str | None]:
+    """Answer every case, `a.parallel` at a time, stopping early on four
+    strikes or the cost cap. Returns the attempts, whether the run aborted, and
+    why."""
+    attempts: dict[str, dict[str, Any]] = {}
+    # Four strikes: four consecutive attempts that errored or found the
+    # server dead abort the run instead of spending the rest of the budget
+    # on attempts nobody will trust. eval-loop mandates this; the harness
+    # had no such check until 2026-09-02.
+    strikes, aborted = 0, False
+    spent, abort_reason = 0.0, None
+    with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
+        fut = {ex.submit(run_answerer, c, a, art): c for c in cases}
+        for i, f in enumerate(futures.as_completed(fut), 1):
+            c = fut[f]
+            try:
+                att = _answer_of(f, c)
+            except futures.CancelledError:
+                continue
+            attempts[c["qid"]] = att
+            dead = att.get("error") == "server_dead" or any(
+                "mcp server" in b or "unreachable" in b for b in att.get("breaches") or [])
+            strikes = strikes + 1 if (att.get("error") or dead) else 0
+            flag = "!" if att.get("error") else ("." if att["submitted"] else "?")
+            print(f"  [{i}/{len(cases)}] {flag} {c['qid']} "
+                  f"({att.get('n_get_context',0)}gc/{att.get('n_execute',0)}eq "
+                  f"{att.get('wall_seconds','?')}s)", flush=True)
+            spent += att.get("cost_usd") or 0
+            if strikes >= 4 and not aborted:
+                aborted, abort_reason = True, "four_strikes"
+                ex.shutdown(wait=False, cancel_futures=True)
+                print("  !! four consecutive failed or dead attempts -- aborting "
+                      "the run; the remaining cases were not attempted",
+                      flush=True)
+                break
+            if over_cost_cap(spent, a.max_cost_usd, i, len(cases)) and not aborted:
+                aborted, abort_reason = True, "max_cost"
+                ex.shutdown(wait=False, cancel_futures=True)
+                print(f"  !! answerers have cost ${spent:.2f}, at or over "
+                      f"--max-cost-usd {a.max_cost_usd:g}, with {len(cases) - i} "
+                      f"case(s) not finished -- aborting the run; no more are "
+                      f"started", flush=True)
+                break
+    # Leaving the `with` waited for the answerers already running when the run
+    # aborted. They finished and were paid for, so they are kept: dropped,
+    # their cost never reached `answererCostUsd`, which a budget reads.
+    for f, c in fut.items():
+        if c["qid"] not in attempts and f.done() and not f.cancelled():
+            attempts[c["qid"]] = _answer_of(f, c)
+    return attempts, aborted, abort_reason
 
 
 def over_cost_cap(spent: float, cap: float | None, done: int, total: int) -> bool:
@@ -3966,6 +4063,7 @@ def main(argv: list[str] | None = None) -> int:
                          "with at most half its cases still voided is then "
                          "recorded, with those cases left out of the score")
     a = ap.parse_args(argv)
+    a.rerun_flags = rerun_flags(ap, a)
     cfg = resolve_config(a)
     imply_flags(a)
     # A slice becomes `--only` here, before anything reads `a.only` (the
@@ -4461,50 +4559,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(cases)} cases, answerer {a.model}, judge {a.judge_model}, "
               f"{a.parallel} at a time")
 
-    attempts: dict[str, dict[str, Any]] = {}
-    # Four strikes: four consecutive attempts that errored or found the
-    # server dead abort the run instead of spending the rest of the budget
-    # on attempts nobody will trust. eval-loop mandates this; the harness
-    # had no such check until 2026-09-02.
-    strikes, aborted = 0, False
-    spent, abort_reason = 0.0, None
-    with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
-        fut = {ex.submit(run_answerer, c, a, art): c for c in cases}
-        for i, f in enumerate(futures.as_completed(fut), 1):
-            c = fut[f]
-            try:
-                att = f.result()
-            except futures.CancelledError:
-                continue
-            except Exception as e:
-                att = {"qid": c["qid"], "submitted": False, "final_query": None,
-                       "answer_text": "", "calls": [], "error": str(e)[:200],
-                       "n_get_context": 0, "n_execute": 0, "n_execute_errors": 0,
-                       "host_tool_uses": 0, "transcriptPath": None}
-            attempts[c["qid"]] = att
-            dead = att.get("error") == "server_dead" or any(
-                "mcp server" in b or "unreachable" in b for b in att.get("breaches") or [])
-            strikes = strikes + 1 if (att.get("error") or dead) else 0
-            flag = "!" if att.get("error") else ("." if att["submitted"] else "?")
-            print(f"  [{i}/{len(cases)}] {flag} {c['qid']} "
-                  f"({att.get('n_get_context',0)}gc/{att.get('n_execute',0)}eq "
-                  f"{att.get('wall_seconds','?')}s)", flush=True)
-            spent += att.get("cost_usd") or 0
-            if strikes >= 4 and not aborted:
-                aborted, abort_reason = True, "four_strikes"
-                ex.shutdown(wait=False, cancel_futures=True)
-                print("  !! four consecutive failed or dead attempts -- aborting "
-                      "the run; the remaining cases were not attempted",
-                      flush=True)
-                break
-            if over_cost_cap(spent, a.max_cost_usd, i, len(cases)) and not aborted:
-                aborted, abort_reason = True, "max_cost"
-                ex.shutdown(wait=False, cancel_futures=True)
-                print(f"  !! answerers have cost ${spent:.2f}, at or over "
-                      f"--max-cost-usd {a.max_cost_usd:g}, with {len(cases) - i} "
-                      f"case(s) not finished -- aborting the run; no more are "
-                      f"started", flush=True)
-                break
+    attempts, aborted, abort_reason = answer_all(cases, a, art)
     if aborted:
         cases = [c for c in cases if c["qid"] in attempts]
 
@@ -4752,7 +4807,7 @@ def main(argv: list[str] | None = None) -> int:
             truncated=truncated, contaminated=contaminated, aborted=aborted,
             left_out=left_out, recovered=recovered_all,
             contamination_reasons=contamination_reasons,
-            max_turns=a.max_turns,
+            max_turns=a.max_turns, rerun_flags=a.rerun_flags,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
             coverage_report=coverage_report, cascade=funnel,
             skill_uses=skill_uses, source=source, queried=queried,

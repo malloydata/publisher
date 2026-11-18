@@ -603,6 +603,10 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
     scope = {k: v for k, v in (("environment", a.environment), ("package", a.package)) if v}
     if a.model_path:
         scope["model_path"] = a.model_path
+    if a.target_version:
+        # A host answers a scope with no version from its default, which would
+        # score that version under this one's name.
+        scope["version"] = a.target_version
     unscoped = [c["qid"] for c in cases if not (c.get("scope") or c.get("scopes") or c.get("scopes") == [])]
     if a.case_scopes and unscoped:
         raise SystemExit(f"--case-scopes: {len(unscoped)} case(s) carry no scope, first {unscoped[0]}.")

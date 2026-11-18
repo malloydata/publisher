@@ -153,6 +153,9 @@ def evidence_for(qid: str, case: dict[str, Any],
     for c in calls:
         if c.get("tool") != "get_context":
             continue
+        # None means the response was never logged: not measured, which is
+        # different from a search that returned nothing.
+        measured = c.get("rankedSummary") is not None
         summary = c.get("rankedSummary") or {}
         asked.append({"targets": c.get("targets"),
                       # Without this a narrow scope is invisible, and a miss it
@@ -161,7 +164,7 @@ def evidence_for(qid: str, case: dict[str, Any],
                       # about a call scoped to one source, and charged the miss
                       # to retrieval on that premise.
                       "scopes": c.get("scopes"),
-                      "returnedInRankOrder": summary.get("entityIds") or [],
+                      "returnedInRankOrder": (summary.get("entityIds") or []) if measured else None,
                       "resultCount": summary.get("resultCount"),
                       "error": c.get("error")})
 
@@ -219,6 +222,8 @@ EVIDENCE FROM THE RUN
 
 In `getContextCalls`, `targets` is what the agent searched for, `scopes` is
 the scope it searched UNDER, and `returnedInRankOrder` is what came back.
+A `returnedInRankOrder` of null means the response was not logged, so what
+came back is unknown: do not read it as a search that returned nothing.
 
 **If `passedInAnotherArm` is present, start there.** Another run of the SAME
 model answered this question correctly. That is a matched pair: same question,

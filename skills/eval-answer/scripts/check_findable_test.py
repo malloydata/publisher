@@ -220,13 +220,18 @@ class Phrase(unittest.TestCase):
 class KindMap(unittest.TestCase):
     def test_it_inverts_the_forward_map_the_server_pins(self):
         # `score_retrieval.KINDS_BY_TARGET` is pinned against the server's own
-        # table. This is its inverse and must not drift from it.
+        # table. A kind can be returned by more than one target type (a
+        # dimension answers `dimension` and `dimensional_value`), so the
+        # inverse must name a target type that returns the kind.
         import score_retrieval
+        kinds_seen = set()
         for target, kinds in score_retrieval.KINDS_BY_TARGET.items():
             for kind in kinds:
-                self.assertEqual(check_findable.TARGET_FOR_KIND.get(kind),
-                                 target,
-                                 f"{kind} should be searched as {target}")
+                kinds_seen.add(kind)
+                inverse = check_findable.TARGET_FOR_KIND.get(kind)
+                self.assertIn(kind, score_retrieval.KINDS_BY_TARGET.get(inverse, set()),
+                              f"{kind} is searched as {inverse}, which never returns it")
+        self.assertIn("dimension", kinds_seen)
 
 
 class CompiledModel(unittest.TestCase):

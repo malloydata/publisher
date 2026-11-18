@@ -969,6 +969,21 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
         self.assertIn("eval.py run --set s --label r --rebuild --recover", body)
         self.assertNotIn("--from", body)
 
+    def test_the_command_carries_the_flags_run_json_records(self):
+        body = self.summary(truncated=["cq-01"], max_turns=40,
+                            rerun_flags="--max-turns 40 --effort high")
+        self.assertIn("--rebuild --recover --max-turns 40 --effort high", body)
+
+    def test_only_settings_moved_off_their_default_are_carried(self):
+        argv = ["--set", "s", "--max-turns", "40", "--model", "opus",
+                "--label", "r", "--parallel", "8", "--no-answerer-skills"]
+        with mock.patch.object(rb, "resolve_config",
+                               side_effect=SystemExit("stop")) as stop:
+            with self.assertRaises(SystemExit):
+                rb.main(argv)
+        a = stop.call_args.args[0]
+        self.assertEqual(a.rerun_flags, "--model opus --no-answerer-skills --max-turns 40")
+
     def test_cases_voided_after_a_second_attempt_are_left_out_and_the_rate_prints(self):
         body = self.summary(truncated=["cq-01"], left_out=True, recovered=["cq-01", "cq-02"])
         self.assertIn("(50%)", body)
@@ -2867,6 +2882,35 @@ class Recovery(unittest.TestCase):
         self.assertFalse(f(4.99, 5.0, 1, 10))
         self.assertTrue(f(5.0, 5.0, 1, 10))
         self.assertFalse(f(9.0, 5.0, 10, 10))       # the last case is in: nothing to stop
+
+    def test_answerers_still_running_when_the_cap_trips_are_kept_and_counted(self):
+        # Two workers. "fast" trips the cap while "slow" runs, and its worker
+        # takes "mid" at once. Both are held until the abort has cancelled
+        # "never", so "never" is the only case not started.
+        import threading
+        tripped = threading.Event()
+        cap = rb.over_cost_cap
+
+        def over(*args):
+            hit = cap(*args)
+            if hit:
+                tripped.set()
+            return hit
+
+        def answer(case, a, art):
+            if case["qid"] in ("slow", "mid"):
+                tripped.wait(5)
+                return {"qid": case["qid"], "submitted": True, "cost_usd": 0.25}
+            return {"qid": case["qid"], "submitted": True, "cost_usd": 1.0}
+        a = argparse.Namespace(parallel=2, max_cost_usd=0.5)
+        cases = [{"qid": q} for q in ("slow", "fast", "mid", "never")]
+        with mock.patch.object(rb, "run_answerer", side_effect=answer), \
+                mock.patch.object(rb, "over_cost_cap", side_effect=over), \
+                contextlib.redirect_stdout(io.StringIO()):
+            attempts, aborted, why = rb.answer_all(cases, a, pathlib.Path("x"))
+        self.assertEqual((sorted(attempts), aborted, why),
+                         (["fast", "mid", "slow"], True, "max_cost"))
+        self.assertEqual(sum(t["cost_usd"] for t in attempts.values()), 1.5)
 
     def test_what_may_be_left_out(self):
         f = rb.may_leave_out

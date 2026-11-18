@@ -109,8 +109,8 @@ def _tool_use(call_id: str, name: str, payload: dict[str, Any]) -> dict[str, Any
         {"type": "tool_use", "id": call_id, "name": name, "input": payload}]}}
 
 
-def _tool_result(call_id: str, body: Any,
-                 error: str | None = None) -> dict[str, Any]:
+def _tool_result(call_id: str, body: Any, error: str | None = None,
+                 unmeasured: bool = False) -> dict[str, Any]:
     """One tool result. `error` marks the call as having FAILED.
 
     Whether a call succeeded is not cosmetic. `pick_final_query` chooses the
@@ -124,6 +124,10 @@ def _tool_result(call_id: str, body: Any,
     So a host that logs an error for a call must pass it here, and one that
     logs nothing at all gets `final_query_source: last` and should read it as
     the warning it already is.
+
+    `unmeasured` marks a call that succeeded but whose response no log holds
+    (`pair_retrieval` found none). `derive_attempt` records it with no
+    `rankedSummary`, so it is never scored as a search that returned nothing.
     """
     # Serialised as the bare JSON body a hosted MCP returns. `resource_json`
     # already accepts that form alongside Publisher's "[Resource from ...]"
@@ -134,6 +138,8 @@ def _tool_result(call_id: str, body: Any,
                              "content": [{"type": "text", "text": text}]}
     if error is not None:
         block["is_error"] = True
+    elif unmeasured:
+        block["unmeasured"] = True
     return {"type": "user", "message": {"content": [block]}}
 
 
@@ -208,8 +214,9 @@ def build_transcript(*, get_context: Iterable[dict[str, Any]] = (),
         call_id = f"{row.get('request_id') or 'req'}-{i}"
         events.append(_tool_use(call_id, row["_tool"],
                                 _as_dict(row.get("request_payload"))))
-        events.append(_tool_result(call_id, row.get("response"),
-                                   row.get("error")))
+        events.append(_tool_result(
+            call_id, row.get("response"), row.get("error"),
+            unmeasured=row["_tool"] == GET_CONTEXT and row.get("response") is None))
 
     if text:
         events.append({"type": "assistant", "message": {

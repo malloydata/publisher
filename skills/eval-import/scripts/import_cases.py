@@ -194,10 +194,8 @@ def search_target_findings(case: dict[str, Any], where: str,
                 out.append(f"{at}: {eid!r} is not a kind:source:name id. Fix: "
                            f'"measure:order_items:total_sales"')
         kinds = KINDS_BY_TARGET.get(t.get("target_type"))
-        # An empty set is a target type Publisher answers with nothing
-        # (`dimensional_value`: it indexes no values). A host that does index
-        # them returns the dimension holding the value, so a key there is not
-        # a mistake and is left to `check_findable.py`.
+        # An empty set is a target type Publisher answers with nothing, so
+        # there is no kind to check a key against.
         if bad or not kinds:
             continue
         for g in req:

@@ -205,6 +205,31 @@ class Retrieval(unittest.TestCase):
         self.assertEqual(r["targets"][0]["recall"], 1.0)
         self.assertEqual(r["targets"][0]["precision"], 1.0)
 
+    def test_an_attributed_source_card_goes_only_to_the_target_it_names(self):
+        g = case(target("source", "order items", [SRC]))
+        r = score_attempt(g, [call([("source", "order items"),
+                                    ("source", "users")],
+                                   [hit(SRC, "order items"),
+                                    hit("source:users:users", "users")])],
+                          KEY, "match")
+        self.assertEqual(r["targets"][0]["precision"], 1.0)
+
+    def test_a_value_target_is_answered_by_a_dimension(self):
+        g = case(target("dimensional_value", "Jeans", [CATEGORY]))
+        r = score_attempt(g, [call([("dimensional_value", "Jeans")],
+                                   [hit(CATEGORY, "Jeans")])], KEY, "match")
+        self.assertEqual(r["targets"][0]["recall"], 1.0)
+
+
+class Unrecorded(unittest.TestCase):
+    def test_a_response_not_recorded_leaves_recall_unmeasured_not_zero(self):
+        c = call([("measure", "revenue")], [])
+        c["rankedSummary"] = None
+        r = score_attempt(case(target("measure", "revenue", [SALES])), [c],
+                          KEY, "no_match")
+        self.assertEqual((r["targets"][0]["recall"], r["targets"][0]["unmeasured"],
+                          r["recall"]), (None, True, None))
+
 
 class OlderRuns(unittest.TestCase):
     def test_a_run_without_search_targets_is_read_from_targets(self):
@@ -242,6 +267,15 @@ class TheAnswer(unittest.TestCase):
                          (1, 1))
         self.assertEqual((s["passed_part_cover"], s["decided_part_cover"]),
                          (0, 1))
+
+    def test_a_verified_wrong_golden_is_not_decided(self):
+        g = case(target("measure", "revenue", [SALES]))
+        events = [{"kind": "attempt", "qid": "q", "sample": None,
+                   "phase": "baseline"},
+                  {"kind": "score", "qid": "q", "sample": None,
+                   "phase": "baseline", "verdict": "match",
+                   "gold_status": "verified_wrong"}]
+        self.assertEqual(summarise(score(events, {"q": g}))["decided"], 0)
 
     def test_near_match_is_not_decided(self):
         r = score_attempt(case(target("measure", "revenue", [SALES])), [],

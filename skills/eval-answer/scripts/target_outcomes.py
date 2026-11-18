@@ -36,7 +36,7 @@ WHAT A TARGET'S LABEL CARRIES (`expectedEntities` on the search target)
 
 WHICH ENTITIES A TARGET RETURNED
 
-From the server's attribution, as `score_targets.returned_by` reads it: a hit
+`score_retrieval.target_hits`, the rule `score_targets.py` reads too: a hit
 belongs to a target when the hit is of a kind the target type can return and
 its `matched_targets` names the target's search text. A source card is read
 the same way when the host attributes cards, and belongs to every `source`
@@ -53,48 +53,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from score_retrieval import KINDS_BY_TARGET, groups, split_entity
-
-# Publisher indexes no dimensional values, so its `dimensional_value` target
-# selects nothing (`KINDS_BY_TARGET`). A host that does index them answers a
-# value target with the dimension that holds the value, so that is the kind a
-# value target's label names.
-KINDS = {**KINDS_BY_TARGET, "dimensional_value": {"dimension"}}
-
-
-def ranked(target: dict[str, Any], call: dict[str, Any]) -> tuple[list[tuple[str, float | None]], str]:
-    """This target's returned entities, best first, and the attribution rule.
-
-    Relevance is the server's score for THIS target when the hit names it in
-    `matched_targets`, else the hit's own. An entity with no score sorts last.
-    The sort is stable, so equal scores keep the response's order.
-    """
-    rs = call.get("rankedSummary") or {}
-    hits = [h for h in rs.get("hits") or [] if isinstance(h, dict) and h.get("entity_id")]
-    kinds = KINDS.get(str(target.get("target_type") or "").lower(), set())
-    text = target.get("search_text")
-    of_kind = [h for h in hits if split_entity(h["entity_id"])[0] in kinds]
-    attributed = any(isinstance(h.get("matched_targets"), list) for h in hits)
-    out: list[tuple[str, float | None]] = []
-    if attributed and text:
-        for h in of_kind:
-            mt = h.get("matched_targets")
-            if mt is None:
-                # A hit that carries no attribution on an attributed response:
-                # a source card on a host that does not attribute cards.
-                out.append((h["entity_id"], h.get("relevance")))
-                continue
-            scores = [m.get("relevance") for m in mt
-                      if isinstance(m, dict) and m.get("search_text") == text]
-            if scores:
-                known = [s for s in scores if isinstance(s, (int, float))]
-                out.append((h["entity_id"], max(known) if known else h.get("relevance")))
-        rule = "server"
-    else:
-        out = [(h["entity_id"], h.get("relevance")) for h in of_kind]
-        rule = "kind"
-    out.sort(key=lambda p: -p[1] if isinstance(p[1], (int, float)) else float("inf"))
-    return out, rule
+from score_retrieval import groups, target_hits
 
 
 def outcome(index: int, target: dict[str, Any], call: dict[str, Any]) -> dict[str, Any]:
@@ -105,7 +64,7 @@ def outcome(index: int, target: dict[str, Any], call: dict[str, Any]) -> dict[st
     absent = bool(exp.get("absent"))
     closest = set(exp.get("closest") or [])
     ok = {e for g in req for e in g} | set(exp.get("acceptable") or []) | closest
-    got, rule = ranked(target, call)
+    got, rule = target_hits(target, call)
     own = [e for e, _ in got]
     own_set = set(own)
     everything = set((call.get("rankedSummary") or {}).get("entityIds") or [])
