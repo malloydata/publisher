@@ -316,3 +316,73 @@ describe("gateReads: compares no string", () => {
       expect(reads.entryPathsComplete).toBe(false);
    });
 });
+
+describe("gateReads: a stage output of a stored source is a stored column", () => {
+   const field = (path: string[]) => ({ node: "field", path });
+   const RAW = {
+      type: "table",
+      sourceID: "raw@m",
+      fields: [{ name: "category", type: "string" }],
+   };
+   // `source: gated is raw -> { group_by: category, tenant is concat(category, '-x') }`
+   const GATED = {
+      type: "query_result",
+      sourceID: "gated@m",
+      query: {
+         structRef: RAW,
+         pipeline: [
+            {
+               type: "reduce",
+               queryFields: [
+                  { type: "fieldref", path: ["category"] },
+                  {
+                     name: "tenant",
+                     type: "string",
+                     e: {
+                        node: "function_call",
+                        name: "concat",
+                        kids: {
+                           args: [
+                              field(["category"]),
+                              { node: "stringLiteral", literal: "-x" },
+                           ],
+                        },
+                     },
+                  },
+               ],
+            },
+         ],
+      },
+      fields: [
+         { name: "category", type: "string" },
+         { name: "tenant", type: "string" },
+      ],
+   };
+   const MODEL = {
+      givens: { "groups@m": { name: "GROUPS", type: { type: "string" } } },
+   };
+
+   it("compares only the stored column when the source's own table is read", () => {
+      const reads = gateReads(
+         GATED,
+         ["tenant in $GROUPS"],
+         MODEL,
+         new Set(["gated@m"]),
+      );
+      // The read compares `tenant IN (...)`: equality, over a string.
+      expect(reads.equalityOnly).toBe(true);
+      expect(reads.comparesNoString).toBe(false);
+      expect(reads.unresolved).toBe(false);
+      expect(reads.entryPaths).toEqual([["tenant"]]);
+      expect(reads.entryPathsComplete).toBe(true);
+      expect(reads.columns).toEqual([["tenant"]]);
+   });
+
+   it("follows the stage back, failing closed, when the stage is computed at read", () => {
+      // Read through another table (or none): the stage runs when read.
+      const reads = gateReads(GATED, ["tenant in $GROUPS"], MODEL, new Set());
+      expect(reads.equalityOnly).toBe(false);
+      expect(reads.entryPathsComplete).toBe(false);
+      expect(reads.columns).toEqual([["tenant", "category"]]);
+   });
+});
