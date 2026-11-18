@@ -34,7 +34,12 @@ import { installSettings } from "../../test_helpers/settings_env";
 import { routeQuery } from "../query_router";
 import { variantsOf } from "../query_serving";
 import { type Binding, EMPTY_SNAPSHOT, pin } from "./domain/binding";
-import { answerKeepsGates, SERVING_GATE_CONTEXT } from "./domain/gate_policy";
+import { admitRead, type ReadFacts } from "./domain/admission";
+import {
+   answerKeepsGates,
+   SERVING_GATE_CONTEXT,
+   type TableRead,
+} from "./domain/gate_policy";
 import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
 import { type LegContext, makeLegs } from "./serve/leg";
 
@@ -970,4 +975,143 @@ describe("the serve verdict's narrower question, for the same tables", () => {
          }
       });
    }
+});
+
+// ---------------------------------------------------------------------------
+// The pure core: admitRead reproduces both tables above from the facts.
+// ---------------------------------------------------------------------------
+
+/**
+ * What the router gathers for each gate shape, the probes' answers aside:
+ * whether the entry point is gated, a composite row filter, a row scope,
+ * the stored types of the columns its gates and scope read (from SCHEMA),
+ * whether they read no column at all (a lock), and whether they compare a
+ * string (which a collation that is not binary refuses).
+ */
+const SHAPE_FACTS: Record<
+   Shape,
+   {
+      composite?: true;
+      scoped?: true;
+      types: string[];
+      readsNoColumn?: true;
+      comparesString?: true;
+   }
+> = {
+   "no gate": { types: [], readsNoColumn: true },
+   "no gate, a where: on a float column": { scoped: true, types: ["DOUBLE"] },
+   "no gate, a where: ordering a string": {
+      scoped: true,
+      types: ["VARCHAR"],
+      comparesString: true,
+   },
+   "row filter, number": { types: ["BIGINT"] },
+   "row filter, string equality": { types: ["VARCHAR"], comparesString: true },
+   "row filter, string ordering": { types: ["VARCHAR"], comparesString: true },
+   "row filter, boolean over a string": {
+      types: ["VARCHAR"],
+      comparesString: true,
+   },
+   "lock only": { types: [], readsNoColumn: true },
+   "row filter, float column": { types: ["DOUBLE"] },
+   "row filter, zoned timestamp column": {
+      types: ["TIMESTAMP WITH TIME ZONE"],
+   },
+   "row filter on a composite": { composite: true, types: ["BIGINT"] },
+};
+
+/** admitRead's verdict for one row, written as the router's outcome reads. */
+function admitted(args: {
+   leg: Leg;
+   shape: Shape;
+   tables: Binding[];
+   gatedSources: boolean;
+   authorCollation?: "binary" | "nocase";
+   storedCollation?: "binary" | "nocase";
+}): string {
+   const f = SHAPE_FACTS[args.shape];
+   const gated = GATED(args.shape);
+   const tables: TableRead[] = args.tables.map((t) => ({
+      tier: t.tier,
+      ...(t.ownGateKept ? { ownGateKept: true } : {}),
+      ...(t.holdsOnlyUngatedRows ? { holdsOnlyUngatedRows: true } : {}),
+      ...(t.tier === "storage"
+         ? {
+              gateColumnTypes: f.types,
+              ...(f.readsNoColumn ? { gatesReadNoColumn: true } : {}),
+           }
+         : {}),
+   }));
+   const refusal = (collation: "binary" | "nocase" | undefined) =>
+      collation === "nocase" && f.comparesString
+         ? "compares under a collation that is not binary"
+         : undefined;
+   const facts: ReadFacts = {
+      pastEntryPointGate: gated,
+      compositeRowFilter: f.composite === true,
+      reads: { scoped: f.scoped === true, gated },
+      columnsListed: tables.some((t) => t.tier === "storage"),
+      sourceCollationRefusal: refusal(args.authorCollation),
+      storedCollationRefusal: refusal(args.storedCollation),
+   };
+   const verdict = admitRead(args.leg, tables, facts, {
+      materialize: true,
+      gatedSources: args.gatedSources,
+   });
+   if (verdict.admit) {
+      return verdict.pastEntryPointGate ? "used, past the gate" : "used";
+   }
+   if (verdict.reason === "row_level_gate") return "skipped row_level_gate";
+   return args.leg === "served"
+      ? "skipped does_not_answer (served_copy_not_served)"
+      : "skipped does_not_answer (rollup_row_level_gate)";
+}
+
+describe("admitRead reproduces the router's admission", () => {
+   it("for every leg, table read, gate shape and switch", () => {
+      for (const shape of Object.keys(SHAPES) as Shape[]) {
+         for (const [switchLabel, gatedSources] of SWITCHES) {
+            const rows: Record<string, string> = {};
+            for (const leg of LEGS) {
+               for (const [read, tables] of Object.entries(READS)) {
+                  rows[`${leg}, ${read}`] = admitted({
+                     leg,
+                     shape,
+                     tables,
+                     gatedSources,
+                  });
+               }
+            }
+            expect({ shape, switchLabel, rows }).toEqual({
+               shape,
+               switchLabel,
+               rows: ADMISSION[shape][switchLabel],
+            });
+         }
+      }
+   });
+
+   it("under a collation that is not binary", () => {
+      for (const [shape, expected] of Object.entries(COLLATION)) {
+         const rows: Record<string, string> = {};
+         for (const [where, collations] of [
+            ["author instance nocase", { authorCollation: "nocase" }],
+            ["stored table nocase", { storedCollation: "nocase" }],
+         ] as const) {
+            for (const read of [
+               "database",
+               "storage, kept past its own gate",
+            ]) {
+               rows[`${where}, ${read}`] = admitted({
+                  leg: "served",
+                  shape: shape as Shape,
+                  tables: READS[read],
+                  gatedSources: false,
+                  ...collations,
+               });
+            }
+         }
+         expect({ shape, rows }).toEqual({ shape, rows: expected });
+      }
+   });
 });
