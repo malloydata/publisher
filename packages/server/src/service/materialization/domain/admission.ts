@@ -7,8 +7,8 @@
  * tables the answer read and the facts gathered about the query, unifying
  * the rules a stored read is held to:
  *
- * - the gate policy ({@link legMayPassGate}, {@link answerKeepsGates}): a
- *   leg past an entry-point gate, and the tables it may read there;
+ * - the gate policy ({@link answerKeepsGates}, which asks `legMayPassGate`
+ *   first): a leg past an entry-point gate, and the tables it may read there;
  * - exactness: a column the gates or a row scope read, stored inexactly
  *   ({@link gateColumnsExact});
  * - zone: a gate column stored with a zone, compared in the destination
@@ -29,7 +29,6 @@ import {
    GATE_LEGS,
    gateColumnsExact,
    type GateSwitches,
-   legMayPassGate,
    SERVING_GATE_CONTEXT,
    type TableRead,
 } from "./gate_policy";
@@ -88,22 +87,6 @@ function gateLegOf(leg: Leg): GateLeg | undefined {
 }
 
 /**
- * Whether `leg` may be attempted at all for the query: past an entry-point
- * gate, only a leg the gate policy lets past it.
- */
-function mayAttempt(
-   leg: Leg,
-   pastEntryPointGate: boolean,
-   s: GateSwitches,
-): boolean {
-   if (!pastEntryPointGate) return true;
-   const gateLeg = gateLegOf(leg);
-   return (
-      gateLeg !== undefined && legMayPassGate(gateLeg, s, SERVING_GATE_CONTEXT)
-   );
-}
-
-/**
  * Why the stored tables do not compare what the gates and scopes read as
  * the source does, or undefined: a column stored with a zone, then the
  * source side (when a `storage=` table is read), then the stored side.
@@ -153,7 +136,8 @@ function rowScopeDecline(
 /**
  * Whether the answer `leg` produced, reading `tables`, is used: the row
  * scope first (judged as the leg answers), then, past an entry-point gate,
- * the gate policy with the composite, zone and collation rules.
+ * the gate policy with the composite, zone and collation rules. A leg the
+ * gate policy has no row for (the query leg) is never used past a gate.
  */
 export function admitRead(
    leg: Leg,
@@ -161,16 +145,14 @@ export function admitRead(
    facts: ReadFacts,
    s: GateSwitches,
 ): AdmissionVerdict {
-   if (!mayAttempt(leg, facts.pastEntryPointGate, s)) {
-      return { admit: false, reason: "row_level_gate" };
-   }
    const scope = rowScopeDecline(leg, tables, facts);
    if (scope !== undefined) return { admit: false, reason: scope };
    if (!facts.pastEntryPointGate) {
       return { admit: true, pastEntryPointGate: false };
    }
-   const gateLeg = gateLegOf(leg)!;
+   const gateLeg = gateLegOf(leg);
    if (
+      gateLeg === undefined ||
       facts.compositeRowFilter ||
       comparisonRefusal(tables, facts) !== undefined ||
       !answerKeepsGates(gateLeg, tables, s, SERVING_GATE_CONTEXT)
