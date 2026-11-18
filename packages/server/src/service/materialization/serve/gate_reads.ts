@@ -30,6 +30,7 @@ import {
 import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import { malloyIdentifiers } from "../../query_text";
 
+import { fieldPathsIn } from "./gate_paths";
 import type { GateReads } from "./gate_reads_types";
 
 // The comparison rule beside the column rules, read by the router through
@@ -39,29 +40,6 @@ export {
    storedTypeIsString,
    stringGateCollationRefusal,
 } from "./gate_collation";
-
-/** Every field path an expression reads (`node: "field"`), at any depth. */
-export function fieldPathsIn(
-   e: unknown,
-   out: string[][] = [],
-   depth = 0,
-): string[][] {
-   if (depth > 64 || e === null || typeof e !== "object") return out;
-   if (Array.isArray(e)) {
-      for (const x of e) fieldPathsIn(x, out, depth + 1);
-      return out;
-   }
-   const n = e as { node?: unknown; path?: unknown };
-   if (
-      n.node === "field" &&
-      Array.isArray(n.path) &&
-      n.path.every((p) => typeof p === "string")
-   ) {
-      out.push(n.path as string[]);
-   }
-   for (const v of Object.values(e)) fieldPathsIn(v, out, depth + 1);
-   return out;
-}
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
 export function gateIdentifiers(exprs: readonly string[]): string[] {

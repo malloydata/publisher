@@ -146,7 +146,8 @@ import {
    type QueryLevelFacts,
 } from "../../governance/ir/prepared_query";
 import { packageFiles } from "../text/package_files";
-import { fieldPathsIn, gateIdentifiers } from "./gate_reads";
+import { fieldPathsIn } from "./gate_paths";
+import { gateIdentifiers } from "./gate_reads";
 import {
    emitMeasureExpr,
    generateRollupBuildFile,

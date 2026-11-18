@@ -49,7 +49,7 @@ import { identifier } from "../../malloy_text";
 import { capabilitiesOf } from "../domain/dialect";
 
 import type { GateReads } from "./gate_reads_types";
-import { fieldPathsIn } from "./gate_reads";
+import { fieldPathsIn } from "./gate_paths";
 
 type Collation = "binary" | "deterministic" | "unknown";
 
