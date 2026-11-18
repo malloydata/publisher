@@ -46,7 +46,7 @@ export const SCRATCH_PREFIX = "pub_whc_";
 export const SWEEP_AFTER_HOURS = 24;
 
 /**
- * BigQuery's cap on every job the native driver runs (live queries, colocated
+ * BigQuery's cap on every job the native driver runs (live queries, database
  * builds, the fixture's DDL): 1 GiB. The fixture is a few kilobytes, so a job
  * that would bill more is a bug, and BigQuery refuses it rather than bill it.
  */

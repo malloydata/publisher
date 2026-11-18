@@ -11,7 +11,7 @@
  * {@link WAREHOUSE_SHAPES}, over tables of the types only a warehouse has.
  *
  * Rendering differs from the DuckDB fixture's in one way: a table built in
- * the warehouse (the `colocated` and `materialize_colocated` variants) is
+ * the warehouse (the `database` and `materialize_database` variants) is
  * named into the run's scratch schema or dataset, since BigQuery refuses a
  * table outside a dataset and the connection's default schema is shared. A
  * `@PERSIST()` with no name gets one too (`<case>_p<n>`), so these variants
@@ -29,6 +29,7 @@ import {
    type Expect,
    type Gap,
    type GapMap,
+   isDatabase,
    MATERIALIZE_VARIANTS,
    type Shape,
    SHAPES,
@@ -52,17 +53,17 @@ const POSTGRES_BIGINT: Gap = {
 };
 
 /** Postgres stores the query-shaped source's sums in types the model does not declare. */
-const POSTGRES_COLOCATED: Gap = {
+const POSTGRES_DATABASE: Gap = {
    kind: "live",
    reason:
-      "on Postgres the colocated table's stored column types differ from the model's (served-copy-not-served), so it answers live",
+      "on Postgres the database table's stored column types differ from the model's (served-copy-not-served), so it answers live",
 };
 
 export const WAREHOUSE_SHAPES: Shape[] = [
    {
       name: "warehouse types: big integers, NUMERIC, zoned timestamps, a mixed-case name",
       about: "A #(materialize) source over a warehouse table carrying INT64/NUMBER(38,0) past 2^53 and negative, a NUMERIC with nine decimal places, a zoned timestamp (BigQuery TIMESTAMP, Snowflake TIMESTAMP_TZ) across offsets, a quoted mixed-case column, and NULLs in each. v2 only: v1 #@ persist refuses a table extension (persist-not-materializable); the next shape is its query-shaped counterpart",
-      variants: ["materialize", "materialize_colocated"],
+      variants: ["materialize", "materialize_database"],
       gaps: {
          "postgres:materialize": POSTGRES_BIGINT,
       },
@@ -169,8 +170,8 @@ source: typed_q is typed_raw -> {
       gaps: {
          "postgres:storage": POSTGRES_BIGINT,
          "postgres:materialize": POSTGRES_BIGINT,
-         "postgres:colocated": POSTGRES_COLOCATED,
-         "postgres:materialize_colocated": POSTGRES_COLOCATED,
+         "postgres:database": POSTGRES_DATABASE,
+         "postgres:materialize_database": POSTGRES_DATABASE,
       },
    },
    {
@@ -239,7 +240,7 @@ source: typed_r is typed_raw extend {
    {
       name: "warehouse nested columns: an array and a struct",
       about: "A #(materialize) source over a table with an ARRAY<STRING> and a STRUCT (Snowflake ARRAY and OBJECT), empty and NULL among them. A struct column sends a #(materialize) source live as a whole (docs/materialization.md, 'A column the served copy cannot carry'), so every answer is live's, from live. v2 only: v1 #@ persist refuses a table extension",
-      variants: ["materialize", "materialize_colocated"],
+      variants: ["materialize", "materialize_database"],
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -317,9 +318,7 @@ export function warehouseVariants(shape: Shape): Variant[] {
 
 /** The tier a variant builds in. */
 export function tierOf(variant: Variant): "database" | "storage" {
-   return variant === "colocated" || variant === "materialize_colocated"
-      ? "database"
-      : "storage";
+   return isDatabase(variant) ? "database" : "storage";
 }
 
 /** A grain or name as a table-name leaf: letters, digits, single underscores. */
@@ -361,12 +360,12 @@ export function renderWarehouseFiles(
             switch (variant) {
                case "storage":
                   return `#@ preaggregate grain="${grain}" storage="lake"`;
-               case "colocated":
+               case "database":
                   return `#@ preaggregate grain="${grain}" ${name}`;
-               case "materialize_colocated":
-                  return `#(preaggregate) grain=["${grain}"] ${name}`;
+               case "materialize_database":
+                  return `#(rollup) grain=["${grain}"] ${name}`;
                case "materialize":
-                  return `#(preaggregate) grain=["${grain}"] storage="lake"`;
+                  return `#(rollup) grain=["${grain}"] storage="lake"`;
             }
          })
          .replace(/@PVIEW\(([^)]*)\)/g, (_m, name: string) =>
@@ -384,11 +383,11 @@ export function renderWarehouseFiles(
             switch (variant) {
                case "storage":
                   return `#@ persist${name ? ` name="${name}"` : ""} storage="lake"`;
-               case "colocated":
+               case "database":
                   return `#@ persist name="${qualified}"`;
                case "materialize":
                   return `#(materialize) storage="lake"`;
-               case "materialize_colocated":
+               case "materialize_database":
                   return `#(materialize) name="${qualified}"`;
             }
          });
@@ -396,14 +395,108 @@ export function renderWarehouseFiles(
    return out;
 }
 
-/** The tier a served query must report, as the DuckDB fixture expects it. */
+/**
+ * A case a warehouse answers at another tier than the DuckDB fixture does,
+ * by design: `expect` replaces the shared shape's for the dialects and
+ * variants in `on`. Not a gap: the answer is still compared with live, and
+ * a case that starts to be served fails until this is updated.
+ */
+interface WarehouseExpect {
+   shape: string;
+   /** The queries it applies to; every query of the shape when absent. */
+   queries?: string[];
+   on: `${Dialect}:${Variant}`[];
+   expect: Expect;
+   because: string;
+}
+
+/**
+ * The stored-comparison rules (#1880, #1884): a `storage=` copy compares
+ * strings byte-exact, so a gate or a `where:` scope over a string column is
+ * kept only where the source's collation is read as binary. Snowflake's is
+ * not read (a column can carry its own COLLATE), so it fails closed.
+ */
+const SNOWFLAKE_STRING_SCOPE =
+   "#1880/#1884: Snowflake's collation is not read, so a storage= copy past a gate or where: scope over a string column fails closed and answers live";
+
+const WAREHOUSE_EXPECT: WarehouseExpect[] = [
+   {
+      shape: "givens and access filters",
+      on: ["snowflake:storage", "snowflake:materialize"],
+      expect: "live",
+      because: SNOWFLAKE_STRING_SCOPE,
+   },
+   {
+      shape: "extensions of persisted sources",
+      queries: [
+         "an extension with a where:",
+         "an extension of an extension",
+         "a query-shaped source over an extension",
+         "an extension in another file",
+      ],
+      on: ["snowflake:storage", "snowflake:materialize"],
+      expect: "live",
+      because: SNOWFLAKE_STRING_SCOPE,
+   },
+   {
+      shape: "materialize: a refined source",
+      on: ["snowflake:materialize"],
+      expect: "live",
+      because: SNOWFLAKE_STRING_SCOPE,
+   },
+   {
+      shape: "extensions of persisted sources",
+      queries: ["a query-shaped source over an extension"],
+      on: ["postgres:storage", "postgres:materialize"],
+      expect: "live",
+      because:
+         "#1880/#1884: the Postgres collation probe does not reach a where: read through a query stage's base, so the storage= copy fails closed and answers live",
+   },
+   {
+      shape: "persist with a rolling window",
+      queries: ["a window in the extend block"],
+      on: ["snowflake:storage", "postgres:storage"],
+      expect: "live",
+      because:
+         "#1880/#1884: the scope's `now - 3650 days` term is not one the rules read as comparing no string, so off a binary-collation warehouse the storage= copy fails closed and answers live",
+   },
+];
+
+/**
+ * The tier a served query must report: as the DuckDB fixture expects it,
+ * unless {@link WAREHOUSE_EXPECT} names another for this warehouse, and why.
+ */
 export function expectedTier(
+   shape: Shape,
    query: ConformanceQuery,
    variant: Variant,
-): Expect {
-   return typeof query.expect === "string"
-      ? query.expect
-      : (query.expect?.[variant] ?? "served");
+   dialect: Dialect,
+): { want: Expect; because?: string } {
+   const own = WAREHOUSE_EXPECT.find(
+      (e) =>
+         e.shape === shape.name &&
+         (!e.queries || e.queries.includes(query.name)) &&
+         e.on.includes(`${dialect}:${variant}`),
+   );
+   if (own) return { want: own.expect, because: own.because };
+   return {
+      want:
+         typeof query.expect === "string"
+            ? query.expect
+            : (query.expect?.[variant] ?? "served"),
+   };
+}
+
+/** Each {@link WAREHOUSE_EXPECT} entry whose shape or query does not exist. */
+export function staleWarehouseExpects(): string[] {
+   const all = [...SHAPES, ...WAREHOUSE_SHAPES];
+   return WAREHOUSE_EXPECT.flatMap((e) => {
+      const shape = all.find((s) => s.name === e.shape);
+      if (!shape) return [`no shape "${e.shape}"`];
+      return (e.queries ?? [])
+         .filter((q) => !shape.queries.some((sq) => sq.name === q))
+         .map((q) => `no query "${q}" in "${e.shape}"`);
+   });
 }
 
 /**

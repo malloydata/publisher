@@ -19,7 +19,7 @@ import type {
    WireField,
 } from "../../../../../src/test_helpers/conformance/package_runner";
 import { withoutDrillExpression } from "../drill_expression";
-import { type Expect, isColocated, type Variant } from "../shapes";
+import { type Expect, isDatabase, type Variant } from "../shapes";
 
 export const TOLERANCES = ["number-subtype", "drill-metadata"] as const;
 export type Tolerance = (typeof TOLERANCES)[number];
@@ -178,7 +178,7 @@ export function judge(
       );
    }
    const from =
-      isColocated(variant) || want === "colocated" ? "database" : "storage";
+      isDatabase(variant) || want === "database" ? "database" : "storage";
    if (s.servedFrom !== from || s.via !== "served_copy") {
       return fail(
          `expected the served copy from ${from}, answered by ${answeredBy}`,

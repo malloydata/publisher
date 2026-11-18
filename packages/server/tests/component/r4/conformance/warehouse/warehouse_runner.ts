@@ -6,7 +6,7 @@
  * end: a real Environment whose `wh` connection is the warehouse and whose
  * `lake` destination is a DuckLake on a Postgres catalog, the package loaded
  * by the load pool, every query answered live, a real MaterializationService
- * run (colocated tables built in the warehouse with the native driver,
+ * run (database tables built in the warehouse with the native driver,
  * `storage=` tables read through DuckDB's warehouse passthrough into the
  * lake), the run's own bind, and every query answered again.
  *

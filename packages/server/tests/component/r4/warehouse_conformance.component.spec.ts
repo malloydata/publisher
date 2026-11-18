@@ -5,7 +5,7 @@
  * The conformance fixture against real warehouses: every shape of
  * conformance.component.spec.ts that is plain Malloy, plus warehouse-typed
  * shapes of its own, built and served on BigQuery and Snowflake, each in the
- * warehouse (`colocated`, `materialize_colocated`: the database tier) and in
+ * warehouse (`database`, `materialize_database`: the database tier) and in
  * a DuckLake destination that reads from the warehouse (`storage`,
  * `materialize`: the `storage=` tier). Every served answer must equal live,
  * rows and result metadata, at the tier the shape names, as on DuckDB.
@@ -59,6 +59,7 @@ import {
 import {
    expectedTier,
    renderWarehouseFiles,
+   staleWarehouseExpects,
    tierOf,
    warehouseGapFor,
    warehouseShapes,
@@ -82,9 +83,9 @@ const CASE_MS = 20 * 60_000;
 
 const VARIANT_CODE: Record<Variant, string> = {
    storage: "s",
-   colocated: "v",
+   database: "v",
    materialize: "m",
-   materialize_colocated: "mc",
+   materialize_database: "mc",
 };
 
 /** One query's outcome on one warehouse, as the artifact records it. */
@@ -95,6 +96,8 @@ interface ResultRow {
    tier: "database" | "storage";
    query: string;
    expect: string;
+   /** Why this warehouse expects another tier than the DuckDB fixture does. */
+   expectBecause?: string;
    /** `pass`, `fail`, `gap` (declared, still failing), `gap-closed` (declared, now passing), `skipped`. */
    status: "pass" | "fail" | "gap" | "gap-closed" | "skipped";
    answeredBy?: string;
@@ -105,6 +108,14 @@ interface ResultRow {
 }
 
 const { targets, skipped } = discoverTargets();
+
+// Runs with no credentials too: a warehouse's own expectation that names a
+// shape or query no longer there would otherwise surface only on the nightly.
+describe("warehouse conformance: its own expectations", () => {
+   it("name shapes and queries that exist", () => {
+      expect(staleWarehouseExpects()).toEqual([]);
+   });
+});
 
 for (const s of skipped) {
    console.log(`warehouse conformance: ${s.dialect} skipped, ${s.reason}`);
@@ -221,7 +232,12 @@ for (const target of targets) {
                   });
                   cases.push({ shape: shape.name, variant, tag, run });
                   shape.queries.forEach((q, i) => {
-                     const want = expectedTier(q, variant);
+                     const { want, because } = expectedTier(
+                        shape,
+                        q,
+                        variant,
+                        dialect,
+                     );
                      const verdict = run!.loadError
                         ? {
                              failure: `load: ${run!.loadError}`,
@@ -238,6 +254,7 @@ for (const target of targets) {
                         tier,
                         query: q.name,
                         expect: want,
+                        ...(because ? { expectBecause: because } : {}),
                         status: gap
                            ? verdict.failure
                               ? "gap"
@@ -256,7 +273,7 @@ for (const target of targets) {
                }, CASE_MS);
 
                shape.queries.forEach((q, i) => {
-                  const want = expectedTier(q, variant);
+                  const { want } = expectedTier(shape, q, variant, dialect);
                   const title = `${q.name}: ${want}, equal to live`;
                   if (noLake) {
                      results.push({
