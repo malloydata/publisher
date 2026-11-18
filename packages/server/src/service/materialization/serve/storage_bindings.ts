@@ -176,6 +176,8 @@ export interface DatabaseDriftFinding {
       storedType?: string;
       /** The table no longer has the column. */
       gone?: true;
+      /** The table is as built; its source's declared type moved. */
+      declaredMoved?: true;
       handling: MismatchHandling;
    })[];
 }
@@ -210,6 +212,8 @@ export function databaseDriftFindings(
       const queryTimezone = readers.queryTimezone?.(sourceID, source);
       const mismatches = drift.columns.flatMap(
          (c): DatabaseDriftFinding["mismatches"] => {
+            // Cast, never reported (bind.ts, declaredMoves).
+            if (c.castOnly) return [];
             const declaredType = driftDeclaredType(
                source.columns,
                c.column,
@@ -220,6 +224,7 @@ export function databaseDriftFindings(
                declaredType,
                ...(c.observedType ? { storedType: c.observedType } : {}),
                ...(c.gone ? { gone: true as const } : {}),
+               ...(c.declaredMoved ? { declaredMoved: true as const } : {}),
             };
             const how = driftedColumnRead(c, declaredType, { queryTimezone });
             if (how.read === "as_is") return [];
