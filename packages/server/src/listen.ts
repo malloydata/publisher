@@ -9,12 +9,17 @@ const LONG_REQUEST_MS = 600_000;
 
 /**
  * A query, a package load or a catalog file load can run for minutes, so every
- * listener keeps a request, its headers and an idle keep-alive open that long.
+ * listener keeps a request, its headers and an idle keep-alive open that long:
+ * ten minutes, or `timeoutMs` where a listener's requests can run longer (the
+ * admin listener's table copies, `admin.requestTimeoutSeconds`).
  */
-export function longTimeouts<T extends http.Server>(server: T): T {
-   server.timeout = LONG_REQUEST_MS;
-   server.keepAliveTimeout = LONG_REQUEST_MS;
-   server.headersTimeout = LONG_REQUEST_MS;
+export function longTimeouts<T extends http.Server>(
+   server: T,
+   timeoutMs: number = LONG_REQUEST_MS,
+): T {
+   server.timeout = timeoutMs;
+   server.keepAliveTimeout = timeoutMs;
+   server.headersTimeout = timeoutMs;
    return server;
 }
 

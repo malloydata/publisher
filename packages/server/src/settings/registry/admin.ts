@@ -28,6 +28,14 @@ export const admin = [
       aliases: { env: ["PUBLISHER_ADMIN_HOST"], flags: ["--admin_host"] },
    }),
    setting({
+      key: "admin.requestTimeoutSeconds",
+      type: integer({ min: 1 }),
+      default: 600,
+      description:
+         "Seconds the admin API keeps a request, its headers and an idle keep-alive open.",
+      notes: "How long the admin listener lets a request run before closing its connection. A table copy or a file load answers only when the table is written, so a large table needs longer than the main API's ten minutes; raise this for the caller's largest copy, and keep the caller's own timeout above it. Applies to the admin listener alone: the main API and MCP listeners keep ten minutes.",
+   }),
+   setting({
       key: "admin.catalogDatabase",
       type: string(),
       secret: true,

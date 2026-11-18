@@ -116,6 +116,8 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
 
    "admin.port": () => settings.get("admin.port") ?? null,
    "admin.host": () => settings.get("admin.host"),
+   "admin.requestTimeoutSeconds": () =>
+      settings.get("admin.requestTimeoutSeconds"),
    "admin.catalogDatabase": () => catalogAdminConfig()?.catalogDatabase ?? null,
    "admin.storage.provider": adminStorage,
    "admin.storage.keyId": adminStorage,

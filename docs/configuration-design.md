@@ -218,6 +218,7 @@ Under one precedence the flag replaces the variable, as it does for every other 
 |---|---|---|---|
 | `PUBLISHER_ADMIN_PORT`, `--admin_port` | `admin.port` | unchanged | `--admin-port` |
 | `PUBLISHER_ADMIN_HOST`, `--admin_host` | `admin.host` | unchanged | `--admin-host` |
+| _new_ | `admin.requestTimeoutSeconds` | `PUBLISHER_ADMIN_REQUEST_TIMEOUT_SECONDS` | `--admin-request-timeout-seconds` |
 | `PUBLISHER_ADMIN_CATALOG_DATABASE` | `admin.catalogDatabase` | unchanged | — (secret) |
 | `PUBLISHER_ADMIN_STORAGE_PROVIDER` | `admin.storage.provider` | unchanged | `--admin-storage-provider` |
 | `PUBLISHER_ADMIN_STORAGE_KEY_ID` | `admin.storage.keyId` | unchanged | `--admin-storage-key-id` |
