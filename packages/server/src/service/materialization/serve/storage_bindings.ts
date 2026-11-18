@@ -212,6 +212,8 @@ export function databaseDriftFindings(
       const queryTimezone = readers.queryTimezone?.(sourceID, source);
       const mismatches = drift.columns.flatMap(
          (c): DatabaseDriftFinding["mismatches"] => {
+            // Cast, never reported (bind.ts, declaredMoves).
+            if (c.castOnly) return [];
             const declaredType = driftDeclaredType(
                source.columns,
                c.column,

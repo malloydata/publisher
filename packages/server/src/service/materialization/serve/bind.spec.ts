@@ -15,6 +15,7 @@ import {
 import type { BuildPlan, ManifestEntry } from "../domain/types";
 import { boundTablePath, buildVirtualMap } from "./bindings";
 import type { Binding } from "../domain/binding";
+import { databaseDriftFindings } from "./storage_bindings";
 
 const ID = "orders@file:///pkg/m.malloy";
 
@@ -1078,7 +1079,7 @@ describe("applyObservedColumns", () => {
          expect(unchanged.entries.v1?.heldRead).toBeUndefined();
       });
 
-      it("does not move a column the build writes as another type by design (a date truncation as a timestamp)", () => {
+      it("reads a column the build writes as another type by design (a date truncation as a timestamp) through its cast, unreported", () => {
          const out = applyObservedColumns({
             entries: {
                v1: {
@@ -1111,8 +1112,47 @@ describe("applyObservedColumns", () => {
                connectionName: "duckdb",
             }),
          });
-         expect(out.drifted).toEqual([]);
-         expect(out.entries.v1?.heldRead).toBeUndefined();
+         // Moved, so the leg reads each through its faithful cast (a
+         // retype upstream into the same pair reads correctly), but marked
+         // cast-only, so no warning or count reports it.
+         expect(out.drifted).toEqual([
+            {
+               sourceEntityId: "v1",
+               columns: [
+                  {
+                     column: "m",
+                     builtType: "TIMESTAMP",
+                     observedType: "TIMESTAMP",
+                     declaredMoved: true,
+                     castOnly: true,
+                  },
+                  {
+                     column: "flag",
+                     builtType: "INTEGER",
+                     observedType: "INTEGER",
+                     declaredMoved: true,
+                     castOnly: true,
+                  },
+               ],
+            },
+         ]);
+         expect(
+            out.entries.v1?.heldRead?.columns.filter((c) => c.moved),
+         ).toHaveLength(2);
+         // Declared in the plan as the source declares them now: no warning.
+         const plan = {
+            sources: {
+               "v@file:///m.malloy": {
+                  name: "v",
+                  sourceEntityId: "v1",
+                  columns: [
+                     { name: "m", type: "date" },
+                     { name: "flag", type: "boolean" },
+                  ],
+               },
+            },
+         } as unknown as BuildPlan;
+         expect(databaseDriftFindings(out.drifted, plan, {})).toEqual([]);
       });
 
       // C1/H1: a move inside one Malloy type that may round a value is left

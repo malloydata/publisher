@@ -665,8 +665,10 @@ is unchanged, so the bind finds the table as built. Every mechanism (a persisted
 `#(materialize)` or `#@ persist` source, a rollup) takes the column as moved: a query that reads
 it answers live with `MISSING_FIELD` and the column in its path report's detail, a query that
 does not still serves, and the warning says what its source reads changed type since the build. A
-type the build writes by design for the declaration (a `date` truncation stored as a timestamp, a
-`boolean` over an integer flag) is not a move. Because the address did not move, a normal run
+column the table holds as a naive timestamp now declared `date`, or as an integer now declared
+`boolean`, is read through its faithful cast (`DATE`, `BOOLEAN`) and not reported: those are also
+the types a build writes by design for a `date` truncation and a `boolean` flag, and the cast
+leaves such a value as it is. Because the address did not move, a normal run
 reuses the table; only a forced refresh (`forceRefresh`) rebuilds it and clears the warning. The log line has the same code and names each changed column. A table
 whose columns cannot be read at the bind (missing, unreadable, or slower than the bound) is answered
 live, with a `database-table-unread` package warning that names the table, a fixed reason (the

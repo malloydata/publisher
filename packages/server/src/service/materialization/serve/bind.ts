@@ -537,6 +537,11 @@ export interface ObservedDrift {
        * build ({@link declaredMoves}).
        */
       declaredMoved?: true;
+      /**
+       * Read through its faithful cast but not reported: a type a build
+       * writes for the declaration by design ({@link declaredMoves}).
+       */
+      castOnly?: true;
    }[];
 }
 
@@ -778,17 +783,21 @@ function declaredMoves(
          (c) => c.name === built.name,
       )?.type;
       if (declared === undefined || declared === "") return [];
-      // What the build wrote for the source as it declares the column now:
-      // no upstream change moved it (the manifest records no build-time
-      // declaration to compare with).
-      if (builtForDeclaration(built.type, declared)) return [];
+      // The type that serves the declaration: nothing to read differently.
+      if (storedTypeServesAs(built.type, declared) !== false) return [];
       const now = columnNamed(read.columns, built.name);
       if (now?.type === undefined) return [];
+      // A type a build writes for this declaration by design (a `date`
+      // truncation as a naive timestamp, a `boolean` flag as an integer):
+      // read through its faithful cast, which leaves a value the build wrote
+      // as it is and corrects one a retype upstream left behind, but not
+      // reported, since the manifest cannot tell the two apart.
       const report = {
          column: built.name,
          builtType: built.type,
          observedType: now.type,
          declaredMoved: true as const,
+         ...(byDesign(built.type, declared) ? { castOnly: true as const } : {}),
       };
       const how = driftedColumnRead(
          report,
@@ -803,13 +812,11 @@ function declaredMoves(
 
 /**
  * Whether a build of a column the source declares as `declared` writes
- * `storedType`: the type that serves it ({@link storedTypeServesAs}), or one
- * a warehouse answers in its place by design, which the read plan reads back
- * as declared: a `date` truncation (or `date + interval`) as a timestamp
- * without a zone, and a `boolean` over an integer flag as an integer.
+ * `storedType` by design, though the type does not serve it: a warehouse
+ * answers a `date` truncation (or `date + interval`) with a naive timestamp,
+ * and a `boolean` over an integer flag with the integer.
  */
-function builtForDeclaration(storedType: string, declared: string): boolean {
-   if (storedTypeServesAs(storedType, declared) !== false) return true;
+function byDesign(storedType: string, declared: string): boolean {
    const family = typeFamily(storedType);
    if (declared === "date") {
       return family === "timestamp" && !isZoned(storedType);

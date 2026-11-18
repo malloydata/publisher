@@ -67,7 +67,46 @@ source: rolled is raw extend {
   #(rollup) grain=["cat"]
   measure: rc is count()
 }
+
+source: raw2 is warehouse.table('t2') extend {
+  measure: total2 is n.sum()
+  #@ persist
+  view: v2 is { group_by: cat, fl, d; aggregate: total2; order_by: cat }
+  #(rollup) grain=["fl", "d"]
+  measure: rc2 is count()
+}
+#@ persist
+query: q2 is raw2 -> { group_by: cat, fl, d; aggregate: total2; order_by: cat }
+#(materialize)
+source: mat2 is warehouse.table('t2')
+#@ persist
+source: per2 is warehouse.table('t2') -> { select: cat, n, fl, d, k is 1 }
 `;
+
+/**
+ * Over `t2`, retyped into the two types a build also writes by design (a
+ * naive timestamp now declared `date`, an integer now declared `boolean`):
+ * read through the faithful cast, equal to live, in a query's own time zone
+ * too, and not warned (the truncation case is the same pair).
+ */
+const CAST_QUERIES = {
+   view2: "run: raw2 -> v2",
+   query2: "run: q2",
+   roll2: "run: raw2 -> { group_by: fl, d; aggregate: rc2; order_by: d, fl }",
+   roll2_tz:
+      "run: raw2 -> { timezone: 'America/Los_Angeles'; group_by: fl, d; aggregate: rc2; order_by: d, fl }",
+   mat2: "run: mat2 -> { group_by: cat, fl, d; order_by: cat }",
+   mat2_d: "run: mat2 -> { group_by: d; aggregate: c is count(); order_by: d }",
+   mat2_tz:
+      "run: mat2 -> { timezone: 'Asia/Tokyo'; group_by: cat, fl, d, dm is d.month; order_by: cat }",
+   mat2_where:
+      "run: mat2 -> { where: fl and d = @2024-01-15; group_by: cat; order_by: cat }",
+   per2: "run: per2 -> { group_by: cat, fl, d; order_by: cat }",
+   per2_fl:
+      "run: per2 -> { group_by: fl; aggregate: c is count(); order_by: fl }",
+   per2_tz:
+      "run: per2 -> { timezone: 'Asia/Tokyo'; group_by: cat, fl, d; order_by: cat }",
+} as const;
 
 const QUERIES = {
    view: "run: viewed -> v",
@@ -79,6 +118,8 @@ const QUERIES = {
    roll_n: "run: rolled -> { group_by: cat; aggregate: rtop; order_by: cat }",
    roll_c: "run: rolled -> { group_by: cat; aggregate: rc; order_by: cat }",
 } as const;
+
+const ALL = { ...QUERIES, ...CAST_QUERIES };
 
 interface Answer {
    rows: unknown;
@@ -182,6 +223,9 @@ describe("every materialization over a column retyped upstream after its build",
       await warehouse.runSQL(
          "CREATE TABLE t AS SELECT * FROM (VALUES ('a', 1), ('b', 2)) AS x(cat, n)",
       );
+      await warehouse.runSQL(
+         "CREATE TABLE t2 AS SELECT cat, n, fl::INTEGER AS fl, d::TIMESTAMP AS d FROM (VALUES ('a', 1, 0, '2024-01-15 03:30:00'), ('b', 2, 1, '2024-01-15 22:45:00'), ('c', 3, 2, '2024-03-20 11:00:00')) AS x(cat, n, fl, d)",
+      );
       await env.addPackage(PKG);
       pkg = await env.getPackage(parsePackageName(PKG), false);
       service = serviceOverEnvironment(
@@ -189,22 +233,28 @@ describe("every materialization over a column retyped upstream after its build",
          () => env,
       );
       expect((await build()).status).toBe("MANIFEST_FILE_READY");
-      for (const [name, query] of Object.entries(QUERIES)) {
-         before[name] = await ask(query);
+      for (const [name, query] of Object.entries(ALL)) {
+         // `mat2_where` reads `fl` as a boolean, which it is only after.
+         before[name] = await ask(query).catch((e: Error) => ({
+            rows: `ERR ${e.message}`,
+         }));
       }
       const bound = pkg.materialization().boundDatabaseEntries() ?? {};
 
       // Upstream, out of band: the source's column changes type.
       await warehouse.runSQL("ALTER TABLE t ALTER n TYPE VARCHAR");
+      await warehouse.runSQL(
+         "ALTER TABLE t2 ALTER fl TYPE BOOLEAN; ALTER TABLE t2 ALTER d TYPE DATE",
+      );
       (warehouse as unknown as { schemaCache: object }).schemaCache = {};
       pkg = await env.getPackage(parsePackageName(PKG), true);
       // Live's answers, before the tables are bound again.
-      for (const [name, query] of Object.entries(QUERIES)) {
+      for (const [name, query] of Object.entries(ALL)) {
          live[name] = (await ask(query)).rows;
       }
       // The bind a run's commit, a manifest bind and a restart take.
       await pkg.reloadAllModels(bound);
-      for (const [name, query] of Object.entries(QUERIES)) {
+      for (const [name, query] of Object.entries(ALL)) {
          try {
             after[name] = await ask(query);
          } catch (e) {
@@ -259,6 +309,24 @@ describe("every materialization over a column retyped upstream after its build",
             expect(after[name].rows).toEqual(live[name]);
          });
       }
+   }
+
+   it("served the retyped table's queries from their tables before the retype", () => {
+      // A query in its own zone may answer live for its zone alone.
+      for (const name of Object.keys(CAST_QUERIES).filter(
+         (n) => !n.endsWith("_tz") && n !== "mat2_where",
+      )) {
+         expect({ name, kind: before[name].kind }).not.toEqual({
+            name,
+            kind: "live",
+         });
+      }
+   });
+
+   for (const name of Object.keys(CAST_QUERIES)) {
+      it(`${name}: a timestamp now a date and an integer now a boolean read through the cast, equal to live`, () => {
+         expect(after[name].rows).toEqual(live[name]);
+      });
    }
 
    it("warns for each table, naming the column and the forced rebuild that clears it", () => {
