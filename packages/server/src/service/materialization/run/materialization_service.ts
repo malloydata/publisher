@@ -14,6 +14,7 @@
  * store's unique index; every table write goes through its collaborators.
  */
 
+import { runAsPublisherWork } from "../../duckdb_lockdown";
 import {
    BadRequestError,
    BuildPlanUnavailableError,
@@ -975,8 +976,10 @@ export class MaterializationService {
          packageName,
       );
       // Every source event of the run, however deep, belongs to this run.
+      // Publisher's own work: its build scripts may run several statements in
+      // one call on a locked connection (duckdb_lockdown.ts).
       return withRunTelemetry(telemetry, () =>
-         this.buildRun(telemetry, ...args),
+         runAsPublisherWork(() => this.buildRun(telemetry, ...args)),
       );
    }
 

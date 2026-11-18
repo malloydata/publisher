@@ -64,7 +64,7 @@ import {
 import { logger } from "../logger";
 import {
    assertSingleSelect,
-   classifySelect,
+   countStatements,
    serializeSQL,
 } from "./single_select";
 
@@ -1055,6 +1055,19 @@ export function runAsInternalStatement<T>(
  */
 const operatorSetup = new AsyncLocalStorage<boolean>();
 
+/**
+ * Publisher's own work on a connection (a materialization run, a reclaim),
+ * whose build scripts may issue several statements in one call. Like
+ * {@link internalStatement}, it belongs to that work's own async chain: a
+ * caller query in flight on the same instance never carries it.
+ */
+const publisherWork = new AsyncLocalStorage<boolean>();
+
+/** Run `fn` as Publisher's own work, exempt from the one-statement rule. */
+export function runAsPublisherWork<T>(fn: () => Promise<T>): Promise<T> {
+   return publisherWork.run(true, fn);
+}
+
 /** Run a connection's own setup (`fn`) as operator setup. */
 export function runAsOperatorSetup<T>(fn: () => Promise<T>): Promise<T> {
    return operatorSetup.run(true, fn);
@@ -1113,6 +1126,18 @@ export async function assertStatementAllowed(
    const internal = internalStatement.getStore() === sql;
    const reason = refusedOnLockedInstance(sql) ?? (await refusedByParser(sql));
    if (reason && !internal) throw new DuckDBStatementRefusedError(reason);
+   // One statement per call for anything not Publisher's own: SQL a caller
+   // or an author shaped cannot end the statement it is in and start another.
+   if (!internal && !operatorSetup.getStore() && !publisherWork.getStore()) {
+      const count = await countStatements(sql);
+      if (count !== 1) {
+         throw new DuckDBStatementRefusedError(
+            count === undefined
+               ? "SQL DuckDB's parser rejects"
+               : `${count} statements in one call`,
+         );
+      }
+   }
 }
 
 /**
@@ -1129,6 +1154,8 @@ export async function authorSqlRefusals(
    modelDef: unknown,
 ): Promise<string[]> {
    const checks = new Map<string, string>();
+   /** Raw SQL expressions, as `SELECT <expr>`, by how many placeholders each holds. */
+   const expressions = new Map<string, number>();
    const seen = new Set<object>();
    const walk = (node: unknown, dialect: string | undefined, depth: number) => {
       if (depth > 400 || node === null || typeof node !== "object") return;
@@ -1149,20 +1176,25 @@ export async function authorSqlRefusals(
             checks.set(record.selectStr, `a .sql() source`);
          }
          if (record.node === "genericSQLExpr" && Array.isArray(record.src)) {
-            // The text with each argument (between, or after, the fragments)
-            // standing as NULL.
+            // Each argument stands as its own column reference, placed where
+            // Malloy places it (between, or after, the fragments). The parse
+            // must read every one back as a column reference: an argument a
+            // fragment leaves inside a string, a dollar quote or a comment
+            // fails, since its value could end the statement at run time.
             const args = (record.kids as { args?: unknown[] } | undefined)
                ?.args;
             const argCount = Array.isArray(args) ? args.length : 0;
             let text = "";
-            (record.src as unknown[]).forEach((fragment, index) => {
-               text += String(fragment);
-               if (index < argCount) text += " NULL ";
-            });
-            for (let extra = record.src.length; extra < argCount; extra++) {
-               text += " NULL ";
+            const fragments = record.src as unknown[];
+            for (
+               let index = 0;
+               index < Math.max(fragments.length, argCount);
+               index++
+            ) {
+               if (index < fragments.length) text += String(fragments[index]);
+               if (index < argCount) text += ` __arg_${index}__ `;
             }
-            checks.set(`SELECT ${text}`, `a raw SQL expression`);
+            expressions.set(`SELECT ${text}`, argCount);
          }
       }
       for (const [key, child] of Object.entries(record)) {
@@ -1172,18 +1204,59 @@ export async function authorSqlRefusals(
    };
    walk(modelDef, undefined, 0);
    const refusals: string[] = [];
-   for (const [sql, what] of checks) {
-      const verdict = await classifySelect(sql);
-      if (!("selects" in verdict) || verdict.selects !== 1) {
-         const shown = sql.length > 120 ? `${sql.slice(0, 117)}...` : sql;
-         refusals.push(
-            `${modelPath}: ${what} on a DuckDB connection must read as one SELECT ` +
-               `(raw SQL on a locked-down DuckDB connection runs only as a single ` +
-               `SELECT), and this one does not: ${shown}`,
-         );
+   const refuse = (what: string, sql: string) => {
+      const shown = sql.length > 120 ? `${sql.slice(0, 117)}...` : sql;
+      refusals.push(
+         `${modelPath}: ${what} on a DuckDB connection must read as one SELECT ` +
+            `(raw SQL on a locked-down DuckDB connection runs only as a single ` +
+            `SELECT), and this one does not: ${shown}`,
+      );
+   };
+   for (const [sql, argCount] of expressions) {
+      if (!(await isOneSelectWithPlaceholders(sql, argCount))) {
+         refuse("a raw SQL expression", sql);
       }
    }
+   for (const [sql, what] of checks) {
+      if (!(await isOneSelectWithPlaceholders(sql, 0))) refuse(what, sql);
+   }
    return refusals;
+}
+
+/**
+ * Whether DuckDB's parser reads `sql` as exactly one SELECT, and reads each
+ * placeholder `__arg_0__` … `__arg_<argCount-1>__` back as a column reference.
+ */
+async function isOneSelectWithPlaceholders(
+   sql: string,
+   argCount: number,
+): Promise<boolean> {
+   const parsed = await serializeSQL(sql);
+   if (parsed.error || parsed.statements?.length !== 1) return false;
+   const found = new Set<string>();
+   const walk = (node: unknown): void => {
+      if (node === null || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+         node.forEach(walk);
+         return;
+      }
+      const record = node as Record<string, unknown>;
+      if (
+         record.class === "COLUMN_REF" &&
+         Array.isArray(record.column_names) &&
+         record.column_names.length === 1 &&
+         typeof record.column_names[0] === "string" &&
+         /^__arg_\d+__$/.test(record.column_names[0])
+      ) {
+         found.add(record.column_names[0]);
+      }
+      Object.values(record).forEach(walk);
+   };
+   walk(parsed.statements);
+   for (let index = 0; index < argCount; index++) {
+      if (!found.has(`__arg_${index}__`)) return false;
+   }
+   return true;
 }
 
 let statementGateInstalled = false;

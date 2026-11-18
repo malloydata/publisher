@@ -398,6 +398,10 @@ What it does not cover, so a multi-tenant deployment still has to:
   SELECT and a raw SQL expression one expression of one SELECT, or the package does not load). What still writes inside a connection's roots is the operator's `setupSQL`
   and Publisher's own work (a `#@ persist` build, a temporary table it creates around a caller's
   SELECT).
+- **A single SELECT can still change state.** The gate decides by statement shape, so a SELECT
+  that calls a function with a side effect is not refused: `checkpoint()`, `nextval()`, or a
+  `ducklake_*` maintenance function. For a catalog that serves callers, a read-only attach is the
+  control (a `ducklake` connection attaches read-only unless its config says otherwise).
 - **An attached `s3` or `gcs` bucket allowlists its whole URL scheme.** These entries name no
   bucket, so a `duckdb` connection with one may reach any URL of that scheme, and the secret is the
   control: callers cannot create, replace or drop secrets on a locked instance, so the only

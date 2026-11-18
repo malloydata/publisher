@@ -30,6 +30,8 @@ import {
    runAsInternalStatement,
    sandboxedDuckDBOptions,
 } from "./duckdb_lockdown";
+import { unrecordedAudit } from "./access_record";
+import { QueryPrivileges } from "./model_query_request";
 import { Package } from "./package";
 
 const ENV_KEY = "AKIA_LOCKDOWN_ENV_KEY";
@@ -494,6 +496,101 @@ describe("author SQL in a model on a DuckDB connection reads as one SELECT", () 
       expect(pkg.getModel("m.malloy")).toBeDefined();
       await pkg.getMalloyConfig().releaseConnections();
    });
+});
+
+describe("an argument interpolated into a raw SQL expression cannot end the statement", () => {
+   let restore: () => void;
+   beforeAll(() => {
+      ({ restore } = installSettings({
+         env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+      }));
+   });
+   afterAll(() => restore());
+
+   /** A string dimension whose value, interpolated into a dollar quote, ends it. */
+   const model = (connection: string, target: string) =>
+      [
+         "##! experimental.sql_functions",
+         `source: s is ${connection}.sql("SELECT 1 AS a") extend {`,
+         `  dimension: inj is '$q$; COPY (SELECT 42 AS x) TO $w$${target}$w$; SELECT $q$'`,
+         '  dimension: d is sql_string("$q$${inj}$q$")',
+         "}",
+         "query: q is s -> { group_by: d }",
+         "",
+      ].join("\n");
+   const adHoc = (target: string) =>
+      `run: s extend { dimension: inj is '$q$; COPY (SELECT 1 AS x) TO $w$${target}$w$; SELECT $q$' dimension: d is sql_string("$q$\${inj}$q$") } -> { group_by: d }`;
+
+   const packageAt = (dir: string, text: string) => {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name: path.basename(dir) }),
+      );
+      fs.writeFileSync(path.join(dir, "m.malloy"), text);
+   };
+
+   for (const tier of ["sandbox", "env"] as const) {
+      it(`refuses it at load and at run time on the ${tier} tier, and writes nothing`, async () => {
+         const base = path.join(root, `interp-${tier}`);
+         const envDir = path.join(base, "env");
+         const pkgDir = path.join(envDir, "pkg");
+         const target = path.join(pkgDir, "written.csv");
+         let release = async () => {};
+         let connections: Map<string, unknown> | MalloyConfig = new Map();
+         let connection = "duckdb";
+         if (tier === "env") {
+            fs.mkdirSync(envDir, { recursive: true });
+            const built = buildEnvironmentMalloyConfig(
+               [
+                  {
+                     name: "local_db",
+                     type: "duckdb",
+                     duckdbConnection: { setupSQL: "SELECT 1" },
+                  },
+               ],
+               envDir,
+            );
+            release = built.releaseConnections;
+            connections = built.malloyConfig;
+            connection = "local_db";
+         }
+         try {
+            // At load: the argument reads back as no column reference.
+            packageAt(pkgDir, model(connection, target));
+            await expect(
+               Package.create("env", "pkg", pkgDir, connections as never),
+            ).rejects.toThrow(/one SELECT/);
+            // At run time: an ad-hoc query is never loaded, and its extra
+            // statement is refused on the locked instance.
+            packageAt(
+               pkgDir,
+               `source: s is ${connection}.sql("SELECT 1 AS a")\n`,
+            );
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               pkgDir,
+               connections as never,
+            );
+            await expect(
+               pkg.getModel("m.malloy")!.runQuery(
+                  unrecordedAudit(),
+                  {
+                     query: adHoc(target),
+                     filterParams: {},
+                     givens: {},
+                  } as never,
+                  QueryPrivileges.none,
+               ),
+            ).rejects.toThrow();
+            expect(fs.existsSync(target)).toBe(false);
+            await pkg.getMalloyConfig().releaseConnections();
+         } finally {
+            await release();
+         }
+      });
+   }
 });
 
 describe("environment duckdb with setupSQL: allowlist, then lock, as options", () => {

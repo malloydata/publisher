@@ -16,6 +16,7 @@
  * marked as its own.
  */
 
+import { runAsPublisherWork } from "../../duckdb_lockdown";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
 import { UnquotableIdentifierError } from "../../quoting";
@@ -783,7 +784,28 @@ export class Reclaimer {
             fn: () => Promise<T>,
          ) => Promise<T>;
       },
-   ) {}
+   ) {
+      // Every reclaim is Publisher's own work: its drops and swaps may run
+      // several statements in one call on a locked connection
+      // (duckdb_lockdown.ts).
+      const self = this as unknown as Record<
+         string,
+         (...args: unknown[]) => Promise<unknown>
+      >;
+      for (const name of [
+         "reclaimStorageTablesFromFailedRun",
+         "dropManifestEntries",
+         "reclaimRenamedTables",
+         "reclaimVersionTables",
+         "reclaimOwedNow",
+         "cleanUpDeletedVersion",
+         "reclaimArchivedVersions",
+      ]) {
+         const method = self[name];
+         self[name] = (...args: unknown[]) =>
+            runAsPublisherWork(() => method.apply(this, args));
+      }
+   }
 
    private get repository(): ResourceRepository {
       return this.deps.repository();
