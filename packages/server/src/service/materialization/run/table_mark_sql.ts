@@ -72,32 +72,79 @@ export function parseNameViewComment(
 }
 
 /**
- * The prefix of the ownership mark on a table an auto-run built at the
- * author's `name=` (table_ownership.ts).
+ * The prefix of the ownership mark on a table a build wrote
+ * (table_ownership.ts).
  */
 export const OWNED_TABLE_MARK = "malloy-publisher:table";
 
 /**
- * The owner a table's ownership mark names (`<environment>/<package>`), or
- * undefined when the comment is not one: exactly the prefix, then `owner=`
- * once. Accepts BigQuery's double-quoted TABLE_OPTIONS spelling.
+ * What a table's ownership mark says: the package that built it (`owner`,
+ * `<environment>/<package>`) and, from 0.16.0, the table it was written on
+ * (`table`, see {@link markedTableIdentity}). A mark an earlier release
+ * wrote has no `table`.
  */
-export function parseOwnedTableComment(comment: unknown): string | undefined {
+interface OwnedTableMark {
+   owner: string;
+   table?: string;
+}
+
+/**
+ * The mark read back from a table's comment, or undefined when the comment
+ * is not one: exactly the prefix, then `owner=`, then optionally `table=`,
+ * each once and nothing else. Accepts BigQuery's double-quoted
+ * TABLE_OPTIONS spelling.
+ */
+export function parseOwnedTableMark(
+   comment: unknown,
+): OwnedTableMark | undefined {
    if (typeof comment !== "string") return undefined;
    let text = comment.trim();
    if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
       text = text.slice(1, -1);
    }
    const fields = text.split(" ");
-   if (fields.length !== 2 || fields[0] !== OWNED_TABLE_MARK) return undefined;
-   if (!fields[1].startsWith("owner=")) return undefined;
-   const encoded = fields[1].slice("owner=".length);
-   if (encoded === "") return undefined;
-   try {
-      return decodeURIComponent(encoded);
-   } catch {
-      return undefined;
-   }
+   if (fields.length < 2 || fields.length > 3) return undefined;
+   if (fields[0] !== OWNED_TABLE_MARK) return undefined;
+   const decode = (field: string, key: string): string | undefined => {
+      if (!field.startsWith(`${key}=`)) return undefined;
+      const encoded = field.slice(key.length + 1);
+      if (encoded === "") return undefined;
+      try {
+         return decodeURIComponent(encoded);
+      } catch {
+         return undefined;
+      }
+   };
+   const owner = decode(fields[1], "owner");
+   if (owner === undefined) return undefined;
+   if (fields.length === 2) return { owner };
+   const table = decode(fields[2], "table");
+   return table === undefined ? undefined : { owner, table };
+}
+
+/**
+ * The owner a table's ownership mark names (`<environment>/<package>`), with
+ * or without the table it names, or undefined when the comment is not one.
+ */
+export function parseOwnedTableComment(comment: unknown): string | undefined {
+   return parseOwnedTableMark(comment)?.owner;
+}
+
+/**
+ * The table a mark names, as `segments` (the unquoted parts of its path at
+ * its site) name it: the parts joined with dots, each lower-cased when
+ * `caseInsensitive` (the dialect resolves a table name without regard to
+ * case), as written otherwise. A mark that travels with
+ * its table (a rename, a move to another schema, a copy that keeps comments)
+ * then names another table than the one it is on.
+ */
+export function markedTableIdentity(
+   segments: string[],
+   caseInsensitive: boolean,
+): string {
+   return segments
+      .map((part) => (caseInsensitive ? part.toLowerCase() : part))
+      .join(".");
 }
 
 /** The unquoted segments of a dotted table path. */

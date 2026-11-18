@@ -36,8 +36,11 @@
  * (withOwnedNameLock), from the check until the mark is written, so two
  * packages that find the name free at once never both build it.
  *
- * The mark is a comment on the table, `malloy-publisher:table owner=<env>/<pkg>`
- * (URI-encoded), the warehouse half of ownership: it is what decides between
+ * The mark is a comment on the table, `malloy-publisher:table
+ * owner=<env>/<pkg> table=<the table>` (each value URI-encoded; `table` is the
+ * table's path at its site, lower-cased where the dialect ignores case, see
+ * markedTableIdentity; a mark before 0.16.0 has no `table`), the warehouse
+ * half of ownership: it is what decides between
  * two packages whose records both name the table (a collision from before the
  * mark existed: the first to build again claims it, and the other is
  * refused). The run records are the Publisher half. Written after every
@@ -46,7 +49,10 @@
  * not be written is still this package's by its records once the run
  * commits. The mark is what lets a caller's drop
  * (Reclaimer.dropConnectionTable) prove a table is this package's after its
- * run's record is gone.
+ * run's record is gone; that drop accepts a mark only on the table it names
+ * (markedFor), since a comment travels with a renamed, moved or copied table.
+ * A build and a reclaim read the owner alone, for marks of every release:
+ * they act only on a name this package's own records or `name=` hold.
  *
  * A drop (deleting a run's tables, reclaiming a version's) skips a table
  * marked as another package's (see ownedElsewhere): a table this package
@@ -74,9 +80,11 @@ import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
 import { capabilitiesOf } from "../domain/dialect";
 import { hasReservedTableSuffix } from "../domain/table_name";
 import {
+   markedTableIdentity,
    OWNED_TABLE_MARK,
    parseNameViewComment,
    parseOwnedTableComment,
+   parseOwnedTableMark,
 } from "./table_mark_sql";
 import { ownedTableProbeSql, tableCommentSql } from "./warehouse_sql";
 import { KeyedLock } from "./keyed_lock";
@@ -187,9 +195,29 @@ function encodeMarkValue(value: string): string {
    return encodeURIComponent(value).replace(/'/g, "%27");
 }
 
-/** The ownership mark for a table `owner` (`<environment>/<package>`) wrote. */
-export function ownedTableComment(owner: string): string {
-   return `${OWNED_TABLE_MARK} owner=${encodeMarkValue(owner)}`;
+/**
+ * The ownership mark for a table `owner` (`<environment>/<package>`) wrote,
+ * naming the table it is on (`table`, a {@link markedTableIdentity}). Without
+ * `table` it is the mark releases before 0.16.0 wrote, which a caller's drop
+ * does not accept as proof (see {@link markedFor}).
+ */
+export function ownedTableComment(owner: string, table?: string): string {
+   const mark = `${OWNED_TABLE_MARK} owner=${encodeMarkValue(owner)}`;
+   return table === undefined
+      ? mark
+      : `${mark} table=${encodeMarkValue(table)}`;
+}
+
+/**
+ * The {@link markedTableIdentity} of `segments` at a site of `dialect`,
+ * lower-cased where the dialect resolves a table name without regard to
+ * case, quoted or not (its `foldsTableNameCase` capability).
+ */
+export function tableIdentityAt(segments: string[], dialect: string): string {
+   return markedTableIdentity(
+      segments,
+      capabilitiesOf(dialect).foldsTableNameCase,
+   );
 }
 
 /** The dialects whose tables' holders can be read (and marked). */
@@ -203,11 +231,15 @@ export function ownedTableMarkSql(
    owner: string,
    dialect: string,
 ): string {
-   return tableCommentSql(segments, ownedTableComment(owner), dialect);
+   return tableCommentSql(
+      segments,
+      ownedTableComment(owner, tableIdentityAt(segments, dialect)),
+      dialect,
+   );
 }
 
 /** What holds a table's name, as `owner` sees it. */
-type TableHolder =
+export type TableHolder =
    | { state: "free" }
    /**
     * A table marked as `owner`'s, or (`view`) `owner`'s own `name=` view an
@@ -258,6 +290,30 @@ export function tableHolderOf(
    }
    if (unmarked) return { state: "unmarked" };
    return table ? { state: "ours" } : { state: "ours", view: true };
+}
+
+/**
+ * {@link tableHolderOf} for a caller's drop, which accepts a mark as proof
+ * only when it names the very table it is on: `ours` becomes `unmarked`
+ * (proof must come from a run record) when any table row's mark is one an
+ * earlier release wrote (no `table=`) or names another table than
+ * `identity` (the table was renamed, moved to another schema, or copied
+ * with its comment). A build and a reclaim read the owner alone, as before.
+ */
+export function markedFor(
+   rows: Record<string, unknown>[],
+   owner: string,
+   identity: string,
+): TableHolder {
+   const holder = tableHolderOf(rows, owner);
+   if (holder.state !== "ours" || holder.view) return holder;
+   for (const row of rows) {
+      if (String(field(row, "kind") ?? "").toUpperCase() === "VIEW") continue;
+      if (parseOwnedTableMark(field(row, "comment"))?.table !== identity) {
+         return { state: "unmarked" };
+      }
+   }
+   return holder;
 }
 
 /** A column of a result row, whatever case the driver reports it in. */

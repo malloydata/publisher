@@ -237,7 +237,7 @@ describe.skipIf(!url)("tables of packages that share a schema", () => {
          marks.filter((r) => /__summary__p[0-9a-f]{8}$/.test(String(r.name))),
       ).toHaveLength(4);
       expect(marks.find((r) => r.name === "named_t")?.comment).toBe(
-         "malloy-publisher:table owner=e1%2Fpa",
+         "malloy-publisher:table owner=e1%2Fpa table=named_t",
       );
    });
 

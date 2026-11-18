@@ -290,10 +290,9 @@ describe("the database tier: a refused name= refuses its own source, and a twin 
       expect(outcome(m).built).toEqual(["named", "solo", "twin"]);
       expect(await planted()).toEqual({
          rows: ["live"],
-         comment: ownedTableComment(`${ENV}/${PKG}`),
+         comment: ownedTableComment(`${ENV}/${PKG}`, "named_t"),
       });
       // The tables Publisher named carry the package's mark too.
-      const own = ownedTableComment(`${ENV}/${PKG}`);
       for (const entry of Object.values(
          (m.manifest as { entries: Record<string, ManifestEntry> }).entries,
       )) {
@@ -302,7 +301,13 @@ describe("the database tier: a refused name= refuses its own source, and a twin 
                `SELECT comment FROM duckdb_tables() WHERE table_name = '${entry.physicalTableName}'`,
             )
          )[0]?.comment;
-         expect([entry.sourceName, comment]).toEqual([entry.sourceName, own]);
+         expect([entry.sourceName, comment]).toEqual([
+            entry.sourceName,
+            ownedTableComment(
+               `${ENV}/${PKG}`,
+               entry.physicalTableName.toLowerCase(),
+            ),
+         ]);
       }
       await sql("UPDATE named_t SET who = 'stored'");
       expect((await answer("named")).who).toBe("stored");
@@ -502,7 +507,7 @@ describe("the build loop: one ownership decision per shared table", () => {
          expect(result.failures).toEqual({});
          expect(h.probes).toEqual([]);
          expect(h.statements).toEqual([
-            `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`)}'`,
+            `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`, "named_t")}'`,
          ]);
       });
    }
@@ -529,7 +534,7 @@ describe("the build loop: one ownership decision per shared table", () => {
       expect(h.built).toEqual(["twin"]);
       expect(result.failures).toEqual({});
       expect(h.statements).toEqual([
-         `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`)}'`,
+         `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`, "named_t")}'`,
       ]);
    });
 });

@@ -72,16 +72,16 @@
     }
   },
   "ownedTableMarkSql.one": {
-    "duckdb": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "postgres": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "standardsql": "ALTER TABLE `orders` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s')",
-    "snowflake": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "databricks": "COMMENT ON TABLE `orders` IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "trino": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "presto": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "mysql": "ALTER TABLE `orders` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"orders\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders';",
-    "unknown_dialect": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'"
+    "duckdb": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=orders'",
+    "postgres": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=orders'",
+    "standardsql": "ALTER TABLE `orders` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s table=orders')",
+    "snowflake": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=orders'",
+    "databricks": "COMMENT ON TABLE `orders` IS 'malloy-publisher:table owner=env%2Fpkg%27s table=orders'",
+    "trino": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=orders'",
+    "presto": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=orders'",
+    "mysql": "ALTER TABLE `orders` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s table=orders'",
+    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"orders\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s table=orders', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s table=orders', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders';",
+    "unknown_dialect": "COMMENT ON TABLE \"orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=orders'"
   },
   "viewReadsSql.one": {
     "duckdb": {
@@ -172,16 +172,16 @@
     }
   },
   "ownedTableMarkSql.two": {
-    "duckdb": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "postgres": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "standardsql": "ALTER TABLE `Sales Data`.`orders'x` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s')",
-    "snowflake": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "databricks": "COMMENT ON TABLE `Sales Data`.`orders'x` IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "trino": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "presto": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "mysql": "ALTER TABLE `Sales Data`.`orders'x` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "sqlserver": "DECLARE @schema sysname = N'Sales Data';\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"Sales Data\".\"orders''x\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders''x';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders''x';",
-    "unknown_dialect": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'"
+    "duckdb": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=sales%20data.orders%27x'",
+    "postgres": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=Sales%20Data.orders%27x'",
+    "standardsql": "ALTER TABLE `Sales Data`.`orders'x` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s table=Sales%20Data.orders%27x')",
+    "snowflake": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=Sales%20Data.orders%27x'",
+    "databricks": "COMMENT ON TABLE `Sales Data`.`orders'x` IS 'malloy-publisher:table owner=env%2Fpkg%27s table=sales%20data.orders%27x'",
+    "trino": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=sales%20data.orders%27x'",
+    "presto": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=sales%20data.orders%27x'",
+    "mysql": "ALTER TABLE `Sales Data`.`orders'x` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s table=Sales%20Data.orders%27x'",
+    "sqlserver": "DECLARE @schema sysname = N'Sales Data';\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"Sales Data\".\"orders''x\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s table=sales%20data.orders%27x', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders''x';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s table=sales%20data.orders%27x', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'orders''x';",
+    "unknown_dialect": "COMMENT ON TABLE \"Sales Data\".\"orders'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=Sales%20Data.orders%27x'"
   },
   "viewReadsSql.two": {
     "duckdb": {
@@ -277,16 +277,16 @@
     }
   },
   "ownedTableMarkSql.three": {
-    "duckdb": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "postgres": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "standardsql": "ALTER TABLE `cat`.`sch`.`Orders` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s')",
-    "snowflake": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "databricks": "COMMENT ON TABLE `cat`.`sch`.`Orders` IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "trino": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "presto": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "mysql": "ALTER TABLE `cat`.`sch`.`Orders` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"cat\".\"sch\".\"Orders\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'Orders';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'Orders';",
-    "unknown_dialect": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'"
+    "duckdb": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.orders'",
+    "postgres": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.Orders'",
+    "standardsql": "ALTER TABLE `cat`.`sch`.`Orders` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.Orders')",
+    "snowflake": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.Orders'",
+    "databricks": "COMMENT ON TABLE `cat`.`sch`.`Orders` IS 'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.orders'",
+    "trino": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.orders'",
+    "presto": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.orders'",
+    "mysql": "ALTER TABLE `cat`.`sch`.`Orders` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.Orders'",
+    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"cat\".\"sch\".\"Orders\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.orders', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'Orders';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.orders', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'Orders';",
+    "unknown_dialect": "COMMENT ON TABLE \"cat\".\"sch\".\"Orders\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=cat.sch.Orders'"
   },
   "viewReadsSql.three": {
     "duckdb": {
@@ -383,16 +383,16 @@
     }
   },
   "ownedTableMarkSql.hostile": {
-    "duckdb": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "postgres": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "standardsql": "ALTER TABLE `p\\`j\\\\`.`d\"s\\\\\\``.`t\\`'x` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s')",
-    "snowflake": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "databricks": "COMMENT ON TABLE `p``j\\`.`d\"s\\```.`t``'x` IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "trino": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "presto": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "mysql": "ALTER TABLE `p``j\\`.`d\"s\\```.`t``'x` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s'",
-    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N't`''x';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N't`''x';",
-    "unknown_dialect": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s'"
+    "duckdb": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x'",
+    "postgres": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x'",
+    "standardsql": "ALTER TABLE `p\\`j\\\\`.`d\"s\\\\\\``.`t\\`'x` SET OPTIONS(description = 'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x')",
+    "snowflake": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x'",
+    "databricks": "COMMENT ON TABLE `p``j\\`.`d\"s\\```.`t``'x` IS 'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x'",
+    "trino": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x'",
+    "presto": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x'",
+    "mysql": "ALTER TABLE `p``j\\`.`d\"s\\```.`t``'x` COMMENT = 'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x'",
+    "sqlserver": "DECLARE @schema sysname = SCHEMA_NAME();\nIF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID(N'\"p`j\\\".\"d\"\"s\\`\".\"t`''x\"') AND minor_id = 0 AND name = N'MS_Description')\n   EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N't`''x';\nELSE\n   EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x', @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N't`''x';",
+    "unknown_dialect": "COMMENT ON TABLE \"p`j\\\".\"d\"\"s\\`\".\"t`'x\" IS 'malloy-publisher:table owner=env%2Fpkg%27s table=p%60j%5C.d%22s%5C%60.t%60%27x'"
   },
   "viewReadsSql.hostile": {
     "duckdb": {

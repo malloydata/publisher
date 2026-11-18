@@ -4205,17 +4205,24 @@ paths:
             table with this name in any place; the run `materializationId`
             names is the one a version or the package serves; or a loaded
             copy of any package in the environment is bound to a table with
-            this name. Delete or replace that run first.
+            this name; or the warehouse refused the drop because other
+            objects depend on the table (Postgres 2BP01). Delete or replace
+            that run, or those objects, first.
           * 409 `TABLE_OWNED_ELSEWHERE`: the table carries another package's
             ownership mark, or the name is held by a view Publisher did not
-            create or another package's view.
+            create or another package's view; or the warehouse refused the
+            drop because the connection may not drop it (42501) or the name
+            holds something other than a table (42809). The answer does not
+            name the holder.
           * 409 `TABLE_OWNERSHIP_UNVERIFIED`: the table carries no ownership
-            mark and the run `materializationId` names (terminal, of this
-            package) does not record it on this connection, or who holds the
-            name could not be read. A table built before 0.16.0, or by a
-            build whose mark could not be written, carries no mark: drop it
-            passing the id of the run that built it, before deleting that
-            run's record.
+            mark this route accepts, and the run `materializationId` names
+            (terminal, of this package) does not record it on this
+            connection; or who holds the name could not be read. A mark is
+            accepted only when it names this package and this very table: a
+            comment travels with a renamed, moved or cloned table, so such a
+            copy is treated as unmarked, as is a mark written before 0.16.0
+            (it names no table). Drop such a table passing the id of the run
+            that records it, before deleting that run's record.
           * 404 `TABLE_NOT_FOUND`: no table holds the name and no run record
             of this package names it on this connection, so nothing proves it
             was ever this package's.

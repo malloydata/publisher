@@ -453,7 +453,7 @@ async function swapInTransaction({
 }
 
 /** Whether a statement failed because other objects depend on what it drops. */
-function dependedOn(err: unknown): boolean {
+export function dependedOn(err: unknown): boolean {
    const code = (err as { code?: unknown } | null)?.code;
    return (
       code === "2BP01" ||

@@ -77,10 +77,14 @@ import {
 import { packageOwner } from "./table_mark_sql";
 import {
    ownedElsewhere,
-   probeTableHolder,
+   markedFor,
    tableExistsAt,
+   tableIdentityAt,
+   type TableHolder,
    withOwnedNameLock,
 } from "./table_ownership";
+import { ownedTableProbeSql } from "./warehouse_sql";
+import { dependedOn } from "./database_build_strategy";
 import {
    atTableSite,
    databaseTableSite,
@@ -767,6 +771,71 @@ function keptAfter(
    };
 }
 
+/** The connection's config, for redacting its secrets; undefined for the sandbox. */
+function apiConnectionOf(
+   environment: MaterializationEnvironment,
+   connectionName: string,
+): unknown {
+   try {
+      return environment.getApiConnection(connectionName);
+   } catch {
+      return undefined;
+   }
+}
+
+/** The SQLSTATE an error, or one it wraps, carries; undefined for none. */
+function sqlStateOf(err: unknown): string | undefined {
+   for (let e: unknown = err, depth = 0; e && depth < 8; depth++) {
+      const code = (e as { code?: unknown }).code;
+      if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return code;
+      e = (e as { cause?: unknown }).cause;
+   }
+   return undefined;
+}
+
+/**
+ * A caller's drop the warehouse refused for a reason the caller can act on,
+ * answered with the reason it fits; undefined for any other failure (a 5xx).
+ * Objects that depend on the table (Postgres 2BP01, DuckDB's "depend on it"):
+ * `TABLE_IN_USE`. A connection not allowed to drop it (42501), or an object
+ * that is not a table (42809): `TABLE_OWNED_ELSEWHERE`, since the connection
+ * Publisher builds with does not hold it as a table of its own.
+ */
+function dropRefusalOf(
+   err: unknown,
+   where: string,
+): MaterializedTableDropRefusedError | undefined {
+   if (dependedOn(err)) {
+      return new MaterializedTableDropRefusedError(
+         "TABLE_IN_USE",
+         `Table ${where} is not dropped (TABLE_IN_USE): other objects in the ` +
+            `warehouse (a view, a foreign key) depend on it. Drop or repoint ` +
+            `them first.`,
+      );
+   }
+   const state = sqlStateOf(err);
+   if (
+      state === "42501" ||
+      /permission denied|must be (?:the )?owner/i.test(errMessage(err))
+   ) {
+      return new MaterializedTableDropRefusedError(
+         "TABLE_OWNED_ELSEWHERE",
+         `Table ${where} is not dropped (TABLE_OWNED_ELSEWHERE): the ` +
+            `connection is not allowed to drop it, so it is not a table this ` +
+            `package's builds own.`,
+      );
+   }
+   if (state === "42809") {
+      return new MaterializedTableDropRefusedError(
+         "TABLE_OWNED_ELSEWHERE",
+         `Table ${where} is not dropped (TABLE_OWNED_ELSEWHERE): the name ` +
+            `holds something other than a table, which no build of this ` +
+            `package makes.`,
+      );
+   }
+   return undefined;
+}
+
 /**
  * Every reader that may serve from a package's runs: its unversioned slot,
  * and each version the runs name, read as a `scope: package` version and as
@@ -1085,15 +1154,19 @@ export class Reclaimer {
       // A build's staging or backup copy goes with its table (its leftovers),
       // never alone: a backup carries its table's mark, and the next build
       // restores it.
+      // By table segment, as the in-use check compares: a copy reached
+      // under another container or case is still the copy.
       const copyOf = runs
          .flatMap((m) => reclaimableEntries(m))
          .find(
             (e) =>
                e.physicalTableName &&
-               (physicalTableName ===
-                  `${e.physicalTableName}${stagingSuffix(e.sourceEntityId)}` ||
-                  physicalTableName ===
-                     `${e.physicalTableName}${backupSuffix(e.sourceEntityId)}`),
+               [stagingSuffix, backupSuffix].some((suffix) =>
+                  mayBeOneTableAnywhere(
+                     physicalTableName,
+                     `${e.physicalTableName}${suffix(e.sourceEntityId)}`,
+                  ),
+               ),
          );
       if (copyOf) {
          throw new InvalidArgumentError(
@@ -1200,18 +1273,30 @@ export class Reclaimer {
          );
       }
       const owner = packageOwner(environmentName, packageName);
-      let holder: Awaited<ReturnType<typeof probeTableHolder>>;
+      // The driver's text can name a host or echo SQL or a secret: logged
+      // redacted, never answered.
+      const redacted = (err: unknown) =>
+         redactConnectionSecrets(
+            errMessage(err),
+            apiConnectionOf(environment, connectionName),
+         );
+      let holder: TableHolder;
       try {
-         holder = await probeTableHolder(site, physicalTableName, owner);
+         const segments = site.segments(physicalTableName);
+         // A mark is proof only on the table it names: a renamed, moved or
+         // copied table carries its source's mark (markedFor).
+         holder = markedFor(
+            await site.run(ownedTableProbeSql(segments, site.dialect)),
+            owner,
+            tableIdentityAt(segments, site.dialect),
+         );
       } catch (err) {
-         // The driver's text can name a host or echo SQL: logged, not
-         // answered.
          logger.warn("Could not read who holds a table a caller would drop", {
             environmentName,
             packageName,
             connectionName,
             physicalTableName,
-            error: errMessage(err),
+            error: redacted(err),
          });
          throw unverified("whose it is could not be read (the probe failed)");
       }
@@ -1224,10 +1309,20 @@ export class Reclaimer {
          );
       }
       if (holder.state === "taken") {
+         // Who holds it (another package's name, a view's) is logged, not
+         // answered: the caller learns only that it is not this package's.
+         logger.warn("Refused a caller's drop of a table another holds", {
+            environmentName,
+            packageName,
+            connectionName,
+            physicalTableName,
+            holder: holder.holder,
+         });
          throw new MaterializedTableDropRefusedError(
             "TABLE_OWNED_ELSEWHERE",
             `Table ${where} is not dropped (TABLE_OWNED_ELSEWHERE): the name ` +
-               `is held by ${holder.holder}, not by package ${packageName}.`,
+               `is held by a table or view that is not package ` +
+               `${packageName}'s.`,
          );
       }
       if (holder.state === "unmarked" && !evidence.namedRecordsIt) {
@@ -1258,10 +1353,14 @@ export class Reclaimer {
                packageName,
                connectionName,
                physicalTableName,
-               error: errMessage(err),
+               error: redacted(err),
             },
          );
-         throw databaseAccessFailure(err) ?? err;
+         throw (
+            dropRefusalOf(err, where) ??
+            databaseAccessFailure(err) ??
+            new Error(`Dropping table ${where} failed: ${redacted(err)}`)
+         );
       }
       recordDropTables("success", "database", "caller");
       logger.info("Dropped a materialized table at a caller's request", {

@@ -30,15 +30,16 @@ import type { DialectName } from "../domain/dialect";
 import type { ManifestEntry } from "../domain/types";
 import { backupSuffix, stagingSuffix } from "./materialization_run_support";
 import { Reclaimer } from "./reclaimer";
-import { ownedTableComment } from "./table_ownership";
+import { ownedTableComment, tableIdentityAt } from "./table_ownership";
 
 const ENV = "e1";
 const ENV_ID = "env-1";
 const PKG = "pa";
 const CONN = "warehouse";
 const TABLE = "analytics.orders_t";
-const OWN = ownedTableComment(`${ENV}/${PKG}`);
-const OTHER = ownedTableComment(`${ENV}/pb`);
+/** This package's mark, on the table it names (Postgres keeps case). */
+const OWN = ownedTableComment(`${ENV}/${PKG}`, TABLE);
+const OTHER = ownedTableComment(`${ENV}/pb`, TABLE);
 
 /** What the probe finds at the name: rows of {kind, comment}, or a throw. */
 type Holder = { kind: string; comment: string | null }[] | "fails";
@@ -99,6 +100,8 @@ function harness(
       runs?: Materialization[];
       bound?: string[];
       versionBound?: string[];
+      /** What the warehouse throws for the table's DROP. */
+      dropError?: unknown;
    } = {},
 ): Harness {
    const statements: string[] = [];
@@ -109,6 +112,7 @@ function harness(
       dialectName: dialect,
       runSQL: async (sql: string) => {
          if (/^DROP /.test(sql)) {
+            if (options.dropError) throw options.dropError;
             locks.push("drop");
             statements.push(sql);
             return { rows: [] };
@@ -236,19 +240,19 @@ describe("ownership", () => {
       ).toBe(1);
    });
 
-   it("refuses a table another package marked: TABLE_OWNED_ELSEWHERE", async () => {
+   it("refuses a table another package marked, without naming that package: TABLE_OWNED_ELSEWHERE", async () => {
       const h = harness(table(OTHER));
-      await expectReason(h.drop(), "TABLE_OWNED_ELSEWHERE", `${ENV}/pb`);
+      const err = await refusal(h.drop());
+      expect((err as MaterializedTableDropRefusedError).reason as string).toBe(
+         "TABLE_OWNED_ELSEWHERE",
+      );
+      expect(err.message).not.toContain("pb");
       expect(h.statements).toEqual([]);
    });
 
    it("refuses a view Publisher did not make: TABLE_OWNED_ELSEWHERE", async () => {
       const h = harness([{ kind: "VIEW", comment: null }]);
-      await expectReason(
-         h.drop(),
-         "TABLE_OWNED_ELSEWHERE",
-         "a view Publisher did not create",
-      );
+      await expectReason(h.drop(), "TABLE_OWNED_ELSEWHERE");
       expect(h.statements).toEqual([]);
    });
 
@@ -319,6 +323,122 @@ describe("ownership", () => {
    });
 });
 
+/**
+ * A comment travels with its table: renamed (`ALTER TABLE … RENAME`), moved
+ * (`SET SCHEMA`), or copied with its comments (`CREATE TABLE … LIKE …
+ * INCLUDING COMMENTS`, a Snowflake CLONE, a BigQuery copy), the copy carries
+ * the mark of the table it came from. The drop accepts a mark only on the
+ * table it names, so each is refused unless a run record names it there.
+ */
+describe("the mark names its table", () => {
+   const own = (table: string) => ownedTableComment(`${ENV}/${PKG}`, table);
+   const cases: [string, string, string][] = [
+      ["renamed", "analytics.orders_t", "analytics.keep_me"],
+      ["moved to another schema", "analytics.orders_t", "archive.orders_t"],
+      [
+         "copied with its comment",
+         "analytics.orders_t",
+         "analytics.orders_copy",
+      ],
+      ["unqualified, then reached qualified", "orders_t", "public.orders_t"],
+   ];
+   for (const [how, built, probed] of cases) {
+      it(`${how}: refused, TABLE_OWNERSHIP_UNVERIFIED`, async () => {
+         const h = harness(table(own(built)));
+         await expectReason(
+            h.drop({ physicalTableName: probed }),
+            "TABLE_OWNERSHIP_UNVERIFIED",
+         );
+         expect(h.statements).toEqual([]);
+      });
+
+      it(`${how}: dropped when the named run records the new name`, async () => {
+         const h = harness(table(own(built)), {
+            runs: [run("r1", "FAILED", [entry(probed)])],
+         });
+         expect(
+            await h.drop({
+               physicalTableName: probed,
+               materializationId: "r1",
+            }),
+         ).toBe("dropped");
+      });
+   }
+
+   it("a mark an earlier release wrote (no table=) is not proof", async () => {
+      const h = harness(table(ownedTableComment(`${ENV}/${PKG}`)));
+      await expectReason(h.drop(), "TABLE_OWNERSHIP_UNVERIFIED");
+      expect(h.statements).toEqual([]);
+   });
+
+   it("DuckDB ignores case: the mark matches the name in any case", async () => {
+      const h = harness(table(own("analytics.orders_t")), {
+         dialect: "duckdb",
+      });
+      expect(await h.drop({ physicalTableName: "Analytics.ORDERS_T" })).toBe(
+         "dropped",
+      );
+   });
+
+   it("Postgres keeps quoted case: a mark for another case is another table", async () => {
+      const h = harness(table(own("analytics.Orders_T")));
+      await expectReason(h.drop(), "TABLE_OWNERSHIP_UNVERIFIED");
+   });
+});
+
+describe("what the warehouse refuses", () => {
+   const coded = (code: string, message: string) =>
+      Object.assign(new Error(message), { code });
+   const failures = () =>
+      metrics.collectCounter("publisher_materialization_drop_tables_total", {
+         outcome: "failure",
+         tier: "database",
+         occasion: "caller",
+      });
+
+   it("dependent objects (Postgres 2BP01): TABLE_IN_USE, counted as a failed drop", async () => {
+      const h = harness(table(OWN), {
+         dropError: coded(
+            "2BP01",
+            "cannot drop table orders_t because other objects depend on it",
+         ),
+      });
+      await expectReason(h.drop(), "TABLE_IN_USE", "depend on it");
+      expect(await failures()).toBe(1);
+   });
+
+   it("a missing privilege (42501): TABLE_OWNED_ELSEWHERE", async () => {
+      const h = harness(table(OWN), {
+         dropError: coded("42501", "must be owner of table orders_t"),
+      });
+      await expectReason(h.drop(), "TABLE_OWNED_ELSEWHERE", "not allowed");
+      expect(await failures()).toBe(1);
+   });
+
+   it("not a table (42809): TABLE_OWNED_ELSEWHERE", async () => {
+      const h = harness(table(OWN), {
+         dropError: coded("42809", '"orders_t" is not a table'),
+      });
+      await expectReason(
+         h.drop(),
+         "TABLE_OWNED_ELSEWHERE",
+         "other than a table",
+      );
+   });
+
+   it("anything else is a server error whose text is redacted", async () => {
+      const h = harness(table(OWN), {
+         dropError: new Error(
+            "could not write s3://secret-bucket/path/data.parquet",
+         ),
+      });
+      const err = await refusal(h.drop());
+      expect(err).not.toBeInstanceOf(MaterializedTableDropRefusedError);
+      expect(err.message).not.toContain("secret-bucket");
+      expect(await failures()).toBe(1);
+   });
+});
+
 describe("in use", () => {
    it("refuses while any run of the package is active: MATERIALIZATION_CONFLICT", async () => {
       const h = harness(table(OWN), {
@@ -374,17 +494,21 @@ describe("in use", () => {
       );
    });
 
-   it("refuses a build's staging or backup copy alone: it goes with its table", async () => {
+   it("refuses a build's staging or backup copy alone, however it is reached: it goes with its table", async () => {
       const recorded = entry(TABLE);
-      for (const suffix of [stagingSuffix, backupSuffix]) {
+      const id = recorded.sourceEntityId;
+      const names = [stagingSuffix, backupSuffix].flatMap((suffix) => [
+         `${TABLE}${suffix(id)}`,
+         // Another container, or another case: the same copy.
+         `public.orders_t${suffix(id)}`,
+         `main.ORDERS_T${suffix(id).toUpperCase()}`,
+         `orders_t${suffix(id)}`,
+      ]);
+      for (const name of names) {
          const h = harness(table(OWN), {
             runs: [run("r1", "FAILED", [recorded])],
          });
-         const err = await refusal(
-            h.drop({
-               physicalTableName: `${TABLE}${suffix(recorded.sourceEntityId)}`,
-            }),
-         );
+         const err = await refusal(h.drop({ physicalTableName: name }));
          expect(err).toBeInstanceOf(InvalidArgumentError);
          expect(err.message).toContain(`drop '${TABLE}' instead`);
          expect(h.statements).toEqual([]);
@@ -418,14 +542,26 @@ describe("quoting, per registered dialect", () => {
             dialect === "sqlserver"
                ? "Analytics.Orders_T"
                : "my-proj.Analytics.Orders_T";
+         // Its own mark, naming it as the build wrote it at this dialect.
          // Presto reads no comment, so its tables are never marked: the
          // named run's record is the evidence there.
-         const h = harness(table(dialect === "presto" ? null : OWN), {
-            dialect,
-            runs: [run("r1", "FAILED", [entry(name)])],
-         });
+         const presto = dialect === "presto";
+         const h = harness(
+            table(
+               presto
+                  ? null
+                  : ownedTableComment(
+                       `${ENV}/${PKG}`,
+                       tableIdentityAt(name.split("."), dialect),
+                    ),
+            ),
+            { dialect, runs: [run("r1", "FAILED", [entry(name)])] },
+         );
          expect(
-            await h.drop({ materializationId: "r1", physicalTableName: name }),
+            await h.drop({
+               physicalTableName: name,
+               ...(presto ? { materializationId: "r1" } : {}),
+            }),
          ).toBe("dropped");
          expect(h.statements[0]).toBe(
             `DROP TABLE IF EXISTS ${quoteTablePath(name, dialect)}`,

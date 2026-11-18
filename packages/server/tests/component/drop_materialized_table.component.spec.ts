@@ -34,6 +34,7 @@ import * as fs from "fs";
 import * as path from "path";
 import {
    ConnectionNotFoundError,
+   InvalidArgumentError,
    MaterializationConflictError,
    MaterializedTableDropRefusedError,
    TableNotFoundError,
@@ -42,6 +43,7 @@ import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import type { MaterializationService } from "../../src/service/materialization/run/materialization_service";
+import { backupSuffix } from "../../src/service/materialization/run/materialization_run_support";
 import { ownedTableComment } from "../../src/service/materialization/run/table_ownership";
 import type {
    Materialization,
@@ -59,8 +61,9 @@ import {
 const ENV = "e1";
 const ENV_ID = "env-1";
 const PKG = "pa";
-const OWN = ownedTableComment(`${ENV}/${PKG}`);
-const OTHER = ownedTableComment(`${ENV}/pb`);
+/** This package's mark on `table` (lower-case names: DuckDB and Postgres agree). */
+const OWN = (table: string) => ownedTableComment(`${ENV}/${PKG}`, table);
+const OTHER = ownedTableComment(`${ENV}/pb`, "theirs_t");
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
 
 const MODEL = [
@@ -394,7 +397,10 @@ for (const warehouse of WAREHOUSES) {
          const m = await build();
          const table = tableOf(m, "summary");
          // Publisher named it (no name=), and it carries the mark.
-         expect(await look(table)).toEqual({ exists: true, comment: OWN });
+         expect(await look(table)).toEqual({
+            exists: true,
+            comment: OWN(table),
+         });
 
          // Named by a committed run and bound: never dropped.
          await expectReason(drop(table), "TABLE_IN_USE");
@@ -420,7 +426,10 @@ for (const warehouse of WAREHOUSES) {
 
       it("a host-instructed build's table carries the mark, and drops once no record names it", async () => {
          const m = await buildInstructed("cp_gen1");
-         expect(await look("cp_gen1")).toEqual({ exists: true, comment: OWN });
+         expect(await look("cp_gen1")).toEqual({
+            exists: true,
+            comment: OWN("cp_gen1"),
+         });
          await expectReason(drop("cp_gen1"), "TABLE_IN_USE");
          await service.deleteMaterialization(ENV, PKG, m.id);
          expect(await drop("cp_gen1")).toBe("dropped");
@@ -449,6 +458,81 @@ for (const warehouse of WAREHOUSES) {
          );
          // The served generation is never dropped.
          expect((await look("cp_gen2")).exists).toBe(true);
+      });
+
+      it("a renamed, moved or copied table carries its mark, which proves nothing: refused, the tables left as they were", async () => {
+         const m = await build();
+         const table = tableOf(m, "summary");
+         await service.deleteMaterialization(ENV, PKG, m.id);
+         const mark = (await look(table)).comment;
+         expect(mark).toBe(OWN(table));
+
+         // Copied, its comment with it (a clone, a copy that keeps comments).
+         await sql(`CREATE TABLE prod_copy AS SELECT * FROM ${table}`);
+         await sql(`COMMENT ON TABLE prod_copy IS '${mark}'`);
+         await expectReason(drop("prod_copy"), "TABLE_OWNERSHIP_UNVERIFIED");
+         expect((await look("prod_copy")).exists).toBe(true);
+
+         // Moved out of the way to keep it: the rename keeps the comment.
+         await sql(`ALTER TABLE ${table} RENAME TO keep_me`);
+         expect((await look("keep_me")).comment).toBe(mark);
+         await expectReason(drop("keep_me"), "TABLE_OWNERSHIP_UNVERIFIED");
+         expect((await look("keep_me")).exists).toBe(true);
+
+         if (warehouse.label === "Postgres") {
+            // Moved to another schema under its own name.
+            await sql("CREATE SCHEMA s2");
+            await sql("ALTER TABLE keep_me RENAME TO " + table);
+            await sql(`ALTER TABLE ${table} SET SCHEMA s2`);
+            await expectReason(
+               drop(`s2.${table}`),
+               "TABLE_OWNERSHIP_UNVERIFIED",
+            );
+         }
+      });
+
+      it("a table other objects depend on is refused TABLE_IN_USE, and another holder is not named", async () => {
+         const m = await build();
+         const table = tableOf(m, "summary");
+         await service.deleteMaterialization(ENV, PKG, m.id);
+         if (warehouse.label === "Postgres") {
+            // Postgres binds a view to its table; DuckDB and DuckLake views
+            // are bound only when read, so their tables drop under them.
+            await sql(`CREATE VIEW dep_v AS SELECT * FROM ${table}`);
+            await expectReason(drop(table), "TABLE_IN_USE");
+            expect((await look(table)).exists).toBe(true);
+         }
+         await warehouse.plant(
+            sql,
+            "secret_t",
+            ownedTableComment("otherenv/secretpkg", "secret_t"),
+         );
+         const err = await refused(drop("secret_t"));
+         expect(
+            (err as MaterializedTableDropRefusedError).reason as string,
+         ).toBe("TABLE_OWNED_ELSEWHERE");
+         expect(err.message).not.toContain("secretpkg");
+         expect(err.message).not.toContain("otherenv");
+      });
+
+      it("a build's backup copy is refused however it is named", async () => {
+         const m = await buildInstructed("cp_a");
+         const entry = Object.values(
+            (
+               m.manifest as {
+                  entries: Record<string, { sourceEntityId: string }>;
+               }
+            ).entries,
+         )[0];
+         const copy = `cp_a${backupSuffix(entry.sourceEntityId)}`;
+         await warehouse.plant(sql, copy, OWN(copy));
+         const schema = warehouse.label === "Postgres" ? "public" : "main";
+         for (const name of [copy, `${schema}.${copy}`, copy.toUpperCase()]) {
+            const err = await refused(drop(name));
+            expect(err).toBeInstanceOf(InvalidArgumentError);
+         }
+         expect((await look(copy)).exists).toBe(true);
+         expect((await look("cp_a")).exists).toBe(true);
       });
 
       it("refuses another package's table, an unproven one, any while a run is active, and an unreached connection", async () => {

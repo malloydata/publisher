@@ -620,7 +620,7 @@ describe.skipIf(process.platform === "win32")(
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
          expect(outcome(m).failures).toEqual([]);
          const shared = (await catalog()).shared_t;
-         expect(shared.comment).toBe(OWN_MARK);
+         expect(shared.comment).toBe(`${OWN_MARK} table=${LAKE}.shared_t`);
          expect(shared.rows).toEqual([
             ["a", 1],
             ["a", 2],

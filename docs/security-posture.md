@@ -60,9 +60,18 @@ stands in front of Publisher and does all of the following:
      from 0.16.0). It drops a table in the warehouse, so allow it only to the operator that owns
      the package's materialization lifecycle. Publisher relies on the gateway for who may call it,
      and enforces ownership itself: whoever the gateway admits can drop only a database-tier table
-     the package's own runs or its ownership mark prove is the package's, and never one that a
-     committed run, a loaded package's binding or an active run still uses, or that another
-     package marked ([the drop route](materialization.md#the-drop-route)).
+     that a run record of the package names on that connection, or whose ownership mark names the
+     package and that very table (a mark copied onto another table by a rename, a move to another
+     schema or a clone proves nothing, and a mark from before 0.16.0 is not accepted). It never
+     drops one that a committed run of the package, a loaded package's binding or an active run
+     still uses, or that another package marked
+     ([the drop route](materialization.md#the-drop-route)). Two limits remain. The in-use check
+     sees only this server's records and loaded packages: not an unloaded package bound through a
+     host manifest or `manifestLocation`, a reader outside Malloy, another environment or server
+     on the same schema, or a re-pointed connection. And the answer tells a caller whether a
+     relation the connection can see exists (404 `TABLE_NOT_FOUND` against a 409), for any name
+     it asks about; it never names another table's owner. Both are acceptable only because the
+     gateway admits the operator alone.
 5. Forwards who is asking in the caller header (`x-publisher-caller`, renamed with
    `PUBLISHER_CALLER_HEADER`) and a `traceparent`, so
    the [access record](access-record.md) names the caller.

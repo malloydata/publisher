@@ -1747,7 +1747,8 @@ source: plain is raw extend { measure: total is amt.sum() }
          ).toHaveLength(1);
          expect(await lake.tableComments()).toEqual({
             [PLAIN]: null,
-            shared_t: OWN_MARK,
+            // The mark names the table at its site: the destination's.
+            shared_t: `${OWN_MARK} table=${LAKE}.shared_t`,
          });
          const answer = await lake.ask(OWNED);
          expect(answer.servedFrom).toBe("storage");
