@@ -149,8 +149,7 @@ export class LegDecline extends Error {
       if (options.tableIds && options.tableIds.length > 0) {
          this.tableIds = options.tableIds;
       }
-      const decline: { reason: SkipReason; code?: string } =
-         DECLINES[code];
+      const decline: { reason: SkipReason; code?: string } = DECLINES[code];
       this.reason = decline.reason;
       this.candidateCode = decline.code;
       this.shapeCheck = options.shapeCheck ?? false;
