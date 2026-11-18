@@ -11729,9 +11729,11 @@ components:
             `merge_key`; absent means no lookback.
 
 
-            All three are validated at publish against the compiled output
-            schema, so a dangling or stale name, or an invalid lookback, is
-            rejected rather than deferred to a build. None participates in
+            All three are checked at publish: `watermark` and `merge_key`
+            against the compiled output schema, and `lookback` against its
+            grammar, its limit and the keys it requires, so a dangling or stale
+            name, or an invalid lookback, is rejected rather than deferred to a
+            build. None participates in
             `sourceEntityId`: adding a watermark to an existing source must not
             re-address its table.
 
