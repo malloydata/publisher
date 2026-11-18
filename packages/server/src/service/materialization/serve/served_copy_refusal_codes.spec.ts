@@ -29,7 +29,6 @@ const PROBLEMS = {
    cross_connection_unbuilt: { reason: "cross_connection_unbuilt" },
    column_types: { reason: "column_types", sourceName: "s" },
    no_declaration: { reason: "no_declaration", sourceName: "s" },
-   range_not_found: { reason: "range_not_found", sourceName: "s" },
    definition_not_parsed: { reason: "definition_not_parsed", sourceName: "s" },
    pair_join_not_found: { reason: "pair_join_not_found", sourceName: "s" },
    pair_not_compiled: { reason: "pair_not_compiled", sourceName: "s" },
@@ -91,14 +90,6 @@ const WARNINGS: Record<
             "This source's declaration was not found in the compiled model, so the served copy leaves it as written and it answers live.",
       },
    ],
-   range_not_found: [
-      {
-         code: "served-copy-not-served",
-         subject: "s",
-         message:
-            "This source's declaration could not be re-rooted on its table, so the served copy leaves it as written and it answers live.",
-      },
-   ],
    definition_not_parsed: [
       {
          code: "served-copy-not-served",
@@ -144,7 +135,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source is stored in a destination its join `j` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source database.",
+            "This source is stored in a destination its join `j` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
       },
    ],
    inline_join_kept: [
@@ -190,13 +181,12 @@ function warningsFor(problems: ServedCopyProblem[]) {
 }
 
 describe("the served copy's refusal codes", () => {
-   it("has fourteen reasons", () => {
+   it("has thirteen reasons", () => {
       expect(Object.keys(PROBLEMS)).toEqual([
          "compile_failed",
          "cross_connection_unbuilt",
          "column_types",
          "no_declaration",
-         "range_not_found",
          "definition_not_parsed",
          "pair_join_not_found",
          "pair_not_compiled",
@@ -240,6 +230,13 @@ describe("the served copy's refusal codes", () => {
       }
    });
 
+   it("carries each reason as the warning's reason field, not only in prose", () => {
+      for (const problem of Object.values(PROBLEMS)) {
+         const [w] = warningsFor([problem]);
+         expect(w.reason).toBe(problem.reason);
+      }
+   });
+
    it("words a compile failure that names a source as that source's kept blocks", () => {
       // An extension table that does not compile over its kept blocks: the
       // copy is compiled again with its own blocks only.
@@ -273,8 +270,8 @@ describe("the served copy's refusal codes", () => {
       expect(both.map((w) => w.message)).toEqual([
          WARNINGS.inline_join_kept[0].message,
          WARNINGS.cross_connection_join[0].message.replace(
-            "inline the join (inline=), materialize the joined source into the same destination, or keep this source database.",
-            "fix what keeps the inlined join from being answered from its stored columns (the warning on this join says what), materialize the joined source into the same destination, or keep this source database.",
+            "inline the join (inline=), materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
+            "fix what keeps the inlined join from being answered from its stored columns (the warning on this join says what), materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
          ),
       ]);
    });

@@ -464,7 +464,7 @@ describe("an empty versionId answers as no versionId", () => {
                   reseed: false,
                   sourceNames: null,
                   mode: "auto",
-                  trigger: "ON_DEMAND",
+                  trigger: "on_demand",
                   ...kind.runVersion,
                },
                settled: "MANIFEST_FILE_READY",

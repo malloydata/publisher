@@ -909,7 +909,7 @@
             "kind": "view",
             "origin": "view",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "SHAPE_MISMATCH",
             "tableId": "2fbc1e225d9431d76c336dc2997792c7d30e8ee6ca6c0a0aa793502eb420db5a"
           }
         ],

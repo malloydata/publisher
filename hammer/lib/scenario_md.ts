@@ -31,7 +31,7 @@
 //                                        redaction check can name a secret only the harness knows]
 //   ## Compile <label> (pkg=P[, refused]) + ```malloy (appended source) + `cites:` -> /compile
 //   ## Warns [<pkg>]                     [body: `cites: <substring>`]  -> package warning
-//   ## Preview [<pkg>]                   + `- <source>[.<view>]: serves|live|not_built` lines ->
+//   ## Preview [<pkg>]                   + `- <source>[.<view>]: serves|live|awaiting_build` lines ->
 //                                        POST /packages?dryRun=true on the package's own tree,
 //                                        asserting each source's serve verdict, or one view's
 //   ## Republish [refused] [<pkg>]       [body: `cites: <substring>`]  -> POST /packages (the
@@ -1120,7 +1120,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             }[] = [];
             for (const line of sec.body) {
                const m =
-                  /^\s*-\s*([A-Za-z_][\w]*)(?:\.([A-Za-z_][\w]*))?\s*:\s*(serves|live|not_built)\s*$/.exec(
+                  /^\s*-\s*([A-Za-z_][\w]*)(?:\.([A-Za-z_][\w]*))?\s*:\s*(serves|live|awaiting_build)\s*$/.exec(
                      line,
                   );
                if (m) {
@@ -1133,7 +1133,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             }
             if (expects.length === 0) {
                throw new Error(
-                  `## Preview ${arg}: expected at least one \`- <source>[.<view>]: serves|live|not_built\` line`,
+                  `## Preview ${arg}: expected at least one \`- <source>[.<view>]: serves|live|awaiting_build\` line`,
                );
             }
             steps.push({

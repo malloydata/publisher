@@ -103,8 +103,7 @@ describe("a storage= source on an environment DuckDB connection", () => {
       expect(warning?.message).toContain(
          "its connection 'shared_duckdb' is a 'duckdb' connection",
       );
-      // A refusal no earlier release raised is not repeated under the former
-      // `persist-source-refused`.
+      // No refusal is repeated under 0.14's `persist-source-refused`.
       expect(
          (pkg.getPackageMetadata().warnings ?? []).filter(
             (w) => w.code === "persist-source-refused",

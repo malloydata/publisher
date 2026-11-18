@@ -52,7 +52,7 @@ async function expectWholeSourceLive(fixture: R4Fixture, malloy: string) {
    expect(path?.servedBy?.kind).toBe("live");
    expect(
       (path?.considered ?? []).map((c) => [c.outcome, c.reason, c.code]),
-   ).toEqual([["skipped", "WARNED", "served-copy-not-served"]]);
+   ).toEqual([["skipped", "NOT_SERVED", "served_copy"]]);
 }
 
 describe.each([

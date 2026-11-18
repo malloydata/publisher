@@ -31,7 +31,12 @@
 import { trace } from "@opentelemetry/api";
 import type { GivenValue, ModelDef } from "@malloydata/malloy";
 import type { components } from "../api";
-import { errorKind, internalErrorToHttpError, type ErrorKind } from "../errors";
+import {
+   type AccessDeniedError,
+   errorKind,
+   internalErrorToHttpError,
+   type ErrorKind,
+} from "../errors";
 import { logger, traceIdOf } from "../logger";
 import { redactConnectionSecretShapes } from "../pg_helpers";
 import { settings } from "../settings";
@@ -287,7 +292,9 @@ export async function summarizeQueryAccess(args: {
 type AccessOutcome =
    | "ok"
    | "denied_lock"
+   | "denied_filter"
    | "refused_surface"
+   | "not_found"
    | "bad_request"
    | "cancelled"
    | "error";
@@ -295,14 +302,21 @@ type AccessOutcome =
 /** The outcome a thrown error means, by its kind; the status it maps to is the route's. */
 export function outcomeOf(error: unknown, status: number): AccessOutcome {
    const kind = errorKind(error);
-   if (kind === "access_denied") return "denied_lock";
-   // A 403 from the storage behind a table, not a gate: the query failed.
-   if (kind === "storage_access_denied") return "error";
-   if (kind === "model_not_found" || status === 404) {
+   if (kind === "access_denied") {
+      return (error as AccessDeniedError).gate === "row_filter"
+         ? "denied_filter"
+         : "denied_lock";
+   }
+   // The package's curation kept the source off the surface.
+   if (kind === "not_queryable" || kind === "off_surface") {
       return "refused_surface";
    }
-   if (status === 403) return "denied_lock";
+   // A missing environment, package, model or source: no curation decided
+   // it. The record is the operator's, so naming it reveals nothing.
+   if (status === 404) return "not_found";
    if (status === 400) return "bad_request";
+   // Any other 403 (the storage behind a table, a frozen config) is not a
+   // gate's: the request failed.
    return "error";
 }
 
@@ -312,7 +326,7 @@ interface AccessPathCandidate {
    kind: string;
    outcome: string;
    reason?: string;
-   /** The serve verdict's reason on a `WARNED` skip, when the report gives one. */
+   /** The serve verdict's reason on a `NOT_SERVED` skip, when the report gives one. */
    code?: string;
 }
 

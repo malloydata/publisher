@@ -290,7 +290,7 @@ export class PersistedViewServe {
       this.compiledOver(args.pinned);
       const called = this.calledView(args.queryString);
       if (!called) {
-         throw new LegDecline("view_missing_field");
+         throw new LegDecline("view_shape_mismatch");
       }
       const { call, plan } = called;
       const refined =
@@ -1205,7 +1205,7 @@ function groupedColumn(c: ViewColumn): string {
 export function refinedCallDecline(call: RunViewCall): LegDecline | undefined {
    if (call.refined) {
       return new LegDecline(
-         "view_missing_field",
+         "view_shape_mismatch",
          `the query refines \`${call.view}\` (\`+ { … }\`), and the stored result holds only the view as written`,
       );
    }
@@ -1239,11 +1239,15 @@ export function callerTextDecline(
       contents: Record<string, unknown> | undefined;
       declaringURL: string | undefined;
    },
+   /** The leg that asks, which the decline's code is attributed to. */
+   leg: "view" | "query" = "view",
 ): LegDecline | undefined {
+   const code =
+      leg === "query" ? "query_shape_mismatch" : "view_shape_mismatch";
    const named = redeclared.find((n) => n !== undefined && otherNames.has(n));
    if (named !== undefined) {
       return new LegDecline(
-         "view_missing_field",
+         code,
          `the query text names \`${named}\` beside the call of \`${name}\`, a name the stored result's variant gives to the stored rows`,
       );
    }
@@ -1258,7 +1262,7 @@ export function callerTextDecline(
          | undefined;
       if (entry?.type === "query") {
          return new LegDecline(
-            "view_missing_field",
+            code,
             `the query text names the named query \`${other}\` beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
          );
       }
@@ -1271,7 +1275,7 @@ export function callerTextDecline(
             : undefined);
       if (declaredIn === undefined || declaredIn !== model.declaringURL) {
          return new LegDecline(
-            "view_missing_field",
+            code,
             `the query text names \`${other}\`, declared in another file than the stored result's, beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
          );
       }
@@ -1292,7 +1296,7 @@ export function callTargetDecline(
 ): LegDecline | undefined {
    if (!localName || sourceID !== plan.sourceID) {
       return new LegDecline(
-         "view_missing_field",
+         "view_shape_mismatch",
          `the query does not call \`${call.view}\` on the source that declares it`,
       );
    }
@@ -1311,7 +1315,7 @@ export function exactCallDecline(
 ): LegDecline | undefined {
    if (resultName !== plan.viewName) {
       return new LegDecline(
-         "view_missing_field",
+         "view_shape_mismatch",
          `the query is not a call of \`${call.view}\``,
       );
    }

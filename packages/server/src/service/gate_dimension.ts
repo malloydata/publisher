@@ -109,6 +109,17 @@ export function expandRefSummaryGivenIds(
    return { ok: true, givenIds: ids };
 }
 
+/** Whether a compiled condition is the literal `false`, parenthesized or not. */
+function isConstantFalse(node: unknown): boolean {
+   let n = node as { node?: unknown; e?: unknown } | null | undefined;
+   for (let depth = 0; depth < NEGATION_SCAN_DEPTH && n; depth++) {
+      if (n.node === "false") return true;
+      if (n.node !== "()") return false;
+      n = n.e as typeof n;
+   }
+   return false;
+}
+
 /** Deepest boolean nesting {@link negatedMembershipScan} walks. */
 const NEGATION_SCAN_DEPTH = 64;
 
@@ -218,7 +229,10 @@ export function validateSourceLineGateGivenUsage(
       }
    }
 
-   if (givenIds.size === 0) {
+   // `#(authorize) false` is a deliberate deny-all lock (a locked base that
+   // only its extensions' own gates re-open), not an access rule that forgot
+   // its given: W1 does not warn on it.
+   if (givenIds.size === 0 && !isConstantFalse(conditionExpr)) {
       onWarning?.(
          "source_line_gate_no_given_reference",
          `The ${gate} on source "${sourceName}" references no given; it is ` +
@@ -235,9 +249,12 @@ export function validateSourceLineGateGivenUsage(
    } else if (negated === "too_deep") {
       onWarning?.(
          "source_line_gate_negated_membership",
-         `The ${gate} on source "${sourceName}" nests too deeply to check ` +
-            `for a negated membership test, which would match everything ` +
-            `when its given is empty; simplify the condition`,
+         // No negation was found: the scan stopped. Say so, never that the
+         // gate negates one.
+         `The ${gate} on source "${sourceName}" is too deep to check: the ` +
+            `scan stops before it can tell whether the gate negates a ` +
+            `membership test (one would match everything when its given is ` +
+            `empty); simplify the condition so it can be checked`,
       );
    }
 }

@@ -1464,7 +1464,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
          const auto = await service.createMaterialization(ENV, PKG, {});
          expect(
             await refusal(service.createMaterialization(ENV, PKG, {})),
-         ).toEqual({ status: 409, reason: undefined });
+         ).toEqual({ status: 409, reason: "MATERIALIZATION_CONFLICT" });
          const instructed = await service.createMaterialization(ENV, PKG, {
             versionId: VersionRef.parse("1.0.0"),
             buildInstructions: [
@@ -1756,7 +1756,7 @@ describe("the scheduler, per published version", () => {
 
    async function scheduledRuns(): Promise<Materialization[]> {
       const runs = (await repo.listMaterializations(ENV_ID, PKG)).filter(
-         (m) => m.metadata?.trigger === "SCHEDULER",
+         (m) => m.metadata?.trigger === "scheduler",
       );
       return Promise.all(runs.map((m) => settled(m.id)));
    }

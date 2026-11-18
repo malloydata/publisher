@@ -30,7 +30,7 @@ describe("refinedCallDecline", () => {
 
    it("declines a refined call", () => {
       const decline = refinedCallDecline(call({ refined: true }));
-      expect(decline?.code).toBe("view_missing_field");
+      expect(decline?.code).toBe("view_shape_mismatch");
       expect(decline?.callerDetail).toContain("refines `by_carrier`");
    });
 });
@@ -46,10 +46,10 @@ describe("callTargetDecline", () => {
 
    it("declines a run target that is not named", () => {
       expect(callTargetDecline(call(), plan, undefined, SOURCE_ID)?.code).toBe(
-         "view_missing_field",
+         "view_shape_mismatch",
       );
       expect(callTargetDecline(call(), plan, "", SOURCE_ID)?.code).toBe(
-         "view_missing_field",
+         "view_shape_mismatch",
       );
    });
 
@@ -75,7 +75,7 @@ describe("exactCallDecline", () => {
 
    it("declines a result named for anything else", () => {
       const decline = exactCallDecline(call(), plan, "flights");
-      expect(decline?.code).toBe("view_missing_field");
+      expect(decline?.code).toBe("view_shape_mismatch");
       expect(decline?.callerDetail).toContain("not a call of `by_carrier`");
    });
 });
@@ -110,8 +110,8 @@ describe("callerTextDecline", () => {
          "q",
          model,
       );
-      expect(decline?.code).toBe("view_missing_field");
-      expect(decline?.reason).toBe("MISSING_FIELD");
+      expect(decline?.code).toBe("view_shape_mismatch");
+      expect(decline?.reason).toBe("SHAPE_MISMATCH");
       expect(decline?.callerDetail).toContain("`fl`");
    });
 
@@ -124,6 +124,18 @@ describe("callerTextDecline", () => {
             ?.callerDetail,
       ).toContain("`alias`, declared in another file");
    });
+
+   it("attributes its decline to the leg that asks", () => {
+      for (const others of [["q"], ["fl_q"], ["alias"]]) {
+         expect(
+            callerTextDecline(new Set(others), ["q"], "q", model, "query")
+               ?.code,
+         ).toBe("query_shape_mismatch");
+         expect(
+            callerTextDecline(new Set(others), ["q"], "q", model)?.code,
+         ).toBe("view_shape_mismatch");
+      }
+   });
 });
 
 describe("the view leg's decisions at their edges", () => {
@@ -135,7 +147,7 @@ describe("the view leg's decisions at their edges", () => {
             "flights",
             undefined,
          )?.code,
-      ).toBe("view_missing_field");
+      ).toBe("view_shape_mismatch");
    });
 
    it("reads the plan's sourceID, never the run target's name", () => {
@@ -162,13 +174,13 @@ describe("the view leg's decisions at their edges", () => {
       expect(
          exactCallDecline(call(), { viewName: "by_carrier" }, "By_Carrier")
             ?.code,
-      ).toBe("view_missing_field");
+      ).toBe("view_shape_mismatch");
    });
 
    it("declines a refined call with later stages as refined", () => {
       expect(
          refinedCallDecline(call({ refined: true, laterStages: 2 }))?.code,
-      ).toBe("view_missing_field");
+      ).toBe("view_shape_mismatch");
       expect(refinedCallDecline(call({ laterStages: 2 }))).toBeUndefined();
    });
 });

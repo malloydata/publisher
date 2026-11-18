@@ -510,7 +510,7 @@ for (const placement of ["database", "storage"] as const) {
  * the join leg engages: database it answers from the rollup; on `storage=`
  * this harness cannot store the DuckDB parent in the destination, so it
  * declines `CROSS_CONNECTION`. Behind a lock, own or
- * inherited, the leg declines `CONTRACT` before the gate policy is asked (its
+ * inherited, the leg declines `ROW_LEVEL_GATE` before the gate policy is asked (its
  * variant redeclares the parent around the join and carries no gate), so
  * `gatesReadNoColumn` never widens it: every caller is answered as live is.
  */
@@ -612,7 +612,7 @@ for (const placement of ["database", "storage"] as const) {
             it(`declines CONTRACT for ${source} and answers every caller as live does`, async () => {
                fixture.setBindings(fixture.bindings);
                const served = await fixture.runAsIs(query(source), ADMIN);
-               expect(rollupStep(served.path)?.reason).toBe("CONTRACT");
+               expect(rollupStep(served.path)?.reason).toBe("ROW_LEVEL_GATE");
                const run = await fixture.run({
                   name: `${source} admin`,
                   malloy: query(source),

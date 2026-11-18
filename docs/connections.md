@@ -65,7 +65,7 @@ server that cannot be reached as unreachable (502, `CONNECTION_FAILED`). Two lim
 
 The dialect is **experimental** upstream. Publisher accepts it on the author's behalf, so a model
 needs no `##! experimental.dialect.sqlserver` pragma. The connection is **read-only**: a database
-`#@ persist` on a SQL Server source is refused at load with reason `read_only_dialect` and the
+`#@ persist` on a SQL Server source is refused at load with reason `connection_cannot_hold_table` and the
 source serves live. The connector's README lists what the dialect does not translate yet (`nest:`,
 a boolean used as a condition, `all()`/`exclude()`, regular expressions before SQL Server 2025).
 

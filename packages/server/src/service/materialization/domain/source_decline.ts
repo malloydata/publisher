@@ -28,7 +28,6 @@ const SOURCE_DECLINES = {
    cross_connection_unbuilt: { stage: "served_copy" },
    column_types: { stage: "served_copy" },
    no_declaration: { stage: "served_copy" },
-   range_not_found: { stage: "served_copy" },
    definition_not_parsed: { stage: "served_copy" },
    pair_join_not_found: { stage: "served_copy" },
    pair_not_compiled: { stage: "served_copy" },

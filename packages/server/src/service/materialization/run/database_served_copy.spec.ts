@@ -413,11 +413,13 @@ source: ev_own is ev extend {
             const failures = Object.values(
                (first.manifest as { failures?: Record<string, unknown> })
                   ?.failures ?? {},
-            ) as { sourceName?: string; reason?: string }[];
+            ) as { sourceName?: string; reason?: string; code?: string }[];
             expect(failures.map((f) => f.sourceName)).toEqual(["ev_taken"]);
             // Refused by the ownership check (table_ownership.ts), which
             // runs before the database name= preflight.
             expect(failures[0].reason).toContain("table-owned-elsewhere");
+            // The code as a field, so a client never parses the prose.
+            expect(failures[0].code).toBe("table-owned-elsewhere");
             expect(failures[0].reason).toContain(
                "a table with no Publisher mark",
             );

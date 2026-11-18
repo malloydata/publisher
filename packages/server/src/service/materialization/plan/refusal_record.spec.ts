@@ -5,7 +5,7 @@
  * The one refusal record: a planner's refusal finding moves into the plan's
  * `refusedSources` once, keeps its warning's code and subject as a notice,
  * and the package's not-built warnings come from the records alone, with the
- * `persist-source-refused` alias beside `persist-not-built` only.
+ * `persist-not-built` alone (0.14's `persist-source-refused` alias is gone).
  */
 
 import { describe, expect, it } from "bun:test";
@@ -104,8 +104,12 @@ describe("measureRefusalKey", () => {
 
    it("keys a refusal of every rollup on a base by the base alone", () => {
       expect(
-         measureRefusalKey(`orders@${URL}`, "orders", undefined, "join_level")
-            .name,
+         measureRefusalKey(
+            `orders@${URL}`,
+            "orders",
+            undefined,
+            "join_not_in_grain",
+         ).name,
       ).toBe("orders");
    });
 });
@@ -195,12 +199,13 @@ describe("persistRefusalWarnings", () => {
             subject: "orders.total",
             message: "refused",
             code: "rollup-not-built",
+            reason: "authorize",
             severity: "warn",
          },
       ]);
    });
 
-   it("repeats a #@ persist gate refusal under the alias, and no other mechanism's", () => {
+   it("codes each mechanism's refusal once, with no 0.14 alias", () => {
       const persist = `orders@${URL}`;
       const view = `orders__by_x__view@${URL}.persist-view.malloy`;
       const materialized = `mat@${URL}`;
@@ -223,7 +228,6 @@ describe("persistRefusalWarnings", () => {
       ).map((w) => [w.subject, w.code]);
       expect(codes).toEqual([
          ["orders", "persist-not-built"],
-         ["orders", "persist-source-refused"],
          ["orders__by_x__view", "persist-view-not-built"],
          ["mat", "materialize-not-built"],
          ["lake", "persist-not-built"],

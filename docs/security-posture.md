@@ -194,10 +194,10 @@ Concretely:
   error, compile diagnostics, MCP error text, a run's recorded errors, `/status` `loadErrors`) has
   every object-store and HTTP URL replaced with `<storage path>`, and the server log masks a signed
   URL's signature, credential and token. An object store refusing a read (`HTTP … error on
-  '<url>' (HTTP 401|403)`, and Azure's and DuckDB's other forms) answers 403
-  `STORAGE_ACCESS_DENIED` on the query and raw `sqlQuery` routes, naming the source or
-  connection the caller read and no URL; it says the query is fine only for a URL under a data
-  path the environment configures. The full text, bucket and path included, is in the server
+  '<url>' (HTTP 401|403)`, and Azure's and DuckDB's other forms) answers 403 on the query and raw `sqlQuery` routes, naming the source or connection the caller
+  read and no URL: `STORAGE_ACCESS_DENIED`, saying the query is fine, only for a URL under a data
+  path the environment configures, and `PATH_ACCESS_DENIED` for a path the query or model reads
+  itself. The full text, bucket and path included, is in the server
   log. Hiding a schema a host's catalog uses (such as a managed `materialized` schema)
   from models is the host's to configure, not Publisher's.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
