@@ -208,11 +208,6 @@ export async function buildFcjIndex(args: {
     * `llm.maxCallsPerSync`.
     */
    budget?: SyncRequestBudget;
-   /**
-    * The value index of the build this one replaces, when it was built again
-    * for failed value reads: only those dimensions are read (values_index.ts).
-    */
-   previousValues?: { index: ValueIndex; report: ValueBuildReport };
    shouldStop?: () => boolean;
    /** Progress of the entity vectors step (not the value vectors). */
    onVectorProgress?: (
@@ -318,7 +313,6 @@ export async function buildFcjIndex(args: {
               }
             : {}),
          ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
-         ...(args.previousValues ? { previous: args.previousValues } : {}),
          ...(valueGivens ? { givens: valueGivens } : {}),
       });
       values = built.index;

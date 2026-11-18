@@ -21,6 +21,7 @@
  */
 
 import type { ModelDef } from "@malloydata/malloy";
+import { createHash } from "crypto";
 import { isOnRoute, marksAgentHidden } from "../../service/annotation_reader";
 import type { Relationship } from "@malloydata/malloy-interfaces";
 import { compareText as comparePaths } from "../../compare_text";
@@ -147,6 +148,16 @@ export interface CatalogSource {
     * the caller's givens name, as hosted Credible does. Sorted by column.
     */
    partitionKey?: PartitionKey;
+   /**
+    * A hash of what decides the rows a read of this source sees: its compiled
+    * definition (joins inlined) and the model's givens, with source locations
+    * and every note except a gate (`#(access_filter)`, `#(authorize)`) left
+    * out. A doc edit leaves it unchanged; a change to a table, a `where:`, a
+    * join, a dimension or a gate changes it. The value index reuses a stored
+    * read only while it matches. Undefined when the model has no compiled
+    * definition for the source.
+    */
+   readDefinition?: string;
    /** Keys of every node the source owns, sources excluded, in walk order. */
    fields: string[];
 }
@@ -1181,6 +1192,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
          indexed: false,
          entities: [e],
       };
+      const readDefinition = readDefinitionOf(model?.modelDef, e.name);
       sources.set(key, {
          key,
          name: e.name,
@@ -1189,6 +1201,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
          node,
          gated,
          ...(partitionKey ? { partitionKey } : {}),
+         ...(readDefinition ? { readDefinition } : {}),
          fields: [],
       });
       nodes.set(node.key, node);
@@ -1708,6 +1721,39 @@ export async function catalogInputOf(
       droppedSources: pkgIndex.droppedSources,
       models,
    };
+}
+
+/** A gate in a note: it changes the rows a read sees, so it stays in the hash. */
+const GATE_NOTE = /#\|?\s*\(\s*(access_filter|authorize)\b/;
+
+/** A note (`{ text, at }`) that is not a gate: a doc or another tag. */
+function isOtherNote(x: unknown): boolean {
+   if (!x || typeof x !== "object" || Array.isArray(x)) return false;
+   const keys = Object.keys(x);
+   const text = (x as { text?: unknown }).text;
+   return (
+      typeof text === "string" &&
+      keys.every((k) => k === "text" || k === "at") &&
+      !GATE_NOTE.test(text)
+   );
+}
+
+/** See {@link CatalogSource.readDefinition}. */
+export function readDefinitionOf(
+   modelDef: ModelDef | undefined,
+   name: string,
+): string | undefined {
+   const compiled = compiledSource(modelDef, name);
+   if (!compiled) return undefined;
+   const text = JSON.stringify(
+      [compiled, modelDef?.givens ?? null],
+      (key, value: unknown) => {
+         if (key === "location" || key === "at") return undefined;
+         if (Array.isArray(value)) return value.filter((v) => !isOtherNote(v));
+         return value;
+      },
+   );
+   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 /** An `#(authorize)` lock or a `#(secure)` given, anywhere in a note. */
