@@ -263,7 +263,7 @@ source: f is duckdb.sql("SELECT 1 as x")
    // ── refused persist sources reach the author ──────────────────────────
 
    // A given in the persisted query, with no `storage=`: refused by the
-   // colocated gate, which is the gate a plain `#@ persist` is evaluated
+   // database gate, which is the gate a plain `#@ persist` is evaluated
    // against. Chosen because it needs no storage destination to resolve, so the
    // refusal is the only thing under test.
    const GIVEN_IN_QUERY_MODEL = `##! experimental.persistence
@@ -300,7 +300,7 @@ source: p is base -> { where: tenant = $tenant; aggregate: c is count() }
       async () => {
          const pkg = await loadPackage(GIVEN_IN_QUERY_MODEL);
          const plan = pkg.getBuildPlan();
-         // A storage/colocated refusal means ABSENCE from `sources` — so the plan
+         // A storage/database refusal means ABSENCE from `sources` — so the plan
          // itself carries no trace of the annotation, and the warning is the only
          // thing standing between the author and a silent no-op.
          expect(
@@ -337,7 +337,7 @@ source: p is base -> { where: tenant = $tenant; aggregate: c is count() }
    // ── within-package persist-target collisions ──────────────────────────
 
    // Two DISTINCT sources both resolving to name="dup" in the same destination
-   // (here their own duckdb warehouse — colocated) — a self-assign clobber.
+   // (here their own duckdb warehouse — database) — a self-assign clobber.
    const COLLIDING_MODEL = `##! experimental.persistence
 
 #@ persist name="dup"

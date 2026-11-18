@@ -7,15 +7,15 @@
  * annotated source with `@PERSIST(name)`, which each variant renders:
  *
  *  - `storage`: v1 `#@ persist name=… storage="lake"`
- *  - `colocated`: v1 `#@ persist name=…` (built in the origin warehouse)
+ *  - `database`: v1 `#@ persist name=…` (built in the origin warehouse)
  *
  * (`@PERSIST()` renders no `name=`, so the table takes the source's name.)
  *  - `materialize`: `#(materialize) storage="lake"` (v2)
- *  - `materialize_colocated`: `#(materialize)` (v2, built in the origin
+ *  - `materialize_database`: `#(materialize)` (v2, built in the origin
  *    warehouse)
  *
  * `@PREAGG(dim)` (or `@PREAGG(a, b)`) marks a rollup measure (`#@ preaggregate grain=…`, with
- * `storage=` for the `storage` variant, and `#(preaggregate)` for
+ * `storage=` for the `storage` variant, and `#(rollup)` for
  * `materialize`, with `storage=` for `materialize` alone), and `@PVIEW(name)` a persisted view (`#@ persist name=…`).
  *
  * A shape lists its queries and, per variant and switch, any outcome main does
@@ -28,25 +28,25 @@ import { RAW_MODEL } from "./data";
 
 export type Variant =
    | "storage"
-   | "colocated"
+   | "database"
    | "materialize"
-   | "materialize_colocated";
+   | "materialize_database";
 export const VARIANTS: Variant[] = [
    "storage",
-   "colocated",
+   "database",
    "materialize",
-   "materialize_colocated",
+   "materialize_database",
 ];
 
 /** The variants a `#(materialize)` renders, on either tier. */
 export const MATERIALIZE_VARIANTS: Variant[] = [
    "materialize",
-   "materialize_colocated",
+   "materialize_database",
 ];
 
 /** The variants whose tables sit in the origin warehouse. */
-export function isColocated(variant: Variant): boolean {
-   return variant === "colocated" || variant === "materialize_colocated";
+export function isDatabase(variant: Variant): boolean {
+   return variant === "database" || variant === "materialize_database";
 }
 
 /** The tier a served query must report. */
@@ -55,8 +55,8 @@ export type Expect =
    | "served"
    /** Live by design: the query reads no stored source, or opts out. */
    | "live"
-   /** A colocated table answered, whatever the variant renders. */
-   | "colocated"
+   /** A database table answered, whatever the variant renders. */
+   | "database"
    /** A rollup answered (`servedBy: rollup`). */
    | "rollup"
    /** A persisted view answered (`servedBy: view`). */
@@ -69,7 +69,11 @@ export interface ConformanceQuery {
    malloy: string;
    givens?: Record<string, unknown>;
    /** Default `served`; by variant when they differ. */
-   expect?: Expect | Partial<Record<Variant, Expect>>;
+   /**
+    * Default `served`; by variant when they differ, and by variant on the
+    * Parquet run (`<variant>@parquet`) when that differs again.
+    */
+   expect?: Expect | Partial<Record<Variant | `${Variant}@parquet`, Expect>>;
 }
 
 /**
@@ -100,7 +104,9 @@ export interface Gap {
 
 /**
  * Gaps keyed by `variant/switch` (`storage/off`), `variant` (both switches),
- * or `*`; a query's own `gaps` are read first.
+ * or `*`; a query's own `gaps` are read first. A gap only the Parquet run
+ * has (conformance.component.spec.ts, `LAKES`) adds `@parquet` to its key
+ * (`storage@parquet`, `*@parquet`), and is read before the others there.
  */
 export type GapMap = Partial<Record<string, Gap>>;
 
@@ -136,11 +142,11 @@ export function renderFiles(
          .replace(/@PREAGG\(([^)]*)\)/g, (_m, grain: string) =>
             variant === "storage"
                ? `#@ preaggregate grain="${grain}" storage="lake"`
-               : variant === "colocated"
+               : variant === "database"
                  ? `#@ preaggregate grain="${grain}"`
-                 : variant === "materialize_colocated"
-                   ? `#(preaggregate) grain=[${v2Grain(grain)}]`
-                   : `#(preaggregate) grain=[${v2Grain(grain)}] storage="lake"`,
+                 : variant === "materialize_database"
+                   ? `#(rollup) grain=[${v2Grain(grain)}]`
+                   : `#(rollup) grain=[${v2Grain(grain)}] storage="lake"`,
          )
          .replace(/@PVIEW\(([^)]*)\)/g, (_m, name: string) =>
             variant === "storage"
@@ -156,11 +162,11 @@ export function renderFiles(
             switch (variant) {
                case "storage":
                   return `#@ persist${name ? ` name="${name}"` : ""} storage="lake"`;
-               case "colocated":
+               case "database":
                   return `#@ persist${name ? ` name="${name}"` : ""}`;
                case "materialize":
                   return `#(materialize) storage="lake"`;
-               case "materialize_colocated":
+               case "materialize_database":
                   return `#(materialize)`;
             }
          });
@@ -175,7 +181,7 @@ const GIVENS_HEADER = "##! experimental { persistence givens }";
 /**
  * A `storage=` table and a warehouse table cannot meet in one query, so a
  * query joining a stored source to an unstored one (or rooted in an unstored
- * source joining a stored one) is answered live by design; colocated tables
+ * source joining a stored one) is answered live by design; database tables
  * sit beside the warehouse and serve it.
  */
 const LIVE_ACROSS_CONNECTIONS: Partial<Record<Variant, Expect>> = {
@@ -492,7 +498,7 @@ source: annotated is orders_raw -> {
    {
       name: "split persist annotation",
       about: "The persist tag's properties over two #@ lines (v1 only)",
-      variants: ["storage", "colocated"],
+      variants: ["storage", "database"],
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -628,9 +634,9 @@ source: nested is orders_raw -> {
             gaps: {
                "storage/on": LIVE_WRONG_NEST,
                "storage/cutover": LIVE_WRONG_NEST,
-               "colocated/cutover": LIVE_WRONG_NEST,
+               "database/cutover": LIVE_WRONG_NEST,
                "materialize/on": LIVE_WRONG_NEST,
-               "materialize_colocated/cutover": LIVE_WRONG_NEST,
+               "materialize_database/cutover": LIVE_WRONG_NEST,
             },
          },
       ],
@@ -788,7 +794,7 @@ source: summary is orders_raw -> {
       // holds the serve path to the opt-out.
       env: { PERSIST_COLLISION_ENFORCE: "false" },
       // `#(materialize)` renders no `name=`, so only the v1 forms collide.
-      variants: ["storage", "colocated"],
+      variants: ["storage", "database"],
       files: {
          "a.malloy": `${HEADER}
 import "raw.malloy"
@@ -891,17 +897,17 @@ source: orders_j is orders_raw extend {
                "run: orders_j -> { group_by: c.segment; aggregate: t is amount.sum() }",
             expect: LIVE_ACROSS_CONNECTIONS,
             gaps: {
-               "colocated/off": {
+               "database/off": {
                   kind: "live",
                   issue: "#6643",
                   reason:
-                     "a warehouse source joining a colocated persisted source is answered live: the colocated manifest is not applied to a joined source",
+                     "a warehouse source joining a database persisted source is answered live: the database manifest is not applied to a joined source",
                },
-               "colocated/on": {
+               "database/on": {
                   kind: "live",
                   issue: "#6643",
                   reason:
-                     "a warehouse source joining a colocated persisted source is answered live: the colocated manifest is not applied to a joined source",
+                     "a warehouse source joining a database persisted source is answered live: the database manifest is not applied to a joined source",
                },
             },
          },
@@ -1005,17 +1011,17 @@ source: orders_k is orders_raw extend {
                "run: orders_k -> { group_by: c.segment; aggregate: t is amount.sum() }",
             expect: LIVE_ACROSS_CONNECTIONS,
             gaps: {
-               "colocated/off": {
+               "database/off": {
                   kind: "live",
                   issue: "#6983",
                   reason:
-                     "a warehouse source joining a colocated persisted source is answered live: the colocated manifest is not applied to a joined source",
+                     "a warehouse source joining a database persisted source is answered live: the database manifest is not applied to a joined source",
                },
-               "colocated/on": {
+               "database/on": {
                   kind: "live",
                   issue: "#6983",
                   reason:
-                     "a warehouse source joining a colocated persisted source is answered live: the colocated manifest is not applied to a joined source",
+                     "a warehouse source joining a database persisted source is answered live: the database manifest is not applied to a joined source",
                },
             },
          },
@@ -1196,17 +1202,17 @@ source: orders_b is orders_raw extend {
                "run: orders_b -> { group_by: c.segment; aggregate: t is amount.sum() }",
             expect: LIVE_ACROSS_CONNECTIONS,
             gaps: {
-               "colocated/off": {
+               "database/off": {
                   kind: "live",
                   issue: "#6643",
                   reason:
-                     "a warehouse source joining a colocated persisted source is answered live: the colocated manifest is not applied to a joined source",
+                     "a warehouse source joining a database persisted source is answered live: the database manifest is not applied to a joined source",
                },
-               "colocated/on": {
+               "database/on": {
                   kind: "live",
                   issue: "#6643",
                   reason:
-                     "a warehouse source joining a colocated persisted source is answered live: the colocated manifest is not applied to a joined source",
+                     "a warehouse source joining a database persisted source is answered live: the database manifest is not applied to a joined source",
                },
             },
          },
@@ -1257,12 +1263,12 @@ source: gated is orders_raw -> {
             // The extension's own gate over the `scoped` table. A v1
             // extension inherits `#@ persist` and stores into that table under
             // its own gate, so plan admits the table past it on either tier
-            // (G3). A `#(materialize)` extension inherits nothing, and an
-            // ungated source's `storage=` table is not a G3 table: live.
+            // (G3). A `#(materialize)` extension inherits nothing, and its
+            // base's table holds only ungated rows, so it is a G3 table on
+            // every tier too (g-mixed, question 14): served.
             name: "an access-filtered extension",
             malloy: "run: gated_ext -> { group_by: status; aggregate: total }",
             givens: { REGION: "south", REGIONS: ["south", "west"] },
-            expect: { materialize: "live" },
          },
          {
             // Its own gate: read past it from the table on every tier (G3).
@@ -1272,7 +1278,7 @@ source: gated is orders_raw -> {
          },
          {
             // The same table, another caller: a table is read past its own
-            // gate (G3), colocated or `storage=`, each caller's rows only.
+            // gate (G3), database or `storage=`, each caller's rows only.
             name: "an access-filtered persisted source, another caller",
             malloy: "run: gated -> { group_by: region; aggregate: total }",
             givens: { REGIONS: ["west"] },
@@ -1281,7 +1287,6 @@ source: gated is orders_raw -> {
             name: "an access-filtered extension, another caller",
             malloy: "run: gated_ext -> { group_by: status; aggregate: total }",
             givens: { REGION: "west", REGIONS: ["west"] },
-            expect: { materialize: "live" },
          },
       ],
    },
@@ -1406,14 +1411,14 @@ source: raw_direct is duckdb.sql("""
       ],
    },
    {
-      name: "colocated and storage= in one package",
-      about: "A colocated dimension source and a storage= fact source in one model (fixed annotations, not rendered per variant)",
+      name: "database and storage= in one package",
+      about: "A database dimension source and a storage= fact source in one model (fixed annotations, not rendered per variant)",
       variants: ["storage"],
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
 
-#@ persist name="dim_colocated"
+#@ persist name="dim_database"
 source: dim_c is customers_raw -> {
   select: id, segment
 } extend {
@@ -1437,10 +1442,10 @@ source: fact_joined is fact_s extend {
       },
       queries: [
          {
-            name: "the colocated source alone",
+            name: "the database source alone",
             malloy:
                "run: dim_c -> { group_by: segment; aggregate: n is count() }",
-            expect: "colocated",
+            expect: "database",
          },
          {
             name: "the storage= source alone",
@@ -1448,7 +1453,7 @@ source: fact_joined is fact_s extend {
          },
          {
             // The two tables are on different connections.
-            name: "the storage= source joined to the colocated one",
+            name: "the storage= source joined to the database one",
             model: "joined.malloy",
             malloy:
                "run: fact_joined -> { group_by: c.segment; aggregate: total }",
@@ -1548,7 +1553,7 @@ source: east_west_ext is east_west extend {
    },
    {
       name: "v1 rollup on annotated measures",
-      about: "A #@ preaggregate rollup over measures carrying # currency and #(doc) (v2: #(preaggregate)); the v1 cutover's G4",
+      about: "A #@ preaggregate rollup over measures carrying # currency and #(doc) (v2: #(rollup)); the v1 cutover's G4",
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -1591,7 +1596,7 @@ source: orders is orders_raw extend {
    {
       name: "persisted view",
       about: "#@ persist on a view, served only to a query that calls the view exactly (phase 4's view leg, behind PUBLISHER_MATERIALIZE)",
-      variants: ["storage", "colocated"],
+      variants: ["storage", "database"],
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -1608,7 +1613,7 @@ source: ov is orders_raw extend {
       gaps: {
          // The view leg exists only with the materialize switch on.
          "storage/off": PERSISTED_VIEW_OFF,
-         "colocated/off": PERSISTED_VIEW_OFF,
+         "database/off": PERSISTED_VIEW_OFF,
       },
       queries: [
          {
@@ -1680,8 +1685,8 @@ source: daily_nf is orders_raw -> {
       gaps: {
          "storage/off": UNFLAGGED_BEFORE_CUTOVER,
          "storage/on": UNFLAGGED_BEFORE_CUTOVER,
-         "colocated/off": UNFLAGGED_BEFORE_CUTOVER,
-         "colocated/on": UNFLAGGED_BEFORE_CUTOVER,
+         "database/off": UNFLAGGED_BEFORE_CUTOVER,
+         "database/on": UNFLAGGED_BEFORE_CUTOVER,
       },
       queries: [
          {
@@ -1716,7 +1721,7 @@ source: rehidden is customers_raw -> {
 }
 `,
       },
-      variants: ["storage", "colocated"],
+      variants: ["storage", "database"],
       queries: [
          {
             name: "a measure beside the excepted column",

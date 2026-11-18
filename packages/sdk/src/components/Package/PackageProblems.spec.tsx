@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { PackageProblems } from "./PackageProblems";
+import { PackageProblems, withoutRetainedAliases } from "./PackageProblems";
 
 const KIND_REMOVED = {
    model: "notebooks/overview.malloy",
@@ -37,5 +37,29 @@ describe("PackageProblems", () => {
       expect(screen.queryByText(/is deprecated/)).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "Show 1 note" }));
       expect(screen.getByText(/is deprecated/)).toBeDefined();
+   });
+});
+
+describe("withoutRetainedAliases", () => {
+   const notBuilt = {
+      model: "m.malloy",
+      subject: "orders",
+      code: "rollup-not-built",
+      severity: "warn" as const,
+      message: "not built",
+   };
+
+   it("shows a renamed code's one-release repeat once", () => {
+      expect(
+         withoutRetainedAliases([
+            notBuilt,
+            { ...notBuilt, code: "preaggregate-not-built" },
+         ]),
+      ).toEqual([notBuilt]);
+   });
+
+   it("keeps an older server's former code when it is the only copy", () => {
+      const old = { ...notBuilt, code: "preaggregate-not-built" };
+      expect(withoutRetainedAliases([old])).toEqual([old]);
    });
 });

@@ -81,7 +81,11 @@ function withViolation(name: string): { dir: string; cleanup: () => void } {
    ].filter((f) => f !== target)) {
       fs.copyFileSync(path.join(EXAMPLE, file), path.join(dir, file));
    }
-   fs.symlinkSync(path.join(EXAMPLE, "data"), path.join(dir, "data"));
+   // Copied, not linked: the package sandbox refuses a link out of the
+   // package (duckdb_lockdown.ts).
+   fs.cpSync(path.join(EXAMPLE, "data"), path.join(dir, "data"), {
+      recursive: true,
+   });
    fs.copyFileSync(
       path.join(EXAMPLE, "violations", name, variant),
       path.join(dir, target),

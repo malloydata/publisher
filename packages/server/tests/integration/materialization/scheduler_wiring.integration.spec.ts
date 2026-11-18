@@ -122,7 +122,7 @@ describe("MaterializationScheduler wiring (E2E, real env-var timer)", () => {
                return rows.find(
                   (m) =>
                      (m.metadata as { trigger?: string } | null)?.trigger ===
-                        "SCHEDULER" && m.status === "MANIFEST_FILE_READY",
+                        "scheduler" && m.status === "MANIFEST_FILE_READY",
                );
             },
             (found) => found !== undefined,

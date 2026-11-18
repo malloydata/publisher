@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The colocated tables bound with no captured warehouse type for a column
- * whose read depends on one (`stored-native-schema-missing`): a column whose
+ * The database tables bound with no captured warehouse type for a column
+ * whose read depends on one (`database-native-type-missing`): a column whose
  * field Malloy types as a big integer is read through a cast to the type the
  * build recorded on its manifest entry (`nativeSchema`), and an entry written
  * before that capture, or one whose capture missed the column, records none.
@@ -16,13 +16,13 @@
  * manifest rather than the query. Pure.
  */
 
-import { type Binding, isColocated } from "../domain/binding";
+import { type Binding, isDatabase } from "../domain/binding";
 import type { MaterializePlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { bigIntegerReads, nativeTypeLookup } from "../stored_column_types";
 
 /** The warning code a column read without its captured type is reported with. */
-export const NATIVE_SCHEMA_MISSING_CODE = "stored-native-schema-missing";
+export const NATIVE_SCHEMA_MISSING_CODE = "database-native-type-missing";
 
 /** One bound source's big-integer columns with no captured warehouse type. */
 export interface NativeSchemaNotice {
@@ -36,7 +36,7 @@ export interface NativeSchemaNotice {
 }
 
 /**
- * Each colocated binding of a source `modelDef` declares whose big-integer
+ * Each database binding of a source `modelDef` declares whose big-integer
  * columns have no captured warehouse type. A `#(materialize)` binding is the
  * generated build source's; its plan names the author's source.
  */
@@ -48,7 +48,7 @@ export function nativeSchemaNotices(
    const map = SourceMap.of(modelDef);
    const out: NativeSchemaNotice[] = [];
    for (const binding of bindings) {
-      if (!isColocated(binding)) continue;
+      if (!isDatabase(binding)) continue;
       const plan = binding.sourceIDs
          ?.map((id) => materializePlans[id])
          .find((p) => p !== undefined);
@@ -66,7 +66,7 @@ export function nativeSchemaNotices(
       const captured = nativeTypeLookup(binding.nativeSchema);
       const uncaptured = bigIntegerReads(binding.schema, def.fields, {
          dialect: def.dialect,
-         colocated: true,
+         database: true,
          nativeTypeOf: captured,
          // A v1 table stores its query's output names; a `#(materialize)`
          // table, each field's own name after its renames.

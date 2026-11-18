@@ -108,6 +108,24 @@ export interface BuildManifest {
 export interface FreshnessAwareManifestEntry {
    tableName: string;
    /**
+    * Set by the bind for a database table read by Malloy's build-manifest
+    * substitution (a rollup, a persisted view or query) whose columns moved
+    * since its build: the columns it holds now, on its connection, but those
+    * the bind left out. Its leg reads it through a typed `virtual()` source
+    * over them, each moved column read by the one stored-column read plan (a
+    * faithful cast, or left out), as a `storage=` table is read; Malloy's
+    * substitution, which no cast reaches, is never used for it. Internal,
+    * never on the wire.
+    */
+   heldRead?: HeldRead;
+   /**
+    * Set by the bind beside {@link heldRead}: the stored columns it left out
+    * (gone, a type Malloy reads as no basic type, a timestamp that gained or
+    * lost its zone off DuckDB, a big integer now a float). Each leg declines
+    * only a query that reads one. Internal, never on the wire.
+    */
+   leftOutColumns?: string[];
+   /**
     * The connection the physical table lives on, carried from the run
     * manifest so the bind step can quote `tableName` for that connection's
     * dialect (see Package.quoteBoundTableNames). Absent on entries whose
@@ -118,25 +136,42 @@ export interface FreshnessAwareManifestEntry {
    freshnessWindowSeconds?: number;
    freshnessFallback?: "live" | "stale_ok" | "fail";
    /**
-    * The colocated table's columns as its build captured them (the wire
+    * The database table's columns as its build captured them (the wire
     * entry's `schema`), in DuckDB's spelling; absent for a table whose
-    * build captured none. The served copy binds a v1 colocated
-    * table with it (colocated_bindings.ts).
+    * build captured none. The served copy binds a v1 database
+    * table with it (database_bindings.ts).
     */
    schema?: { name: string; type: string }[];
    /**
-    * The colocated table's columns with their types as the warehouse's own
+    * The database table's columns with their types as the warehouse's own
     * catalog names them (the wire entry's `nativeSchema`), which the served
     * copy casts a big-integer column to exactly (known limitation 12).
     */
    nativeSchema?: { name: string; type: string }[];
    /**
-    * A `#(preaggregate)` rollup's key check (known limitation 29), as the
+    * A `#(rollup)` rollup's key check (known limitation 29), as the
     * auto-run that wrote or carried this table recorded it: whether the rows
     * it grouped held its one grain dimension once per value. Internal, never
     * on the wire; absent (unknown) on every entry a host's manifest binds.
     */
    keyUniqueness?: KeyUniqueness;
+}
+
+/** See {@link FreshnessAwareManifestEntry.heldRead}. */
+interface HeldRead {
+   /** The connection the table is on: its build source's. */
+   connectionName: string;
+   /**
+    * Each column it holds now, in DuckDB's spelling, with its native type;
+    * `moved` for one whose type moved since the build (read as it is, a
+    * lossless widening, or through a faithful cast).
+    */
+   columns: {
+      name: string;
+      type: string;
+      nativeType?: string;
+      moved?: true;
+   }[];
 }
 
 /** See {@link FreshnessAwareManifestEntry.keyUniqueness}. */
@@ -154,7 +189,7 @@ export interface KeyUniqueness {
 }
 
 /**
- * One bound colocated table's columns as the bind read them from its
+ * One bound database table's columns as the bind read them from its
  * warehouse (DuckDB's spelling, as {@link FreshnessAwareManifestEntry.schema}),
  * or why they could not be read, in which case the table answers live.
  */
@@ -219,7 +254,7 @@ export type KeptTableReason =
 /**
  * A table an auto-run replaced and Publisher keeps, listed on the run record
  * (`metadata.keptTables`) and raised as a package warning
- * (`table-kept-after-rename`) until the table is dropped or the name is
+ * (`table-kept`) until the table is dropped or the name is
  * reused: one at an author's exact `name=` (`author_name`), which Publisher
  * never drops; one in a storage destination that is no longer configured
  * (`destination_missing`), which it cannot reach; or one at the name the

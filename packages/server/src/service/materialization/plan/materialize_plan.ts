@@ -182,7 +182,7 @@ export interface MaterializeRefusal {
 /** A refusal's reason, and the tier the table would have been built in. */
 interface TierRefusal {
    reason: RefusedReason;
-   tier: "colocated" | "storage";
+   tier: "database" | "storage";
 }
 
 /** The Malloy atomic types a stored column can hold. */
@@ -535,7 +535,7 @@ function callerDependentDimensions(
                `inline= names ${quotedName(j)}, through which a given is read, ` +
                "so its stored columns would hold one caller's values; " +
                "reference the join instead",
-            refusal: "given_in_persisted_query",
+            refusal: "reads_given",
          };
       }
    }
@@ -1295,7 +1295,7 @@ class Declined {
 function declaredTier(
    def: SourceDefLike,
    contents: Record<string, unknown>,
-): "colocated" | "storage" {
+): "database" | "storage" {
    try {
       const declaration = readMaterializeDeclaration(def, contents);
       const placed = declaration ? placementOf(declaration.tag) : undefined;
@@ -1305,7 +1305,7 @@ function declaredTier(
             : undefined,
       );
    } catch {
-      return "colocated";
+      return "database";
    }
 }
 
@@ -1900,7 +1900,7 @@ function pairLayoutOf(
       });
       // A pair table's delta replaces whole parents in DuckDB only
       // (pairDeltaStatements): the target of every `storage=` table, and of a
-      // colocated one in a DuckDB warehouse. A colocated one anywhere else is
+      // database one in a DuckDB warehouse. A database one anywhere else is
       // rebuilt in full every refresh, which the package says.
       if (
          "watermark" in incremental &&
@@ -1909,7 +1909,7 @@ function pairLayoutOf(
       ) {
          incremental = {
             fullRefresh:
-               `its table is colocated in its source's warehouse (dialect ` +
+               `its table is in its source's warehouse (dialect ` +
                `${String(def.dialect)}), and a pair table's delta is applied only in DuckDB ` +
                `(a \`storage=\` destination, or a DuckDB warehouse); declare ` +
                `storage= to refresh it incrementally`,
@@ -1950,7 +1950,7 @@ const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key"];
  * in the same file (the build copy re-roots it in that file's text; one in
  * another file is the companion compiler's, `crossFileEntries`), as is
  * every declaration between them (`path`). Both must be on one tier (both
- * colocated, or both `storage=` the same destination), carry no incremental
+ * database, or both `storage=` the same destination), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
  * `extend` re-applies that term, which would scope the extension's build to
  * one caller) and no current-time `where:` its build leaves out (the
@@ -1997,7 +1997,7 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
 /**
  * Whether an extension's plan may build over its parent's build source
  * (P10), whichever file declares the parent: both on one tier (both
- * colocated, whose build reads the parent's build source in its own
+ * database, whose build reads the parent's build source in its own
  * warehouse, or one storage destination, whose build reads the parent's
  * table there, see `overStored`), neither incremental, neither a table of
  * several inlined paths, the parent no pair table, and the parent with no
@@ -2049,15 +2049,8 @@ export function crossFileEntries(
       const def = map.node(sourceID)?.def as SourceDefLike | undefined;
       return def ? declarationOf(def) : undefined;
    };
-   const declares = (sourceID: string) => {
-      const def = map.node(sourceID)?.def as PlannedDef | undefined;
-      if (!def) return false;
-      try {
-         return readMaterializeDeclaration(def, contents) !== undefined;
-      } catch {
-         return true;
-      }
-   };
+   const declares = (sourceID: string) =>
+      declaresMaterialize(map, contents, sourceID);
    const out: ReturnType<typeof crossFileEntries> = [];
    for (const plan of plans) {
       if (plan.buildsOver) continue;
@@ -2092,6 +2085,25 @@ export function crossFileEntries(
 }
 
 /**
+ * Whether the source `sourceID` declares `#(materialize)` itself, planned or
+ * refused; an unreadable declaration counts as one. A chain walk stops at
+ * such a source: whether it is a parent is its own file's plan to say.
+ */
+function declaresMaterialize(
+   map: SourceMap,
+   contents: Record<string, unknown>,
+   sourceID: string,
+): boolean {
+   const def = map.node(sourceID)?.def as PlannedDef | undefined;
+   if (!def) return false;
+   try {
+      return readMaterializeDeclaration(def, contents) !== undefined;
+   } catch {
+      return true;
+   }
+}
+
+/**
  * The sources of one file a chain entering it at `entrySourceID` is built
  * on (P10 across files), nearest first, read in that file's own compile:
  * the entry, then each source it is built on through `extend` and renames
@@ -2123,6 +2135,46 @@ export function chainWithinFile(
       sourceID = base.sourceID;
    }
    return out;
+}
+
+/**
+ * A file a chain passes through on its way to a parent in a file beyond it
+ * (P10 across files), read in that file's own compile from the source the
+ * chain enters it at: the declarations of the sources it walks there
+ * ({@link chainWithinFile}), root first; whether any of them declares
+ * `#(materialize)` itself (`declares`), planned or refused, so the file is no
+ * pass-through; and the source the walk leaves the file at, by `extend` or a
+ * rename, when it does (`next`). No `next` means the chain ends in the file,
+ * at a table or a query-shaped hop.
+ */
+export function chainThroughFile(
+   modelDef: { contents?: unknown; sourceRegistry?: unknown },
+   entrySourceID: string,
+): {
+   declarations: TermUse[];
+   declares: boolean;
+   next?: { sourceID: string; url: string };
+} {
+   const walked = chainWithinFile(modelDef, entrySourceID);
+   const map = SourceMap.of(modelDef);
+   const contents = (modelDef.contents ?? {}) as Record<string, unknown>;
+   const declarations = walked.map((w) => w.declaration).reverse();
+   const declares = walked.some((w) =>
+      declaresMaterialize(map, contents, w.sourceID),
+   );
+   const last = walked[walked.length - 1];
+   const base = last ? map.node(last.sourceID)?.base : undefined;
+   const url =
+      base && base.hop !== "query" && base.sourceID !== undefined
+         ? splitSourceID(base.sourceID)?.url
+         : undefined;
+   return {
+      declarations,
+      declares,
+      ...(url !== undefined && url !== last?.declaration.url
+         ? { next: { sourceID: base!.sourceID!, url } }
+         : {}),
+   };
 }
 
 /**

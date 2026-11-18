@@ -27,9 +27,10 @@ import {
    tableNameParts,
    tableNamesMeet,
 } from "../domain/table_name";
+import { isPersistedQuerySourceID } from "../domain/table_plans";
 import { getPersistStorageMode } from "../../../config";
 import {
-   BadRequestError,
+   BuildInstructionsInvalidError,
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
@@ -208,11 +209,11 @@ function gateSources(
          if (include && !include.has(persistSource.name)) continue;
 
          // A source that DECLARES `storage=` must never silently downgrade
-         // to a colocated CTAS into its own warehouse when
+         // to a database CTAS into its own warehouse when
          // PERSIST_STORAGE_MODE=off: the author did not ask for that, and
          // production grants read-only warehouse access. It serves LIVE and
          // Package.storageWarnings reports it. A plain `#@ persist` is
-         // unaffected; colocated is its intent.
+         // unaffected; database is its intent.
          if (
             getPersistStorageMode() === "off" &&
             declaredStorage(persistSource)
@@ -229,7 +230,7 @@ function gateSources(
          // ineligible source does not stop the rest of the package refreshing.
          // The run throws only when nothing else is left to build, or when
          // `sourceNames` asked for exactly this source.
-         // A colocated `#@ persist` is just as frozen as a storage build, so
+         // A database `#@ persist` is just as frozen as a storage build, so
          // an authorize-gated source materialized there would be served to
          // every caller.
          try {
@@ -257,12 +258,9 @@ function gateSources(
                refused[persistSource.sourceID] = refusalRecord(
                   persistSource,
                   err,
-                  isRollup
-                     ? "preaggregate"
-                     : destination
-                       ? "storage"
-                       : "colocated",
+                  destination ? "storage" : "database",
                   compiled.tables[persistSource.sourceID]?.modelPath,
+                  compiled.tables[persistSource.sourceID]?.kind,
                );
                // A refused rollup never fails the run: the author asked for
                // nothing they can see.
@@ -279,7 +277,7 @@ function gateSources(
          }
          cleared.set(
             persistSource.sourceID,
-            destination ? "storage" : "colocated",
+            destination ? "storage" : "database",
          );
          sources.push({
             persistSource,
@@ -339,6 +337,7 @@ function labelOf(
    return sourceLabel(
       persistSource.name,
       rollup?.baseSourceName && rollup.grainDimensions ? rollup : undefined,
+      { persistedQuery: isPersistedQuerySourceID(persistSource.sourceID) },
    );
 }
 
@@ -425,6 +424,12 @@ function selfTableName(
 const READABLE_TAIL = /__p[0-9a-f]{8}$/;
 
 /**
+ * How a persisted query's readable name ended before its label dropped the
+ * build source's `__query` (`<query>__query`, sanitized to `<query>_query`).
+ */
+const LEGACY_QUERY_LABEL_END = "_query";
+
+/**
  * Whether a table an earlier run of this package built for the same source,
  * in the same destination, at `recorded`, keeps that name rather than taking
  * `fresh`: when `recorded` is a readable name this scheme gave it (all
@@ -452,6 +457,15 @@ function keepsReadableName(
       return false;
    }
    const head = (leaf: string) => leaf.replace(READABLE_TAIL, "");
+   // A persisted query's table named before its label dropped the build
+   // source's `__query` (`…__q_query__p…`): renamed, and rebuilt, once.
+   if (
+      isPersistedQuerySourceID(persistSource.sourceID) &&
+      head(was.leaf).endsWith(LEGACY_QUERY_LABEL_END) &&
+      !head(now.leaf).endsWith(LEGACY_QUERY_LABEL_END)
+   ) {
+      return false;
+   }
    // A `name=` that sets the prefix (under `scope: version`, or a rollup's
    // in any package) keeps the table's name only while the prefix is the
    // same; a readable name's own prefix (with `__`) stands for none.
@@ -536,12 +550,9 @@ function tableNameCollision(
             `answered live.`,
          reason: "table_name_collision",
       }),
-      compiled.tables[persistSource.sourceID]?.rollup
-         ? "preaggregate"
-         : destination
-           ? "storage"
-           : "colocated",
+      destination ? "storage" : "database",
       compiled.tables[persistSource.sourceID]?.modelPath,
+      compiled.tables[persistSource.sourceID]?.kind,
    );
 }
 
@@ -627,7 +638,7 @@ function tableNameDecision(
 } {
    // Orchestrated builds use the host-supplied `physicalTableName`. A
    // storage build replaces its table atomically (`CREATE OR REPLACE` in
-   // ONE transaction), and a colocated one swaps it in, so a rebuild
+   // ONE transaction), and a database one swaps it in, so a rebuild
    // never empties the table it serves and no generation is needed.
    const named =
       !!naming &&
@@ -1080,7 +1091,7 @@ export function validateInstructions(
    runReseed = false,
 ): void {
    if (!plan) {
-      throw new BadRequestError(
+      throw new BuildInstructionsInvalidError(
          "Package has no persist sources; buildInstructions cannot be applied",
       );
    }
@@ -1091,13 +1102,13 @@ export function validateInstructions(
 
    for (const instruction of instructions) {
       if (!plannedSourceEntityIds.has(instruction.sourceEntityId)) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Instruction references unknown sourceEntityId '${instruction.sourceEntityId}'`,
          );
       }
       // COPY-only for now; SNAPSHOT lands once clone semantics are defined.
       if (instruction.realization === "SNAPSHOT") {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             "realization=SNAPSHOT is not supported (COPY only)",
          );
       }
@@ -1160,7 +1171,7 @@ export function validateInstructions(
             ? `in storage destination '${entry.storageDestinationName}'`
             : `on connection '${entry.connectionName}'`);
       if (seen.has(key)) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry for table ${table} appears more than once`,
          );
       }
@@ -1181,20 +1192,20 @@ export function validateInstructions(
          if (entry.storageDestinationName === undefined && storedHere) {
             continue;
          }
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry names table ${table}, which this run's ` +
                `instructions do not build`,
          );
       }
       if (target.reseed) continue;
       if (target.refresh !== "incremental") {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry names table ${table}, whose source does not ` +
                `declare refresh="incremental"`,
          );
       }
       if (entry.sourceEntityId !== target.sourceEntityId) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry for table ${table} was measured under a ` +
                `different definition of its source (its sourceEntityId does ` +
                `not match the plan's) — expected after a publish or ` +

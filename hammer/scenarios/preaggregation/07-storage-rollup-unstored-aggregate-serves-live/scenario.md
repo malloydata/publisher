@@ -11,7 +11,7 @@ SPDX-License-Identifier: MIT
 # A lake rollup does not answer an aggregate it stores no partial for
 
 The same rule as `preaggregate-unstored-aggregate-serves-from-the-base`, on the storage
-tier. That scenario covers the colocated path. This one is needed because the storage
+tier. That scenario covers the database path. This one is needed because the storage
 path routes through different code, and its composite is a different shape.
 
 A lake rollup is offered through a composite with no base member. The base is on the
@@ -21,7 +21,7 @@ compiles against the shape at all, a rollup answers it. An inline `count()` uses
 field, so it compiles against the first lake member and returns that table's row count.
 The only safeguard is a check after compile that sends the query to live.
 
-The staleness proof is the same as the colocated scenario's. After the mutation, the
+The staleness proof is the same as the database scenario's. After the mutation, the
 covered query reads the stored rollup and stays stale, and each unstored aggregate reads
 the source and sees the new row.
 

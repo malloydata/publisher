@@ -23,8 +23,8 @@
  * and a `sql_boolean` over an integer stays an integer. An incremental source
  * whose stored table holds a type a rebuild would cast re-seeds on its next
  * run ({@link rebuildWouldRecast}), since a delta never reaches the CTAS that
- * casts. The capture of a colocated table's native types stays in
- * `run/colocated_native_types.ts`.
+ * casts. The capture of a database table's native types stays in
+ * `run/database_native_types.ts`.
  *
  * Pure: the build and the served copy apply what it decides.
  */
@@ -475,6 +475,58 @@ export function serveTypePlan(
    return { casts, unservable };
 }
 
+/**
+ * How one database table's column that moved since its build is read now,
+ * the rule every reader of a database table and its warning share
+ * ({@link serveTypePlan}): `left_out` when the bind left it out (gone, a
+ * type Malloy reads as no basic type, a timestamp that gained or lost its
+ * zone off DuckDB) or no faithful cast reads its type as declared; `cast`
+ * (to a DuckDB type, `BOOLEAN` or `DATE`) where one does; else `as_is`, a
+ * type that still reads as declared.
+ */
+type DriftedColumnRead =
+   | { read: "as_is" }
+   | { read: "cast"; castTo: string }
+   | { read: "left_out" };
+
+export function driftedColumnRead(
+   column: { column: string; observedType?: string; leftOut?: true },
+   declaredType: string,
+   options: BuildCastOptions = {},
+): DriftedColumnRead {
+   if (column.leftOut || !column.observedType) return { read: "left_out" };
+   const [cast] = serveTypePlan(
+      [
+         {
+            column: column.column,
+            storedType: column.observedType,
+            declaredType,
+         },
+      ],
+      options,
+   ).casts;
+   if (cast) return { read: "cast", castTo: cast.castTo };
+   return storedTypeServesAs(column.observedType, declaredType) !== false
+      ? { read: "as_is" }
+      : { read: "left_out" };
+}
+
+/**
+ * The Malloy type a moved column must read as: its build source's declared
+ * one, else the one its build wrote.
+ */
+export function driftDeclaredType(
+   declared: readonly { name?: string; type?: string }[] | undefined,
+   column: string,
+   builtType: string,
+): string {
+   return (
+      declared?.find((c) => c.name === column)?.type ??
+      storedMalloyType(builtType) ??
+      builtType
+   );
+}
+
 /** A declared column, with the author's field when its big-integer read is asked. */
 export interface DeclaredRead extends DeclaredColumn {
    /** The compiled field: its `bigint` subtype decides a native read. */
@@ -571,7 +623,7 @@ export function storedColumnReadPlan(
  * DuckDB spelling a serve binding's schema carries (`VARCHAR`, `BIGINT`,
  * `STRUCT(a VARCHAR)[]`), which the served copy reads back as Malloy types.
  *
- * For a colocated `#(materialize)` table (no `storage=`), whose build writes
+ * For a database `#(materialize)` table (no `storage=`), whose build writes
  * into the source's own warehouse and captures no schema: its columns are the
  * build source's output, a table at one content address holds exactly that
  * build's columns, and Malloy reads each back as the basic type it built.
@@ -756,17 +808,17 @@ const HUGEINT_EXACT =
  * `integer`, and a DECIMAL is `float`, all read through a number live too, so
  * they are not touched. Served must equal live, never exceed it: a
  * `storage=` table of a source whose live answer rounds (Postgres) is not
- * touched, since its plain `number` rounds the same way; a colocated table is
+ * touched, since its plain `number` rounds the same way; a database table is
  * read through the warehouse's own bigint type, on live's own data path,
  * which rounds where live rounds and gives the field live's `bigint` subtype.
  *
- * - A `storage=` table (`colocated` false) is in a DuckLake destination and
+ * - A `storage=` table (`database` false) is in a DuckLake destination and
  *   its schema is what DESCRIBE reported: a 64-bit or narrower integer
  *   column, or a DECIMAL with no scale, is read as HUGEINT, which holds every
  *   value exactly; one stored as a float has lost digits already, and so has
  *   a 128-bit integer, which DuckLake writes to Parquet as a DOUBLE
  *   ({@link ducklakeStoresAsDouble}): both are left out.
- * - A colocated table is in the source's own warehouse, and its column can
+ * - A database table is in the source's own warehouse, and its column can
  *   be wider than any type Malloy names for a `bigint` number (Postgres
  *   stores a sum of BIGINTs as `numeric`, SQL Server's `decimal(38,0)` is
  *   typed `bigint`, DuckDB's UHUGEINT holds values past HUGEINT). It is read
@@ -783,11 +835,11 @@ export function bigIntegerReads(
    fields: readonly unknown[] | undefined,
    options: BigIntegerReadOptions,
 ): BigIntegerRead[] {
-   // A colocated table is read on the same connection live runs on, so a
+   // A database table is read on the same connection live runs on, so a
    // cast to the warehouse's own bigint type takes live's own data path and
    // rounds exactly where live rounds. A `storage=` table is read in DuckDB,
    // which keeps every digit: cast there only when live does too.
-   if (!options.colocated && !liveKeepsBigIntegers(options.dialect)) return [];
+   if (!options.database && !liveKeepsBigIntegers(options.dialect)) return [];
    // How a field is matched to its stored column depends on how the table
    // stores it. A v1 query-shaped table stores each column under its
    // query's output name: a field a trailing `extend` renames (`rename:
@@ -853,11 +905,11 @@ export function bigIntegerReadOf(
    column: { name: string; type: string },
    options: BigIntegerReadOptions,
 ): BigIntegerRead | undefined {
-   if (!options.colocated && !liveKeepsBigIntegers(options.dialect)) {
+   if (!options.database && !liveKeepsBigIntegers(options.dialect)) {
       return undefined;
    }
    if (!isBigIntegerField(field)) return undefined;
-   const castTo = options.colocated
+   const castTo = options.database
       ? exactWarehouseCast(options.dialect, options.nativeTypeOf?.(column.name))
       : duckdbBigIntegerCast(column.type);
    return { column: column.name, ...(castTo ? { castTo } : {}) };
@@ -867,10 +919,10 @@ export function bigIntegerReadOf(
 export interface BigIntegerReadOptions {
    /** The author's source's dialect: the one live answers on. */
    dialect: unknown;
-   /** A colocated table, in the source's own warehouse (else `storage=`). */
-   colocated?: boolean;
+   /** A database table, in the source's own warehouse (else `storage=`). */
+   database?: boolean;
    /**
-    * For a colocated table: a stored column's type as the warehouse's catalog
+    * For a database table: a stored column's type as the warehouse's catalog
     * names it, as its build captured it, or undefined when it did not.
     */
    nativeTypeOf?: (column: string) => string | undefined;
@@ -885,7 +937,7 @@ export interface BigIntegerReadOptions {
 }
 
 /**
- * A colocated column's captured warehouse type, as the cast that reads it
+ * A database column's captured warehouse type, as the cast that reads it
  * exactly, when Malloy types that type as a `bigint` number (`bigint`,
  * `NUMBER(38,0)`, `decimal(38,0)`, `UHUGEINT`); undefined for any other type
  * (`numeric`, read as a float), a type the dialect's CAST does not take by
@@ -1297,7 +1349,7 @@ export function boundNativeSchemaOf(
 }
 
 /**
- * A dry run's colocated binding with the warehouse types a build would
+ * A dry run's database binding with the warehouse types a build would
  * capture (`ManifestEntry.nativeSchema`), so it predicts the cast a big-integer
  * column is read through: each column as the dialect's own type for a
  * `bigint` number. A preview has no table to read; the real build's capture
@@ -1309,7 +1361,7 @@ export function previewNativeSchema(
    sources: Readonly<Record<string, { dialect?: string }>>,
 ): Binding {
    const dialect = sources[binding.sourceIDs?.[0] ?? ""]?.dialect;
-   if (binding.tier !== "colocated" || !dialect) return binding;
+   if (binding.tier !== "database" || !dialect) return binding;
    let type: string;
    try {
       type = getDialect(dialect).malloyTypeToSQLType({

@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A `#(preaggregate)` rollup whose given-reading `where:` cannot be
+ * A `#(rollup)` rollup whose given-reading `where:` cannot be
  * re-applied at read is left out of the build plan with a
- * `preaggregate-not-built` warning, under the reason `#(materialize)` gives
+ * `rollup-not-built` warning, under the reason `#(materialize)` gives
  * the same case: `given_where_over_unstored_field` for a term over a column
- * the grain drops (the fix is the grain), `given_in_persisted_query` for a
+ * the grain drops (the fix is the grain), `reads_given` for a
  * given its build reads (the table would hold one given value's rows, served
  * to every caller). A rollup in the same model that reads no given is still
  * planned. Drives `Package.create` on the worker path with
@@ -32,22 +32,22 @@ given: REGION :: string is 'east'
 
 source: scoped is ${ROWS} extend {
   where: region = $REGION
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 
 source: baked is ${ROWS} -> { where: region = $REGION; select: * } extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 
 source: open is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 `;
 
-describe("#(preaggregate) rollups whose given-reading where: cannot be re-applied", () => {
+describe("#(rollup) rollups whose given-reading where: cannot be re-applied", () => {
    let tempDir: string;
    let pool: PackageLoadPool;
    let duckdb: DuckDBConnection;
@@ -85,7 +85,7 @@ describe("#(preaggregate) rollups whose given-reading where: cannot be re-applie
 
    it("leaves each rollup out with a warning naming its own fix", () => {
       const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "preaggregate-not-built",
+         (w) => w.code === "rollup-not-built",
       );
       expect(warnings.map((w) => [w.model, w.subject]).sort()).toEqual([
          ["m.malloy", "baked"],
@@ -101,7 +101,7 @@ describe("#(preaggregate) rollups whose given-reading where: cannot be re-applie
             .map((r) => [r.name.split(/[.]|__rollup__/)[0], r.reason])
             .sort(),
       ).toEqual([
-         ["baked", "given_in_persisted_query"],
+         ["baked", "reads_given"],
          ["scoped", "given_where_over_unstored_field"],
       ]);
       const planned = Object.values(pkg.getBuildPlan()?.sources ?? {}).map(

@@ -7,6 +7,11 @@
  * table, then the declarations from the parent to the extension as the build
  * copy writes them, and nothing else of the file.
  *
+ * The declarations may come from several files: the parent's, each file the
+ * chain passes through, and the extension's. Carried into one text, they are
+ * compiled together only when each reads its names alike there
+ * (materialize_compile.ts, `carriesAlike`).
+ *
  * Read by the companion compiler, which checks the chain compiles before it
  * chains, and by the `storage=` build.
  *
@@ -55,6 +60,12 @@ export function storedChainText(
        * the path declared there, is read from it.
        */
       parentText?: string;
+      /**
+       * Each file the chain passes through between the extension's and the
+       * parent's (`buildsOver.crossFile.via`), by URL: the declarations on
+       * the path declared there are read from it, unedited.
+       */
+      between?: ReadonlyMap<string, string>;
    } = {},
 ): StoredChain | undefined {
    const over = plan.buildsOver;
@@ -63,6 +74,7 @@ export function storedChainText(
    const ownURL = over.path[over.path.length - 1]?.url;
    const parentText = over.crossFile ? options.parentText : text;
    if (parentText === undefined) return undefined;
+   const between = options.between ?? new Map<string, string>();
    // Each file's edits: one file's both, or the parent's re-root in its file
    // and the extension's own edits in the extension's.
    const edited = new Map<string, TextEdit[]>();
@@ -80,12 +92,22 @@ export function storedChainText(
    }
    const statements: string[] = [];
    for (const { url, range } of [over.declaration, ...over.path]) {
-      const inParent = over.crossFile !== undefined && url !== ownURL;
-      const from_ = inParent ? parentText : text;
+      const inBetween =
+         over.crossFile !== undefined && url !== ownURL && between.has(url);
+      const inParent =
+         over.crossFile !== undefined && url !== ownURL && !inBetween;
+      if (inParent && url !== over.declaration.url) return undefined;
+      const from_ = inBetween
+         ? between.get(url)!
+         : inParent
+           ? parentText
+           : text;
       const from = offsetOf(from_, range.start);
       const to = offsetOf(from_, range.end);
       if (from < 0 || to < from) return undefined;
-      const inside = (edited.get(inParent ? "parent" : "own") ?? [])
+      const inside = (
+         inBetween ? [] : (edited.get(inParent ? "parent" : "own") ?? [])
+      )
          .filter((e) => e.start >= from && e.end <= to)
          .map((e) => ({ ...e, start: e.start - from, end: e.end - from }));
       const declaration = applyEdits(from_.slice(from, to), inside);
@@ -100,6 +122,7 @@ export function storedChainText(
          ...new Set([
             ...documentFlagLines(text),
             ...(over.crossFile ? documentFlagLines(parentText) : []),
+            ...[...between.values()].flatMap(documentFlagLines),
             ...(options.liftAccess ? [ACCESS_FLAG] : []),
          ]),
       ],

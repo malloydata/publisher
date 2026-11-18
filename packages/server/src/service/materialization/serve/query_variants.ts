@@ -57,6 +57,7 @@ import type {
 import type { BuildManifest } from "../domain/types";
 import { viewNoteTexts } from "../text/read_text";
 import {
+   alteredColumnsRefusal,
    callerTextDecline,
    compilePersistedResultVariant,
    type CompiledVariant,
@@ -193,12 +194,19 @@ export class PersistedQueryServe {
    ): (ViewTable & { kind: "query" }) | undefined {
       const called = this.calledQuery(queryString);
       if (!called) return undefined;
-      const { virtualMap, quotedPath, binding, colocatedTable, ...table } =
-         this.views.tableOf(called.plan, pinned, pinned.compilerManifest);
+      const {
+         virtualMap,
+         quotedPath,
+         binding,
+         databaseTable,
+         leftOut,
+         ...table
+      } = this.views.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
       void quotedPath;
       void binding;
-      void colocatedTable;
+      void databaseTable;
+      void leftOut;
       return { ...table, kind: "query" };
    }
 
@@ -220,11 +228,11 @@ export class PersistedQueryServe {
    }): Promise<ViewAnswer> {
       this.compiledOver(args.pinned);
       const called = this.calledQuery(args.queryString);
-      if (!called) throw new LegDecline("query_missing_field");
+      if (!called) throw new LegDecline("query_shape_mismatch");
       const { call, plan } = called;
       if (call.refined) {
          throw new LegDecline(
-            "query_missing_field",
+            "query_shape_mismatch",
             `the query refines \`${call.query}\` (\`+ { … }\`), and the stored result holds only the query as written`,
          );
       }
@@ -244,6 +252,7 @@ export class PersistedQueryServe {
                | undefined,
             declaringURL: plan.declaringURL,
          },
+         "query",
       );
       if (unfollowed) throw unfollowed;
       const prepared = await readPreparedQuery(args.authorRunnable);
@@ -254,7 +263,7 @@ export class PersistedQueryServe {
          | { type?: unknown; location?: { url?: unknown } }
          | undefined;
       const notTheQuery = new LegDecline(
-         "query_missing_field",
+         "query_shape_mismatch",
          `the query does not call \`${call.query}\` as its file declares it`,
       );
       if (
@@ -287,8 +296,15 @@ export class PersistedQueryServe {
       }
       const table = this.views.tableOf(plan, args.pinned, args.buildManifest);
       if (!table.built) throw new LegDecline("query_not_built");
-      if (table.stale || (!table.virtualMap && !table.colocatedTable)) {
+      if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("query_stale");
+      }
+      const altered = alteredColumnsRefusal(table);
+      if (altered) {
+         throw new LegDecline(
+            "query_missing_field",
+            `the stored result cannot answer \`${call.query}\` with live's columns: ${altered}`,
+         );
       }
       const variant = await this.compiledVariant(plan, table);
       if (variant.refusal) {
@@ -316,7 +332,7 @@ export class PersistedQueryServe {
          plan.buildSourceID,
          table.binding
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
-            : "colocated",
+            : "database",
       ].join("\u0000");
       let compiled = this.compiled.get(key);
       if (!compiled) {
@@ -383,7 +399,7 @@ export class PersistedQueryServe {
                     // resolve too.
                     alsoExported: [inlineTarget],
                  },
-         colocatedAlias: `${plan.buildSourceName}__stored`,
+         databaseAlias: `${plan.buildSourceName}__stored`,
          emit: (read) => {
             // malloy-text: the run target's own gate expressions, as the author wrote them, one per line (see gateLines)
             const gates = read.gates;
@@ -391,7 +407,7 @@ export class PersistedQueryServe {
             const zone = read.sourceTimezone;
             // The run target's own time zone: on the stored source beside the
             // timeframes a `storage=` read truncates again, on the
-            // redeclaration for a colocated table, read as built.
+            // redeclaration for a database table, read as built.
             let storedSource: string;
             let redeclaredZone = "";
             if ("typeText" in read.stored) {

@@ -9,7 +9,7 @@
  * - A struct (record) column of the source's own. Malloy types it as a join,
  *   so the plan stores no column for it, and the served copy cannot carry the
  *   field: the source is left as written (`fields_not_carried`), in a
- *   `storage=` table and a colocated one alike. Every query over the source
+ *   `storage=` table and a database one alike. Every query over the source
  *   is answered live, equal to live.
  * - An inlined join's column with no stored declaration (a MAP, standing in
  *   for a warehouse GEOGRAPHY): the join's record cannot be declared, so the
@@ -52,7 +52,7 @@ async function expectWholeSourceLive(fixture: R4Fixture, malloy: string) {
    expect(path?.servedBy?.kind).toBe("live");
    expect(
       (path?.considered ?? []).map((c) => [c.outcome, c.reason, c.code]),
-   ).toEqual([["skipped", "WARNED", "served-copy-not-served"]]);
+   ).toEqual([["skipped", "NOT_SERVED", "served_copy"]]);
 }
 
 describe.each([
@@ -61,18 +61,18 @@ describe.each([
       model: `#(materialize) storage="lake"
 source: s is duckdb.table('ex') extend { primary_key: id }
 `,
-      colocated: undefined as string[] | undefined,
+      database: undefined as string[] | undefined,
    },
    {
-      tier: "colocated (a database origin)",
-      model: `#(materialize) name="p2_26_colocated"
+      tier: "database (a database origin)",
+      model: `#(materialize) name="p2_26_database"
 source: s is duckdb.table('ex') extend { primary_key: id }
 `,
-      colocated: ["s"] as string[] | undefined,
+      database: ["s"] as string[] | undefined,
    },
 ])(
    "P2-26: a #(materialize) $tier source with a STRUCT(a BIGINT) column answers live as a whole",
-   ({ model, colocated }) => {
+   ({ model, database }) => {
       let fixture: R4Fixture;
       useMaterializationOn();
       beforeAll(async () => {
@@ -80,7 +80,7 @@ source: s is duckdb.table('ex') extend { primary_key: id }
             files: { "m.malloy": model },
             seedSql: OWN_SEED,
             materialize: true,
-            ...(colocated ? { colocated } : {}),
+            ...(database ? { database } : {}),
          });
       });
       afterAll(async () => {

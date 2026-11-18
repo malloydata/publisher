@@ -297,7 +297,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "注文",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

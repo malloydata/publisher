@@ -179,7 +179,14 @@ describe("R3: a gated read whose stored table fails at run time falls back live"
          givens: { GROUPS: ["acme"] },
       });
       expect(before.servedVia).toBe("served_copy");
-      await fixture.storedSQL((t) => `DROP TABLE ${t("orders")}`);
+      // Broken in place rather than dropped: a table the destination's
+      // catalog no longer lists is answered live before it is read (the
+      // stored-side collation check cannot judge it, #1880), so the run-time
+      // fallback this case is about would never run.
+      await fixture.storedSQL(
+         (t) =>
+            `ALTER TABLE ${t("orders")} RENAME COLUMN org_id TO org_id_gone`,
+      );
       const run = await fixture.run({
          name: "after the table is gone",
          malloy: byOrg,

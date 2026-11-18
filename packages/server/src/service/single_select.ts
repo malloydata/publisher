@@ -34,6 +34,58 @@ async function parserInstance(): Promise<DuckDBInstance> {
    return parser;
 }
 
+/**
+ * DuckDB's own parse of `sql`, by `json_serialize_sql`: the statements when
+ * all are SELECT, else the error and its type (`parser` for SQL that does not
+ * parse, `not implemented` for a statement kind it does not serialize).
+ */
+export async function serializeSQL(sql: string): Promise<{
+   error?: boolean;
+   errorType?: string;
+   errorMessage?: string;
+   statements?: unknown[];
+}> {
+   const connection = await (await parserInstance()).connect();
+   try {
+      const prepared = await connection.prepare(
+         "SELECT json_serialize_sql($1::VARCHAR) AS j",
+      );
+      prepared.bindVarchar(1, sql);
+      const rows = await (await prepared.run()).getRowObjectsJson();
+      const parsed = JSON.parse(String(rows[0]?.j)) as {
+         error?: boolean;
+         error_type?: string;
+         error_message?: string;
+         statements?: unknown[];
+      };
+      return {
+         error: parsed.error,
+         errorType: parsed.error_type,
+         errorMessage: parsed.error_message,
+         statements: parsed.statements,
+      };
+   } finally {
+      connection.closeSync();
+   }
+}
+
+/**
+ * How many statements DuckDB's own parser reads in `sql` (of any kind), or
+ * undefined when it does not parse.
+ */
+export async function countStatements(
+   sql: string,
+): Promise<number | undefined> {
+   const connection = await (await parserInstance()).connect();
+   try {
+      return (await connection.extractStatements(sql)).count;
+   } catch {
+      return undefined;
+   } finally {
+      connection.closeSync();
+   }
+}
+
 /** How many SELECT statements `sql` holds, or why it is not only SELECTs. */
 export async function classifySelect(
    sql: string,
@@ -63,6 +115,9 @@ export async function classifySelect(
 export async function assertSingleSelect(
    connectionName: string,
    sql: string,
+   kind:
+      | "managed database"
+      | "locked-down DuckDB connection" = "managed database",
 ): Promise<void> {
    const verdict = await classifySelect(sql);
    if ("selects" in verdict && verdict.selects === 1) return;
@@ -73,6 +128,6 @@ export async function assertSingleSelect(
            ? "it holds no statement"
            : `it holds ${verdict.selects} statements`;
    throw new BadRequestError(
-      `'${connectionName}' is a managed database: raw SQL on it runs only as a single SELECT, and ${why}.`,
+      `'${connectionName}' is a ${kind}: raw SQL on it runs only as a single SELECT, and ${why}.`,
    );
 }

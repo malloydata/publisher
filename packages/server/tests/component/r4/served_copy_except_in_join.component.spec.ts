@@ -50,7 +50,7 @@ describe("an except: inside a join's own extend on a v1 re-root", () => {
    });
 
    for (const [label, storage] of [
-      ["colocated", ""],
+      ["database", ""],
       ["storage=", ` storage="lake"`],
    ] as const) {
       it(`keeps the joined field hidden (${label})`, async () => {
@@ -90,7 +90,7 @@ describe("an except: inside a join's own extend on a v1 re-root", () => {
                      served: { error: expect.stringContaining("'name'") },
                   });
                }
-               // The colocated re-roots still answer from their tables.
+               // The database re-roots still answer from their tables.
                if (storage === "") expect(fromTable).toBe(VISIBLE.length);
             } finally {
                await fixture.dispose();

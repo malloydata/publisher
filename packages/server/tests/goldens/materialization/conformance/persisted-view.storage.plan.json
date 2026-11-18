@@ -67,7 +67,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "ov__by_region__view",
-        "origin": "persist",
+        "origin": "view",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

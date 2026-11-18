@@ -11,7 +11,7 @@
  * helpers for annotation bundles (own notes, model notes, positions); this
  * module is about routes.
  *
- * Materialization v2's routes (`#(materialize)`, `#(preaggregate)`) are in the
+ * Materialization v2's routes (`#(materialize)`, `#(rollup)`) are in the
  * registry with their closed key sets, and are read only with the materialize
  * switch on (`PUBLISHER_MATERIALIZE`): see {@link MATERIALIZE_V2_ROUTES}.
  */
@@ -304,13 +304,13 @@ export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `#(preaggregate)`'s keys (materialization v2, A1): the grain it stores a
+ * `#(rollup)`'s keys (materialization v2, A1): the grain it stores a
  * measure at, where (a `storage=` destination, or a `name=` whose container
  * places it in the source's own warehouse; `namespace=` is that container's
  * deprecated spelling), and its `freshness` group, as on `#@ persist`. A
  * closed set: any other key is malformed.
  */
-export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
+export const ROLLUP_ROUTE_KEYS: ReadonlySet<string> = new Set([
    "grain",
    "storage",
    "name",
@@ -345,6 +345,8 @@ const SCHEDULE_RETIRED =
  */
 export const MATERIALIZE_V2_ROUTES: ReadonlySet<string> = new Set([
    "materialize",
+   "rollup",
+   // `#(rollup)`'s deprecated spelling, read the same for one release.
    "preaggregate",
 ]);
 
@@ -391,7 +393,9 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
          partition: PARTITION_RETIRED,
       },
    },
-   preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
+   rollup: { payload: "tag", keys: ROLLUP_ROUTE_KEYS },
+   // `#(rollup)`'s deprecated spelling, read the same for one release.
+   preaggregate: { payload: "tag", keys: ROLLUP_ROUTE_KEYS },
    "!": { payload: "tag" },
    "": { payload: "tag" },
 };
@@ -411,6 +415,16 @@ export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The word a route's codes are spelled with: `persist` for `#@`, `rollup`
+ * for `#(rollup)` and its deprecated spelling `#(preaggregate)`, and the
+ * route's own name otherwise.
+ */
+function codeRouteOf(route: string): string {
+   if (route === "@") return "persist";
+   return route === "preaggregate" ? "rollup" : route;
+}
+
+/**
  * The materialization warning-code taxonomy. The suffix tells the outcome:
  *
  *  - `*-invalid`, `*-unknown-key`, `*-retired-key`, `*-unparseable` and
@@ -424,7 +438,7 @@ export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
  */
 export const MATERIALIZE_INVALID_CODE = "materialize-invalid";
 export const PERSIST_INVALID_CODE = "persist-invalid";
-export const PREAGGREGATE_INVALID_CODE = "preaggregate-invalid";
+export const ROLLUP_INVALID_CODE = "rollup-invalid";
 export const PERSIST_VIEW_INVALID_CODE = "persist-view-invalid";
 export const PERSIST_QUERY_INVALID_CODE = "persist-query-invalid";
 export const PERSIST_VIEW_UNPARSEABLE_CODE = "persist-view-unparseable";
@@ -441,18 +455,19 @@ export const PERSIST_NOT_BUILT_CODE = "persist-not-built";
 /** A valid `#(materialize)` source Publisher refuses alone. */
 export const MATERIALIZE_NOT_BUILT_CODE = "materialize-not-built";
 /** A valid rollup, or one measure of it, Publisher refuses alone. */
-export const PREAGGREGATE_NOT_BUILT_CODE = "preaggregate-not-built";
+export const ROLLUP_NOT_BUILT_CODE = "rollup-not-built";
+/**
+ * A rollup declared with a deprecated spelling, v1's `#@ preaggregate` or
+ * `#(rollup)`'s alias `#(preaggregate)`: still read, with this warning, whose
+ * message names the spelling it found.
+ */
+export const DEPRECATED_PREAGGREGATE_ANNOTATION_CODE =
+   "deprecated-preaggregate-annotation";
 /**
  * A rollup placed with `namespace=`, the deprecated spelling of its `name=`
  * container: still read, for one release, with this warning.
  */
-export const PREAGGREGATE_NAMESPACE_DEPRECATED_CODE =
-   "deprecated-preaggregate-namespace";
-/**
- * {@link PERSIST_NOT_BUILT_CODE}'s former name, still emitted beside it for
- * one release so a client switching on it keeps working; removed after.
- */
-export const PERSIST_SOURCE_REFUSED_ALIAS_CODE = "persist-source-refused";
+export const ROLLUP_NAMESPACE_DEPRECATED_CODE = "deprecated-rollup-namespace";
 
 /**
  * A load failure's line: `text` ended with a full stop, then its `[code]`.
@@ -460,6 +475,18 @@ export const PERSIST_SOURCE_REFUSED_ALIAS_CODE = "persist-source-refused";
 export function codedLine(text: string, code: string): string {
    const trimmed = text.trimEnd();
    return `${/[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`} [${code}]`;
+}
+
+/**
+ * The codes of a load failure's {@link codedLine}s, in order, each once: what
+ * a `loadErrors` entry carries as `codes`, so a client never parses the
+ * message for them.
+ */
+export function codesOfLines(text: string): string[] {
+   const codes = [...text.matchAll(/ \[([a-z][a-z0-9-]*)\]$/gm)].map(
+      (m) => m[1],
+   );
+   return [...new Set(codes)];
 }
 
 /** One diagnostic about an annotation, with its tier from the outcome rule. */
@@ -474,6 +501,12 @@ export interface AnnotationFinding {
    tier: "malformed" | "unservable" | "deprecated";
    /** Stable, for counting and for clients: `persist-unknown-key`. */
    code: string;
+   /**
+    * For an `unservable` finding that is a refusal: its bounded
+    * `RefusedSource.reason` (`table_name_collision`), carried as the
+    * package warning's `reason`.
+    */
+   reason?: string;
    message: string;
    /** The fix, when there is one. */
    rewrite?: string;
@@ -526,7 +559,7 @@ export function readRouteTag(
                // Every materialization route's key set is closed: a typo
                // (`nmae=`) would otherwise build under a defaulted name.
                tier: "malformed",
-               code: `${route === "@" ? "persist" : route}-unknown-key`,
+               code: `${codeRouteOf(route)}-unknown-key`,
                message: `\`${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
             });
          }
@@ -594,7 +627,7 @@ export function readRouteTag(
             findings.push({
                route,
                tier: "malformed",
-               code: `${route === "@" ? "persist" : route}-unknown-key`,
+               code: `${codeRouteOf(route)}-unknown-key`,
                message: `\`freshness.${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`freshness.${near}=\`?)` : ""}`,
                nested: true,
             });

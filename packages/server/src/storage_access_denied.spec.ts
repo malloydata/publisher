@@ -66,7 +66,7 @@ describe("P6-21: an object store's refusal", () => {
       }
    });
 
-   it("answers the query route 403 STORAGE_ACCESS_DENIED, naming the source and no path, and logs the full text", () => {
+   it("answers the query route 403, naming the source and no path, and logs the full text", () => {
       for (const text of [GCS, S3, GS]) {
          let thrown: unknown;
          try {
@@ -86,7 +86,9 @@ describe("P6-21: an object store's refusal", () => {
          try {
             const answer = internalErrorToHttpError(thrown as Error);
             expect(answer.status).toBe(403);
-            expect(answer.json.reason).toBe("STORAGE_ACCESS_DENIED");
+            // No environment said the path is a configured one: the path
+            // the query reads is what to fix.
+            expect(answer.json.reason).toBe("PATH_ACCESS_DENIED");
             expect(answer.json.message).toContain('"trips"');
             expect(answer.json.message).not.toMatch(LEAKS);
             const logged = JSON.stringify(warn.mock.calls);
@@ -158,6 +160,17 @@ describe("P6-21: an object store's refusal", () => {
       expect(refusal.suggestions.join(" ")).not.toContain("Do not rewrite");
       refusal.managed = true;
       expect(refusal.callerMessage).toContain("fine");
+   });
+
+   it("names who fixes it: a configured data path is STORAGE_ACCESS_DENIED, a path the query reads PATH_ACCESS_DENIED", () => {
+      const reasonOf = (managed: boolean) => {
+         const refusal = new StorageAccessDeniedError(GCS, "trips", "gs://x");
+         refusal.managed = managed;
+         const answer = internalErrorToHttpError(refusal, { log: false });
+         return [answer.status, answer.json.reason];
+      };
+      expect(reasonOf(true)).toEqual([403, "STORAGE_ACCESS_DENIED"]);
+      expect(reasonOf(false)).toEqual([403, "PATH_ACCESS_DENIED"]);
    });
 
    it("matches one location across its spellings", () => {

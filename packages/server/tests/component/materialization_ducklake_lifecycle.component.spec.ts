@@ -96,7 +96,7 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: amount is amt.sum()
 }
 `;
@@ -132,7 +132,13 @@ type Entry = {
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
-   servedBy: { kind: string; tableId?: string; tier?: string; via?: string };
+   servedBy: {
+      kind: string;
+      origin?: string;
+      tableId?: string;
+      tier?: string;
+      via?: string;
+   };
 };
 
 describe.skipIf(process.platform === "win32")(
@@ -499,7 +505,7 @@ describe.skipIf(process.platform === "win32")(
          }
          expect(daily.origin).toBeUndefined();
          expect(orders.origin).toBeUndefined();
-         expect(sales.origin).toBe("preaggregate");
+         expect(sales.origin).toBe("rollup");
          expect(daily.schema).toEqual([
             { name: "cat", type: "VARCHAR" },
             { name: "total", type: "DECIMAL(38,1)" },
@@ -561,10 +567,12 @@ describe.skipIf(process.platform === "win32")(
          }
          expect((await ask("daily")).servedBy).toMatchObject({
             kind: "materialized",
+            origin: "persist",
             via: "served_copy",
          });
          expect((await ask("orders")).servedBy).toMatchObject({
             kind: "materialized",
+            origin: "materialize",
             via: "served_copy",
          });
          expect((await ask("sales")).servedBy.kind).toBe("rollup");
@@ -923,7 +931,9 @@ class LakeFixture {
                // Recorded from here on: the build's own statements.
                const run = session.runSQL.bind(session);
                session.runSQL = (async (sql: string, ...rest: unknown[]) => {
-                  this.statements.push(sql);
+                  // The session's lockdown (duckdb_lockdown.ts) runs once the
+                  // source is federated; it is not the build's own SQL.
+                  if (!LOCKDOWN_STATEMENT.test(sql)) this.statements.push(sql);
                   await this.onStatement?.(sql);
                   const result = await (run as (...a: unknown[]) => unknown)(
                      sql,
@@ -1319,11 +1329,15 @@ describe.skipIf(process.platform === "win32")(
 describe.skipIf(process.platform === "win32")(
    "an incremental storage= source refreshed by a delta inside the DuckLake session",
    () => {
-      // The warehouse rows live in a CSV under the fixture's root, which the
-      // warehouse and every build session read, so a case can add rows
-      // between runs.
-      const csv = (root: string) => path.join(root, "events.csv");
+      // The warehouse rows live in a CSV, which the warehouse and every build
+      // session read (the fake passthrough runs locally), so a case can add
+      // rows between runs. It sits where both are confined to
+      // (duckdb_lockdown.ts): the environment directory, for the warehouse,
+      // and its storage-destinations root, for a build session.
+      const csv = (root: string) =>
+         path.join(root, "env", ".storage-destinations", "events.csv");
       const lake = new LakeFixture("incremental", (root) => {
+         fs.mkdirSync(path.dirname(csv(root)), { recursive: true });
          fs.writeFileSync(
             csv(root),
             "id,cat,amt,wm\n1,a,1.0,10\n2,a,2.0,20\n3,b,4.0,30\n",
@@ -1452,6 +1466,7 @@ source: events is warehouse.sql("""
          expect(served.servedFrom).toBe("storage");
          expect(served.servedBy).toMatchObject({
             kind: "materialized",
+            origin: "materialize",
             tableId: address,
          });
          expect(served.rows).toEqual(live.rows);
@@ -1655,6 +1670,7 @@ source: plain is raw extend { measure: total is amt.sum() }
          );
          expect(failures).toEqual([
             {
+               code: "table-owned-elsewhere",
                sourceEntityId: expect.any(String),
                sourceName: "owned",
                materializedTableId: expect.stringMatching(/^local-/),
@@ -2054,6 +2070,10 @@ describe.skipIf(process.platform === "win32")(
    },
 );
 
+/** A statement of a build session's lockdown, not of the build. */
+const LOCKDOWN_STATEMENT =
+   /^(SELECT current_setting\(|SELECT extension_name FROM duckdb_extensions\(\)|SELECT count\(\*\) FROM duckdb_secrets\(\)|SET (GLOBAL )?(enable_global_s3_configuration|s3_|autoinstall_known_extensions|autoload_known_extensions|allowed_directories|allowed_paths|enable_external_access|TimeZone|file_search_path)|(INSTALL|LOAD) excel)/;
+
 const SHAPES_MODEL = `##! experimental.persistence
 source: raw is warehouse.sql("""
   SELECT * FROM (VALUES (1, 'a', 1.0), (2, 'a', 2.0), (3, 'b', 4.0)) AS t(id, cat, amt)
@@ -2222,12 +2242,14 @@ describe.skipIf(process.platform === "win32")(
          }
          expect((await lake.ask(QUERIES.view)).servedBy).toEqual({
             kind: "view",
+            origin: "view",
             tableId: entries.ops__by_cat__view.sourceEntityId,
             tier: "storage",
          });
          for (const name of ["pairs", "parent", "child"] as const) {
             expect((await lake.ask(QUERIES[name])).servedBy).toEqual({
                kind: "materialized",
+               origin: "materialize",
                tableId: entries[name].sourceEntityId,
                tier: "storage",
                via: "served_copy",
@@ -2276,7 +2298,7 @@ source: sb_viewed is sb_raw extend {
 query: sb_query is sb_raw -> { group_by: cat; aggregate: total is amt.sum() }
 
 source: sb_sales is sb_raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: total is amt.sum()
 }
 `,
@@ -2303,9 +2325,9 @@ source: sb_sales is sb_raw extend {
                "persist-not-built:sb_daily",
                "persist-query-not-built:sb_query__query",
                "persist-view-not-built:sb_viewed__by_cat__view",
+               "rollup-not-built:sb_sales",
+               // Its 0.14 code, repeated beside it this release only.
                "preaggregate-not-built:sb_sales",
-               // No repeat under the former `persist-source-refused`: no
-               // earlier release raised this refusal.
             ].sort(),
          );
          const plan = lake.pkg.getBuildPlan();

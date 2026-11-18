@@ -11,20 +11,20 @@ const rollup = (name: string, grain: string[], storage?: string) => ({
 });
 
 describe("byReadCost", () => {
-   it("tries a coarser rollup first, then a colocated one before a storage= one, then by name", () => {
+   it("tries a coarser rollup first, then a database one before a storage= one, then by name", () => {
       const plans = [
-         rollup("d_fine_colocated", ["a", "b"]),
+         rollup("d_fine_database", ["a", "b"]),
          rollup("c_coarse_storage", ["a"], "lake"),
-         rollup("b_coarse_colocated", ["b"]),
+         rollup("b_coarse_database", ["b"]),
          rollup("a_coarse_storage", ["c"], "lake"),
       ];
       expect(
          [...plans].sort(byReadCost).map((p) => p.rollupSourceName),
       ).toEqual([
-         "b_coarse_colocated",
+         "b_coarse_database",
          "a_coarse_storage",
          "c_coarse_storage",
-         "d_fine_colocated",
+         "d_fine_database",
       ]);
    });
 

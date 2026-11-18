@@ -649,7 +649,7 @@ source: orders is orders_raw extend {
    );
 
    for (const [tier, route] of [
-      ["colocated", ""],
+      ["database", ""],
       ["storage", 'storage="lake" '],
    ]) {
       it(

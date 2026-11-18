@@ -19,7 +19,7 @@ import {
 import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 import { Environment } from "../../environment";
 import { parsePackageName } from "../../identity";
-import { TABLE_KEPT_AFTER_RENAME_CODE } from "../package_warnings";
+import { TABLE_KEPT_CODE } from "../package_warnings";
 import { MaterializationService } from "./materialization_service";
 import { KEPT_TABLES_KEY, RENAMED_TABLES_KEY } from "./reclaimer";
 import type { KeptTable } from "../domain/types";
@@ -30,7 +30,7 @@ import { ownedTableComment } from "./table_ownership";
  * renamed between two auto-runs by an edit to its `name=`, and the table it
  * replaced is dropped once the second run commits and is served when
  * Publisher can prove it is its own, and is kept, listed on the run
- * (`metadata.keptTables`) and raised as `table-kept-after-rename`, when it is
+ * (`metadata.keptTables`) and raised as `table-kept`, when it is
  * at an author's exact `name=`. A table another package has marked, or one
  * this package's records never built, is never dropped.
  */
@@ -146,7 +146,7 @@ describe("the one rename rule on DuckDB", () => {
    async function keptWarnings() {
       const pkg = await env.getPackage(parsePackageName(PKG), false);
       return (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === TABLE_KEPT_AFTER_RENAME_CODE,
+         (w) => w.code === TABLE_KEPT_CODE,
       );
    }
 

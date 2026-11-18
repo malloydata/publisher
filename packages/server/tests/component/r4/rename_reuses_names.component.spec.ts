@@ -10,9 +10,15 @@
  * table stores it under, and keep every digit of a big integer. Every case
  * must equal live, on the `storage=` tier and in the source's own database.
  *
- * For a gated `#@ persist` source a mismatch served rows its row-level gate
- * hides (live 0 rows, served 2); the gated cases pin that served rows equal
- * live's for each caller.
+ * The gated cases check, per caller, that served rows equal live's. Where
+ * such a source is served from its table (its own gate on either tier, and a
+ * gated extension of it in its own database), a swap read the wrong stored
+ * column and served rows the gate hides. A gated extension of a `storage=`
+ * table is answered live.
+ *
+ * Each case also says where it is answered: from its table through the
+ * served copy, or live, for the shapes the served copy does not serve
+ * (`liveOn`).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -52,6 +58,8 @@ interface Case {
    srcs: string[];
    queries: { malloy: string; givens?: Record<string, unknown> }[];
    env?: Record<string, string>;
+   /** Where it is answered live, not from its table: `<kind> <tier>`. */
+   liveOn?: string[];
 }
 
 const CASES: Case[] = [
@@ -138,6 +146,7 @@ source: cy is raw -> { group_by: sub, g; aggregate: total is v.sum(), n is count
       ],
    },
    {
+      liveOn: ["mat storage=", "persist storage="],
       name: "swap with a join",
       kinds: ["persist", "mat"],
       srcs: ["sj"],
@@ -160,6 +169,7 @@ source: sj is raw ${Q} extend {
       ],
    },
    {
+      liveOn: ["persist database", "persist storage="],
       name: "refinement-rooted swap (table rooted)",
       kinds: ["persist", "mat"],
       srcs: ["rr"],
@@ -205,6 +215,7 @@ source: gs is raw -> { group_by: sub, g; aggregate: total is v.sum() } extend {
       ],
    },
    {
+      liveOn: ["mat storage=", "persist storage="],
       name: "string swap, gated downstream extension",
       kinds: ["persist", "mat"],
       srcs: ["gb"],
@@ -230,6 +241,7 @@ source: gdown is gb extend { where: sub in $ORGS }`,
       ],
    },
    {
+      liveOn: ["mat database", "persist database"],
       name: "incremental swap",
       kinds: ["persist", "mat"],
       srcs: ["inc"],
@@ -260,6 +272,7 @@ source: px is raw ${Q} extend {
       ],
    },
    {
+      liveOn: ["mat database", "mat storage="],
       name: "X7: a renamed BIGINT sum whose old name a dimension takes",
       kinds: ["persist", "mat"],
       srcs: ["pd"],
@@ -301,7 +314,7 @@ for (const c of CASES) {
                   files: { "m.malloy": c.model(place, kind) },
                   seedSql: SEED,
                   ...(kind === "mat" ? { materialize: true } : {}),
-                  ...(tier === "database" ? { colocated: c.srcs } : {}),
+                  ...(tier === "database" ? { database: c.srcs } : {}),
                });
             });
             afterAll(async () => {
@@ -317,6 +330,15 @@ for (const c of CASES) {
                   });
                   expect(exact(run.served)).toBe(exact(run.live));
                   expect(rowDifference(run.live, run.served)).toBeUndefined();
+                  if (c.liveOn?.includes(`${kind} ${tier}`)) {
+                     expect(run.servedFrom).toBeNull();
+                     expect(run.servedBy?.kind).toBe("live");
+                  } else {
+                     expect(run.servedFrom).toBe(
+                        tier === "storage=" ? "storage" : "database",
+                     );
+                     expect(run.servedVia).toBe("served_copy");
+                  }
                });
             }
          });

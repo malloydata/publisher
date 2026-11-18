@@ -188,11 +188,11 @@ with the line and the spelling it meant:
   `#(secure)`, `#(index)`, `#(dbmeta)`) but does not reach it.
 - `materialization-near-miss` (a load failure): a near miss of a materialization route or directive,
   `#@ persist`, `#@ preaggregate`, and, with `PUBLISHER_MATERIALIZE` on, `#(materialize)` and
-  `#(preaggregate)`, so `#(materialise)`, `#(Materialize)` and `#(preaggregates)` are caught. A
+  `#(rollup)`, so `#(materialise)`, `#(Materialize)` and `#(preaggregates)` are caught. A
   declaration that silently builds nothing is a mistake in the model, so it fails the publish and
   the load ([materialization.md](materialization.md#fails-the-load-or-refused-alone)). With
-  `PUBLISHER_MATERIALIZE` off, `#(materialize)` and `#(preaggregate)` spelled exactly are not read,
-  which is the deployment's choice rather than a mistake: `#(preaggregate)` is then an
+  `PUBLISHER_MATERIALIZE` off, `#(materialize)` and `#(rollup)` spelled exactly are not read,
+  which is the deployment's choice rather than a mistake: `#(rollup)` is then an
   `annotation-near-miss` warning reaching for `#@ preaggregate`.
 - `annotation-malformed-route`: a prefix Malloy cannot route at all, such as `#percent` (write
   `# percent` for a tag, or `#(name)` for an app route). Malloy warns about these when it compiles,

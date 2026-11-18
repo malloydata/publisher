@@ -12,7 +12,7 @@
       },
       {
         "name": "orders__rollup__m_region__75e7c0f9",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [
@@ -21,8 +21,13 @@
     ],
     "warnings": [
       {
+        "code": "rollup-not-built",
+        "message": "#(rollup) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+        "subject": "zoned.total"
+      },
+      {
         "code": "preaggregate-not-built",
-        "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+        "message": "#(rollup) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
         "subject": "zoned.total"
       }
     ]
@@ -73,6 +78,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -80,6 +86,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -151,6 +158,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -158,6 +166,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -232,6 +241,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -239,6 +249,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -310,6 +321,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -317,6 +329,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -387,6 +400,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -394,6 +408,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -462,6 +477,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
@@ -470,6 +486,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -487,6 +504,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
           "tier": "storage",
           "via": "served_copy"
@@ -542,6 +560,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
@@ -550,6 +569,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -568,6 +588,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
           "tier": "storage",
           "via": "served_copy"
@@ -623,6 +644,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "TIME_ZONE",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -632,6 +654,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -701,6 +724,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
           }
@@ -709,6 +733,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -716,6 +741,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -733,6 +759,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "rollup",
           "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7",
           "tier": "database"
         },
@@ -788,6 +815,7 @@
           {
             "detail": "the query sets its own time zone and reads a time the rollup stored in the model's",
             "kind": "rollup",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "TIME_ZONE",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -797,6 +825,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -804,6 +833,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -877,6 +907,7 @@
           {
             "detail": "the query sets its own time zone and reads a time the rollup stored in the model's",
             "kind": "rollup",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "TIME_ZONE",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -886,6 +917,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -893,6 +925,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -964,6 +997,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -971,6 +1005,7 @@
           {
             "built": true,
             "kind": "rollup",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "orders",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -978,6 +1013,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -1047,6 +1083,7 @@
           {
             "detail": "the query's source sets its own time zone, and the rollup was built in its base's",
             "kind": "rollup",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "TIME_ZONE",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -1056,6 +1093,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -1063,6 +1101,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -1131,6 +1170,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
@@ -1139,6 +1179,7 @@
           {
             "built": true,
             "kind": "rollup",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "orders",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -1146,6 +1187,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -1163,6 +1205,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
           "tier": "storage",
           "via": "served_copy"
@@ -1218,6 +1261,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
           }
@@ -1226,6 +1270,7 @@
           {
             "built": true,
             "kind": "rollup",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "orders",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"
@@ -1233,6 +1278,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "wide",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -1251,6 +1297,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
           "tier": "storage",
           "via": "served_copy"
@@ -1306,6 +1353,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "TIME_ZONE",
             "tableId": "a55afd4939ad8e5de2177af551a7b36316f114ae00b27bc8af37a5e89910fb13"
@@ -1315,6 +1363,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "mat",
             "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
@@ -1322,6 +1371,7 @@
           {
             "built": true,
             "kind": "rollup",
+            "origin": "rollup",
             "relationship": "sibling",
             "sourceName": "orders",
             "tableId": "63ab64738419e7bc208520ea3386607248fa4a63e035a05092114b5fbc7085f7"

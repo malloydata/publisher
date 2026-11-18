@@ -71,7 +71,7 @@ const AUTO_LOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const NOT_SERVED_CONSEQUENCE: Record<string, string> = {
    reload:
       "the package's models were not recompiled with this run's tables until its next reload or restart (or, for a published version, a rebind from the store) binds this run's manifest",
-   bind: "the run's colocated tables are served and its stored ones are not, until the package's next reload or restart binds this run's manifest",
+   bind: "the run's database tables are served and its stored ones are not, until the package's next reload or restart binds this run's manifest",
    timeout:
       "what the package serves is undecided until the load finishes, or its next reload or restart binds this run's manifest; a hung reload holds the package's lock until it returns, so the package's reloads, publishes and PATCHes wait (queries do not)",
 };
@@ -304,7 +304,7 @@ export class ManifestCommitter {
       );
       const manifestEntries: FreshnessManifest = {};
       for (const [sourceEntityId, entry] of Object.entries(builtEntries)) {
-         // Only colocated entries: a storage entry here would substitute a
+         // Only database entries: a storage entry here would substitute a
          // table on the source's OWN connection, where it does not exist.
          // Storage entries serve via the bindings below.
          if (entry.physicalTableName && !entry.storageDestinationName) {
@@ -319,7 +319,7 @@ export class ManifestCommitter {
                // build CREATEd it quoted, so an unquoted read misses on a
                // case-folding engine.
                connectionName: entry.connectionName,
-               // The columns a colocated build captured (v1 cutover), which
+               // The columns a database build captured (v1 cutover), which
                // the served copy binds a v1 table with.
                ...boundSchemaOf(entry.schema),
                ...boundNativeSchemaOf(entry.nativeSchema),
@@ -341,7 +341,7 @@ export class ManifestCommitter {
       await environment.loadRunManifest({
          packageName,
          versionId,
-         colocated: manifestEntries,
+         database: manifestEntries,
          storage: storageEntries,
          commit: async (outcome) => {
             if (outcome.loaded) {
@@ -488,7 +488,7 @@ export class ManifestCommitter {
          );
          return;
       }
-      // Storage entries carry their full shape; colocated ones are rebuilt from
+      // Storage entries carry their full shape; database ones are rebuilt from
       // the tableName manifest.
       const bound: Record<string, ManifestEntry> = {
          ...fetched.storageEntries,
@@ -567,7 +567,7 @@ export class ManifestCommitter {
     * every slot rebound (or was taken out of service), so a caller can tell
     * that nothing loaded still reads what the store no longer names.
     *
-    * Colocated is rebound regardless of `PERSIST_STORAGE_MODE` (it is not gated
+    * Database is rebound regardless of `PERSIST_STORAGE_MODE` (it is not gated
     * by the storage kill switch); storage= only when the tier is not `off`.
     */
    async rebindLoadedVersions(
@@ -634,8 +634,8 @@ export class ManifestCommitter {
                      "store",
                   );
                return {
-                  // Colocated: re-derive (or clear) regardless of mode.
-                  colocated: tableNameManifest,
+                  // Database: re-derive (or clear) regardless of mode.
+                  database: tableNameManifest,
                   // Storage=: only meaningful when the tier is not off.
                   ...(getPersistStorageMode() !== "off"
                      ? { storage: storageEntries }

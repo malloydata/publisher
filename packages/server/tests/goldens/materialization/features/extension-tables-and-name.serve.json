@@ -3,8 +3,8 @@
     "buildErrors": {},
     "built": [
       {
-        "name": "colocated_ext",
-        "tier": "colocated"
+        "name": "database_ext",
+        "tier": "database"
       },
       {
         "name": "stored",
@@ -28,7 +28,7 @@
       }
     ],
     "verdicts": [
-      "colocated_ext:serves",
+      "database_ext:serves",
       "stored:serves",
       "by_given:serves",
       "east:serves",
@@ -86,6 +86,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
           }
@@ -94,6 +95,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -101,6 +103,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "east",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
@@ -108,6 +111,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -115,13 +119,15 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -140,6 +146,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7",
           "tier": "storage",
           "via": "served_copy"
@@ -194,6 +201,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
           }
@@ -202,6 +210,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -209,6 +218,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -216,6 +226,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -223,8 +234,9 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
         ],
@@ -240,6 +252,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13",
           "tier": "storage",
           "via": "served_copy"
@@ -292,15 +305,38 @@
       "path": {
         "considered": [
           {
+            "code": "served_copy",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
-            "outcome": "used",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "NOT_SERVED",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          },
+          {
+            "code": "served_copy",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "NOT_SERVED",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "code": "served_copy",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "NOT_SERVED",
+            "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
           }
         ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -308,6 +344,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -315,8 +352,9 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
         ],
@@ -330,16 +368,13 @@
           "sourceName": "east_big"
         },
         "servedBy": {
-          "kind": "materialized",
-          "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "two deep",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "off"
     },
     {
@@ -390,6 +425,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
           }
@@ -398,6 +434,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
@@ -405,6 +442,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -412,13 +450,15 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -436,6 +476,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a",
           "tier": "storage",
           "via": "served_copy"
@@ -490,6 +531,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
           }
@@ -498,6 +540,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -505,6 +548,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
@@ -512,13 +556,15 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -536,6 +582,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda",
           "tier": "storage",
           "via": "served_copy"
@@ -574,22 +621,23 @@
           ],
           "filteredDimensions": [],
           "filters": [],
-          "key": "2c68f147647c8966",
+          "key": "e355aa16f4d1c9b1",
           "kind": "reduce",
           "measures": [
             "n"
           ],
-          "source": "colocated_ext",
+          "source": "database_ext",
           "stages": 1
         },
-        "source": "colocated_ext"
+        "source": "database_ext"
       },
       "equalToLive": true,
-      "malloy": "run: colocated_ext -> { group_by: region; aggregate: n }",
+      "malloy": "run: database_ext -> { group_by: region; aggregate: n }",
       "path": {
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
@@ -598,6 +646,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "stored",
             "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
@@ -605,6 +654,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -612,6 +662,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
@@ -619,6 +670,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -626,6 +678,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -639,17 +692,18 @@
           "measures": [
             "n"
           ],
-          "sourceName": "colocated_ext"
+          "sourceName": "database_ext"
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
           "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
-      "query": "a colocated extension",
+      "query": "a database extension",
       "servedBy": "materialized",
       "servedFrom": "database",
       "switch": "off"
@@ -702,6 +756,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
           }
@@ -710,6 +765,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -717,6 +773,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "east",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
@@ -724,6 +781,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -731,13 +789,15 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -756,6 +816,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7",
           "tier": "storage",
           "via": "served_copy"
@@ -810,6 +871,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
           }
@@ -818,6 +880,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "below",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -825,6 +888,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -832,6 +896,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -839,8 +904,9 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
         ],
@@ -856,6 +922,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13",
           "tier": "storage",
           "via": "served_copy"
@@ -908,15 +975,38 @@
       "path": {
         "considered": [
           {
+            "code": "served_copy",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
-            "outcome": "used",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "NOT_SERVED",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
+          },
+          {
+            "code": "served_copy",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "NOT_SERVED",
+            "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
+          },
+          {
+            "code": "served_copy",
+            "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "NOT_SERVED",
+            "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
           }
         ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -924,6 +1014,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -931,8 +1022,9 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
         ],
@@ -946,16 +1038,13 @@
           "sourceName": "east_big"
         },
         "servedBy": {
-          "kind": "materialized",
-          "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "two deep",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "on"
     },
     {
@@ -1006,6 +1095,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
           }
@@ -1014,6 +1104,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
@@ -1021,6 +1112,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -1028,13 +1120,15 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -1052,6 +1146,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a",
           "tier": "storage",
           "via": "served_copy"
@@ -1106,6 +1201,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
           }
@@ -1114,6 +1210,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -1121,6 +1218,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
@@ -1128,13 +1226,15 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
-            "sourceName": "colocated_ext",
+            "sourceName": "database_ext",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           },
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -1152,6 +1252,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda",
           "tier": "storage",
           "via": "served_copy"
@@ -1190,22 +1291,23 @@
           ],
           "filteredDimensions": [],
           "filters": [],
-          "key": "2c68f147647c8966",
+          "key": "e355aa16f4d1c9b1",
           "kind": "reduce",
           "measures": [
             "n"
           ],
-          "source": "colocated_ext",
+          "source": "database_ext",
           "stages": 1
         },
-        "source": "colocated_ext"
+        "source": "database_ext"
       },
       "equalToLive": true,
-      "malloy": "run: colocated_ext -> { group_by: region; aggregate: n }",
+      "malloy": "run: database_ext -> { group_by: region; aggregate: n }",
       "path": {
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1"
           }
@@ -1214,6 +1316,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "stored",
             "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
@@ -1221,6 +1324,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "by_given",
             "tableId": "89346a5441a6acebb9ed864a77a0577a19037eaf9209176e639247880b52728a"
@@ -1228,6 +1332,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
@@ -1235,6 +1340,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "renamed",
             "tableId": "d5200d694f4551cc166e0f821e6651d42d736db4be01c931f45b8a3fbb918bda"
@@ -1242,6 +1348,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "east_big",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
@@ -1255,17 +1362,18 @@
           "measures": [
             "n"
           ],
-          "sourceName": "colocated_ext"
+          "sourceName": "database_ext"
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
           "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
-      "query": "a colocated extension",
+      "query": "a database extension",
       "servedBy": "materialized",
       "servedFrom": "database",
       "switch": "on"

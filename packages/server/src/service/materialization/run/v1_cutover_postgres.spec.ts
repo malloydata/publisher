@@ -27,7 +27,7 @@ import { serviceOverEnvironment } from "../../../test_helpers/materialization_se
 
 /**
  * The v1 cutover on a real Postgres (the R4 subset the
- * fixture cannot reach, and G7): v1 colocated `#@ persist` tables, one of them
+ * fixture cannot reach, and G7): v1 database `#@ persist` tables, one of them
  * incremental, built through real builds and
  * answered from the served copy equal to live, before and after a delta. Date
  * truncations stored by Postgres as timestamps exercise G5's read cast there.
@@ -139,7 +139,7 @@ function sortRows(rows: Row[]): string {
 
 for (const flag of [true, false])
    describe.skipIf(!POSTGRES_URL)(
-      `v1 colocated #@ persist on Postgres under the cutover (${flag ? "flagged" : "unflagged"} file)`,
+      `v1 database #@ persist on Postgres under the cutover (${flag ? "flagged" : "unflagged"} file)`,
       () => {
          let root: string;
          let envPath: string;

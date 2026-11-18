@@ -34,14 +34,14 @@ import "raw.malloy"
 
 source: orders is orders_raw extend {
   dimension: m is created_at.month
-  #(preaggregate) grain=["region", "m"]
+  #(rollup) grain=["region", "m"]
   measure: total is amount.sum()
 }
 
 source: zoned is orders_raw extend {
   timezone: 'America/Los_Angeles'
   dimension: m is created_at.month
-  #(preaggregate) grain=["region", "m"]
+  #(rollup) grain=["region", "m"]
   measure: total is amount.sum()
 }
 
@@ -96,7 +96,7 @@ import { mat, rezoned, wide, zoned } from "m.malloy.rollup-author.malloy"
 import { orders__rollup__m_region__75e7c0f9__built is orders__rollup__m_region__75e7c0f9 } from "m.malloy.preaggregate.malloy"
 source: orders__rollup__m_region__75e7c0f9__served is orders__rollup__m_region__75e7c0f9__built extend {
   measure:
-    #(preaggregate) grain=["region", "m"]
+    #(rollup) grain=["region", "m"]
     total is total__partial.sum()
 }
 source: orders is orders__rollup__m_region__75e7c0f9__served include { internal: total__partial public: * }
@@ -120,14 +120,14 @@ import "raw.malloy"
 
 source: orders is orders_raw extend {
   dimension: m is created_at.month
-  #(preaggregate) grain=["region", "m"]
+  #(rollup) grain=["region", "m"]
   measure: total is amount.sum()
 }
 
 source: zoned is orders_raw extend {
   timezone: 'America/Los_Angeles'
   dimension: m is created_at.month
-  #(preaggregate) grain=["region", "m"]
+  #(rollup) grain=["region", "m"]
   measure: total is amount.sum()
 }
 

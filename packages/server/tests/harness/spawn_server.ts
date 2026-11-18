@@ -140,10 +140,15 @@ const bothListening = (log: string) =>
  * Whether an HTTP server answers on 127.0.0.1:`port`, with any status. A
  * socket that only accepts (the spec's blocker, a port-picking probe) never
  * answers, so a port that answers is held by an HTTP server, not merely bound.
+ *
+ * It asks for the liveness probe, which both listeners answer ahead of the
+ * rate limiter, so a spec that sets `PUBLISHER_RATE_LIMIT` keeps its whole
+ * budget. A probe of `/` counted against it: on a runner slow to log the
+ * listening lines, one landed before the spec's first request.
  */
 async function answersHttp(port: number): Promise<boolean> {
    try {
-      await fetch(`http://127.0.0.1:${port}/`, {
+      await fetch(`http://127.0.0.1:${port}/health/liveness`, {
          signal: AbortSignal.timeout(1_000),
          keepalive: false,
       });

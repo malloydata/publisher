@@ -21,7 +21,7 @@ import {
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
    PERSIST_VIEW_INVALID_CODE,
-   PREAGGREGATE_INVALID_CODE,
+   ROLLUP_INVALID_CODE,
    type AnnotationFinding,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -98,6 +98,7 @@ export function relaxedCollision(
    return {
       ...finding,
       tier: "unservable",
+      reason: "table_name_collision",
       // Each source under its own not-built code.
       code:
          finding.route !== "@"
@@ -329,7 +330,7 @@ export function loadGateText(
 /**
  * `#@ preaggregate` violations of a VALID declaration Publisher cannot build
  * here, and the reason each is refused under: that rollup alone is refused
- * (`preaggregate-not-built`), its measures answered live, and the package
+ * (`rollup-not-built`), its measures answered live, and the package
  * loads. Every other violation is an invalid declaration and fails the load
  * (see formatInvalidPreaggregatePolicy). The planner skips each of these
  * itself, so nothing is built.
@@ -341,27 +342,27 @@ export const PREAGG_WARN_ONLY: ReadonlyMap<
    // Governance: an extension that hides an inherited field cannot fix
    // its base's annotation.
    ["non_public_measure", "hidden_field"],
-   // A rollup over a fan-out join, as `#(preaggregate)` refuses one.
-   ["base_source_has_fanout_join", "join_level"],
+   // A rollup over a fan-out join, as `#(rollup)` refuses one.
+   ["base_source_has_fanout_join", "join_not_in_grain"],
 ]);
 
 /**
  * The code a `#@ preaggregate` violation that fails the load is named by, the
- * same as `#(preaggregate)`'s for the same mistake.
+ * same as `#(rollup)`'s for the same mistake.
  */
 function preaggregateViolationCode(code: PreaggregateViolationCode): string {
-   if (code === "unknown_key") return "preaggregate-unknown-key";
-   if (code === "unparseable") return "preaggregate-unparseable";
-   if (code === "non_additive_measure") return "preaggregate-not-mergeable";
-   if (code.startsWith("misplaced_")) return "preaggregate-not-a-measure";
+   if (code === "unknown_key") return "rollup-unknown-key";
+   if (code === "unparseable") return "rollup-unparseable";
+   if (code === "non_additive_measure") return "rollup-not-mergeable";
+   if (code.startsWith("misplaced_")) return "rollup-not-a-measure";
    if (
       code === "unknown_grain_dimension" ||
       code.startsWith("grain_") ||
       code === "truncation_on_non_temporal"
    ) {
-      return "preaggregate-unknown-grain";
+      return "rollup-unknown-grain";
    }
-   return PREAGGREGATE_INVALID_CODE;
+   return ROLLUP_INVALID_CODE;
 }
 
 /**

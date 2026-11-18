@@ -18,7 +18,7 @@
  * the fact table, all bound. The serve shape is compiled package-wide, over
  * every binding, so its cost grows with N; queries read the first.
  *
- * `--rollup` also declares a `#(preaggregate)` rollup on the first source,
+ * `--rollup` also declares a `#(rollup)` rollup on the first source,
  * with `materialize.enabled` on, so the router tries the rollup leg first:
  * `cheap` is answered from the rollup, `grouped` and `miss` are declined by
  * its shape check, and `declined` compiles against it and is declined by its
@@ -79,9 +79,7 @@ const WARMUP = 5;
 const ROLLUP = process.argv.includes("--rollup");
 
 const rollupOn = (first: boolean) =>
-   ROLLUP && first
-      ? `#(preaggregate) grain=["region_code"] storage="lake"\n  `
-      : "";
+   ROLLUP && first ? `#(rollup) grain=["region_code"] storage="lake"\n  ` : "";
 const persisted = (name: string, where: string, first = false) => `
 #@ persist name="${name}_rows" storage="lake"
 source: ${name} is duckdb.table('fact') -> { select: *${where} } extend {
@@ -215,7 +213,7 @@ async function main() {
       }
       logger.level = level;
       console.log(
-         `\nRouter baseline${ROLLUP ? ", with a #(preaggregate) rollup" : ""}: ${SOURCES} persisted source${SOURCES === 1 ? "" : "s"} bound, ${ROWS.toLocaleString()} fact rows, ${ITERATIONS} iterations after ${WARMUP} warm-up, paths interleaved, ms (median · p95; served minus live median in parentheses)\n`,
+         `\nRouter baseline${ROLLUP ? ", with a #(rollup) rollup" : ""}: ${SOURCES} persisted source${SOURCES === 1 ? "" : "s"} bound, ${ROWS.toLocaleString()} fact rows, ${ITERATIONS} iterations after ${WARMUP} warm-up, paths interleaved, ms (median · p95; served minus live median in parentheses)\n`,
       );
       console.log(
          "| sources | query | path | live | served, warm | served, cold |",
