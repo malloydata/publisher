@@ -827,7 +827,7 @@
     },
     {
       "name": "eval-loop",
-      "description": "Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set in the model package''s evals/ directory, runs in the set''s workdir; checkpoints are git commits of the model repo. `eval.py` runs each step from the set''s eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction."
+      "description": "Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set beside the model package in its repository, runs in the set''s workdir, never in git; checkpoints are git commits of the model repo. `eval.py` runs each step from the set''s eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction."
     },
     {
       "name": "eval-loop/acceptance-check",
@@ -846,8 +846,24 @@
       "description": "The golden side door. Reference detail for the eval-loop skill."
     },
     {
+      "name": "eval-loop/log-scrape",
+      "description": "Scraping cases from production logs. Reference detail for the eval-loop skill."
+    },
+    {
       "name": "eval-loop/measurement",
       "description": "Measurement. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/query-performance",
+      "description": "Query speed in the loop. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/replaying-a-logged-session",
+      "description": "Scoring a session that ran somewhere else. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/retrieval-replay",
+      "description": "Replaying retrieval requests. Reference detail for the eval-loop skill."
     },
     {
       "name": "eval-loop/running-a-run",
@@ -856,6 +872,14 @@
     {
       "name": "eval-loop/setting-up-a-set",
       "description": "Setting up a set on your own model. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/sharing-runs",
+      "description": "Sharing runs. Reference detail for the eval-loop skill."
+    },
+    {
+      "name": "eval-loop/team-workflow",
+      "description": "Working the loop, alone or as a team. Reference detail for the eval-loop skill."
     },
     {
       "name": "eval-report",

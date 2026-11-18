@@ -4,15 +4,16 @@
   python build_run_package.py --run <workdir>/runs/sonnet --run <workdir>/runs/opus \
       --set <set-dir>      # --out defaults to <workdir>/packages/eval-<run>
 
-Writes CSVs, a Malloy model over them, a notebook for the analytical tables and
-an in-package HTML app for the case matrix.
+Writes CSVs, a Malloy model over them, a report (`run_report.malloy`) for the
+analytical tables and an in-package HTML app for the case matrix. Query replays
+go to build_speed_package.py instead, which writes the same three parts.
 
-WHY BOTH A NOTEBOOK AND AN APP
+WHY BOTH A REPORT AND AN APP
 
 They are not redundant, and the split is not stylistic. Publisher renders a
-`.malloy` notebook natively, so the aggregate tables -- pass rate, effort, most-missed
+`.malloy` report natively, so the aggregate tables -- pass rate, effort, most-missed
 entities, the backlog -- are best expressed as Malloy and left alone: no
-JavaScript to drift out of step with the model. What a notebook cannot do is
+JavaScript to drift out of step with the model. What a report cannot do is
 open a drawer, and reading an eval is mostly drilling into one case. So the
 matrix and its drawer are an HTML app, and both read the same model, which is
 what keeps the two from disagreeing.
@@ -553,12 +554,10 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "n_cases", "proposed_edit", "evidence", "confidence"])
     write_csv(data / "cluster_members.csv", member_rows, ["cluster_id", "qid"])
 
-    for name in ("publisher.json", "eval_run.malloy"):
+    for name in ("publisher.json", "eval_run.malloy", "run_report.malloy"):
         if (TEMPLATE / name).exists():
             shutil.copy(TEMPLATE / name, out / name)
     stamp_version(out / "publisher.json")
-    if (TEMPLATE / "notebooks").exists():
-        shutil.copytree(TEMPLATE / "notebooks", out / "notebooks", dirs_exist_ok=True)
     if (TEMPLATE / "public").exists():
         shutil.copytree(TEMPLATE / "public", out / "public", dirs_exist_ok=True)
 
@@ -590,7 +589,8 @@ def stamp_version(manifest: pathlib.Path) -> None:
 
 
 def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
-                  out: pathlib.Path, on_model_server: bool = False) -> list[str]:
+                  out: pathlib.Path, on_model_server: bool = False,
+                  report: str = "run_report") -> list[str]:
     """The registration command and both URLs, which are in different path spaces.
 
     Registered on the truth server when the set has one. The package holds the
@@ -620,8 +620,8 @@ def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
     return [*note,
             f"curl -sS -X POST {base}/api/v0/environments/{env}/packages \\",
             f"    -H 'content-type: application/json' -d {shlex.quote(body)}",
-            f"# case matrix: {base}/environments/{env}/packages/{name}/",
-            f"# notebook:    {base}/{env}/{name}/notebooks/eval_run",
+            f"# data app:    {base}/environments/{env}/packages/{name}/",
+            f"# report:      {base}/{env}/{name}/{report}",
             *tail]
 
 
@@ -667,7 +667,15 @@ def main(argv: list[str] | None = None) -> int:
                          "register the report on the truth server")
     a = ap.parse_args(argv)
     cfg = config.load(a.set_dir)
-    out = a.out or cfg.workdir() / "packages" / f"eval-{a.run[0].name}"
+    import build_speed_package as speed
+    replays = [r for r in a.run if speed.is_replay(r)]
+    if replays and len(replays) != len(a.run):
+        raise SystemExit(
+            "these runs mix query replays and answer runs: "
+            + ", ".join(r.name for r in a.run) + ". Fix: package the replays "
+            "together and the answer runs together, as two packages")
+    out = a.out or cfg.workdir() / "packages" / (
+        f"speed-{a.run[-1].name}" if replays else f"eval-{a.run[0].name}")
 
     outer = config.enclosing_package(out)
     if outer:
@@ -676,15 +684,16 @@ def main(argv: list[str] | None = None) -> int:
             f"that package into loadErrors. Fix: pass an --out outside any "
             f"package, or omit it for {cfg.workdir() / 'packages'}")
     undiagnosed = [r for r in a.run if not (r / "clusters.jsonl").exists()]
-    if undiagnosed and not a.without_diagnosis:
+    if undiagnosed and not a.without_diagnosis and not replays:
         raise SystemExit(
             "no clusters.jsonl in " + ", ".join(str(r) for r in undiagnosed)
             + ": the report's cluster views would be empty. Fix: run "
               "`eval.py diagnose` on each run first, or pass "
               "--without-diagnosis")
 
-    counts = build(a.run, a.set_dir, out)
-    lines = serving_lines(cfg, a.run, out, a.on_model_server)
+    counts = speed.build(a.run, out) if replays else build(a.run, a.set_dir, out)
+    lines = serving_lines(cfg, a.run, out, a.on_model_server,
+                          "speed_report" if replays else "run_report")
     (out / "README.md").write_text(
         "# Serving this report\n\n```bash\n" + "\n".join(lines) + "\n```\n")
     print(f"{out}")

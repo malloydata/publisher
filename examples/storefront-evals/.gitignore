@@ -1,0 +1,10 @@
+# A run belongs to whoever ran it, not to this repository. The set is the
+# questions and the answer key; everything an arm produces -- the record, the
+# transcripts, the write-up, the built report package -- stays out.
+#
+# The report package especially: it is a Malloy package, and it must never
+# land inside examples/storefront, where its eval_run.malloy would resolve
+# duckdb.table('data/*.csv') against the STOREFRONT package root and put
+# storefront itself into loadErrors.
+*/runs/
+run-package-*/

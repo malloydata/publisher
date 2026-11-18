@@ -22,13 +22,16 @@ an arriving item maps to, and the four physical formats.
 Two separate rules, and "package" blurs them:
 
 - **The same git repository as the model it evaluates**, so one commit pins
-  the model and the ledger together. That is what a checkpoint is.
-- **Never inside the directory tree the answerer's package serves.** The
-  answerer can read files in the served tree, and gold there is a
-  contamination path.
+  the model and the answer key together. That is what a checkpoint is.
+- **Never inside the package directory.** Anything in it is part of the
+  package: a published version's `contentHash` covers it, so a golden fix would
+  force a new package version, and anyone who can read the version can read
+  the goldens.
 
 So the set is a SIBLING of the package under test, in its repo. A repo with
-`ecommerce/` under test gets `evals/ecommerce-questions/`, beside it.
+`ecommerce/` under test gets `evals/ecommerce-questions/`, beside it
+(`examples/storefront-evals/` in this repository is a worked one). The runs
+are neither: they live in the set's workdir, outside git.
 
 ## Step 1: keep the file as it arrived
 
@@ -105,6 +108,11 @@ are the ones already stated rather than new ones:
   you are not that agent, and the gap is the point.
 - Record the query as `canonicalQuery`. A number with no query is somebody's
   guess, which is the row above it in the table.
+- Record a second query that reaches the same number by another route as
+  `golden.verification.verifyQuery`, with `primaryAxis` and `variesAxis`
+  saying how the two differ. `verify --promote` runs it, records both, and
+  promotes the key only when they agree (`eval-loop`'s
+  `reference/setting-up-a-set.md`, step 6).
 - Record the entities you used to get there as `expectedEntities.required`, in
   the `kind:source:name` form: the measures, dimensions and views the answer
   cannot be produced without. `reference/case-format.md` says to leave this
@@ -221,6 +229,45 @@ are the ones already stated rather than new ones:
   a new number.
 - What no query can settle is not a failure to derive. It is step 4's second
   kind, and those clauses score on day one.
+
+### Proposing search targets
+
+When you derive `expectedEntities`, also write the searches that find them, as
+`searchTargets` (`reference/ledger-schema.md` in `skill:eval-answer` has the
+shape). The answer key says what the answer needs; the targets say how a good
+agent breaks the question into `get_context` calls. With both, a run reports
+whether the agent asked for the right things separately from whether search
+returned them.
+
+- **One target per concept the question names**, in the request's own fields:
+  `target_type`, `search_text` in the question's words rather than the field's
+  name, and `example_values` only where a value is part of the question
+  (`"Cancelled"`, `"Returned"` for a net-of-returns filter).
+- **Key each target with the entities IT should return**, not the whole case's
+  list. A `dimension` target keyed to a measure can never be satisfied, because
+  `target_type` is a hard filter, and `import_cases.py` refuses it. Use a
+  `requiredAnyOf` group where the model offers two routes, as for the case.
+- **Do not add a target for a concept the answer does not need.** An extra
+  golden target scores every agent that skipped it as a decomposition miss.
+
+**From real traffic.** A run rebuilt from a host's request logs holds the
+searches a real agent sent. `targets_from_run.py --run <run> --set <set>`
+prints them per case, and `--write` copies them onto cases that have none.
+That is the request to hold fixed while retrieval changes
+(`reference/retrieval-replay.md` in `skill:eval-loop`). It is what one agent
+asked, not what a good agent asks, so the copied targets carry no key: key
+each one as above before `score_targets.py` grades an agent against it.
+
+Then verify both halves against the served model:
+
+```
+python3 check_findable.py --set <set> --publisher <rest>
+```
+
+It checks every target's ids against the compiled model, and sends each target
+exactly as written. A target whose own search does not return its key is a
+finding: either the wording is unlike anything in the model's docs, or the docs
+do not say what the words ask. Fix one before any run is scored against it.
 
 ## Step 3: run their query, if they gave one
 
@@ -354,7 +401,7 @@ not roll into the new one.
 
 ## Step 6: freeze the split
 
-Every case gets `split`: `dev` or `holdout`. Diagnose and improve read dev only;
+Every case gets `split`: `dev`, `holdout` or `test`. `test` is optional: its cases are never diagnosed and decide nothing in the acceptance check, so their pass rate is the one number the loop has not been tuned on, and the one to quote. Diagnose and improve read dev only;
 the acceptance check runs both, and a set that is all dev cannot defend an
 accept. `skill:eval-loop` owns the rule; import is where it is frozen, because
 a split chosen after the first failures is not a holdout.

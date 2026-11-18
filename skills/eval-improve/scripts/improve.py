@@ -51,6 +51,14 @@ serves as a published version is refused before any agent starts (the server
 is asked, in both modes): nothing synced there is served, the sync would
 delete it, and a reload of it answers 200 without reading the edit. Either way
 the agent gets one generated script rather than a general shell.
+
+`--experiment <name>` is the third way, and the one that works on a server
+that publishes versions, which is the default: the agent's edits are served as
+the experiment `<package>.<name>` beside the main package (experiment.py), and
+the helper publishes the working tree as that experiment again after each
+edit. The agent probes the experiment, the main package and its record are
+never touched, and no watch mode or restart is needed. The routine's improve
+mode runs this way.
 """
 from __future__ import annotations
 
@@ -72,8 +80,11 @@ import config  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 import golden_rows  # noqa: E402
+import attempts  # noqa: E402
+import golden_leak  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+EXPERIMENT_PY = SKILLS_ROOT / "eval-loop" / "scripts" / "experiment.py"
 IMPROVE_TOOLS = ("mcp__publisher__get_context",
                  "mcp__publisher__execute_query",
                  "mcp__publisher__compile_model",
@@ -119,7 +130,28 @@ echo "reloaded; if sourceContentSha did not change, the edit did not reach the s
 """
 
 
+# With --experiment: publish the working tree as the experiment again. Its last
+# line is the same `"sourceContentSha":"..."` the reload prints, so the
+# agent's instruction to watch that value holds in both modes.
+EXPERIMENT_SYNC = """{python} {experiment_py} sync {name} --set {set_dir} --dir {model_dir} --no-build
+"""
+
 SYNC_HELPER = "sync_and_reload.sh"
+
+# For a run nobody is watching. The skill tells a speed edit to wait for the
+# user's yes, because a persisted table costs a build on every refresh. Here
+# the yes comes later and from the right place: the edit is measured and left
+# on a branch, and a person merges it or does not.
+UNATTENDED = """
+NOBODY IS HERE TO ASK
+
+This run is unattended. Do not wait for approval and do not ask a question:
+nobody will answer. Where the skill says to propose an edit and wait for the
+user, make the edit instead. It is not published: it is measured as an
+experiment beside the main package and left on a branch, and a person approves
+it by merging that branch. If you would not make the edit without asking,
+make none and say why in `disagreement`.
+"""
 
 
 def served_version(rest_url: str | None, environment: str,
@@ -190,6 +222,16 @@ THE CLUSTER
 THE CASES IN IT
 {cases}
 
+WHAT WAS ALREADY TRIED ON THIS SET
+
+Each entry is an edit that was put to the acceptance check, newest first,
+those aimed at your cases before the rest. A REJECTED edit failed for the
+reason given: do not make it again, and do not make a reworded version of it.
+If you believe a rejected edit was right and the rejection was noise, say so
+in `disagreement` and make no edit. An ACCEPTED edit is already in the model.
+
+{prior}
+
 MAKING YOUR EDIT REACH THE SERVER
 
 After each edit run `bash ./sync_and_reload.sh`. It prints `sourceContentSha`.
@@ -198,7 +240,7 @@ probe you run afterwards is testing the old model. This covers a package skill
 under skills/ as well as a .malloy file: both are part of the hash.
 
 One edit for the cluster's shared root cause, not one per case.
-
+{unattended}
 READ THE CLUSTER'S `sufficiency` BEFORE YOU EDIT
 
 It reports whether the diagnosis was PROBED, worst case across the cluster's
@@ -221,6 +263,27 @@ A reply that ends in prose is a lost result. The edit still happened and the
 receipts -- probes, edit tier, golden-suspect list -- are gone, so the
 acceptance check has nothing to weigh.
 """
+
+
+def model_under_test(a: argparse.Namespace) -> pathlib.Path | None:
+    """The edited model for the verifier's `--model`: `<package>.malloy`, else
+    the model directory when it holds any .malloy file, else None.
+
+    Named by the configured package, not `a.package`: with `--experiment` that
+    is `<package>.<name>`, which no file is called. The served copy is skipped
+    for an experiment too, because it is the main package, which the agent
+    never edits.
+    """
+    name = getattr(a, "model_package", None) or a.package
+    served = (a.server_root / "publisher_data" / a.environment / name
+              if a.server_root and not getattr(a, "experiment", None) else None)
+    for cand in (served, a.model_dir):
+        if cand and (cand / f"{name}.malloy").exists():
+            return cand / f"{name}.malloy"
+    # The verifier takes a package directory as well as a file.
+    if a.model_dir and a.model_dir.is_dir() and any(a.model_dir.rglob("*.malloy")):
+        return a.model_dir
+    return None
 
 
 def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
@@ -248,12 +311,13 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
     if not diff.strip():
         return {"ran": False, "why": "no edit to invalidate anything"}
 
-    model = None
-    for cand in (a.server_root / "publisher_data" / a.environment / a.package
-                 if a.server_root else None, a.model_dir):
-        if cand and (cand / f"{a.package}.malloy").exists():
-            model = cand / f"{a.package}.malloy"
-            break
+    model = model_under_test(a)
+    # Without `--model` the verifier skips its stale-rubric and name checks and
+    # still exits 0, so a clean result would claim checks that never ran.
+    if model is None:
+        return {"ran": False, "couldNotRun": True,
+                "why": f"no .malloy file in {a.model_dir}, so the stale-rubric and "
+                       f"name checks cannot run against the edited model"}
     # `--set` is required by the verifier and was never passed, so argparse
     # exited 2 on every call: `clean` was false whenever there was a diff, and
     # the acceptance check below reported BLOCKED for every cluster that made an
@@ -282,8 +346,7 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
     # getattr: older callers and the tests build this Namespace by hand.
     if getattr(a, "definitions", None):
         cmd += ["--definitions", str(a.definitions)]
-    if model:
-        cmd += ["--model", str(model)]
+    cmd += ["--model", str(model)]
     # The isolation guard needs to know what is under test; without it the
     # guard reads `set.json`'s `targetPackage`, which nothing writes.
     if a.package:
@@ -311,22 +374,65 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
         return {"ran": False, "couldNotRun": True,
                 "why": f"verify_goldens could not run (exit {p.returncode}); "
                        f"see artifacts/clusters/*/verify_goldens.txt",
-                "model": str(model) if model else None,
+                "model": str(model),
                 "tail": (p.stderr or p.stdout or "").strip().splitlines()[-25:]}
     return {"ran": True, "clean": p.returncode == 0,
-            "model": str(model) if model else None,
+            "model": str(model),
             "tail": (p.stdout or p.stderr or "").strip().splitlines()[-25:]}
 
 
-def cluster_members(issue: dict[str, Any], cases: dict[str, Any],
-                    set_dir: pathlib.Path | None) -> list[dict[str, Any]]:
-    """Each case in the cluster with its question, key and rubric.
+def golden_keys(cases: dict[str, Any], set_dir: pathlib.Path | None
+                ) -> tuple[dict[str, Any], dict[str, list[str]], dict[str, str]]:
+    """Every case's key, its golden queries and the answers its rubric and
+    mustState accept, for the leak check. A key whose rows cannot be read is
+    left out: there is nothing to look for."""
+    keys: dict[str, Any] = {}
+    queries: dict[str, list[str]] = {}
+    accepted: dict[str, str] = {}
+    for qid, c in cases.items():
+        g = c.get("golden") or {}
+        try:
+            keys[qid] = golden_rows.key_value(g, set_dir, qid)
+        except golden_rows.GoldenRowsError:
+            pass
+        # `canonicalQuery` is the field the case format defines; there is no
+        # `golden.query`, so reading that left every primary query unchecked.
+        qs = [g.get("canonicalQuery"), (g.get("verification") or {}).get("verifyQuery")]
+        queries[qid] = [q for q in qs if isinstance(q, str)]
+        accepted[qid] = golden_leak.accepted_text(g)
+    return keys, queries, accepted
 
-    The key comes through `golden_rows`, so a rows golden kept in
-    `golden.path` reaches the improver as its rows rather than as no key.
+
+REPLAY_FIELDS = ("qid", "source", "query", "givens", "modelPath", "count",
+                 "median_ms", "error")
+
+
+def cluster_members(issue: dict[str, Any], cases: dict[str, Any],
+                    set_dir: pathlib.Path | None,
+                    run: pathlib.Path | None = None) -> list[dict[str, Any]]:
+    """What the improver is shown about each case in the cluster.
+
+    A speed issue gets the replayed queries and their timings, read from the
+    replay's results, and nothing from the case: a replay times every split,
+    so its qids include test and holdout cases whose keys the improver must
+    never see, and a speed edit needs the query, not the answer.
+
+    Any other issue gets each case's question, key and rubric. The key comes
+    through `golden_rows`, so a rows golden kept in `golden.path` reaches the
+    improver as its rows rather than as no key. A `test` case is skipped:
+    diagnose never puts one in a cluster, and this keeps its key out even if
+    an issue names one.
     """
+    if issue.get("component") == "performance":
+        want = set(issue.get("qids", []))
+        rows = (ledger.read_jsonl(run / "results.jsonl")
+                if run and (run / "results.jsonl").is_file() else [])
+        return [{k: r.get(k) for k in REPLAY_FIELDS}
+                for r in rows if r.get("qid") in want]
     out = []
     for q in issue.get("qids", []):
+        if (cases.get(q) or {}).get("split") == "test":
+            continue
         g = (cases.get(q) or {}).get("golden") or {}
         out.append({"qid": q, "question": (cases.get(q) or {}).get("question"),
                     "golden": golden_rows.key_value_or_note(g, set_dir, q),
@@ -347,7 +453,14 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
                                environment=a.environment,
                                package=a.package)
     sync = ""
-    if not a.watch_mode:
+    if a.experiment:
+        import shlex
+        reload_cmd = EXPERIMENT_SYNC.format(
+            python=shlex.quote(sys.executable),
+            experiment_py=shlex.quote(str(EXPERIMENT_PY)), name=shlex.quote(a.experiment),
+            set_dir=shlex.quote(str(a.set_dir.resolve())),
+            model_dir=shlex.quote(str(a.model_dir.resolve())))
+    elif not a.watch_mode:
         served = (a.server_root / "publisher_data" / a.environment / a.package
                   if a.server_root else None)
         if served:
@@ -357,7 +470,7 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
     helper.write_text(SYNC_SCRIPT.format(sync=sync, reload=reload_cmd))
     helper.chmod(0o755)
 
-    members = cluster_members(issue, cases, a.set_dir)
+    members = cluster_members(issue, cases, a.set_dir, getattr(a, "run", None))
 
     r = spawn_agent(
         IMPROVE_PROMPT.format(
@@ -375,6 +488,8 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
                                  "sufficiency", "diagnosis", "evidence")},
                                indent=2),
             cases=json.dumps(members, indent=2)[:8000],
+            unattended=UNATTENDED if getattr(a, "unattended", False) else "",
+            prior=attempts.brief(attempts.relevant(a.prior, issue.get("qids", [])))[:6000],
             cases_file=(a.set_dir / "cases.jsonl").resolve()),
         skills=["eval-improve", *a.role_skills], skills_root=a.roots,
         model=a.model,
@@ -392,6 +507,12 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
     # whose stored value silently moved is invisible here, which is why the
     # agent is asked for goldenSuspect as well.
     audit = verify_goldens(a, d, diff)
+    # Two checks a script can make on the diff itself, before anything is
+    # re-answered. An edit that states a case's answer passes that case for
+    # nothing, and one that was already rejected would cost two runs to
+    # reject again.
+    leak = golden_leak.check(diff, a.keys, a.golden_queries, a.accepted)
+    again = attempts.same_edit(a.prior, diff)
 
     helper.unlink(missing_ok=True)
     if a.isolate:
@@ -404,7 +525,10 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
 
     res = {"issue_id": cid, "qids": issue.get("qids", []),
            "diffStat": stat, "diffEmpty": not diff.strip(),
-           "goldenAudit": audit,
+           "goldenAudit": audit, "goldenLeak": leak,
+           "duplicateOf": ({"at": again.get("at"), "what": again.get("what"),
+                            "failedRules": again.get("failedRules")} if again else None),
+           "patchSha": attempts.patch_sha(diff),
            "patchPath": str((d / "edit.patch").relative_to(art.parent)),
            "cost_usd": r.cost_usd, "wall_seconds": r.wall_seconds,
            "attempts": r.attempts, "agentError": r.error,
@@ -414,6 +538,20 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
 
 
 def main(argv: list[str] | None = None) -> int:
+    """`run`, then take down the experiment it started, however it ended."""
+    started: dict[str, Any] = {}
+    try:
+        return run(argv, started)
+    finally:
+        if started:
+            import contextlib
+            import io
+            import experiment
+            with contextlib.redirect_stdout(io.StringIO()):
+                experiment.stop(started["cfg"], started["name"])
+
+
+def run(argv: list[str] | None, started: dict[str, Any]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True, type=pathlib.Path)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
@@ -430,6 +568,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--watch-mode", action="store_true",
                     help="Publisher was started with --watch-env, so edits are "
                          "live and the helper only reloads")
+    ap.add_argument("--experiment", default=None, metavar="NAME",
+                    help="serve the agent's edits as the experiment "
+                         "<package>.<NAME> beside the main package, and have "
+                         "the agent probe that. Works on a server that "
+                         "publishes versions, where --watch-mode and the "
+                         "sync do not, and leaves the main package alone")
+    ap.add_argument("--unattended", action="store_true",
+                    help="tell the agent nobody will answer a question or approve "
+                         "an edit: it makes the edit, which is then measured and "
+                         "left on a branch for a person to merge")
     ap.add_argument("--model", default="opus", help="the modeling agent")
     ap.add_argument("--environment", default=None)
     ap.add_argument("--package", default=None)
@@ -518,15 +666,26 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"{a.model_dir} has uncommitted changes; commit or "
                          f"stash first so each candidate diff is only its own "
                          f"edit:\n{dirty}")
-    if not a.watch_mode and not a.server_root:
+    if a.experiment:
+        # The agent edits the working tree and probes the experiment, so what
+        # the main package is served as does not matter: nothing writes to it.
+        import experiment
+        import publish
+        experiment.sync(cfg, a.experiment, a.model_dir, build=False)
+        started.update(cfg=cfg, name=a.experiment)
+        publish.warm(cfg, a.environment, publish.experiment_package(a.package, a.experiment))
+        a.model_package = a.package
+        a.package = publish.experiment_package(a.package, a.experiment)
+        print(f"edits are served as {a.environment}/{a.package}; the main package is untouched")
+    elif not a.watch_mode and not a.server_root:
         print("warning: no --watch-mode and no --server-root, so the agent "
               "cannot sync its edit into Publisher's snapshot; every probe it "
               "runs will test the unedited model")
     # Asked in both modes: --watch-mode is the caller's claim, and a server
     # started with --watch-env over a preserved root still serves a version.
-    version = served_version(a.rest_url, a.environment, a.package)
+    version = None if a.experiment else served_version(a.rest_url, a.environment, a.package)
     served = (a.server_root / "publisher_data" / a.environment / a.package
-              if a.server_root and not a.watch_mode else None)
+              if a.server_root and not a.watch_mode and not a.experiment else None)
     if version or (served is not None and served_as_versions(served)):
         what = (f"the model server serves {a.package} as published version "
                 f"{version}" if version else f"{served} holds published versions")
@@ -536,10 +695,13 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             f"{what}, which is immutable: {why}. Fix: restart the model "
             f"server in watch mode, `eval.py serve model --set {a.set_dir} "
-            f"--watch-env {a.environment} --reinit`, then pass --watch-mode")
+            f"--watch-env {a.environment} --reinit`, then pass --watch-mode. Or pass "
+            f"--experiment <name>, which needs neither")
 
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
+    a.prior = attempts.read(a.set_dir)
+    a.keys, a.golden_queries, a.accepted = golden_keys(cases, a.set_dir)
 
     status: dict[str, str] = {}
     for e in events:
@@ -547,7 +709,9 @@ def main(argv: list[str] | None = None) -> int:
             status[e["issue_id"]] = e["status"]
     issues = [e for e in events if e.get("kind") == "issue"
               and e.get("owner") in ("model", "package-skill")
-              and status.get(e["issue_id"]) == "open"]
+              # An issue with no status event is open: the speed findings of
+              # a query replay are written without one.
+              and status.get(e["issue_id"], "open") == "open"]
     if a.only:
         want = {x.strip() for x in a.only.split(",")}
         issues = [i for i in issues if i["issue_id"] in want]
@@ -566,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
     art.mkdir(parents=True, exist_ok=True)
     print(f"{len(issues)} model/package-skill clusters, agent {a.model}, "
           f"{'isolated' if a.isolate else 'cumulative'}, "
-          f"{'watch mode' if a.watch_mode else 'snapshot sync'}")
+          f"{'served as an experiment' if a.experiment else 'watch mode' if a.watch_mode else 'snapshot sync'}")
 
     results = []
     for n, issue in enumerate(issues, 1):
@@ -602,6 +766,12 @@ def main(argv: list[str] | None = None) -> int:
             for g in (r.get("goldenSuspect") or []):
                 print(f"  ! golden_suspect {g.get('qid')} via {g.get('entity')}: "
                       f"{g.get('stored')} -> {g.get('rederived')}")
+            for x in (r.get("goldenLeak") or []):
+                print(f"  ! the edit states {x['qid']}'s answer ({x['kind']}): {x['found']}")
+            if r.get("duplicateOf"):
+                dup = r["duplicateOf"]
+                print(f"  ! this same edit was REJECTED on {dup.get('at')} ({dup.get('what')}): "
+                      + "; ".join(f"{k}: {v}" for k, v in (dup.get("failedRules") or {}).items()))
 
     # Keyed by issue_id so a re-run replaces its own candidates instead of
     # appending a second set. This script may be re-invoked after a crash.
@@ -617,6 +787,9 @@ def main(argv: list[str] | None = None) -> int:
         meaningChanged=r.get("meaningChanged") or [],
         goldenSuspect=r.get("goldenSuspect") or [],
         goldenAudit=r.get("goldenAudit") or {},
+        goldenLeak=r.get("goldenLeak") or [],
+        duplicateOf=r.get("duplicateOf"),
+        patchSha=r.get("patchSha"),
         improvedBy=a.model,
         at=ledger.now(),
     ) for r in results]
@@ -647,14 +820,23 @@ def main(argv: list[str] | None = None) -> int:
                for r in results]
     blocked = [(r, g, aud) for r, g, aud in blocked
                if g or (aud.get("ran") and not aud.get("clean"))
-               or aud.get("couldNotRun")]
+               or aud.get("couldNotRun") or r.get("goldenLeak") or r.get("duplicateOf")]
     if blocked:
         print(f"\nACCEPTANCE CHECK BLOCKED: {len(blocked)} cluster(s) either may "
-              f"have invalidated a golden or were never checked. Settle each "
+              f"have invalidated a golden, were never checked, state a case's "
+              f"answer, or repeat a rejected edit. Settle each "
               f"through the golden side door in skill:eval-loop, and re-run any "
               f"verification that failed to start, before re-answering.")
         for r, g, aud in blocked:
             print(f"  {r['issue_id']}")
+            for x in r.get("goldenLeak") or []:
+                print(f"    the edit states {x['qid']}'s answer ({x['kind']}: {x['found']}). "
+                      f"Re-asking that case would pass it for nothing. Take the value out "
+                      f"of the edit, or confirm it is a constant of the business and not "
+                      f"the answer")
+            if r.get("duplicateOf"):
+                print(f"    the same edit was rejected on {r['duplicateOf'].get('at')}; "
+                      f"read why in {attempts.path(a.set_dir)} before paying to reject it again")
             if aud.get("ran") and not aud.get("clean"):
                 print(f"    verify_goldens failed; see "
                       f"artifacts/clusters/*/verify_goldens.txt")

@@ -7,11 +7,13 @@ exited 2 every time and the acceptance check reported BLOCKED for every cluster
 that made an edit. These tests run the real verifier through the real command
 builder, so a missing required argument fails here rather than in a run."""
 import argparse
+import json
 import pathlib
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -33,6 +35,8 @@ class Invocation(unittest.TestCase):
         (self.set_dir / "cases.jsonl").write_text("")
         self.art = self.tmp / "art"
         self.art.mkdir()
+        (self.tmp / "model").mkdir()
+        (self.tmp / "model" / "ecommerce.malloy").write_text("source: a is x\n")
         self.a = argparse.Namespace(
             set_dir=self.set_dir, server_root=None, model_dir=self.tmp / "model",
             environment="samples", package="ecommerce",
@@ -86,6 +90,26 @@ class Invocation(unittest.TestCase):
         r = improve.verify_goldens(self.a, self.art, "   ")
         self.assertEqual(r["ran"], False)
         self.assertIn("no edit", r["why"])
+
+    def test_an_experiment_is_audited_against_the_configured_package_file(self):
+        # With --experiment, a.package is `<package>.<name>`, which no file is
+        # called; the lookup used to find nothing and drop --model.
+        self.a.experiment, self.a.model_package = "imp1", "ecommerce"
+        self.a.package = "ecommerce.imp1"
+        cmd = self.capture()
+        self.assertEqual(cmd[cmd.index("--model") + 1],
+                         str(self.tmp / "model" / "ecommerce.malloy"))
+
+    def test_with_no_model_found_the_audit_is_not_run_and_says_why(self):
+        # The verifier skips its model checks without --model and still exits
+        # 0, so running it here would report checks as clean that never ran.
+        (self.tmp / "model" / "ecommerce.malloy").unlink()
+        with mock.patch.object(improve.subprocess, "run") as run:
+            r = improve.verify_goldens(self.a, self.art, "a diff")
+        run.assert_not_called()
+        self.assertTrue(r["couldNotRun"])
+        self.assertNotIn("clean", r)
+        self.assertIn("stale-rubric and name checks", r["why"])
 
     def test_a_set_path_that_does_not_exist_returns_rather_than_crashes(self):
         # It used to run the verifier with cwd=set_dir, so a bad path raised
@@ -157,6 +181,8 @@ class NoTruthServerNamed(unittest.TestCase):
         (self.set_dir / "set.json").write_text('{"truthPackage": "t"}')
         self.art = self.tmp / "art"
         self.art.mkdir()
+        (self.tmp / "model").mkdir()
+        (self.tmp / "model" / "ecommerce.malloy").write_text("source: a is x\n")
         self.a = argparse.Namespace(
             set_dir=self.set_dir, server_root=None, model_dir=self.tmp / "model",
             environment="samples", package="ecommerce", truth_publisher=None)
@@ -409,6 +435,114 @@ class ReloadReceipt(unittest.TestCase):
         self.assertIn("reload failed (HTTP 400)", out)
         self.assertIn("bad.malloy: refused", out)
         self.assertNotIn("stale", out)
+
+
+class WhatTheImproverIsToldAndWhatItsDiffIsCheckedFor(unittest.TestCase):
+    """One cluster, with the agent faked as a function that edits the model."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.model = self.root / "model"
+        self.model.mkdir()
+        (self.model / "m.malloy").write_text("source: orders is t extend {\n  measure: n is count()\n}\n")
+        for cmd in (["init", "-q"], ["add", "."],
+                    ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]):
+            subprocess.run(["git", *cmd], cwd=self.model, check=True, capture_output=True)
+        self.set = self.root / "set"
+        self.set.mkdir()
+        self.cases = {"q1": {"qid": "q1", "question": "net sales?",
+                             "golden": {"kind": "value", "value": 464861.37}}}
+        self.prompt = None
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def improve(self, added: str, prior=(), experiment=None, issue=None, run=None):
+        def agent(prompt, **kw):
+            self.prompt = prompt
+            self.helper = (self.model / improve.SYNC_HELPER).read_text()
+            f = self.model / "m.malloy"
+            f.write_text(f.read_text().replace("  measure: n", added + "\n  measure: n"))
+            return types.SimpleNamespace(text="done", json={"edit": "doc"}, cost_usd=0.1,
+                                         wall_seconds=1, attempts=1, error=None)
+        a = argparse.Namespace(
+            rest_url="http://x", environment="e", package="p", watch_mode=True, server_root=None,
+            model_dir=self.model, set_dir=self.set, role_skills=[], roots=[], model="opus",
+            mcp_url="http://x/mcp", max_turns=5, timeout=5, retries=0, isolate=True, force=False,
+            prior=list(prior), experiment=experiment, run=run)
+        a.keys, a.golden_queries, a.accepted = improve.golden_keys(self.cases, self.set)
+        with mock.patch.object(improve, "spawn_agent", side_effect=agent), \
+                mock.patch.object(improve, "verify_goldens", return_value={"ran": True, "clean": True}):
+            return improve.improve_cluster(issue or {"issue_id": "r:c1", "qids": ["q1"]},
+                                           self.cases, a, self.root / "run" / "artifacts")
+
+    def test_an_edit_that_states_the_answer_is_reported(self):
+        r = self.improve("  #(doc) Net sales, about 464,861 last year")
+        self.assertEqual([(x["qid"], x["kind"]) for x in r["goldenLeak"]], [("q1", "value")])
+
+    def test_an_edit_that_states_a_figure_only_the_rubric_accepts_is_reported(self):
+        self.cases["q1"]["golden"]["rubric"] = (
+            "Accept $440,000-$450,000 (the realised basis). Reject $512,300.")
+        r = self.improve("  #(doc) Realised net sales were about 445K")
+        self.assertEqual([x["qid"] for x in r["goldenLeak"]], ["q1"])
+
+    def test_an_edit_that_pastes_a_canonical_query_is_reported(self):
+        q = "run: orders -> { where: status != 'Returned' aggregate: net is sale_price.sum() }"
+        self.cases["q1"]["golden"]["canonicalQuery"] = q
+        r = self.improve(f"  // {q}")
+        self.assertIn(("q1", "query"), [(x["qid"], x["kind"]) for x in r["goldenLeak"]])
+
+    def test_a_speed_issue_shows_the_replayed_queries_and_never_a_case_key(self):
+        # A replay times every split, so a speed issue can name a test case.
+        self.cases["t1"] = {"qid": "t1", "split": "test", "question": "SECRET QUESTION?",
+                            "golden": {"kind": "value", "value": 987654.32,
+                                       "rubric": "SECRET RUBRIC"}}
+        run = self.root / "replay"
+        run.mkdir()
+        (run / "results.jsonl").write_text(json.dumps(
+            {"qid": "t1", "source": "orders", "query": "run: orders -> by_month",
+             "median_ms": 812.5, "count": 3}) + "\n")
+        self.improve("  #@ persist", run=run, issue={
+            "issue_id": "perf-hot-orders", "qids": ["t1"], "component": "performance",
+            "owner": "model", "evidence": {"source": "orders"}})
+        self.assertIn("run: orders -> by_month", self.prompt)
+        self.assertIn("812.5", self.prompt)
+        for secret in ("SECRET QUESTION", "SECRET RUBRIC", "987654"):
+            self.assertNotIn(secret, self.prompt)
+
+    def test_an_honest_edit_is_not(self):
+        r = self.improve("  #(doc) Net sales. Excludes returned lines.")
+        self.assertEqual((r["goldenLeak"], r["duplicateOf"]), ([], None))
+        self.assertTrue(r["patchSha"])
+
+    def test_the_agent_is_shown_what_was_tried_and_a_repeat_of_a_rejected_edit_is_named(self):
+        first = self.improve("  #(doc) Net sales. Excludes returned lines.")
+        patch = (self.root / "run" / first["patchPath"]).read_text()
+        shutil.rmtree(self.root / "run")
+        rejected = improve.attempts.row(
+            what="doc net sales", outcome="rejected", baseline="b", candidates=["a", "b2"],
+            targets=["q1"], failed={"no regression": "keep in a"},
+            effect={"targets": 1, "targetsFixed": 1, "regressions": ["keep in a"]}, diff=patch)
+        r = self.improve("  #(doc) Net sales. Excludes returned lines.", prior=[rejected])
+        self.assertIn("REJECTED", self.prompt)
+        self.assertIn("rejected because: no regression: keep in a", self.prompt)
+        self.assertEqual(r["duplicateOf"]["what"], "doc net sales")
+
+    def test_with_an_experiment_the_agents_helper_republishes_the_working_tree(self):
+        self.improve("  #(doc) Net sales.", experiment="imp1")
+        self.assertIn("experiment.py", self.helper)
+        self.assertIn(f"sync imp1 --set {self.set.resolve()} --dir {self.model.resolve()}",
+                      self.helper)
+        self.assertNotIn("reload=true", self.helper)
+        # and without one it is the reload, as before
+        shutil.rmtree(self.root / "run")
+        self.improve("  #(doc) Net sales, again.")
+        self.assertIn("reload=true", self.helper)
+        self.assertNotIn("experiment.py", self.helper)
+
+    def test_with_nothing_tried_the_prompt_says_so(self):
+        self.improve("  #(doc) Net sales.")
+        self.assertIn("(none recorded for this set)", self.prompt)
 
 
 if __name__ == "__main__":

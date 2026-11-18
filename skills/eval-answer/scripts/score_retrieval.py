@@ -177,9 +177,12 @@ def attempt_key(e: dict[str, Any]) -> tuple:
 
 
 # Which entity KINDS each search target type can return. Mirrors
-# `KINDS_BY_TARGET` in the server's get_context tool, and `test_kinds_by_target_
-# matches_the_server` pins it against that file, because this module stays
-# stdlib-only and cannot import TypeScript. Getting this wrong in either
+# `KINDS_BY_FIND_TARGET` in the server's retrieval/search/find.ts, and
+# `test_kinds_by_target_matches_the_server` pins it against that file, because
+# this module stays stdlib-only and cannot import TypeScript. That map, not the
+# one in get_context_request.ts, is what a default server answers with: value
+# search is on by default (retrieval/defaults.ts), and it answers a value
+# target with the dimension that holds the value. Getting this wrong in either
 # direction misattributes a miss: too narrow and the agent is blamed for not
 # asking when it did, too wide and a real never-asked reads as a retrieval
 # failure.
@@ -195,9 +198,57 @@ KINDS_BY_TARGET = {
     # published shape says a `view` target is for.
     "view": {"view", "query"},
     "join": {"join"},
-    # Publisher indexes no dimensional values, so this target selects nothing.
-    "dimensional_value": set(),
+    "dimensional_value": {"dimension"},
 }
+
+
+def target_hits(target: dict[str, Any], call: dict[str, Any]
+                ) -> tuple[list[tuple[str, float | None]], str]:
+    """The entities one search target returned in its call, best first, with
+    their relevance, and the rule used. The one attribution rule every scorer
+    reads, so an answer run and a replay credit a target alike.
+
+    `server` when any hit carries `matched_targets`: a hit of a kind this
+    target type can return whose attribution names this target's text, scored
+    by that match. A hit with no attribution on such a response is a source
+    card from a host that does not attribute cards, and goes to every target of
+    its kind. `kind` otherwise (a lexical run, or a target with no text): every
+    returned entity of a kind the target can return, which can only
+    over-credit. Attribution names the text, not the type, so the kind filter
+    keeps the same text sent as two types from sharing hits.
+    """
+    rs = call.get("rankedSummary") or {}
+    hits = [h for h in rs.get("hits") or []
+            if isinstance(h, dict) and h.get("entity_id")]
+    kinds = KINDS_BY_TARGET.get(
+        str(target.get("target_type") or "").lower(), set())
+    text = target.get("search_text")
+    of_kind = [h for h in hits if split_entity(h["entity_id"])[0] in kinds]
+    out: list[tuple[str, float | None]] = []
+    if text and any(isinstance(h.get("matched_targets"), list) for h in hits):
+        for h in of_kind:
+            mt = h.get("matched_targets")
+            if mt is None:
+                out.append((h["entity_id"], h.get("relevance")))
+                continue
+            scores = [m.get("relevance") for m in mt
+                      if isinstance(m, dict) and m.get("search_text") == text]
+            if scores:
+                known = [x for x in scores if isinstance(x, (int, float))]
+                out.append((h["entity_id"],
+                            max(known) if known else h.get("relevance")))
+        rule = "server"
+    elif hits:
+        out = [(h["entity_id"], h.get("relevance")) for h in of_kind]
+        rule = "kind"
+    else:
+        # A run recorded before `hits` carried only the ids.
+        out = [(e, None) for e in rs.get("entityIds") or []
+               if e and split_entity(e)[0] in kinds]
+        rule = "kind"
+    out.sort(key=lambda p: -p[1] if isinstance(p[1], (int, float))
+             else float("inf"))
+    return out, rule
 
 
 def retrieved(events: list[dict[str, Any]],
@@ -247,6 +298,17 @@ def retrieved(events: list[dict[str, Any]],
     return list(seen), calls, tokens, reachable
 
 
+def unmeasured_calls(events: list[dict[str, Any]], key: tuple) -> int:
+    """The attempt's get_context calls that succeeded and recorded no
+    `rankedSummary`: a spilled result that could not be read back, or a logged
+    call whose response no log held. What they delivered is unknown, which is
+    not the same as nothing. A FAILED call delivered nothing and is not one."""
+    return sum(1 for e in events
+               if e.get("kind") == "tool_call" and e.get("tool") == "get_context"
+               and attempt_key(e) == key and e.get("rankedSummary") is None
+               and not e.get("error"))
+
+
 def split_entity(eid: str) -> tuple[str, str, str]:
     parts = (eid or "").split(":")
     if len(parts) >= 3:
@@ -281,7 +343,8 @@ def groups(exp: dict[str, Any]) -> list[list[str]]:
 
 def attribute(recall: float | None, coverage: str, passed: bool | None,
               missing_kinds: set[str] | None = None,
-              asked_kinds: set[str] | None = None) -> tuple:
+              asked_kinds: set[str] | None = None,
+              unmeasured: bool = False) -> tuple:
     """Where to fix this outcome. Returns (component, owner, label, why).
 
     EVERY failure gets attributed. An earlier version returned nothing when
@@ -315,6 +378,15 @@ def attribute(recall: float | None, coverage: str, passed: bool | None,
                 return (*UNATTRIBUTED, "declined an unanswerable question")
             return (*REFUSAL,
                     "the model cannot answer this and the answerer did not decline")
+        if unmeasured:
+            if passed:
+                return (*UNATTRIBUTED,
+                        "correct; a get_context response was not recorded, so "
+                        "retrieval was not measured")
+            return (*NO_ENTITIES,
+                    "the answer was wrong and a get_context response was not "
+                    "recorded, so nothing here can say whether retrieval "
+                    "delivered. Diagnose the failure directly")
         if passed:
             return (*UNATTRIBUTED,
                     "correct; the case names no required entities, so retrieval "
@@ -436,10 +508,19 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
     # miss was a dimension the agent DID search for came back owned by
     # agent-skill, "no search asked for a join at all". That is the
     # charge-the-agent default this file exists to remove.
+    # A call whose response was not recorded may have delivered what is
+    # missing, so a short recall is unknown rather than short. A full one is
+    # still full: more calls can only add.
+    unmeasured = bool(unmeasured_calls(events, key)) and recall is not None
+    if unmeasured:
+        precision = None
+        if recall < 1.0:
+            recall, missing, noise = None, [], []
+    unmeasured = unmeasured and recall is None
     missing_kinds = {split_entity(e)[0] for g in req_groups
                      if not any(e in delivered for e in g) for e in g}
     component, owner, where_to_fix, why = attribute(
-        recall, coverage, passed, missing_kinds, asked)
+        recall, coverage, passed, missing_kinds, asked, unmeasured)
     return {
         "qid": case["qid"],
         "sample": key[1],
@@ -450,6 +531,7 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
         "failed": passed is False,
         "recall": recall,
         "precision": precision,
+        "retrieval_unmeasured": unmeasured,
         "n_required": len(req_groups),
         "n_returned": len(got_set),
         # Precision reads everything outside `acceptable` as noise, so a set
@@ -546,6 +628,9 @@ def cascade(rows: list[dict[str, Any]]) -> dict[str, int]:
             c["not covered"] += 1
             c["passed_not_covered"] += passed
         elif cov not in ("covered", MEASURED_OK):
+            c["unmeasured"] += 1
+            c["passed_unmeasured"] += passed
+        elif r.get("retrieval_unmeasured"):
             c["unmeasured"] += 1
             c["passed_unmeasured"] += passed
         elif r["recall"] is None:

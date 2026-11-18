@@ -144,9 +144,10 @@ import json
 import pathlib
 import re
 import sys
+import tempfile
 import traceback
 import urllib.parse
-from typing import Any
+from typing import Any, NamedTuple
 
 import config
 from check_must_not_use import candidate as must_not_use_candidate
@@ -266,8 +267,12 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
     if a.rewrite:
         q = rewrite_table_refs(q)
     # try_query, not query: one bad golden reports and the sweep continues.
-    rows, err = try_query(a.publisher, a.environment, a.truth_package,
-                          a.truth_model, q)
+    if getattr(a, "hosted", None):
+        rows, err = hosted_truth_query(a.hosted, a.truth_package,
+                                       a.truth_model, q)
+    else:
+        rows, err = try_query(a.publisher, a.environment, a.truth_package,
+                              a.truth_model, q)
     if err:
         if "not queryable" in err:
             # The single most likely state of a set authored before its truth
@@ -332,9 +337,131 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
     return "ok", ", ".join(f"{k}={v}" for k, v in scalars.items()), rows
 
 
+def hosted_truth_query(hosted: dict[str, Any], package: str, model_path: str,
+                       malloy: str) -> tuple[list[dict[str, Any]], str | None]:
+    """One canonical query against a truth package published on a host.
+
+    The rule does not change: a value is verified when it re-derives through a
+    package of raw tables with no modelling. Only where that package is served
+    changes. A hosted platform publishes packages behind OAuth, which no plain
+    request in this tree can reach, so the query goes through `hosted_query`,
+    the eval-loop's single `claude -p` transport.
+
+    A page the host cut short is an error, not rows: a golden compared against
+    the first N rows of a longer result would pass or fail on the cut.
+    """
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                           / "eval-loop" / "scripts"))
+    import hosted_query                                  # noqa: PLC0415
+    rows, cut, err = hosted_query.query(hosted_query.Target(**hosted),
+                                        package, model_path, malloy)
+    if err:
+        return [], err
+    if cut:
+        return [], ("the host cut the truth query's result at its row limit, "
+                    "so it cannot be compared whole")
+    return rows, None
+
+
+def hosted_isolation_findings(truth_package: str | None,
+                              target_package: str | None) -> list[str]:
+    """The hosted half of the isolation guard.
+
+    A local truth server is checked by listing what it serves. A host serves
+    every package in an organization, so the check that can be made is the
+    one that matters most: the truth package is not the package under test.
+    Keeping it out of the answerer's workspace is the operator's to do and is
+    stated in the replay guide, because nothing here can list a workspace's
+    attachments.
+    """
+    if truth_package and target_package and truth_package == target_package:
+        return [f"the truth package and the package under test are both "
+                f"{truth_package!r}, so a golden would be re-derived through "
+                f"the model it is meant to check. Fix: publish the raw tables "
+                f"as their own package and name it in set.json's truthPackage"]
+    return []
+
+
 # ---------------------------------------------------------------- 2. rubric numbers
 
 _NUM = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d{1,}|\d{4,})(?![\w])")
+# A figure written with a magnitude suffix: 489K, $0.49M, 1.2B. `_NUM` alone
+# read none of these, so a rubric or a doc could state an answer that way
+# unseen.
+_SUFFIXED = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)\s?([KkMmBb])(?![\w])")
+_SCALE = {"k": 1e3, "m": 1e6, "b": 1e9}
+
+
+class Figure(NamedTuple):
+    text: str     # as written
+    value: float
+    tol: float    # half a unit of the last digit written
+    start: int
+    end: int
+
+
+def quoted_figures(text: str) -> list[Figure]:
+    """Every figure in `text` specific enough to be a quoted result.
+
+    One definition for every check that asks "does this text state that
+    number": the rubric-figure check here and `golden_leak.py`. Years, small
+    counts and short rates are left out (see `rubric_number_findings` for the
+    floor and how it was measured), so an honest doc saying "12 regions since
+    2025" is not a figure. A suffixed figure needs two significant digits:
+    "$0.49M" is a stated value, "$1M" is a round number.
+    """
+    out: list[Figure] = []
+    taken: list[tuple[int, int]] = []
+    for m in _SUFFIXED.finditer(text):
+        mant, scale = m.group(1), _SCALE[m.group(2).lower()]
+        if len(re.sub(r"\D", "", mant).lstrip("0")) < 2:
+            continue
+        decimals = len(mant.split(".")[1]) if "." in mant else 0
+        out.append(Figure(m.group(), float(mant) * scale,
+                          0.5 * 10 ** -decimals * scale, m.start(), m.end()))
+        taken.append(m.span())
+    for m in _NUM.finditer(text):
+        if any(a <= m.start() < b for a, b in taken):
+            continue
+        tok = m.group(1)
+        digits = tok.replace(",", "").replace(".", "").lstrip("0")
+        decimals = len(tok.split(".")[1]) if "." in tok else 0
+        n = float(tok.replace(",", ""))
+        # Three significant digits and at least 100, not five. The old floor
+        # let through the exact defect this check exists to catch: a rubric
+        # saying "615 and 502" over goldens holding 747 and 370, after the
+        # goldens were re-derived and the prose was not. The agent computed the
+        # golden's own figures and was failed for it. Three-digit quantities
+        # are ordinary results, so a floor above them is a floor above the
+        # answers.
+        if decimals == 0 and (len(digits) < 3 or n < 100
+                              or 1900 <= n <= 2100):
+            continue
+        if decimals and n < 100 and len(digits) < 5:
+            continue
+        out.append(Figure(tok, n, 0.5 * 10 ** -decimals, m.start(), m.end()))
+    return sorted(out, key=lambda f: f.start)
+
+
+def figure_matches(f: Figure, have: list[float]) -> bool:
+    """Does the written figure state one of `have`, at the precision written
+    or to within 5e-4 of it (a rounded 489,000 for 488,970.54)?"""
+    return any(abs(f.value - h) <= f.tol
+               or (h and abs(f.value - h) / abs(h) < 5e-4) for h in have)
+
+
+def key_figures(val: Any) -> list[float]:
+    """Every number a key holds, plus each column's sum for a rows key:
+    rubrics legitimately quote "177,340,447.81 across the three groups"."""
+    have = golden_numbers(val)
+    if isinstance(val, list):
+        cols: dict[str, float] = {}
+        for row in val:
+            for k, x in (row or {}).items() if isinstance(row, dict) else ():
+                if isinstance(x, (int, float)) and not isinstance(x, bool):
+                    cols[k] = cols.get(k, 0.0) + float(x)
+        have += list(cols.values())
+    return have
 
 
 def golden_numbers(value: Any) -> list[float]:
@@ -464,37 +591,10 @@ def rubric_number_findings(case: dict[str, Any],
         val = golden_rows.key_value(g, set_dir, case.get("qid", "?"))
     except golden_rows.GoldenRowsError as exc:
         return [f"review {case['qid']}: rubric figures not checked: {exc}"]
-    have = golden_numbers(val)
-    if isinstance(val, list):
-        cols: dict[str, float] = {}
-        for row in val:
-            for k, x in (row or {}).items():
-                if isinstance(x, (int, float)) and not isinstance(x, bool):
-                    cols[k] = cols.get(k, 0.0) + float(x)
-        have += list(cols.values())
+    have = key_figures(val)
     text_values = {str(v) for v in _walk_strings(val)}
-    bad = []
-    for tok in _NUM.findall(accepting):
-        if tok in text_values:
-            continue
-        digits = tok.replace(",", "").replace(".", "").lstrip("0")
-        decimals = len(tok.split(".")[1]) if "." in tok else 0
-        n = float(tok.replace(",", ""))
-        # Three significant digits and at least 100, not five. The old floor
-        # let through the exact defect this check exists to catch: a rubric
-        # saying "615 and 502" over goldens holding 747 and 370, after the
-        # goldens were re-derived and the prose was not. The agent computed the
-        # golden's own figures and was failed for it. Three-digit quantities
-        # are ordinary results, so a floor above them is a floor above the
-        # answers.
-        if decimals == 0 and (len(digits) < 3 or n < 100
-                              or 1900 <= n <= 2100):
-            continue
-        if decimals and n < 100 and len(digits) < 5:
-            continue
-        tol = max(0.5 * 10 ** -decimals, 0.5 if decimals == 0 else 0)
-        if not any(abs(n - h) <= tol or (h and abs(n - h) / abs(h) < 5e-4) for h in have):
-            bad.append(tok)
+    bad = [f.text for f in quoted_figures(accepting)
+           if f.text not in text_values and not figure_matches(f, have)]
     return [f"review {case['qid']}: rubric asserts {t} as right; not in the golden "
             f"rows or their column sums" for t in bad]
 
@@ -525,6 +625,119 @@ def has_second_derivation(case: dict[str, Any], set_dir: pathlib.Path) -> bool:
     side = set_dir / "gold" / f"{case['qid']}.json"
     return bool(ver) or (side.exists()
                          and "verifyRows" in json.loads(side.read_text()))
+
+
+def _is_num(x: Any) -> bool:
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def value_columns(key: Any, truth: list[dict[str, Any]]) -> list[str]:
+    """The columns that hold the golden's ANSWER, which a second derivation
+    must reproduce for the two to count as agreeing.
+
+    A scalar key names them: every column of `golden.value` but `currency`
+    and `round`. A rows key holds group-by columns beside the measures, and a
+    group-by column agreeing proves nothing about the measure (month 1..12
+    match whatever the sales figure is). So for rows the answer is the numeric
+    columns holding a fraction in some row; a key whose numbers are all whole
+    (counts) has no way to tell a count from an integer group-by, and all its
+    numeric columns are required. A key that is neither (a bare number) is
+    read through the truth rows the same way.
+    """
+    if isinstance(key, dict):
+        return [k for k in key if k not in ("currency", "round")]
+    rows = key if (isinstance(key, list) and key
+                   and all(isinstance(r, dict) for r in key)) else truth
+    cols: list[str] = []
+    for r in rows or []:
+        for k, x in r.items():
+            if _is_num(x) and k not in cols:
+                cols.append(k)
+    fractional = [k for k in cols
+                  if any(_is_num(r.get(k)) and float(r[k]) % 1 != 0
+                         for r in rows)]
+    return fractional or cols
+
+
+def rows_agree(truth: list[dict[str, Any]], second: list[dict[str, Any]],
+               rel: float = 1e-6, required: list[str] | None = None
+               ) -> tuple[bool, str]:
+    """Do two derivations agree on every column they share, row by row?
+
+    The second query names the columns it checks the same as the truth query
+    does; columns only one of them has (a zone name against a location id) are
+    how the two take different routes, and are not compared. Numbers agree
+    within `rel` of the larger, which absorbs float summation order.
+
+    `required` (from `value_columns`) are the columns that must be among the
+    shared ones. Without it, a second query sharing only the group-by column
+    agreed on that alone and promoted a measure it never checked.
+    """
+    if len(truth) != len(second):
+        return False, f"{len(truth)} rows against {len(second)}"
+    if not truth:
+        return True, "both empty"
+    shared = [k for k in truth[0] if k in second[0]]
+    missing = [k for k in (required or []) if k not in second[0]]
+    if missing:
+        return False, (f"the second derivation does not return the golden's "
+                       f"value column(s) {', '.join(missing)}, so it never "
+                       f"checked the answer (it returns "
+                       f"{', '.join(sorted(second[0])) or 'nothing'}). Fix: name "
+                       f"{', '.join(missing)} the same in the verifyQuery")
+    if not shared:
+        return False, ("no column in common, so nothing to compare. Fix: name the "
+                       "checked column the same in both queries")
+    for i, (t, v) in enumerate(zip(truth, second)):
+        for k in shared:
+            a, b = t.get(k), v.get(k)
+            num = (isinstance(a, (int, float)) and isinstance(b, (int, float))
+                   and not isinstance(a, bool) and not isinstance(b, bool))
+            if num and abs(a - b) <= rel * max(abs(a), abs(b), 1e-12):
+                continue
+            if not num and a == b:
+                continue
+            return False, f"row {i + 1} `{k}`: {a!r} against {b!r}"
+    return True, f"agree on {', '.join(shared)}"
+
+
+def second_derivation(case: dict[str, Any], a: argparse.Namespace,
+                      truth_rows: list[dict[str, Any]] | None,
+                      set_dir: pathlib.Path) -> str | None:
+    """Run `golden.verification.verifyQuery`, record both, and say why not to promote.
+
+    None when the case carries no verifyQuery (the older forms still count)
+    or when the two agree. The record goes to gold/<qid>.json either way, so a
+    disagreement can be read rather than re-run.
+    """
+    ver = (case.get("golden") or {}).get("verification") or {}
+    q = ver.get("verifyQuery")
+    if not q or truth_rows is None:
+        return None
+    if getattr(a, "hosted", None):
+        rows, err = hosted_truth_query(a.hosted, a.truth_package, a.truth_model, q)
+    else:
+        rows, err = try_query(a.publisher, a.environment, a.truth_package, a.truth_model, q)
+    if err:
+        return f"the second derivation (verifyQuery) failed: {err[:160]}"
+    try:
+        key = golden_rows.key_value(case.get("golden"), set_dir, case["qid"])
+    except golden_rows.GoldenRowsError:
+        key = None
+    ok, note = rows_agree(truth_rows, rows,
+                          required=value_columns(key, truth_rows))
+    gold = set_dir / "gold"
+    gold.mkdir(exist_ok=True)
+    (gold / f"{case['qid']}.json").write_text(json.dumps({
+        "qid": case["qid"], "truthQuery": (case.get("golden") or {}).get("canonicalQuery"),
+        "verifyQuery": q, "truthRows": truth_rows, "verifyRows": rows,
+        "agreement": {"agree": ok, "note": note},
+        "derivedAt": datetime.date.today().isoformat(),
+        "truthPackage": a.truth_package}, indent=1, default=str) + "\n")
+    if ok:
+        return None
+    return note if note.startswith("the second derivation") else (
+        f"the two derivations disagree: {note}")
 
 
 PROMOTED_BY = "verify_goldens.py --promote"
@@ -572,6 +785,19 @@ def promotion_blocker(case: dict[str, Any], set_dir: pathlib.Path) -> str | None
         return ("no second derivation: a golden is verified only after two "
                 "differently shaped derivations agree (golden.verification, "
                 "or gold/<qid>.json with verifyRows)")
+    if not g.get("verification"):
+        # The evidence is a stored record, not a query run now. It has to show
+        # the same agreement a fresh verifyQuery would, on the value columns.
+        rec = json.loads((set_dir / "gold" / f"{case['qid']}.json").read_text())
+        truth = rec.get("truthRows") or []
+        try:
+            key = golden_rows.key_value(g, set_dir, case["qid"])
+        except golden_rows.GoldenRowsError:
+            key = None
+        ok, note = rows_agree(truth, rec.get("verifyRows") or [],
+                              required=value_columns(key, truth))
+        if not ok:
+            return f"gold/{case['qid']}.json does not show agreement: {note}"
     return None
 
 
@@ -1163,7 +1389,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
            verbose: bool = False,
            definitions: pathlib.Path | None = None,
            verify_figures_flag: bool = False,
-           figure_model: str = "sonnet") -> dict[str, Any]:
+           figure_model: str = "sonnet",
+           hosted: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run every check. Returns a summary; `drifted` is the count that should
     stop a run.
 
@@ -1180,7 +1407,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         truth_model=meta.get("truthModel", "truth.malloy"),
         rewrite=bool(meta.get("truthTableRewrite", False)),
         verify_figures=verify_figures_flag, figure_model=figure_model,
-        set_dir=set_dir)
+        set_dir=set_dir, hosted=hosted)
     # Only the value check needs a truth server. Without one it does not happen,
     # and `skipped` carries that all the way out to the exit code -- but every
     # audit below still runs. Returning here skipped four checks that need no
@@ -1189,7 +1416,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     skipped = None
     if not a.truth_package:
         skipped = "set.json names no truthPackage; nothing to re-derive against"
-    elif not publisher:
+    elif not publisher and not hosted:
         # Same class as the line above: the value check did not happen, and
         # exit 3 says so. What it must never be is a guess at a port.
         skipped = ("no --publisher given, so no truth server to re-derive "
@@ -1277,7 +1504,10 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     findings += unknown_name_findings(chosen, model_text(model))
     findings += question_drift_findings(chosen)
 
-    if not server_absent:
+    if not server_absent and hosted:
+        findings += hosted_isolation_findings(
+            a.truth_package, target_package or meta.get("targetPackage"))
+    elif not server_absent:
         findings += truth_isolation_findings(
             publisher, environment,
             target_package or meta.get("targetPackage"))
@@ -1345,7 +1575,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                 promotion_notes.append(
                     f"{c['qid']}: not promoted, value check says {status}")
             else:
-                why = promotion_blocker(c, set_dir)
+                why = (second_derivation(c, a, rows, set_dir)
+                       or promotion_blocker(c, set_dir))
                 if why and attest and why.startswith("no second derivation"):
                     # The human path the doctrine already grants `invalid` and
                     # `ambiguous`: a person vouches, and the record says so
@@ -1513,6 +1744,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--environment", default=None,
                     help="the environment on the TRUTH server. Default: "
                          "[truth] environment in eval.toml")
+    ap.add_argument("--truth-mcp-url", default=None,
+                    help="re-derive against a truth package published on a "
+                         "hosted platform, through this MCP URL, instead of a "
+                         "local --publisher. Needs --truth-organization and "
+                         "--environment, and an OAuth login under "
+                         "--hosted-mcp-server")
+    ap.add_argument("--hosted-mcp-server", default="hosted",
+                    help="with --truth-mcp-url: the MCP server name you "
+                         "authenticated under (also the OAuth cache key)")
+    ap.add_argument("--truth-organization", default=None,
+                    help="with --truth-mcp-url: the organization publishing "
+                         "the truth package")
     ap.add_argument("--qid", action="append", help="verify only these cases")
     ap.add_argument("--cases", default="cases.jsonl",
                     help="case file to verify, relative to the set dir")
@@ -1560,11 +1803,17 @@ def main(argv: list[str] | None = None) -> int:
                          "rests on validated definitions exits 0 instead of 3, "
                          "and --promote may promote through it")
     args = ap.parse_args(argv)
+    # Before the config fallback: a [truth] section fills args.publisher, and
+    # checking after it refused --truth-mcp-url on every set that has one.
+    if args.truth_mcp_url and args.publisher:
+        ap.error("--truth-mcp-url and --publisher name two truth servers; "
+                 "pass one")
     # A config that cannot be read means nothing was checked: 3, never 1,
     # which says a golden drifted.
     try:
         cfg = config.load(args.set_dir)
-        args.publisher = args.publisher or cfg.truth_publisher()
+        if not args.truth_mcp_url:
+            args.publisher = args.publisher or cfg.truth_publisher()
         args.target_package = args.target_package or cfg.get("model", "package")
         if args.publisher:
             args.environment = cfg.need(args.environment, "truth",
@@ -1572,6 +1821,18 @@ def main(argv: list[str] | None = None) -> int:
     except config.ConfigError as e:
         print(e, file=sys.stderr)
         return CANNOT_RUN
+    hosted = None
+    if args.truth_mcp_url:
+        if not (args.truth_organization and args.environment):
+            ap.error("--truth-mcp-url needs --truth-organization and "
+                     "--environment (where the truth package is published)")
+        hosted = {"mcp_url": args.truth_mcp_url,
+                  "server": args.hosted_mcp_server,
+                  "organization": args.truth_organization,
+                  "environment": args.environment,
+                  # Outside the set: the set directory is in git, and the
+                  # transport writes its MCP config where it runs.
+                  "workdir": pathlib.Path(tempfile.mkdtemp(prefix="truth-"))}
     if args.attest is not None and (not args.promote or not args.attest.strip()):
         ap.error("--attest needs --promote and non-empty text naming who "
                  "checked, when, and how")
@@ -1583,7 +1844,7 @@ def main(argv: list[str] | None = None) -> int:
                attest=args.attest, verbose=args.verbose,
                definitions=args.definitions,
                verify_figures_flag=args.verify_figures,
-               figure_model=args.figure_model)
+               figure_model=args.figure_model, hosted=hosted)
     if r.get("skipped"):
         print(f"\n{r['skipped']}")
     # Drift and findings both fail: a golden that cannot be re-derived is a

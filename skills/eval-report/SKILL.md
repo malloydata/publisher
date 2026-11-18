@@ -73,23 +73,32 @@ It gives you two things to link:
 | Artifact | What it is | URL |
 |---|---|---|
 | The case matrix app | Every question, its verdict, which needed entities retrieval delivered, and a drawer per case holding the reference answer, the judge's reasoning, the re-executed rows and every query the answerer ran | `<publisher>/environments/<env>/packages/eval-<label>/` |
-| `notebooks/eval_run.malloy` | The aggregate tables: pass rate, effort, cost, most-missed entities, the backlog | `<publisher>/<env>/eval-<label>/notebooks/eval_run` |
+| `run_report.malloy` | The aggregate tables: pass rate, effort, cost, most-missed entities, the backlog | `<publisher>/<env>/eval-<label>/run_report` |
 
 **Those two URLs are in different path spaces, and guessing costs a 404.** The
 app is served by the in-package `public/` handler, which owns
-`/environments/<env>/packages/<pkg>/<file>`. The notebook is a MODEL, rendered
+`/environments/<env>/packages/<pkg>/<file>`. The report is a MODEL, rendered
 by the Console, whose routes are `/<env>/<package>/<model path>` with no
-`environments` or `packages` segment at all. Putting the notebook under the
+`environments` or `packages` segment at all. Putting the report under the
 app's prefix 404s, because the public-file handler answers there and the
-notebook is not in `public/`. Verified both, on a real package, by opening
+report is not in `public/`. Verified both, on a real package, by opening
 them.
 
 Pass `--run` more than once to put two arms side by side.
 
+A query replay (`eval.py query-replay`) packages the same way, into
+`speed-<label>`: `speed_report.malloy` for the timings per replay and per source,
+and an app showing each query's time before and after, with any query whose
+rows changed listed first. Give the baseline replay first:
+`eval.py package --set <set> --run <runs>/perf-01 --run <runs>/perf-02`. Answer
+runs and replays do not mix in one package.
+
 ## Step 2: write the report
 
 Put it in the repository beside the set, as `RESULTS.md`. Not in a chat log,
-not in `~/Downloads`, both of which have lost a findings document before.
+not in `~/Downloads`, both of which have lost a findings document before. Name
+each run it reports by `runId` and package version, so a reader can find the
+run in the workdir or in shared storage. The run itself stays out of git.
 
 **Derive every number from `events.jsonl` and `run.json`, not from memory or
 from the console.** A figure retyped from scrollback is a figure nobody can
@@ -152,6 +161,21 @@ headline of the last one. Then the cascade: Covered? -> Retrieved? -> Correct?,
 with the per-arm numbers under each. Say in one clause what recall counts, then
 give the number.
 
+## Search targets          <-- only when the set has golden `searchTargets`
+
+Three lines, copied from the `search targets` block the run printed (or
+`score_targets.py --events <run>/events.jsonl --cases <set>/cases.jsonl`):
+
+1. **Asked:** N of M golden targets asked for; how many under the wrong type,
+   how many never asked, how many extra targets the agent sent.
+2. **Returned:** for the targets it asked for, recall and precision of what
+   each target returned; then per case.
+3. **Correct:** the pass count, split by whether the agent asked for every
+   golden target.
+
+Then one line per golden target that was never asked or asked as the wrong
+type, naming the target and what the agent sent instead.
+
 ## Model failures
 
 One entry per wrong answer. What it got wrong in plain words, then the
@@ -184,7 +208,9 @@ these in order and put every one that fires into the list, with its command:
 | any golden still `provisional` | re-derive and `verify_goldens.py --promote` |
 | a stale entity name warning | fix `expectedEntities`; it scores as a retrieval miss on every run until you do. A next step, not a section: it goes in this list and nowhere else in the report |
 | a passing case with recall below 1.0 | check whether `required` over-specifies one path |
-| `truncated` non-empty | re-run those cases at a higher cap with `--from` |
+| the same golden search target never asked, or asked as the wrong type, on several cases | an `agent-skill` finding: the decomposition rule belongs in the skill the answerer reads before `get_context` (`malloy-phrase-detection`) |
+| a golden target asked for, with recall below 1.0 on that target | send it as written with `check_findable.py`; if that misses too, the target or the docs need fixing before the agent is blamed |
+| `truncated` non-empty | answer those cases again in place, at double the cap: `eval.py run --set <set> --label <run> --rebuild --recover` |
 | diagnose did not run | run it, or say the failures have no owner yet |
 | a cluster with `owner: model` | `skill:eval-improve`, then the acceptance check |
 | a cluster with `owner: agent-skill` | **edit that skill.** This is NOT a dead end |
@@ -246,7 +272,7 @@ that these are NOT evidence about the model:
 
 | What happened | How it reads in the ledger | Who fixes it |
 |---|---|---|
-| Answerer ran out of turns | `reason: answerer_truncated`, and `run.json` `truncated` | raise `--max-turns`, re-run those cases with `--from` |
+| Answerer ran out of turns | `reason: answerer_truncated`, and `run.json` `truncated` | answer them again in place with `eval.py run --set <set> --label <run> --rebuild --recover`; if one is cut off twice, raise `--max-turns` for the set |
 | Isolation breached | `reason: contaminated`, `contamination_reasons` on the attempt | harness config; the answerer held a tool it should not |
 | Harness or server failed | `reason: environment_failure: <what>` | fix the environment, re-run the arm |
 | Answer key not established | `reason: golden_provisional` / `_invalid` / `_ambiguous` / `_missing` | derive the key (`skill:eval-import`), or the golden side door |
@@ -429,7 +455,7 @@ A report whose evidence cannot be opened is a report nobody checks.
 
 - **Absolute paths**, never relative ones. A reader is not in your working
   directory, and a terminal only makes an absolute path clickable.
-- **The served URL** for the app and the notebook, with the real host and port
+- **The served URL** for the app and the report, with the real host and port
   the run used, not a placeholder.
 - Per case, link the FILES, not the directory: `artifacts/<qid>/answer.md`,
   `artifacts/<qid>/judge.md`, `artifacts/<qid>/answerer.jsonl`. A `file://`
@@ -438,8 +464,10 @@ A report whose evidence cannot be opened is a report nobody checks.
 - **Move the run somewhere durable before you link it.** A run written under a
   session scratch directory (`/tmp/...`, a host's per-session sandbox) is
   deleted when the session ends, and many editors will not linkify a path there
-  even while it exists. Copy the run directory, artifacts included, next to the
-  report under the set, then link that. A report whose evidence is in a temp
+  even while it exists. Move it to the set's workdir, or export it to shared
+  storage (`eval.py export`, `reference/sharing-runs.md` in `skill:eval-loop`),
+  and link that. Never copy it into the repository: runs do not go in git, and
+  `RESULTS.md` names the `runId` instead. A report whose evidence is in a temp
   directory is a report with no evidence by next week. This was caught twice by
   a reader clicking and getting nothing.
 - Write a local path bare, as `/abs/path/to/file`, not as `[text](file:///...)`.

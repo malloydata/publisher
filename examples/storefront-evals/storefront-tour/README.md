@@ -56,12 +56,15 @@ serve a copy of the package without `skills/` and run a second arm with
 `--package <that copy> --package-skills off`; `off` refuses while the server
 still serves package skills.
 
-The same guide is why two keys accept a second basis. Asked for the top category
-by revenue, or for the best customers, an agent following the guide may leave
-out cancelled and returned lines and say so. The guide tells it to do exactly
+The same guide is why three keys accept a second basis. Asked for the top category
+by revenue, for the revenue from a signup cohort, or for the best customers, an
+agent following the guide may leave out cancelled and returned lines and say so. The guide tells it to do exactly
 that when the question does not say ("Decide which one the question wants, and
 say which you used"), so `top-category` also accepts Outerwear at about
-$422,373. "Total spend" does say which, so `top-customer-spend` does not.
+$422,373, and `signup-cohort-2025` also accepts about $445,319. "Total spend"
+does say which, so `top-customer-spend` does not. An improve run doubted that
+key too (2026-11-13), and it stands: on the other basis the top customer is a
+different person, and "total" rules that basis out.
 
 `best-customers` is stricter. The model does not define "best", so the key
 wants the agent to say so: ask which definition the business wants, or show who
@@ -107,7 +110,7 @@ From the repository root:
 ```bash
 bun install && bun run build          # once: the repo's build: builds Publisher
 EVAL=skills/eval-loop/scripts/eval.py
-SET=examples/storefront/evals/storefront-tour
+SET=examples/storefront-evals/storefront-tour
 
 python3 $EVAL check --set $SET
 ```
@@ -167,7 +170,7 @@ python3 $EVAL diagnose --set $SET --label baseline-01 --verdicts no_match,near_m
 
 **5. Build the report.** It refuses a run that has not been diagnosed, then
 builds the report, registers it on the truth server, and prints its two links:
-the case matrix, and the notebook of aggregate tables.
+the case matrix, and the report of aggregate tables.
 
 ```bash
 python3 $EVAL package --set $SET --label baseline-01
@@ -187,7 +190,7 @@ it does not belong in this directory.
 
 ## Running it on your own questions
 
-[`skills/eval-loop/reference/setting-up-a-set.md`](../../../../skills/eval-loop/reference/setting-up-a-set.md)
+[`skills/eval-loop/reference/setting-up-a-set.md`](../../../skills/eval-loop/reference/setting-up-a-set.md)
 is that path in order: the files a set needs, the truth package, `eval.toml`,
 and when to run `check`. `skill:eval-import` turns questions in any shape into
 cases.

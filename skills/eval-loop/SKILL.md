@@ -1,6 +1,6 @@
 ---
 name: eval-loop
-description: 'Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set in the model package''s evals/ directory, runs in the set''s workdir; checkpoints are git commits of the model repo. `eval.py` runs each step from the set''s eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction.'
+description: 'Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files: the set beside the model package in its repository, runs in the set''s workdir, never in git; checkpoints are git commits of the model repo. `eval.py` runs each step from the set''s eval.toml. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction.'
 ---
 
 # The Evaluation Loop
@@ -38,12 +38,18 @@ all of them for every run is how a skill stops being read.
 
 | When | Read |
 |---|---|
+| deciding what to run next: an experiment on a slice, or a record of the whole set | `reference/team-workflow.md` |
 | the set does not exist yet, or has never run | `reference/setting-up-a-set.md` |
 | about to run one | `reference/running-a-run.md` |
+| scraping cases out of production traffic | `reference/log-scrape.md` |
+| scoring a session that ran on another host | `reference/replaying-a-logged-session.md` |
 | a golden is wrong, doubted, or out of step with the model | `reference/golden-side-door.md` |
 | auditing a key you doubt, or a set you did not author | `reference/auditing-an-answer-key.md` |
 | deciding whether an edit stays | `reference/acceptance-check.md` |
 | about to quote a number, set the band, or read a set's flips | `reference/measurement.md` |
+| measuring whether `get_context` returns the right fields, with no answerer | `reference/retrieval-replay.md` |
+| keeping runs, sharing them with a team through a store, or comparing package versions | `reference/sharing-runs.md` |
+| timing queries, or making them faster with a persist or preaggregate | `reference/query-performance.md` |
 | the run finished and someone has to read it | `skill:eval-report` |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |
 
@@ -86,18 +92,34 @@ what arrived with each question, why nothing imports as a verified value, and
 the seal that makes a later edit to a question detectable. Read it whenever the
 questions came from outside, which is most of the time. While importing:
 
-- Freeze each case's `split`: `dev` or `holdout`. Diagnose and improve read
-  dev cases only; the acceptance check runs both. A set that is all dev cannot defend an
-  accept.
+- Freeze each case's `split`: `dev` or `holdout`, and on a set large enough
+  to spare the cases, `test`. A `test` case is never diagnosed and decides
+  nothing in the acceptance check, so its pass rate is the one number the loop
+  was not tuned on: quote that one. Holdout is read by every acceptance check,
+  so over many edits it stops being unseen. Diagnose and improve read
+  dev cases only; the acceptance check runs dev and holdout. A set that is all dev cannot defend an
+  accept. On a small set a holdout is too few cases to mean anything (three
+  dev and seven holdout from ten cases says nothing); there, say the set is
+  all dev, accept nothing on it alone, and grow it.
+- Tag each case with what it tests: the behaviour (`near-twin-sources`,
+  `ambiguous-doc`, `dimensional-value`) and, once diagnosed, the layer that
+  failed. Tags are the set's own vocabulary; no list is prescribed. A tag is
+  what lets a targeted run pick its cases by name (`slices.json`).
 - Later, each diagnosed-and-fixed failure becomes a new frozen dev case, so a
   fixed bug cannot silently return.
 
 Scraping from production logs (chat transcripts, retrieval traces) is the
 other supported source, and usually the better one: real traffic asks what
 people actually ask. Where your logs physically live is a host concern; look
-for a host-specific log-fetching skill. `skill:eval-import` takes over once
-you have the text, and its `reference/case-format.md` covers what a log pull
-needs that a question list does not.
+for a host-specific log-fetching skill. `reference/log-scrape.md` is the
+adapter contract, and `skill:eval-import` takes over once you have the text;
+its `reference/case-format.md` covers what a log pull needs that a question
+list does not.
+
+Scraping is not the only thing logs are good for. Where the agent ALREADY ran
+on another host, its session can be scored by this loop rather than re-asked:
+`reference/replaying-a-logged-session.md` covers that, and what a run may
+claim depends on what the source recorded.
 
 Prefer variety over volume when you sample, from either source. Cases that
 differ in grain, source, filter shape, and phrasing are what move a
@@ -205,6 +227,17 @@ nonsense rather than an error:
   A local target pins a commit; a platform target pins the published version.
   Recording a local commit for a run that queried a published model is a pin
   that means nothing.
+- **Every run records which package version answered**, as `packageVersion` in
+  `run.json`, the same shape on a laptop and on a host, so scores line up by
+  version (`eval.py versions`). A local package is a working copy unless the
+  server runs with `PUBLISHER_PACKAGE_VERSIONING=on` and the package was
+  published. A working copy records `id: null` and its publisher.json
+  `baseVersion`: that is the normal case for a replay or a targeted run while
+  you edit. To score a published version locally, publish it, then pass
+  `--target-version <v>`. Locally that must be the version serving `latest`,
+  because the local MCP tools cannot pin one, and a run during which `latest`
+  moves is left `incomplete` and exits 1. A full run is the one to pin to a
+  version: it is the record of how that version scored.
 
 Which target for which job:
 
@@ -288,24 +321,30 @@ the run measure something other than what it names:
 
 ## Before you start
 
-1. The model package under evaluation must live in a git repository, with
-   `evals/<set>/` in the package, beside the model files. Git is the checkpoint
+1. The model package under evaluation must live in a git repository, and the
+   set beside it in the SAME repository: `<repo>/<package>/` and
+   `<repo>/evals/<set>/` (`skill:eval-import`, "Where the set goes";
+   `examples/storefront-evals/` is a worked one). Git is the checkpoint
    mechanism; without it there is no rollback and no run can include improve.
 
-   Keeping the set IN the package is what stops a model edit and its answer key
-   drifting apart: they move in one commit, so fixing a measure and forgetting
-   the golden that depended on it stops being possible. It is safe -- measured
-   on a running server, a `cases.jsonl` inside a package appears in no model
-   listing, no notebook listing, no package resource, and 404s over HTTP, so an
-   MCP-only answerer has no route to it.
+   One repository is what stops a model edit and its answer key drifting
+   apart: they move in one commit, so fixing a measure and forgetting the
+   golden that depended on it stops being possible. Beside the package rather
+   than inside it, for three reasons:
+   - a package version's `contentHash` covers every file in it, so a set
+     inside would make every golden fix a new package version;
+   - a published version's files are readable by anyone who can read the
+     package, goldens included;
+   - nothing in Publisher can leave a folder out of what it serves.
 
-   What it buys differs by target. On a LOCAL Publisher it does not get you free
-   versioning -- `sourceContentSha` hashes model paths only, so the set needs
-   its own `datasetSha`. On a hosted target that publishes the whole package
-   directory as an IMMUTABLE version, the set rides inside that version and
-   `targetVersion` pins model and answer key together; nothing can be edited
-   under a published version, which is what makes it a pin. Check which you have
-   before deciding how much of this you need.
+   Version tracking does not depend on where the set lives: every run records
+   the package version that answered (`packageVersion`) and, separately, the
+   set it was scored on (`datasetVersion`, `datasetSha`), and each score the
+   `goldenRevision` it was judged against.
+
+   The default workdir is named by a hash of the set's PATH, so moving a set
+   leaves its earlier runs in the old workdir. Set `[paths] workdir` in
+   `eval.toml` before a move to keep them together.
 
    **Look for a set and for prior runs before you author either.** A minute of
    `find . -name cases.jsonl`, a glance at the set's workdir (`<workdir>/runs/`,
@@ -326,19 +365,20 @@ the run measure something other than what it names:
    calls. An id that fails either scores a retrieval miss on every run, and the
    miss reads as the model's fault.
 
-   **Commit the set before you spend money on an arm**, and keep durable
-   outputs in the repository. A findings document in `~/Downloads` is gone the
-   first time somebody tidies up; the set and the write-up belong in git
-   beside the model.
+   **Commit the set before you spend money on an arm.** A findings document in
+   `~/Downloads` is gone the first time somebody tidies up; the set and the
+   short write-up (`RESULTS.md`, `skill:eval-report`) belong in git beside the
+   model. Runs do not.
 
    **Runs go in the set's workdir, never inside the model package.** A run
    directory holds a `model.malloy` snapshot, and a built report is a Malloy
    package; inside the package under test, either puts that package into
-   `loadErrors`. The default workdir, `~/.malloy-eval/<set>-<hash>/`, is outside git,
-   which suits a measure-only run. A run that will improve and checkpoint needs
-   its ledger kept: set `[paths] workdir` in `eval.toml` to a directory in the
-   model's repository but outside the package, and gitignore its `servers/`
-   and `packages/`, which are a server's database and rebuilt reports.
+   `loadErrors`. **Runs never go in git.** A run is 100 to 300 KB per case,
+   mostly transcripts, and a repository that keeps them grows with every arm
+   while nothing in it reads them. The default workdir,
+   `~/.malloy-eval/<set>-<hash>/`, is outside git. To share runs with a team,
+   export them (`eval.py export`, `reference/sharing-runs.md`) to storage
+   built for it, not to the repository.
 
 2. The server must be up. Where your host offers retrieval tracing, turn it on
    and confirm a trace lookup answers, so a call's ranked results can be
@@ -412,7 +452,10 @@ the run measure something other than what it names:
    what the acceptance check attributes for the price of the affected cases
    plus holdout. Budget five arms for a defensible claim (a baseline, two for
    the A/A, two post-edit), not one per edit, and let `skill:eval-improve`
-   carry each cluster.
+   carry each cluster. Most of those arms need not be the whole set:
+   `reference/running-a-run.md` ("Which run to reach for") says when a
+   retrieval replay or a targeted run on a slice is enough, and when only a
+   full run will do.
 
    The instrument is the other axis: the answer key, the judge and its prompt,
    the answerer model, the skills. Move one of those together with the model
@@ -454,7 +497,7 @@ the run measure something other than what it names:
 A run directory is JSONL. It is a record, not a result, and the console summary
 scrolls away. **Every run ends by producing something a person can open**, and
 that job is `skill:eval-report`: it builds the servable run package (the case
-matrix app and the aggregate notebook) and gives the template for the write-up.
+matrix app and the aggregate report) and gives the template for the write-up.
 
 Read it at the end of every run, including a run that failed. The standing
 complaint about this loop is that "a bunch of stuff happens and it is hard to
@@ -480,16 +523,17 @@ A checkpoint is a git commit of the model repository, taken after an acceptance 
 accepts, so a bad improve direction can be rolled back. It is not a report,
 and it is not a remote publish.
 
-1. Commit the model files AND the set's ledger in one commit; put the label
-   and the closed issue ids in the message. The run's ledger is in that commit
-   only when the workdir is in the repository (Before you start, item 1).
+1. Commit the model files in one commit; put the run's label and `runId` and
+   the closed issue ids in the message (`eval.py accept` prints one). The run itself stays in the workdir
+   (and wherever you export it); the message is what ties the commit to it.
 2. Append the `checkpoint` event (`action: created`, label, `modelGitSha`
    from the commit you just made, issueIds). The event line itself rides in
    the next commit; append-only logs trail by one commit and that is fine.
 3. Confirm `git status` is clean for the model files.
 
 **Restore**: `git checkout <sha> -- <model files>` (or `git revert` the
-checkpoint commits), then reload the package, then append a `checkpoint`
+checkpoint commits), then `eval.py publish` (with versioning on, bump the
+version first: a published version never changes), then append a `checkpoint`
 event with `action: restored` and the sha. Readers return to the model that
 existed before the bad direction.
 
@@ -540,6 +584,10 @@ conductor. Do not:
   the harness now enforces the parts it can. A run with a truncated or
   contaminated attempt prints no pass rate and records `status: incomplete`,
   and `flip_table.py` names what one arm left unscored that the other did not.
+  `run --recover` answers each such case once more (a truncated one at double
+  the cap) and keeps the first attempt; with `--rebuild` it finishes a run that
+  ended incomplete, in place. A case voided twice is left out of the rate and
+  named. The routine passes `--recover`.
   Read `run_error` on the attempts
   and the INCOMPLETE line before quoting any number.
 - When a subagent disagrees with you, probe. Do not win by authority.

@@ -1,7 +1,7 @@
 # Eval-run package
 
 A finished run as a Malloy package you can open: the semantic model in
-`eval_run.malloy`, a notebook in `notebooks/eval_run.malloy`, an HTML data app in
+`eval_run.malloy`, a report in `run_report.malloy`, an HTML data app in
 `public/`, and CSV under `data/` written by `../../scripts/build_run_package.py`.
 
 ```bash
@@ -34,7 +34,7 @@ product, found on data we control and understand.
 
 Both, and the split is not stylistic.
 
-**`notebooks/eval_run.malloy`** holds the analytical tables: pass rate, cost, effort,
+**`run_report.malloy`** holds the analytical tables: pass rate, cost, effort,
 where the failures are, retrieval, the backlog. Publisher renders it natively, so
 these are Malloy reading the model directly with no JavaScript in between and
 nothing to drift. It is a linear report of text and query tiles, so it opens in
@@ -52,7 +52,7 @@ search delivered, and what the attempt cost. Its **Step by step** tab is the
 attempt as a list -- every `get_context` and `execute_query` and the prose
 between them, one line each, opened in place to show the full query and its
 result. That is the view a verdict cannot give: whether a wrong number came out
-of a wrong query or a right query read wrongly. A notebook cannot do that, and
+of a wrong query or a right query read wrongly. A report cannot do that, and
 drilling into one case is most of what reading an eval consists of. Data comes
 from `steps.csv`, `required.csv` and the `prediction` column on attempts, all
 built from the run's transcripts.
@@ -129,12 +129,12 @@ rest of this section is for serving it on a Publisher of its own.
 ```bash
 publisher --server_root <parent-of-package> --mcp_port 4049
 # app      http://localhost:4000/environments/evals/packages/eval-run/index.html
-# notebook http://localhost:4000/evals/eval-run/notebooks/eval_run
+# report   http://localhost:4000/evals/eval-run/run_report
 ```
 
 The two URLs are different on purpose and neither is guessable. `public/` is
 web-served under `/environments/<env>/packages/<pkg>/<file>`, where `<file>` is
-relative to `public/` and does not include it. Notebooks and models are **not**
+relative to `public/` and does not include it. Reports and models are **not**
 served there at all; they open in the web UI at `/<env>/<pkg>/<file>`.
 
 `/<env>/<pkg>/public/index.html` also works, but only as a 302 to the canonical
@@ -146,17 +146,14 @@ file:
 
 ```bash
 curl -s .../api/v0/environments/<env>/packages/<pkg>/models      # compiles the model
-curl -s .../api/v0/environments/<env>/packages/<pkg>/notebooks   # lists the notebook
+curl -s .../api/v0/environments/<env>/packages/<pkg>/reports     # lists the report
 ```
 
 `models` returns a 424 with the full compiler error when the Malloy is broken,
-which is the fastest way to see a compile failure. Notebooks are listed by
-`notebooks` and are **not** in the `models` list. A `.malloy` notebook still compiles
-as a model, so `models/notebooks/eval_run.malloy` shows its compile errors; only a
-legacy `.malloynb` returns `404 "<file> is a notebook"` there. A notebook fetched from `notebooks/<file>` reports
-its cells' compiled schemas under `modelInfo`, but only the cells it treats as
-anonymous queries -- do not read a low count there as cells failing to compile. To
-verify every cell, run each named query through `execute_query`.
+which is the fastest way to see a compile failure. `reports` lists every `.malloy`
+file with an `## artifact` tag, with its `path` and `layout`. A report still
+compiles as a model, so `models/run_report.malloy` shows its compile errors. To
+verify every tile, run each tile's query through the query route.
 
 Pass `--mcp_port` explicitly. It defaults to 4040 and any other local Publisher
 already holds it; the server logs `Port 4040 in use` and carries on without an MCP

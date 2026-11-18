@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Eval History</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --surface: #fff; --text: #1d1d1b; --text-2: #5f5e5a; --border: #e2e1dc;
+    --bar: #2f6fb3; --track: #ecebe6; --good: #2e7d32; --bad: #b3261e;
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --surface: #1f1f1d; --text: #ecebe6; --text-2: #a3a29c; --border: #34332f;
+            --bar: #6ea8e6; --track: #2a2926; --good: #8fd19e; --bad: #f2b8b5; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--font); }
+  header, main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { margin: 0; font-size: 20px; } header p { margin: 4px 0 0; color: var(--text-2); }
+  h2 { font-size: 14px; margin: 0 0 10px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-top: 12px; }
+  #versions { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; min-height: 150px; }
+  .version { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .version.latest { border-color: var(--bar); }
+  .v-name { font-weight: 650; font-size: 16px; } .v-tag { color: var(--text-2); font-size: 12px; }
+  .stat { display: flex; justify-content: space-between; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .stat .k { color: var(--text-2); } .big { font-size: 26px; font-weight: 650; }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  .tag { display: grid; grid-template-columns: 160px 1fr 70px; gap: 10px; align-items: center; padding: 4px 0; }
+  .track { background: var(--track); border-radius: 3px; height: 10px; } .fill { background: var(--bar); height: 10px; border-radius: 3px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td.r, th.r { text-align: right; }
+  .pill { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 12px; border: 1px solid var(--border); color: var(--text-2); }
+  .pill.exp { border-color: var(--bar); color: var(--bar); }
+  .scroll { overflow-x: auto; }
+  .muted { color: var(--text-2); padding: 12px 0; } .is-error { color: var(--bad); padding: 12px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Eval history</h1>
+  <p>Every run of this set: how each package version scored and how fast it answered. Rebuilt from the runs by <code>eval.py history</code>.</p>
+</header>
+<main>
+  <div id="versions"><div class="muted">Loading</div></div>
+  <section class="panel"><h2>Pass rate by tag, over every answer run</h2><div id="tags"><div class="muted">Loading</div></div></section>
+  <section class="panel"><h2>Runs, newest first</h2><div class="scroll" id="runs"><div class="muted">Loading</div></div></section>
+</main>
+<script src="/sdk/publisher.js"></script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

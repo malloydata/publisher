@@ -30,16 +30,16 @@
   ]
 }
 |##
-import "../eval_run.malloy"
+import "eval_run.malloy"
 
 ##|(markdown) intro
 One or more scored runs over one evaluation set. Publisher renders this natively,
 so every table below is Malloy reading the same model the app reads -- there is no
 second copy of the logic to drift.
 
-This notebook is the **analytical** half: how the arms did, what it cost, and what
+This report is the **analytical** half: how the arms did, what it cost, and what
 to fix next. The **case-by-case** half lives in the app at `/public/index.html`,
-because reading an eval is mostly drilling into one case and a notebook cannot
+because reading an eval is mostly drilling into one case and a report cannot
 open a drawer.
 
 Read it top to bottom: the headline, then whether the headline is trustworthy,

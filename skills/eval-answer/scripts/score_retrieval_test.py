@@ -162,6 +162,22 @@ class Recall(unittest.TestCase):
         r = score_case(case(required=[M_SALES, D_STATUS]), events, KEY, "no_match")
         self.assertEqual(r["recall"], 0.5, "sample 2's call leaked into sample 1")
 
+    def test_a_response_not_recorded_leaves_a_short_recall_unmeasured(self):
+        unread = dict(calls([])[0], rankedSummary=None)
+        r = score_case(case(required=[M_SALES, D_STATUS]),
+                       calls([M_SALES]) + [unread], KEY, "no_match")
+        self.assertEqual((r["recall"], r["precision"], r["retrieval_unmeasured"]),
+                         (None, None, True))
+        self.assertEqual(r["where_to_fix"], "retrieval not measured")
+        self.assertEqual(cascade([r])["unmeasured"], 1)
+        # A full recall stays full, and a FAILED call delivered nothing.
+        full = score_case(case(required=[M_SALES]), calls([M_SALES]) + [unread],
+                          KEY, "match")
+        self.assertEqual(full["recall"], 1.0)
+        failed = dict(unread, error="validation error")
+        r = score_case(case(required=[M_SALES]), [failed], KEY, "no_match")
+        self.assertEqual((r["recall"], r["retrieval_unmeasured"]), (0.0, False))
+
     def test_execute_query_calls_are_not_retrieval(self):
         events = calls([M_SALES]) + [
             {"kind": "tool_call", "tool": "execute_query", "qid": "q",
@@ -602,14 +618,8 @@ class LabelsMatchTheRunPackage(unittest.TestCase):
             return fh.read()
 
     def notebook_text(self):
-        """The notebook, at its `.malloy` path or the legacy `.malloynb` one that
-        run packages built before the switch still carry."""
-        for parts in (("notebooks", "eval_run.malloy"), ("eval_run.malloynb",)):
-            try:
-                return self.package_file(*parts)
-            except FileNotFoundError:
-                continue
-        raise FileNotFoundError("eval-run-package has no notebook")
+        """The run package's report."""
+        return self.package_file("run_report.malloy")
 
     def emitted(self):
         from score_retrieval import (DELIVERED, MODEL, NEVER_ASKED,
@@ -797,11 +807,13 @@ class TargetKinds(unittest.TestCase):
         # misattributes: too narrow blames the agent for not asking when it
         # did, too wide reads a real never-asked as a retrieval failure.
         here = os.path.dirname(os.path.abspath(__file__))
+        # find.ts, not get_context_request.ts: value search is on by default,
+        # and find.ts is the map it answers a value target with.
         src = os.path.join(here, "..", "..", "..", "packages", "server", "src",
-                           "mcp", "tools", "get_context_request.ts")
+                           "retrieval", "search", "find.ts")
         with open(src, encoding="utf-8") as fh:
             text = fh.read()
-        block = text.split("const KINDS_BY_TARGET")[1].split("};")[0]
+        block = text.split("const KINDS_BY_FIND_TARGET")[1].split("};")[0]
         for target, kinds in score_retrieval.KINDS_BY_TARGET.items():
             self.assertIn(f"{target}:", block,
                           f"{target} is not in the server's map")
