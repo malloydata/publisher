@@ -74,6 +74,8 @@ DISCOVER → SCOPE → SOURCES → DEFINITIONS → BUILD BASE → BUILD JOINED �
 | 7. Review | (none) | Present the review checklist below; user confirms or corrects |
 | 8. Curate | `skill:malloy-model` | Propose the published surface (an `index.malloy` with `export { ... }`) and access controls (gates, `private:` fields; `internal:` is curation only); always propose, the user decides whether to apply |
 
+**Curating never hides a fact a question needs.** Every table the user's rules or questions mention stays reachable through some published source. Apply a business rule ("cancelled orders never count") inside the measures, or publish a separate source for the excluded rows labelled for that use, not by leaving the unfiltered source out of `export { ... }`. In a blind build, a model that filtered cancellations correctly and then published only its filtered sources could not answer "what share of last month's orders were cancelled?", and a model that kept a segment-history source unpublished could not count customers who changed segment. When nobody is there to approve the surface, publish more rather than less, and list in `modeling-notes.md` what you left out and why.
+
 ### The pauses are the point
 
 These are governed semantic models: the business decisions in them must be confirmed by a human subject-matter expert, and the **(user)** steps exist to collect that confirmation. They are real stops, not progress reports. A model can be complete, compiling, and fully documented and still be wrong everywhere it guessed; a capable agent can build the whole thing without pausing once, which is exactly the failure mode this workflow exists to prevent.

@@ -42,7 +42,7 @@ Only `public/` is reachable over the web, at `/environments/<env>/packages/<pkg>
 
 The agent orchestrates these. Each query and chart step hands off to a focused skill.
 
-1. DESIGN IT FIRST. Read `reference/design.md`: who opens it, the decision it serves, the archetype, the form each tile takes, and the depth plan. Skipping this is what produces an app that enumerates the model - a KPI row and a chart grid, whatever the domain - instead of one that answers a question. Hand the brief to the user before scaffolding.
+1. DESIGN IT FIRST. Read `reference/design.md`: who opens it, the decision it serves, the archetype, the form each tile takes, and the depth plan. Skipping this is what produces an app that enumerates the model - a KPI row and a chart grid, whatever the domain - instead of one that answers a question. Hand the brief to the user before scaffolding. The brief ends with one line per tile: the question it answers, its form, and the model source and view or measure it reads. Write every guess into it marked "(assumed)" ("last full month vs the same month last year (assumed)"), so the user can correct a written guess in one reply instead of discovering it in the finished app.
 2. READ THE MODEL. Get the model's real source and view names, through your environment's context tool if it has one, or by opening the `.malloy` file directly. Never guess field or view names.
 3. SCAFFOLD the package (template below).
 4. WRITE THE QUERIES. Read `reference/runtime.md`. Validate each before pasting it into the page, using whatever query tool your environment provides or a running Publisher (see `reference/runtime.md`). Malloy syntax questions go to `skill:malloy-queries`.

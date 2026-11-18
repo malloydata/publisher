@@ -86,6 +86,16 @@ When reviewing tables and columns, capture:
 - Column cardinality and NULL rates (via `execute_query`)
 - Data distributions for key numeric and categorical columns
 
+### Business conventions the data carries
+
+Some company definitions are not in any column name but can be read off the data. Look for each of these, record what you found in `modeling-notes.md`, and treat anything you could not settle as an open decision:
+
+- **Fiscal calendar.** Targets, budgets or plans by month usually start on the fiscal year's first month. If a targets table's years run February to January, quarters are fiscal, not calendar.
+- **"New customer".** Decided by first order, first paid order, or sign-up date? Compare the counts each gives for one month; they differ, and the difference is a question for the user.
+- **"Customer".** Every account, or only accounts with an order that counts? Sign-ups who never ordered and internal or test accounts usually inflate the first.
+- **Rows that never count.** Status values (cancelled, test, internal) that the company excludes from every measure. Count them, and keep them reachable for questions about them (a model that filters them out of its measures still needs a source that can count them).
+- **History tables.** A table with `valid_from` / `valid_to` (a slowly changing dimension) answers two kinds of question: the value on a date, and changes between values. Plan a source for both.
+
 ### Data Quality
 - **Check for duplicate rows** on primary keys. Run `group_by: pk, aggregate: count(), having: count() > 1` on each key table. Duplicates cause `sum()` to return nonsensical values.
 - **Denormalized count columns**: beware pre-aggregated fields (e.g., `order_count` in a customer table) that may conflict with joined counts.
