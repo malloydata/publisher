@@ -10,6 +10,11 @@ on:
 
 env:
   BUN_VERSION: 1.4.4
+  # Playwright's browsers go here, where the cache below can save and restore
+  # them. Credible's runners set PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright,
+  # which no step caches, so the default path saved nothing and every run
+  # downloaded Chromium again.
+  PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
 # The GITHUB_TOKEN is read-only for every job here; a job that needs more
 # declares it itself.
@@ -28,8 +33,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  playwright:
-    name: Playwright (packages/app)
+  # The suite in three shards, each on its own runner with its own Publisher
+  # (playwright.config.ts starts one through `webServer`), so no state is
+  # shared between them; inside a shard it still runs on one worker. The
+  # spec files each shard runs are listed in
+  # packages/app/tests/playwright/shards.json, balanced by measured per-file
+  # durations; shards.mjs fails the shard when a spec is in no group or in two.
+  # Each shard builds for itself rather than waiting on one shared build job,
+  # which would put that build in series in front of every shard.
+  #
+  # None of these is the required check: the `playwright` gate below is.
+  playwright_shard:
+    name: "Playwright shard (${{ matrix.shard }}/3)"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     # Pinned: `ubuntu-latest` began resolving to ubuntu-26.04 on 2026-10-30, and
     # `playwright install --with-deps chromium` refuses that image ("does not
     # support chromium on ubuntu26.04"), failing the job before any test runs.
@@ -41,45 +60,51 @@ jobs:
         with:
           submodules: "true"
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache Bun dependencies
-        id: bun-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
-
-      - name: Install dependencies
-        run: scripts/ci-install-with-retry.sh bun install --frozen-lockfile
-        env:
-          BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
-
-      - name: Generate API types
-        run: bun run generate-api-types
-
-      - name: Build SDK + server
-        run: bun run build
-
-      - name: Build app
-        run: bun run build:app
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-playwright-
-
-      - name: Install Playwright browsers
+      # Before the build, so a spec missing from shards.json fails in seconds.
+      - name: Check every spec is in exactly one shard
         working-directory: packages/app
-        run: bunx playwright install --with-deps chromium
+        run: node tests/playwright/shards.mjs check
+
+      # Bun, the retried install, API types, and `bun run build`, which builds
+      # the SDK, the app and the server. The app needs no build of its own.
+      - uses: ./.github/actions/setup-workspace
+
+      - name: Read the Playwright version
+        id: playwright-version
+        working-directory: packages/app
+        run: echo "version=$(bun -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # Keyed on the Playwright version, which pins the browser build: no
+      # restore-keys, since another version's browser is never the one needed.
+      - name: Cache Playwright's headless Chromium
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: ${{ runner.os }}-playwright-shell-${{ steps.playwright-version.outputs.version }}
+
+      # Headless shell only: the suite runs headless, so the full Chromium is
+      # never launched. System packages: GitHub's ubuntu-24.04 image lacks some
+      # of Chromium's (nine on 2026-11-18), so it takes --with-deps. Credible's
+      # image has them all (apt reported 0 newly installed), so there the step
+      # skips apt, which took 4-32s and once over four minutes, and installs
+      # the packages only if the browser is missing a shared library.
+      - name: Install Playwright's headless Chromium
+        working-directory: packages/app
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" = "github-hosted" ]; then
+            bunx playwright install --with-deps --only-shell chromium
+            exit 0
+          fi
+          bunx playwright install --only-shell chromium
+          shell=$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -name headless_shell | head -n 1)
+          if [ -z "$shell" ]; then
+            echo "::error::No headless_shell under $PLAYWRIGHT_BROWSERS_PATH after install"
+            exit 1
+          fi
+          if ldd "$shell" | grep 'not found'; then
+            echo "::warning::This runner image lacks Chromium's system packages; installing them"
+            bunx playwright install-deps chromium
+          fi
 
       # Tests in packages/app/tests/playwright/environment-connections.spec.ts
       # assume the examples environment exposes a top-level `bigquery`
@@ -105,11 +130,17 @@ jobs:
 
       # playwright.config.ts spawns `npm run start:init` from the repo root as
       # its webServer, polls /api/v0/status in global-setup until the publisher
-      # reaches operationalState=serving, then runs the suite.
+      # reaches operationalState=serving, then runs this shard's spec files.
       - name: Run Playwright suite
         id: suite
         working-directory: packages/app
-        run: bunx playwright test --config=playwright.config.ts
+        # An assignment, not a process substitution: if shards.mjs fails, the
+        # step fails, rather than running Playwright with no file arguments,
+        # which would run the whole suite. Spec names hold no spaces.
+        run: |
+          specs=$(node tests/playwright/shards.mjs files ${{ matrix.shard }})
+          # shellcheck disable=SC2086
+          bunx playwright test --config=playwright.config.ts $specs
         env:
           CI: "true"
           PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "false"
@@ -118,7 +149,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: packages/app/playwright-report
           retention-days: 7
 
@@ -126,18 +157,19 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-test-results
+          name: playwright-test-results-${{ matrix.shard }}
           path: packages/app/test-results
           retention-days: 7
 
-      # The model viewer's specs: the suite above runs against a
-      # server on the default model page, the Explorer, so they skip
-      # themselves there. Run them again against a server of their own with
-      # PUBLISHER_MODEL_PAGE=viewer; EXPECT_MODEL_PAGE makes them fail rather
-      # than skip if the server reports another page.
+      # The model viewer's specs, in shard 2, which carries the least of the
+      # suite above. That suite runs against a server on the default model
+      # page, the Explorer, so they skip themselves there. Run them again
+      # against a server of their own with PUBLISHER_MODEL_PAGE=viewer;
+      # EXPECT_MODEL_PAGE makes them fail rather than skip if the server
+      # reports another page.
       - name: Run the model viewer specs with PUBLISHER_MODEL_PAGE=viewer
         id: model-viewer
-        if: ${{ !cancelled() && (steps.suite.outcome == 'success' || steps.suite.outcome == 'failure') }}
+        if: ${{ matrix.shard == 2 && !cancelled() && (steps.suite.outcome == 'success' || steps.suite.outcome == 'failure') }}
         working-directory: packages/app
         run: bunx playwright test --config=playwright.config.ts --output=test-results-model-viewer tests/playwright/model-page-literals.spec.ts tests/playwright/model-page-givens.spec.ts tests/playwright/model-viewer.spec.ts
         env:
@@ -155,3 +187,28 @@ jobs:
             packages/app/playwright-report
             packages/app/test-results-model-viewer
           retention-days: 7
+
+  # The required status check, under the name the single job had before the
+  # split, so branch protection did not change. Green only when every shard
+  # passed: a failed, cancelled or skipped shard fails it. `!cancelled()`
+  # rather than `always()`, so a cancelled run (a newer push to the PR)
+  # reports this check cancelled, not red. Never give a shard this name.
+  playwright:
+    name: Playwright (packages/app)
+    if: ${{ !cancelled() }}
+    needs:
+      - playwright_shard
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    steps:
+      - name: Require every Playwright shard to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          failed=$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')
+          if [ -n "$failed" ]; then
+            echo "::error::Playwright shards did not pass: $failed"
+            exit 1
+          fi
+        shell: bash
