@@ -91,13 +91,8 @@ import {
 } from "./table_site";
 import { capabilitiesOf } from "../domain/dialect";
 import type { RunLifecycle } from "./run_lifecycle";
-import {
-   mayBeOneTable,
-   mayBeOneTableAnywhere,
-   tableLeafKey,
-   previousDestinationOf,
-   type RenamedTable,
-} from "./run_instructions";
+import { leafKey, mayBeSameTable } from "../domain/physical_table";
+import { previousDestinationOf, type RenamedTable } from "./run_instructions";
 import { hasReservedTableSuffix } from "../domain/table_name";
 
 /**
@@ -467,7 +462,7 @@ function recordedNameViews(
  * reclaim keeps any table a committed run names anywhere under that segment.
  */
 function leafReferenceKey(physicalTableName: string): string {
-   return `\u0000leaf:${tableLeafKey(physicalTableName)}`;
+   return `\u0000leaf:${leafKey(physicalTableName)}`;
 }
 
 /**
@@ -735,7 +730,7 @@ function keptAfter(
    ];
    const at = (t: KeptTable, e: ManifestEntry): boolean =>
       !!e.physicalTableName &&
-      mayBeOneTable(e.physicalTableName, t.physicalTableName) &&
+      mayBeSameTable(e.physicalTableName, t.physicalTableName) &&
       placeKey(e) === placeKey(t);
    const named = (t: KeptTable) =>
       runs.some(
@@ -749,7 +744,7 @@ function keptAfter(
       entries.some(
          (e) =>
             !!e.physicalTableName &&
-            mayBeOneTableAnywhere(e.physicalTableName, t.physicalTableName) &&
+            leafKey(e.physicalTableName) === leafKey(t.physicalTableName) &&
             !at(t, e),
       );
    const byKey = new Map<string, KeptTable>();
@@ -1124,7 +1119,7 @@ export class Reclaimer {
          );
       const namesIt = (e: ManifestEntry) =>
          !!e.physicalTableName &&
-         mayBeOneTableAnywhere(e.physicalTableName, physicalTableName);
+         leafKey(e.physicalTableName) === leafKey(physicalTableName);
       const committedNaming = runs.find(
          (m) =>
             m.id !== materializationId &&
@@ -1159,11 +1154,12 @@ export class Reclaimer {
          .find(
             (e) =>
                e.physicalTableName &&
-               [stagingSuffix, backupSuffix].some((suffix) =>
-                  mayBeOneTableAnywhere(
-                     physicalTableName,
-                     `${e.physicalTableName}${suffix(e.sourceEntityId)}`,
-                  ),
+               [stagingSuffix, backupSuffix].some(
+                  (suffix) =>
+                     leafKey(physicalTableName) ===
+                     leafKey(
+                        `${e.physicalTableName}${suffix(e.sourceEntityId)}`,
+                     ),
                ),
          );
       if (copyOf) {
@@ -1974,7 +1970,7 @@ export class Reclaimer {
          return "not-in-package-records";
       }
       // 5: no table the package serves now may be it. By table segment
-      // alone (mayBeOneTableAnywhere): a table's name does not say where it
+      // alone (leafKey): a table's name does not say where it
       // is, and two places (two names for one DuckLake, a connection that
       // reaches a destination) can reach one table, which no config or
       // probe proves otherwise; nor does a container (on DuckDB `memory.t`
@@ -1983,13 +1979,13 @@ export class Reclaimer {
       // dropped: kept and listed.
       const namesIt = (e: ManifestEntry) =>
          !!e.physicalTableName &&
-         mayBeOneTableAnywhere(e.physicalTableName, table.previousName);
+         leafKey(e.physicalTableName) === leafKey(table.previousName);
       const servedUnderName = Object.values(serving).filter(namesIt);
       if (
          servedUnderName.some(
             (e) =>
                place(e) === place(oldAt) &&
-               mayBeOneTable(e.physicalTableName, table.previousName),
+               mayBeSameTable(e.physicalTableName, table.previousName),
          )
       ) {
          return "still-served";
@@ -2012,8 +2008,8 @@ export class Reclaimer {
          runs.some(
             (m) =>
                isActiveRun(m.status) &&
-               tableNamesIn(m.metadata, WRITES_TABLES_KEY).some((name) =>
-                  mayBeOneTableAnywhere(name, table.previousName),
+               tableNamesIn(m.metadata, WRITES_TABLES_KEY).some(
+                  (name) => leafKey(name) === leafKey(table.previousName),
                ),
          )
       ) {

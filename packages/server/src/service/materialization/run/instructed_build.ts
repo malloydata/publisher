@@ -15,6 +15,8 @@
  * manifest; the committer does.
  */
 
+import { instructionTier } from "../domain/placement";
+import { instructedTable, placedLeafKey } from "../domain/physical_table";
 import { BuildCancelledError } from "../domain/build_cancelled";
 import { keyCheckCompilerKey } from "../domain/key_check";
 import {
@@ -1019,8 +1021,7 @@ export class InstructedBuild {
       // Re-assert (idempotent) so no path into a storage build is ungated.
       if (
          !orchestrated &&
-         instruction.destination &&
-         getPersistStorageMode() !== "off" &&
+         instructionTier(instruction, getPersistStorageMode()) === "storage" &&
          run.clearedTiers?.get(persistSource.sourceID) !== "storage"
       ) {
          assertMaterializationEligible(
@@ -1244,8 +1245,7 @@ export class InstructedBuild {
          // Skipped when the mode is off: the destination refusal owns that.
          const storage =
             orchestrated &&
-            !!instruction.destination &&
-            getPersistStorageMode() !== "off";
+            instructionTier(instruction, getPersistStorageMode()) === "storage";
          // Every other instruction (database, or any build while the mode is
          // off) takes the database gate however it was instructed, unless
          // auto-run already cleared the source through one of the two gates.
@@ -1669,17 +1669,7 @@ function writtenTableIdentity(
    instruction: BuildInstruction,
    connectionName: string,
 ): string {
-   return instruction.destination
-      ? tableIdentityKey(
-           "destination",
-           instruction.destination,
-           instruction.physicalTableName,
-        )
-      : tableIdentityKey(
-           "connection",
-           connectionName,
-           instruction.physicalTableName,
-        );
+   return placedLeafKey(instructedTable(instruction, connectionName));
 }
 
 /**

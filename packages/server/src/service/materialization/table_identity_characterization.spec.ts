@@ -12,10 +12,13 @@
  * - identity: `tableIdentity` (claims, superseding, the owned-name lock),
  *   `tableIdentityKey` (the uniqueness ledger; the run's
  *   `writtenTableIdentity` is this key over the instruction's place) and
- *   `tableLeafKey` / `mayBeOneTableAnywhere` (reclaim): the last segment,
- *   unquoted, case-folded;
- * - may-be-one: `mayBeOneTable` (a rename's reclaim): every segment unquoted
- *   and case-folded, containers matched by suffix.
+ *   `leafKey` (reclaim, compared anywhere): the last segment, unquoted,
+ *   case-folded;
+ * - may-be-one: `mayBeSameTable` (a rename's reclaim): every segment
+ *   unquoted and case-folded, containers matched by suffix.
+ *
+ * The keys now live in `domain/physical_table.ts`; the older names
+ * (`physicalTargetKey`, `tableIdentity`, `tableIdentityKey`) delegate to it.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -26,11 +29,7 @@ import {
    physicalTargetKey,
    tableKeyOf,
 } from "./run/materialization_run_support";
-import {
-   mayBeOneTable,
-   mayBeOneTableAnywhere,
-   tableLeafKey,
-} from "./run/run_instructions";
+import { leafKey, mayBeSameTable } from "./domain/physical_table";
 
 /** Each key's answer to "are `a` and `b` one table", in one place. */
 function sameUnder(a: string, b: string) {
@@ -47,9 +46,9 @@ function sameUnder(a: string, b: string) {
       uniqueness:
          tableIdentityKey("connection", "duckdb", a) ===
          tableIdentityKey("connection", "duckdb", b),
-      leaf: tableLeafKey(a) === tableLeafKey(b),
-      anywhere: mayBeOneTableAnywhere(a, b),
-      mayBeOne: mayBeOneTable(a, b),
+      leaf: leafKey(a) === leafKey(b),
+      anywhere: leafKey(a) === leafKey(b),
+      mayBeOne: mayBeSameTable(a, b),
    };
 }
 
@@ -122,7 +121,7 @@ describe("which physical table, per key", () => {
          '"we""ird"': "weird",
       });
       for (const name of Object.keys(identities)) {
-         expect(tableLeafKey(name)).toBe(tableIdentity(name));
+         expect(leafKey(name)).toBe(tableIdentity(name));
       }
    });
 });

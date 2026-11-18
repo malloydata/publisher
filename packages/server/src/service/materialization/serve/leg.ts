@@ -32,6 +32,7 @@
  * {@link makeLegs}, and its rows in `domain/leg_decline.ts`.
  */
 
+import type { Leg as LegName } from "../domain/vocabulary";
 import type {
    GivenValue,
    QueryMaterializer,
@@ -52,7 +53,7 @@ import type { PersistedQueryServe } from "./query_variants";
 export { PersistedQueryServe } from "./query_variants";
 
 /** The legs, in their usual order. */
-export type LegKind = "view" | "query" | "rollup" | "served";
+export type LegKind = LegName;
 
 /** What a leg reads of one query. */
 export interface QueryFacts {

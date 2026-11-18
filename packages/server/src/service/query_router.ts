@@ -28,6 +28,7 @@
  * built.
  */
 
+import type { Leg } from "./materialization/domain/vocabulary";
 import type { QueryMaterializer } from "@malloydata/malloy";
 import {
    declineOfCode,
@@ -48,7 +49,7 @@ import {
  * `rollup`, the coarsest `#(rollup)` rollup that reproduces the query;
  * and `served`, the served copy on `virtual`.
  */
-export type VariantKind = "view" | "query" | "served" | "rollup";
+export type VariantKind = Leg;
 
 /**
  * Why a candidate did not answer, in the router's own terms. It is kept on

@@ -17,6 +17,10 @@
  */
 
 import {
+   type TableKind,
+   TIERS,
+} from "./service/materialization/domain/vocabulary";
+import {
    lazyCounter,
    lazyHistogram,
    resetInstrumentsForTesting,
@@ -49,11 +53,11 @@ export const BUILD_KINDS = [
    "view",
    "query",
    "pair",
-] as const;
+] as const satisfies readonly TableKind[];
 export type BuildKind = (typeof BUILD_KINDS)[number];
 
 /** Where a table is built: the source's own warehouse, or a `storage=` destination. */
-export const BUILD_TIERS = ["database", "storage"] as const;
+export const BUILD_TIERS = TIERS;
 export type BuildTier = (typeof BUILD_TIERS)[number];
 
 /** A full rebuild, or an incremental delta applied in place. */

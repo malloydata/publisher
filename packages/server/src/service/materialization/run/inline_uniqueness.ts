@@ -20,8 +20,8 @@
  * is checked on every build, because its rows change under a stable address.
  */
 
+import { placedLeafKey } from "../domain/physical_table";
 import { createHash } from "node:crypto";
-import { tableIdentity } from "../../versions/materialization_scope";
 import { recordKeyCheck } from "../../../materialization_metrics";
 import { isActiveRun } from "./materialization_run_support";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
@@ -624,7 +624,7 @@ export function uncontestedAutoRun<
 
 /**
  * The identity a uniqueness record names a table by: where it lives and its
- * name as {@link tableIdentity} reads it. Two names a warehouse may read as
+ * name as `leafKey` (domain/physical_table.ts) reads it. Two names a warehouse may read as
  * one table get one identity, so a write to either loses the record: the
  * safe direction.
  */
@@ -633,7 +633,10 @@ export function tableIdentityKey(
    where: string,
    physicalTableName: string,
 ): string {
-   return JSON.stringify([kind, where, tableIdentity(physicalTableName)]);
+   return placedLeafKey({
+      place: { kind, name: where },
+      name: physicalTableName,
+   });
 }
 
 /**

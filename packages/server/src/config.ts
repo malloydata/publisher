@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type {
+   StorageMode,
+   Switches,
+} from "./service/materialization/domain/switches";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -889,7 +893,7 @@ export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy =>
  *
  * No mode hard-fails a package on `storage=`; a stricter policy is the caller's.
  */
-export type PersistStorageMode = "off" | "write-only" | "on";
+export type PersistStorageMode = StorageMode;
 
 /**
  * The `storage=` deployment mode from `PERSIST_STORAGE_MODE` (default `off`).
@@ -932,6 +936,16 @@ export const getMaterializeGatedSources = (): boolean =>
 export const gateSwitches = (): GateSwitches => ({
    materialize: getMaterializeEnabled(),
    gatedSources: getMaterializeGatedSources(),
+});
+
+/**
+ * Every switch materialization reads, read once, for a shell to pass down
+ * (`materialization/domain/switches.ts`).
+ */
+export const materializationSwitches = (): Switches => ({
+   ...gateSwitches(),
+   storageMode: getPersistStorageMode(),
+   addressIncludesDestination: getPersistAddressIncludesDestination(),
 });
 
 /**

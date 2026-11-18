@@ -17,6 +17,8 @@
  * ({@link reportRetainedStorageTables}).
  */
 
+import { declaredDestination, storageWritable } from "../domain/placement";
+import { exactTableKey, instructedTable } from "../domain/physical_table";
 import { generatedNameOwner } from "../plan/build_file_generator";
 import {
    isPersistedResultSourceID,
@@ -409,7 +411,7 @@ export function chainedPlanFacts(
    const compilerKeyBySourceId: Record<string, string | undefined> = {};
    const declaredTiersByAddress: Record<string, (string | null)[]> = {};
    const namesByAddress: Record<string, string[]> = {};
-   const storageOn = getPersistStorageMode() !== "off";
+   const storageOn = storageWritable(getPersistStorageMode());
    for (const [sourceID, { source }] of Object.entries(tables)) {
       let sourceEntityId: string | undefined;
       try {
@@ -844,8 +846,10 @@ export { declaredStorage };
 export function resolveStorageDestination(
    persistSource: PersistSource,
 ): string | undefined {
-   if (getPersistStorageMode() === "off") return undefined;
-   return declaredStorage(persistSource);
+   return declaredDestination(
+      declaredStorage(persistSource),
+      getPersistStorageMode(),
+   );
 }
 
 /** Connection-config keys whose string values are credentials to redact. */
@@ -1096,15 +1100,7 @@ export function physicalTargetKey(
    instruction: BuildInstruction,
    connectionName: string,
 ): string {
-   return JSON.stringify(
-      instruction.destination
-         ? [
-              "destination",
-              instruction.destination,
-              instruction.physicalTableName,
-           ]
-         : ["connection", connectionName, instruction.physicalTableName],
-   );
+   return exactTableKey(instructedTable(instruction, connectionName));
 }
 
 /**
