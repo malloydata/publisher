@@ -44,7 +44,7 @@ Three identities, each used for one thing:
 | Identity | Key | Used for |
 | --- | --- | --- |
 | A declaration | `sourceID` (`name@<model URL>`) | Every map, gate and lookup about a source |
-| A stored table | `(sourceEntityId, destination)`; destination is null for colocated | Bindings, the catalog, verdicts and the path report |
+| A stored table | `(sourceEntityId, destination)`; destination is null for database | Bindings, the catalog, verdicts and the path report |
 | A name | the name in one model's namespace | Display and logs only |
 
 A name is never a map key or a gate. Names are neither package-unique (two
@@ -221,7 +221,7 @@ verdict tests stay green.
 
 ## Open points
 
-1. **One listing per rollup.** Resolved for `#(preaggregate)` (phase 4 PR 1):
+1. **One listing per rollup.** Resolved for `#(rollup)` (phase 4 PR 1):
    a rollup is planned only in the model that declares its base, keyed by its
    own `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`), so the
    build plan lists it once. `#@ preaggregate` keeps its per-model companions,

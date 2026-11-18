@@ -1,13 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// P2-21: `col_a` (colocated) and `twin_a` (`storage="lake"`) compile to one
+// P2-21: `col_a` (database) and `twin_a` (`storage="lake"`) compile to one
 // build, so they once shared one address: the run's manifest kept whichever
-// built last, and `col_b`, a colocated source over `col_a`, was handed the
-// stored twin's entry (which a colocated build drops) and missed strictly.
+// built last, and `col_b`, a database source over `col_a`, was handed the
+// stored twin's entry (which a database build drops) and missed strictly.
 // The storage twin now folds its destination into its address
 // (foldDistinctTableNames), so one run builds both, and `col_b` builds over
-// `col_a`'s colocated entry, whether `twin_a` builds or fails.
+// `col_a`'s database entry, whether `twin_a` builds or fails.
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
@@ -74,7 +74,7 @@ function selfInstructions(plan: ReturnType<typeof compiled>) {
    ).deriveSelfInstructions(plan, undefined, {});
 }
 
-describe("P2-21: twins in two tiers and the colocated chain over one", () => {
+describe("P2-21: twins in two tiers and the database chain over one", () => {
    it("instructs each twin under its own address", () => {
       restore = installSettings({
          env: { PERSIST_STORAGE_MODE: "on" },
@@ -83,13 +83,13 @@ describe("P2-21: twins in two tiers and the colocated chain over one", () => {
       expect(refused).toEqual({});
       const ids = instructions.map((i) => i.sourceEntityId);
       expect(new Set(ids).size).toBe(3);
-      // The colocated twin and the downstream keep their plain addresses.
+      // The database twin and the downstream keep their plain addresses.
       expect(ids).toContain(SHARED);
       expect(ids).toContain(DOWNSTREAM);
    });
 
    for (const twinFails of [false, true]) {
-      it(`builds col_b over col_a's colocated entry when twin_a ${twinFails ? "fails" : "builds"}`, async () => {
+      it(`builds col_b over col_a's database entry when twin_a ${twinFails ? "fails" : "builds"}`, async () => {
          restore = installSettings({
             env: { PERSIST_STORAGE_MODE: "on" },
          }).restore;
@@ -141,7 +141,7 @@ describe("P2-21: twins in two tiers and the colocated chain over one", () => {
             seedEntries: {},
             signal: new AbortController().signal,
          });
-         // col_a's colocated entry is its own; the twin never replaces it.
+         // col_a's database entry is its own; the twin never replaces it.
          expect(result.entries[SHARED]).toMatchObject({ sourceName: "col_a" });
          expect(result.entries[SHARED].storageDestinationName).toBeUndefined();
          expect(result.entries[DOWNSTREAM]).toMatchObject({

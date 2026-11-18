@@ -72,8 +72,8 @@ const OWNED_V1_ROUTES: readonly string[] = OWNED_ROUTES.filter(
 
 /**
  * The owned routes in force: the v2 routes only with the materialize switch
- * on. Off, nothing reads `#(materialize)` or `#(preaggregate)`, so the scan
- * reads them as it did before they were registered: `#(preaggregate)` is
+ * on. Off, nothing reads `#(materialize)` or `#(rollup)`, so the scan
+ * reads them as it did before they were registered: `#(rollup)` is
  * reaching for `#@ preaggregate`, which works there.
  */
 function ownedRoutes(): readonly string[] {
@@ -132,10 +132,15 @@ function misspelledOwnedRoute(name: string): Intended | undefined {
          best = { route, distance };
       }
    }
-   if (best) return { spelling: `#(${best.route})`, route: best.route };
-   const directive = PERSIST_DIRECTIVES.find(
-      (d) => foldRouteName(d) === folded,
-   );
+   // Never point at a deprecated spelling: `#(preaggregate)` is `#(rollup)`.
+   if (best) {
+      const spelled = best.route === "preaggregate" ? "rollup" : best.route;
+      return { spelling: `#(${spelled})`, route: best.route };
+   }
+   // With v2 off, `#(rollup)` and `#(preaggregate)` reach for v1's line.
+   const directive =
+      PERSIST_DIRECTIVES.find((d) => foldRouteName(d) === folded) ??
+      (folded === "rollup" ? "preaggregate" : undefined);
    return directive ? { spelling: `#@ ${directive}`, route: "@" } : undefined;
 }
 
@@ -266,7 +271,7 @@ export function annotationNearMisses(
       // A near miss of a materialization route or directive fails the load,
       // as a misspelled gate does: a declaration that silently does nothing
       // is an invalid annotation. Not when the route is spelled exactly but
-      // switched off (`#(preaggregate)` with PUBLISHER_MATERIALIZE=false):
+      // switched off (`#(rollup)` with PUBLISHER_MATERIALIZE=false):
       // that is the deployment's choice, not the author's mistake.
       const materialization =
          MATERIALIZATION_ROUTES.has(intended.route) &&

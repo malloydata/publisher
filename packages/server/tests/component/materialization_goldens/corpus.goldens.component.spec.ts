@@ -5,7 +5,7 @@
  * Materialization characterization goldens over the repo's persist corpus
  * (phase 5, step 1): every hammer scenario model that materializes, through
  * v1 `#@ persist` / `#@ preaggregate` or v2 `#(materialize)` /
- * `#(preaggregate)` (`test_helpers/persist_corpus.ts`), compiled against its
+ * `#(rollup)` (`test_helpers/persist_corpus.ts`), compiled against its
  * DuckDB stand-in and planned through `collectModelBuildPlan` with the
  * materialize switch on, as a package load plans each model. The persist fixtures are packages,
  * and run through the package goldens instead.

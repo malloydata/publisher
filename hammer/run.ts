@@ -801,7 +801,7 @@ async function main(): Promise<void> {
       //
       // Two backends, because a persist target can live in either: a DuckLake
       // destination is reached by a read-write attach, and a source warehouse is
-      // reached by psql against the scenario's own database. A colocated persist
+      // reached by psql against the scenario's own database. A database persist
       // whose `name=` carries a schema needs that schema to exist first, and only
       // this path can create it.
       const operatorSqlFor =

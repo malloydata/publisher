@@ -458,7 +458,7 @@ describe("executeInstructedBuild", () => {
             name: "up",
             sourceEntityId: "bupupupupupupupu",
          });
-         // A strict colocated build of a source whose upstream is not in the
+         // A strict database build of a source whose upstream is not in the
          // manifest: Malloy refuses to render it. The option-free render that
          // computes its content address still succeeds.
          const down = fakeSource({
@@ -1593,7 +1593,7 @@ describe("executeInstructedBuild", () => {
          expect(seen?.buildManifest?.entries?.up).toBeUndefined();
       });
 
-      it("refuses a strict colocated build whose upstream was supplied at the wrong tier, naming both tiers", async () => {
+      it("refuses a strict database build whose upstream was supplied at the wrong tier, naming both tiers", async () => {
          // The only instructed source fails, so the run itself fails, with it.
          const reason = await downstreamSees({
             upStorage: "lake",
@@ -1735,7 +1735,7 @@ describe("executeInstructedBuild", () => {
          expect(Object.keys(result.failures ?? {})).toEqual([]);
       });
 
-      it("still renders a colocated upstream's warehouse table", async () => {
+      it("still renders a database upstream's warehouse table", async () => {
          const { seen } = await downstreamSees({
             seed: {
                up: {
@@ -1877,11 +1877,11 @@ describe("executeInstructedBuild", () => {
    });
 
    describe("a refused sibling with no compile-time gate outcome", () => {
-      // Colocated (no `storage=`) authorize-gated, and `compiledWith`'s default
+      // Database (no `storage=`) authorize-gated, and `compiledWith`'s default
       // `sourceGateOutcomes` is undefined — the fail-closed default the
-      // colocated relaxation never admits, so this refuses unconditionally
-      // (see the "colocated #(authorize) gate" describe above).
-      function refusedColocated(sourceEntityId: string) {
+      // database relaxation never admits, so this refuses unconditionally
+      // (see the "database #(authorize) gate" describe above).
+      function refusedDatabase(sourceEntityId: string) {
          return fakeSource({
             name: "refused",
             sourceEntityId,
@@ -1900,7 +1900,7 @@ describe("executeInstructedBuild", () => {
             name: "ok",
             sourceEntityId: "b0k0k0k0k0k0k0k0",
          });
-         const refused = refusedColocated("bref1bref1bref1b");
+         const refused = refusedDatabase("bref1bref1bref1b");
          const compiled = compiledWith(
             { ok, refused },
             [["ok"], ["refused"]],
@@ -1935,7 +1935,7 @@ describe("executeInstructedBuild", () => {
             name: "ok",
             sourceEntityId: "b0k0k0k0k0k0k0k0",
          });
-         const refused = refusedColocated("bref1bref1bref1b");
+         const refused = refusedDatabase("bref1bref1bref1b");
          const compiled = compiledWith(
             { ok, refused },
             [["refused"], ["ok"]],
@@ -1987,8 +1987,8 @@ describe("executeInstructedBuild", () => {
          ).toBe(false);
       });
 
-      // ms2data/service#7078, colocated: a base and its `extend` share one
-      // content address, and a colocated table is served by address (the bind
+      // ms2data/service#7078, database: a base and its `extend` share one
+      // content address, and a database table is served by address (the bind
       // refuses the whole address when any source on it is refused). So a
       // refused extension refuses the address in both run orders: nothing is
       // built that could not serve, and the outcome no longer depends on order.
@@ -1996,7 +1996,7 @@ describe("executeInstructedBuild", () => {
          ["the eligible source comes first", [["ok"], ["base"], ["ext"]]],
          ["the refused source comes first", [["ok"], ["ext"], ["base"]]],
       ] as const) {
-         it(`refuses a colocated address a refused sibling shares when ${label}, building nothing on it`, async () => {
+         it(`refuses a database address a refused sibling shares when ${label}, building nothing on it`, async () => {
             const runSQL = sinon.stub().resolves();
             const connection = { runSQL } as unknown as MalloyConnection;
             const ok = fakeSource({
@@ -2057,7 +2057,7 @@ describe("executeInstructedBuild", () => {
             expect(result.refusedBesideBuilt).toEqual({});
             expect(
                createsFrom(runSQL).some((sql) => sql.includes("shared_v1")),
-               "nothing is built on a refused colocated address",
+               "nothing is built on a refused database address",
             ).toBe(false);
          });
       }
@@ -2071,7 +2071,7 @@ describe("executeInstructedBuild", () => {
          ["the base comes first", [["base"], ["ext"]]],
          ["the extension comes first", [["ext"], ["base"]]],
       ] as const) {
-         it(`does not fail a run whose only sources are a colocated base and its refused extension when ${label}`, async () => {
+         it(`does not fail a run whose only sources are a database base and its refused extension when ${label}`, async () => {
             const runSQL = sinon.stub().resolves();
             const connection = { runSQL } as unknown as MalloyConnection;
             const base = fakeSource({
@@ -2112,8 +2112,8 @@ describe("executeInstructedBuild", () => {
          });
       }
 
-      it("builds the eligible table and nothing on a refused colocated address, on a real DuckDB connection", async () => {
-         // No stubbed build: the real colocated build runs against DuckDB.
+      it("builds the eligible table and nothing on a refused database address, on a real DuckDB connection", async () => {
+         // No stubbed build: the real database build runs against DuckDB.
          const duckdb = new DuckDBConnection("duckdb");
          try {
             const ok = fakeSource({
@@ -2172,10 +2172,10 @@ describe("executeInstructedBuild", () => {
          }
       });
 
-      it("never fails a colocated run on an unrelated source whose gate throws", async () => {
-         // The colocated sibling check gates only the sources on the address
+      it("never fails a database run on an unrelated source whose gate throws", async () => {
+         // The database sibling check gates only the sources on the address
          // it is asked about. An unrelated planned source whose gate walk
-         // throws something other than a refusal used to fail every colocated
+         // throws something other than a refusal used to fail every database
          // run in the package.
          const runSQL = sinon.stub().resolves();
          const connection = { runSQL } as unknown as MalloyConnection;
@@ -2215,7 +2215,7 @@ describe("executeInstructedBuild", () => {
          expect(result.failures).toEqual({});
       });
 
-      it("holds back a colocated base whose extension auto-run already refused", async () => {
+      it("holds back a database base whose extension auto-run already refused", async () => {
          // Auto-run refused the extension (deriveSelfInstructions) and cleared
          // the base; the base's instruction still names the shared address.
          // The extension is not refused twice, and the base is not built onto
@@ -2276,14 +2276,14 @@ describe("executeInstructedBuild", () => {
                {
                   name: "ext",
                   sourceID: "ext",
-                  tier: "colocated",
+                  tier: "database",
                   reason: "authorize",
                   message: "Source 'ext' cannot be materialized",
                },
             ],
             clearedTiers: new Map([
-               ["ok", "colocated"],
-               ["base", "colocated"],
+               ["ok", "database"],
+               ["base", "database"],
             ]),
          });
          expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
@@ -2298,7 +2298,7 @@ describe("executeInstructedBuild", () => {
          expect(result.sourcesRefused).toBe(1);
          expect(
             createsFrom(runSQL).some((sql) => sql.includes("auto_v1")),
-            "nothing is built on a refused colocated address",
+            "nothing is built on a refused database address",
          ).toBe(false);
       });
 
@@ -2309,7 +2309,7 @@ describe("executeInstructedBuild", () => {
             name: "ok",
             sourceEntityId: "b0k0k0k0k0k0k0k0",
          });
-         const a = refusedColocated("bonlyrefusedaaaa");
+         const a = refusedDatabase("bonlyrefusedaaaa");
          const b = fakeSource({
             name: "refused_too",
             sourceEntityId: "bonlyrefusedaaaa",
@@ -2351,7 +2351,7 @@ describe("executeInstructedBuild", () => {
       it("still 422s when every instructed source is refused", async () => {
          const runSQL = sinon.stub().resolves();
          const connection = { runSQL } as unknown as MalloyConnection;
-         const refused = refusedColocated("bref1bref1bref1b");
+         const refused = refusedDatabase("bref1bref1bref1b");
          const compiled = compiledWith(
             { refused },
             [["refused"]],

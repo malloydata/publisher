@@ -3,7 +3,13 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { type Binding, EMPTY_SNAPSHOT, makeSnapshot, pin } from "./binding";
+import {
+   type Binding,
+   EMPTY_SNAPSHOT,
+   heldReadBinding,
+   makeSnapshot,
+   pin,
+} from "./binding";
 import type { FreshnessManifest } from "./types";
 
 // A fixed instant so age math is deterministic.
@@ -97,7 +103,7 @@ describe("pin", () => {
       expect(pin(snapshot, later).serves(fresh)).toBe(false);
    });
 
-   it("pins the colocated entries as Malloy's build manifest, never undefined", () => {
+   it("pins the database entries as Malloy's build manifest, never undefined", () => {
       const entries: FreshnessManifest = {
          fresh: { tableName: "fresh_t", ...asOfEntry(1800, "live") },
          ungated: { tableName: "ungated_t", dataAsOf: asOf(999_999) },
@@ -144,3 +150,39 @@ function asOfEntry(age: number, fallback: "live" | "stale_ok" | "fail") {
       freshnessFallback: fallback,
    };
 }
+
+describe("heldReadBinding", () => {
+   it("records each moved column by the type it holds now, for the gate policy", () => {
+      const b = heldReadBinding("rollup", "acct_rollup", {
+         tableName: "mz_acct_rollup",
+         heldRead: {
+            connectionName: "warehouse",
+            columns: [
+               { name: "org_id", type: "BIGINT" },
+               { name: "acct", type: "DOUBLE", moved: true },
+               {
+                  name: "big",
+                  type: "VARCHAR",
+                  nativeType: "HUGEINT",
+                  moved: true,
+               },
+            ],
+         },
+      } as never);
+      expect(b?.retypedColumns).toEqual([
+         { name: "acct", type: "DOUBLE" },
+         { name: "big", type: "HUGEINT" },
+      ]);
+   });
+
+   it("records none when no column moved", () => {
+      const b = heldReadBinding("rollup", "acct_rollup", {
+         tableName: "mz_acct_rollup",
+         heldRead: {
+            connectionName: "warehouse",
+            columns: [{ name: "org_id", type: "BIGINT" }],
+         },
+      } as never);
+      expect(b?.retypedColumns).toBeUndefined();
+   });
+});

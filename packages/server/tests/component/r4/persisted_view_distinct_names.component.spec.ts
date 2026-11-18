@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Colocated persisted views and persisted queries, of both kinds together,
+ * Database persisted views and persisted queries, of both kinds together,
  * that compile to one build but name different tables (`name=`), through the real package path (load,
  * build, bind, query). Each names its own table, so each has its own address
  * (foldDistinctTableNames) and its own table; Malloy files all four under one
@@ -92,7 +92,7 @@ const PAIRS: {
    },
 ];
 
-describe("colocated persisted views and queries of one build, each under its own name=", () => {
+describe("database persisted views and queries of one build, each under its own name=", () => {
    let restore: () => void = () => {};
    let loader: Awaited<ReturnType<typeof loadFixture>>;
    let fixture: LoadedFixture;

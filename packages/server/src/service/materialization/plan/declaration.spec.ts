@@ -49,7 +49,7 @@ describe("placementOf: the one placement rule", () => {
          placement: { tier: "storage", destination: "in" },
       });
       expect(placed('#@ persist name="t"')).toEqual({
-         placement: { tier: "colocated", name: "t" },
+         placement: { tier: "database", name: "t" },
       });
    });
 

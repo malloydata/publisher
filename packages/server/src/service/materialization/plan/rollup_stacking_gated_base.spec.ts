@@ -26,7 +26,7 @@ source: raw is duckdb.sql("""SELECT 1 AS id, 'a' AS cat, 1.5::DOUBLE AS amt""")
 
 ${gate}#@ persist storage="lake"
 source: orders is raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: grand is amt.sum()
 }
 `;

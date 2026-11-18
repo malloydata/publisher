@@ -92,9 +92,9 @@ query: q_${k} is raw -> { group_by: ${GROUPING[k]}; aggregate: total; order_by: 
 ).join("\n")}
 
 source: rolled is raw extend {
-  #(preaggregate) grain=["cat", "flag", "d", "ts", "note"]
+  #(rollup) grain=["cat", "flag", "d", "ts", "note"]
   measure: rtotal is n.max()
-  #(preaggregate) grain=["cat", "flag", "d", "ts", "note"]
+  #(rollup) grain=["cat", "flag", "d", "ts", "note"]
   measure: rtop is amt.max()
 }
 `;
@@ -405,7 +405,7 @@ for (const tier of tiers) {
          }
          // The bind every run, manifest and restart takes.
          await f.pkg.reloadAllModels(
-            f.pkg.materialization().boundColocatedEntries() ?? {},
+            f.pkg.materialization().boundDatabaseEntries() ?? {},
          );
       }, 300_000);
       afterAll(async () => {

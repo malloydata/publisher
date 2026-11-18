@@ -17,9 +17,9 @@ changes where its rows are read FROM, never which rows they are.
 A source's `where:` is a query-time refinement rather than part of its
 materialized relation — Malloy's persist artifact for an `extend` is the base's
 UNFILTERED relation, and the filter is applied over it when the query runs. The
-colocated tier gets that division of labour for free, because it binds a manifest
+database tier gets that division of labour for free, because it binds a manifest
 and lets the compiler rewrite the FROM underneath the author's own source, filter
-still attached (`filtered-source-serves-only-filtered-rows-colocated` is the
+still attached (`filtered-source-serves-only-filtered-rows-database` is the
 control, and it is green). The storage tier serves the source from its served copy
 instead: the author's own model text with `high_value` re-rooted on its stored
 table (`<alias>.virtual('<handle>')::<type>`) and its `extend` block kept as

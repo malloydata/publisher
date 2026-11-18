@@ -7,7 +7,7 @@
  *
  * - Plan asks {@link tableKeepsGates} before it builds a table over a gated
  *   source, so a table is never built that cannot be read past its gate
- *   (`gateEnforcedAtRead`, `rollupGateEnforcedAtRead`, and a colocated
+ *   (`gateEnforcedAtRead`, `rollupGateEnforcedAtRead`, and a database
  *   `#@ persist` source's own gate).
  * - The serve verdict asks {@link answerKeepsGates} of a source's own table
  *   on the served leg, and {@link legMayPassGate} with the plan's answer for a
@@ -32,9 +32,9 @@
  * Rows were loosened outside it by maintainer decision, for consistency,
  * ahead of the review: G3 keeps a source's own row-level gate (an attributed
  * row filter or lock, no inherited row filter) on the served leg for a
- * colocated `#(materialize)` table, as v1 colocated does, and for a `storage=`
+ * database `#(materialize)` table, as v1 database does, and for a `storage=`
  * table under exactly the same conditions, v1 `#@ persist` and
- * `#(materialize)` alike; and on the rollup leg for a colocated rollup whose
+ * `#(materialize)` alike; and on the rollup leg for a database rollup whose
  * base's gates are all its own and each proven exact on the rollup (every
  * field a grain dimension), which the gated-sources switch already admits.
  * The review then covers that consistent behaviour. Pending that review's
@@ -80,7 +80,7 @@ export const GATE_KINDS = [
 type GateKind = (typeof GATE_KINDS)[number];
 
 /** Where a stored table lives. */
-export const GATE_TIERS = ["colocated", "storage"] as const;
+export const GATE_TIERS = ["database", "storage"] as const;
 type GateTier = (typeof GATE_TIERS)[number];
 
 /** A stored table over a gated source, as the policy reads it. */
@@ -128,7 +128,7 @@ type Row = (t: GatedTable, s: GateSwitches) => boolean;
  * gate, keeps the gate.
  */
 const ROWS: Record<GateKind, Row> = {
-   // A v1 table is substituted by Malloy (colocated) or re-rooted by the
+   // A v1 table is substituted by Malloy (database) or re-rooted by the
    // served copy, which the router lets past a gate per leg. Either tier
    // keeps its source's own row-level gate under G3.
    persist: (t) => persistKeepsGates(t),
@@ -137,13 +137,13 @@ const ROWS: Record<GateKind, Row> = {
    // switch, on either tier under G3.
    materialize: (t, s) => materializedKeepsGates(t, s),
    pair: (t, s) => materializedKeepsGates(t, s),
-   // A `#(preaggregate)` rollup's variant redeclares its base with its gates,
-   // proven on the rollup; colocated under the gated-sources switch, in a
+   // A `#(rollup)` rollup's variant redeclares its base with its gates,
+   // proven on the rollup; database under the gated-sources switch, in a
    // storage destination only once that is reviewed, a v1 `#@ preaggregate`
    // line read as one alike. A rollup no variant was planned for keeps
    // none.
    //
-   // G3 for a colocated rollup, with the switch off: its base's own gates,
+   // G3 for a database rollup, with the switch off: its base's own gates,
    // each proven exact on the rollup (every field a grain dimension), as a
    // stored source keeps its own row-level gate.
    //
@@ -156,8 +156,8 @@ const ROWS: Record<GateKind, Row> = {
       t.baseGateProven === true &&
       (t.gate?.lockOnly === true ||
          (s.gatedSources
-            ? t.tier === "colocated" || s.gatedStorageRollupsReviewed
-            : t.tier === "colocated" && ownRowLevelGate(t))),
+            ? t.tier === "database" || s.gatedStorageRollupsReviewed
+            : t.tier === "database" && ownRowLevelGate(t))),
    // A persisted view's gate is decided at the router, per leg.
    view: () => false,
 };
@@ -177,15 +177,15 @@ function ownRowLevelGate(t: GatedTable): boolean {
 }
 
 function materializedKeepsGates(t: GatedTable, s: GateSwitches): boolean {
-   // G3 for `#(materialize)`, colocated or `storage=`, with the gated-sources
+   // G3 for `#(materialize)`, database or `storage=`, with the gated-sources
    // switch on or off. A maintainer-approved exception made ahead of the
-   // question-14 review, for consistency: colocated and `storage=` behave the
+   // question-14 review, for consistency: database and `storage=` behave the
    // same under a source's own row-level gate, and the review covers that.
    return s.materialize && ownRowLevelGate(t);
 }
 
 function persistKeepsGates(t: GatedTable): boolean {
-   // G3 for a v1 table, colocated (as since the v1 cutover) or `storage=` on
+   // G3 for a v1 table, database (as since the v1 cutover) or `storage=` on
    // the same conditions, the maintainer-approved exception made ahead of
    // the question-14 review. No switch is read.
    return ownRowLevelGate(t);
@@ -213,7 +213,7 @@ interface LegGateContext {
     * G3 tables keeps the gates even with the gated-sources switch off
     * ({@link SERVING_GATE_CONTEXT}).
     */
-   readonly colocatedReadsKeepGates: boolean;
+   readonly databaseReadsKeepGates: boolean;
 }
 
 /**
@@ -221,7 +221,7 @@ interface LegGateContext {
  * G3 holds at read, so an answer reading only G3 tables keeps the gates.
  */
 export const SERVING_GATE_CONTEXT: LegGateContext = {
-   colocatedReadsKeepGates: true,
+   databaseReadsKeepGates: true,
 };
 
 /** A table an answer read, as the policy judges it. */
@@ -273,31 +273,31 @@ export function gateColumnTypeExact(type: string): boolean {
  * be listed is not.
  */
 export function gateColumnsExact(t: TableRead): boolean {
-   if (t.gateColumnTypes === undefined) return t.tier === "colocated";
+   if (t.gateColumnTypes === undefined) return t.tier === "database";
    return t.gateColumnTypes.every(gateColumnTypeExact);
 }
 
 /**
- * Whether a table an answer read is a G3 table: a colocated one (as since
+ * Whether a table an answer read is a G3 table: a database one (as since
  * the v1 cutover), or a `storage=` one plan admitted past its own gate.
  */
 function g3Table(t: TableRead): boolean {
-   return t.tier === "colocated" || t.ownGateKept === true;
+   return t.tier === "database" || t.ownGateKept === true;
 }
 
 /**
- * Whether a table a rollup answer read keeps the gates under G3: a colocated
+ * Whether a table a rollup answer read keeps the gates under G3: a database
  * one, or any one when the entry point's gates read no column (locks only).
  */
 function g3RollupTable(t: TableRead): boolean {
-   return t.tier === "colocated" || t.gatesReadNoColumn === true;
+   return t.tier === "database" || t.gatesReadNoColumn === true;
 }
 
 /**
  * Whether a leg may be attempted past an entry-point gate. Each leg keeps the
  * author's gates on its own compile (the served copy's text, a variant's
  * redeclared base), under the gated-sources switch; the served copy and the
- * rollup leg also under `colocatedReadsKeepGates`, decided per answer by
+ * rollup leg also under `databaseReadsKeepGates`, decided per answer by
  * {@link answerKeepsGates}.
  */
 export function legMayPassGate(
@@ -310,7 +310,7 @@ export function legMayPassGate(
          return s.gatedSources;
       case "rollup":
       case "served":
-         return s.gatedSources || ctx.colocatedReadsKeepGates;
+         return s.gatedSources || ctx.databaseReadsKeepGates;
       default:
          return false;
    }
@@ -321,8 +321,8 @@ export function legMayPassGate(
  * given the tables it read. Never when a column the gates read is stored
  * inexactly ({@link gateColumnsExact}), under any switch. Otherwise always
  * under the gated-sources switch; under G3 alone, only when it read at least
- * one table and every one is a G3 table: for the served copy, colocated or
- * `storage=` admitted past its own gate; for the rollup leg, colocated, or
+ * one table and every one is a G3 table: for the served copy, database or
+ * `storage=` admitted past its own gate; for the rollup leg, database, or
  * any tier when the entry point's gates are locks reading no column (a
  * `storage=` rollup past a row filter awaits its review).
  */
@@ -345,7 +345,7 @@ export function answerKeepsGates(
       return false;
    }
    if (s.gatedSources) return true;
-   if (!ctx.colocatedReadsKeepGates || tablesRead.length === 0) return false;
+   if (!ctx.databaseReadsKeepGates || tablesRead.length === 0) return false;
    if (leg === "served") return tablesRead.every(g3Table);
    return leg === "rollup" && tablesRead.every(g3RollupTable);
 }

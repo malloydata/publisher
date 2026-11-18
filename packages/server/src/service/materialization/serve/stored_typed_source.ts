@@ -28,7 +28,7 @@ import { canonicalStoredSchema } from "../stored_column_types";
 function storedConnectionOf(
    binding: Pick<Binding, "destinationName"> & Partial<Pick<Binding, "tier">>,
 ): string {
-   return binding.tier === "colocated"
+   return binding.tier === "database"
       ? binding.destinationName
       : servedCopyAlias(binding.destinationName);
 }

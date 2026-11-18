@@ -113,12 +113,12 @@ describe("materialization_metrics", () => {
    it("counts one build per call, failure_class none unless failed", async () => {
       recordBuildOutcome({
          kind: "persist",
-         tier: "colocated",
+         tier: "database",
          outcome: "built",
       });
       recordBuildOutcome({
          kind: "persist",
-         tier: "colocated",
+         tier: "database",
          outcome: "reused",
       });
       recordBuildOutcome({
@@ -183,8 +183,8 @@ describe("materialization_metrics", () => {
    });
 
    it("records bytes read only when the warehouse reported a positive count", async () => {
-      recordBuildReadBytes(5e9, "colocated");
-      recordBuildReadBytes(0, "colocated");
+      recordBuildReadBytes(5e9, "database");
+      recordBuildReadBytes(0, "database");
       recordBuildReadBytes(null, "storage");
       recordBuildReadBytes(undefined, "storage");
 
@@ -199,7 +199,7 @@ describe("materialization_metrics", () => {
          await harness.collectAttributes(
             "publisher_materialization_build_read_bytes",
          ),
-      ).toEqual([{ tier: "colocated" }]);
+      ).toEqual([{ tier: "database" }]);
    });
 
    it("keeps every build label to the spec's vocabulary and series bound", () => {
@@ -213,7 +213,7 @@ describe("materialization_metrics", () => {
          "query",
          "pair",
       ]);
-      expect([...BUILD_TIERS]).toEqual(["colocated", "storage"]);
+      expect([...BUILD_TIERS]).toEqual(["database", "storage"]);
       expect([...BUILD_METHODS]).toEqual(["full", "delta"]);
       expect([...BUILD_OUTCOMES]).toEqual([
          "built",
@@ -413,13 +413,13 @@ const EMISSIONS: Record<string, () => void> = {
    publisher_materialization_build_total: () =>
       recordBuildOutcome({
          kind: "persist",
-         tier: "colocated",
+         tier: "database",
          outcome: "built",
       }),
    publisher_materialization_build_duration_ms: () =>
       recordBuildDuration(1, { kind: "view", tier: "storage", method: "full" }),
    publisher_materialization_build_read_bytes: () =>
-      recordBuildReadBytes(1_000, "colocated"),
+      recordBuildReadBytes(1_000, "database"),
    publisher_annotation_findings_total: () =>
       recordAnnotationFindings([
          { code: "persist-not-built", severity: "warn" },

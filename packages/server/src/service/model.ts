@@ -381,7 +381,7 @@ export class Model {
       | undefined;
    /**
     * The rollup leg: a router candidate when this model sees a rollup; a
-    * `#(preaggregate)` one is read only with `materialize.enabled` on, a v1
+    * `#(rollup)` one is read only with `materialize.enabled` on, a v1
     * `#@ preaggregate` one either way.
     */
    private rollupVariants = new RollupVariantServe({
@@ -2588,7 +2588,7 @@ export class Model {
             this.ensureSharedQueryModel(materializer),
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
-         // Storage tables only while the storage tier serves; colocated tables
+         // Storage tables only while the storage tier serves; database tables
          // (on the source's own connection) need no destination.
          serveDestinationConfig: () =>
             getPersistStorageMode() === "on"
@@ -2604,7 +2604,7 @@ export class Model {
    /**
     * Every table this model serves now: its package's snapshot, or the
     * bindings set on it directly ({@link setServeBindings}) beside the
-    * package's colocated entries. Replaced by reference, never edited.
+    * package's database entries. Replaced by reference, never edited.
     */
    private servingSnapshot(): Snapshot {
       const pkg = this.policy.snapshot() ?? EMPTY_SNAPSHOT;
@@ -2650,7 +2650,7 @@ export class Model {
       // The same context again (a rebind, a republish) keeps the served
       // copy: its compile is keyed on its bindings, and this model's own text
       // never changes. The other legs are reset as before, since their caches
-      // are not keyed on the colocated entries a bind can change alone.
+      // are not keyed on the database entries a bind can change alone.
       const current = this.servedCopyContext;
       const unchanged =
          !!current &&
@@ -2724,7 +2724,7 @@ export class Model {
 
    /**
     * Whether the router may try the served copy: a model file. It reads a
-    * colocated table on the source's own connection, and a storage table
+    * database table on the source's own connection, and a storage table
     * only while `PERSIST_STORAGE_MODE=on` (its host withholds the
     * destinations otherwise). Warnings and the compile at bind follow the
     * same rule, so a package never warns about a copy that is not routed.
@@ -2735,7 +2735,7 @@ export class Model {
    }
 
    /**
-    * Whether the router may try the `#(preaggregate)` rollup leg: a model file
+    * Whether the router may try the `#(rollup)` rollup leg: a model file
     * and a rollup declared on a source it sees.
     */
    private rollupVariantsEnabled(): boolean {
@@ -2795,7 +2795,7 @@ export class Model {
 
    /**
     * Serve this model from `bindings` in place of its package's (the
-    * package's colocated entries still apply): a model driven outside a
+    * package's database entries still apply): a model driven outside a
     * package, as a test or a tool drives one. A copy is taken, so a caller
     * that edits a binding and sets it again compiles over the edit.
     */
