@@ -824,6 +824,13 @@ jobs:
         if: failure()
         run: sed 's/^/[server] /' "$RUNNER_TEMP/server.log" || true
 
+  # The test suites, on Linux only, split into parallel groups behind one
+  # required check, `Cross Platform Tests / Platform: (ubuntu-latest)`. macOS
+  # and Windows run nightly, on a PR labelled `cross-platform`, and before a
+  # release (cross-platform-nightly.yml, release.yml).
   cross_platform_test:
     name: Cross Platform Tests
     uses: ./.github/workflows/cross-platform-tests.yml
+    with:
+      linux: true
+      macos_windows: false
