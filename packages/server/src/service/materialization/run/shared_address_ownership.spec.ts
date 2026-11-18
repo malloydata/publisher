@@ -41,7 +41,7 @@ import { serviceOverEnvironment } from "../../../test_helpers/materialization_se
  * serving its own table instead. (A host that instructs one table for the
  * shared build is the build loop's case, below.)
  *
- * The colocated tier and a `scope: package` version, on a real DuckDB
+ * The database tier and a `scope: package` version, on a real DuckDB
  * warehouse; the `storage=` tier is
  * tests/component/materialization_shared_address_ownership.component.spec.ts.
  */
@@ -246,7 +246,7 @@ async function expectServedFromOwnTable(
    expect((await answer(source, versionId)).who).toBe(`${source}_stored`);
 }
 
-describe("the colocated tier: a refused name= refuses its own source, and a twin builds its own table", () => {
+describe("the database tier: a refused name= refuses its own source, and a twin builds its own table", () => {
    beforeEach(async () => {
       writePackageFiles(
          path.join(envPath, PKG),

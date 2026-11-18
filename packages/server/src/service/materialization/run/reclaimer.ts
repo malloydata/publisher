@@ -48,7 +48,7 @@ import {
    type KeptTableReason,
    ManifestEntry,
 } from "../domain/types";
-import { ColocatedTier } from "./colocated_build_strategy";
+import { DatabaseTier } from "./database_build_strategy";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
    BuildEnvironment,
@@ -84,7 +84,7 @@ import { hasReservedTableSuffix } from "../domain/table_name";
 type ReclaimOccasion = Extract<DropOccasion, "reclaim">;
 
 /** The tiers a drop reaches a table through. */
-const COLOCATED = new ColocatedTier();
+const DATABASE = new DatabaseTier();
 // Only its drop. A build goes through the service's adapter, which routes a
 // chained build through the run's collaborators; this one would not.
 const STORAGE: Pick<StorageBuildStrategy, "drop"> = new StorageBuildStrategy();
@@ -536,13 +536,13 @@ async function keptInPlace(
 }
 
 /**
- * Drop one colocated table, with its staging and backup names, on its own
+ * Drop one database table, with its staging and backup names, on its own
  * connection. Best-effort: `owed` when the drop failed, which is logged;
  * `skipped` when the table lived in an unloaded version's in-memory duckdb;
  * `unquotable` when its name cannot be written as SQL in the connection's
  * dialect, so no drop can name it and none is owed (a retry fails alike).
  */
-async function dropColocatedTable(
+async function dropDatabaseTable(
    environment: MaterializationEnvironment,
    environmentName: string,
    packageName: string,
@@ -565,7 +565,7 @@ async function dropColocatedTable(
          );
          return "skipped";
       }
-      await COLOCATED.drop(
+      await DATABASE.drop(
          {
             connection,
             // Tagged for attribution like a build, but as `ops`.
@@ -585,7 +585,7 @@ async function dropColocatedTable(
             onDropFailed: retireIfReplacedByView(entry),
          },
       );
-      recordDropTables("success", "in_warehouse", occasion);
+      recordDropTables("success", "database", occasion);
       logger.info("Dropped materialized table on delete", {
          runId: materializationId,
          physicalTableName,
@@ -605,7 +605,7 @@ async function dropColocatedTable(
          );
          return "unquotable";
       }
-      recordDropTables("failure", "in_warehouse", occasion);
+      recordDropTables("failure", "database", occasion);
       logger.warn("Failed to drop materialized table on delete", {
          runId: materializationId,
          physicalTableName,
@@ -810,7 +810,7 @@ export class Reclaimer {
     * - Only names no other MANIFEST_FILE_READY run references, the same
     *   destination-and-name check a version's reclaim applies.
     *
-    * Colocated failures are left alone: stable names in the customer's own
+    * Database failures are left alone: stable names in the customer's own
     * warehouse are overwritten by the next build, and a DROP there is a far
     * larger blast radius for no reclaim.
     */
@@ -968,7 +968,7 @@ export class Reclaimer {
             continue;
          }
 
-         const dropped = await dropColocatedTable(
+         const dropped = await dropDatabaseTable(
             environment,
             environmentName,
             packageName,

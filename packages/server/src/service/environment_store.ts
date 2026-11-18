@@ -1,7 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { redactStorageUrls } from "../pg_helpers";
+import { codesOfLines } from "./annotation_reader";
+import {
+   initFailedLine,
+   redactPgSecrets,
+   redactSignedUrlParams,
+   redactStorageUrls,
+} from "../pg_helpers";
 import { localPackageFingerprint } from "./configured_publish_retry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -36,7 +42,6 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
-import { redactPgSecrets } from "../pg_helpers";
 import { lazyCounter } from "../telemetry";
 import { assertSafePackageName, safeJoinUnderRoot } from "../path_safety";
 import {
@@ -82,6 +87,12 @@ import {
 } from "./package_sources";
 type ApiEnvironment = components["schemas"]["Environment"];
 type ApiConnection = components["schemas"]["Connection"];
+/** A load failure's `codes`, when its message carries any (`[code]` lines). */
+function codesField(message: string): { codes?: string[] } {
+   const codes = codesOfLines(message);
+   return codes.length > 0 ? { codes } : {};
+}
+
 type LoadError = NonNullable<
    components["schemas"]["ServerStatus"]["loadErrors"]
 >[number];
@@ -935,18 +946,18 @@ export class EnvironmentStore
       } catch (error) {
          markNotReady();
          // Redacted because initialization errors can carry connection strings.
-         this.initError = redactPgSecrets(messageWithFilesystemCause(error));
+         this.initError = redactSignedUrlParams(
+            redactPgSecrets(messageWithFilesystemCause(error)),
+         );
          const errorData = extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
          try {
             // The failure counterpart of PUBLISHER_READY, so a waiting script
             // fails fast. Redacted for the same reason as above.
             process.stderr.write(
-               `PUBLISHER_INIT_FAILED error=${JSON.stringify(
-                  redactPgSecrets(
-                     error instanceof Error ? error.message : String(error),
-                  ),
-               )}\n`,
+               initFailedLine(
+                  error instanceof Error ? error.message : String(error),
+               ),
             );
          } catch {
             // A failed stderr write must not mask the logged error above.
@@ -1033,7 +1044,7 @@ export class EnvironmentStore
       // Re-establish serve routing when a package loads, from its latest
       // successful materialization — so serving survives a restart, not only
       // a fresh build. The full entry map is returned; the environment splits
-      // it by tier (colocated + storage=) in rebindServeBindingsFromLocalStore.
+      // it by tier (database + storage=) in rebindServeBindingsFromLocalStore.
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(
@@ -1911,6 +1922,7 @@ export class EnvironmentStore
                environment: environmentName,
                package: packageName,
                message,
+               ...codesField(message),
             });
          }
          // Stale packages are SERVING, but from a model older than the files on
@@ -1924,6 +1936,7 @@ export class EnvironmentStore
                environment: environmentName,
                package: packageName,
                message: stale.message,
+               ...codesField(stale.message),
                stale: true,
                failedAt: stale.failedAt,
             });

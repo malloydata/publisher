@@ -4,7 +4,7 @@
 /**
  * The one reader of materialization's annotations: every `#@` line
  * (`persist`, a v1 `preaggregate`, a persisted view's), `#(materialize)`,
- * `#(preaggregate)` and a model's `##` and `##!` lines are parsed here and
+ * `#(rollup)` and a model's `##` and `##!` lines are parsed here and
  * nowhere else in materialization (the annotation ratchet,
  * `layer_rules.spec.ts`), and a declaration's place is decided by one rule,
  * {@link placementOf}.
@@ -27,7 +27,7 @@
  *    name, trimmed, and is looked up exactly: one no destination is
  *    configured under is not built, and the package warns that the source
  *    serves live;
- *  - no `storage=` builds colocated, in the source's own warehouse.
+ *  - no `storage=` builds in the database tier, in the source's own warehouse.
  *
  * Pure: reads only the annotations it is handed.
  */
@@ -44,7 +44,7 @@ type RouteParse = ReturnType<typeof parseRouteTag>;
 
 /** Where a declaration asks its table to live. */
 type Placement =
-   | { tier: "colocated"; name?: string }
+   | { tier: "database"; name?: string }
    | { tier: "storage"; destination: string; name?: string };
 
 /** Why a declaration's placement is refused: its `storage=` names nothing. */
@@ -145,7 +145,7 @@ export function notesDeclarePersist(
  * module's header). `key` is the route's own key when the route is shared
  * (`persist` or `preaggregate` on `#@`), whose `storage=` and `name=` may be
  * written inside it; a route of its own (`#(materialize)`,
- * `#(preaggregate)`) has none.
+ * `#(rollup)`) has none.
  */
 export function placementOf(tag: RouteTag, key?: string): PlacementRead {
    const inside = (k: string) =>
@@ -154,7 +154,7 @@ export function placementOf(tag: RouteTag, key?: string): PlacementRead {
    const name = inside("name") ?? tag.text("name");
    const named = name !== undefined ? { name } : {};
    if (!nested && !tag.has("storage")) {
-      return { placement: { tier: "colocated", ...named } };
+      return { placement: { tier: "database", ...named } };
    }
    // The nested form wins whenever it is written, even when it is unusable:
    // a nested list or block never falls through to the flat value.

@@ -26,11 +26,12 @@ import {
 } from "./addressing";
 import {
    assertBuildReadsNoCurrentTime,
-   assertColocatedPersistNotAuthorizeGated,
+   assertDatabasePersistNotAuthorizeGated,
    assertMaterializationEligible,
    assertPlacementNamed,
    assertTierEligible,
    gateEnforcedAtRead,
+   holdsOnlyUngatedRows,
    storageKeepsOwnGate,
    type TierGateInputs,
 } from "./materialization_eligibility";
@@ -556,6 +557,15 @@ export type SourceEligibility = {
     * read past that gate. Absent, as in a record made before it: none.
     */
    gateKept?: string[];
+   /**
+    * The eligible sourceIDs whose tables hold only ungated rows: no gate
+    * anywhere beneath the source, its joins and the sources it derives from
+    * included (`holdsOnlyUngatedRows`). A `storage=` table every source on
+    * whose address is listed here is read past a gated entry point's gate,
+    * as a database table is (g-mixed). Absent, as in a record made before
+    * it: none.
+    */
+   ungated?: string[];
 };
 
 export function collectSourceEligibility(
@@ -564,6 +574,7 @@ export function collectSourceEligibility(
 ): SourceEligibility {
    const eligible: string[] = [];
    const gateKept: string[] = [];
+   const ungated: string[] = [];
    const refused: Record<string, string> = {};
    for (const sourceID of Object.keys(compiled.tables)) {
       const storage = verdicts.get(sourceID)!.storage;
@@ -573,15 +584,16 @@ export function collectSourceEligibility(
       }
       eligible.push(sourceID);
       if (storage.gateKept) gateKept.push(sourceID);
+      if (storage.ungated) ungated.push(sourceID);
    }
-   return { eligible, refused, gateKept };
+   return { eligible, refused, gateKept, ungated };
 }
 
 /**
- * Which sources may be served from a COLOCATED materialized table, decided here
+ * Which sources may be served from a DATABASE materialized table, decided here
  * for the same reason as {@link SourceEligibility}.
  *
- * Keyed by `sourceEntityId`, not name: a colocated binding carries only the id,
+ * Keyed by `sourceEntityId`, not name: a database binding carries only the id,
  * and two models may declare same-named sources, so a name key would let one's
  * eligibility authorize the other.
  *
@@ -589,23 +601,23 @@ export function collectSourceEligibility(
  * the build SQL excludes annotations). Refusal therefore dominates: one refusal
  * retracts the id for good, regardless of iteration order.
  */
-export type ColocatedSourceEligibility = {
-   /** sourceEntityId of colocated sources examined and found eligible. */
+export type DatabaseSourceEligibility = {
+   /** sourceEntityId of database sources examined and found eligible. */
    eligibleEntityIds: Set<string>;
    /** sourceEntityId -> why it was refused; for the operator-facing log. */
    refused: Record<string, string>;
 };
 
-export function collectColocatedSourceEligibility(
+export function collectDatabaseSourceEligibility(
    compiled: EligibilityPlan,
    verdicts: ReadonlyMap<string, TableVerdict> = planVerdicts(compiled),
-): ColocatedSourceEligibility {
+): DatabaseSourceEligibility {
    const eligibleEntityIds = new Set<string>();
    const refused: Record<string, string> = {};
    for (const [sourceID, { source }] of Object.entries(compiled.tables)) {
       try {
-         const { colocated, shared } = verdicts.get(sourceID)!;
-         if (colocated !== undefined) throw colocated;
+         const { database, shared } = verdicts.get(sourceID)!;
+         if (database !== undefined) throw database;
          if (shared !== undefined) throw new Error(shared);
       } catch (err) {
          // Gated BEFORE computeSourceEntityId: the gate never addresses the
@@ -617,7 +629,7 @@ export function collectColocatedSourceEligibility(
             // No id to key the refusal under; the log is the only record that
             // it was examined and refused.
             logger.warn(
-               "Dropping a refused colocated source: its content address could not be computed",
+               "Dropping a refused database source: its content address could not be computed",
                {
                   sourceID,
                   sourceName: source.name,
@@ -632,14 +644,14 @@ export function collectColocatedSourceEligibility(
          eligibleEntityIds.delete(sourceEntityId);
          continue;
       }
-      // A given-referencing colocated source's addressing can throw; contain it
+      // A given-referencing database source's addressing can throw; contain it
       // to this source's binding.
       let sourceEntityId: string;
       try {
          sourceEntityId = planAddressOf(compiled, sourceID);
       } catch (err) {
          logger.warn(
-            "Dropping an eligible colocated source: its content address could not be computed",
+            "Dropping an eligible database source: its content address could not be computed",
             { sourceID, sourceName: source.name, error: errMessage(err) },
          );
          continue;
@@ -682,9 +694,9 @@ function refusalOf(
  *
  * Tier-appropriate, BEFORE computeSourceEntityId(), which fails for a refused
  * source. Mirrors the build path: `storage=` gets the storage-destination
- * gate; plain `#@ persist` gets the colocated gate, which admits a resolved,
+ * gate; plain `#@ persist` gets the database gate, which admits a resolved,
  * fully-attributed gate. The storage gate for every source would misreport
- * buildable colocated sources as refused.
+ * buildable database sources as refused.
  *
  * A rollup over a gated base is refused UNCONDITIONALLY, but that governs
  * only whether it MATERIALIZES (enforced at build time); the plan still
@@ -696,8 +708,8 @@ function eligibilityOf(
    annotationFields: Record<string, string>,
    ctx: {
       gateInputs: TierGateInputs;
-      /** The colocated gate's refusal of this table, decided once. */
-      colocated: unknown;
+      /** The database gate's refusal of this table, decided once. */
+      database: unknown;
    },
 ): WireVerdict {
    const { source, modelPath, rollup } = table;
@@ -719,16 +731,16 @@ function eligibilityOf(
          assertPlacementNamed(source);
          if (declaresStorage) {
             assertTierEligible(source, true, ctx.gateInputs, annotationFields);
-         } else if (ctx.colocated !== undefined) {
-            // The colocated gate, as decided for the table once.
-            throw ctx.colocated;
+         } else if (ctx.database !== undefined) {
+            // The database gate, as decided for the table once.
+            throw ctx.database;
          }
       });
       return err
          ? {
               refused: refusal(
                  err,
-                 declaresStorage ? "storage" : "colocated",
+                 declaresStorage ? "storage" : "database",
                  "authorize",
               ),
               refusal: err,
@@ -746,21 +758,21 @@ function eligibilityOf(
    // `Package.storageWarnings` and the auto-run would otherwise treat it as
    // materialized/buildable.
    //
-   // Always tier `preaggregate`, even for a storage refusal: only this tier
-   // may coexist with a `sources` entry, and it is the only provenance
-   // marking the entry as a rollup. Which gate refused is in `reason`.
+   // Its tier is where its table would live; `origin: rollup` (set on
+   // the plan's records) marks it a rollup, the one mechanism whose refusal
+   // may coexist with a `sources` entry. Which gate refused is in `reason`.
    //
-   // A `#(preaggregate)` rollup over a gated base whose gates the variant
+   // A `#(rollup)` rollup over a gated base whose gates the variant
    // grafts at read (rows 1 and 21) is not refused for them; a v1 rollup
    // always is.
    let keepsGate = false;
    const authorize = refusalOf(() => {
       // Inside the check: a rollup whose gate cannot be read fails the gate.
       keepsGate = rollupGateEnforcedAtRead(rollup);
-      assertColocatedPersistNotAuthorizeGated(
+      assertDatabasePersistNotAuthorizeGated(
          source,
          source.name,
-         "preaggregate",
+         "rollup",
          table.gate,
          annotationFields,
          { gateEnforcedAtRead: keepsGate },
@@ -768,7 +780,11 @@ function eligibilityOf(
    });
    if (authorize) {
       return {
-         refused: refusal(authorize, "preaggregate", "authorize"),
+         refused: refusal(
+            authorize,
+            declaresStorage ? "storage" : "database",
+            "authorize",
+         ),
          refusal: authorize,
          inPlan: true,
       };
@@ -782,7 +798,7 @@ function eligibilityOf(
    );
    return storage
       ? {
-           refused: refusal(storage, "preaggregate", "authorize"),
+           refused: refusal(storage, "storage", "authorize"),
            refusal: storage,
            inPlan: false,
         }
@@ -802,8 +818,8 @@ interface WireVerdict {
 /**
  * One planned table's eligibility, decided once per plan
  * ({@link planVerdicts}): the wire plan's `refusedSources`, the bind's
- * {@link SourceEligibility} and {@link ColocatedSourceEligibility}, and the
- * colocated sibling rule are each projected from it.
+ * {@link SourceEligibility} and {@link DatabaseSourceEligibility}, and the
+ * database sibling rule are each projected from it.
  */
 export interface TableVerdict {
    /**
@@ -814,17 +830,17 @@ export interface TableVerdict {
       | (WireVerdict & { annotationFields: Record<string, string> })
       | { failed: unknown };
    /** Whether it may be served from a stored table ({@link SourceEligibility}). */
-   storage: { refused: string } | { gateKept: boolean };
+   storage: { refused: string } | { gateKept: boolean; ungated: boolean };
    /**
-    * The colocated gate's refusal, before any table it shares
-    * ({@link ColocatedSourceEligibility}, the colocated sibling rule).
+    * The database gate's refusal, before any table it shares
+    * ({@link DatabaseSourceEligibility}, the database sibling rule).
     */
-   colocated?: unknown;
+   database?: unknown;
    /** Why it shares its table with another source ({@link sharedTables}). */
    shared?: string;
    /**
     * The reason a refused source is counted under, once per plan: its wire
-    * refusal (`refusedSources`), or the colocated gate's when the wire
+    * refusal (`refusedSources`), or the database gate's when the wire
     * projection could not decide.
     */
    counted?: NonNullable<MaterializationEligibilityError["reason"]>;
@@ -839,11 +855,11 @@ export function planVerdicts(
    const verdicts = new Map<string, TableVerdict>();
    for (const [sourceID, table] of Object.entries(compiled.tables)) {
       const { source } = table;
-      let colocated: unknown;
+      let database: unknown;
       try {
          assertTierEligible(source, false, gateInputs);
       } catch (err) {
-         colocated = err;
+         database = err;
       }
       let wire: TableVerdict["wire"];
       try {
@@ -852,7 +868,7 @@ export function planVerdicts(
             annotationFields,
             ...eligibilityOf(table, annotationFields, {
                gateInputs,
-               colocated,
+               database,
             }),
          };
       } catch (err) {
@@ -860,7 +876,7 @@ export function planVerdicts(
       }
       const sharing = shared.get(sourceID);
       const storage = storageVerdict(sourceID, compiled, gateInputs, sharing);
-      const refusal = "failed" in wire ? colocated : wire.refusal;
+      const refusal = "failed" in wire ? database : wire.refusal;
       const counted =
          refusal instanceof MaterializationEligibilityError
             ? refusal.reason
@@ -868,7 +884,7 @@ export function planVerdicts(
       verdicts.set(sourceID, {
          wire,
          storage,
-         ...(colocated !== undefined ? { colocated } : {}),
+         ...(database !== undefined ? { database } : {}),
          ...(sharing !== undefined ? { shared: sharing } : {}),
          ...(counted ? { counted } : {}),
       });
@@ -897,19 +913,34 @@ function storageVerdict(
       // A table whose build reads the current time is not served, however it
       // was built.
       assertBuildReadsNoCurrentTime(source, gate);
-      return { gateKept: kept && storageKeepsOwnGate(source, compiled) };
+      // A rollup's base gates are grafted on its variant, not read off the
+      // rollup's own source: one admitted past them is kept as a stored
+      // source past its own gate is.
+      const rollup = compiled.tables[sourceID].rollup;
+      return {
+         gateKept:
+            kept &&
+            (rollup !== undefined
+               ? "baseGated" in rollup && rollup.baseGated === true
+               : storageKeepsOwnGate(source, compiled)),
+         // A persisted view's or query's table is read only by its own
+         // leg, which decides a gate itself: never marked.
+         ungated:
+            !isPersistedResultSourceID(sourceID) &&
+            holdsOnlyUngatedRows(source),
+      };
    } catch (err) {
       return { refused: errMessage(err) };
    }
 }
 
 /**
- * The colocated gate's refusals on each address, in sourceID order, of the
- * sources `include` admits: a refusal on a shared colocated address wins for
- * every source on it, as the bind ({@link collectColocatedSourceEligibility})
+ * The database gate's refusals on each address, in sourceID order, of the
+ * sources `include` admits: a refusal on a shared database address wins for
+ * every source on it, as the bind ({@link collectDatabaseSourceEligibility})
  * and the build read it.
  */
-export function colocatedRefusalsByAddress(
+export function databaseRefusalsByAddress(
    compiled: EligibilityPlan,
    verdicts: ReadonlyMap<string, TableVerdict>,
    include: (sourceID: string) => boolean,
@@ -922,7 +953,7 @@ export function colocatedRefusalsByAddress(
       { sourceID: string; name: string; reason?: string; message: string }[]
    >();
    for (const id of Object.keys(compiled.tables).sort()) {
-      const err = verdicts.get(id)?.colocated;
+      const err = verdicts.get(id)?.database;
       if (err === undefined || !include(id)) continue;
       let address: string;
       try {

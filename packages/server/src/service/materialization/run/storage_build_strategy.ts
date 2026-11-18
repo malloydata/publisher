@@ -814,7 +814,7 @@ export class StorageBuildStrategy
          buildDurationMs: result.refresh
             ? (result.refresh.durationMs ?? null)
             : durationMs,
-         // Incremental coverage and what this run did, as for a colocated
+         // Incremental coverage and what this run did, as for a database
          // table. Absent for a non-incremental source.
          ...ledgerFields(
             incrementalRefresh?.lineage,
@@ -840,7 +840,7 @@ export class StorageBuildStrategy
                 params.rollup
                 ? {}
                 : baseReuse),
-         // SCANNED, not billed, matching the colocated path's runStats
+         // SCANNED, not billed, matching the database path's runStats
          // (totalBytesProcessed), so the field sums consistently across sources.
          // Null when the read reported nothing: a build with an empty metadata
          // bag, since the label is what makes BigQuery's read report.

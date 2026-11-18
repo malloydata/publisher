@@ -219,7 +219,7 @@ source: daily is raw -> { where: category = $CAT; group_by: category; aggregate:
 `;
    it.each([
       [
-         "a colocated",
+         "a database",
          `${RAW}#@ persist name="t" partition="category"\n${ROLLUP}\n`,
       ],
       [
@@ -292,7 +292,7 @@ describe("annotation findings on a loaded package", () => {
   private measure: total is amount.sum()
 }
 `);
-         const [warning] = coded(pkg, "preaggregate-not-built");
+         const [warning] = coded(pkg, "rollup-not-built");
          expect(warning).toMatchObject({ severity: "warn" });
          expect(
             Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map((r) => [
@@ -300,12 +300,12 @@ describe("annotation findings on a loaded package", () => {
                r.tier,
                r.reason,
             ]),
-         ).toEqual([["orders.total", "preaggregate", "hidden_field"]]);
+         ).toEqual([["orders.total", "database", "hidden_field"]]);
          expect(
             await harness.collectCounter(
                "publisher_annotation_findings_total",
                {
-                  code: "preaggregate-not-built",
+                  code: "rollup-not-built",
                },
             ),
          ).toBe(1);
@@ -330,7 +330,7 @@ describe("annotation findings on a loaded package", () => {
    );
 
    it(
-      "plans #(materialize) name= at that name, whatever the package's scope, colocated or stored",
+      "plans #(materialize) name= at that name, whatever the package's scope, database or stored",
       async () => {
          await withMaterialize(
             async () => {
@@ -371,9 +371,9 @@ describe("annotation findings on a loaded package", () => {
                   force: true,
                });
                const message = await loadError(
-                  `${RAW}source: sales is raw extend {\n  #(preaggregate) grain=["category"] name="analytics."\n  measure: total is amount.sum()\n}\n`,
+                  `${RAW}source: sales is raw extend {\n  #(rollup) grain=["category"] name="analytics."\n  measure: total is amount.sum()\n}\n`,
                );
-               expect(message).toContain("[preaggregate-invalid]");
+               expect(message).toContain("[rollup-invalid]");
             },
             { PERSIST_STORAGE_MODE: "on" },
          );
@@ -389,8 +389,8 @@ describe("annotation findings on a loaded package", () => {
                for (const line of [
                   '#(materialize) nmae="t"',
                   '#(materialize) name="t',
-                  '#(preaggregate) grian=["category"]',
-                  '#(preaggregate) grain=["category"',
+                  '#(rollup) grian=["category"]',
+                  '#(rollup) grain=["category"',
                ]) {
                   const pkg = await loadPackage(
                      `${RAW}${line}\nsource: orders is raw\n`,
@@ -673,14 +673,14 @@ describe("the load failure for invalid materialization annotations", () => {
       });
       expect(
          failureOf([
-            finding("preaggregate", "malformed", "preaggregate-invalid"),
+            finding("preaggregate", "malformed", "rollup-invalid"),
             finding("materialize", "malformed", "materialize-unparseable"),
             finding("materialize", "unservable", "materialize-not-built"),
             finding("@", "malformed", "persist-unknown-key"),
             finding("@", "unservable", "persist-view-not-built"),
          ]).split("\n"),
       ).toEqual([
-         "m.malloy: preaggregate-invalid on preaggregate. [preaggregate-invalid]",
+         "m.malloy: rollup-invalid on preaggregate. [rollup-invalid]",
          "m.malloy: materialize-unparseable on materialize. [materialize-unparseable]",
          "m.malloy: persist-unknown-key on @. [persist-unknown-key]",
       ]);

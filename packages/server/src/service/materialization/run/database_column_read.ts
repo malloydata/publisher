@@ -31,7 +31,7 @@ import {
    storedColumnsOfOutput,
 } from "../stored_column_types";
 import type { FreshnessManifest, ObservedColumns } from "../domain/types";
-import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
+import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { redactConnectionSecrets } from "./materialization_run_support";
 import {
    type CatalogBatch,
@@ -226,16 +226,24 @@ async function readBatch(
                           };
                        }
                        // Spelled as the build's capture spells it; a type
-                       // Malloy reads as no basic type has no spelling.
-                       const [spelled] = storedColumnsOfOutput(
-                          [
-                             {
-                                name: c.name,
-                                ...malloy.sqlTypeToMalloyType(c.type),
-                             },
-                          ],
-                          { nested: false, bigint: true, timestamptz: true },
-                       );
+                       // Malloy reads as no basic type has no spelling. An
+                       // array is one, though the dialect maps `DATE[]` to
+                       // its element's `date`.
+                       const [spelled] = isArrayType(c.type)
+                          ? []
+                          : storedColumnsOfOutput(
+                               [
+                                  {
+                                     name: c.name,
+                                     ...malloy.sqlTypeToMalloyType(c.type),
+                                  },
+                               ],
+                               {
+                                  nested: false,
+                                  bigint: true,
+                                  timestamptz: true,
+                               },
+                            );
                        return {
                           name: c.name,
                           ...(spelled ? { type: spelled.type } : {}),
@@ -246,6 +254,11 @@ async function readBatch(
          );
       }
    }
+}
+
+/** An array type as a catalog names it: `DATE[]`, `integer[3]`, `ARRAY<INT64>`. */
+function isArrayType(type: string): boolean {
+   return /\[\s*\d*\s*\]\s*$/.test(type) || /^\s*ARRAY\b/i.test(type);
 }
 
 /** A catalog read that outlived its bound. */

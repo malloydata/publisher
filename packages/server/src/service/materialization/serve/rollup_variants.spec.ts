@@ -84,7 +84,7 @@ describe("joinBranchDecline", () => {
 
    it("skips a branch whose join the query does not read, without a decline", () => {
       const skipped = joinBranchDecline("segments", [["orders", "id"]], {
-         code: "rollup_contract",
+         code: "rollup_row_level_gate",
          callerDetail: "never reported",
       });
       expect(skipped).toBeInstanceOf(Error);

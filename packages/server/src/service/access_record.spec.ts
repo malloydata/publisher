@@ -15,7 +15,10 @@ import {
    BadRequestError,
    ConnectionError,
    ConnectionPoolExhaustedError,
+   FrozenConfigError,
    ModelNotFoundError,
+   NotQueryableError,
+   OffSurfaceError,
 } from "../errors";
 import { logger } from "../logger";
 import { withAuthorizeModel } from "../test_helpers/authorize_fixture";
@@ -299,14 +302,31 @@ describe("enforcedGatesOf", () => {
 describe("outcomeOf", () => {
    it("maps a refusal to the gate's view of it", () => {
       expect(outcomeOf(new AccessDeniedError("x"), 403)).toBe("denied_lock");
-      expect(outcomeOf(new ModelNotFoundError("x"), 404)).toBe(
+      expect(outcomeOf(new NotQueryableError("x"), 404)).toBe(
          "refused_surface",
       );
-      expect(outcomeOf(new Error("not queryable"), 404)).toBe(
-         "refused_surface",
-      );
+      expect(outcomeOf(new OffSurfaceError("x"), 404)).toBe("refused_surface");
       expect(outcomeOf(new BadRequestError("x"), 400)).toBe("bad_request");
       expect(outcomeOf(new Error("boom"), 500)).toBe("error");
+   });
+
+   it("tells a lock's denial from a row filter's", () => {
+      expect(outcomeOf(AccessDeniedError.forSource("s", "lock"), 403)).toBe(
+         "denied_lock",
+      );
+      expect(
+         outcomeOf(AccessDeniedError.forSource("s", "row_filter"), 403),
+      ).toBe("denied_filter");
+   });
+
+   it("tells a curation refusal from a missing resource", () => {
+      expect(outcomeOf(new ModelNotFoundError("x"), 404)).toBe("not_found");
+      expect(outcomeOf(new Error("gone"), 404)).toBe("not_found");
+   });
+
+   it("reads a 403 that is not a gate's as an error", () => {
+      expect(outcomeOf(new FrozenConfigError(), 403)).toBe("error");
+      expect(outcomeOf(new Error("forbidden"), 403)).toBe("error");
    });
 });
 
@@ -510,7 +530,7 @@ describe("accessPathOf", () => {
                   tableId: "def",
                   kind: "materialized",
                   outcome: "skipped",
-                  reason: "WARNED",
+                  reason: "NOT_SERVED",
                   code: "unreachable",
                },
             ],
@@ -523,10 +543,34 @@ describe("accessPathOf", () => {
                tableId: "def",
                kind: "materialized",
                outcome: "skipped",
-               reason: "WARNED",
+               reason: "NOT_SERVED",
                code: "unreachable",
             },
          ],
+      });
+   });
+
+   it("keeps the answering table's origin and tier, and only known values", () => {
+      const of = (origin: string, tier: string) =>
+         accessPathOf({
+            servedBy: { kind: "materialized", origin, tier, tableId: "abc" },
+            considered: [
+               { tableId: "abc", kind: "materialized", outcome: "used" },
+            ],
+         })?.servedBy;
+      expect(of("materialize", "database")).toEqual({
+         kind: "materialized",
+         origin: "materialize",
+         tier: "database",
+         tableId: "abc",
+      });
+      expect(of("rollup", "storage")).toMatchObject({
+         origin: "rollup",
+         tier: "storage",
+      });
+      expect(of("free text", "elsewhere")).toEqual({
+         kind: "materialized",
+         tableId: "abc",
       });
    });
 
@@ -557,14 +601,14 @@ describe("accessPathOf", () => {
                tableId: "abc",
                kind: "materialized",
                outcome: "skipped",
-               reason: "WARNED",
+               reason: "NOT_SERVED",
                code: 'relation "secret_schema.t" does not exist',
             },
             {
                tableId: "def",
                kind: "materialized",
                outcome: "skipped",
-               reason: "WARNED",
+               reason: "NOT_SERVED",
                code: "Storage_Mode",
             },
          ],
@@ -574,13 +618,13 @@ describe("accessPathOf", () => {
             tableId: "abc",
             kind: "materialized",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
          },
          {
             tableId: "def",
             kind: "materialized",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
          },
       ]);
    });

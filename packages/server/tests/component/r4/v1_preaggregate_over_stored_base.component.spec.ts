@@ -4,7 +4,7 @@
 /**
  * R4 for a v1 `#@ preaggregate` over a `#@ persist storage=` base, with
  * PUBLISHER_MATERIALIZE at its default (off), where `#@ preaggregate` is the
- * spelling that builds. The line is read as a `#(preaggregate)` declaration
+ * spelling that builds. The line is read as a `#(rollup)` declaration
  * and built over the author's rows by the rollup leg, so it builds and serves
  * as that declaration would: a covered query is answered from the rollup,
  * equal to live, and an uncovered one as it was before, equal to live.
@@ -13,7 +13,7 @@
  * still answers what no rollup covers. A table extended with measures is not
  * a build root, so its `#@ persist` plans nothing (`persist-not-materializable`)
  * and what no rollup covers is answered live; its rollups build and serve
- * all the same. Both placements: `storage=` and colocated.
+ * all the same. Both placements: `storage=` and database.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -103,7 +103,7 @@ for (const [shape, { text, baseStored }] of Object.entries(SHAPES)) {
          await disposeScenarios();
       });
 
-      it("builds the storage= grain into the destination and the colocated one beside the base, apart from the base's table", () => {
+      it("builds the storage= grain into the destination and the database one beside the base, apart from the base's table", () => {
          const stored = Object.keys(fixture.physicalTables);
          const storedRollups = stored.filter((n) => ROLLUP_BY_CATEGORY.test(n));
          expect(storedRollups).toHaveLength(1);
@@ -130,10 +130,10 @@ for (const [shape, { text, baseStored }] of Object.entries(SHAPES)) {
          );
       });
 
-      it("serves a query the colocated rollup covers from it, equal to live", async () => {
+      it("serves a query the database rollup covers from it, equal to live", async () => {
          expectServedFromRollup(
             await fixture.run({
-               name: "colocated rollup",
+               name: "database rollup",
                malloy: "run: daily -> { group_by: region; aggregate: total }",
             }),
          );

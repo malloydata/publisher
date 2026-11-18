@@ -146,7 +146,7 @@ import { type SiblingModelDefResolver } from "./filter_binding_guard";
 // Aliased with an `Impl` suffix because `Model` declares private wrapper
 // methods of the same names; without the alias, converting one of them to an
 // arrow-function property would recurse instead of delegating.
-import { extractCheckedModel } from "./model_load_checks";
+import { extractCheckedModel, type GateLoadWarning } from "./model_load_checks";
 import { translatorMalloyError } from "./translator_error";
 import {
    createModelMaterializer,
@@ -381,7 +381,7 @@ export class Model {
       | undefined;
    /**
     * The rollup leg: a router candidate when this model sees a rollup; a
-    * `#(preaggregate)` one is read only with `materialize.enabled` on, a v1
+    * `#(rollup)` one is read only with `materialize.enabled` on, a v1
     * `#@ preaggregate` one either way.
     */
    private rollupVariants = new RollupVariantServe({
@@ -415,6 +415,11 @@ export class Model {
     * on disk is newer than the served IR.
     */
    private compiledSourceText: string | undefined;
+   /**
+    * The non-fatal gate findings this model's load made, which the package
+    * carries as warnings (`row-level-gate-*`).
+    */
+   private gateLoadWarningList: readonly GateLoadWarning[] = [];
    /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
    private reportModelFacts:
       | { value: ReportModelFacts | undefined }
@@ -865,6 +870,7 @@ export class Model {
                packageName,
                modelPath,
                sourceName: warning.sourceName,
+               code: warning.code,
             });
          }
          const modelDef = compiled?._modelDef;
@@ -894,6 +900,7 @@ export class Model {
             gateRuntime: runtime as HydrationRuntime,
          });
          model.compiledSourceText = compiledTextFor(modelURL);
+         model.gateLoadWarningList = checked?.warnings ?? [];
          return model;
       } catch (thrown) {
          if (thrown instanceof Error && thrown.stack) {
@@ -957,11 +964,17 @@ export class Model {
          ? new Map(data.filterMap as Array<[string, FilterDefinition[]]>)
          : undefined;
 
-      // Non-fatal `#(authorize)` findings from the worker, which has no logger.
+      // Non-fatal gate findings from the worker, which has no logger.
+      const gateWarnings = (data.gateWarnings ?? []) as GateLoadWarning[];
       for (const warning of options.skipAuthorizeWarningLog
          ? []
-         : (data.authorizeWarnings ?? [])) {
-         logger.warn(warning, { packageName, modelPath: data.modelPath });
+         : gateWarnings) {
+         logger.warn(warning.message, {
+            packageName,
+            modelPath: data.modelPath,
+            sourceName: warning.sourceName,
+            code: warning.code,
+         });
       }
 
       // No modelDef: an empty notebook or a corrupt payload. Queries throw a
@@ -1028,6 +1041,7 @@ export class Model {
          | { label: string; result?: Malloy.Result }[]
          | undefined;
       model.preparedRenderTagResultsDigest = data.renderTagResultsDigest;
+      model.gateLoadWarningList = gateWarnings;
       return model;
    }
 
@@ -1247,6 +1261,11 @@ export class Model {
     * Deliberately NOT curated: callers should join onto the curated
     * `getSourceInfos()` and use this only to look up fields it admitted.
     */
+   /** The non-fatal gate findings this model's load made (`row-level-gate-*`). */
+   public gateLoadWarnings(): readonly GateLoadWarning[] {
+      return this.gateLoadWarningList;
+   }
+
    public getModelDef(): ModelDef | undefined {
       return this.modelDef;
    }
@@ -2588,7 +2607,7 @@ export class Model {
             this.ensureSharedQueryModel(materializer),
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
-         // Storage tables only while the storage tier serves; colocated tables
+         // Storage tables only while the storage tier serves; database tables
          // (on the source's own connection) need no destination.
          serveDestinationConfig: () =>
             getPersistStorageMode() === "on"
@@ -2604,7 +2623,7 @@ export class Model {
    /**
     * Every table this model serves now: its package's snapshot, or the
     * bindings set on it directly ({@link setServeBindings}) beside the
-    * package's colocated entries. Replaced by reference, never edited.
+    * package's database entries. Replaced by reference, never edited.
     */
    private servingSnapshot(): Snapshot {
       const pkg = this.policy.snapshot() ?? EMPTY_SNAPSHOT;
@@ -2650,7 +2669,7 @@ export class Model {
       // The same context again (a rebind, a republish) keeps the served
       // copy: its compile is keyed on its bindings, and this model's own text
       // never changes. The other legs are reset as before, since their caches
-      // are not keyed on the colocated entries a bind can change alone.
+      // are not keyed on the database entries a bind can change alone.
       const current = this.servedCopyContext;
       const unchanged =
          !!current &&
@@ -2724,7 +2743,7 @@ export class Model {
 
    /**
     * Whether the router may try the served copy: a model file. It reads a
-    * colocated table on the source's own connection, and a storage table
+    * database table on the source's own connection, and a storage table
     * only while `PERSIST_STORAGE_MODE=on` (its host withholds the
     * destinations otherwise). Warnings and the compile at bind follow the
     * same rule, so a package never warns about a copy that is not routed.
@@ -2735,7 +2754,7 @@ export class Model {
    }
 
    /**
-    * Whether the router may try the `#(preaggregate)` rollup leg: a model file
+    * Whether the router may try the `#(rollup)` rollup leg: a model file
     * and a rollup declared on a source it sees.
     */
    private rollupVariantsEnabled(): boolean {
@@ -2795,7 +2814,7 @@ export class Model {
 
    /**
     * Serve this model from `bindings` in place of its package's (the
-    * package's colocated entries still apply): a model driven outside a
+    * package's database entries still apply): a model driven outside a
     * package, as a test or a tool drives one. A copy is taken, so a caller
     * that edits a binding and sets it again compiles over the edit.
     */

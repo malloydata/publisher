@@ -503,7 +503,13 @@ describe("Model.fromSerialized: authorize warning log", () => {
    const serialized = {
       modelPath: "m.malloy",
       modelType: "model",
-      authorizeWarnings: ["gate on x is not expressible"],
+      gateWarnings: [
+         {
+            sourceName: "x",
+            code: "row-level-gate-unexpressible",
+            message: "gate on x is not expressible",
+         },
+      ],
    } as unknown as Parameters<typeof Model.fromSerialized>[3];
 
    const hydrate = (skipAuthorizeWarningLog?: boolean): string[] => {

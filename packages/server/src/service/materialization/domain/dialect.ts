@@ -156,6 +156,16 @@ export interface Capabilities {
     * dropped table from a hidden one.
     */
    catalogHidesTables: boolean;
+   /**
+    * How a string column's comparison is read, for a gate or a `where:` a
+    * `storage=` copy re-applies byte-exact (`serve/gate_collation.ts`):
+    * `binary` (always byte-exact), `instance` (byte-exact unless the DuckDB
+    * instance sets a `default_collation` or a `COLLATE` is written), `column`
+    * (the column's own collation, read with Postgres's `pg_collation_for`);
+    * absent when it
+    * cannot be read, which keeps no gate over a string column there.
+    */
+   stringCollation: "binary" | "instance" | "column" | undefined;
 }
 
 const NONE: Capabilities = Object.freeze({
@@ -178,6 +188,7 @@ const NONE: Capabilities = Object.freeze({
    leafBudget: 50,
    passthroughNumericAsDouble: false,
    catalogHidesTables: false,
+   stringCollation: undefined,
 });
 
 /** Each dialect's capabilities. */
@@ -196,9 +207,11 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       foldsTableNameCase: true,
       utcSessions: true,
       leafBudget: 120,
+      stringCollation: "instance",
    }),
    postgres: Object.freeze({
       ...NONE,
+      stringCollation: "column",
       passthroughNumericAsDouble: true,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
@@ -221,6 +234,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       castsToIntegerType: true,
       onlyBigIntegerType: "INT64",
       leafBudget: 120,
+      stringCollation: "binary",
    }),
    snowflake: Object.freeze({
       ...NONE,

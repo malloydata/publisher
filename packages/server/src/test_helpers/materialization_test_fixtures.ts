@@ -201,7 +201,7 @@ export function fakeSource(opts: {
    /**
     * The compiled `_sourceDef` the materialization-eligibility gate walks
     * (parameters/givens). Defaults to an empty def (eligible); the gate only
-    * runs for `storage=` sources, so colocated fakes never touch it.
+    * runs for `storage=` sources, so database fakes never touch it.
     */
    sourceDef?: unknown;
    /**
@@ -294,7 +294,7 @@ export function fakeSource(opts: {
  * tests need different connection mocks. A source's gate is left undefined
  * unless a test explicitly supplies one — a fixture that doesn't set it
  * exercises the fail-closed default (no compile-time gate outcome ⇒ the
- * colocated authorize relaxation never applies, same as before that outcome
+ * database authorize relaxation never applies, same as before that outcome
  * existed).
  */
 export function compiledWith(

@@ -607,7 +607,7 @@ describe("placing a rollup in a storage destination", () => {
 
    it("a namespace= beside a storage= BASE is untouched, because nothing is inherited", async () => {
       // The configuration the shipped docs describe: a `storage=` base lends
-      // nothing, so its rollups are colocated and a `namespace=` on the grain
+      // nothing, so its rollups are in the database tier and a `namespace=` on the grain
       // means exactly what it always did. No destination is in play for the
       // refusal to fire against.
       expect(
@@ -622,7 +622,7 @@ describe("placing a rollup in a storage destination", () => {
    });
 
    it("a namespace= with no storage anywhere is still fine", async () => {
-      // The colocated path must not acquire a refusal it never had.
+      // The database path must not acquire a refusal it never had.
       expect(
          await codesFor(`  #@ preaggregate grain="category" namespace="ns_a"
   measure: revenue is amount.sum()`),
@@ -656,7 +656,7 @@ describe("a rollup may not store what the source hides", () => {
    // a field hidden on the source is not hidden on the rollup — a query the live
    // path refuses is answered from the table.
    //
-   // The colocated tier does not have the hole, but only by accident: its
+   // The database tier does not have the hole, but only by accident: its
    // companion imports the author's model, so a private reference fails to compile
    // across the file boundary and no table is built. The storage tier plans from
    // the compiled contents directly, which removed the only thing enforcing access

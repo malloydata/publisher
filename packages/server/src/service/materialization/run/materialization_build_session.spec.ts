@@ -243,6 +243,7 @@ describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
             },
          }),
          read,
+         numericColumns: async () => ({ columns: [], numeric: [] }),
       };
       const dir = mkdtempSync(join(tmpdir(), "tunnel-close-"));
       mkdirSync(storageDestinationRoot(dir), { recursive: true });
@@ -342,6 +343,7 @@ describe("buildSourceIntoStorage hands the warehouse its SQL verbatim", () => {
             received.push(buildSQL);
             return { selectSQL: "SELECT 1 AS org_id", jobId: null, cost: null };
          },
+         numericColumns: async () => ({ columns: [], numeric: [] }),
       };
       const dir = mkdtempSync(join(tmpdir(), "build-verbatim-"));
       mkdirSync(storageDestinationRoot(dir), { recursive: true });
@@ -1031,6 +1033,8 @@ function fileLakeBuild(selectSQL: string) {
          reads.push(buildSQL);
          return { selectSQL, jobId: null, cost: null };
       },
+      // The stubbed warehouse holds no numeric column to read as text.
+      numericColumns: async () => ({ columns: [], numeric: [] }),
    };
    const dir = mkdtempSync(join(tmpdir(), "storage-build-"));
    mkdirSync(storageDestinationRoot(dir), { recursive: true });

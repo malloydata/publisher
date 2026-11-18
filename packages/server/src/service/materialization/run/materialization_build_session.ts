@@ -82,6 +82,12 @@ import {
    type BuildReadCost,
 } from "./build_read_cost";
 import { BIGQUERY_COST_COLUMNS, snowflakeCostSQL } from "./warehouse_sql";
+import {
+   bigQueryJobLister,
+   markBigQueryRead,
+   trackBigQueryJobs,
+   type BigQueryJobListerFactory,
+} from "./bigquery_job_cancel";
 import { recordAttributionSkipped } from "../../../materialization_metrics";
 import type { QueryMetadata } from "../../query_metadata";
 import {
@@ -96,6 +102,7 @@ import {
 } from "../../connection";
 import type { WatermarkBound } from "./incremental_apply";
 import { storageDestinationRoot } from "../../connection_config";
+import { lockDownDuckDBSession } from "../../duckdb_lockdown";
 import {
    DEFAULT_DESTINATION_SCHEMA,
    destinationSchemaOf,
@@ -408,6 +415,11 @@ export async function issuePassthroughRead(
    buildSQL: string,
    queryMetadata: QueryMetadata | undefined,
 ): Promise<PassthroughRead> {
+   // Marked so a cancelled build can find its job and cancel it
+   // (bigquery_job_cancel.ts); unchanged for any other engine.
+   if (sourceType === "bigquery") {
+      buildSQL = markBigQueryRead(session, buildSQL);
+   }
    const label =
       sourceType === "bigquery"
          ? bigQueryQueryLabelValue(queryMetadata)
@@ -799,8 +811,8 @@ export async function withDestinationSession<T>(
  * refused with {@link BuildCancelledError} before it starts, so an abort that
  * lands while the session is idle (between the federation and the CTAS, say)
  * is not lost. A read DuckDB makes through a warehouse extension
- * (BigQuery's) is not cancelled in the warehouse: its job runs to
- * completion, and DuckDB raises only once its wait returns.
+ * (BigQuery's) is not cancelled in the warehouse by the interrupt: a
+ * BigQuery build cancels its jobs itself (bigquery_job_cancel.ts).
  */
 export function interruptOnAbort(
    session: DuckDBConnection,
@@ -923,6 +935,10 @@ export interface StorageIncrementalRefresh {
 export interface BuildSessionDeps {
    federate?: typeof federateSourceForPassthrough;
    read?: typeof issuePassthroughRead;
+   /** The Postgres column-type read a build stores exact numerics by. */
+   numericColumns?: typeof postgresNumericColumns;
+   /** The BigQuery jobs API a cancelled build cancels its reads through. */
+   bigQueryJobs?: BigQueryJobListerFactory;
 }
 
 /**
@@ -1039,6 +1055,28 @@ export async function buildSourceIntoStorage(params: {
                sourceFederationConfig(sourceConnection),
             );
             federatedClose = federated.close;
+            // A BigQuery read outlives DuckDB's interrupt, so a cancel also
+            // cancels the build's jobs in BigQuery, under the read's own key.
+            const stopTrackingJobs =
+               sourceType === "bigquery"
+                  ? trackBigQueryJobs(session, params.signal, () =>
+                       (params.deps?.bigQueryJobs ?? bigQueryJobLister)(
+                          federated.handle,
+                          sourceConnection.bigqueryConnection
+                             ?.serviceAccountKeyJson,
+                       ),
+                    )
+                  : async () => {};
+            // Setup done (the destination attached, the source federated):
+            // confine the session to them (duckdb_lockdown.ts). The
+            // configuration is left unlocked because the build itself sets
+            // per-step options (threads around a partitioned write); no caller
+            // or author SQL runs in DuckDB here, as the build's SQL runs in the
+            // source warehouse through the passthrough.
+            await lockDownDuckDBSession(session, {
+               allow: destinationAllowlist(params),
+               lockConfiguration: false,
+            });
             try {
                return await buildOnFederatedSession(
                   params,
@@ -1047,6 +1085,7 @@ export async function buildSourceIntoStorage(params: {
                   federated.handle,
                );
             } finally {
+               await stopTrackingJobs();
                await clearSnowflakeSessionTag(
                   session,
                   sourceType,
@@ -1121,7 +1160,12 @@ async function buildOnFederatedSession(
    // text instead, staged, and stored as the DECIMAL that holds it
    // (postgres_numeric_precision.ts).
    const numeric = capabilitiesOf(sourceType).passthroughNumericAsDouble
-      ? await postgresNumericColumns(session, handle, buildSQL, sourceType)
+      ? await (params.deps?.numericColumns ?? postgresNumericColumns)(
+           session,
+           handle,
+           buildSQL,
+           sourceType,
+        )
       : { columns: [], numeric: [] };
    const passthrough = await read(
       session,
@@ -1247,6 +1291,12 @@ async function buildSameCatalogIntoStorage(params: {
       { purpose: "build", attachAs: alias, build: true, signal: params.signal },
       async (session) => {
          await session.runSQL(managedSearchPathSql(alias));
+         // Confined to the catalog before the build's SQL runs, unlocked for the
+         // build's own per-step options (see buildSourceIntoStorage).
+         await lockDownDuckDBSession(session, {
+            allow: destinationAllowlist(params),
+            lockConfiguration: false,
+         });
          const target = quoteManifestTablePath(
             storageTablePath(
                alias,
@@ -1850,6 +1900,23 @@ async function attachDestinationReadWrite(
    await session.runSQL(
       `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)}`,
    );
+}
+
+/**
+ * What a build session on a destination reads and writes, beyond what its
+ * attach recorded (duckdb_lockdown.ts): the plain-DuckDB destinations' root,
+ * and the DuckLake destination's configured data path.
+ */
+function destinationAllowlist(params: {
+   destinationConnection: ApiConnection;
+   environmentPath: string;
+}): string[] {
+   const dataPath =
+      params.destinationConnection.ducklakeConnection?.storage?.bucketUrl;
+   return [
+      storageDestinationRoot(params.environmentPath),
+      ...(dataPath ? [dataPath] : []),
+   ];
 }
 
 /** Throw a clean 422 unless the destination is a supported storage type. */

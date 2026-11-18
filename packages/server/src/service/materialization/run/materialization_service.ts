@@ -16,6 +16,7 @@
 
 import {
    BadRequestError,
+   BuildInstructionsInvalidError,
    BuildPlanUnavailableError,
    InvalidStateTransitionError,
    MaterializationConflictError,
@@ -121,6 +122,7 @@ import { buildSource } from "./source_build";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 import { uncarryUnownedTables } from "./table_ownership";
+import { isRollupOrigin } from "../domain/table_plans";
 
 /** What a run is asked to do: createMaterialization's options, resolved. */
 export interface RunBuildOptions {
@@ -132,7 +134,7 @@ export interface RunBuildOptions {
    referenceManifest: ManifestReference[] | undefined;
    strictUpstreams: boolean | undefined;
    warehouseReach?: WarehouseReach;
-   trigger: "ON_DEMAND" | "SCHEDULER";
+   trigger: "on_demand" | "scheduler";
    runContext?: components["schemas"]["RunContext"];
    /** The version createMaterialization resolved; null when unversioned. */
    version: string | null;
@@ -212,10 +214,12 @@ interface CreateMaterializationOptions {
     */
    ledger?: LedgerEntry[];
    /**
-    * What initiated this run: `ON_DEMAND` (default, manual/API) or
-    * `SCHEDULER` (the standalone scheduler). Recorded on the run metadata.
+    * What initiated this run: `on_demand` (default, manual/API) or
+    * `scheduler` (the standalone scheduler). Recorded on the run metadata;
+    * releases before 0.15 wrote `ON_DEMAND` and `SCHEDULER`, which readers
+    * still accept.
     */
-   trigger?: "ON_DEMAND" | "SCHEDULER";
+   trigger?: "on_demand" | "scheduler";
    /**
     * Caller context attached as query metadata to the build's statements.
     * Its `trigger` can express a publish, which `trigger` cannot; its
@@ -628,7 +632,7 @@ export class MaterializationService {
 
       const forceRefresh = options.forceRefresh ?? false;
       const reseed = options.reseed ?? false;
-      const trigger = options.trigger ?? "ON_DEMAND";
+      const trigger = options.trigger ?? "on_demand";
       const metadata = {
          forceRefresh,
          // Recorded separately: it says whether an incremental source rebuilt
@@ -742,19 +746,24 @@ export class MaterializationService {
       const buildInstructions = options.buildInstructions;
       const orchestrated = buildInstructions !== undefined;
       // A package or version bound to a host manifest serves the host's
-      // tables, and a run's own tables are never applied to it
-      // (Environment.loadRunManifest), so an auto-run would build tables it
-      // cannot serve. Refused before anything is built, as the scheduler
-      // skips it; a host building into tables it names (buildInstructions)
-      // is what such a package's runs are for.
-      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
-      if (!orchestrated && manifestLocation) {
+      // tables, and a version a host has bound serves its manifest or live
+      // (Environment.isHostOwned): a run's own tables are never applied to
+      // either (Environment.loadRunManifest), so an auto-run would build
+      // tables it cannot serve. Refused before anything is built, as the
+      // scheduler skips it; a host building into tables it names
+      // (buildInstructions) is what such a package's runs are for.
+      if (!orchestrated && environment.isHostOwned(pkg)) {
+         const manifestLocation = pkg.getPackageMetadata().manifestLocation;
          const target =
             version !== null
                ? `Version ${version} of package ${packageName}`
                : `Package ${packageName}`;
          throw new MaterializationConflictError(
-            `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`,
+            manifestLocation
+               ? version !== null
+                  ? `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Pass buildInstructions to build into tables the host names.`
+                  : `${target} is bound to a host manifest (${manifestLocation}): its tables are served from a host manifest, so a local run would build tables it cannot serve. Clear its manifestLocation to build here, or pass buildInstructions to build into tables the host names.`
+               : `${target} has been bound or built by a host: it serves the host's manifest or live, never a local run's tables, so a local run would build tables it cannot serve. Pass buildInstructions to build into tables the host names.`,
          );
       }
       const versions = environment.getVersionService();
@@ -799,7 +808,7 @@ export class MaterializationService {
             for (const i of buildInstructions) {
                const table = tableIdentity(i.physicalTableName);
                if (seen.has(table)) {
-                  throw new BadRequestError(
+                  throw new BuildInstructionsInvalidError(
                      `buildInstructions name table ${i.physicalTableName} more than once; give each source a table of its own.`,
                   );
                }
@@ -835,7 +844,7 @@ export class MaterializationService {
       buildInstructions: BuildInstruction[] | undefined;
       forceRefresh: boolean;
       reseed: boolean;
-      trigger: "ON_DEMAND" | "SCHEDULER";
+      trigger: "on_demand" | "scheduler";
    }): Promise<Materialization> {
       const {
          environmentId,
@@ -1053,7 +1062,7 @@ export class MaterializationService {
             reportSourceRefused(
                {
                   kind: buildKindOf(compiled, refusal.sourceID),
-                  tier: refusal.tier === "storage" ? "storage" : "colocated",
+                  tier: refusal.tier === "storage" ? "storage" : "database",
                   sourceName: refusal.name,
                },
                refusal.reason,
@@ -1531,6 +1540,14 @@ export class MaterializationService {
               new Date(startedAt),
               built.readFrom,
            );
+      // A host built this version: it owns it from now on, as a bind would
+      // make it (Environment.isHostOwned), so a clear, reload or restart
+      // never binds what this server's store holds for it. Marked before
+      // the commit, so no load or settle in between binds this run's own
+      // tables from the store.
+      if (orchestrated && versionId !== undefined) {
+         await environment.markVersionHostOwned(packageName, versionId);
+      }
       const served = await this.collaborators.commitManifest(
          id,
          committedEntries,
@@ -1697,8 +1714,8 @@ export class MaterializationService {
          }
          reportSourceReused(
             kindByAddress.get(address) ??
-               (entry.origin === "preaggregate" ? "rollup" : "persist"),
-            entry.storageDestinationName ? "storage" : "colocated",
+               (isRollupOrigin(entry.origin) ? "rollup" : "persist"),
+            entry.storageDestinationName ? "storage" : "database",
          );
       }
       // A run that lost sources is partial: its manifest is missing tables a

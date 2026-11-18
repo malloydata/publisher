@@ -113,9 +113,35 @@ export type ErrorReason =
    | "CONNECTION_AUTH_FAILED"
    // 424: the model names a connection the environment does not have.
    | "CONNECTION_NOT_FOUND"
-   // 403: the object store behind a table refused the database's read of its
-   // files; the query and the model are fine.
+   // 403: the object store under an environment-configured data path (a
+   // storage destination, a DuckLake catalog's data path) refused the
+   // database's read; the query and the model are fine, the operator's
+   // storage credentials are not.
    | "STORAGE_ACCESS_DENIED"
+   // 403: the object store at a path the query or the model reads itself (a
+   // file or table URL) refused access; the fix is the path or the caller's
+   // grant to it.
+   | "PATH_ACCESS_DENIED"
+   // 403: a gate (`#(authorize)` or `#(access_filter)`) refused the caller.
+   // A gate that could not be decided answers the same; only the metrics and
+   // the log tell the two apart.
+   | "ACCESS_DENIED"
+   // 422: a valid materialization declaration this server will not build;
+   // the body's `refusalReason` is its `RefusedSource.reason`.
+   | "MATERIALIZATION_REFUSED"
+   // 400: a build's `name=` is held by a table this package does not own.
+   | "TABLE_OWNED_ELSEWHERE"
+   // 400: who holds a build's `name=` could not be read.
+   | "TABLE_OWNERSHIP_UNVERIFIED"
+   // 400: a materialization create's body or build instructions are not a
+   // run this package can take (a field of the wrong shape, an unknown
+   // source, a table named twice, a ledger entry that does not fit); the
+   // message says which. Retrying unchanged fails the same way.
+   | "BUILD_INSTRUCTIONS_INVALID"
+   // 409: a materialization run conflicts with another run or the package's
+   // binding (a run already active, a table another run is writing, an
+   // auto-run of a package a host manifest serves).
+   | "MATERIALIZATION_CONFLICT"
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
@@ -405,6 +431,8 @@ export interface HttpErrorAnswer {
       code: number;
       message: string;
       reason?: ErrorReason;
+      /** With `MATERIALIZATION_REFUSED`: the refusal's `RefusedSource.reason`. */
+      refusalReason?: string;
       problems?: ReturnType<typeof toQueryTextProblem>[];
    };
 }
@@ -454,6 +482,8 @@ export function internalErrorToHttpError(
       };
    }
    const answer = httpError(status, message, resolve(row.reason, error));
+   const refusalReason = row.refusalReason?.(error);
+   if (refusalReason !== undefined) answer.json.refusalReason = refusalReason;
    return headers ? { ...answer, headers } : answer;
 }
 
@@ -526,6 +556,38 @@ export class BadRequestError extends Error {
    }
 
    constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * A materialization create's body or build instructions that no run of this
+ * package can take: a field of the wrong shape, an unknown `sourceEntityId`,
+ * a table named twice, a ledger entry that does not fit. 400 with `reason:
+ * BUILD_INSTRUCTIONS_INVALID`; the message says which.
+ */
+export class BuildInstructionsInvalidError extends BadRequestError {
+   override get kind(): "build_instructions_invalid" {
+      return "build_instructions_invalid";
+   }
+}
+
+/**
+ * A build refused before it wrote, because its table's `name=` is held by
+ * something that is not this package's (`table-owned-elsewhere`), or by
+ * something it cannot read (`table-ownership-unverified`). 400 with
+ * `reason` `TABLE_OWNED_ELSEWHERE` or `TABLE_OWNERSHIP_UNVERIFIED`. `code` is
+ * the kebab-case code a run's failure record carries (an open string).
+ */
+export class TableOwnershipError extends BadRequestError {
+   override get kind(): "table_ownership" {
+      return "table_ownership";
+   }
+
+   constructor(
+      readonly code: string,
+      message: string,
+   ) {
       super(message);
    }
 }
@@ -842,9 +904,12 @@ export class ConnectionAuthError extends Error {
 
 /**
  * The object store behind a table (a DuckLake data path, a bucket a file is
- * read from) refused the database's read of its files: 403, `reason:
- * STORAGE_ACCESS_DENIED`. The query ran and the model is fine; the storage
- * credentials the database reads with are not. The driver's text quotes the
+ * read from) refused the database's read of its files: 403. Under an
+ * environment-configured data path ({@link managed}), `reason:
+ * STORAGE_ACCESS_DENIED`: the query and the model are fine, the storage
+ * credentials the database reads with are not. At a path the query or the
+ * model names itself, `reason: PATH_ACCESS_DENIED`: the path, or the
+ * caller's grant to it, is what to fix. The driver's text quotes the
  * object's URL (bucket, organization and database paths), so it is this
  * error's message, which is logged, and the answer names only `subject`, the
  * source or connection the caller asked for.
@@ -1140,9 +1205,10 @@ export class FrozenConfigError extends Error {
 }
 
 /**
- * A request refused access to a source (403): an unsatisfied `#(authorize)`,
- * or a gate that could not apply at all. An `#(access_filter)` matching no row
- * is not this; that is a 200 with empty rows.
+ * A request refused access to a source (403, `reason: ACCESS_DENIED`): an
+ * unsatisfied `#(authorize)`, or a gate that could not apply at all. An
+ * `#(access_filter)` matching no row is not this; that is a 200 with empty
+ * rows.
  */
 export class AccessDeniedError extends Error {
    get kind(): "access_denied" {
@@ -1155,16 +1221,35 @@ export class AccessDeniedError extends Error {
     */
    readonly source?: string;
 
-   constructor(message: string, options?: { source?: string }) {
+   /**
+    * Which kind of gate refused, for the access record (operator-side,
+    * never sent): `lock`, an `#(authorize)` lock that does not admit the
+    * caller or could not be decided; `row_filter`, a row-level gate that
+    * could not apply to this query.
+    */
+   readonly gate: "lock" | "row_filter";
+
+   constructor(
+      message: string,
+      options?: { source?: string; gate?: "lock" | "row_filter" },
+   ) {
       super(message);
       this.name = "AccessDeniedError";
       if (options?.source !== undefined) this.source = options.source;
+      this.gate = options?.gate ?? "lock";
    }
 
-   /** The gate refusal for `source`. The message names the source and never the gate's logic. */
-   static forSource(source: string): AccessDeniedError {
+   /**
+    * The gate refusal for `source`. The message names the source and never
+    * the gate's logic, and is the same whichever gate refused.
+    */
+   static forSource(
+      source: string,
+      gate: "lock" | "row_filter" = "row_filter",
+   ): AccessDeniedError {
       return new AccessDeniedError(`Access denied for source "${source}".`, {
          source,
+         gate,
       });
    }
 }
@@ -1466,6 +1551,8 @@ type CompileRefusedKind =
    | "unparseable_text";
 type BadRequestKind =
    | "bad_request"
+   | "table_ownership"
+   | "build_instructions_invalid"
    | "invalid_argument"
    | "invalid_model_path"
    | "invalid_query_request"
@@ -1486,6 +1573,8 @@ interface ErrorByKind {
    build_plan_refreshing: BuildPlanRefreshingError;
    not_implemented: NotImplementedError;
    bad_request: BadRequestError;
+   table_ownership: TableOwnershipError;
+   build_instructions_invalid: BuildInstructionsInvalidError;
    invalid_argument: InvalidArgumentError;
    compile_refused: CompileRefusedError;
    invalid_model_path: InvalidModelPathError;
@@ -1570,6 +1659,8 @@ const ERROR_CLASSES: {
    build_plan_refreshing: BuildPlanRefreshingError,
    not_implemented: NotImplementedError,
    bad_request: BadRequestError,
+   table_ownership: TableOwnershipError,
+   build_instructions_invalid: BuildInstructionsInvalidError,
    invalid_argument: InvalidArgumentError,
    compile_refused: CompileRefusedError,
    invalid_model_path: InvalidModelPathError,
@@ -1703,6 +1794,8 @@ export interface ErrorMapping<E> {
    message?: string | ((error: E) => string);
    /** The HTTP body's `reason`, for a caller that branches on it. */
    reason?: ErrorReason | ((error: E) => ErrorReason | undefined);
+   /** The HTTP body's `refusalReason`, beside `reason: MATERIALIZATION_REFUSED`. */
+   refusalReason?: (error: E) => string | undefined;
    /** Logged server-side by the HTTP mapping (unless the caller passed `log: false`). */
    log?: LogLine | ((error: E) => LogLine | undefined);
    /** The HTTP body also carries the compile problems. */
@@ -1805,6 +1898,30 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       mcpSetup: "package",
    },
    bad_request: BAD_REQUEST,
+   build_instructions_invalid: {
+      status: 400,
+      reason: "BUILD_INSTRUCTIONS_INVALID",
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "This is not transient. The request's build instructions or body fail the same way until they change; the message names what is wrong.",
+         ],
+      },
+   },
+   table_ownership: {
+      status: 400,
+      reason: (error) =>
+         error.code === "table-ownership-unverified"
+            ? "TABLE_OWNERSHIP_UNVERIFIED"
+            : "TABLE_OWNED_ELSEWHERE",
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "This is not transient. The table at this name= is not this package's, or who holds it could not be read, so the build fails the same way until that changes.",
+            "Choose a name= no other package or table uses, or have the table's holder release it.",
+         ],
+      },
+   },
    // A malformed argument that is not about Malloy, so it must not get the
    // Malloy advice. BadRequestError keeps it: that class also wraps genuine
    // query-time compile failures, which do want the Malloy advice.
@@ -1831,6 +1948,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    frozen_config: { status: 403, mcp: { advice: "internal" } },
    access_denied: {
       status: 403,
+      // Every gate 403, a gate that could not be decided included: the caller
+      // learns nothing the status does not already say.
+      reason: "ACCESS_DENIED",
       mcp: { advice: "malloy" },
       // The #(authorize) gate fires at query time, not setup, but a denial
       // must never surface as an opaque internal error.
@@ -1930,7 +2050,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       // sent. warn: the storage credentials are the operator's to fix.
       status: 403,
       message: (error) => error.callerMessage,
-      reason: "STORAGE_ACCESS_DENIED",
+      // Who fixes it: the operator's credentials, or the path the query reads.
+      reason: (error) =>
+         error.managed ? "STORAGE_ACCESS_DENIED" : "PATH_ACCESS_DENIED",
       log: { summary: "Storage access denied", level: "warn" },
       mcp: {
          advice: "fixed",
@@ -1973,6 +2095,8 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    unsupported_catalog_format: { status: 422, mcp: { advice: "internal" } },
    materialization_eligibility: {
       status: 422,
+      reason: "MATERIALIZATION_REFUSED",
+      refusalReason: (error) => error.reason,
       mcp: { advice: "internal" },
    },
    model_compilation: {
@@ -2008,7 +2132,11 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       },
    },
    materialization_not_found: { status: 404, mcp: { advice: "internal" } },
-   materialization_conflict: { status: 409, mcp: { advice: "internal" } },
+   materialization_conflict: {
+      status: 409,
+      reason: "MATERIALIZATION_CONFLICT",
+      mcp: { advice: "internal" },
+   },
    invalid_state_transition: { status: 409, mcp: { advice: "internal" } },
    write_conflict: {
       status: 409,

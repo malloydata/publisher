@@ -2,8 +2,8 @@
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 
--- ==== source colocated_ext
--- sourceID: colocated_ext@<pkg>/m.malloy
+-- ==== source database_ext
+-- sourceID: database_ext@<pkg>/m.malloy
 -- connection: duckdb
 -- sourceEntityId: bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1
 -- compiler key: bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1 (the sourceEntityId)
@@ -339,18 +339,18 @@ source: renamed is stored extend {
   measure: id_total is order_id.sum()
 }
 
-#(materialize) name="colocated_ext_t"
-source: colocated_ext is orders extend {
+#(materialize) name="database_ext_t"
+source: database_ext is orders extend {
   where: status = 'shipped'
 }
 
 -- ==== <pkg>/m.malloy.0.materialize-level.malloy
 ##! experimental.persistence
-import { colocated_ext__mat__base is colocated_ext } from 'm.malloy'
+import { database_ext__mat__base is database_ext } from 'm.malloy'
 import { stored__mat__base is stored } from 'm.malloy'
 
-#@ persist name="colocated_ext_t"
-source: colocated_ext__mat is colocated_ext__mat__base -> {
+#@ persist name="database_ext_t"
+source: database_ext__mat is database_ext__mat__base -> {
   select:
     id,
     customer_id,
@@ -416,8 +416,8 @@ source: renamed is stored extend {
   measure: id_total is order_id.sum()
 }
 
-#(materialize) name="colocated_ext_t"
-source: colocated_ext is orders extend {
+#(materialize) name="database_ext_t"
+source: database_ext is orders extend {
   where: status = 'shipped'
 }
 
@@ -513,8 +513,8 @@ source: renamed is stored extend {
   measure: id_total is order_id.sum()
 }
 
-#(materialize) name="colocated_ext_t"
-source: colocated_ext is orders extend {
+#(materialize) name="database_ext_t"
+source: database_ext is orders extend {
   where: status = 'shipped'
 }
 
@@ -576,13 +576,13 @@ source: renamed is stored extend {
   measure: id_total is order_id.sum()
 }
 
-#(materialize) name="colocated_ext_t"
-source: colocated_ext is orders extend {
+#(materialize) name="database_ext_t"
+source: database_ext is orders extend {
   where: status = 'shipped'
 }
 
 -- ==== <pkg>/m.malloy.materialize.malloy
 ##! experimental.persistence
-import { colocated_ext__mat, stored__mat } from 'm.malloy.0.materialize-level.malloy'
+import { database_ext__mat, stored__mat } from 'm.malloy.0.materialize-level.malloy'
 import { by_given__mat, east__mat, renamed__mat } from 'm.malloy.1.materialize-level.malloy'
 import { east_big__mat } from 'm.malloy.2.materialize-level.malloy'

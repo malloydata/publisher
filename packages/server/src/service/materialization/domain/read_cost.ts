@@ -7,10 +7,10 @@
  * result by exact call, then rollups, then the served copy over base tables),
  * and the plan orders each base's rollups by {@link byReadCost}, once:
  * fewer grain dimensions first (a coarser rollup holds fewer rows), then a
- * colocated table before a `storage=` one at equal grain, then by name, so
- * the order is deterministic. Colocated first is a heuristic, not a
+ * database table before a `storage=` one at equal grain, then by name, so
+ * the order is deterministic. Database first is a heuristic, not a
  * guarantee: it reads where the query already runs with no destination to
- * attach, but on a warehouse that bills per scan (BigQuery) a colocated read
+ * attach, but on a warehouse that bills per scan (BigQuery) a database read
  * is billed where a `storage=` one is not. Row counts are deliberately not
  * read: the order would then move with each build.
  *
@@ -23,7 +23,7 @@
 /** What a rollup candidate's read cost is judged by. */
 interface RollupCost {
    grainDimensions: readonly string[];
-   /** The rollup's `storage=` destination; undefined when colocated. */
+   /** The rollup's `storage=` destination; undefined when database. */
    storage?: string;
    rollupSourceName: string;
 }

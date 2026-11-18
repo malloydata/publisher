@@ -122,7 +122,7 @@ describe("an inline= join whose rows read a given", () => {
                sourceID: expect.stringMatching(/^wide@/),
                outcome: {
                   refused: {
-                     reason: "given_in_persisted_query",
+                     reason: "reads_given",
                      tier: "storage",
                   },
                },

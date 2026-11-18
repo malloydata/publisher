@@ -165,6 +165,10 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
       const issued: string[] = [];
       const s = {
          runSQL: async (sql: string) => {
+            // The warehouse's own column types: none read as DOUBLE.
+            if (sql.startsWith("DESCRIBE") && sql.includes("postgres_query")) {
+               return { rows: [] };
+            }
             if (sql.startsWith("DESCRIBE")) return destination.runSQL(sql);
             issued.push(sql);
             if (sql.includes("duckdb_columns()")) {

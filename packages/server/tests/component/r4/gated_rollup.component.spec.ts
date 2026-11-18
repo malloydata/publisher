@@ -5,7 +5,7 @@
  * R4 for gated queries on rollups (known limitation 1, R3 for rollups: route,
  * then govern). With PUBLISHER_MATERIALIZE_GATED_SOURCES on, a query whose
  * entry point carries a row-level gate or lock is answered from a
- * `#(preaggregate)` rollup over its source when every gate is provable on
+ * `#(rollup)` rollup over its source when every gate is provable on
  * the rollup (each field it reads a grain dimension): the run target is
  * redeclared over the rollup in its declaring file, gates written on it, and
  * `govern()` grafts and proves them there.
@@ -16,20 +16,18 @@
  * denied. Negatives answer live (a gate field outside the grain, a gate
  * through a join, a caller join, a caller `count()`, an extension whose own
  * gate the rollup cannot prove), and a caller `except:` or `rename:` of the
- * gate field is denied, as live is. Colocated and `storage=` (the latter
- * behind its review seam, as question 14 leaves it off in production).
+ * gate field is denied, as live is. Database and `storage=` alike.
  *
- * G3 for colocated rollups: with the gated-sources switch off, a colocated
+ * G3 for rollups, on either tier: with the gated-sources switch off, a
  * rollup over a base whose gates are all its own (a row filter, a lock, or
  * both, each field a grain dimension) is built and read past the gate the
  * same way, each caller getting exactly live's rows; one over an inherited
  * gate, a gate through a join or a gate field outside the grain is not
- * built, and a `storage=` one waits for its review.
+ * built.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../../src/errors";
-import { allowGatedStorageRollupsForTests } from "../../../src/config";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -72,15 +70,15 @@ source: carriers is duckdb.table('carriers_raw') extend { primary_key: code }
 
 // Ungated, so the companion is never empty.
 source: open is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: open_total is amount.sum()
 }
 
 #(access_filter) region = $REGION
 source: by_column is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: biggest is amount.max()
   view: by_category is { group_by: category; aggregate: total }
 }
@@ -88,14 +86,14 @@ source: by_column is duckdb.table('orders_raw') extend {
 #(access_filter) reg = $REG
 source: by_computed is duckdb.table('orders_raw') extend {
   dimension: reg is upper(region)
-  #(preaggregate) grain=["category", "reg"]${p}
+  #(rollup) grain=["category", "reg"]${p}
   measure: total is amount.sum()
 }
 
 #(access_filter) order_day = $ON_DAY
 source: by_truncation is duckdb.table('orders_raw') extend {
   dimension: order_day is order_time.day
-  #(preaggregate) grain=["category", "order_day"]${p}
+  #(rollup) grain=["category", "order_day"]${p}
   measure: total is amount.sum()
 }
 
@@ -105,40 +103,40 @@ source: by_truncation is duckdb.table('orders_raw') extend {
 source: by_zoned_truncation is duckdb.table('orders_raw') extend {
   timezone: 'America/New_York'
   dimension: order_day is order_time.day
-  #(preaggregate) grain=["category", "order_day"]${p}
+  #(rollup) grain=["category", "order_day"]${p}
   measure: total is amount.sum()
 }
 
 #(access_filter) tenant = $REGION
 source: by_internal is duckdb.table('orders_raw') extend {
   internal dimension: tenant is region
-  #(preaggregate) grain=["category", "tenant"]${p}
+  #(rollup) grain=["category", "tenant"]${p}
   measure: total is amount.sum()
 }
 
 #(access_filter) region = $REGION
 source: gated_base is duckdb.table('orders_raw')
 source: by_inherited is gated_base extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
   // A column of its own, so its table is not another source's.
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: inh_n is count()
 }
 
 #(authorize) 'admin' = $ROLE
 source: by_lock is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
 }
 
 #(authorize) 'admin' = $ROLE
 #(access_filter) region = $REGION
 source: by_lock_and_filter is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
   // A column of its own, so its table is not another source's.
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: lf_n is count()
 }
 
@@ -148,10 +146,10 @@ source: locked is duckdb.table('orders_raw')
 #(authorize) true
 #(access_filter) region = $REGION
 source: reopened is locked extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
   // A column of its own, so its table is not another source's.
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: ro_n is count()
 }
 
@@ -167,7 +165,7 @@ source: ext_gated is by_column extend {}
 // A gated parent joining a rollup's base (A7): the join branch redeclares the
 // parent around the join, carrying no gate to prove, so it declines.
 source: order_lines is duckdb.table('lines_raw') extend {
-  #(preaggregate) grain=["order_id"]${p}
+  #(rollup) grain=["order_id"]${p}
   measure: qty_total is qty.sum()
 }
 #(access_filter) region = $REGION
@@ -179,14 +177,14 @@ source: gated_parent is duckdb.table('orders_raw') extend {
 // Negatives: never built (A4), so answered live.
 #(access_filter) region = $REGION
 source: outside is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
 }
 
 #(access_filter) carriers.fleet = $FLEET
 source: through_join is duckdb.table('orders_raw') extend {
   join_one: carriers with carrier
-  #(preaggregate) grain=["category", "carrier"]${p}
+  #(rollup) grain=["category", "carrier"]${p}
   measure: total is amount.sum()
 }
 `;
@@ -323,9 +321,12 @@ function expectLive(run: R4Run): void {
 }
 
 for (const [placement, gatedSources] of [
-   ["colocated", true],
+   ["database", true],
    ["storage", true],
-   ["colocated", false],
+   ["database", false],
+   // `storage=` with the switch off is G3 through the bind's mark, which this
+   // harness does not run: storage_rollup_gates.component.spec.ts takes it
+   // through the real package path.
 ] as const) {
    // With the switch off (G3), only a base's own gates are kept.
    const cases = CASES.filter(
@@ -333,7 +334,6 @@ for (const [placement, gatedSources] of [
    );
    describe(`R4: gated queries on ${placement} rollups (${gatedSources ? "row 1, gated sources on" : "G3, gated sources off"})`, () => {
       let restore: () => void;
-      let restoreReview: () => void;
       let fixture: R4Fixture;
       beforeAll(async () => {
          restore = installSettings({
@@ -343,11 +343,6 @@ for (const [placement, gatedSources] of [
                PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
             },
          }).restore;
-         // `storage=` waits for question 14's review in production; the
-         // seam stands in for it here.
-         restoreReview = allowGatedStorageRollupsForTests(
-            placement === "storage",
-         );
          fixture = await buildScenario({
             files: {
                "m.malloy": model(
@@ -359,7 +354,6 @@ for (const [placement, gatedSources] of [
          });
       });
       afterAll(async () => {
-         restoreReview();
          restore();
          await disposeScenarios();
       });
@@ -605,7 +599,7 @@ for (const [placement, gatedSources] of [
             { ...EAST.givens, CARRIER: "AA" },
          );
          const skipped = (path?.considered ?? []).filter(
-            (c) => (c as { reason?: string }).reason === "CONTRACT",
+            (c) => (c as { reason?: string }).reason === "ROW_LEVEL_GATE",
          );
          expect(skipped.length).toBeGreaterThan(0);
          for (const c of skipped) {
@@ -616,23 +610,30 @@ for (const [placement, gatedSources] of [
          }
       });
 
-      it("declines a joined source's rollup under a gated parent (A7), as CONTRACT without naming the gate", async () => {
+      it("answers a joined source's rollup under a gated parent (A7) as live: from the rollup on the database tier (g-mixed), live without naming the gate in a storage destination it is not stored in", async () => {
          const malloy =
             "run: gated_parent -> { group_by: category; aggregate: order_lines.qty_total }";
-         expectLive(
-            await fixture.run({
-               name: "gated parent",
-               malloy,
-               givens: EAST.givens,
-            }),
-         );
+         const run = await fixture.run({
+            name: "gated parent",
+            malloy,
+            givens: EAST.givens,
+         });
+         if (placement === "database") {
+            // The parent's own gate (a plain column) is grafted on the
+            // variant, which keeps the author's rows (question 14).
+            expect(run.servedBy?.kind).toBe("rollup");
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            return;
+         }
+         // In a storage destination the parent here is not stored there, so
+         // the branch declines (`CROSS_CONNECTION`) before its gate is read;
+         // no decline names the gate.
+         expectLive(run);
          fixture.setBindings(fixture.bindings);
          const { path } = await fixture.runAsIs(malloy, EAST.givens);
-         const contract = (path?.considered ?? []).filter(
-            (c) => (c as { reason?: string }).reason === "CONTRACT",
-         );
-         expect(contract.length).toBeGreaterThan(0);
-         for (const c of contract) {
+         const skipped = path?.considered ?? [];
+         expect(skipped.length).toBeGreaterThan(0);
+         for (const c of skipped) {
             expect(JSON.stringify(c)).not.toContain("region");
          }
       });
@@ -736,55 +737,3 @@ for (const [placement, gatedSources] of [
       });
    });
 }
-
-describe("R4: gated queries on storage= rollups with gated sources off", () => {
-   let restore: () => void;
-   let fixture: R4Fixture;
-   beforeAll(async () => {
-      restore = installSettings({
-         env: {
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "true",
-            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
-         },
-      }).restore;
-      fixture = await buildScenario({
-         files: { "m.malloy": model(` storage="${DESTINATION}"`) },
-         seedSql,
-         preaggregate: true,
-      });
-   });
-   afterAll(async () => {
-      restore();
-      await disposeScenarios();
-   });
-
-   it("builds no storage= rollup over a gated base: it waits for its review", () => {
-      expect(
-         fixture.rollupRefusals
-            .filter((r) => !["open", "order_lines"].includes(r.sourceName))
-            .every(
-               // Named by the gate's kind: a row filter or a lock.
-               (r) =>
-                  r.reason === "access_filter" ||
-                  r.reason === "authorize" ||
-                  r.reason === "time_zone",
-            ),
-      ).toBe(true);
-   });
-
-   for (const c of CASES) {
-      it(`answers ${c.kind} live, equal to live`, async () => {
-         for (const caller of c.callers) {
-            expectLive(
-               await fixture.run({
-                  name: `${c.source} ${caller.name}`,
-                  malloy: `run: ${c.source} -> { group_by: category; aggregate: total }`,
-                  givens: caller.givens,
-                  expectLive: true,
-               }),
-            );
-         }
-      });
-   }
-});

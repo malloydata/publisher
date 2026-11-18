@@ -90,10 +90,10 @@ const persists = (text: string): boolean =>
 /**
  * A model that materializes anything: a v1 `#@ persist` or `#@ preaggregate`
  * under the persistence flag ({@link persists}), or a v2 `#(materialize)` or
- * `#(preaggregate)`, which needs no flag.
+ * `#(rollup)`, which needs no flag.
  */
 export const materializes = (text: string): boolean =>
-   persists(text) || /#\((materialize|preaggregate)\)/.test(text);
+   persists(text) || /#\((materialize|rollup|preaggregate)\)/.test(text);
 
 /** The persist fixtures, each compiled as its own package. */
 export function fixtureModels(): CorpusModel[] {

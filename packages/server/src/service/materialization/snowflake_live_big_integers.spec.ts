@@ -41,14 +41,14 @@ describe("F-16 P3-11: Snowflake big integers are read exactly when served", () =
       ).toEqual({ column: "total", castTo: "HUGEINT" });
    });
 
-   it("reads a colocated NUMBER(38,0) column through its own type", () => {
+   it("reads a database NUMBER(38,0) column through its own type", () => {
       expect(
          bigIntegerReadOf(
             bigintField,
             { name: "total", type: "DOUBLE" },
             {
                dialect: "snowflake",
-               colocated: true,
+               database: true,
                nativeTypeOf: () => "NUMBER(38,0)",
             },
          ),
