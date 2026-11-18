@@ -379,6 +379,7 @@ describe("In-package HTML data apps (E2E)", () => {
          "fitattr.html",
          "fitcomment.html",
          "fitdecoy.html",
+         "fitmanyattrs.html",
          "fitquoted.html",
          "index.html",
          "nohead.html",
@@ -431,6 +432,10 @@ describe("In-package HTML data apps (E2E)", () => {
       );
       expect(
          dataApps.find((a) => a.path === "fitdecoy.html")?.fit,
+      ).toBeUndefined();
+      // Many quoted attribute values on <html> must not skip the comment after it.
+      expect(
+         dataApps.find((a) => a.path === "fitmanyattrs.html")?.fit,
       ).toBeUndefined();
 
       // notfit.html carries the STANDARD <meta name="viewport"> (device-width),

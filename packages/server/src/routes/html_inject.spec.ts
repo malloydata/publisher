@@ -148,6 +148,8 @@ describe("injectAfterHeadStart", () => {
          ["repeated closed-attribute charset metas", fill("<meta charset=x ")],
          ["repeated unclosed heads", fill("<head ")],
          ["repeated unclosed titles", fill("<title>")],
+         ["repeated unclosed doctypes", fill("<!doctype ")],
+         ["repeated empty quoted values", fill('<a x=""')],
       ];
       for (const [name, html] of cases) {
          it(`is fast on ${name}`, () => {
@@ -211,6 +213,24 @@ describe("injectAfterHeadStart", () => {
          `<!doctype html>${page.replace("utf-8>", `utf-8>${SNIPPET}`)}`,
       );
       expect(inject(page)).toBe(page.replace("utf-8>", `utf-8>${SNIPPET}`));
+   });
+
+   it("follows a tag through any number of quoted values", () => {
+      const attrs = Array.from({ length: 17 }, (_, n) => ` a${n}="${n}"`).join(
+         "",
+      );
+      expect(
+         inject(`<!doctype html><html${attrs}><head><meta charset=utf-8><p>`),
+      ).toBe(
+         `<!doctype html><html${attrs}><head><meta charset=utf-8>${SNIPPET}<p>`,
+      );
+   });
+
+   it("does not splice inside a head tag whose quoted value never closes", () => {
+      const page = `<!doctype html><head data-x="a>b${"x".repeat(3000)}<p>`;
+      expect(inject(page)).toBe(
+         page.replace("<!doctype html>", `<!doctype html>${SNIPPET}`),
+      );
    });
 
    it("ends the head and meta tags at their real `>`, past one inside a quoted value", () => {

@@ -358,17 +358,17 @@ doctype, else at the start (past a UTF-8 byte-order mark) of a page that fits in
 that 64 KiB; a tag inside an HTML comment, a quoted attribute value, or a
 `<script>`, `<style>`, `<title>`, `<textarea>`, `<noscript>`, `<iframe>`,
 `<noembed>`, `<noframes>`, `<xmp>` or `<plaintext>` element does not count. A
-UTF-16 page, one over 2 MiB, and one with no insertion point in its first 64 KiB are sent unchanged (the runtime still pins
-the version from the versioned path). An HTML response carries a weak `ETag`
+UTF-16 page, one over 2 MiB, and one with no insertion point in its first
+64 KiB are sent unchanged (the runtime still pins the version from the
+versioned path). An HTML response carries a weak `ETag`
 (a hash of the file's size and modification time, a format version and the
 injected block, so a matching `If-None-Match` is answered `304` after a `stat`,
 without reading the file; replicas copy a package without keeping its
 timestamps, so a request that lands on another replica is just a `200`, and, as
 with `express.static`, a same-size file swapped in with its old modification
 time can get a stale `304` in watch mode), `Cache-Control: no-cache` so every
-load revalidates; a
-`Range` request gets the whole page, since byte offsets into a rewritten body
-mean nothing. Other files are sent as they are.
+load revalidates; a `Range` request gets the whole page, since byte offsets
+into a rewritten body mean nothing. Other files are sent as they are.
 
 **Serving Publisher behind a gateway.** A gateway that exposes Publisher under
 other names or another path can set the context itself. With the

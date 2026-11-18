@@ -47,7 +47,6 @@ const RAW_TEXT_CLOSE = new Map(
 
 /** How far an open tag is followed to its closing `>`, quoted attribute values included. */
 const MAX_TAG_BYTES = 2048;
-const MAX_TAG_QUOTES = 16;
 
 /**
  * Where the text that is not markup, starting at the `<` at `at`, ends: an HTML
@@ -76,9 +75,9 @@ export function nonTagTextEnd(text: string, at: number): number | undefined {
  * Where the open tag at the `<` at `at` ends, with quoted attribute values
  * honored (one opens only right after `=`), so a `>` or `<` inside one is not
  * taken for markup. Undefined when `at` starts no tag. `closed` is false when
- * the scan gave up (no `>`, an unpaired quote or too many quoted values within
- * the bounds): `end` is then where it stopped, which a caller resumes from, so
- * a run of such tags is scanned once, not once per `<`.
+ * the scan gave up (no `>` or an unpaired quote within the bound): `end` is
+ * then where it stopped, which a caller resumes from, so a run of such tags is
+ * scanned once, not once per `<`.
  */
 export function openTagEnd(
    text: string,
@@ -87,10 +86,10 @@ export function openTagEnd(
    if (!/[a-z]/i.test(text[at + 1] ?? "")) return undefined;
    const limit = Math.min(text.length, at + MAX_TAG_BYTES);
    const span = text.slice(at + 1, limit);
-   const stop = /=\s*(["'])|>/g;
-   for (let quoted = 0; quoted <= MAX_TAG_QUOTES; quoted++) {
-      const m = stop.exec(span);
-      if (!m) break;
+   // HTML whitespace only; `\s` would also take \v and \xA0.
+   const stop = /=[\t\n\f\r ]*(["'])|>/g;
+   // lastIndex only moves forward within the capped span, so this stays linear in it.
+   for (let m = stop.exec(span); m; m = stop.exec(span)) {
       if (m[0] === ">") return { end: at + 1 + m.index + 1, closed: true };
       const close = span.indexOf(m[1], stop.lastIndex);
       if (close === -1) break;
@@ -138,9 +137,13 @@ export function injectAfterHeadStart(
          continue;
       }
       const tag = openTagEnd(text, i);
-      // The regexes end at the first `>`; the tag's own end can be later.
+      // The regexes end at the first `>`; the tag's own end can be later, or never come.
       const realEnd = (matched: number | undefined) =>
-         matched !== undefined && tag?.closed ? tag.end : matched;
+         matched === undefined || !tag
+            ? matched
+            : tag.closed
+              ? tag.end
+              : undefined;
       if (i < CHARSET_PRESCAN_BYTES) {
          const metaEnd = realEnd(stickyEnd(CHARSET_META, text, i));
          if (metaEnd !== undefined && metaEnd <= CHARSET_PRESCAN_BYTES) {
