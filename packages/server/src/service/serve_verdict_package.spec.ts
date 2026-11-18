@@ -160,7 +160,10 @@ source: orders is ${ROWS} -> { select: * }
 source: secure_orders is orders -> { select: * }
 `;
 
-      it("sends a stored source live when every published entry point over it is gated", async () => {
+      // g-mixed (question 14): an ungated `storage=` table read only
+      // through gated entry points is a G3 table, as a database table is:
+      // the gate is grafted on the answer, so the verdict is that it serves.
+      it("serves a stored source holding only ungated rows when every published entry point over it is gated (g-mixed)", async () => {
          restoreSettings = installSettings({
             env: { PERSIST_STORAGE_MODE: "on" },
          }).restore;
@@ -172,8 +175,7 @@ source: secure_orders is orders -> { select: * }
             byName(loaded.pkg.materialization().serveVerdicts()).orders,
          ).toMatchObject({
             tier: "storage",
-            verdict: "live",
-            reason: "row_level_gate",
+            verdict: "awaiting_build",
          });
       });
 
@@ -198,7 +200,7 @@ source: secure_orders is orders -> { select: * }
          });
       });
 
-      it("sends it live when the only entry point is a named query over a gated source written inline", async () => {
+      it("serves it when the only entry point is a named query over a gated source written inline (g-mixed)", async () => {
          restoreSettings = installSettings({
             env: { PERSIST_STORAGE_MODE: "on" },
          }).restore;
@@ -216,8 +218,7 @@ export { by_one }
             byName(loaded.pkg.materialization().serveVerdicts()).orders,
          ).toMatchObject({
             tier: "storage",
-            verdict: "live",
-            reason: "row_level_gate",
+            verdict: "awaiting_build",
          });
       });
 

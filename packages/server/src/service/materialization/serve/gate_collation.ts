@@ -48,17 +48,7 @@ import {
 import { identifier } from "../../malloy_text";
 import { capabilitiesOf } from "../domain/dialect";
 
-/**
- * What this reads of the entry point's gate reads (`GateReads` in
- * `gate_reads.ts`, which re-exports this module's rules: declared here, so
- * the two modules do not import each other).
- */
-interface GateReads {
-   readonly unresolved: boolean;
-   readonly equalityOnly: boolean;
-   readonly entryPaths: readonly (readonly string[])[];
-   readonly entryPathsComplete: boolean;
-}
+import type { GateReads } from "./gate_reads_types";
 
 type Collation = "binary" | "deterministic" | "unknown";
 
@@ -84,8 +74,9 @@ export function storedTypeIsString(type: string): boolean {
  * Why an answer that read a `storage=` table past the entry point's gates
  * does not compare a string column as live does, or undefined when every
  * string column it compares does. `stringStored` says whether any `storage=`
- * table the answer read holds a gate column as a string; when none does, no
- * probe runs.
+ * table the answer read holds a gate column as a string. No probe runs only
+ * when nothing the gates and scopes compare is a string
+ * (`GateReads.comparesNoString`).
  */
 export async function stringGateCollationRefusal(args: {
    authorRunnable: QueryMaterializer;
@@ -95,7 +86,12 @@ export async function stringGateCollationRefusal(args: {
    givens?: Record<string, unknown>;
 }): Promise<string | undefined> {
    const { reads } = args;
-   if (!args.stringStored) return undefined;
+   // Nothing the gates and scopes compare is a string (an allow-list over
+   // every leaf: a given, a literal, a cast or a function that could make one
+   // reads false), so no collation can change what they admit.
+   if (reads !== undefined && !reads.unresolved && reads.comparesNoString) {
+      return undefined;
+   }
    if (reads === undefined || reads.unresolved) return "gate reads unread";
    const need: Collation[] = reads.equalityOnly
       ? ["binary", "deterministic"]
@@ -109,7 +105,7 @@ export async function stringGateCollationRefusal(args: {
    const modelDef = prepared.modelDef as ModelDef | undefined;
    const entryName =
       typeof prepared.structRef === "string" ? prepared.structRef : undefined;
-   if (!modelDef || entryName === undefined) return "no named entry point";
+   if (!modelDef) return "no author compile";
    const struct = resolveStructRefSource(
       prepared.structRef as never,
       modelDef as never,
@@ -150,8 +146,27 @@ export async function stringGateCollationRefusal(args: {
          ? undefined
          : "an instance that compares strings under a collation";
    }
-   // Per column: only the entry point's own paths can be probed.
+   // Per column: only a named entry point's own paths can be probed (a
+   // caller's inline `extend` or `include` has no name to compile a probe
+   // over; the instance-wide check above needs none).
+   if (entryName === undefined) return "no named entry point";
    if (!reads.entryPathsComplete) return "a scope from elsewhere";
+   // A comparison of a string the query makes (a given, a literal, a cast,
+   // a `pick`) compares under the database's default collation, which must
+   // then meet the comparison's need as a column's would.
+   if (!reads.comparesNoString) {
+      const fallback = await probeOnce(
+         modelDef,
+         `${connectionName}\u0000default`,
+         async () =>
+            postgresDefaultCollation(
+               await runtime.connections.lookupConnection(connectionName),
+            ),
+      );
+      if (!need.includes(fallback)) {
+         return `a comparison under a ${fallback} default collation`;
+      }
+   }
    const paths = stringPaths(struct, reads.entryPaths);
    if (paths === undefined) return "an unreadable gate path";
    for (const path of paths) {
@@ -259,7 +274,7 @@ async function probe(args: {
    try {
       return read === "instance"
          ? await duckdbCollation(connection, sql)
-         : await postgresCollation(connection, sql);
+         : await postgresCollation(connection, unfinalizedPostgresSQL(sql));
    } catch {
       // Unreadable: fail closed.
       return "unknown";
@@ -331,6 +346,31 @@ function postgresJudged(row: Record<string, unknown> | undefined): Collation {
 const PG_COLLATION_COLUMNS =
    "c.collname AS name, c.collisdeterministic AS det, c.collcollate AS cc, c.collprovider AS prov, d.datcollate AS dbc, to_jsonb(d) ->> 'datlocprovider' AS dbp";
 
+/** The Postgres database's default collation, as {@link postgresJudged} reads it. */
+async function postgresDefaultCollation(
+   connection: Connection,
+): Promise<Collation> {
+   const [row] = await pgRows(
+      connection,
+      `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.collname = 'default' AND d.datname = current_database()`,
+   );
+   return postgresJudged(row);
+}
+
+/**
+ * Malloy's Postgres query SQL with its final stage taken off: a compiled
+ * query ends `SELECT row_to_json(finalStage) as row FROM <stage> AS
+ * finalStage`, one JSON column with no collation, so the probe reads the
+ * stage it wraps instead, whose `probe_value` keeps its column's collation.
+ * SQL with no such stage is returned as it is.
+ */
+export function unfinalizedPostgresSQL(sql: string): string {
+   return sql.replace(
+      /\bSELECT row_to_json\(finalStage\) as row FROM (__stage\d+) AS finalStage\s*$/,
+      "SELECT * FROM $1",
+   );
+}
+
 /**
  * A Postgres column's collation, read from the source's own SQL
  * (`pg_collation_for`, looked up by its OID): binary under a libc `C` or
@@ -376,7 +416,7 @@ interface StoredTable {
  * `equalityOnly` admits a deterministic collation; otherwise only binary.
  */
 export async function storedTableCollationRefusal(args: {
-   tables: readonly StoredTable[];
+   tables: readonly (StoredTable & { gateColumnTypes?: readonly string[] })[];
    answerRunnable: QueryMaterializer;
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
    /** The author's compile: a database table shares its source's dialect. */
@@ -384,6 +424,7 @@ export async function storedTableCollationRefusal(args: {
    reads: GateReads | undefined;
 }): Promise<string | undefined> {
    if (args.tables.length === 0) return undefined;
+   if (await comparesNoString(args)) return undefined;
    const sourceDialect = await entryDialectOf(args.authorRunnable);
    const equalityOnly = args.reads?.equalityOnly === true;
    const runtime = (
@@ -517,7 +558,9 @@ async function storedSide(
    const connection =
       await runtime.connections.lookupConnection(connectionName);
    if (t.tablePath === undefined) {
-      return read === "instance" ? duckdbCollation(connection, "") : "binary";
+      // No path to read the table's own columns by: the instance-wide check
+      // for DuckDB, and unknown elsewhere.
+      return read === "instance" ? duckdbCollation(connection, "") : "unknown";
    }
    return read === "instance"
       ? duckdbTableCollation(connection, t.tablePath)
@@ -540,4 +583,16 @@ async function entryConnectionOf(
    } catch {
       return undefined;
    }
+}
+
+/**
+ * Whether the entry point's gates and scopes compare no string at all
+ * (`GateReads.comparesNoString`, an allow-list over every leaf), so no
+ * collation can change what they admit. Any doubt reads false.
+ */
+async function comparesNoString(args: {
+   reads: GateReads | undefined;
+}): Promise<boolean> {
+   const { reads } = args;
+   return reads !== undefined && !reads.unresolved && reads.comparesNoString;
 }

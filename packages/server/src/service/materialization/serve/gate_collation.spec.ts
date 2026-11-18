@@ -3,14 +3,15 @@
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
-import type { Connection } from "@malloydata/malloy";
+import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { equalityOnlyExpr } from "./gate_reads";
+import { equalityOnlyExpr, storedTableCollationRefusal } from "./gate_reads";
 import {
    duckdbCollation,
    duckdbTableCollation,
    postgresCollation,
    postgresTableCollation,
+   unfinalizedPostgresSQL,
 } from "./gate_collation";
 
 describe("a DuckDB source's string comparison", () => {
@@ -59,6 +60,41 @@ describe("a DuckDB source's string comparison", () => {
          ).toBe("unknown");
       } finally {
          await db.runSQL("DROP MACRO IF EXISTS gate_ci").catch(() => {});
+         await db.close();
+      }
+   });
+
+   it("reads a default_collation set before the instance's configuration was locked", async () => {
+      // As the lockdown leaves an operator's connection: its setupSQL ran,
+      // then the configuration was locked. Reading the setting still works;
+      // only a SET is refused.
+      const db = new DuckDBConnection({
+         name: "duckdb",
+         databasePath: ":memory:",
+         setupSQL: "SET default_collation = 'nocase'",
+         lockConfiguration: true,
+      } as never);
+      try {
+         await expect(db.runSQL("SET default_collation = ''")).rejects.toThrow(
+            /locked/,
+         );
+         const [row] = (
+            await db.runSQL("SELECT current_setting('default_collation') AS c")
+         ).rows;
+         expect(row.c).toBe("nocase");
+         expect(
+            await duckdbCollation(
+               db as unknown as Connection,
+               "SELECT 'a' AS probe_value",
+            ),
+         ).toBe("unknown");
+         expect(
+            await duckdbTableCollation(
+               db as unknown as Connection,
+               "t_missing",
+            ),
+         ).toBe("unknown");
+      } finally {
          await db.close();
       }
    });
@@ -142,6 +178,19 @@ describe("an equality-only comparison", () => {
             kids: { left: { node: "function_call", kids: {} }, right: g },
          }),
       ).toBe(false);
+   });
+});
+
+describe("a Postgres probe's SQL", () => {
+   it("reads the stage Malloy's final stage wraps, and leaves other SQL alone", () => {
+      const stage = `WITH __stage0 AS (\n  SELECT \n     (base."c") as "probe_value"\n  FROM t as base\n  LIMIT 1\n)\n`;
+      expect(
+         unfinalizedPostgresSQL(
+            `${stage}SELECT row_to_json(finalStage) as row FROM __stage0 AS finalStage`,
+         ),
+      ).toBe(`${stage}SELECT * FROM __stage0`);
+      const plain = "SELECT c AS probe_value FROM t";
+      expect(unfinalizedPostgresSQL(plain)).toBe(plain);
    });
 });
 
@@ -234,6 +283,43 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
       } finally {
          await icu.close();
       }
+   });
+
+   it("judges a database table with no path unknown, never binary", async () => {
+      const postgresAuthor = new SingleConnectionRuntime({ connection: pg })
+         .loadModel(`source: s is pg.sql("SELECT 'a' AS c")`)
+         .loadQuery("run: s -> { select: c }");
+      expect(
+         await storedTableCollationRefusal({
+            tables: [{ tier: "database" }],
+            answerRunnable: {
+               runtime: {
+                  connections: { lookupConnection: async () => pg },
+               },
+            } as never,
+            virtualMap: undefined,
+            authorRunnable: postgresAuthor as never,
+            reads: undefined,
+         }),
+      ).toBeDefined();
+   });
+
+   it("reads a column through a query Malloy compiled, as the probe sends it", async () => {
+      const { sql } = await new SingleConnectionRuntime({ connection: pg })
+         .loadModel(`source: s is pg.table('public.gate_coll_t')`)
+         .loadQuery("run: s -> { select: probe_value is c_bin; limit: 1 }")
+         .getPreparedResult();
+      // Malloy wraps a Postgres query's rows as one JSON column, which has
+      // no `probe_value` to read.
+      await expect(
+         postgresCollation(pg as unknown as Connection, sql),
+      ).rejects.toThrow();
+      expect(
+         await postgresCollation(
+            pg as unknown as Connection,
+            unfinalizedPostgresSQL(sql),
+         ),
+      ).toBe("binary");
    });
 
    it("reads an empty source's column too", async () => {

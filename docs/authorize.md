@@ -300,8 +300,8 @@ with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off: a `#@ persist` or a `#(materiali
 source it derives from or extends), or both. Its table holds every caller's rows, and the gate is grafted and proven
 on each read through Publisher, exactly as on live. A database table stays in the author's warehouse;
 a `storage=` table puts those rows, ungated, at rest in the destination, readable by anyone with
-direct access to it, a maintainer-approved exception made ahead of the managed tier's security
-review, for consistency between the tiers. A row filter the source inherits, a gate reached only
+direct access to it. This is allowed ahead of the managed tier's security review, so the two
+tiers behave the same. A row filter the source inherits, a gate reached only
 through a join, and a gate over a source whose build would substitute a given stay refused on every
 tier. A v1 `#@ preaggregate` rollup over a gated source is never read past a gate, and a `storage=`
 rollup over one waits for that review.

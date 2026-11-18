@@ -748,8 +748,8 @@ onto every served query and proven there exactly as on live: rows come back filt
 or the caller is denied, as live. The gate is not absent at read; it is absent **at
 rest**. The table holds every caller's rows, ungated, and a `storage=` destination may
 be a separate, shared store, readable by anyone with direct access to it. Admitting a
-gated `storage=` source is a maintainer-approved exception made ahead of the managed
-tier's security review, for consistency with database. A database build has no
+gated `storage=` source is allowed ahead of the managed tier's security review, so the
+two tiers behave the same. A database build has no
 separate store: the table stays in your own warehouse. When admitted, what is frozen is
 the data the gate DECIDES AGAINST — the gating column's values are whatever they were at
 build time, so a row that changes hands keeps being served to its former owner until

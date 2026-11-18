@@ -45,7 +45,7 @@
 //                                        `(failed)` = instructed but expected to FAIL, asserted
 //                                        against the manifest's `failures`. An unmarked source is
 //                                        asserted built AND absent from `failures`.
-//   ## Build refusals [(pkg=P)]          + GFM table `source [| tier | reason]` -> assert the
+//   ## Build refusals [(pkg=P)]          + GFM table `source [| tier | reason | origin]` -> assert the
 //                                        compiled build plan's REFUSED sources (examined and
 //                                        refused, as opposed to never present). An EMPTY table
 //                                        asserts nothing was refused. Runs nothing.
@@ -2624,7 +2624,12 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   buildPlan?: {
                      refusedSources?: Record<
                         string,
-                        { name?: string; tier?: string; reason?: string }
+                        {
+                           name?: string;
+                           tier?: string;
+                           reason?: string;
+                           origin?: string;
+                        }
                      >;
                   };
                };
@@ -2639,8 +2644,8 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                );
                // One row per DISTINCT source name, sorted both sides so the
                // comparison is order-independent — plan iteration order is not a
-               // contract. `tier` and `reason` are opt-in columns, the same way
-               // `## Build targets` treats `entity`.
+               // contract. `tier`, `reason` and `origin` are opt-in columns, the
+               // same way `## Build targets` treats `entity`.
                const actual = [
                   ...new Map(
                      refused
@@ -2651,6 +2656,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                               source: r.name!,
                               tier: r.tier ?? "",
                               reason: r.reason ?? "",
+                              origin: r.origin ?? "",
                            },
                         ]),
                   ).values(),

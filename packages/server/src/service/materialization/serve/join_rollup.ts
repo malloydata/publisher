@@ -56,9 +56,16 @@
  * NULL on an unmatched parent's row when its join is keyed on a column of
  * the joined source, so it is read like the joined source's own column.
  *
- * Gates: a gated entry point skips every rollup (`ROW_LEVEL_GATE`) as for the base
- * branch; a joined source that declares a gate of its own is declined
- * (`ROW_LEVEL_GATE`), since the rollup carries none.
+ * Gates: a joined source that declares a gate of its own is declined
+ * (`ROW_LEVEL_GATE`), since the rollup carries none. A gated query source is
+ * answered from a rollup of an ungated joined source when its gate reads
+ * only its own plain columns: the variant redeclares it in its own
+ * declaring file with its gates (in a storage destination, the served
+ * copy's copy of that file), where `govern()` grafts and proves them
+ * (`joinGateDecline`, `compileJoinGated`, `compileJoinInDestinationGated`
+ * in rollup_variants.ts; g-mixed for rollups, question 14). In a storage
+ * destination the answer keeps the gate only when every table it reads is a
+ * G3 table. Any other gate declines (`ROW_LEVEL_GATE`).
  */
 
 import { requireUnique, type KeyVerdict } from "../domain/key_check";
