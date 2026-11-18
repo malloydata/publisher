@@ -10379,10 +10379,15 @@ components:
             the same reasons: the table is another's, or nothing proves it is
             this package's.
 
-            TABLE_IN_USE, on a 409 from dropping a materialized table, means a
-            committed run of the package, or a loaded package's binding, still
-            names a table with that name, so dropping it could break what is
-            served. Delete or replace that run first.
+            TABLE_IN_USE, on a 409 from dropping a materialized table, means
+            the table may still be read: a committed run of the package, of
+            any version, names a table with that name (other than the run the
+            caller named, unless that run is the one a version or the package
+            serves); a loaded copy of any package in the environment, or any
+            loaded version of one, is bound to a table with that name; or the
+            warehouse refused the drop because other objects depend on the
+            table. Delete or replace that run, rebind that copy, or drop
+            those objects first.
 
             BUILD_INSTRUCTIONS_INVALID, on a 400 from creating a
             materialization, means its body or build instructions are not a
@@ -11714,10 +11719,21 @@ components:
             quoted string (`merge_key="order_id, region"`).
 
 
-            Both are validated at publish against the compiled output schema, so
-            a dangling or stale name is rejected rather than deferred to a build.
-            Neither participates in `sourceEntityId`: adding a watermark to an
-            existing source must not re-address its table.
+            * `lookback` — a duration (a positive whole number and one unit:
+            `seconds`, `minutes`, `hours`, `days` or `weeks`, singular or
+            plural, or `s`, `m`, `h`, `d` or `w`, as in `"2 days"` or `"36h"`;
+            at most 365 days). Each delta of a `date` or `timestamp` watermark
+            starts that much below the newest watermark the stored table holds,
+            and the merge key matches the rows read again. Valid only with
+            `refresh="incremental"`, a `date` or `timestamp` watermark and a
+            `merge_key`; absent means no lookback.
+
+
+            All three are validated at publish against the compiled output
+            schema, so a dangling or stale name, or an invalid lookback, is
+            rejected rather than deferred to a build. None participates in
+            `sourceEntityId`: adding a watermark to an existing source must not
+            re-address its table.
 
 
             For a synthesized rollup (`origin: rollup`) the annotation was
