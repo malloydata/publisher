@@ -11,7 +11,7 @@ const LONG_REQUEST_MS = 600_000;
  * A query, a package load or a catalog file load can run for minutes, so every
  * listener keeps a request, its headers and an idle keep-alive open that long:
  * ten minutes, or `timeoutMs` where a listener's requests can run longer (the
- * admin listener's table copies, `admin.requestTimeoutSeconds`).
+ * admin listener's table copies, `admin.requestTimeoutMs`).
  */
 export function longTimeouts<T extends http.Server>(
    server: T,

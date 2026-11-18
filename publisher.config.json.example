@@ -25,7 +25,7 @@
   "admin": {
     "port": null,
     "host": "127.0.0.1",
-    "requestTimeoutSeconds": 600,
+    "requestTimeoutMs": 600000,
     "catalogDatabase": null,
     "storage": {
       "provider": null,

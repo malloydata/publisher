@@ -39,7 +39,7 @@ adminServer.on("error", (error: NodeJS.ErrnoException) => {
    );
    process.exit(1);
 });
-longTimeouts(adminServer, settings.get("admin.requestTimeoutSeconds") * 1000);
+longTimeouts(adminServer, settings.get("admin.requestTimeoutMs"));
 
 registerSignalHandlers(
    null,

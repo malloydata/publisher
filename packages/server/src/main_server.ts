@@ -567,10 +567,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
             "error",
             fatalListenError("Admin", ADMIN_PORT!, "--admin_port", mainServer),
          );
-         longTimeouts(
-            adminServer,
-            settings.get("admin.requestTimeoutSeconds") * 1000,
-         );
+         longTimeouts(adminServer, settings.get("admin.requestTimeoutMs"));
       }
 
       const otherServers = adminServer ? [adminServer] : [];
