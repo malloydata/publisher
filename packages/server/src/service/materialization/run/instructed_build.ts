@@ -255,7 +255,24 @@ function upstreamsBySourceID(
    return out;
 }
 
-/** Mark a table built at its author's `name=` as this package's; best-effort. */
+/**
+ * The database table a build wrote, for its ownership mark: undefined for a
+ * `storage=` table (a destination's tables are not marked) or a run that
+ * names no package to mark it as.
+ */
+function builtDatabaseTarget(
+   run: InstructedRun,
+   built: ManifestEntry,
+): OwnedTableTarget | undefined {
+   if (built.storageDestinationName || !built.connectionName) return undefined;
+   if (!runPackageOf(run)) return undefined;
+   return {
+      physicalTableName: built.physicalTableName,
+      connectionName: built.connectionName,
+   };
+}
+
+/** Mark a table a build wrote as this package's; best-effort. */
 async function markBuiltOwnedTable(
    run: InstructedRun,
    persistSource: PersistSource,
@@ -1151,11 +1168,17 @@ export class InstructedBuild {
          if (compiled.tables[persistSource.sourceID]?.rollup) {
             built = { ...built, origin: "rollup" as const };
          }
-         if (ownedTarget) {
+         // Every database table a build writes carries the package's mark,
+         // whoever named it (an author's name=, Publisher, or a host's
+         // instruction), so a caller's drop can prove the table is this
+         // package's once its run's record is gone. Best-effort, after the
+         // build: it never changes what was built or what is served.
+         const markTarget = ownedTarget ?? builtDatabaseTarget(run, built);
+         if (markTarget) {
             await markBuiltOwnedTable(
                run,
                persistSource,
-               ownedTarget,
+               markTarget,
                connection,
             );
          }

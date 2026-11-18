@@ -40,9 +40,13 @@
  * (URI-encoded), the warehouse half of ownership: it is what decides between
  * two packages whose records both name the table (a collision from before the
  * mark existed: the first to build again claims it, and the other is
- * refused). The run records are the Publisher half. Written after every build,
- * best-effort: a table whose mark could not be written is still this
- * package's by its records once the run commits.
+ * refused). The run records are the Publisher half. Written after every
+ * database-tier build, whoever named the table (an author's `name=`,
+ * Publisher, or a host's instruction), best-effort: a table whose mark could
+ * not be written is still this package's by its records once the run
+ * commits. The mark is what lets a caller's drop
+ * (Reclaimer.dropConnectionTable) prove a table is this package's after its
+ * run's record is gone.
  *
  * A drop (deleting a run's tables, reclaiming a version's) skips a table
  * marked as another package's (see ownedElsewhere): a table this package
@@ -51,7 +55,8 @@
  *
  * The SQL of the ownership probe and mark is in warehouse_sql.ts.
  *
- * Host-orchestrated builds are not checked: the host chooses their names.
+ * Host-orchestrated builds are not checked (the host chooses their names),
+ * only marked.
  * Within one server only: two servers whose environments and packages have
  * the same names write the same mark.
  */
