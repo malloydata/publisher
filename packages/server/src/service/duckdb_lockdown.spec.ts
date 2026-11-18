@@ -50,6 +50,38 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
 }
 
+/**
+ * Whether `ducklake` is loaded on the connection's instance, read from the
+ * functions it registers (`duckdb_extensions()` lists the extension
+ * directory, which a confined instance may not read).
+ */
+async function ducklakeLoaded(connection: {
+   runSQL(sql: string): Promise<unknown>;
+}): Promise<boolean> {
+   const [row] = rowsOf(
+      await connection.runSQL(
+         "SELECT count(*) AS n FROM duckdb_functions() WHERE function_name = 'ducklake_snapshots'",
+      ),
+   );
+   return Number(row?.n) > 0;
+}
+
+/** Whether this host can load `ducklake` at all (the preload is best effort). */
+async function ducklakeAvailable(): Promise<boolean> {
+   const plain = new DuckDBConnection({
+      name: "ducklake_probe",
+      databasePath: ":memory:",
+   });
+   try {
+      await plain.runSQL("LOAD ducklake");
+      return true;
+   } catch {
+      return false;
+   } finally {
+      await plain.close();
+   }
+}
+
 async function refused(
    connection: { runSQL(sql: string): Promise<unknown> },
    sql: string,
@@ -361,6 +393,10 @@ describe("package sandbox: Malloy's sandboxed policy", () => {
       await expectCommonVectorsRefused(connection);
    });
 
+   it("does not preload ducklake: no setup of its own attaches a catalog", async () => {
+      expect(await ducklakeLoaded(connection)).toBe(false);
+   });
+
    it("never shares an instance with an unsandboxed connection", async () => {
       const plain = new DuckDBConnection({
          name: "duckdb",
@@ -636,6 +672,11 @@ describe("environment duckdb with setupSQL: allowlist, then lock, as options", (
       expect(
          rowsOf(await connection.runSQL("SELECT * FROM 'data/y.csv'")),
       ).toEqual([{ c: "3" }]);
+   });
+
+   it("preloads ducklake, which its setupSQL may attach a local catalog with", async () => {
+      // Best effort, as the preload is: a host without the extension loads none.
+      expect(await ducklakeLoaded(connection)).toBe(await ducklakeAvailable());
    });
 
    it("refuses every vector", async () => {
