@@ -67,11 +67,74 @@ interface IndexedValue {
    /** Node key of the dimension. */
    dimension: string;
    origin: "data" | "doc";
+   /**
+    * For a source whose gate splits its rows (CatalogSource.partitionKey):
+    * the key the value was read under, from {@link partitionKeyText}. A
+    * search returns it only to a caller whose givens name that key.
+    */
+   key?: string;
+}
+
+/**
+ * Which stored values a search may return: by dimension, and, for a value
+ * stored under a key, by that key.
+ */
+export type ValueAllow = (dimension: string, key?: string) => boolean;
+
+/**
+ * One part of a partition key as text, so the database's value and the
+ * caller's given compare equal: `362023`, `362023.0` and `"362023"` are one
+ * key, and a one-element list is its element. Hosted Credible keys the same
+ * way (canonical_key_part).
+ */
+export function partitionKeyPart(raw: unknown): string | undefined {
+   const v = Array.isArray(raw) && raw.length === 1 ? raw[0] : raw;
+   if (v === null || v === undefined || Array.isArray(v)) return undefined;
+   if (v instanceof Date) {
+      const iso = v.toISOString();
+      return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
+   }
+   if (typeof v === "number" || typeof v === "bigint") return String(Number(v));
+   const text = String(v);
+   const n = Number(text);
+   return text.trim() !== "" && Number.isFinite(n) ? String(n) : text;
+}
+
+/**
+ * The key the caller's givens name for each dimension's source, by dimension
+ * node key: undefined when the source is not split by a key, or when the
+ * caller did not send every given its key needs (then none of its stored
+ * values match).
+ */
+export function callerKeyOf(
+   catalog: Catalog,
+   givens: Readonly<Record<string, unknown>> | undefined,
+): (dimension: string) => string | undefined {
+   return (dimension) => {
+      const node = catalog.nodes.get(dimension);
+      const key = node && catalog.sources.get(node.sourceKey)?.partitionKey;
+      if (!key) return undefined;
+      return partitionKeyText(key.map((p) => givens?.[p.given]));
+   };
+}
+
+/** A whole partition key as text, or undefined when a part is missing. */
+export function partitionKeyText(
+   parts: readonly unknown[],
+): string | undefined {
+   const out: string[] = [];
+   for (const raw of parts) {
+      const part = partitionKeyPart(raw);
+      if (part === undefined) return undefined;
+      out.push(part);
+   }
+   return out.join("\u0000");
 }
 
 /** What one data read returns, most frequent first. */
 interface CountedValues {
-   values: Array<{ value: string; count: number }>;
+   /** `key` is set when the read named partition columns. */
+   values: Array<{ value: string; count: number; key?: string }>;
    /** More distinct values exist than were read. */
    truncated: boolean;
 }
@@ -87,6 +150,8 @@ export interface IndexValueRequest {
    limit: number;
    timeoutMs: number;
    givens?: Record<string, unknown>;
+   /** Return each value's key; see DistinctValueQuery.partitionColumns. */
+   partitionColumns?: readonly string[];
 }
 
 export type IndexValueFetcher = (
@@ -107,8 +172,9 @@ const VALUE_READ_BUDGET_MS = 300_000;
 
 /**
  * The read: the `limit` most frequent non-null values of one dimension,
- * through the normal query path, with no givens (an ungated source needs
- * none) and no `#(authorize)` bypass.
+ * through the normal query path and every gate, with the configured givens
+ * (none for an ungated source). For a source whose gate splits its rows,
+ * each row also carries its key; see DistinctValueQuery.partitionColumns.
  */
 export const indexValueFetcherFor =
    (deps: ValueQueryDeps): IndexValueFetcher =>
@@ -122,11 +188,21 @@ export const indexValueFetcherFor =
          },
          deps,
       );
-      const values: Array<{ value: string; count: number }> = [];
+      const values: CountedValues["values"] = [];
+      const keyCount = request.partitionColumns?.length ?? 0;
       for (const row of rows.slice(0, request.limit)) {
          const text = usableValue(row.v);
          if (text === undefined) continue;
-         values.push({ value: text, count: Number(row.n) || 0 });
+         if (keyCount === 0) {
+            values.push({ value: text, count: Number(row.n) || 0 });
+            continue;
+         }
+         // A row whose key is null belongs to no caller: drop it.
+         const key = partitionKeyText(
+            Array.from({ length: keyCount }, (_, i) => row[`k${i}`]),
+         );
+         if (key === undefined) continue;
+         values.push({ value: text, count: Number(row.n) || 0, key });
       }
       return { values, truncated: rows.length > request.limit };
    };
@@ -267,7 +343,7 @@ export class ValueIndex {
    searchByMeaning(
       phrase: string,
       vec: Float32Array,
-      allow: (dimension: string) => boolean = () => true,
+      allow: ValueAllow = () => true,
    ): ValueMatch[] {
       const m = this.meaning;
       if (!m || vec.length !== m.dims) return [];
@@ -284,7 +360,7 @@ export class ValueIndex {
             m.matrix.subarray(t * m.dims, (t + 1) * m.dims),
          );
          if (score < floor) continue;
-         if (!m.rows[t].some((i) => allow(this.values[i].dimension))) continue;
+         if (!m.rows[t].some((i) => allowed(allow, this.values[i]))) continue;
          hits.push({ t, score });
       }
       if (hits.length === 0) return [];
@@ -295,7 +371,7 @@ export class ValueIndex {
          if (h.score < cut) break;
          for (const i of m.rows[h.t]) {
             const v = this.values[i];
-            if (!allow(v.dimension)) continue;
+            if (!allowed(allow, v)) continue;
             out.push({
                value: v.value,
                dimension: v.dimension,
@@ -315,12 +391,12 @@ export class ValueIndex {
     * "Denver International (DIA)" in another; which of the two the question
     * means is the connect stage's call, not this one's.
     */
-   search(phrase: string, allow: (dimension: string) => boolean = () => true) {
+   search(phrase: string, allow: ValueAllow = () => true) {
       const norm = normalizeText(phrase);
       if (!norm) return [];
       const exact = (this.byNormalized.get(norm) ?? [])
          .map((i) => this.values[i])
-         .filter((v) => allow(v.dimension))
+         .filter((v) => allowed(allow, v))
          .map<ValueMatch>((v) => ({
             value: v.value,
             dimension: v.dimension,
@@ -328,8 +404,8 @@ export class ValueIndex {
             how: "exact",
          }));
       const done = new Set(exact.map((m) => m.dimension));
-      const open = (dimension: string) =>
-         allow(dimension) && !done.has(dimension);
+      const open = (v: IndexedValue) =>
+         allowed(allow, v) && !done.has(v.dimension);
 
       // Words: every value sharing a word with the phrase, or holding a word
       // within two edits of one of its words.
@@ -353,7 +429,7 @@ export class ValueIndex {
       const byWords: ValueMatch[] = [];
       for (const i of candidates) {
          const v = this.values[i];
-         if (!open(v.dimension)) continue;
+         if (!open(v)) continue;
          const score = scoreValue(phrase, v.value);
          if (score >= VALUE_MATCH_FLOOR) {
             byWords.push({
@@ -379,7 +455,7 @@ export class ValueIndex {
       const byGrams: ValueMatch[] = [];
       for (const [i, shared] of overlap) {
          const v = this.values[i];
-         if (!open(v.dimension)) continue;
+         if (!open(v)) continue;
          const theirs = trigrams(v.normalized).size;
          const jaccard = shared / (grams.size + theirs - shared);
          if (jaccard >= NGRAM_MIN_OVERLAP) {
@@ -400,7 +476,7 @@ export class ValueIndex {
     */
    nominate(
       phrases: readonly string[],
-      allow: (dimension: string) => boolean = () => true,
+      allow: ValueAllow = () => true,
    ): ValueNomination[] {
       return this.nominateFrom(phrases.map((p) => this.search(p, allow)));
    }
@@ -411,7 +487,7 @@ export class ValueIndex {
     */
    nominateByMeaning(
       phrases: ReadonlyArray<{ phrase: string; vec: Float32Array }>,
-      allow: (dimension: string) => boolean = () => true,
+      allow: ValueAllow = () => true,
    ): ValueNomination[] {
       return this.nominateFrom(
          phrases.map((p) => this.searchByMeaning(p.phrase, p.vec, allow)),
@@ -451,6 +527,53 @@ export class ValueIndex {
                  : 0),
       );
    }
+}
+
+/**
+ * Every combination of the configured givens' values, one per read; `[undefined]`
+ * (one read with no givens) when none are configured.
+ */
+export function combinationsOf(
+   givens: Readonly<Record<string, readonly unknown[]>> | undefined,
+): Array<Record<string, unknown> | undefined> {
+   const entries = Object.entries(givens ?? {});
+   if (entries.length === 0) return [undefined];
+   let out: Array<Record<string, unknown>> = [{}];
+   for (const [name, list] of entries) {
+      out = out.flatMap((c) => list.map((v) => ({ ...c, [name]: v })));
+   }
+   return out;
+}
+
+/**
+ * One read per combination, merged. A value read under a key keeps it (two
+ * combinations name two keys); a value with none is one value, its counts
+ * summed. Truncated when any read was.
+ */
+async function readEachCombination(
+   combinations: ReadonlyArray<Record<string, unknown> | undefined>,
+   read: (
+      givens: Record<string, unknown> | undefined,
+   ) => Promise<CountedValues>,
+): Promise<CountedValues> {
+   if (combinations.length === 1) return read(combinations[0]);
+   const merged = new Map<string, CountedValues["values"][number]>();
+   let truncated = false;
+   for (const givens of combinations) {
+      const got = await read(givens);
+      truncated ||= got.truncated;
+      for (const v of got.values) {
+         const id = `${v.key ?? ""}\u0000${v.value}`;
+         const seen = merged.get(id);
+         if (seen) seen.count += v.count;
+         else merged.set(id, { ...v });
+      }
+   }
+   return { values: [...merged.values()], truncated };
+}
+
+function allowed(allow: ValueAllow, v: IndexedValue): boolean {
+   return v.key === undefined ? allow(v.dimension) : allow(v.dimension, v.key);
 }
 
 function push(map: Map<string, number[]>, key: string, i: number) {
@@ -512,14 +635,33 @@ function isTransientReadFailure(error: unknown): boolean {
    );
 }
 
-/** Whether a node's values may be read into the shared index. */
+/**
+ * Whether a node's values may be read into the shared index. A source split
+ * by a key is read only for the keys `givens` lists: reading every key at
+ * once scans the whole table, and on a production model the cap then keeps
+ * a sliver of the (value, key) pairs, so most keys would get nothing.
+ */
 function readable(
    catalog: Catalog,
    node: CatalogNode,
+   givens: Readonly<Record<string, readonly unknown[]>> | undefined,
+   packageName: string | undefined,
 ): { ok: true } | { ok: false; reason: string } {
    if (!node.indexed) return { ok: false, reason: "not tagged #(index)" };
    if (node.joinPath) return { ok: false, reason: "a field of a join" };
-   if (catalog.sources.get(node.sourceKey)?.gated) {
+   const owner = catalog.sources.get(node.sourceKey);
+   const unlisted = owner?.partitionKey
+      ?.map((p) => p.given)
+      .filter((g) => !givens?.[g]);
+   if (unlisted?.length) {
+      return {
+         ok: false,
+         reason:
+            `its source's rows are split by ${unlisted.join(", ")}, and reading every value of it scans the whole table. ` +
+            `Fix: list the ones to index in publisher.config.json, "retrieval": { "dimensionValues": { "givens": { "${packageName ?? "<package>"}": { "${unlisted[0]}": [...] } } } }`,
+      };
+   }
+   if (owner?.gated && !owner.partitionKey) {
       return {
          ok: false,
          reason:
@@ -556,6 +698,12 @@ export async function buildValueIndex(args: {
    previous?: { index: ValueIndex; report: ValueBuildReport };
    /** Test seam for {@link VALUE_READ_BUDGET_MS}. */
    readBudgetMs?: number;
+   /**
+    * `retrieval.dimensionValues.givens` for this package: every dimension is
+    * read once per combination of these values, with that combination as
+    * its givens.
+    */
+   givens?: Readonly<Record<string, readonly unknown[]>>;
 }): Promise<{ index: ValueIndex; report: ValueBuildReport }> {
    const started = Date.now();
    const budgetMs = args.readBudgetMs ?? VALUE_READ_BUDGET_MS;
@@ -570,6 +718,7 @@ export async function buildValueIndex(args: {
       previousValues.set(v.dimension, list);
    }
    const values: IndexedValue[] = [];
+   const givenCombinations = combinationsOf(args.givens);
    const report: ValueBuildReport = {
       dimensionsRead: 0,
       dimensionsReused: 0,
@@ -595,7 +744,12 @@ export async function buildValueIndex(args: {
          report.valuesFromDocs += 1;
       }
       if (!node.indexed) continue;
-      const check = readable(args.catalog, node);
+      const check = readable(
+         args.catalog,
+         node,
+         args.givens,
+         args.read?.packageName,
+      );
       if (!check.ok) {
          report.skipped.push({ dimension: node.key, reason: check.reason });
          continue;
@@ -628,21 +782,30 @@ export async function buildValueIndex(args: {
          continue;
       }
       const fetcher = args.read.fetcher;
+      const partitionKey = args.catalog.sources.get(
+         node.sourceKey,
+      )?.partitionKey;
       try {
-         const got = await fetcher({
-            environmentStore: args.read.environmentStore,
-            environmentName: args.read.environmentName,
-            packageName: args.read.packageName,
-            modelPath: node.modelPaths[0],
-            source: node.source,
-            dimension: node.name,
-            limit: args.cap,
-            timeoutMs: VALUE_READ_TIMEOUT_MS,
-         });
+         const got = await readEachCombination(givenCombinations, (givens) =>
+            fetcher({
+               environmentStore: args.read!.environmentStore,
+               environmentName: args.read!.environmentName,
+               packageName: args.read!.packageName,
+               modelPath: node.modelPaths[0],
+               source: node.source,
+               dimension: node.name,
+               limit: args.cap,
+               timeoutMs: VALUE_READ_TIMEOUT_MS,
+               ...(givens ? { givens } : {}),
+               ...(partitionKey
+                  ? { partitionColumns: partitionKey.map((p) => p.column) }
+                  : {}),
+            }),
+         );
          report.dimensionsRead += 1;
          if (got.truncated)
             report.cut.push({ dimension: node.key, kept: got.values.length });
-         for (const { value, count } of got.values) {
+         for (const { value, count, key } of got.values) {
             const normalized = normalizeText(value);
             if (!normalized) continue;
             values.push({
@@ -651,13 +814,20 @@ export async function buildValueIndex(args: {
                count,
                dimension: node.key,
                origin: "data",
+               ...(key !== undefined ? { key } : {}),
             });
             report.valuesFromData += 1;
          }
       } catch (error) {
+         const message = error instanceof Error ? error.message : String(error);
+         const unset = /Given '([^']+)' has no value and no default/.exec(
+            message,
+         );
          (isTransientReadFailure(error) ? report.failed : report.skipped).push({
             dimension: node.key,
-            reason: `the read failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`,
+            reason: unset
+               ? `the read needs the given ${unset[1]}, which has no default. Fix: name its values for this package in publisher.config.json, "retrieval": { "dimensionValues": { "givens": { "${args.read.packageName}": { "${unset[1]}": [...] } } } }`
+               : `the read failed: ${message.slice(0, 200)}`,
          });
       }
    }

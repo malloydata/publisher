@@ -2519,6 +2519,27 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: fails("retrieval.dimensionValues.enabled"),
       },
    ],
+   "retrieval.dimensionValues.givens": [
+      { name: "unset", expect: value({}) },
+      {
+         name: "the file, one value read as a list of one",
+         file: {
+            retrieval: {
+               dimensionValues: { givens: { reports: { REPORT_ID: 7 } } },
+            },
+         },
+         expect: value({ reports: { REPORT_ID: [7] } }),
+      },
+      {
+         name: "a given with no value is refused",
+         file: {
+            retrieval: {
+               dimensionValues: { givens: { reports: { REPORT_ID: [] } } },
+            },
+         },
+         expect: fails("retrieval.dimensionValues.givens.reports.REPORT_ID"),
+      },
+   ],
 };
 
 /** Read one case: its value and warnings, or the message it failed with. */

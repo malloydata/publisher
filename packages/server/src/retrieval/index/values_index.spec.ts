@@ -13,6 +13,8 @@ import type { DocParts } from "./doc_parts";
 import { toUnit } from "./vectors";
 import {
    buildValueIndex,
+   callerKeyOf,
+   combinationsOf,
    MEANING_SHORT_FLOOR,
    ValueIndex,
    type IndexValueFetcher,
@@ -230,6 +232,126 @@ describe("value index build", () => {
          },
       ]);
       expect(index.size).toBe(0);
+   });
+});
+
+describe("value index build over a source whose gate splits its rows", () => {
+   /** A keyed read: each tenant's cities, under the tenant's key. */
+   const keyed: IndexValueFetcher = async (req) => {
+      if (req.source !== "cities") return fetcher(req);
+      asked.push(req);
+      const rows = [
+         { value: "Denver", count: 3, key: "acme" },
+         { value: "Boulder", count: 1, key: "acme" },
+         { value: "Paris", count: 2, key: "globex" },
+      ];
+      const tenant = req.givens?.TENANT;
+      return {
+         values: rows.filter((r) => tenant === undefined || r.key === tenant),
+         truncated: false,
+      };
+   };
+   const withKey = async <T>(run: () => Promise<T>): Promise<T> => {
+      const cities = fixture.catalog.sources.get("cities@travel.malloy")!;
+      cities.gated = true;
+      cities.partitionKey = [{ column: "tenant", given: "TENANT" }];
+      try {
+         return await run();
+      } finally {
+         cities.gated = false;
+         delete cities.partitionKey;
+      }
+   };
+
+   it("skips a keyed source no configured givens name, saying how to list them", async () => {
+      asked.length = 0;
+      await withKey(async () => {
+         const { report } = await buildValueIndex({
+            catalog: fixture.catalog,
+            parts: noParts,
+            cap: 100,
+            read: read(keyed),
+         });
+         expect(asked.map((r) => r.source)).toEqual(["flights"]);
+         expect(report.skipped).toEqual([
+            {
+               dimension: CITY,
+               reason:
+                  'its source\'s rows are split by TENANT, and reading every value of it scans the whole table. Fix: list the ones to index in publisher.config.json, "retrieval": { "dimensionValues": { "givens": { "fixture": { "TENANT": [...] } } } }',
+            },
+         ]);
+      });
+   });
+
+   it("with configured givens, reads once per listed value and keeps each value under its key", async () => {
+      asked.length = 0;
+      await withKey(async () => {
+         const { index, report } = await buildValueIndex({
+            catalog: fixture.catalog,
+            parts: noParts,
+            cap: 100,
+            read: read(keyed),
+            givens: { TENANT: ["acme", "globex"] },
+         });
+         expect(
+            asked.map((r) => [r.source, r.givens?.TENANT, r.partitionColumns]),
+         ).toEqual([
+            ["cities", "acme", ["tenant"]],
+            ["cities", "globex", ["tenant"]],
+            ["flights", "acme", undefined],
+            ["flights", "globex", undefined],
+         ]);
+         expect(
+            index.values
+               .filter((v) => v.dimension === CITY)
+               .map((v) => `${v.key}:${v.value}`),
+         ).toEqual(["acme:Denver", "acme:Boulder", "globex:Paris"]);
+         // An unkeyed value read under two combinations is one value.
+         expect(
+            index.values.find((v) => v.value === "Denver International (DIA)")
+               ?.count,
+         ).toBe(20);
+         expect(report.dimensionsRead).toBe(2);
+         const searchAs = (givens?: Record<string, unknown>) => {
+            const key = callerKeyOf(fixture.catalog, givens);
+            return index
+               .search("Paris", (d, k) => k === undefined || key(d) === k)
+               .map((m) => m.value);
+         };
+         expect(searchAs({ TENANT: "globex" })).toEqual(["Paris"]);
+         expect(searchAs({ TENANT: "acme" })).toEqual([]);
+         expect(searchAs()).toEqual([]);
+      });
+   });
+
+   it("names the config fix when a read needs a given nobody set", async () => {
+      const { report } = await buildValueIndex({
+         catalog: fixture.catalog,
+         parts: noParts,
+         cap: 100,
+         read: read(async (req) => {
+            if (req.source === "cities")
+               throw new Error(
+                  "Given 'TENANT' has no value and no default. To fix: ...",
+               );
+            return fetcher(req);
+         }),
+      });
+      expect(report.skipped).toEqual([
+         {
+            dimension: CITY,
+            reason:
+               'the read needs the given TENANT, which has no default. Fix: name its values for this package in publisher.config.json, "retrieval": { "dimensionValues": { "givens": { "fixture": { "TENANT": [...] } } } }',
+         },
+      ]);
+   });
+
+   it("makes one combination per pairing of the listed values, and one read with none when nothing is set", () => {
+      expect(combinationsOf(undefined)).toEqual([undefined]);
+      expect(combinationsOf({ A: [1, 2], B: ["x"] })).toEqual([
+         { A: 1, B: "x" },
+         { A: 2, B: "x" },
+      ]);
    });
 });
 

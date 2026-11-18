@@ -17,4 +17,4 @@ export const DEFAULT_LLM_MAX_CALLS_PER_SYNC = 300;
 export const DEFAULT_LLM_MAX_CALLS_PER_REQUEST = 20;
 
 /** What each `retrieval.dimensionValues` key means when the operator leaves it out. */
-export const DIMENSION_VALUE_DEFAULTS = { enabled: true } as const;
+export const DIMENSION_VALUE_DEFAULTS = { enabled: true, givens: {} } as const;

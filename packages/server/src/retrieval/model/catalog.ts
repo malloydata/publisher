@@ -37,7 +37,14 @@ import {
    sourceContextKey,
 } from "./package_entities";
 import { entityId } from "../search/response";
-import { type Entity, type JoinTopology, type PackageIndex } from "./types";
+import {
+   type Entity,
+   type JoinTopology,
+   type PackageIndex,
+   type SourceContextEntry,
+   type SourceContextGiven,
+} from "./types";
+import { accessFilterTerms } from "../../service/entities/access_gates";
 
 type NodeKind = Entity["kind"];
 
@@ -130,6 +137,16 @@ export interface CatalogSource {
     * answer combined, the safe side.
     */
    gated: boolean;
+   /**
+    * Set when every gate on the source is `column = $GIVEN` over a scalar
+    * given that is not secure, with no `#(authorize)`, in a model that
+    * declares no secure given: the gate splits the rows by report or tenant
+    * rather than protecting them. The value index reads the keys
+    * `retrieval.dimensionValues.givens` lists, through the gate, and stores
+    * each value with its key; a search returns only the values under the key
+    * the caller's givens name, as hosted Credible does. Sorted by column.
+    */
+   partitionKey?: PartitionKey;
    /** Keys of every node the source owns, sources excluded, in walk order. */
    fields: string[];
 }
@@ -225,12 +242,17 @@ export interface CatalogModel {
    sourceInfos: readonly unknown[];
 }
 
+/** The gate columns a source's values are split by, and the given naming each. */
+export type PartitionKey = ReadonlyArray<{ column: string; given: string }>;
+
 interface CatalogInput {
    /** The entity index's direct entities: no joined copy assembly would rebuild. */
    entities: readonly Entity[];
    topology: JoinTopology;
    /** Per (model path, source): whether a gate is in force. */
    gatedByContext: ReadonlyMap<string, boolean>;
+   /** Per (model path, source): its partition key, when its gate has one. */
+   partitionKeyByContext?: ReadonlyMap<string, PartitionKey>;
    /** Deny-all sources, by (model path, source): nothing they document is copied. */
    droppedSources?: ReadonlySet<string>;
    models: readonly CatalogModel[];
@@ -1061,16 +1083,18 @@ export function buildCatalog(input: CatalogInput): Catalog {
          (id && id.source === name
             ? modelPathOfUrl(id.url, modelPaths)
             : undefined) ?? modelPath;
+      // The parent is keyed the way the source is: by the file that defines
+      // it, or, when that file is not published (an index.malloy package),
+      // by the file serving it here. A key no source has records no edge.
       const parent = splitSourceId(compiled?.extends);
-      const parentIn = parent
-         ? modelPathOfUrl(parent.url, modelPaths)
-         : undefined;
       return {
          definedIn,
-         extendsKey:
-            parent && parentIn !== undefined
-               ? sourceKeyOf(parent.source, parentIn)
-               : undefined,
+         extendsKey: parent
+            ? sourceKeyOf(
+                 parent.source,
+                 modelPathOfUrl(parent.url, modelPaths) ?? modelPath,
+              )
+            : undefined,
       };
    };
    const extendsOf = new Map<string, string>();
@@ -1104,6 +1128,11 @@ export function buildCatalog(input: CatalogInput): Catalog {
       const gated =
          input.gatedByContext.get(sourceContextKey(e.modelPath, e.name)) ??
          false;
+      const partitionKey = gated
+         ? input.partitionKeyByContext?.get(
+              sourceContextKey(e.modelPath, e.name),
+           )
+         : undefined;
       const existing = sources.get(key);
       if (existing) {
          existing.modelPaths.push(e.modelPath);
@@ -1111,9 +1140,19 @@ export function buildCatalog(input: CatalogInput): Catalog {
          existing.node.entities.push(e);
          if (e.modelPath === definedIn) {
             existing.gated = gated;
+            setPartitionKey(existing, partitionKey);
             gatedByDefinition.add(key);
          } else if (!gatedByDefinition.has(key)) {
+            // Files that disagree on the key keep none: the safe side.
+            const agreed = !existing.gated
+               ? partitionKey
+               : !gated
+                 ? existing.partitionKey
+                 : samePartitionKey(existing.partitionKey, partitionKey)
+                   ? partitionKey
+                   : undefined;
             existing.gated ||= gated;
+            setPartitionKey(existing, agreed);
          }
          continue;
       }
@@ -1149,6 +1188,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
          definedIn,
          node,
          gated,
+         ...(partitionKey ? { partitionKey } : {}),
          fields: [],
       });
       nodes.set(node.key, node);
@@ -1636,21 +1676,101 @@ export async function catalogInputOf(
       });
    }
    const gatedByContext = new Map<string, boolean>();
+   const partitionKeyByContext = new Map<string, PartitionKey>();
+   // A keyed source's stored values go to any caller who names the key,
+   // with no gate checked again at search time. A gate over givens that are
+   // not secure only splits rows the caller can already name, but an
+   // `#(authorize)` or a secure given protects them, and the configured
+   // givens the read ran with may have passed one on a joined source. So one
+   // anywhere in the package, served or only joined, keys nothing: stricter
+   // than hosted, which judges each source alone. The test reads the compiled
+   // text, so a doc that only mentions one also counts, the safe side.
+   const protectsRows =
+      (pkgIndex.droppedSources?.size ?? 0) > 0 ||
+      models.some(
+         (m) => m.modelDef && LOCK_NOTE.test(JSON.stringify(m.modelDef)),
+      );
    for (const [key, ctx] of pkgIndex.sourceContext) {
       gatedByContext.set(
          key,
          Boolean(ctx.accessFilter?.length) ||
             Boolean(ctx.authorize?.length) ||
-            (ctx.givens ?? []).some((g) =>
-               (g.annotations ?? []).some((a) => /secure/i.test(a)),
-            ),
+            (ctx.givens ?? []).some(isSecureGiven),
       );
+      const partitionKey = protectsRows ? undefined : partitionKeyOf(ctx);
+      if (partitionKey) partitionKeyByContext.set(key, partitionKey);
    }
    return {
       entities: pkgIndex.directEntities,
       topology: pkgIndex.topology,
       gatedByContext,
+      partitionKeyByContext,
       droppedSources: pkgIndex.droppedSources,
       models,
    };
+}
+
+/** An `#(authorize)` lock or a `#(secure)` given, anywhere in a note. */
+const LOCK_NOTE = /#\|?\s*[([{<]?\s*(authorize|secure)\b/;
+
+const SCALAR_GIVEN_TYPES = new Set([
+   "number",
+   "string",
+   "boolean",
+   "date",
+   "timestamp",
+]);
+
+function isSecureGiven(g: SourceContextGiven): boolean {
+   return (g.annotations ?? []).some((a) => /secure/i.test(a));
+}
+
+/**
+ * The columns a source's gate splits its rows by, or undefined when the gate
+ * does more than split them. The rule is hosted Credible's for a source it
+ * keys by the caller's givens (docs/rlac-get-context-design.md section 7.1 in
+ * the service repo): no `#(authorize)`, and every `#(access_filter)` term is
+ * `column = $GIVEN` over a declared scalar given. A secure given anywhere in
+ * the model rules it out, because which source a secure given scopes is not
+ * known here. Under those rules the caller may already send any value of the
+ * given to `execute_query`, so returning the values under the key they name
+ * shows nothing the query path would refuse.
+ */
+export function partitionKeyOf(
+   ctx: Pick<SourceContextEntry, "accessFilter" | "authorize" | "givens">,
+): PartitionKey | undefined {
+   if (!ctx.accessFilter?.length || ctx.authorize?.length) return undefined;
+   const givens = ctx.givens ?? [];
+   if (givens.some(isSecureGiven)) return undefined;
+   const givenTypes = new Map(
+      givens.flatMap((g) => (g.type ? [[g.name, g.type] as const] : [])),
+   );
+   const byColumn = new Map<string, string>();
+   for (const gate of ctx.accessFilter) {
+      const terms = accessFilterTerms(gate.expression, givenTypes);
+      if (!terms?.length) return undefined;
+      for (const term of terms) {
+         if (term.op !== "=") return undefined;
+         if (!SCALAR_GIVEN_TYPES.has(givenTypes.get(term.given) ?? ""))
+            return undefined;
+         const seen = byColumn.get(term.field_path);
+         if (seen !== undefined && seen !== term.given) return undefined;
+         byColumn.set(term.field_path, term.given);
+      }
+   }
+   return [...byColumn]
+      .sort(([a], [b]) => comparePaths(a, b))
+      .map(([column, given]) => ({ column, given }));
+}
+
+function samePartitionKey(
+   a: PartitionKey | undefined,
+   b: PartitionKey | undefined,
+): boolean {
+   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+function setPartitionKey(source: CatalogSource, key: PartitionKey | undefined) {
+   if (key) source.partitionKey = key;
+   else delete source.partitionKey;
 }

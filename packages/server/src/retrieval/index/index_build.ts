@@ -293,7 +293,9 @@ export async function buildFcjIndex(args: {
    let values = new ValueIndex([]);
    // The operator's switch wins over the package's: with value search off,
    // no warehouse value is read at all.
-   const operatorValues = getDimensionValueSettings().enabled;
+   const valueSettings = getDimensionValueSettings();
+   const operatorValues = valueSettings.enabled;
+   const valueGivens = valueSettings.givens[packageName];
    let valueReport: FcjBuildReport["values"] = {
       skipped: operatorValues
          ? "retrieval.fcj.values is false"
@@ -317,6 +319,7 @@ export async function buildFcjIndex(args: {
             : {}),
          ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
          ...(args.previousValues ? { previous: args.previousValues } : {}),
+         ...(valueGivens ? { givens: valueGivens } : {}),
       });
       values = built.index;
       valueReport = built.report;

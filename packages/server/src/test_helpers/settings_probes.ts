@@ -242,6 +242,8 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       inForce(context, () => loadedRetrievalConfig()?.egressIgnored === true),
    "retrieval.dimensionValues.enabled": (context) =>
       inForce(context, () => getDimensionValueSettings().enabled),
+   "retrieval.dimensionValues.givens": (context) =>
+      inForce(context, () => getDimensionValueSettings().givens),
 };
 
 /** The `retrieval.llm` block startup assembles and validates. */

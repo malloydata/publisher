@@ -75,6 +75,36 @@ describe("catalog", () => {
       ]);
    });
 
+   it("records an extension whose sources are defined in a file the package does not publish", async () => {
+      // The index.malloy convention: only index.malloy is published, and the
+      // sources it exports are defined in a file that is not.
+      const { catalog: curated } = await compileFcjFixture(
+         {
+            "lines.malloy": `
+source: lines is duckdb.sql("select 1 as id, 'Shoes' as category") extend {
+  #(index)
+  dimension: cat is category
+}
+source: lines_ext is lines extend {}
+source: lines_ext2 is lines_ext extend {}
+`,
+            "index.malloy": `
+import "lines.malloy"
+export { lines, lines_ext, lines_ext2 }
+`,
+         },
+         {},
+         undefined,
+         ["index.malloy"],
+      );
+      expect(curated.sources.get("lines_ext@index.malloy")?.extendsKey).toBe(
+         "lines@index.malloy",
+      );
+      expect(curated.sources.get("lines_ext2@index.malloy")?.extendsKey).toBe(
+         "lines_ext@index.malloy",
+      );
+   });
+
    it("records an extension and keeps the field it hides out of it", () => {
       const pub = catalog.sources.get("orders_public@shop.malloy")!;
       expect(pub.extendsKey).toBe("orders@shop.malloy");

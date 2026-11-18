@@ -134,7 +134,8 @@
       "preset": null
     },
     "dimensionValues": {
-      "enabled": null
+      "enabled": null,
+      "givens": null
     }
   }
 }

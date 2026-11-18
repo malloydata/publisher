@@ -421,6 +421,7 @@ credentials, what may leave the machine and the spend ceilings are all in the op
 | `embedding.model`, `dimensions`, `baseUrl`, `projectId`, `location` | As for `llm`. `model` defaults to `text-embedding-3-small` for `openai` and is required for the other providers. `dimensions` is omitted from requests when unset.                                                                     |
 | `embedding.queryPrefix` / `documentPrefix`                          | Text put before a search query / before indexed text (default empty). `nomic-embed-text` wants `search_query: ` and `search_document: `. Changing `documentPrefix` re-embeds; changing `queryPrefix` does not.                         |
 | `dimensionValues.enabled`                                           | See "Dimension value search".                                                                                                                                                                                                          |
+| `dimensionValues.givens`                                            | See "Dimension value search".                                                                                                                                                                                                          |
 
 **Keys.** Secrets are environment variables only, never file entries: `LLM_API_KEY` for the chat
 model and `EMBEDDING_API_KEY` for the embedding model (they are separate because the two are often
@@ -671,24 +672,53 @@ those dimensions, while the old one keeps answering. The cool-down is one minute
 build leaves values unread, up to an hour. Any other failed read (a query error, a missing table) is skipped until the package
 reloads, since reading again would fail the same way. A dimension that holds no values is not a failure.
 
-**Access.** A value is data, and a gate applies to it as it does to `execute_query`. A source with
-`#(authorize)` or `#(access_filter)` is never read at index time and its values are never embedded. A
-`dimensional_value` target that pins one of its dimensions reads the values when asked, through the query
-path, with the caller's givens:
+**Access.** A value is data, and a gate applies to it as it does to `execute_query`.
 
-- `#(authorize)`: a caller whose givens do not pass gets no values from that source. The source still
-  returns, with its dimensions and no `values`, and a warning says the values were withheld.
-- `#(access_filter)`: values come only from rows the filter admits. With no givens the gate cannot apply
-  and the source is withheld.
-- `get_context` takes an optional `givens` argument, read only by this lookup, with the trust `execute_query`'s
-  `givens` has: the caller asserts them. See [authorize.md](authorize.md#security-model).
+- **A source whose only gate splits rows by a given** is indexed for the values of that given you list
+  in `retrieval.dimensionValues.givens` (below), and skipped otherwise, with a server log line that names
+  the setting. That means every `#(access_filter)` term is `column = $GIVEN` over a scalar given, with no
+  `#(authorize)`, and no `#(authorize)` or secure given anywhere in the package. An example is
+  `#(access_filter) report_id = $REPORT_ID`. Each listed report is read through the gate, like any query
+  for that report, and each value is stored with its report id. A search returns a value only to a caller
+  whose `givens` name that report, as hosted Credible does. Nothing reads every report at once: on a
+  production model that is a scan of the whole table, and the cap would keep values for almost none of
+  the reports.
+- **Any other gated source** is never read at index time and its values are never embedded. A
+  `dimensional_value` target that pins one of its dimensions reads the values when asked, through the
+  query path, with the caller's givens:
+  - `#(authorize)`: a caller whose givens do not pass gets no values from that source. The source still
+    returns, with its dimensions and no `values`, and a warning says the values were withheld.
+  - `#(access_filter)`: values come only from rows the filter admits. With no givens the gate cannot
+    apply and the source is withheld.
+- `get_context` takes an optional `givens` argument, with the trust `execute_query`'s `givens` has: the
+  caller asserts them. It is read by this lookup, and it picks which report's stored values a search
+  returns. See [authorize.md](authorize.md#security-model).
 
 A value search that pins no dimension says which gated sources it skipped.
 
-**Settings.** `retrieval.dimensionValues.enabled` in `publisher.config.json` (default `true`): `false`
-reads no `#(index)` value when a package's index is built, whatever the package's `fcj.values` says, and
-makes a `dimensional_value` target answer with the "No index for target_type" warning. It is the block's
-only key.
+**Settings.** Both live in `publisher.config.json`, the local server's own file, which publishing a
+package never carries.
+
+- `retrieval.dimensionValues.enabled` (default `true`): `false` reads no `#(index)` value when a
+  package's index is built, whatever the package's `fcj.values` says. A `dimensional_value` target then
+  answers with the "No index for target_type" warning.
+- `retrieval.dimensionValues.givens`: for local development against a large model. Per package, the
+  givens the index reads with, each one value or a list:
+
+  ```json
+  "retrieval": { "dimensionValues": { "givens": {
+    "campaigns": { "REPORT_ID": [1042, 1077] }
+  } } }
+  ```
+
+  Each indexed dimension is then read once for each combination of the listed values (at most 50),
+  with that combination as its givens and up to the cap for each read. A source gated by
+  `column = $GIVEN` gets only the listed reports' values. A source that filters on a given with a plain
+  `where:` and no default, which cannot be read at all without one, is read too. Each model is sent
+  only the givens it declares. A read that needs a given nobody listed is skipped, and the server log
+  names the given and this setting. Every read counts against the build's 5-minute budget above, so
+  list only the reports you are working on: on one production model, two reports took 160 seconds.
+  Changing the setting takes a restart. It is not a way to limit what hosted Credible indexes.
 
 ## Semantic ranking for `search_database_schema`
 
