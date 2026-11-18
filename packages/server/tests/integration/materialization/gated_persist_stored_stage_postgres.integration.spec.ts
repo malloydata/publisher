@@ -277,7 +277,10 @@ describe.skipIf(!url)(
          expect(books.rows).toEqual([{ tenant: "books-x", total_orders: 2 }]);
       });
 
-      it("answers live over a case-insensitive stored column, and names why", async () => {
+      it("serves from a case-insensitive stored column that keeps its source's collation", async () => {
+         // The table was built in the source's own warehouse, so its column
+         // keeps the source's case-insensitive collation: the gate compares
+         // there as live does.
          for (const groups of CALLERS) {
             const got = await query(
                sel("gated_ci", "tenant, total_orders"),
@@ -288,14 +291,7 @@ describe.skipIf(!url)(
                groups,
             );
             expect(got.rows, JSON.stringify(groups)).toEqual(live.rows);
-            expect(got.path.servedBy.kind).toBe("live");
-            // The decline is reported on the source's own table, not dropped.
-            expect(got.path.considered).toEqual([
-               expect.objectContaining({
-                  outcome: "skipped",
-                  reason: "ROW_LEVEL_GATE",
-               }),
-            ]);
+            expect(got.path.servedBy.kind).toBe("materialized");
          }
       });
 
