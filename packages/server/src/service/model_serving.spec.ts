@@ -362,6 +362,91 @@ describe("the query pipeline over a fake leg list", () => {
       });
    });
 
+   it("run: only an answer a leg ran is rounded as live on Postgres rounds it, never a live answer or the live retry of a failed one", async () => {
+      // 2^53 + 1, which live on Postgres answers as 2^53.
+      const above = 9007199254740993n;
+      const bigResult = () => ({
+         _queryResult: {
+            result: [{ big: above }],
+            structs: [
+               {
+                  fields: [
+                     { name: "big", type: "number", numberType: "bigint" },
+                  ],
+               },
+            ],
+         },
+      });
+      const runs = (result: unknown, dialect = "postgres") =>
+         ({
+            getPreparedQuery: async () => ({ dialect }),
+            getPreparedResult: async () => ({
+               resultExplore: { limit: undefined },
+               connectionName: "duckdb",
+            }),
+            run: async () => result,
+         }) as unknown as QueryMaterializer;
+      const failing = {
+         getPreparedResult: async () => {
+            throw new Error("store down");
+         },
+      } as unknown as QueryMaterializer;
+      const routed = (runnable: QueryMaterializer): Answer => ({
+         leg: "served",
+         considered: [{ kind: "served", outcome: "used" }],
+         answer: answer({
+            runnable,
+            virtualMap,
+            shapeBindings: [binding("orders", { freshnessFallback: "live" })],
+         }),
+         pastEntryPointGate: false,
+         runFailed: false,
+         databaseRead: new Set(),
+      });
+      const bigOf = async (
+         governedRunnable: QueryMaterializer,
+         liveRunnable: QueryMaterializer,
+         ans: Answer,
+      ) => {
+         const s = stages(host([]).host);
+         const ran = await s.execute(ctxOf(), {
+            pinned: s.pin(),
+            viewManifest: undefined,
+            admitted,
+            prepared: { ...prepared, liveRunnable },
+            answer: ans,
+            governed: {
+               runnable: governedRunnable,
+               request: { ceiling: undefined },
+               decision: { grafts: [], enforced: [] },
+               compiledSource: "orders",
+            },
+         } as never);
+         return (ran.run.result as unknown as ReturnType<typeof bigResult>)
+            ._queryResult.result[0].big;
+      };
+      // A leg's answer on a Postgres source: rounded.
+      const served = bigResult();
+      expect(
+         await bigOf(runs(served), runs(bigResult()), routed(runs(served))),
+      ).toBe(9007199254740992n);
+      // The same on a dialect whose rounding is not measured: as it ran.
+      const trino = bigResult();
+      expect(
+         await bigOf(
+            runs(trino),
+            runs(bigResult(), "trino"),
+            routed(runs(trino)),
+         ),
+      ).toBe(above);
+      // A live answer: as live ran it (a fake that did not round).
+      const live = bigResult();
+      expect(await bigOf(runs(live), runs(live), LIVE_ANSWER)).toBe(above);
+      // A stored run that failed and was retried live: as the retry ran it.
+      const retried = bigResult();
+      expect(await bigOf(failing, runs(retried), routed(failing))).toBe(above);
+   });
+
    it("run: each answer takes its own manifest or map", () => {
       const manifests = {
          pinned: "pinned",
