@@ -80,11 +80,9 @@ The package resource says which version answered: `versionId` is the version des
 
 ### Static files and data apps
 
-A data app's page is opened at `…/packages/{pkg}/index.html?versionId=1.2.0`, and its links carry the version the list was read from. The bundled runtime pins the page's queries to that version.
+A package's `public/` is also served per version, at `…/packages/{pkg}/versions/{version}/public/{file}`, and a data app's page is opened at one. A page load (an `.html` or `.htm` file, or a directory's `index.html`) at the short URL `…/packages/{pkg}/index.html` answers 302 to the versioned URL of the version it resolves, with `Cache-Control: no-store`, keeping the query string except `versionId`. That is `latest`, or the version `?versionId=1.2.0` names when the package has it, which is how a data-app listing's links pin their version. The page's relative requests (`./app.js`, a stylesheet's `url()`) then resolve under the versioned path, so they come from that version too, and the bundled runtime pins the page's queries to it. `…/versions/latest/public/…` answers 302 to the version `latest` names now.
 
-Only the URL pins a version. The page's own relative requests (`./app.js`, a stylesheet's `url()`) carry no query string, so they are served from `latest`. A page that must stay on one version end to end puts `?versionId=` on those URLs itself.
-
-A `versionId` on a static file pins only a version the package has; anything else serves `latest` rather than 404. A proxy that resolves versions itself may forward a page's query string unchanged, with a `versionId` of its own, and refusing it would break every page it serves. A pinned version that is archived answers 410.
+On a versioned URL the path wins over `?versionId=`. A non-HTML file at the short URL is served directly, from `latest` or from the version `?versionId=` names. A `versionId` on the short URL pins only a version the package has; anything else serves `latest` rather than 404. A proxy that resolves versions itself may forward a page's query string unchanged, with a `versionId` of its own, and refusing it would break every page it serves. A pinned version that is archived answers 410. A package with no version records serves every file directly, with no redirect.
 
 ### A version named in the package name (transition)
 

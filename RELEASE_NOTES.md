@@ -345,6 +345,27 @@ An incremental table refreshes in the same types: a delta reads the column as te
 
 **What to do.** Nothing. Each affected table is stored with `DECIMAL` on its next full build. An incremental table built before this is re-seeded at its next refresh (see the section on DOUBLE incremental tables).
 
+## [Unreleased] — Data apps talk to their host
+
+An HTML data app can now tell the page that embeds it what it is doing, and be told what to do, and it knows where it was served from without guessing. The bus, the page context and `Publisher.embed`'s new members are additive, and the old `?versionId=`, `embed_token` and `publisher:resize` paths keep working. Serving a page from a versioned URL is not: it changes what a page load looks like on the wire.
+
+**What changes for a page, and for a gateway in front of it:**
+
+- A page load at the short URL of a package with versions (`…/packages/<pkg>/index.html`) is now a `302` followed by a `200`, where it was one `200`. After it, `location.pathname` is the versioned path, `…/versions/<v>/public/index.html`, so anything that reads or compares the pathname sees that.
+- A query the runtime makes to its own package now carries `versionId`, the version the page was served from, in its body. A gateway that routes or authorizes queries by body will see a field it did not before.
+- An open page stays on its version, and never live-reloads, even after `latest` moves. It keeps answering from that version until the version is archived, when its queries get `410` and it emits `version.unavailable`.
+- The gateway must route `…/versions/<v>/public/…` to Publisher. A gateway that allows only the paths it knew will refuse it, and every page of a versioned package then fails on the redirect.
+
+What is new:
+
+- **A versioned static URL.** A package's `public/` is served per version at `/environments/<env>/packages/<pkg>/versions/<version>/public/<file>`, so a page and its relative assets (`./app.js`, stylesheets, images) all come from the same version. A page load (`.html`, `.htm` or a directory index) at the short URL of a versioned package answers `302` to the current version's URL, keeping the query string minus `versionId`; assets at the short URL are served directly, as before. `versions/latest/...` redirects to the resolved version, an unknown version gets the static 404 page, an archived one `410`, and on a versioned URL the path wins over `?versionId=`. A path that leaves `public/` is refused before any redirect.
+- **Injected page context.** Every HTML page from `public/` carries a `<script type="application/json" id="publisher-context">` block (`environment`, `package`, `versionId`, `apiBase`, `hostOrigins`), which supplies the version, API base and embedding hosts; the page's names come from its URL when it has one of the known shapes (a gateway may have renamed the path), and from the block otherwise. HTML is sent with a weak `ETag` (derived from the file's stat and the injected block, so a matching `If-None-Match` is answered `304` without reading the file) and `Cache-Control: no-cache`; a `Range` request gets the whole page. Only the first 64 KiB of a page is scanned for where to splice; a page with no place in it is sent unchanged.
+- **A two-way bus between a page and its host.** New runtime members `Publisher.on`, `emit`, `givens`, `setGivens` and `onGivensChange`; a page emits `ready`, `query.ran`, `givens.changed` and `version.unavailable` and sends the request `auth.token.request`, and a host can send `givens.set` (to drive a page's filters; a `null` value removes a key) and `auth.token`. The bus runs only for hosts that `frameAncestors` names as an exact origin or a leading-label wildcard (`https://*.example.com`), checks window and origin on both sides, and uses a nonce in the iframe URL fragment that the host never sends (the page reads it once and removes it from its URL). `query.ran` carries the first 2000 characters of each query's text and its givens to the bound host. Reference: [html-data-apps.md](docs/html-data-apps.md#talking-to-the-host).
+- **`Publisher.embed` returns `send` and `on`, and takes `getToken`.** `getToken` delivers the bearer token over the bus, when the page is ready and in answer to the page's `auth.token.request` when a query gets a `401` (a host with no `getToken` answers `unhandled`, so the query fails at once; otherwise the runtime retries once), instead of in the iframe URL. React hosts get the same exchange from `createDataAppBridge` in `@malloy-publisher/sdk`, with `createDataAppNonce` and `withDataAppNonce` to build the iframe's `src`. Every host post names the page's exact origin, never `*`.
+- **New setting `trustPageContextHeader`** (`PUBLISHER_TRUST_PAGE_CONTEXT_HEADER`, `--trust-page-context-header`; default off). On, the request header `x-publisher-page-context` can override a page's `environment`, `package`, `apiBase` and `hostOrigins`, for a gateway that serves Publisher under other names or paths; responses that read it carry `Vary: x-publisher-page-context`. The gateway must strip the header from client requests.
+
+**Deprecated:** the `token` option of `Publisher.embed`, which puts the token in the iframe URL (`embed_token`). Use `getToken`. It keeps working.
+
 ## [Unreleased] — materialization telemetry: standard log fields, refusal events, key-check and routing metrics
 
 **Log queries may need updating.** Materialization log lines now name the same things by the same fields: `runId`, `destinationName`, `error`, `environmentName`, `packageName`. Renamed:

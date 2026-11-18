@@ -19,7 +19,10 @@ import os from "os";
 import request from "supertest";
 import {
    FRAME_ANCESTORS_ENV,
+   droppedFrameAncestorSources,
+   frameAncestorHostOrigins,
    frameAncestorsMiddleware,
+   hostOriginPattern,
    parseFrameAncestors,
 } from "./frame_ancestors";
 
@@ -85,6 +88,122 @@ describe("parseFrameAncestors", () => {
       );
       expect(parseFrameAncestors("https:")).toBe("https:");
       expect(parseFrameAncestors("*")).toBe("*");
+   });
+});
+
+describe("hostOriginPattern", () => {
+   it("keeps 'self' literally, whatever its case", () => {
+      expect(hostOriginPattern("'self'")).toBe("'self'");
+      expect(hostOriginPattern("'SELF'")).toBe("'self'");
+   });
+
+   it("keeps an exact origin, normalized to what a browser reports", () => {
+      expect(hostOriginPattern("https://app.example.com")).toBe(
+         "https://app.example.com",
+      );
+      expect(hostOriginPattern("HTTPS://App.Example.COM")).toBe(
+         "https://app.example.com",
+      );
+      // Default ports are not part of `MessageEvent.origin`.
+      expect(hostOriginPattern("https://a.example:443")).toBe(
+         "https://a.example",
+      );
+      expect(hostOriginPattern("http://a.example:80")).toBe("http://a.example");
+      expect(hostOriginPattern("https://a.example:8443")).toBe(
+         "https://a.example:8443",
+      );
+      expect(hostOriginPattern("http://localhost:5173")).toBe(
+         "http://localhost:5173",
+      );
+      expect(hostOriginPattern("https://[::1]:3000")).toBe(
+         "https://[::1]:3000",
+      );
+   });
+
+   it("keeps a wildcard host: the scheme, a suffix on a label boundary, the port", () => {
+      expect(hostOriginPattern("https://*.app.example.com")).toBe(
+         "https://*.app.example.com",
+      );
+      expect(hostOriginPattern("HTTPS://*.App.Example.com:8443")).toBe(
+         "https://*.app.example.com:8443",
+      );
+      expect(hostOriginPattern("https://*.app.example.com:443")).toBe(
+         "https://*.app.example.com",
+      );
+   });
+
+   it("drops what cannot name an embedding origin", () => {
+      for (const source of [
+         "*",
+         "https:",
+         "http:",
+         "data:",
+         "'none'",
+         "https://a.example/path",
+         "https://a.example/",
+         "https://a.example?x=1",
+         "https://user@a.example",
+         "https://*",
+         "https://*.",
+         "https://a.*.example",
+         "https://*.*.example",
+         "https://a.example:*",
+         "https://a.example:99999",
+         "ftp://a.example",
+         "a.example",
+         "",
+      ]) {
+         expect(hostOriginPattern(source)).toBeUndefined();
+      }
+   });
+});
+
+describe("droppedFrameAncestorSources", () => {
+   it("names the sources the bus cannot use, and none for a usable list or the default", () => {
+      expect(droppedFrameAncestorSources(undefined)).toEqual([]);
+      expect(droppedFrameAncestorSources("'none'")).toEqual([]);
+      expect(
+         droppedFrameAncestorSources("'self' https://*.app.example.com"),
+      ).toEqual([]);
+      expect(
+         droppedFrameAncestorSources(
+            "'self' * https://a.example/path https://b.example https:",
+         ),
+      ).toEqual(["*", "https://a.example/path", "https:"]);
+   });
+});
+
+describe("frameAncestorHostOrigins", () => {
+   it("is 'self' for the default, so an unconfigured server keeps its own pages talking", () => {
+      expect(frameAncestorHostOrigins(undefined)).toEqual(["'self'"]);
+      expect(frameAncestorHostOrigins("  ")).toEqual(["'self'"]);
+   });
+
+   it("keeps the usable sources in order and drops the rest", () => {
+      // The shape a hosted deployment configures: its own origin, the app's
+      // wildcard and bare hosts, and a source no postMessage target can use.
+      expect(
+         frameAncestorHostOrigins(
+            "'self' https://*.app.example.com https://app.example.com https:",
+         ),
+      ).toEqual([
+         "'self'",
+         "https://*.app.example.com",
+         "https://app.example.com",
+      ]);
+   });
+
+   it("is empty when nothing is usable, which turns the bus off", () => {
+      expect(frameAncestorHostOrigins("*")).toEqual([]);
+      expect(frameAncestorHostOrigins("https: 'none'")).toEqual([]);
+   });
+
+   it("deduplicates after normalizing, and splits on any whitespace", () => {
+      expect(
+         frameAncestorHostOrigins(
+            "https://A.example\thttps://a.example:443\n'self'  'self'",
+         ),
+      ).toEqual(["https://a.example", "'self'"]);
    });
 });
 

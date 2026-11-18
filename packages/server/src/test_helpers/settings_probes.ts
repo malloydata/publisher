@@ -84,6 +84,7 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    rateLimit: () => settings.get("rateLimit"),
    frameAncestors: () => parseFrameAncestors(settings.get("frameAncestors")),
    callerHeader: () => callerHeaderName(),
+   trustPageContextHeader: () => settings.get("trustPageContextHeader"),
    packageVersioning: () => isVersioningEnabled(),
    versionPromotion: () => getVersionPromotionMode(),
    packageInlineFields: () => isPackageInlineFieldsEnabled(),

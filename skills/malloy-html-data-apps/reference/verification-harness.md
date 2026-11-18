@@ -25,6 +25,8 @@ Serve a stand-in at the same root-relative path the page loads (`/sdk/publisher.
     ],
     // ...one entry per (model, query) your tiles.js declares
   };
+  let givens = {};
+  let listeners = [];
   const DELAY_MS = 40; // > 0 on purpose: mimic the real async round-trip
 
   function resolve(modelPath, malloy) {
@@ -41,6 +43,29 @@ Serve a stand-in at the same root-relative path the page loads (`/sdk/publisher.
     // via <malloy-render>, make this fixture a real envelope or that tile breaks.
     queryFull: (m, q) => resolve(m, q).then((rows) => ({ data: rows })),
     setToken() {},
+    // `on`/`emit` do nothing, since nothing embeds the page under test; the givens
+    // store approximates the real page's (merge, `null` deletes, notify on change only).
+    on: () => () => {},
+    emit: () => false,
+    get givens() {
+      return { ...givens };
+    },
+    setGivens(patch) {
+      const next = { ...givens };
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === null) delete next[k];
+        else if (v !== undefined) next[k] = v;
+      }
+      if (JSON.stringify(next) === JSON.stringify(givens)) return;
+      givens = next;
+      listeners.slice().forEach((fn) => fn({ ...givens }));
+    },
+    onGivensChange(fn) {
+      listeners.push(fn);
+      return () => {
+        listeners = listeners.filter((l) => l !== fn);
+      };
+    },
   };
 })();
 ```

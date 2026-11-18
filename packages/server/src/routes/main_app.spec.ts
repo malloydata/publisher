@@ -93,6 +93,28 @@ describe("createMainApp", () => {
       expect(names).not.toContain("route *");
    });
 
+   it("warns at startup of frameAncestors sources the data-app bus drops, and only then", () => {
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         const build = (frameAncestors?: string) =>
+            createMainApp({
+               controllers: { querySlots: new QuerySlots() } as never,
+               dataAppRuntimePath: "/nonexistent/publisher.js",
+               frameAncestors,
+            });
+         build();
+         build("'self' https://app.example.com");
+         expect(warn).not.toHaveBeenCalled();
+         build("'self' * https://a.example/path");
+         expect(warn).toHaveBeenCalledTimes(1);
+         expect((warn.mock.calls[0] as unknown[])[1]).toEqual({
+            sources: ["*", "https://a.example/path"],
+         });
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
    it("puts the frame-ancestors policy on an early refusal", async () => {
       const res = await request(buildRouteApp()).get(
          `${API_PREFIX}/environments?reload=true`,

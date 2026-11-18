@@ -63,18 +63,25 @@ It adds one global, `window.Publisher`:
   row objects, for driving your own charts and tables.
 - `Publisher.queryFull(modelPath, malloy, opts?)` returns the full Malloy result
   envelope, for handing to a `<malloy-render>` element.
-- `Publisher.embed(selector, { src, token?, height?, allow? })` mounts a
-  sandboxed, auto-resizing iframe and returns `{ iframe, destroy() }`.
-- `Publisher.context` is `{ environment, package }`, inferred from the page URL.
+- `Publisher.embed(selector, { src, getToken?, height?, allow? })` mounts a
+  sandboxed, auto-resizing iframe and returns `{ iframe, destroy(), send(type, payload),
+  on(type, fn) }`.
+- `Publisher.context` is `{ environment, package }`, inferred from the page URL
+  (else taken from the context Publisher injects into the page).
+- `Publisher.on`, `emit`, `givens`, `setGivens` and `onGivensChange` are the page's side
+  of the host bus. `on` and `emit` do nothing on a page nobody embeds; the givens store
+  (`setGivens`, `givens`, `onGivensChange`) works with or without a host.
 - `Publisher.setToken(token | null)` sets a bearer token used by all later
   queries on the page; `null` reverts to cookies.
 
 `modelPath` is the model FILE path within the package (`"subscriptions.malloy"`),
 with `/` separators. It is not the source name. `opts` may carry `sourceName`,
 `queryName`, and `environment` / `package` (only for pages served outside
-`/environments/<env>/packages/<pkg>/`). The runtime does not pass per-query
-[givens](../../docs/givens.md) values — model-declared given *defaults* still
-apply.
+`/environments/<env>/packages/<pkg>/`), and `givens` (a `{ name: value }` map
+bound as [givens](../../docs/givens.md) for that query; model-declared given
+*defaults* still apply to any given not passed). Givens held with
+`Publisher.setGivens` ride only on queries to this package, so every model the
+page queries must declare each given it holds.
 
 ## Query patterns
 

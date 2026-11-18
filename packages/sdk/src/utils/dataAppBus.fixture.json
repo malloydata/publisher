@@ -1,0 +1,392 @@
+{
+   "comment": "One protocol, two hosts: read by dataAppBridge.spec.ts (SDK) and publisher.spec.ts (the vanilla Publisher.embed). \"$NONCE\" is the embed's nonce and \"$ID\" the id of the request being answered; every page message here echoes the nonce unless the case says otherwise, and the host never sends one. A handshake case with loadFirst fires the frame's load event after the host's send and before the message; the send, when probePosted, is then answered and must resolve.",
+   "appOrigin": "https://app.example.com",
+   "events": [
+      {
+         "name": "a valid event from the frame at the app origin",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.event",
+            "nonce": "$NONCE",
+            "payload": { "n": 1 }
+         },
+         "accept": true
+      },
+      {
+         "name": "a valid event from a frame whose origin is null (a sandboxed document)",
+         "origin": "null",
+         "source": "iframe",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.event",
+            "nonce": "$NONCE"
+         },
+         "accept": false
+      },
+      {
+         "name": "a numeric id is a request and is accepted",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.event",
+            "id": 7,
+            "nonce": "$NONCE"
+         },
+         "accept": true
+      },
+      {
+         "name": "another origin",
+         "origin": "https://evil.example.com",
+         "source": "iframe",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.event",
+            "nonce": "$NONCE"
+         },
+         "accept": false
+      },
+      {
+         "name": "a host name that merely starts with the app origin",
+         "origin": "https://app.example.com.evil.example.com",
+         "source": "iframe",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.event",
+            "nonce": "$NONCE"
+         },
+         "accept": false
+      },
+      {
+         "name": "a window other than the frame",
+         "origin": "https://app.example.com",
+         "source": "other",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.event",
+            "nonce": "$NONCE"
+         },
+         "accept": false
+      },
+      {
+         "name": "no nonce",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": { "protocol": "publisher", "v": 1, "type": "probe.event" },
+         "accept": false
+      },
+      {
+         "name": "a wrong nonce",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.event",
+            "nonce": "wrong"
+         },
+         "accept": false
+      },
+      {
+         "name": "another protocol",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": {
+            "protocol": "other",
+            "v": 1,
+            "type": "probe.event",
+            "nonce": "$NONCE"
+         },
+         "accept": false
+      },
+      {
+         "name": "another version",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": {
+            "protocol": "publisher",
+            "v": 2,
+            "type": "probe.event",
+            "nonce": "$NONCE"
+         },
+         "accept": false
+      },
+      {
+         "name": "no type",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": { "protocol": "publisher", "v": 1, "nonce": "$NONCE" },
+         "accept": false
+      },
+      {
+         "name": "an empty type",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "",
+            "nonce": "$NONCE"
+         },
+         "accept": false
+      },
+      {
+         "name": "an id that is neither a string nor a number",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.event",
+            "id": {},
+            "nonce": "$NONCE"
+         },
+         "accept": false
+      },
+      {
+         "name": "a bare string",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": "probe.event",
+         "accept": false
+      },
+      {
+         "name": "null",
+         "origin": "https://app.example.com",
+         "source": "iframe",
+         "message": null,
+         "accept": false
+      }
+   ],
+   "handshake": [
+      {
+         "name": "the reply to hello is the ready signal",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "hello",
+            "id": "hello-1",
+            "reply": true,
+            "nonce": "$NONCE",
+            "payload": { "handles": ["givens.set"], "runtime": "1" }
+         },
+         "probePosted": true,
+         "helloPosted": false
+      },
+      {
+         "name": "a send queued before the frame's first load posts once the page replies",
+         "loadFirst": true,
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "hello",
+            "id": "hello-1",
+            "reply": true,
+            "nonce": "$NONCE",
+            "payload": { "handles": [], "runtime": "1" }
+         },
+         "probePosted": true,
+         "helloPosted": true
+      },
+      {
+         "name": "a reply to hello without the nonce proves nothing",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "hello",
+            "id": "hello-1",
+            "reply": true,
+            "payload": { "handles": [], "runtime": "1" }
+         },
+         "probePosted": false,
+         "helloPosted": false
+      },
+      {
+         "name": "a reply to hello with a wrong nonce proves nothing",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "hello",
+            "id": "hello-1",
+            "reply": true,
+            "nonce": "wrong",
+            "payload": { "handles": [], "runtime": "1" }
+         },
+         "probePosted": false,
+         "helloPosted": false
+      },
+      {
+         "name": "an unsolicited ready is answered with a hello, not treated as ready",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "ready",
+            "nonce": "$NONCE",
+            "payload": { "handles": [], "runtime": "1" }
+         },
+         "probePosted": false,
+         "helloPosted": true
+      },
+      {
+         "name": "an unsolicited ready without the nonce is ignored",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "ready",
+            "payload": { "handles": [], "runtime": "1" }
+         },
+         "probePosted": false,
+         "helloPosted": false
+      }
+   ],
+   "replies": [
+      {
+         "name": "a payload reply resolves the request",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.request",
+            "id": "$ID",
+            "reply": true,
+            "nonce": "$NONCE",
+            "payload": { "ok": true }
+         },
+         "outcome": { "resolves": { "ok": true } }
+      },
+      {
+         "name": "a null payload resolves with null",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.request",
+            "id": "$ID",
+            "reply": true,
+            "nonce": "$NONCE",
+            "payload": null
+         },
+         "outcome": { "resolves": null }
+      },
+      {
+         "name": "an unhandled error rejects with its code",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.request",
+            "id": "$ID",
+            "reply": true,
+            "nonce": "$NONCE",
+            "error": {
+               "code": "unhandled",
+               "message": "No handler for 'probe.request'"
+            }
+         },
+         "outcome": { "rejectsWithCode": "unhandled" }
+      },
+      {
+         "name": "a handler error rejects with its code",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.request",
+            "id": "$ID",
+            "reply": true,
+            "nonce": "$NONCE",
+            "error": { "code": "handler_error", "message": "boom" }
+         },
+         "outcome": { "rejectsWithCode": "handler_error" }
+      },
+      {
+         "name": "a reply without the nonce is ignored and the request times out",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.request",
+            "id": "$ID",
+            "reply": true,
+            "payload": { "ok": true }
+         },
+         "outcome": { "timesOut": true }
+      },
+      {
+         "name": "a reply for another id is ignored and the request times out",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "probe.request",
+            "id": "other",
+            "reply": true,
+            "nonce": "$NONCE",
+            "payload": { "ok": true }
+         },
+         "outcome": { "timesOut": true }
+      }
+   ],
+   "tokenRequests": [
+      {
+         "name": "a request is answered with the token when the host has getToken",
+         "getToken": "tok-1",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "auth.token.request",
+            "id": "p1",
+            "nonce": "$NONCE"
+         },
+         "reply": { "payload": { "token": "tok-1" } }
+      },
+      {
+         "name": "a request is answered unhandled when the host has no getToken",
+         "getToken": null,
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "auth.token.request",
+            "id": "p1",
+            "nonce": "$NONCE"
+         },
+         "reply": { "error": { "code": "unhandled" } }
+      },
+      {
+         "name": "a request whose getToken fails is answered with handler_error",
+         "getToken": "throws",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "auth.token.request",
+            "id": "p1",
+            "nonce": "$NONCE"
+         },
+         "reply": { "error": { "code": "handler_error" } }
+      },
+      {
+         "name": "a request without the nonce is not answered",
+         "getToken": "tok-1",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "auth.token.request",
+            "id": "p1"
+         },
+         "reply": null
+      },
+      {
+         "name": "an event form (no id) is not answered",
+         "getToken": "tok-1",
+         "message": {
+            "protocol": "publisher",
+            "v": 1,
+            "type": "auth.token.request",
+            "nonce": "$NONCE"
+         },
+         "reply": null
+      }
+   ]
+}
