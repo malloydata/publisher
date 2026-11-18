@@ -274,7 +274,7 @@ async function probe(args: {
    try {
       return read === "instance"
          ? await duckdbCollation(connection, sql)
-         : await postgresCollation(connection, sql);
+         : await postgresCollation(connection, unfinalizedPostgresSQL(sql));
    } catch {
       // Unreadable: fail closed.
       return "unknown";
@@ -355,6 +355,20 @@ async function postgresDefaultCollation(
       `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.collname = 'default' AND d.datname = current_database()`,
    );
    return postgresJudged(row);
+}
+
+/**
+ * Malloy's Postgres query SQL with its final stage taken off: a compiled
+ * query ends `SELECT row_to_json(finalStage) as row FROM <stage> AS
+ * finalStage`, one JSON column with no collation, so the probe reads the
+ * stage it wraps instead, whose `probe_value` keeps its column's collation.
+ * SQL with no such stage is returned as it is.
+ */
+export function unfinalizedPostgresSQL(sql: string): string {
+   return sql.replace(
+      /\bSELECT row_to_json\(finalStage\) as row FROM (__stage\d+) AS finalStage\s*$/,
+      "SELECT * FROM $1",
+   );
 }
 
 /**

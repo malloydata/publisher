@@ -315,6 +315,15 @@ class GateReadWalk {
       return true;
    }
 
+   /**
+    * Whether `e` keeps {@link GateReads}'s `equalityOnly`: an equality, or a
+    * comparison whose every leaf is a non-string value, which no collation
+    * orders (`amount > 100`).
+    */
+   private equalityOrNotString(e: unknown, source: unknown): boolean {
+      return equalityOnlyExpr(e) || this.leavesNotString(e, source);
+   }
+
    private tooDeep(): boolean {
       return ++this.steps > 4096;
    }
@@ -381,7 +390,7 @@ class GateReadWalk {
       this.names.add(stored);
       const along = [...chain, name, stored];
       if (f.e !== undefined) {
-         if (!equalityOnlyExpr(f.e)) this.equalityOnly = false;
+         if (!this.equalityOrNotString(f.e, source)) this.equalityOnly = false;
          for (const p of fieldPathsIn(f.e))
             this.resolve(source, p, along, joins);
          return;
@@ -507,7 +516,7 @@ class GateReadWalk {
       for (const f of Array.isArray(s.filterList) ? s.filterList : []) {
          this.scoped = true;
          const e = (f as { e?: unknown }).e;
-         if (!equalityOnlyExpr(e)) this.equalityOnly = false;
+         if (!this.equalityOrNotString(e, source)) this.equalityOnly = false;
          if (!this.leavesNotString(e, source)) this.comparesNoString = false;
          for (const p of fieldPathsIn(e)) {
             if (depth === 0) this.entryPaths.push(p);

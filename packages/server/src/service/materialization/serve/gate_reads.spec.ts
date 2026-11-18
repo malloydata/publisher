@@ -104,3 +104,61 @@ describe("gateReads: the row scope", () => {
       expect(reads.columns).toEqual([["amount"]]);
    });
 });
+
+describe("gateReads: equality-only", () => {
+   const str = (path: string[]) => ({ node: "field", path });
+   const US = { node: "stringLiteral", literal: "US" };
+   const ORDERS = {
+      type: "table",
+      sourceID: "orders@m",
+      fields: [
+         { name: "region", type: "string" },
+         { name: "amount", type: "number" },
+         // `dimension: big is amount > 100`
+         {
+            name: "big",
+            type: "boolean",
+            e: {
+               node: ">",
+               kids: {
+                  left: str(["amount"]),
+                  right: { node: "numberLiteral" },
+               },
+            },
+         },
+         // `dimension: late is region > 'M'`
+         {
+            name: "late",
+            type: "boolean",
+            e: { node: ">", kids: { left: str(["region"]), right: US } },
+         },
+      ],
+   };
+   const scopedBy = (...terms: unknown[]) => ({
+      ...ORDERS,
+      filterList: terms.map((e) => ({ e })),
+   });
+   const regionIsUS = { node: "=", kids: { left: str(["region"]), right: US } };
+
+   it("holds beside an ordering that compares no string, written or read through a field", () => {
+      const ordering = {
+         node: ">",
+         kids: { left: str(["amount"]), right: { node: "numberLiteral" } },
+      };
+      expect(gateReads(scopedBy(regionIsUS, ordering), []).equalityOnly).toBe(
+         true,
+      );
+      expect(
+         gateReads(scopedBy(regionIsUS, str(["big"])), []).equalityOnly,
+      ).toBe(true);
+   });
+
+   it("does not hold for an ordering over a string, written or read through a field", () => {
+      const ordering = {
+         node: ">",
+         kids: { left: str(["region"]), right: US },
+      };
+      expect(gateReads(scopedBy(ordering), []).equalityOnly).toBe(false);
+      expect(gateReads(scopedBy(str(["late"])), []).equalityOnly).toBe(false);
+   });
+});
