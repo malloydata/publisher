@@ -28,7 +28,8 @@
 # re-wrapped and masked there, and handed to the test as a file. The account
 # reaches only the test and cleanup steps. The test's output goes to the job
 # log alone; the artifact is the spec's JSON report and summary, scrubbed,
-# and checked for key-shaped text before upload.
+# and checked for key-shaped text and for any piece of either key before it
+# is posted or uploaded.
 #
 # Cost: a few hundred rows in all. Every native BigQuery job carries
 # maximumBytesBilled (1 GiB); the warehouse is shared with Malloy's CI, so the
@@ -54,7 +55,7 @@ on:
         required: false
         default: ""
       variants:
-        description: "Only these variants, comma-separated (storage, colocated, materialize, materialize_colocated)"
+        description: "Only these variants, comma-separated (storage, database, materialize, materialize_database)"
         required: false
         default: ""
   pull_request:
@@ -135,6 +136,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # The suite runs the checked-out code; it needs no token in .git.
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -303,14 +307,11 @@ jobs:
           cd packages/server
           bun ./tests/component/r4/conformance/warehouse/sweep.ts --run-id "$WAREHOUSE_CONFORMANCE_RUN_ID"
 
-      - name: Remove the Snowflake key file
-        if: always() && steps.snowflake.outputs.ready == 'true'
-        run: rm -rf "$RUNNER_TEMP/snowflake"
-
       # Only the spec's report and summary are kept, both scrubbed by the spec;
       # scrubbed again here (mask commands, PEM markers, long base64 runs, key
-      # fields), then checked: a file that still holds any of it fails the job
-      # and is not uploaded.
+      # fields), then checked for those and for any piece of the keys
+      # themselves: a file that still holds any of it fails the job and is
+      # neither posted nor uploaded.
       - name: Scrub and check the results
         id: scrub
         if: always() && steps.run.outcome != 'skipped'
@@ -328,26 +329,54 @@ jobs:
               -e 's/private_key(_id)?/[key field]/Ig' \
               "$f"
           done
+          # The keys themselves, whatever encoding hid their shape: every
+          # 16-character window of each run of letters and digits in a key's
+          # body (a run stops at +, / and =, which an encoding may rewrite).
+          # Read from the key files, which the next step removes; nothing
+          # here prints a fragment.
+          frags="$RUNNER_TEMP/key-fragments"
+          umask 077
+          : > "$frags"
+          windows() {
+            { grep -v -- '-----' || true; } | tr -d ' \t\r\n' | tr '+/=' '\n' \
+              | awk '{ for (i = 1; i + 15 <= length($0); i++) print substr($0, i, 16) }' >> "$frags"
+          }
+          if [ -f "$RUNNER_TEMP/snowflake/key.pem" ]; then
+            windows < "$RUNNER_TEMP/snowflake/key.pem"
+          fi
+          if [ -f "$RUNNER_TEMP/bq-credentials.json" ]; then
+            jq -r '.private_key // empty' "$RUNNER_TEMP/bq-credentials.json" | windows
+          fi
           leaked=0
           for f in "${files[@]}"; do
-            if grep -n -E -e '::add-mask::|PRIVATE KEY|private_key' -e '^[[:space:]]*[A-Za-z0-9+/]{64}[[:space:]]*$' "$f" > /dev/null; then
+            if grep -q -E -e '::add-mask::|PRIVATE KEY|private_key' -e '^[[:space:]]*[A-Za-z0-9+/]{64}[[:space:]]*$' "$f" \
+              || { [ -s "$frags" ] && grep -q -F -f "$frags" "$f"; }; then
               echo "::error::$(basename "$f") still holds key-shaped text; it is not uploaded"
               rm -f "$f"
               leaked=1
             fi
           done
+          rm -f "$frags"
           if [ "$leaked" -ne 0 ]; then exit 1; fi
           echo "clean=true" >> "$GITHUB_OUTPUT"
 
+      # After the check above, which reads them.
+      - name: Remove the key files
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/snowflake" "$RUNNER_TEMP/bq-credentials.json" "$RUNNER_TEMP/key-fragments"
+
+      # Only a summary the check above passed is posted.
       - name: Job summary
         if: always() && steps.run.outcome != 'skipped'
+        env:
+          CLEAN: ${{ steps.scrub.outputs.clean }}
         run: |
           summary="$WAREHOUSE_CONFORMANCE_OUT/${{ matrix.dialect }}.md"
-          if [ -f "$summary" ]; then
+          if [ "$CLEAN" = "true" ] && [ -f "$summary" ]; then
             cat "$summary" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Warehouse conformance: ${{ matrix.dialect }}" >> "$GITHUB_STEP_SUMMARY"
-            echo "No summary was written; see the job log." >> "$GITHUB_STEP_SUMMARY"
+            echo "No checked summary was written; see the job log." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload results

@@ -61,9 +61,13 @@ gate, it compares `main` with the anchor release in `anchor.json`. It holds no s
 `ubuntu-latest`, where its absolute budgets were calibrated, and it is **not a required check yet**: its flake rate on PRs decides
 that. It path-filters, which is only safe because it is not required (see below).
 
-Two workflows hold real warehouse credentials, and both should be treated as such when edited:
-`connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
-`BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand.
+Three workflows hold real warehouse credentials, and each should be treated as such when edited:
+`connection-integration-tests.yml` (the full connection matrix), `k6-tests.yml`, which passes
+`BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand, and `warehouse-conformance.yml`
+(materialization conformance on BigQuery and Snowflake: nightly, on demand, and on a same-repo PR
+carrying the `warehouse-conformance` label). The last uploads an artifact from a public repository,
+so it keeps the Snowflake key to one step, uploads only the spec's scrubbed report, and fails the
+job rather than upload a file holding any piece of either key.
 
 Every workflow a pull request triggers shares one `concurrency:` rule: runs for a PR are grouped by
 its number and a new push cancels the one in flight, while every other event (push to `main`,
