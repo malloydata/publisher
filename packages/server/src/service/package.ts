@@ -2127,6 +2127,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.databaseTableUnreadWarnings(),
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
+         ...this.mz.lateRowWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),

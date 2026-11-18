@@ -36,6 +36,7 @@ import {
    describeDialects,
    dialectsWith,
 } from "../domain/dialect";
+import { DURATION_UNIT_TEXT } from "../domain/freshness";
 import type {
    IncrementalDeclaration,
    ResolvedName,
@@ -111,6 +112,13 @@ function malformedMessage(
    problem: string,
    detail: string | undefined,
 ): string {
+   if (key === "lookback" && (problem === "array" || problem === "empty")) {
+      return (
+         `${where} declares lookback=${problem === "array" ? "[…] as a tag ARRAY" : '"" (empty)'}. ` +
+         `Write ONE quoted duration, such as lookback="2 days", or remove the ` +
+         `key (use -lookback to strip one inherited from a parent source).`
+      );
+   }
    switch (problem) {
       case "array":
          return (
@@ -212,10 +220,14 @@ function judgeSource(source: IncrementalPolicySource): {
 
    // Rule 1: a key that only means something in incremental mode, on a source
    // that is not in it.
-   if (!d.incremental && (d.declaredWatermark || d.declaredMergeKey)) {
+   if (
+      !d.incremental &&
+      (d.declaredWatermark || d.declaredMergeKey || d.declaredLookback)
+   ) {
       const keys = [
          d.declaredWatermark ? "watermark=" : undefined,
          d.declaredMergeKey ? "merge_key=" : undefined,
+         d.declaredLookback ? "lookback=" : undefined,
       ].filter((k): k is string => k !== undefined);
       out.push(
          `${where} declares ${keys.join(" and ")} but is not ${MODE}` +
@@ -338,6 +350,8 @@ function judgeSource(source: IncrementalPolicySource): {
       );
    }
 
+   out.push(...lookbackRejections(d, where));
+
    // Rule 12: any window field. Conservative on purpose; the message states the
    // eventual criterion.
    if (d.calculateFields.length > 0) {
@@ -358,6 +372,53 @@ function judgeSource(source: IncrementalPolicySource): {
    }
 
    return { invalid: out, unbuildable };
+}
+
+/**
+ * Rule 13: `lookback=` moves a delta's start back by a duration, below the
+ * newest stored watermark, and re-reads rows the table already holds. A
+ * duration is time, so the watermark must be a date or timestamp, and the
+ * rows read again must be matched to their stored copies by row identity.
+ */
+function lookbackRejections(
+   d: IncrementalDeclaration,
+   where: string,
+): string[] {
+   if (d.lookback === undefined) return [];
+   const out: string[] = [];
+   if (d.lookback.seconds === undefined) {
+      out.push(
+         `${where} declares lookback=${JSON.stringify(d.lookback.text)}, ` +
+            `which is not a duration. Write a positive whole number and one ` +
+            `unit of ${DURATION_UNIT_TEXT}, such as lookback="2 days" or ` +
+            `lookback="36h".`,
+      );
+   }
+   if (!d.declaredMergeKey) {
+      out.push(
+         `${where} declares lookback= without merge_key=. lookback= re-reads ` +
+            `rows the table already holds, below the newest stored ` +
+            `watermark, and merge_key= is what matches each one to its stored ` +
+            `copy instead of applying it again. Declare merge_key= with the ` +
+            `row's identity dimensions, or remove lookback=.`,
+      );
+   }
+   const watermark = d.watermark;
+   if (
+      watermark !== undefined &&
+      watermark.kind !== "unresolved" &&
+      watermark.malloyType !== "date" &&
+      watermark.malloyType !== "timestamp"
+   ) {
+      out.push(
+         `${where} declares lookback= with watermark="${watermark.name}", of ` +
+            `type ${watermark.malloyType}. lookback= is a span of time, so it ` +
+            `needs a date or timestamp watermark; a ${watermark.malloyType} ` +
+            `watermark's delta already starts at the newest value the source ` +
+            `held at the last refresh. Remove lookback=.`,
+      );
+   }
+   return out;
 }
 
 /**

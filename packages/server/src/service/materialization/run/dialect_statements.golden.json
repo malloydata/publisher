@@ -675,6 +675,90 @@
       "SELECT MAX(\"updated_at\") AS \"watermark_max\" FROM (SELECT * FROM src) AS __w"
     ]
   },
+  "probeStoredWatermark": {
+    "duckdb": [
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= TIMESTAMP '2026-01-01 00:00:00'",
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02'"
+    ],
+    "postgres": [
+      "SELECT row_to_json(__p) AS \"row\" FROM (SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= TIMESTAMP '2026-01-01 00:00:00') AS __p",
+      "SELECT row_to_json(__p) AS \"row\" FROM (SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02') AS __p"
+    ],
+    "standardsql": [
+      "SELECT CAST(MAX(`updated_at`) AS STRING) AS `watermark_max` FROM tgt WHERE `updated_at` <= TIMESTAMP '2026-01-01 00:00:00'",
+      "SELECT CAST(MAX(`updated_at`) AS STRING) AS `watermark_max` FROM tgt WHERE `updated_at` <= DATE '2026-01-02'"
+    ],
+    "snowflake": [
+      "SELECT TO_CHAR(CONVERT_TIMEZONE('UTC', MAX(\"updated_at\"))::TIMESTAMP_NTZ, 'YYYY-MM-DD HH24:MI:SS') AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= TIMESTAMP '2026-01-01 00:00:00'",
+      "SELECT TO_CHAR(MAX(\"updated_at\"), 'YYYY-MM-DD') AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02'"
+    ],
+    "databricks": [
+      "SELECT CAST(MAX(`updated_at`) AS VARCHAR) AS `watermark_max` FROM tgt WHERE `updated_at` <= TIMESTAMP '2026-01-01 00:00:00'",
+      "SELECT CAST(MAX(`updated_at`) AS VARCHAR) AS `watermark_max` FROM tgt WHERE `updated_at` <= DATE '2026-01-02'"
+    ],
+    "trino": [
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= TIMESTAMP '2026-01-01 00:00:00'",
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02'"
+    ],
+    "presto": [
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= TIMESTAMP '2026-01-01 00:00:00'",
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02'"
+    ],
+    "mysql": [
+      "SELECT CAST(MAX(`updated_at`) AS VARCHAR) AS `watermark_max` FROM tgt WHERE `updated_at` <= TIMESTAMP '2026-01-01 00:00:00'",
+      "SELECT CAST(MAX(`updated_at`) AS VARCHAR) AS `watermark_max` FROM tgt WHERE `updated_at` <= DATE '2026-01-02'"
+    ],
+    "sqlserver": [
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= TIMESTAMP '2026-01-01 00:00:00'",
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02'"
+    ],
+    "unknown_dialect": [
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= TIMESTAMP '2026-01-01 00:00:00'",
+      "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02'"
+    ]
+  },
+  "lateRowsSql": {
+    "duckdb": {
+      "merge": "SELECT COUNT(*) AS \"late_rows\" FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, \"updated_at\", \"id\", \"region\" FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.\"updated_at\" = __s.\"updated_at\" AND (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"region\" = __s.\"region\" OR (__t.\"region\" IS NULL AND __s.\"region\" IS NULL)) WHERE __t.__present IS NULL",
+      "rangeReplace": "SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS \"late_rows\""
+    },
+    "postgres": {
+      "merge": "SELECT row_to_json(__p) AS \"row\" FROM (SELECT COUNT(*) AS \"late_rows\" FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, \"updated_at\", \"id\", \"region\" FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.\"updated_at\" = __s.\"updated_at\" AND (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"region\" = __s.\"region\" OR (__t.\"region\" IS NULL AND __s.\"region\" IS NULL)) WHERE __t.__present IS NULL) AS __p",
+      "rangeReplace": "SELECT row_to_json(__p) AS \"row\" FROM (SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS \"late_rows\") AS __p"
+    },
+    "standardsql": {
+      "merge": "SELECT COUNT(*) AS `late_rows` FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, `updated_at`, `id`, `region` FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.`updated_at` = __s.`updated_at` AND (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`region` = __s.`region` OR (__t.`region` IS NULL AND __s.`region` IS NULL)) WHERE __t.__present IS NULL",
+      "rangeReplace": "SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00') AS `late_rows`"
+    },
+    "snowflake": {
+      "merge": "SELECT COUNT(*) AS \"late_rows\" FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, \"updated_at\", \"id\", \"region\" FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.\"updated_at\" = __s.\"updated_at\" AND (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"region\" = __s.\"region\" OR (__t.\"region\" IS NULL AND __s.\"region\" IS NULL)) WHERE __t.__present IS NULL",
+      "rangeReplace": "SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS \"late_rows\""
+    },
+    "databricks": {
+      "merge": "SELECT COUNT(*) AS `late_rows` FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, `updated_at`, `id`, `region` FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.`updated_at` = __s.`updated_at` AND (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`region` = __s.`region` OR (__t.`region` IS NULL AND __s.`region` IS NULL)) WHERE __t.__present IS NULL",
+      "rangeReplace": "SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00') AS `late_rows`"
+    },
+    "trino": {
+      "merge": "SELECT COUNT(*) AS \"late_rows\" FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, \"updated_at\", \"id\", \"region\" FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.\"updated_at\" = __s.\"updated_at\" AND (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"region\" = __s.\"region\" OR (__t.\"region\" IS NULL AND __s.\"region\" IS NULL)) WHERE __t.__present IS NULL",
+      "rangeReplace": "SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS \"late_rows\""
+    },
+    "presto": {
+      "merge": "SELECT COUNT(*) AS \"late_rows\" FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, \"updated_at\", \"id\", \"region\" FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.\"updated_at\" = __s.\"updated_at\" AND (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"region\" = __s.\"region\" OR (__t.\"region\" IS NULL AND __s.\"region\" IS NULL)) WHERE __t.__present IS NULL",
+      "rangeReplace": "SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS \"late_rows\""
+    },
+    "mysql": {
+      "merge": "SELECT COUNT(*) AS `late_rows` FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, `updated_at`, `id`, `region` FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.`updated_at` = __s.`updated_at` AND (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`region` = __s.`region` OR (__t.`region` IS NULL AND __s.`region` IS NULL)) WHERE __t.__present IS NULL",
+      "rangeReplace": "SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE `updated_at` >= TIMESTAMP '2026-01-01 00:00:00' AND `updated_at` < TIMESTAMP '2026-02-01 00:00:00') AS `late_rows`"
+    },
+    "sqlserver": {
+      "merge": "SELECT COUNT(*) AS \"late_rows\" FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, \"updated_at\", \"id\", \"region\" FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.\"updated_at\" = __s.\"updated_at\" AND (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"region\" = __s.\"region\" OR (__t.\"region\" IS NULL AND __s.\"region\" IS NULL)) WHERE __t.__present IS NULL",
+      "rangeReplace": "SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS \"late_rows\""
+    },
+    "unknown_dialect": {
+      "merge": "SELECT COUNT(*) AS \"late_rows\" FROM (SELECT * FROM src) AS __s LEFT JOIN (SELECT 1 AS __present, \"updated_at\", \"id\", \"region\" FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS __t ON __t.\"updated_at\" = __s.\"updated_at\" AND (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"region\" = __s.\"region\" OR (__t.\"region\" IS NULL AND __s.\"region\" IS NULL)) WHERE __t.__present IS NULL",
+      "rangeReplace": "SELECT (SELECT COUNT(*) FROM (SELECT * FROM src) AS __s) - (SELECT COUNT(*) FROM tgt WHERE \"updated_at\" >= TIMESTAMP '2026-01-01 00:00:00' AND \"updated_at\" < TIMESTAMP '2026-02-01 00:00:00') AS \"late_rows\""
+    }
+  },
   "probePostgresVersion": [
     "SELECT row_to_json(__p) AS \"row\" FROM (SELECT current_setting('server_version_num') AS version_num) AS __p"
   ],

@@ -40,6 +40,7 @@ import type {
 import type {
    BuildInstruction,
    IncrementalStrategy,
+   LateRows,
    LedgerEntry,
    ManifestEntry,
 } from "../domain/types";
@@ -56,6 +57,7 @@ import type { QueryMetadata } from "../../query_metadata";
 import { errMessage } from "../../../utils";
 import {
    applyDeltaScript,
+   countLateRows,
    isPairGuardFailure,
    isRenderableWatermarkType,
    planIncrementalStep,
@@ -70,7 +72,10 @@ import {
 } from "./incremental_apply";
 import { isDecimalDeltaGuardFailure } from "./postgres_numeric_precision";
 import { capturedNativeSchema } from "./database_native_types";
-import type { IncrementalDeclaration } from "../domain/incremental";
+import {
+   INCREMENTAL_LATE_ROWS_CODE,
+   type IncrementalDeclaration,
+} from "../domain/incremental";
 
 /**
  * The ledger surface a build needs; a narrowing of ResourceRepository. Addressed
@@ -282,6 +287,7 @@ export function incrementalLineage(params: {
       strategy: d.strategy as IncrementalStrategy,
       ...(d.rollingWindow?.length ? { rollingWindow: d.rollingWindow } : {}),
       ...(d.pair ? { pair: d.pair } : {}),
+      ...(d.lookback?.seconds ? { lookbackSeconds: d.lookback.seconds } : {}),
    };
 }
 
@@ -535,6 +541,8 @@ export async function applyIncrementalStep(params: {
    durationMs?: number;
    coveredThrough?: WatermarkBound;
    refresh?: "delta" | "none";
+   /** What the late-row check found below the delta (see reportLateRows). */
+   lateRows?: LateRows;
 }> {
    const { context, lineage, step, target } = params;
    if (step.mode !== "delta") {
@@ -611,12 +619,82 @@ export async function applyIncrementalStep(params: {
       physicalTableName: lineage.physicalTableName,
       durationMs,
    });
+   // After the commit and the advance, and outside the apply's duration: the
+   // check reads, never writes, and its failure costs only the report.
+   const lateRows = target.abortSignal?.aborted
+      ? undefined
+      : await reportLateRows({
+           target,
+           lineage,
+           step,
+           sourceName: params.sourceName,
+           packageName: context.packageName,
+        });
    return {
       applied: true,
       durationMs,
       coveredThrough: step.coveredThrough,
       refresh: "delta",
+      ...(lateRows ? { lateRows } : {}),
    };
+}
+
+/**
+ * Run the late-row check for a committed delta ({@link countLateRows}) and log
+ * what it found, under {@link INCREMENTAL_LATE_ROWS_CODE}: the rows the source
+ * holds just below the delta's lower bound that the stored table lacks, so the
+ * table undercounts until a rebuild. The window's bounds are watermark values
+ * from the data, so they ride the manifest entry, not the log.
+ */
+async function reportLateRows(params: {
+   target: DeltaTarget;
+   lineage: IncrementalLineage;
+   step: Extract<IncrementalStep, { mode: "delta" }>;
+   sourceName: string;
+   packageName: string;
+}): Promise<LateRows | undefined> {
+   const { lineage, step } = params;
+   const found = await countLateRows({
+      target: params.target,
+      lineage,
+      start: step.start,
+      end: step.end,
+   });
+   const at = {
+      packageName: params.packageName,
+      sourceName: params.sourceName,
+      physicalTableName: lineage.physicalTableName,
+   };
+   if (found.error !== undefined) {
+      logger.warn("Could not check an incremental delta for late rows", {
+         ...at,
+         // The code only: the error can quote a watermark value.
+         errorCode: found.errorCode,
+      });
+      return undefined;
+   }
+   if (found.lateRows) {
+      logger.warn(
+         "An incremental source's table is missing rows stamped below its " +
+            "delta's lower bound",
+         {
+            ...at,
+            code: INCREMENTAL_LATE_ROWS_CODE,
+            count: found.lateRows.count,
+         },
+      );
+   }
+   return found.lateRows;
+}
+
+/**
+ * The manifest entry's `lateRows` field: what the late-row check found below
+ * this run's delta, or nothing when it found nothing or did not run.
+ */
+export function lateRowsFields(
+   lateRows: LateRows | undefined,
+): { lateRows: LateRows } | Record<never, never> {
+   return lateRows ? { lateRows } : {};
 }
 
 /**
@@ -845,6 +923,7 @@ export async function refreshOneSourceIncrementally(params: {
       // A delta reports where it advanced to; a skip, the boundary in force.
       ...ledgerFields(lineage, outcome.coveredThrough),
       ...refreshFields(outcome.refresh),
+      ...lateRowsFields(outcome.lateRows),
       ...(nativeSchema?.length ? { nativeSchema } : {}),
    };
 }
@@ -972,6 +1051,7 @@ export function storageRefreshFor(params: {
             coveredThrough: outcome.coveredThrough,
             refresh: outcome.refresh ?? "none",
             readCost: readCost(),
+            ...(outcome.lateRows ? { lateRows: outcome.lateRows } : {}),
          };
       },
       afterSeed: ({ session, quotedTablePath }) =>

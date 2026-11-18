@@ -604,6 +604,49 @@ export function probeSelect(dialect: string, innerSelect: string): string {
 }
 
 /**
+ * A date or timestamp watermark expression as TEXT the bound parser reads
+ * (`canonicalBoundValue` in incremental_apply.ts): `YYYY-MM-DD` for a date,
+ * `YYYY-MM-DD HH:MM:SS[.f]` in UTC for a timestamp, with no offset or a zero
+ * one.
+ *
+ * Text, not the driver's own value, because drivers disagree about a
+ * timestamp: node-postgres hands back a zone-naive one as a Date in the
+ * PROCESS's zone, which off UTC would move the bound by hours. Every
+ * incremental session is pinned to UTC, so a zoned timestamp's text is UTC.
+ * Snowflake spells its own format, because a cast follows the account's
+ * `TIMESTAMP_OUTPUT_FORMAT`, and converts first, because a `TIMESTAMP_TZ`
+ * prints in the offset it was stored with. A dialect with no incremental
+ * refresh takes the standard cast.
+ */
+export function watermarkTextSql(
+   dialect: string,
+   malloyType: "date" | "timestamp",
+   expression: string,
+): string {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
+      case "snowflake":
+         return malloyType === "date"
+            ? `TO_CHAR(${expression}, 'YYYY-MM-DD')`
+            : `TO_CHAR(CONVERT_TIMEZONE('UTC', ${expression})::TIMESTAMP_NTZ, ` +
+                 `'YYYY-MM-DD HH24:MI:SS')`;
+      case "standardsql":
+         return `CAST(${expression} AS STRING)`;
+      case "postgres":
+      case "duckdb":
+      case "databricks":
+      case "trino":
+      case "presto":
+      case "mysql":
+      case "sqlserver":
+         return `CAST(${expression} AS VARCHAR)`;
+      default:
+         unregistered(knownDialect);
+         return `CAST(${expression} AS VARCHAR)`;
+   }
+}
+
+/**
  * The query reading the column names, in ordinal order, of the table whose
  * decoded path is `segments` (one row per column, `column_name`). Undefined
  * when the name gives no container to read the catalog in: every dialect but

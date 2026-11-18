@@ -6133,6 +6133,12 @@ components:
                   the same SQL on one connection, so they share one table and
                   one boundary, where at least one is incremental (one per
                   source; `warn`).
+                  `persist-incremental-late-rows`: an incremental source whose
+                  bound table a delta's late-row check found missing rows
+                  stamped just below where the delta started reading, which no
+                  later delta reads (its manifest entry's `lateRows`); it
+                  clears once a bound manifest no longer reports them (one per
+                  source; `warn`).
                   `rollup-join-one-key-repeated`: a bound rollup whose last
                   build found the key of a `join_one` it reads repeated, so a
                   query reading that join beside other aggregates is answered
@@ -12388,6 +12394,43 @@ components:
             `refresh="full"`, or one whose declaration the delta path cannot act
             on at all (an unsupported source dialect), which the publish
             gate rejects anyway.
+        lateRows:
+          type: object
+          required: [count, from, to]
+          description: >-
+            For a source this run advanced by a delta (`refresh` is `delta`):
+            rows the source holds below where the delta started reading that
+            the stored table lacks. A delta reads from the newest watermark
+            the table holds (less the source's `lookback=`), so a row stamped
+            below that, landing after the rows above it were stored, is never
+            read, and the table undercounts it until it is rebuilt.
+
+            The check reads one window directly below the delta's start, as
+            wide as the delta's own range, so it finds a row stamped within
+            that window and not one older. With `merge_key=` a source row
+            counts when no stored row has its keys and its watermark (a
+            skipped restatement counts too); without one, it is the source's
+            rows in the window less the table's.
+
+            Absent when the check found nothing or did not run: a refresh
+            that was not a delta, a pair table, a string watermark, or a
+            check that failed (logged; the delta it checks has committed).
+            While the run's manifest is bound, the package also warns with
+            code `persist-incremental-late-rows`.
+          properties:
+            count:
+              type: integer
+              description: Source rows in the window the stored table lacks.
+            from:
+              type: string
+              description: >-
+                Where the window starts (inclusive), as the watermark's value:
+                ISO-8601 for a date or timestamp, decimal text for a number.
+            to:
+              type: string
+              description: >-
+                Where it ends (exclusive): the delta's lower bound, spelled as
+                `from` is.
 
   parameters:
     includeHiddenFilesAndSources:

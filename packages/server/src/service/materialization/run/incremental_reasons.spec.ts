@@ -61,7 +61,10 @@ const LEDGER = {
    createdAt: new Date("2024-05-01T00:00:00Z"),
 };
 
-/** Answers the planner's probes: the table's columns, its emptiness, the frontier. */
+/**
+ * Answers the planner's probes: the table's columns, its emptiness, its newest
+ * stored watermark, the frontier.
+ */
 function runner(
    answers: { frontierFails?: boolean; columns?: string[] } = {},
 ): SqlRunner {
@@ -74,6 +77,10 @@ function runner(
          };
       }
       if (sql.includes("LIMIT 1")) return { rows: [{ present: 1 }] };
+      // The newest stored watermark a date delta starts from.
+      if (sql.includes("CAST(MAX(")) {
+         return { rows: [{ watermark_max: "2024-05-31" }] };
+      }
       if (sql.includes("watermark_max")) {
          if (answers.frontierFails) throw new Error("permission denied");
          return { rows: [{ watermark_max: 99 }] };

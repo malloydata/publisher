@@ -35,8 +35,10 @@ import {
    probeSelect,
    targetColumnsProbeSql,
    transactionKeywords,
+   watermarkTextSql,
 } from "./warehouse_sql";
 import type { PairDelta } from "../domain/incremental";
+import type { LateRows } from "../domain/types";
 import {
    windowDeleteBefore,
    type RollingWindow,
@@ -89,10 +91,14 @@ function secondsPrecision(value: string): string {
    // Anchored at BOTH ends. A zone offset is refused rather than dropped: dropping
    // `+05:30` would relabel a local bound as UTC, and east of UTC that moves
    // `covered_through` AHEAD of the table, skipping rows permanently. A bare `Z`
-   // already says UTC.
+   // already says UTC, and so does a zero offset (`+00`, `+00:00`, `+0000`),
+   // which is how a zoned timestamp's text reads in a UTC session
+   // (watermarkTextSql).
    const match = value
       .trim()
-      .match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?$/);
+      .match(
+         /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|\s?[+-]00(?::?00)?)?$/,
+      );
    if (!match) {
       throw new Error(
          `not a UTC ISO-8601 timestamp: ${JSON.stringify(value)} (expected YYYY-MM-DDTHH:MM:SS, with no zone offset)`,
@@ -194,6 +200,100 @@ export function canonicalBoundValue(
  */
 export function snapshotBound(malloyType: string, now: Date): WatermarkBound {
    return canonicalBoundValue(malloyType, now);
+}
+
+/** Whether a watermark type takes its range end from the run clock. */
+function isTimeWatermark(malloyType: string): boolean {
+   return malloyType === "date" || malloyType === "timestamp";
+}
+
+const MS_PER_DAY = 86_400_000;
+
+/** A date or timestamp bound as epoch milliseconds (UTC). */
+function boundMillis(bound: WatermarkBound): number {
+   return bound.malloyType === "date"
+      ? Date.parse(`${datePrecision(bound.value)}T00:00:00Z`)
+      : Date.parse(`${secondsPrecision(bound.value).replace(" ", "T")}Z`);
+}
+
+/**
+ * A date or timestamp bound moved back by `seconds`. A date moves by whole
+ * days, rounded UP, so a lookback shorter than a day still re-reads the
+ * boundary's day and the one before it.
+ */
+export function boundMinusSeconds(
+   bound: WatermarkBound,
+   seconds: number,
+): WatermarkBound {
+   const ms =
+      bound.malloyType === "date"
+         ? Math.ceil(seconds / 86_400) * MS_PER_DAY
+         : seconds * 1000;
+   return canonicalBoundValue(
+      bound.malloyType,
+      new Date(boundMillis(bound) - ms),
+   );
+}
+
+/**
+ * Where a delta of a date or timestamp watermark starts reading: the newest
+ * watermark the stored table holds at or below the recorded boundary, moved
+ * back by `lookback=` when one is declared.
+ *
+ * Not the recorded boundary itself. That is the previous run's START TIME (a
+ * time watermark's range ends at the run clock), and a row stamped before it
+ * but landing after it would be below every later range, never written
+ * (F-23). The newest stored value is the highest point the table is known to
+ * hold; anything stamped at or above it is read again. The range is
+ * inclusive below (`>=`), so a row stamped in the very second of the newest
+ * stored one is read too: a merge matches it by key, and a range replace
+ * deletes the same range before it inserts, so neither writes it twice.
+ *
+ * Capped at the recorded boundary, which it may lag but never lead (see the
+ * build path's invariant below). With nothing stored at or below it (every
+ * stored watermark NULL, or past the clock when the table was seeded), the
+ * recorded boundary stands.
+ */
+export function deltaLowerBound(params: {
+   recorded: WatermarkBound;
+   /** The table's newest watermark at or below `recorded`; undefined for none. */
+   stored: WatermarkBound | undefined;
+   /** The declared `lookback=`, in seconds; undefined or 0 for none. */
+   lookbackSeconds?: number;
+}): WatermarkBound {
+   const { recorded, stored } = params;
+   const base =
+      stored !== undefined && compareBounds(stored, recorded) < 0
+         ? stored
+         : recorded;
+   return params.lookbackSeconds
+      ? boundMinusSeconds(base, params.lookbackSeconds)
+      : base;
+}
+
+/**
+ * The start of the window the late-row check reads below a delta's lower
+ * bound: `start - (end - start)`, a window as wide as the delta's own range,
+ * so the check reads about as much as the delta does. Undefined for a string
+ * watermark, which has no width.
+ */
+export function lateRowsWindowStart(
+   start: WatermarkBound,
+   end: WatermarkBound,
+): WatermarkBound | undefined {
+   if (start.malloyType === "number") {
+      const width = Number(end.value) - Number(start.value);
+      return width > 0
+         ? canonicalBoundValue("number", Number(start.value) - width)
+         : undefined;
+   }
+   if (!isTimeWatermark(start.malloyType)) return undefined;
+   const width = boundMillis(end) - boundMillis(start);
+   if (!(width > 0)) return undefined;
+   return canonicalBoundValue(
+      start.malloyType,
+      new Date(boundMillis(start) - width),
+   );
 }
 
 /**
@@ -390,6 +490,47 @@ export async function probeMaxWatermark(
 }
 
 /**
+ * The newest date or timestamp watermark the stored table holds at or below
+ * `atOrBelow` (the recorded boundary), for {@link deltaLowerBound}: one
+ * aggregate over one column of the table. Undefined (not an error) when none
+ * is: every stored watermark NULL, or past the boundary.
+ *
+ * Read as text ({@link watermarkTextSql}), never as the driver's value, so a
+ * zone-naive timestamp cannot be read in the process's zone.
+ */
+export async function probeStoredWatermark(params: {
+   runner: SqlRunner;
+   dialect: string;
+   quotedTablePath: string;
+   /** The column the table holds the watermark under. */
+   column: string;
+   atOrBelow: WatermarkBound;
+}): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
+   const { dialect, atOrBelow } = params;
+   const type = atOrBelow.malloyType;
+   if (type !== "date" && type !== "timestamp") {
+      return { error: `a ${type} watermark has no stored boundary to read` };
+   }
+   const column = quoteIdentifier(params.column, dialect);
+   const sql = probeSelect(
+      dialect,
+      `SELECT ${watermarkTextSql(dialect, type, `MAX(${column})`)} AS ` +
+         `${probeAlias("watermark_max", dialect)} ` +
+         `FROM ${params.quotedTablePath} ` +
+         `WHERE ${column} <= ${renderSqlBound(atOrBelow, dialect)}`,
+   );
+   try {
+      const result = await params.runner(sql);
+      const raw = probeRows(result.rows)[0]?.["watermark_max"];
+      if (raw === null || raw === undefined) return {};
+      return { bound: canonicalBoundValue(type, raw) };
+   } catch (err) {
+      // The message can quote the value read, so only the code may be logged.
+      return { error: errMessage(err), errorCode: errorCodeOf(err) };
+   }
+}
+
+/**
  * Postgres's `server_version_num`, for the MERGE floor: MERGE is a syntax error
  * before Postgres 15.
  */
@@ -426,7 +567,14 @@ export function compareBounds(a: WatermarkBound, b: WatermarkBound): number {
       );
    }
    if (a.malloyType === "number") return Number(a.value) - Number(b.value);
-   return a.value < b.value ? -1 : a.value > b.value ? 1 : 0;
+   // A timestamp read back as text is spelled `YYYY-MM-DD HH:MM:SS`, one from
+   // the run clock `YYYY-MM-DDTHH:MM:SS`: one spelling, so they compare.
+   const text = (bound: WatermarkBound) =>
+      bound.malloyType === "timestamp"
+         ? bound.value.replace("T", " ")
+         : bound.value;
+   const [x, y] = [text(a), text(b)];
+   return x < y ? -1 : x > y ? 1 : 0;
 }
 
 /**
@@ -789,6 +937,14 @@ export interface IncrementalLineage {
     */
    rollingWindow?: readonly RollingWindow[];
    /**
+    * The declared `lookback=`, in seconds: a date or timestamp delta starts
+    * this far below the newest stored watermark ({@link deltaLowerBound}),
+    * and the merge key matches the rows read again. Only with `merge_key=`
+    * (the publish gate). Not compared with the ledger: it moves where a
+    * delta starts, never what a recorded boundary means.
+    */
+   lookbackSeconds?: number;
+   /**
     * A pair table's parent key and parent-row flag column
     * ({@link pairDeltaStatements}): a delta replaces every row of each parent
     * it holds, by the key, and checks that each parent keeps exactly one
@@ -969,6 +1125,38 @@ async function resolveDeltaEnd(
 }
 
 /**
+ * The lower bound of a delta's range. A DATE or TIMESTAMP watermark starts at
+ * the newest watermark the table holds, less `lookback=`
+ * ({@link deltaLowerBound}), not at the recorded boundary, which is the
+ * previous run's clock: one aggregate over the table's watermark column. A
+ * NUMBER or STRING boundary is already the source's own frontier, read from
+ * its rows, so it is where the delta starts.
+ */
+async function resolveDeltaStart(
+   target: DeltaTarget,
+   lineage: IncrementalLineage,
+   recorded: WatermarkBound,
+): Promise<{ bound: WatermarkBound; error?: undefined } | { error: string }> {
+   if (!isTimeWatermark(recorded.malloyType)) return { bound: recorded };
+   const stored = await probeStoredWatermark({
+      runner: target.runner,
+      dialect: target.dialect,
+      quotedTablePath: target.quotedTablePath,
+      column:
+         target.storedColumn?.(lineage.watermarkName) ?? lineage.watermarkName,
+      atOrBelow: recorded,
+   });
+   if (stored.error !== undefined) return { error: stored.error };
+   return {
+      bound: deltaLowerBound({
+         recorded,
+         stored: stored.bound,
+         lookbackSeconds: lineage.lookbackSeconds,
+      }),
+   };
+}
+
+/**
  * Where a delta's DML lands, and how its rows are produced: the only facts that
  * differ between a database table and a `storage=` one (rows computed by the
  * SOURCE warehouse, DML issued in the DESTINATION engine).
@@ -1000,6 +1188,18 @@ export interface DeltaTarget {
    deltaRows(
       start: WatermarkBound,
       end: WatermarkBound | undefined,
+   ): Promise<string>;
+   /**
+    * The SOURCE's rows in `[start, end)`, only `columns` of them (stored
+    * names), as a SELECT executable on the TARGET: what the late-row check
+    * ({@link countLateRows}) compares the stored table with. Its read is not
+    * the delta's, so it is not counted in the delta's read cost. Absent: the
+    * check is not run.
+    */
+   windowRows?(
+      start: WatermarkBound,
+      end: WatermarkBound,
+      columns: string[],
    ): Promise<string>;
    /**
     * The SOURCE's watermark frontier, for a number or string watermark (see
@@ -1047,6 +1247,15 @@ export function warehouseDeltaTarget(params: {
             start,
             end,
          }),
+      windowRows: async (start, end, columns) =>
+         `SELECT ${columns.map((c) => quoteIdentifier(c, dialect)).join(", ")} ` +
+         `FROM (${deltaSelect({
+            dialect,
+            sourceSQL,
+            watermarkName: lineage.watermarkName,
+            start,
+            end,
+         })}) AS __c`,
       probeSourceFrontier: () =>
          probeMaxWatermark(
             runner,
@@ -1156,10 +1365,21 @@ export async function planIncrementalStep(inputs: {
       };
    }
 
-   const start: WatermarkBound = {
+   const recorded: WatermarkBound = {
       malloyType: ledgerEntry.coveredThroughType,
       value: ledgerEntry.coveredThroughValue,
    };
+   const lower = await resolveDeltaStart(target, lineage, recorded);
+   if (lower.error !== undefined) {
+      // Unproven where the table reaches: a delta from the recorded boundary
+      // could skip rows, so rebuild.
+      return {
+         mode: "seed",
+         reasonCode: "table_unreadable",
+         reason: `the newest stored watermark could not be read (${lower.error})`,
+      };
+   }
+   const start = lower.bound;
    const end = await resolveDeltaEnd(target, lineage, inputs.now);
    if (!end.bound) {
       return {
@@ -1168,7 +1388,7 @@ export async function planIncrementalStep(inputs: {
          reason: end.error
             ? `the watermark frontier could not be read (${end.error})`
             : "the source has no rows with a non-null watermark",
-         coveredThrough: start,
+         coveredThrough: recorded,
       };
    }
    if (compareBounds(end.bound, start) <= 0) {
@@ -1178,7 +1398,7 @@ export async function planIncrementalStep(inputs: {
          reason:
             `the watermark has not advanced past ${start.value} ` +
             `(frontier: ${end.bound.value})`,
-         coveredThrough: start,
+         coveredThrough: recorded,
       };
    }
 
@@ -1282,4 +1502,146 @@ export async function seedCoveredThrough(
    return type === "date" || type === "timestamp"
       ? { bound: snapshotBound(type, now) }
       : frontier;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Late rows: rows the source holds below a delta's lower bound that the stored
+// table lacks. A delta never reads below that bound, so such a row (stamped
+// before the newest stored row, landing after it was written) is missing from
+// the served table until a rebuild, or a `lookback=` wide enough to reach it.
+// The check makes that visible; it never writes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The late-row check's one aggregate, run on the TARGET: how many of the
+ * source's rows in `[from, to)` (`windowSQL`, see DeltaTarget.windowRows) the
+ * stored table lacks.
+ *
+ * With `merge_key=` (`matchColumns`, the keys plus any scope columns), a
+ * source row is present when a stored row has the same keys AND the same
+ * watermark, so a restatement the delta skipped counts as well as a row it
+ * never saw. A LEFT JOIN rather than a correlated `NOT EXISTS`: BigQuery
+ * refuses a correlated subquery it cannot turn into a join, and the
+ * watermark's equality is the equi-join every engine needs. Both sides are
+ * read only inside the window. Without a merge key (a range replace, whose
+ * rows' watermarks never change) the count is the source's rows in the
+ * window less the table's.
+ */
+export function lateRowsSql(params: {
+   dialect: string;
+   quotedTablePath: string;
+   windowSQL: string;
+   /** The watermark's stored column. */
+   watermark: string;
+   /** Stored columns that identify a row; empty for a range replace. */
+   matchColumns: string[];
+   from: WatermarkBound;
+   to: WatermarkBound;
+}): string {
+   const { dialect, quotedTablePath, windowSQL, matchColumns } = params;
+   const q = (name: string) => quoteIdentifier(name, dialect);
+   const w = q(params.watermark);
+   const inWindow =
+      `${w} >= ${renderSqlBound(params.from, dialect)} AND ` +
+      `${w} < ${renderSqlBound(params.to, dialect)}`;
+   const alias = probeAlias("late_rows", dialect);
+   if (matchColumns.length === 0) {
+      return probeSelect(
+         dialect,
+         `SELECT (SELECT COUNT(*) FROM (${windowSQL}) AS __s) - ` +
+            `(SELECT COUNT(*) FROM ${quotedTablePath} WHERE ${inWindow}) ` +
+            `AS ${alias}`,
+      );
+   }
+   const stored = [...new Set([params.watermark, ...matchColumns])]
+      .map(q)
+      .join(", ");
+   const on = [
+      `__t.${w} = __s.${w}`,
+      ...matchColumns
+         .filter((c) => c !== params.watermark)
+         .map(
+            (c) =>
+               `(__t.${q(c)} = __s.${q(c)} OR ` +
+               `(__t.${q(c)} IS NULL AND __s.${q(c)} IS NULL))`,
+         ),
+   ].join(" AND ");
+   return probeSelect(
+      dialect,
+      `SELECT COUNT(*) AS ${alias} FROM (${windowSQL}) AS __s ` +
+         `LEFT JOIN (SELECT 1 AS __present, ${stored} FROM ` +
+         `${quotedTablePath} WHERE ${inWindow}) AS __t ON ${on} ` +
+         `WHERE __t.__present IS NULL`,
+   );
+}
+
+/** A bound as the wire spells it: ISO-8601 with a `T` for a timestamp. */
+function wireBoundValue(bound: WatermarkBound): string {
+   return bound.malloyType === "timestamp"
+      ? bound.value.replace(" ", "T")
+      : bound.value;
+}
+
+/**
+ * Run the late-row check for a delta that committed: the source's rows in a
+ * window directly below its lower bound, as wide as its own range
+ * ({@link lateRowsWindowStart}), that the stored table lacks. One aggregate
+ * over that window of the source and of the table, so it costs about what
+ * the delta's own read does.
+ *
+ * Nothing for a pair table (its delta replaces whole parents, so its rows
+ * have no per-row identity to compare), a string watermark (a window has no
+ * width), a target that cannot read the source's window, or a window with no
+ * missing row. Best-effort: a failure is returned, never thrown, because the
+ * delta it checks has already committed.
+ */
+export async function countLateRows(params: {
+   target: DeltaTarget;
+   lineage: IncrementalLineage;
+   start: WatermarkBound;
+   end: WatermarkBound;
+}): Promise<{ lateRows?: LateRows; error?: string; errorCode?: string }> {
+   const { target, lineage, start, end } = params;
+   if (lineage.pair || !target.windowRows) return {};
+   const from = lateRowsWindowStart(start, end);
+   if (!from) return {};
+   const column = (field: string) => target.storedColumn?.(field) ?? field;
+   const watermark = column(lineage.watermarkName);
+   const matchColumns =
+      lineage.mergeKeys.length > 0
+         ? [
+              ...new Set(
+                 [...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])].map(
+                    column,
+                 ),
+              ),
+           ]
+         : [];
+   try {
+      const windowSQL = await target.windowRows(from, start, [
+         ...new Set([watermark, ...matchColumns]),
+      ]);
+      const result = await target.runner(
+         lateRowsSql({
+            dialect: target.dialect,
+            quotedTablePath: target.quotedTablePath,
+            windowSQL,
+            watermark,
+            matchColumns,
+            from,
+            to: start,
+         }),
+      );
+      const count = Number(probeRows(result.rows)[0]?.["late_rows"]);
+      if (!Number.isFinite(count) || count <= 0) return {};
+      return {
+         lateRows: {
+            count,
+            from: wireBoundValue(from),
+            to: wireBoundValue(start),
+         },
+      };
+   } catch (err) {
+      return { error: errMessage(err), errorCode: errorCodeOf(err) };
+   }
 }

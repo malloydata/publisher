@@ -29,7 +29,7 @@ export type ResolvedName =
 
 /** A key whose VALUE is unusable, as opposed to absent. */
 export interface MalformedValue {
-   key: "refresh" | "watermark" | "merge_key";
+   key: "refresh" | "watermark" | "merge_key" | "lookback";
    problem:
       | "array" // tag-array form: watermark=["a","b"]
       | "empty" // empty string: watermark=""
@@ -49,6 +49,14 @@ export interface IncrementalDeclaration {
    /** Whether the key is present on the raw tag, whatever its value's shape. */
    declaredWatermark: boolean;
    declaredMergeKey: boolean;
+   /** Whether `lookback=` is present on the raw tag; absent reads as false. */
+   declaredLookback?: boolean;
+   /**
+    * `lookback=` as written, and in seconds when it reads as a duration
+    * (domain/freshness.ts, `durationSeconds`); undefined when not declared or
+    * malformed. A delta starts this far below the newest stored watermark.
+    */
+   lookback?: { text: string; seconds?: number };
    /** The watermark, resolved against the output schema. */
    watermark?: ResolvedName;
    /** Whether the watermark's type supports a `<` range. */
@@ -123,3 +131,10 @@ export interface PairDelta {
     */
    lanes?: number;
 }
+
+/**
+ * The code on the warning for an incremental source's late rows: what the
+ * late-row check found below a delta (`LateRows`, domain/types.ts), raised
+ * while the run that found them is bound.
+ */
+export const INCREMENTAL_LATE_ROWS_CODE = "persist-incremental-late-rows";

@@ -260,6 +260,32 @@ export function storageDeltaTarget(params: {
                : read.selectSQL;
          },
 
+         windowRows: async (start, end, columns) => {
+            // The late-row check's read: only the columns it compares, so the
+            // warehouse reads (and bills) those alone, through the seed's
+            // read path but not its cost, which is the delta's.
+            const projected =
+               `SELECT ${columns.map((c) => quoteIdentifier(c, sourceDialect)).join(", ")} ` +
+               `FROM (${projectToStoredColumns(
+                  persistSource,
+                  deltaSelect({
+                     dialect: sourceDialect,
+                     sourceSQL: buildSQL,
+                     watermarkName: watermarkColumn,
+                     start,
+                     end,
+                  }),
+               )}) AS __c`;
+            const read = await issuePassthroughRead(
+               session,
+               sourceType,
+               handle,
+               projected,
+               queryMetadata,
+            );
+            return read.selectSQL;
+         },
+
          probeSourceFrontier: async () => {
             // Source-dialect through the passthrough, so the warehouse aggregates
             // and one row crosses instead of streaming every row.

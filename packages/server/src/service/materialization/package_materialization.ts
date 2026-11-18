@@ -78,6 +78,7 @@ import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
 import type { KeptTable } from "./domain/types";
+import type { LateRows } from "./domain/types";
 import { isRollupOrigin, originOfTable } from "./domain/table_plans";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
@@ -197,6 +198,12 @@ export class PackageMaterialization {
    } = { drifted: [], unread: [] };
    /** The `storage=` bindings a host's or a run's manifest made. */
    private storageBindings: readonly Binding[] = [];
+   /**
+    * The `lateRows` the bound `storage=` entries carry, by content address:
+    * an incremental table's late-row check, which outlives the binding's own
+    * shape. The database entries carry theirs on {@link databaseEntries}.
+    */
+   private storageLateRows: ReadonlyMap<string, LateRows> = new Map();
    /** {@link snapshot}, keyed on every fact it is made from. */
    private snapshotMemo:
       | { key: readonly unknown[]; snapshot: Snapshot; signature: string }
@@ -519,6 +526,11 @@ export class PackageMaterialization {
       }
       if (update.storage) {
          this.storageBindings = this.admitStorage(update.storage);
+         this.storageLateRows = new Map(
+            Object.entries(update.storage).flatMap(([id, entry]) =>
+               entry.lateRows ? [[id, entry.lateRows]] : [],
+            ),
+         );
       }
       this.publish(update.models);
       if (update.database && update.observed) {
@@ -1073,6 +1085,15 @@ export class PackageMaterialization {
 
    keptTableWarnings(): ApiPackageWarning[] {
       return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
+   }
+
+   /** See package_warnings.ts, `lateRowWarnings`. */
+   lateRowWarnings(): ApiPackageWarning[] {
+      const bound = new Map(this.storageLateRows);
+      for (const [id, entry] of Object.entries(this.databaseEntries ?? {})) {
+         if (entry.lateRows) bound.set(id, entry.lateRows);
+      }
+      return warnings.lateRowWarnings(this.plan.buildPlan, bound);
    }
 
    repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {

@@ -78,6 +78,7 @@ import { runRollupKeyCheck } from "./inline_uniqueness";
 import { storedKeyCheckSql } from "../text/key_check_text";
 import {
    ledgerFields,
+   lateRowsFields,
    refreshFields,
    reportIncrementalStep,
    resetLedger,
@@ -824,6 +825,7 @@ export class StorageBuildStrategy
             result.refresh?.refresh ??
                (incrementalRefresh ? "full" : undefined),
          ),
+         ...lateRowsFields(result.refresh?.lateRows),
          // How stored upstreams were read: a chained attempt answers for
          // itself; otherwise the manifest's answer for the passthrough SQL.
          ...(dependsOnStorageUpstream
