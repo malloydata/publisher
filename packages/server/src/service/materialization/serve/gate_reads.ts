@@ -26,6 +26,14 @@ import {
 import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import { malloyIdentifiers } from "../../query_text";
 
+// The comparison rule beside the column rules, read by the router through
+// this module.
+export {
+   storedTableCollationRefusal,
+   storedTypeIsString,
+   stringGateCollationRefusal,
+} from "./gate_collation";
+
 /** Every field path an expression reads (`node: "field"`), at any depth. */
 export function fieldPathsIn(
    e: unknown,
@@ -126,6 +134,56 @@ export interface GateReads {
    readonly scoped: boolean;
    /** The entry point carries a gate: the gate policy judges these columns past it. */
    readonly gated: boolean;
+   /**
+    * Every comparison the gates and scopes make, and every computed field they
+    * read through, is an equality (`=`, `!=`, `in`, `is null`) over fields,
+    * givens and literals ({@link equalityOnlyExpr}). Equality is byte-exact
+    * under a deterministic collation; anything else (an ordering, a pattern,
+    * a function) compares as the column's collation orders it, so it holds
+    * on a stored copy only where that collation is binary.
+    */
+   readonly equalityOnly: boolean;
+   /**
+    * The field paths, from the entry point, that the gates and the entry
+    * point's own `where:` terms compare; `entryPathsComplete` is false when a
+    * scope is read from elsewhere (a composite member, a join, a query-shaped
+    * source's base or stage), whose fields have no path from the entry point.
+    */
+   readonly entryPaths: readonly (readonly string[])[];
+   readonly entryPathsComplete: boolean;
+}
+
+/** The IR nodes an equality-only comparison is built from. */
+const EQUALITY_NODES = new Set([
+   "=",
+   "!=",
+   "in",
+   "not",
+   "and",
+   "or",
+   "()",
+   "field",
+   "given",
+   "stringLiteral",
+   "numberLiteral",
+   "true",
+   "false",
+   "null",
+   "is-null",
+   "is-not-null",
+]);
+
+/**
+ * Whether an expression compares only by equality: every IR node it holds is
+ * one of {@link EQUALITY_NODES}. Any other node, known or not, reads false.
+ */
+export function equalityOnlyExpr(e: unknown, depth = 0): boolean {
+   if (depth > 64) return false;
+   if (e === null || typeof e !== "object") return true;
+   if (Array.isArray(e)) return e.every((x) => equalityOnlyExpr(x, depth + 1));
+   const n = (e as { node?: unknown }).node;
+   if (typeof n === "string" && !EQUALITY_NODES.has(n)) return false;
+   return Object.values(e).every((v) => equalityOnlyExpr(v, depth + 1));
 }
 
 interface FieldLike {
@@ -172,6 +230,9 @@ class GateReadWalk {
    readonly columns: string[][] = [];
    unresolved = false;
    scoped = false;
+   equalityOnly = true;
+   readonly entryPaths: string[][] = [];
+   entryPathsComplete = true;
    private steps = 0;
 
    constructor(
@@ -245,6 +306,7 @@ class GateReadWalk {
       this.names.add(stored);
       const along = [...chain, name, stored];
       if (f.e !== undefined) {
+         if (!equalityOnlyExpr(f.e)) this.equalityOnly = false;
          for (const p of fieldPathsIn(f.e))
             this.resolve(source, p, along, joins);
          return;
@@ -298,6 +360,7 @@ class GateReadWalk {
          } else if (qf.type === "fieldref" && Array.isArray(qf.path)) {
             next.push({ path: qf.path as string[], chain });
          } else if (qf.e !== undefined) {
+            if (!equalityOnlyExpr(qf.e)) this.equalityOnly = false;
             const read = fieldPathsIn(qf.e);
             if (read.length === 0) this.unresolved = true;
             for (const p of read) next.push({ path: p, chain });
@@ -368,7 +431,13 @@ class GateReadWalk {
       };
       for (const f of Array.isArray(s.filterList) ? s.filterList : []) {
          this.scoped = true;
-         for (const p of fieldPathsIn((f as { e?: unknown }).e)) at(p);
+         const e = (f as { e?: unknown }).e;
+         if (!equalityOnlyExpr(e)) this.equalityOnly = false;
+         for (const p of fieldPathsIn(e)) {
+            if (depth === 0) this.entryPaths.push(p);
+            else this.entryPathsComplete = false;
+            at(p);
+         }
       }
       this.scopeMembers(source, depth, at, own);
       this.scopeJoins(source, depth, at);
@@ -431,6 +500,10 @@ class GateReadWalk {
          const where = (stage as { filterList?: unknown }).filterList;
          for (const f of Array.isArray(where) ? where : []) {
             this.scoped = true;
+            if (!equalityOnlyExpr((f as { e?: unknown }).e)) {
+               this.equalityOnly = false;
+            }
+            this.entryPathsComplete = false;
             for (const p of fieldPathsIn((f as { e?: unknown }).e)) {
                if (i === 0) atBase(p);
                else if (p.length === 1) {
@@ -467,7 +540,10 @@ export function gateReads(
    const walk = new GateReadWalk(modelDef, stored);
    const read = gatePaths(exprs);
    if (read.unresolved) walk.unresolved = true;
-   for (const p of read.paths) walk.resolve(struct, p, []);
+   for (const p of read.paths) {
+      walk.entryPaths.push(p);
+      walk.resolve(struct, p, []);
+   }
    walk.scope(struct, 0, (p) => walk.resolve(struct, p, []), true);
    return {
       names: walk.names,
@@ -475,6 +551,9 @@ export function gateReads(
       unresolved: walk.unresolved,
       scoped: walk.scoped,
       gated: exprs.length > 0,
+      equalityOnly: walk.equalityOnly,
+      entryPaths: walk.entryPaths,
+      entryPathsComplete: walk.entryPathsComplete,
    };
 }
 

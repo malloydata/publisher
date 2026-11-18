@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { binaryCollationRuntime } from "../test_helpers/binary_collation_runtime";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    type QueryMaterializer,
@@ -31,7 +32,10 @@ import type { RollupVariantServe } from "./materialization/serve/rollup_variants
 import { tablesReadForGates } from "./materialization/serve/bindings";
 import { answerOf, recordingManifest, variantsOf } from "./query_serving";
 
-const runnable = { tag: "routed" } as unknown as QueryMaterializer;
+const runnable = {
+   tag: "routed",
+   runtime: binaryCollationRuntime(),
+} as unknown as QueryMaterializer;
 const virtualMap = new Map() as unknown as VirtualMap;
 
 // The author's compile the router reads an entry point's gate columns from:
@@ -339,6 +343,8 @@ describe("the #(rollup) rollup candidate past an entry-point gate (row 1)", () =
                      tier === "storage"
                         ? {
                              tier,
+                             destinationName: "lake",
+                             tablePath: "t_rollup",
                              schema: [{ name: "acct", type: "DECIMAL(38,0)" }],
                           }
                         : { tier },
@@ -346,7 +352,9 @@ describe("the #(rollup) rollup candidate past an entry-point gate (row 1)", () =
                   shapeBindings: [],
                } as never);
             expect(await read("database")).toBe(true);
-            expect(await read("storage")).toBe(on);
+            // A `storage=` rollup past a gate reading a column waits for its
+            // review, under either switch.
+            expect(await read("storage")).toBe(false);
          } finally {
             restore();
          }

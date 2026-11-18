@@ -40,10 +40,14 @@
  * The review then covers that consistent behaviour. g-mixed, a gated entry
  * point over an ungated stored source, is the same rule on the `storage=`
  * tier: a table proven to hold only ungated rows counts as a G3 table, as a
- * database table does (pending the question-14 review's sign-off). The
- * rollup leg's join branch over an ungated base's database rollup answers
- * past a gated query source on the existing rollup row (a database table),
- * its gate grafted on the variant (`joinGateDecline` in rollup_variants.ts).
+ * database table does (signed off in the question-14 review). The rollup
+ * leg's join branch over an ungated base's database rollup answers past a
+ * gated query source on the existing rollup row (a database table), its gate
+ * grafted on the variant (`joinGateDecline` in rollup_variants.ts). Pending
+ * that review's sign-off: a rollup, on either tier, keeps a base gate set
+ * made only of `#(authorize)` locks reading no row field, own or inherited
+ * (`lockOnly`), and the rollup leg keeps an answer on any tier whose entry
+ * point's gates read no column (`gatesReadNoColumn`).
  * `gate_policy_frozen.spec.ts` enumerates every row this file allows and
  * fails on any change, naming the review.
  */
@@ -107,6 +111,14 @@ export interface GatedTable {
       readonly attributed: boolean;
       /** The entry point inherits a row filter the served copy cannot graft. */
       readonly inheritedRowFilter: boolean;
+      /**
+       * For a `rollup`: every base gate is an `#(authorize)` lock whose
+       * expression reads only givens and literals, no row field, own or
+       * inherited. Such a lock admits or refuses the whole query, decided per
+       * request by `govern()` on the live entry point, so pre-grouped rows
+       * cannot change its outcome. Absent reads false: fail closed.
+       */
+      readonly lockOnly?: boolean;
    };
    /**
     * For a `rollup`: its base is gated and every base gate was proven exact
@@ -140,12 +152,18 @@ const ROWS: Record<GateKind, Row> = {
    // G3 for a database rollup, with the switch off: its base's own gates,
    // each proven exact on the rollup (every field a grain dimension), as a
    // stored source keeps its own row-level gate.
+   //
+   // A base whose every gate is a lock reading no row field, own or
+   // inherited, on either tier and either switch setting: the lock decides
+   // the whole query on the live entry point, and the rollup holds no row a
+   // caller the lock admits would not see live.
    rollup: (t, s) =>
       !t.v1 &&
       t.baseGateProven === true &&
-      (s.gatedSources
-         ? t.tier === "database" || s.gatedStorageRollupsReviewed
-         : t.tier === "database" && ownRowLevelGate(t)),
+      (t.gate?.lockOnly === true ||
+         (s.gatedSources
+            ? t.tier === "database" || s.gatedStorageRollupsReviewed
+            : t.tier === "database" && ownRowLevelGate(t))),
    // A persisted view's gate is decided at the router, per leg.
    view: () => false,
 };
@@ -235,6 +253,14 @@ export interface TableRead {
     * as live's do; absent there reads as exact.
     */
    readonly gateColumnTypes?: readonly string[];
+   /**
+    * The entry point's gates read no column at all: each is an
+    * `#(authorize)` lock over givens and literals, decided per request on the
+    * live entry point, so no stored row changes its outcome. Set by the
+    * router from the author's compile (`serve/gate_reads.ts`); absent reads
+    * false.
+    */
+   readonly gatesReadNoColumn?: boolean;
 }
 
 /**
@@ -279,6 +305,14 @@ function g3Table(t: TableRead): boolean {
 }
 
 /**
+ * Whether a table a rollup answer read keeps the gates under G3: a database
+ * one, or any one when the entry point's gates read no column (locks only).
+ */
+function g3RollupTable(t: TableRead): boolean {
+   return t.tier === "database" || t.gatesReadNoColumn === true;
+}
+
+/**
  * Whether a leg may be attempted past an entry-point gate. Each leg keeps the
  * author's gates on its own compile (the served copy's text, a variant's
  * redeclared base), under the gated-sources switch; the served copy and the
@@ -308,8 +342,9 @@ export function legMayPassGate(
  * under the gated-sources switch; under G3 alone, only when it read at least
  * one table and every one is a G3 table: for the served copy, database,
  * `storage=` admitted past its own gate, or `storage=` holding only ungated
- * rows; for the rollup leg, database (a
- * `storage=` rollup awaits its review).
+ * rows; for the rollup leg, database, or any tier when the entry point's
+ * gates are locks reading no column (a `storage=` rollup past a row filter
+ * awaits its review).
  */
 export function answerKeepsGates(
    leg: GateLeg,
@@ -319,8 +354,18 @@ export function answerKeepsGates(
 ): boolean {
    if (!legMayPassGate(leg, s, ctx)) return false;
    if (!tablesRead.every(gateColumnsExact)) return false;
+   // A `storage=` rollup is read past a gate that reads a column only once
+   // its review allows it, under either switch: a lock-only entry point
+   // aside, its rows are not filtered past a row filter before then.
+   if (
+      leg === "rollup" &&
+      !s.gatedStorageRollupsReviewed &&
+      !tablesRead.every(g3RollupTable)
+   ) {
+      return false;
+   }
    if (s.gatedSources) return true;
    if (!ctx.databaseReadsKeepGates || tablesRead.length === 0) return false;
    if (leg === "served") return tablesRead.every(g3Table);
-   return leg === "rollup" && tablesRead.every((t) => t.tier === "database");
+   return leg === "rollup" && tablesRead.every(g3RollupTable);
 }
