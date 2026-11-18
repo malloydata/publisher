@@ -88,6 +88,19 @@ export interface ServerOptions {
    /** Pipe server stdout/stderr through (default false — captured to a log file). */
    inheritStdio?: boolean;
    logFile?: string;
+   /**
+    * The command that starts the server, before its flags. Default: this
+    * repo's build, `bun run ./dist/server.mjs` in packages/server. The upgrade
+    * test passes a released package's entry point instead.
+    */
+   command?: string[];
+   /** Working directory for `command` (default packages/server). */
+   cwd?: string;
+   /**
+    * Spell the flags as releases before 0.15.0 read them (`--server_root`,
+    * `--mcp_port`, `--init`), for the upgrade test's released server.
+    */
+   legacyFlags?: boolean;
 }
 
 export interface ServerHandle {
@@ -103,21 +116,20 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    const mcpUrl = `http://${HOST}:${opts.mcpPort}/mcp`;
 
    const args = [
-      "bun",
-      "run",
-      "./dist/server.mjs",
+      ...(opts.command ?? ["bun", "run", "./dist/server.mjs"]),
       // The settings' derived names (docs/configuration.md), so every
       // scenario starts a publisher the way the reference documents.
-      "--root",
+      opts.legacyFlags ? "--server_root" : "--root",
       opts.serverRoot,
       "--config",
       opts.configPath,
       "--port",
       String(opts.port),
-      "--mcp-port",
+      opts.legacyFlags ? "--mcp_port" : "--mcp-port",
       String(opts.mcpPort),
    ];
-   if (opts.init !== false) args.push("--initialize-storage");
+   if (opts.init !== false)
+      args.push(opts.legacyFlags ? "--init" : "--initialize-storage");
 
    log.step(
       `starting Publisher server (mode=${opts.mode}) on ${baseUrl} [mcp ${opts.mcpPort}]`,
@@ -135,7 +147,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    delete inherited.MCP_HOST;
    delete inherited.PERSIST_STORAGE_MODE;
    const proc: Subprocess = Bun.spawn(args, {
-      cwd: serverDir,
+      cwd: opts.cwd ?? serverDir,
       env: {
          ...inherited,
          NODE_ENV: "production",
