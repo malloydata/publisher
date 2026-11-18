@@ -26,7 +26,7 @@ function render(measures: Record<string, string>, name = "m") {
    };
 }
 
-describe("the #(preaggregate) measure grammar", () => {
+describe("the #(rollup) measure grammar", () => {
    it("stores one partial per aggregate and merges count with sum", () => {
       expect(render({ m: "count()" })).toEqual({
          partials: ["count: count()"],

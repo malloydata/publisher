@@ -225,7 +225,7 @@ describe("classifySourceFailure", () => {
       ).toBeUndefined();
    });
 
-   it("inherits through Malloy's strict miss on a colocated build", () => {
+   it("inherits through Malloy's strict miss on a database build", () => {
       expect(
          classifySourceFailure(strictMiss("orders"), [deterministic]).retryable,
       ).toBe(false);

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 // A `#@ persist` whose `storage=` names nothing is refused for itself
-// (assertPlacementNamed), never through the colocated sibling rule: that rule
+// (assertPlacementNamed), never through the database sibling rule: that rule
 // keeps a GATED source's rows from being served past its gate through a table
 // it shares, and a blank `storage=` is one source's own mistake, not a gate. A
-// colocated sibling with the same SQL, so the same address, still builds, at
+// database sibling with the same SQL, so the same address, still builds, at
 // auto-run and on a host's instruction, in either order.
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
@@ -49,7 +49,7 @@ const ORDERS = [
    ["the sound source comes first", [["b"], ["a"]]],
 ] as const;
 
-describe("an empty storage= beside a colocated sibling on one address", () => {
+describe("an empty storage= beside a database sibling on one address", () => {
    for (const [label, order] of ORDERS) {
       it(`auto-run refuses that source alone and instructs its sibling when ${label}`, () => {
          const { service } = createMocks();
@@ -79,7 +79,7 @@ describe("an empty storage= beside a colocated sibling on one address", () => {
          expect(instructions[0].destination).toBeUndefined();
       });
 
-      it(`a host's colocated instruction builds the sibling, not the refused source, when ${label}`, async () => {
+      it(`a host's database instruction builds the sibling, not the refused source, when ${label}`, async () => {
          const built: string[] = [];
          const buildOneSource = sinon.fake(
             async ({

@@ -6,7 +6,7 @@
         "code": "deprecated-preaggregate-namespace",
         "message": "Measure \"regional\" of source \"orders\" places its rollup with namespace=\"rollups\": namespace= is deprecated: write name=\"rollups.<table>\" instead (its schema or dataset places the table, and <table> starts the table's name).",
         "model": "pa.malloy",
-        "route": "preaggregate",
+        "route": "rollup",
         "subject": "orders.regional",
         "tier": "deprecated"
       }
@@ -266,7 +266,7 @@
         "freshness": null,
         "modelPath": "pa.malloy",
         "name": "orders__rollup__category__389984bb",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "orders",
           "grainDimensions": [
@@ -301,7 +301,7 @@
         "freshness": null,
         "modelPath": "pa.malloy",
         "name": "orders__rollup__region__85a0fa84",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "orders",
           "grainDimensions": [

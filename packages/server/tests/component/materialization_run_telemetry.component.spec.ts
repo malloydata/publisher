@@ -164,7 +164,7 @@ describe("materialization run telemetry, through a real build", () => {
       expect(
          await builds({
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "built",
             failure_class: "none",
          }),
@@ -172,7 +172,7 @@ describe("materialization run telemetry, through a real build", () => {
       expect(
          await builds({
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "failed",
             failure_class: "unclassified",
          }),
@@ -185,7 +185,7 @@ describe("materialization run telemetry, through a real build", () => {
          (
             await harness.collectHistogram(
                "publisher_materialization_build_duration_ms",
-               { kind: "persist", tier: "colocated", method: "full" },
+               { kind: "persist", tier: "database", method: "full" },
             )
          ).count,
       ).toBe(2);
@@ -213,7 +213,7 @@ describe("materialization run telemetry, through a real build", () => {
          meta: {
             runId: first.id,
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             method: "full",
             sourceName: "good",
          },

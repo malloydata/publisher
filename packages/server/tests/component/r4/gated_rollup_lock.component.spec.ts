@@ -60,7 +60,7 @@ given: REGION :: string
 
 // Ungated, so the companion is never empty.
 source: open is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: open_total is amount.sum()
 }
 
@@ -69,9 +69,9 @@ source: locked is duckdb.table('orders_raw')
 
 // Depth one: the lock is inherited.
 source: inh1 is locked extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: inh1_n is count()
 }
 
@@ -80,26 +80,26 @@ source: mid is locked extend {
   dimension: cat_lower is lower(category)
 }
 source: inh2 is mid extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: inh2_n is count()
 }
 
 // From another file.
 source: inh_import is imported_locked extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: imp_n is count()
 }
 
 // Its own lock.
 #(authorize) 'admin' = $ROLE
 source: own_lock is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: own_n is count()
 }
 
@@ -107,9 +107,9 @@ source: own_lock is duckdb.table('orders_raw') extend {
 // inherited lock.
 #(authorize) 'eu' = $ZONE
 source: stacked is locked extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: st_n is count()
 }
 
@@ -118,18 +118,18 @@ source: stacked is locked extend {
 source: shut is duckdb.table('orders_raw')
 #(authorize) true
 source: reopened is shut extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: ro_n is count()
 }
 
 // Not lock-only: an inherited lock and a row filter.
 #(access_filter) region = $REGION
 source: lock_and_filter is locked extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: lf_n is count()
 }
 
@@ -145,12 +145,12 @@ given: CAT :: string
 #(authorize) 'admin' = $ROLE
 source: lw is duckdb.table('orders_raw') extend {
   where: category = $CAT
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: lw_total is amount.sum()
 }
 source: inh_w is locked extend {
   where: region = $REGION
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: iw_total is amount.sum()
 }
 
@@ -253,7 +253,7 @@ async function expectDeniedAsLive(
    expect(served).toBe(live);
 }
 
-for (const placement of ["colocated", "storage"] as const) {
+for (const placement of ["database", "storage"] as const) {
    for (const gatedSources of [false, true]) {
       describe(`R4: lock-only gates on ${placement} rollups (gated sources ${gatedSources ? "on" : "off"})`, () => {
          let restore: () => void;
@@ -360,12 +360,12 @@ for (const placement of ["colocated", "storage"] as const) {
 
          it("builds a lock beside a given-reading where: as its gates allow, and answers every caller as live does", async () => {
             const refused = fixture.rollupRefusals.map((r) => r.sourceName);
-            const colocated = placement === "colocated";
+            const database = placement === "database";
             // This harness binds no `storage=` table as plan-admitted
             // (`ownGateKept`), so with the switch off a `storage=` answer
             // past a column-reading gate is live here;
             // storage_rollup_gates.component.spec.ts takes the bind.
-            const fromRollup = colocated || gatedSources;
+            const fromRollup = database || gatedSources;
             for (const [source, malloy, admitted, refusedCallers] of [
                [
                   "lw",
@@ -390,7 +390,7 @@ for (const placement of ["colocated", "storage"] as const) {
                // inherited and, beside its `where:`, not lock-only on
                // `storage=`, so it is built there only with the switch on.
                expect(refused.includes(source)).toBe(
-                  source === "inh_w" && !colocated && !gatedSources,
+                  source === "inh_w" && !database && !gatedSources,
                );
                for (const givens of admitted) {
                   const run = await fixture.run({
@@ -470,11 +470,11 @@ for (const placement of ["colocated", "storage"] as const) {
 
          it("reads a rollup past an extension's row filter on a grain field when it keeps the gate", async () => {
             for (const cat of ["A", "B", "Z"]) {
-               // Colocated always; `storage=` with the switch on. With it
+               // Database always; `storage=` with the switch on. With it
                // off, a `storage=` answer is kept only for a table the bind
                // marks, which this harness does not run.
                const servedFromRollup =
-                  placement === "colocated" || gatedSources;
+                  placement === "database" || gatedSources;
                const run = await fixture.run({
                   name: `inh1_by_cat ${cat}`,
                   malloy:
@@ -507,7 +507,7 @@ for (const placement of ["colocated", "storage"] as const) {
 /**
  * The join-to-rollup leg (A7) over a stored parent table: a parent joining a
  * rollup's base, its own table stored, the rollup in the same tier. Ungated,
- * the join leg engages: colocated it answers from the rollup; on `storage=`
+ * the join leg engages: database it answers from the rollup; on `storage=`
  * this harness cannot store the DuckDB parent in the destination, so it
  * declines `CROSS_CONNECTION`. Behind a lock, own or
  * inherited, the leg declines `CONTRACT` before the gate policy is asked (its
@@ -544,7 +544,7 @@ given: ROLE :: string
 
 source: kids is duckdb.table('kids_raw') extend {
   primary_key: kid_id
-  #(preaggregate) grain=["pid"]${rollup}
+  #(rollup) grain=["pid"]${rollup}
   measure: kid_amt is v.sum()
 }
 
@@ -561,7 +561,7 @@ source: parent_inherited is parent_locked extend {}
 `;
 }
 
-for (const placement of ["colocated", "storage"] as const) {
+for (const placement of ["database", "storage"] as const) {
    for (const gatedSources of [false, true]) {
       describe(`R4: the join-to-rollup leg over a stored parent behind a lock, ${placement} (gated sources ${gatedSources ? "on" : "off"})`, () => {
          let restore: () => void;
@@ -597,7 +597,7 @@ for (const placement of ["colocated", "storage"] as const) {
                expectLive: placement === "storage",
             });
             expect(rowDifference(run.live, run.served)).toBeUndefined();
-            if (placement === "colocated") {
+            if (placement === "database") {
                expect(run.servedBy?.kind).toBe("rollup");
                return;
             }

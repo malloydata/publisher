@@ -8,17 +8,17 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Kill switch off: a storage= source serves LIVE, never a colocated build
+# Kill switch off: a storage= source serves LIVE, never a database build
 
 When `PERSIST_STORAGE_MODE=off`, a source that declares `storage=` is NOT
 materialized at all — the build skips it and it serves **live** from its own
-warehouse. It must NOT fall back to a colocated build: a colocated build writes a
+warehouse. It must NOT fall back to a database build: a database build writes a
 CTAS into the source's own warehouse, which the author did not intend (they asked
 for external storage, and production grants this server read-only warehouse
 access), so it could fail or land in an unexpected schema. Falling back to live is
 the safe default — the tier being off never mutates the customer warehouse.
 
-(A plain `#@ persist` with NO `storage=` is unaffected: it still builds colocated,
+(A plain `#@ persist` with NO `storage=` is unaffected: it still builds in the database tier,
 because that is its author's intent — the v0 path, ungated by the storage kill
 switch. This scenario is specifically about a `storage=`-declaring source.)
 
@@ -26,7 +26,7 @@ The proof is decisive by construction. Publish a `storage=lake` source while off
 then mutate and re-query:
 - **served live (skipped, correct):** the query recomputes from the source
   warehouse ⇒ the mutation is visible ⇒ **fresh**.
-- if it had wrongly built colocated: the frozen colocated table would serve the
+- if it had wrongly built in the database tier: the frozen database table would serve the
   pre-mutation snapshot ⇒ **stale**.
 
 So a **fresh** re-query proves nothing was materialized into the warehouse.
@@ -59,7 +59,7 @@ source: daily is orders -> {
 
 ## Publish
 
-`storage=` is disabled while off, and the source is NOT downgraded to a colocated
+`storage=` is disabled while off, and the source is NOT downgraded to a database
 build — the build skips it. No table is written to the warehouse; no binding is
 produced.
 
@@ -85,7 +85,7 @@ Expect:
 ## Query base (again)
 
 Fresh `1150` ⇒ served LIVE from the source warehouse — nothing was materialized.
-The kill switch did NOT write a colocated CTAS into the warehouse.
+The kill switch did NOT write a database CTAS into the warehouse.
 
 Expect:
 
@@ -96,7 +96,7 @@ Expect:
 
 ## Note (since=2026-07-24)
 
-> Settled (2026-07-24): off ⇒ a `storage=` source serves LIVE, never a colocated
+> Settled (2026-07-24): off ⇒ a `storage=` source serves LIVE, never a database
 > build — the safe default (the tier being off must not mutate the customer
 > warehouse). STILL OPEN: whether off should additionally REFUSE such a source at
 > publish (a loud error) rather than silently serving it live with only the

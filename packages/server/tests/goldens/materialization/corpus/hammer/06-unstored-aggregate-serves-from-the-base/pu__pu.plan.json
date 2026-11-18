@@ -124,7 +124,7 @@
         "freshness": null,
         "modelPath": "pu.malloy",
         "name": "orders__rollup__category_qty__f372ae9d",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "orders",
           "grainDimensions": [

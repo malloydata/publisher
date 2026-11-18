@@ -61,7 +61,7 @@ import {
    quoteManifestTablePath,
    UnquotableIdentifierError,
 } from "../../quoting";
-import { ColocatedTier } from "./colocated_build_strategy";
+import { DatabaseTier } from "./database_build_strategy";
 import {
    StorageBuildStrategy,
    type StoredRollupBase,
@@ -98,7 +98,7 @@ import {
    indexInstructions,
    recordInstructedBuildFailure,
    resolveInstruction,
-   type ColocatedRefusal,
+   type DatabaseRefusal,
    type InstructedBuildOptions,
    type InstructedRun,
    type PendingRefusal,
@@ -147,7 +147,7 @@ import {
 } from "./run_telemetry";
 
 /** The tiers a key check runs through, where its table lives. */
-const COLOCATED = new ColocatedTier();
+const DATABASE = new DatabaseTier();
 // Only its key checks. A build goes through the service's adapter, which
 // routes a chained build through the run's collaborators; this one would not.
 const STORAGE: Pick<StorageBuildStrategy, "checkKey" | "keyCheckSql"> =
@@ -221,9 +221,9 @@ async function checkBuiltKeys(
             ),
          {
             notRun:
-               "A stored source's primary key check did not run; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+               "A stored source's primary key check did not run; its queries through a storage #(rollup) rollup read as a join_many are answered live",
             notUnique:
-               "A stored source holds its primary key more than once or NULL; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+               "A stored source holds its primary key more than once or NULL; its queries through a storage #(rollup) rollup read as a join_many are answered live",
          },
          { source: persistSource.name, keyColumn: stored.keyColumn },
          // Recorded under its own sourceID.
@@ -540,7 +540,7 @@ export class InstructedBuild {
          }
          // Every instructed source was refused by its own gate: the refusal is
          // the answer. Not when a source its own gate admits was held back only
-         // because a colocated sibling on its table is refused: the address
+         // because a database sibling on its table is refused: the address
          // fails in `failures`, as an address with a refused source always
          // has, and the run is not failed for it.
          if (
@@ -866,7 +866,7 @@ export class InstructedBuild {
       );
       if (!built) return;
       // A `storage=` rollup that grouped its base's stored table is anchored
-      // at that table, as a colocated one is.
+      // at that table, as a database one is.
       if (storedBase && stacked) {
          (run.readFrom ??= new Map()).set(sourceEntityId, [storedBase.address]);
       }
@@ -880,7 +880,7 @@ export class InstructedBuild {
       reportSourceBuilt(
          {
             kind: buildKindOf(compiled, persistSource.sourceID),
-            tier: entry.storageDestinationName ? "storage" : "colocated",
+            tier: entry.storageDestinationName ? "storage" : "database",
             sourceEntityId,
             sourceName: persistSource.name,
             physicalTableName: instruction.physicalTableName,
@@ -911,7 +911,7 @@ export class InstructedBuild {
 
    /**
     * The gates before one instructed source's build: its instruction, its
-    * eligibility, a colocated sibling's refusal, the storage re-assert, and
+    * eligibility, a database sibling's refusal, the storage re-assert, and
     * another route to a table this run built or failed. What the build needs,
     * or undefined when the source is not built (any refusal recorded).
     */
@@ -966,13 +966,13 @@ export class InstructedBuild {
          return undefined;
       }
 
-      // A colocated table is served by its address, so the bind refuses the
+      // A database table is served by its address, so the bind refuses the
       // whole address when any source on it is refused
-      // (collectColocatedSourceEligibility). Building it would write a table
+      // (collectDatabaseSourceEligibility). Building it would write a table
       // nothing serves; refuse this source with its sibling's reason instead,
       // so every source on the address gets one outcome whatever the order.
       if (!instruction.destination) {
-         const sibling = colocatedRefusalOn(
+         const sibling = databaseRefusalOn(
             run,
             sourceEntityId,
             persistSource.sourceID,
@@ -988,7 +988,7 @@ export class InstructedBuild {
                   message:
                      `'${persistSource.name}' is not built: it shares its ` +
                      `table with '${sibling.name}', which the eligibility ` +
-                     `gate refuses for a colocated build, and a colocated ` +
+                     `gate refuses for a database build, and a database ` +
                      `table is served to every source on it. ` +
                      sibling.message,
                }),
@@ -1149,7 +1149,7 @@ export class InstructedBuild {
          // as an ordinary binding it would be silently dropped (see
          // preaggregation_serve_bindings).
          if (compiled.tables[persistSource.sourceID]?.rollup) {
-            built = { ...built, origin: "preaggregate" as const };
+            built = { ...built, origin: "rollup" as const };
          }
          if (ownedTarget) {
             await markBuiltOwnedTable(
@@ -1163,7 +1163,7 @@ export class InstructedBuild {
       };
       try {
          // An instructed destination that cannot be honored REFUSES, never
-         // falls through to a colocated build: that would write the caller's
+         // falls through to a database build: that would write the caller's
          // name into the source's own warehouse and answer success.
          assertInstructedDestinationWritable(
             persistSource,
@@ -1223,8 +1223,8 @@ export class InstructedBuild {
             orchestrated &&
             !!instruction.destination &&
             getPersistStorageMode() !== "off";
-         // Every other instruction (colocated, or any build while the mode is
-         // off) takes the colocated gate however it was instructed, unless
+         // Every other instruction (database, or any build while the mode is
+         // off) takes the database gate however it was instructed, unless
          // auto-run already cleared the source through one of the two gates.
          // Never both: the storage gate already runs the same IR walk.
          // Its own placement, never a sibling's (assertPlacementNamed).
@@ -1559,12 +1559,9 @@ function recordPendingRefusal(
       refused: refusalRecord(
          persistSource,
          err,
-         run.compiled.tables[persistSource.sourceID]?.rollup
-            ? "preaggregate"
-            : instruction.destination
-              ? "storage"
-              : "colocated",
+         instruction.destination ? "storage" : "database",
          run.compiled.tables[persistSource.sourceID]?.modelPath,
+         run.compiled.tables[persistSource.sourceID]?.kind,
       ),
       sourceID: persistSource.sourceID,
       own,
@@ -1572,18 +1569,18 @@ function recordPendingRefusal(
 }
 
 /**
- * Another planned source on `address` that the colocated gate refuses, or
+ * Another planned source on `address` that the database gate refuses, or
  * undefined. Only the sources on that address are gated, once per address per
  * run, so an unrelated source can never fail this build. Any error from the
- * gate refuses, as the bind's collectColocatedSourceEligibility treats it, so
+ * gate refuses, as the bind's collectDatabaseSourceEligibility treats it, so
  * build and serve agree on the address. The first refused source in sourceID
  * order is named, so the reason never depends on run order.
  */
-function colocatedRefusalOn(
+function databaseRefusalOn(
    run: InstructedRun,
    address: string,
    sourceID: string,
-): ColocatedRefusal | undefined {
+): DatabaseRefusal | undefined {
    const { compiled } = run;
    if (!run.sourceIDsByAddress) {
       const byAddress = new Map<string, string[]>();
@@ -1606,8 +1603,8 @@ function colocatedRefusalOn(
       }
       run.sourceIDsByAddress = byAddress;
    }
-   run.colocatedRefusalsByAddress ??= new Map();
-   let refusals = run.colocatedRefusalsByAddress.get(address);
+   run.databaseRefusalsByAddress ??= new Map();
+   let refusals = run.databaseRefusalsByAddress.get(address);
    if (!refusals) {
       refusals = [];
       const ids = [...(run.sourceIDsByAddress.get(address) ?? [])].sort();
@@ -1619,7 +1616,7 @@ function colocatedRefusalOn(
          } catch (err) {
             if (!(err instanceof MaterializationEligibilityError)) {
                logger.warn(
-                  "The colocated gate could not decide a source; refusing its address, as the bind does",
+                  "The database gate could not decide a source; refusing its address, as the bind does",
                   {
                      packageName: run.owner?.packageName,
                      sourceName: source.name,
@@ -1638,7 +1635,7 @@ function colocatedRefusalOn(
             });
          }
       }
-      run.colocatedRefusalsByAddress.set(address, refusals);
+      run.databaseRefusalsByAddress.set(address, refusals);
    }
    return refusals.find((refusal) => refusal.sourceID !== sourceID);
 }
@@ -1750,7 +1747,7 @@ async function storedJoinOf(
  * its own (a join_one keyed on its grain, known limitation 29) and its base's
  * primary key, both over the base's rows on the source's own connection, the
  * rows a build from the author's definition groups; and the primary key of
- * each query source that reads a colocated rollup through a join_many on it.
+ * each query source that reads a database rollup through a join_many on it.
  *
  * A build that stacked on a stored upstream (`upstreamReuse: "reused"`)
  * grouped that table's rows instead, which a check over the base's own rows
@@ -1775,7 +1772,7 @@ async function checkRollupKeys(
    const own = rollupKeyCheckOf(compiled, sourceID);
    if (own && !groupsBaseRows) {
       logger.info(
-         "A #(preaggregate) rollup was built over a stored upstream, so its key check over the base's rows is not run; queries through its join_one that need the key unique are answered live",
+         "A #(rollup) rollup was built over a stored upstream, so its key check over the base's rows is not run; queries through its join_one that need the key unique are answered live",
          { rollup: persistSource.name, keyColumn: own.keyColumn },
       );
    }
@@ -1784,12 +1781,12 @@ async function checkRollupKeys(
          ledger,
          address,
          "rollup",
-         () => COLOCATED.checkKey({ connection }, own, table),
+         () => DATABASE.checkKey({ connection }, own, table),
          {
             notRun:
-               "A #(preaggregate) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
+               "A #(rollup) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
             notUnique:
-               "A #(preaggregate) rollup's base holds its join_one key more than once; queries that read that join_one beside other aggregates are answered live",
+               "A #(rollup) rollup's base holds its join_one key more than once; queries that read that join_one beside other aggregates are answered live",
          },
          { rollup: persistSource.name, keyColumn: own.keyColumn },
       );
@@ -1854,12 +1851,12 @@ async function checkParentKeys(
          ledger,
          address,
          "parent",
-         () => COLOCATED.checkKey({ connection }, check, table),
+         () => DATABASE.checkKey({ connection }, check, table),
          {
             notRun:
-               "A query source's primary key check did not run; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+               "A query source's primary key check did not run; its queries through a #(rollup) rollup read as a join_many are answered live",
             notUnique:
-               "A query source holds its primary key more than once or NULL; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+               "A query source holds its primary key more than once or NULL; its queries through a #(rollup) rollup read as a join_many are answered live",
          },
          {
             rollup: rollupName,
@@ -1891,7 +1888,7 @@ async function checkPairLeafKeys(
          ledger,
          address,
          "pair_leaf",
-         () => COLOCATED.checkKey({ connection }, check, table),
+         () => DATABASE.checkKey({ connection }, check, table),
          {
             notRun:
                "A pair table's leaf key check did not run; counts through its inlined join_many are answered live",
@@ -2129,18 +2126,18 @@ function baseFreshEnough(
 }
 
 /**
- * The source a colocated rollup builds from when this run holds its base's
+ * The source a database rollup builds from when this run holds its base's
  * table: the rollup compiled over that table (rollup_compile.ts), so its
  * build reads the table rather than the warehouse, through the build
  * manifest as any chained build does. Only when every one of these holds,
  * otherwise undefined and the rollup builds from the warehouse as planned:
  *
- *  - the rollup builds colocated, and its base is a colocated `#@ persist`
- *    source or a colocated `#(materialize)` plain table (the plan offers the
+ *  - the rollup builds in the database tier, and its base is a database `#@ persist`
+ *    source or a database `#(materialize)` plain table (the plan offers the
  *    compile only then);
  *  - the run's entries hold the base's table at the address the plan gives
- *    it, built this run or carried under the reuse rules, colocated and at
- *    the tier the base declares now. The colocated gate refused nothing on
+ *    it, built this run or carried under the reuse rules, database and at
+ *    the tier the base declares now. The database gate refused nothing on
  *    that address, or it would not be built or carried, and a table's rows
  *    do not depend on any gate: each is applied when a query reads it;
  *  - with a declared window, the base's table is new enough
@@ -2383,7 +2380,7 @@ function storedRollupBase(
 }
 
 /**
- * A colocated rollup's entry with `upstreamReuse` saying what its build read: `reused`
+ * A database rollup's entry with `upstreamReuse` saying what its build read: `reused`
  * when it built from its base's stored table ({@link overStoredBaseSource}),
  * absent when it built from the warehouse. Its build source names the base
  * only in the author's text, which the classification reads, so the

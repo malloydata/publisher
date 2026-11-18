@@ -353,17 +353,17 @@ export type PackageListingOptions = {
 
 /**
  * What a version binds from a set of entries, in one form whoever bound it:
- * the colocated entries its models compile and bind over, and the `storage=`
+ * the database entries its models compile and bind over, and the `storage=`
  * entries as {@link splitManifestEntries} gives them, keys sorted at every
  * depth. A read of the store and a run's own load compare equal exactly when
  * they bind the same, whatever key order the store (a jsonb column, say)
  * gives back.
  */
 function storeBindingSignature(
-   colocated: FreshnessManifest,
+   database: FreshnessManifest,
    storage: Record<string, ManifestEntry>,
 ): string {
-   return canonicalJson({ colocated, storage });
+   return canonicalJson({ database, storage });
 }
 
 /**
@@ -2256,7 +2256,7 @@ export class Environment {
     * build. Best-effort: a lookup failure leaves the package serving live.
     *
     * Both tiers come from the same manifest ({@link splitManifestEntries}):
-    *  - colocated → {@link Package.bindColocatedServeManifest}, a per-query
+    *  - database → {@link Package.bindDatabaseServeManifest}, a per-query
     *    override with no recompile; restored regardless of
     *    `PERSIST_STORAGE_MODE`, which does not gate a plain `#@ persist`.
     *  - storage= → {@link Package.bindStorageServeBindings}; only when the
@@ -2306,7 +2306,7 @@ export class Environment {
          if (Object.keys(rawEntries).length === 0) return;
          if (Object.keys(tableNameManifest).length > 0) {
             pkg.materialization().bind({
-               colocated: tableNameManifest,
+               database: tableNameManifest,
                observed: await pkg
                   .materialization()
                   .readDatabaseColumns(tableNameManifest),
@@ -3035,7 +3035,7 @@ export class Environment {
       // failed reload does, never this server's version folder.
       return withPackageRelativeErrors(versionPath, async () => {
          // Read the manifest while the version compiles, and compile it
-         // once: its models hydrate over the colocated entries, so the bind
+         // once: its models hydrate over the database entries, so the bind
          // below binds them without the reload a bind after a plain load
          // would run. A read that fails is reported by that bind.
          const manifest = version.manifestPath
@@ -3050,7 +3050,7 @@ export class Environment {
             false,
             {
                versionId: version.versionId,
-               colocated: manifest?.then(
+               database: manifest?.then(
                   (fetched) => fetched.tableNameManifest,
                   () => undefined,
                ),
@@ -3257,7 +3257,7 @@ export class Environment {
 
    /**
     * Bind store entries ({@link splitStoreEntries}) to a package bound to no
-    * host manifest: the colocated ones recompile the models when there is
+    * host manifest: the database ones recompile the models when there is
     * something to substitute or clear, the `storage=` ones replace the
     * storage bindings (unless the storage tier is off). A version remembers
     * what it bound (see storeBindingReads).
@@ -3405,7 +3405,7 @@ export class Environment {
             ) {
                // Never fails the run before it commits: its tables would
                // go unrecorded. A copy that does not recompile keeps its
-               // colocated tables until it next loads, live (host-owned).
+               // database tables until it next loads, live (host-owned).
                try {
                   await loaded.reloadAllModels({});
                } catch (error) {
@@ -4230,7 +4230,7 @@ export class Environment {
     * Every materialization run lands here, so the recompile (~1.1 MB of RSS
     * never reclaimed) is skipped when there is nothing to substitute now and
     * nothing was before: a `tableName` manifest is resolved at compile time,
-    * and a package that dropped its last colocated entry must still recompile
+    * and a package that dropped its last database entry must still recompile
     * to revert it.
     */
    public async reloadAllModelsForPackage(
@@ -4298,8 +4298,8 @@ export class Environment {
    public async loadRunManifest(params: {
       packageName: string;
       versionId?: string;
-      /** The colocated entries, compiled in as the build manifest. */
-      colocated: FreshnessManifest;
+      /** The database entries, compiled in as the build manifest. */
+      database: FreshnessManifest;
       /** The full entries, of which the `storage=` ones are bound. */
       storage: Record<string, ManifestEntry>;
       commit: (outcome: RunManifestLoad) => Promise<void>;
@@ -4360,9 +4360,9 @@ export class Environment {
             };
          }
          try {
-            const has = Object.keys(params.colocated).length > 0;
+            const has = Object.keys(params.database).length > 0;
             if (has || pkg.materialization().hasBoundTableNameManifest()) {
-               await pkg.reloadAllModels(params.colocated);
+               await pkg.reloadAllModels(params.database);
             }
          } catch (err) {
             return { loaded: false, step: "reload", error: errMessage(err) };
@@ -4381,7 +4381,7 @@ export class Environment {
             this.storeBindingReads.set(
                pkg,
                storeBindingSignature(
-                  params.colocated,
+                  params.database,
                   splitManifestEntries(
                      params.storage,
                      `run (package ${packageName} version ${versionId})`,
@@ -4420,7 +4420,7 @@ export class Environment {
     * store says it serves, and is called under the package's lock, which
     * the bind holds too, so nothing created under the same lock (a load, a
     * reload, an unversioned run's start) lands between the read and the
-    * bind. The colocated entries recompile the models when there is
+    * bind. The database entries recompile the models when there is
     * something to substitute or clear (a build's auto-load baked the
     * substitution in); the `storage=` entries, when `read` returns them,
     * replace the storage bindings, empty reverting to live. Used after a
@@ -4431,7 +4431,7 @@ export class Environment {
    public async rebindPackageFromStore(
       packageName: string,
       read: () => Promise<{
-         colocated: FreshnessManifest;
+         database: FreshnessManifest;
          storage?: Record<string, ManifestEntry>;
       }>,
    ): Promise<void> {
@@ -4455,12 +4455,12 @@ export class Environment {
                );
                return;
             }
-            const { colocated, storage } = await read();
+            const { database, storage } = await read();
             if (
-               Object.keys(colocated).length > 0 ||
+               Object.keys(database).length > 0 ||
                pkg.materialization().hasBoundTableNameManifest()
             ) {
-               await pkg.reloadAllModels(colocated);
+               await pkg.reloadAllModels(database);
             }
             if (storage) pkg.materialization().bind({ storage: storage });
          }),
@@ -4510,16 +4510,16 @@ export class Environment {
          const hasStorage = Object.keys(storageEntries).length > 0;
          const hadStorage = pkg.materialization().hasStorageServeBindings();
 
-         // Colocated substitution is resolved at compile time, so it needs a
+         // Database substitution is resolved at compile time, so it needs a
          // recompile, skipped when there is nothing to substitute or clear.
-         const hasColocated = Object.keys(tableNameManifest).length > 0;
-         const hadColocated = pkg.materialization().hasBoundTableNameManifest();
+         const hasDatabase = Object.keys(tableNameManifest).length > 0;
+         const hadDatabase = pkg.materialization().hasBoundTableNameManifest();
 
          // Recompile first: it is the only step that can throw, and the catch
          // reports "no manifest applied", which would be false if the new
          // storage bindings were already routing.
          const recompiled =
-            (hasColocated || hadColocated) &&
+            (hasDatabase || hadDatabase) &&
             (await pkg.reloadAllModels(tableNameManifest, {
                ifChanged: recompile === "if-changed",
             }));

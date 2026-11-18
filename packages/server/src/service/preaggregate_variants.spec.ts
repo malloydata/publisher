@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// `#(preaggregate)` over a real package (materialization v2, phase 4): the build
+// `#(rollup)` over a real package (materialization v2, phase 4): the build
 // plan lists each rollup once however many models import its base (review bug
 // 8), a malformed declaration is refused at publish, a rollup over a stored
 // base is planned (#6293), and with the switch off nothing of it runs.
@@ -87,20 +87,20 @@ async function loadPackage(files: Record<string, string>): Promise<Package> {
 const ORDERS = `source: orders is duckdb.sql("""
   SELECT * FROM (VALUES (10, 'A', 'x'), (20, 'B', 'y')) AS t(amount, category, region)
 """) extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: n is count()
 }
 `;
 
 function rollups(pkg: Package) {
    return Object.entries(pkg.getBuildPlan()?.sources ?? {}).filter(
-      ([, s]) => s.origin === "preaggregate",
+      ([, s]) => s.origin === "rollup",
    );
 }
 
-describe("#(preaggregate) in a package", () => {
+describe("#(rollup) in a package", () => {
    usePackageLoadPool();
    it(
       "lists a rollup once, under its declaring model, however many models import its base",
@@ -136,7 +136,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category") -> {
   group_by: category
   aggregate: amount_sum is amount.sum()
 } extend {
-  #(preaggregate) grain=["category"] storage="lake"
+  #(rollup) grain=["category"] storage="lake"
   measure: total is amount_sum.sum()
 }
 `,
@@ -160,7 +160,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category") -> {
          try {
             await loadPackage({
                "m.malloy": `source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category") extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: average is amount.avg()
 }
 `,
@@ -172,9 +172,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category") -> {
          expect((error as Error).message).toContain(
             "its partials cannot be merged",
          );
-         expect((error as Error).message).toContain(
-            "[preaggregate-not-mergeable]",
-         );
+         expect((error as Error).message).toContain("[rollup-not-mergeable]");
       },
       { timeout: 60000 },
    );
@@ -187,7 +185,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category") -> {
             "m.malloy": `source: carriers is duckdb.sql("SELECT 'A' AS code, 3 AS fleet") extend { primary_key: code }
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carrier") extend {
   join_one: carriers with carrier
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: fleet is carriers.fleet.sum()
 }
 `,
@@ -195,7 +193,7 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
          expect(rollups(pkg)).toEqual([]);
          const warning = pkg
             .annotationFindingWarnings()
-            .find((w) => w.code === "preaggregate-not-built");
+            .find((w) => w.code === "rollup-not-built");
          expect(warning?.severity).toBe("warn");
          expect(
             Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map(
@@ -208,7 +206,7 @@ source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'A' AS carri
    );
 
    it(
-      "does nothing with the switch off, and says #(preaggregate) is not read",
+      "does nothing with the switch off, and says #(rollup) is not read",
       async () => {
          switchOn(false);
          // Compiled on this thread: a load worker already running keeps the

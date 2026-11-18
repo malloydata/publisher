@@ -6,7 +6,12 @@ import { PostgresConnection } from "@malloydata/db-postgres";
 import type { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { equalityOnlyExpr } from "./gate_reads";
-import { duckdbCollation, postgresCollation } from "./gate_collation";
+import {
+   duckdbCollation,
+   duckdbTableCollation,
+   postgresCollation,
+   postgresTableCollation,
+} from "./gate_collation";
 
 describe("a DuckDB source's string comparison", () => {
    it("is binary with no collation set or written, and unknown with one", async () => {
@@ -29,6 +34,29 @@ describe("a DuckDB source's string comparison", () => {
             "unknown",
          );
       } finally {
+         // In-memory DuckDB instances can be shared within a process.
+         await db.runSQL("SET default_collation = ''").catch(() => {});
+         await db
+            .runSQL(
+               "DROP TABLE IF EXISTS ci_t; DROP TABLE IF EXISTS t_plain; DROP TABLE IF EXISTS t_alter",
+            )
+            .catch(() => {});
+         await db.close();
+      }
+   });
+
+   it("is unknown when a macro returns a collated value", async () => {
+      const db = new DuckDBConnection("duckdb", ":memory:");
+      try {
+         await db.runSQL("CREATE MACRO gate_ci(x) AS CAST(x AS VARCHAR) COLLATE NOCASE");
+         expect(
+            await duckdbCollation(
+               db as unknown as Connection,
+               "SELECT gate_ci('a') AS probe_value",
+            ),
+         ).toBe("unknown");
+      } finally {
+         await db.runSQL("DROP MACRO IF EXISTS gate_ci").catch(() => {});
          await db.close();
       }
    });
@@ -44,6 +72,43 @@ describe("a DuckDB source's string comparison", () => {
             ),
          ).toBe("unknown");
       } finally {
+         // In-memory DuckDB instances can be shared within a process.
+         await db.runSQL("SET default_collation = ''").catch(() => {});
+         await db
+            .runSQL(
+               "DROP TABLE IF EXISTS ci_t; DROP TABLE IF EXISTS t_plain; DROP TABLE IF EXISTS t_alter",
+            )
+            .catch(() => {});
+         await db.close();
+      }
+   });
+});
+
+describe("a stored table's own collation", () => {
+   it("is binary for a plain DuckDB table, and unknown once a column is altered to NOCASE, under a default_collation, or for a table the catalog does not list", async () => {
+      const db = new DuckDBConnection("duckdb", ":memory:");
+      try {
+         const c = db as unknown as Connection;
+         await db.runSQL("CREATE TABLE t_plain (r VARCHAR)");
+         await db.runSQL("CREATE TABLE t_alter (r VARCHAR)");
+         expect(await duckdbTableCollation(c, '"main"."t_plain"')).toBe(
+            "binary",
+         );
+         await db.runSQL(
+            "ALTER TABLE t_alter ALTER COLUMN r SET DATA TYPE VARCHAR COLLATE NOCASE",
+         );
+         expect(await duckdbTableCollation(c, "t_alter")).toBe("unknown");
+         expect(await duckdbTableCollation(c, "t_missing")).toBe("unknown");
+         await db.runSQL("SET default_collation = 'nocase'");
+         expect(await duckdbTableCollation(c, "t_plain")).toBe("unknown");
+      } finally {
+         // In-memory DuckDB instances can be shared within a process.
+         await db.runSQL("SET default_collation = ''").catch(() => {});
+         await db
+            .runSQL(
+               "DROP TABLE IF EXISTS ci_t; DROP TABLE IF EXISTS t_plain; DROP TABLE IF EXISTS t_alter",
+            )
+            .catch(() => {});
          await db.close();
       }
    });
@@ -114,6 +179,59 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
       expect(await of("c_bin")).toBe("binary");
       expect(["deterministic", "binary"]).toContain(await of("c_def"));
       expect(await of("c_ci")).toBe("unknown");
+   });
+
+   it("reads a table's columns: unknown once one is nondeterministic", async () => {
+      await pg.runSQL(`DROP TABLE IF EXISTS gate_coll_c`);
+      await pg.runSQL(
+         `CREATE TABLE gate_coll_c (c_bin text COLLATE "C", n int)`,
+      );
+      expect(
+         await postgresTableCollation(
+            pg as unknown as Connection,
+            "gate_coll_c",
+         ),
+      ).toBe("binary");
+      await pg.runSQL(
+         `ALTER TABLE gate_coll_c ALTER COLUMN c_bin TYPE text COLLATE gate_ci`,
+      );
+      expect(
+         await postgresTableCollation(
+            pg as unknown as Connection,
+            "gate_coll_c",
+         ),
+      ).toBe("unknown");
+      await pg.runSQL(`DROP TABLE gate_coll_c`);
+   });
+
+   it("judges a database created with an ICU default deterministic, never binary", async () => {
+      const icu = new PostgresConnection(
+         "pg_icu",
+         () => ({}),
+         async () => ({
+            connectionString: url!.replace(/\/[^/]*$/, "/gate_icu"),
+         }),
+      );
+      await pg
+         .runSQL(
+            `CREATE DATABASE gate_icu LOCALE_PROVIDER icu ICU_LOCALE 'und' LOCALE 'C' TEMPLATE template0`,
+         )
+         .catch(() => {});
+      try {
+         await icu.runSQL(`DROP TABLE IF EXISTS t_icu`);
+         await icu.runSQL(`CREATE TABLE t_icu (c text)`);
+         expect(
+            await postgresCollation(
+               icu as unknown as Connection,
+               `SELECT c AS probe_value FROM t_icu`,
+            ),
+         ).toBe("deterministic");
+         expect(
+            await postgresTableCollation(icu as unknown as Connection, "t_icu"),
+         ).toBe("deterministic");
+      } finally {
+         await icu.close();
+      }
    });
 
    it("reads an empty source's column too", async () => {

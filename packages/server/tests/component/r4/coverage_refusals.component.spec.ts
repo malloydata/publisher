@@ -9,12 +9,12 @@
  * refusal carries.
  *
  *  - Naming: two `#@ persist name=` values that differ only in case, on a
- *    destination that folds case (`storage=` and colocated DuckDB); two
+ *    destination that folds case (`storage=` and database DuckDB); two
  *    persisted views that resolve to one table (under
  *    `PERSIST_COLLISION_ENFORCE=false`; by default each fails the load).
  *  - Rollups: two models' same-named bases rolled up at one grain, whose
  *    hashed names never meet (`rollup_name_collision` does not fire); a
- *    `#(preaggregate)` whose partial column clashes with a field
+ *    `#(rollup)` whose partial column clashes with a field
  *    (`preaggregate-name-clash`); unmergeable measures, failing the load (v1
  *    and v2); a v1 `storage=` rollup over a
  *    `storage=` base, served by the rollup leg.
@@ -58,7 +58,7 @@ import {
 } from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
 
-type Tier = "live" | "storage" | "colocated" | "rollup" | "view";
+type Tier = "live" | "storage" | "database" | "rollup" | "view";
 
 interface Probe {
    name: string;
@@ -130,7 +130,7 @@ async function expectAsLive(l: Loaded, p: Probe): Promise<void> {
       case "view":
          expect(served.answer.servedBy).toBe(p.tier);
          return;
-      case "colocated":
+      case "database":
          expect(served.answer.servedBy).toBe("materialized");
          expect(served.answer.servedFrom).toBe("database");
          return;
@@ -180,7 +180,7 @@ const HEADER = "##! experimental { persistence }";
 // Naming and placement
 // ---------------------------------------------------------------------------
 
-for (const tier of ["storage", "colocated"] as const) {
+for (const tier of ["storage", "database"] as const) {
    const at = tier === "storage" ? ` storage="lake"` : "";
    scenario(
       `two #@ persist names that differ only in case, ${tier} on DuckDB (folds case)`,
@@ -418,7 +418,7 @@ scenario(
 );
 
 scenario(
-   "a #(preaggregate) measure whose partial column clashes with a field",
+   "a #(rollup) measure whose partial column clashes with a field",
    {
       files: {
          "m.malloy": `${HEADER}
@@ -426,9 +426,9 @@ import "raw.malloy"
 
 source: orders is orders_raw extend {
   dimension: total__partial is amount * 2
-  #(preaggregate) grain=["status"]
+  #(rollup) grain=["status"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["status"]
+  #(rollup) grain=["status"]
   measure: n is count()
 }
 `,
@@ -448,9 +448,9 @@ source: orders is orders_raw extend {
       },
    ],
    {
-      "warns preaggregate-not-built (name_clash) on the clashing measure, and publish allows it":
+      "warns rollup-not-built (name_clash) on the clashing measure, and publish allows it":
          (l) => {
-            const clash = codes(l, "preaggregate-not-built");
+            const clash = codes(l, "rollup-not-built");
             expect(clash.map((w) => w.subject)).toEqual(["orders.total"]);
             expect(clash[0].message).toContain("total__partial");
             expect(
@@ -458,7 +458,7 @@ source: orders is orders_raw extend {
                   l.fixture.pkg.getBuildPlan()?.refusedSources ?? {},
                ).map((r) => r.reason),
             ).toEqual(["name_clash"]);
-            expect(l.rejections ?? "").not.toContain("preaggregate-not-built");
+            expect(l.rejections ?? "").not.toContain("rollup-not-built");
          },
    },
 );
@@ -479,15 +479,15 @@ source: orders is orders_raw extend {
       await freshLoadPool();
    });
 
-   it("v2 #(preaggregate) on avg and count_distinct: the load fails, preaggregate-not-mergeable naming both", async () => {
+   it("v2 #(rollup) on avg and count_distinct: the load fails, rollup-not-mergeable naming both", async () => {
       let error: unknown;
       try {
          const loader = await loadFixture({
             ...DATA_FILES,
             "raw.malloy": RAW_MODEL,
-            "m.malloy": model(`#(preaggregate) grain=["status"]
+            "m.malloy": model(`#(rollup) grain=["status"]
   measure: avg_amount is amount.avg()
-  #(preaggregate) grain=["status"]
+  #(rollup) grain=["status"]
   measure: customers is count(customer_id)`),
          });
          await loader.dispose();
@@ -497,7 +497,7 @@ source: orders is orders_raw extend {
       expect(error).toBeInstanceOf(Error);
       const lines = (error as Error).message
          .split("\n")
-         .filter((l) => l.includes("[preaggregate-not-mergeable]"));
+         .filter((l) => l.includes("[rollup-not-mergeable]"));
       expect(lines.some((l) => l.includes("avg_amount"))).toBe(true);
       expect(lines.some((l) => l.includes("customers"))).toBe(true);
    }, 120_000);
@@ -548,7 +548,7 @@ source: stored_base is orders_raw -> { select: id, region, status, amount } exte
          },
       ],
       {
-         // Planned as the rollup leg's, as #(preaggregate) over a stored base
+         // Planned as the rollup leg's, as #(rollup) over a stored base
          // is: built in the destination beside its base and served from there.
          "the rollup is planned and served, not left out as rollup_over_stored_base":
             async (l) => {
@@ -560,10 +560,7 @@ source: stored_base is orders_raw -> { select: id, region, status, amount } exte
                         `${v.origin}:${v.verdict}${v.reason ? `:${v.reason}` : ""}`,
                   )
                   .sort();
-               expect(verdicts).toEqual([
-                  "persist:serves",
-                  "preaggregate:serves",
-               ]);
+               expect(verdicts).toEqual(["persist:serves", "rollup:serves"]);
                expect(l.fixture.built.map((b) => b.tier)).toEqual([
                   "storage",
                   "storage",
@@ -610,7 +607,7 @@ export { published }
       {
          name: "the published source",
          malloy: "run: published -> { group_by: region; aggregate: total }",
-         tier: "colocated",
+         tier: "database",
       },
    ],
    {
@@ -649,9 +646,9 @@ const ADDRESSED_PROBES: Probe[] = [
       tier: "storage",
    },
    {
-      name: "the colocated source",
+      name: "the database source",
       malloy: "run: placed -> { group_by: region; aggregate: total }",
-      tier: "colocated",
+      tier: "database",
    },
 ];
 
@@ -681,7 +678,7 @@ describe("PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION", () => {
    }
 
    // One compile, fixed connection digests: only the switch differs.
-   it("moves the storage= source's address and no colocated one", async () => {
+   it("moves the storage= source's address and no database one", async () => {
       const duckdb = new DuckDBConnection("duckdb");
       try {
          await duckdb.runSQL(
@@ -816,7 +813,7 @@ source: open_t is orders_raw -> { select: id, region, amount } extend {
       {
          name: "an ungated source beside it",
          malloy: "run: open_t -> { group_by: region; aggregate: total }",
-         tier: "colocated",
+         tier: "database",
       },
    ],
 );
@@ -955,8 +952,7 @@ source: listed is duckdb.sql("""
             const refused = (
                loader.pkg.getPackageMetadata().warnings ?? []
             ).filter(
-               (w) =>
-                  (w as { code?: string }).code === "preaggregate-not-built",
+               (w) => (w as { code?: string }).code === "rollup-not-built",
             );
             expect(refused).toHaveLength(1);
             expect(refused[0]?.message).toContain(

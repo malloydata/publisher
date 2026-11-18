@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * P3/P4: a `#(preaggregate)` rollup in a `storage=` destination read past a
+ * P3/P4: a `#(rollup)` rollup in a `storage=` destination read past a
  * row-level gate, through the real package path (plan, bind, router,
  * `govern()`), with the gated-sources switch off (G3: the base's own gates)
  * and on (any gate proven on the grain).
@@ -71,13 +71,13 @@ source: orders_raw is duckdb.sql("""
 
 // Ungated, so the destination always holds a rollup.
 source: open is orders_raw extend {
-  #(preaggregate) grain=["category"]${P}
+  #(rollup) grain=["category"]${P}
   measure: open_total is amount.sum()
 }
 
 #(access_filter) region = $REGION
 source: by_region is orders_raw extend {
-  #(preaggregate) grain=["category", "region"]${P}
+  #(rollup) grain=["category", "region"]${P}
   measure: total is amount.sum()
   view: by_category is { group_by: category; aggregate: total }
 }
@@ -85,36 +85,36 @@ source: by_region is orders_raw extend {
 #(access_filter) reg = $REG
 source: by_upper is orders_raw extend {
   dimension: reg is upper(region)
-  #(preaggregate) grain=["category", "reg"]${P}
+  #(rollup) grain=["category", "reg"]${P}
   measure: total is amount.sum()
 }
 
 #(access_filter) dday = $ON_DAY
 source: by_day is orders_raw extend {
   dimension: dday is ts.day
-  #(preaggregate) grain=["category", "dday"]${P}
+  #(rollup) grain=["category", "dday"]${P}
   measure: total is amount.sum()
 }
 
 #(access_filter) acct = $ACCT
 source: by_acct is orders_raw extend {
-  #(preaggregate) grain=["category", "acct"]${P}
+  #(rollup) grain=["category", "acct"]${P}
   measure: total is amount.sum()
 }
 
 #(access_filter) tenant = $REGION
 source: by_internal is orders_raw extend {
   internal dimension: tenant is region
-  #(preaggregate) grain=["category", "tenant"]${P}
+  #(rollup) grain=["category", "tenant"]${P}
   measure: total is amount.sum()
 }
 
 #(authorize) 'admin' = $ROLE
 #(access_filter) region = $REGION
 source: by_lock_filter is orders_raw extend {
-  #(preaggregate) grain=["category", "region"]${P}
+  #(rollup) grain=["category", "region"]${P}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category", "region"]${P}
+  #(rollup) grain=["category", "region"]${P}
   measure: lf_n is count()
 }
 
@@ -123,16 +123,16 @@ source: by_lock_filter is orders_raw extend {
 #(authorize) 'admin' = $ROLE
 source: by_lock_where is orders_raw extend {
   where: category = $CAT
-  #(preaggregate) grain=["category"]${P}
+  #(rollup) grain=["category"]${P}
   measure: total is amount.sum()
 }
 
 #(access_filter) region = $REGION
 source: gated_base is orders_raw
 source: by_inherited is gated_base extend {
-  #(preaggregate) grain=["category", "region"]${P}
+  #(rollup) grain=["category", "region"]${P}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category", "region"]${P}
+  #(rollup) grain=["category", "region"]${P}
   measure: inh_n is count()
 }
 
@@ -149,7 +149,7 @@ source: ext_renamed is by_region extend { rename: area is region }
 source: by_zoned_source is orders_raw extend {
   timezone: 'America/New_York'
   dimension: dday is ts.day
-  #(preaggregate) grain=["category", "dday"]${P}
+  #(rollup) grain=["category", "dday"]${P}
   measure: total is amount.sum()
 }
 
@@ -157,7 +157,7 @@ source: by_zoned_source is orders_raw extend {
 #(access_filter) at_z = $AT
 source: by_tstz is orders_raw extend {
   dimension: at_z is tsz
-  #(preaggregate) grain=["category", "at_z"]${P}
+  #(rollup) grain=["category", "at_z"]${P}
   measure: total is amount.sum()
 }
 
@@ -167,7 +167,7 @@ source: lines is duckdb.sql("""
   FROM (VALUES (1, 2.0), (1, 3.0), (2, 4.0), (3, 1.0), (5, 6.0), (6, 2.5))
     AS t(order_id, qty)
 """) extend {
-  #(preaggregate) grain=["order_id"]${P}
+  #(rollup) grain=["order_id"]${P}
   measure: qty_total is qty.sum()
 }
 #(access_filter) region = $REGION
@@ -185,20 +185,20 @@ source: orders_ci is duckdb.sql("""
 """) extend { primary_key: id }
 #(access_filter) region = $REGION
 source: ci_eq is orders_ci extend {
-  #(preaggregate) grain=["category", "region"]${P}
+  #(rollup) grain=["category", "region"]${P}
   measure: total is amount.sum()
 }
 #(access_filter) category = $CAT
 source: ci_where_filter is orders_ci extend {
   where: region != $EXCL
-  #(preaggregate) grain=["category", "region"]${P}
+  #(rollup) grain=["category", "region"]${P}
   measure: total is amount.sum()
 }
 
 // A composite with its own row filter: refused live, so never built.
 #(access_filter) region = $REGION
 source: comp_own is compose(orders_raw, orders_raw extend { dimension: x is 1 }) extend {
-  #(preaggregate) grain=["category", "region"]${P}
+  #(rollup) grain=["category", "region"]${P}
   measure: total is amount.sum()
 }
 

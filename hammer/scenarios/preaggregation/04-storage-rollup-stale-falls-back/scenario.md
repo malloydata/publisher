@@ -99,9 +99,9 @@ the query was answered from the base — correct, unaccelerated, and silent, whi
 the fallback is logged at info rather than debug.
 
 The answer is a single `GROUP BY` of the base, not a rollup recomputed and then merged.
-That distinction is invisible in the rows and is the reason the colocated companion is
+That distinction is invisible in the rows and is the reason the database companion is
 skipped when every rollup is storage-bound: its composite would still pick the rollup
-member, find no colocated table behind it, and rebuild the rollup at query time — two
+member, find no database table behind it, and rebuild the rollup at query time — two
 stages to produce what one stage already produces.
 
 Expect:

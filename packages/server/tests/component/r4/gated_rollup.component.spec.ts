@@ -5,7 +5,7 @@
  * R4 for gated queries on rollups (known limitation 1, R3 for rollups: route,
  * then govern). With PUBLISHER_MATERIALIZE_GATED_SOURCES on, a query whose
  * entry point carries a row-level gate or lock is answered from a
- * `#(preaggregate)` rollup over its source when every gate is provable on
+ * `#(rollup)` rollup over its source when every gate is provable on
  * the rollup (each field it reads a grain dimension): the run target is
  * redeclared over the rollup in its declaring file, gates written on it, and
  * `govern()` grafts and proves them there.
@@ -16,7 +16,7 @@
  * denied. Negatives answer live (a gate field outside the grain, a gate
  * through a join, a caller join, a caller `count()`, an extension whose own
  * gate the rollup cannot prove), and a caller `except:` or `rename:` of the
- * gate field is denied, as live is. Colocated and `storage=` alike.
+ * gate field is denied, as live is. Database and `storage=` alike.
  *
  * G3 for rollups, on either tier: with the gated-sources switch off, a
  * rollup over a base whose gates are all its own (a row filter, a lock, or
@@ -70,15 +70,15 @@ source: carriers is duckdb.table('carriers_raw') extend { primary_key: code }
 
 // Ungated, so the companion is never empty.
 source: open is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: open_total is amount.sum()
 }
 
 #(access_filter) region = $REGION
 source: by_column is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: biggest is amount.max()
   view: by_category is { group_by: category; aggregate: total }
 }
@@ -86,14 +86,14 @@ source: by_column is duckdb.table('orders_raw') extend {
 #(access_filter) reg = $REG
 source: by_computed is duckdb.table('orders_raw') extend {
   dimension: reg is upper(region)
-  #(preaggregate) grain=["category", "reg"]${p}
+  #(rollup) grain=["category", "reg"]${p}
   measure: total is amount.sum()
 }
 
 #(access_filter) order_day = $ON_DAY
 source: by_truncation is duckdb.table('orders_raw') extend {
   dimension: order_day is order_time.day
-  #(preaggregate) grain=["category", "order_day"]${p}
+  #(rollup) grain=["category", "order_day"]${p}
   measure: total is amount.sum()
 }
 
@@ -103,40 +103,40 @@ source: by_truncation is duckdb.table('orders_raw') extend {
 source: by_zoned_truncation is duckdb.table('orders_raw') extend {
   timezone: 'America/New_York'
   dimension: order_day is order_time.day
-  #(preaggregate) grain=["category", "order_day"]${p}
+  #(rollup) grain=["category", "order_day"]${p}
   measure: total is amount.sum()
 }
 
 #(access_filter) tenant = $REGION
 source: by_internal is duckdb.table('orders_raw') extend {
   internal dimension: tenant is region
-  #(preaggregate) grain=["category", "tenant"]${p}
+  #(rollup) grain=["category", "tenant"]${p}
   measure: total is amount.sum()
 }
 
 #(access_filter) region = $REGION
 source: gated_base is duckdb.table('orders_raw')
 source: by_inherited is gated_base extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
   // A column of its own, so its table is not another source's.
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: inh_n is count()
 }
 
 #(authorize) 'admin' = $ROLE
 source: by_lock is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
 }
 
 #(authorize) 'admin' = $ROLE
 #(access_filter) region = $REGION
 source: by_lock_and_filter is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
   // A column of its own, so its table is not another source's.
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: lf_n is count()
 }
 
@@ -146,10 +146,10 @@ source: locked is duckdb.table('orders_raw')
 #(authorize) true
 #(access_filter) region = $REGION
 source: reopened is locked extend {
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: total is amount.sum()
   // A column of its own, so its table is not another source's.
-  #(preaggregate) grain=["category", "region"]${p}
+  #(rollup) grain=["category", "region"]${p}
   measure: ro_n is count()
 }
 
@@ -165,7 +165,7 @@ source: ext_gated is by_column extend {}
 // A gated parent joining a rollup's base (A7): the join branch redeclares the
 // parent around the join, carrying no gate to prove, so it declines.
 source: order_lines is duckdb.table('lines_raw') extend {
-  #(preaggregate) grain=["order_id"]${p}
+  #(rollup) grain=["order_id"]${p}
   measure: qty_total is qty.sum()
 }
 #(access_filter) region = $REGION
@@ -177,14 +177,14 @@ source: gated_parent is duckdb.table('orders_raw') extend {
 // Negatives: never built (A4), so answered live.
 #(access_filter) region = $REGION
 source: outside is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]${p}
+  #(rollup) grain=["category"]${p}
   measure: total is amount.sum()
 }
 
 #(access_filter) carriers.fleet = $FLEET
 source: through_join is duckdb.table('orders_raw') extend {
   join_one: carriers with carrier
-  #(preaggregate) grain=["category", "carrier"]${p}
+  #(rollup) grain=["category", "carrier"]${p}
   measure: total is amount.sum()
 }
 `;
@@ -321,9 +321,9 @@ function expectLive(run: R4Run): void {
 }
 
 for (const [placement, gatedSources] of [
-   ["colocated", true],
+   ["database", true],
    ["storage", true],
-   ["colocated", false],
+   ["database", false],
    // `storage=` with the switch off is G3 through the bind's mark, which this
    // harness does not run: storage_rollup_gates.component.spec.ts takes it
    // through the real package path.

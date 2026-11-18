@@ -144,7 +144,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: "s",
          message:
-            "This source is stored in a destination its join `j` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
+            "This source is stored in a destination its join `j` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source database.",
       },
    ],
    inline_join_kept: [
@@ -273,8 +273,8 @@ describe("the served copy's refusal codes", () => {
       expect(both.map((w) => w.message)).toEqual([
          WARNINGS.inline_join_kept[0].message,
          WARNINGS.cross_connection_join[0].message.replace(
-            "inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
-            "fix what keeps the inlined join from being answered from its stored columns (the warning on this join says what), materialize the joined source into the same destination, or keep this source colocated.",
+            "inline the join (inline=), materialize the joined source into the same destination, or keep this source database.",
+            "fix what keeps the inlined join from being answered from its stored columns (the warning on this join says what), materialize the joined source into the same destination, or keep this source database.",
          ),
       ]);
    });

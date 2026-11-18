@@ -1975,7 +1975,7 @@ describe("PackageController.dryRunPackage", () => {
          sourceName: "orders",
          sourceID: "orders@file:///pkg/m.malloy",
          origin: "persist",
-         tier: "colocated",
+         tier: "database",
          verdict: "not_built",
          message: "`orders` will serve from its table once a build binds it.",
       };

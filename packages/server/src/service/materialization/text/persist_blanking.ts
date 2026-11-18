@@ -5,7 +5,7 @@
  * The author's files with every SOURCE-level `#@` note blanked, for a
  * generated companion that must read the rows a live query reads, never a
  * source's own stored table: a `#@ persist` view's build and serve variant
- * and a `#(preaggregate)` rollup's both compile over it.
+ * and a `#(rollup)` rollup's both compile over it.
  *
  * The spans are the compiler's own (each note's `at.range`), never a text
  * search. Each is checked before it is blanked: it lies on one line, it holds

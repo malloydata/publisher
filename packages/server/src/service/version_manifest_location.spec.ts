@@ -789,7 +789,7 @@ describe("a local run of a host-bound package or version", () => {
       const outcome = await env.loadRunManifest({
          packageName: PKG,
          versionId: "1.0.0",
-         colocated: {},
+         database: {},
          storage: {},
          commit: async () => undefined,
       });

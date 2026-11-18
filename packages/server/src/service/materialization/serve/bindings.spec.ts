@@ -43,9 +43,9 @@ describe("sqlReadsTable", () => {
 });
 
 describe("tablesReadForGates", () => {
-   const colocated: Binding = {
+   const database: Binding = {
       kind: "materialize",
-      tier: "colocated",
+      tier: "database",
       sourceName: "c",
       destinationName: "duckdb",
       virtualHandle: "h1",
@@ -67,36 +67,36 @@ describe("tablesReadForGates", () => {
    };
    const keeps = (tables: readonly Binding[]) =>
       answerKeepsGates("served", tables, G3_ONLY, {
-         colocatedReadsKeepGates: true,
+         databaseReadsKeepGates: true,
       });
 
-   it("counts a storage table spelled with other quoting as read, so a mixed answer never reads as colocated", () => {
+   it("counts a storage table spelled with other quoting as read, so a mixed answer never reads as database", () => {
       // The storage table read unquoted and upper-cased: the one spelling
       // sqlReadsTable matches (`"main"."s_tbl"`) is not there.
       const sql =
          'SELECT 1 FROM "c_tbl" AS base LEFT JOIN MAIN.S_TBL AS j ON j.id = base.id';
-      const found = [colocated, storage].filter((b) =>
+      const found = [database, storage].filter((b) =>
          sqlReadsTable(
             sql,
-            b.tier === "colocated" ? b.tablePath : '"main"."s_tbl"',
+            b.tier === "database" ? b.tablePath : '"main"."s_tbl"',
          ),
       );
-      expect(found).toEqual([colocated]);
+      expect(found).toEqual([database]);
       expect(keeps(found)).toBe(true);
-      const judged = tablesReadForGates(sql, [colocated, storage], found);
-      expect(judged).toEqual([colocated, storage]);
+      const judged = tablesReadForGates(sql, [database, storage], found);
+      expect(judged).toEqual([database, storage]);
       expect(keeps(judged)).toBe(false);
    });
 
-   it("leaves out a storage table the SQL never names, so G3 still serves a colocated-only answer", () => {
+   it("leaves out a storage table the SQL never names, so G3 still serves a database-only answer", () => {
       const sql = 'SELECT 1 FROM "c_tbl" AS base WHERE base.s_tbl_flag';
-      const judged = tablesReadForGates(sql, [colocated, storage], [colocated]);
-      expect(judged).toEqual([colocated]);
+      const judged = tablesReadForGates(sql, [database, storage], [database]);
+      expect(judged).toEqual([database]);
       expect(keeps(judged)).toBe(true);
    });
 
    it("keeps a mixed answer off G3 when both tables are found", () => {
-      expect(keeps([colocated, storage])).toBe(false);
+      expect(keeps([database, storage])).toBe(false);
       expect(keeps([])).toBe(false);
    });
 });

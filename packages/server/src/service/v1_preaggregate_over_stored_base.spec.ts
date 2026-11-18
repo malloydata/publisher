@@ -3,9 +3,9 @@
 
 /**
  * A v1 `#@ preaggregate` over a `#@ persist storage=` base is planned as the
- * `#(preaggregate)` it reads as, by the rollup leg, over the author's rows: the
+ * `#(rollup)` it reads as, by the rollup leg, over the author's rows: the
  * same build source, address, grain, measures and placement as the
- * `#(preaggregate)` spelling, and the same refusals for the same reasons. Its
+ * `#(rollup)` spelling, and the same refusals for the same reasons. Its
  * table takes the rollup's readable name, `<pkg>__<file>__<base>_by_<grain>`,
  * never the base's, and nothing is left out of the plan for its base being
  * stored. (Answers equal to live: r4/v1_preaggregate_over_stored_base.)
@@ -46,7 +46,7 @@ afterEach(async () => {
 });
 
 /**
- * Compile `text` on this thread, with `#(preaggregate)` read (v2) or not (the
+ * Compile `text` on this thread, with `#(rollup)` read (v2) or not (the
  * default, where `#@ preaggregate` is the spelling that builds).
  */
 async function compile(
@@ -90,7 +90,7 @@ function rollupsOf(compiled: FinishedBuildPlan): Record<string, PlannedRollup> {
    const { plan } = deriveBuildPlanOutcome(compiled, null);
    const out: Record<string, PlannedRollup> = {};
    for (const s of Object.values(plan?.sources ?? {})) {
-      if (s.origin !== "preaggregate") continue;
+      if (s.origin !== "rollup") continue;
       out[s.name] = {
          sourceEntityId: s.sourceEntityId,
          sql: s.sql,
@@ -104,7 +104,7 @@ function rollupsOf(compiled: FinishedBuildPlan): Record<string, PlannedRollup> {
 /** Each rollup finding's refusal reason, or its code when it refuses nothing. */
 function codesOf(compiled: FinishedBuildPlan): string[] {
    return (compiled.annotationFindings ?? [])
-      .filter((f) => f.code.startsWith("preaggregate-"))
+      .filter((f) => /^(preaggregate|rollup)-/.test(f.code))
       .map((f) => f.refused?.reason ?? f.code)
       .sort();
 }
@@ -115,7 +115,7 @@ function spelled(template: string, v2: boolean): string {
       const [grain, place] = args.split("|").map((a) => a.trim());
       const placement = place ? ` ${place}` : "";
       return v2
-         ? `#(preaggregate) grain=["${grain}"]${placement}`
+         ? `#(rollup) grain=["${grain}"]${placement}`
          : `#@ preaggregate grain="${grain}"${placement}`;
    });
 }
@@ -150,7 +150,7 @@ describe("a v1 #@ preaggregate over a storage= base", () => {
       ["a query-shaped base", QUERY_SHAPED],
       ["a table extended with measures", TABLE_EXTENDED],
    ] as const) {
-      it(`plans exactly the #(preaggregate) it reads as, on ${shape}`, async () => {
+      it(`plans exactly the #(rollup) it reads as, on ${shape}`, async () => {
          const v1 = await compile(spelled(template, false), false);
          const v1Rollups = rollupsOf(v1.compiled);
          const v2 = await compile(spelled(template, true), true);
@@ -201,7 +201,7 @@ describe("a v1 #@ preaggregate over a storage= base", () => {
       expect(new Set(instructions.map((i) => i.sourceEntityId)).size).toBe(3);
    });
 
-   it("gives a colocated grain with no namespace= no container from a storage= base's name=", async () => {
+   it("gives a database grain with no namespace= no container from a storage= base's name=", async () => {
       const { compiled, packagePath } = await compile(
          `##! experimental.persistence
 #@ persist storage="lake" name="analytics.lake_daily"
@@ -274,7 +274,7 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'east' AS reg
       ]);
    });
 
-   describe("is refused as the #(preaggregate) would be", () => {
+   describe("is refused as the #(rollup) would be", () => {
       const cases: [string, string, string[]][] = [
          [
             "a base whose rows read the current time",
