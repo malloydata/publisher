@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { hostname } from "node:os";
 import { logger } from "../logger";
@@ -92,6 +93,40 @@ describe("statement usage records", () => {
          "surface",
          "worker",
       ]);
+   });
+
+   it("leaves threads out when the thread cap cannot be installed, whatever the setting says", () => {
+      const settings = installSettings({
+         env: { PUBLISHER_DUCKDB_THREADS: "3" },
+      });
+      // What a db-duckdb release that reshaped its internals looks like:
+      // duckdb_instance_sharing.ts then skips the cap, and an instance opens
+      // one thread per core.
+      const proto = DuckDBConnection.prototype as unknown as Record<
+         string,
+         unknown
+      >;
+      const setupOnce = proto["setupOnce"];
+      const { spy, records } = captureUsage();
+      restore = () => {
+         proto["setupOnce"] = setupOnce;
+         spy.mockRestore();
+         settings.restore();
+      };
+      const usage = {
+         environment: "acme___prod",
+         connection: "sales",
+         surface: "serve" as const,
+         durationMs: 1,
+         status: "ok" as const,
+      };
+
+      emitStatementUsage(usage);
+      proto["setupOnce"] = undefined;
+      emitStatementUsage(usage);
+
+      expect(records()[0].threads).toBe(3);
+      expect(records()[1]).not.toHaveProperty("threads");
    });
 
    it("gives every record a statement_id of its own", () => {

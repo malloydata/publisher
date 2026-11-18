@@ -6,6 +6,7 @@ import { hostname } from "node:os";
 import { getDuckDBThreads } from "../config";
 import { logger } from "../logger";
 import { lazyCounter } from "../telemetry";
+import { dbDuckDBInternalsMatch } from "./duckdb_instance_sharing";
 
 /**
  * Where a metered statement ran: a model query (`serve`), raw SQL on a managed
@@ -62,9 +63,14 @@ export function usageCatalog(
 /**
  * The thread count a DuckDB instance of this process opens with (the
  * `duckdb.threads` setting). Undefined under `off`, where DuckDB sizes the pool
- * itself. A connection that sets its own `threads` is not reflected.
+ * itself, and when the cap could not be installed (duckdb_instance_sharing.ts
+ * skips it if `@malloydata/db-duckdb`'s internals changed shape): an instance
+ * then opens one thread per core whatever the setting says, and a record must
+ * not claim a size the statement did not run at. A connection that sets its
+ * own `threads` is not reflected.
  */
 function configuredThreads(): number | undefined {
+   if (!dbDuckDBInternalsMatch()) return undefined;
    const threads = Number(getDuckDBThreads());
    return Number.isInteger(threads) && threads > 0 ? threads : undefined;
 }

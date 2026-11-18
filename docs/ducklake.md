@@ -295,7 +295,7 @@ record names no sink; a log collector maps it. Its fields, each left out when th
 | `duration_ms` | Wall-clock milliseconds the statement ran. |
 | `rows` | Rows returned or written, when the result reports a count. |
 | `status` | `ok` or `error`. |
-| `threads` | The `duckdb.threads` setting: the thread count a DuckDB instance of the process opens with. Left out under `off`; a connection that sets its own `threads` is not reflected. |
+| `threads` | The `duckdb.threads` setting: the thread count a DuckDB instance of the process opens with. Left out under `off`, and when the cap could not be applied (a `@malloydata/db-duckdb` release that changed the internals Publisher patches, which Publisher logs at startup); a connection that sets its own `threads` is not reflected. |
 | `worker` | The host name of the process that ran it: the pod's name in Kubernetes. |
 
 A same-catalog build and a chained build are recorded; a passthrough build is not, since its time is
