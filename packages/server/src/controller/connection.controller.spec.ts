@@ -2033,10 +2033,12 @@ describe("raw SQL on a managed database", () => {
       expect(manifestTemporaryTable.called).toBe(false);
    });
 
-   it("leaves a connection that is not managed as it was: a script runs", async () => {
+   // A DuckDB-backed connection, managed or not, is held to one SELECT too
+   // (duckdb_lockdown.ts); any other connection runs a script as before.
+   it("leaves a connection that is neither managed nor DuckDB-backed as it was: a script runs", async () => {
       const { controller, runSQL } = controllerOn({
          name: "lake",
-         type: "ducklake",
+         type: "postgres",
       });
       await controller.getConnectionQueryData(
          "env",
@@ -2088,6 +2090,87 @@ describe("raw SQL on a managed database", () => {
       );
       await expect(refused).rejects.toThrow("config unreadable");
       expect(runSQL.called).toBe(false);
+   });
+});
+
+describe("ConnectionController: raw SQL on a locked-down DuckDB connection is one SELECT", () => {
+   afterEach(() => sinon.restore());
+
+   /** A controller whose environment answers `type` for every connection name. */
+   function lockedController(type: string) {
+      const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
+      const { controller } = buildController(runSQL);
+      const fakeEnv = {
+         assertCanAdmitQuery: sinon.stub().returns(undefined),
+         getApiConnection: () => ({ name: "lake", type }),
+      };
+      (
+         controller as unknown as {
+            environmentStore: { getEnvironment: sinon.SinonStub };
+         }
+      ).environmentStore = {
+         getEnvironment: sinon.stub().resolves(fakeEnv),
+      } as never;
+      return { controller, runSQL };
+   }
+
+   const query = (
+      controller: ConnectionController,
+      connection: string,
+      sql: string,
+   ) =>
+      controller.getConnectionQueryData(
+         "env",
+         connection,
+         sql,
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+
+   for (const [label, type, name] of [
+      ["the package sandbox", "duckdb", "duckdb"],
+      ["an environment duckdb connection", "duckdb", "lake"],
+      ["a ducklake connection", "ducklake", "lake"],
+      ["a motherduck connection", "motherduck", "lake"],
+   ] as const) {
+      it(`refuses anything but one SELECT on ${label}, before it runs`, async () => {
+         const { controller, runSQL } = lockedController(type);
+         for (const sql of [
+            "COPY (SELECT 1) TO 'x.csv'",
+            "CREATE TABLE t AS SELECT 1",
+            "SELECT 1; SELECT 2",
+            "INSERT INTO t VALUES (1)",
+            "SELECT 1 FROM",
+         ]) {
+            await expect(query(controller, name, sql)).rejects.toThrow(
+               "locked-down DuckDB connection: raw SQL on it runs only as a single SELECT",
+            );
+            await expect(
+               controller.getConnectionSqlSource("env", name, sql),
+            ).rejects.toThrow("runs only as a single SELECT");
+         }
+         expect(runSQL.called).toBe(false);
+      });
+
+      it(`runs one SELECT, CTEs included, on ${label}`, async () => {
+         const { controller, runSQL } = lockedController(type);
+         await query(
+            controller,
+            name,
+            "WITH x AS (SELECT 1 AS a) SELECT a FROM x",
+         );
+         await query(controller, name, "FROM (SELECT 1 AS a)");
+         expect(runSQL.callCount).toBe(2);
+      });
+   }
+
+   it("leaves a non-DuckDB connection's raw SQL alone", async () => {
+      const { controller, runSQL } = lockedController("postgres");
+      await query(controller, "lake", "SELECT 1; SELECT 2");
+      expect(runSQL.calledOnce).toBe(true);
    });
 });
 

@@ -30,6 +30,7 @@ import type { PlanLifecycle } from "./plan_lifecycle";
 import {
    deriveDatabaseServeBindings,
    keptTableAddresses,
+   ungatedTableAddresses,
    v1StoredColumnsOf,
 } from "./serve/bind";
 import {
@@ -309,6 +310,27 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
+      // A `storage=` table that holds only ungated rows (g-mixed), read the
+      // same way: off the bound bindings, or, not bound yet, by the bind's
+      // own rule.
+      const ungatedTables = ungatedTableAddresses(
+         plan.sourceEligibility?.ungated,
+         buildPlan?.sources ?? {},
+      );
+      const holdsOnlyUngatedRows = (sourceID: string): boolean => {
+         const bound = storageBindings.filter((b) =>
+            b.sourceIDs?.includes(sourceID),
+         );
+         if (bound.length > 0) {
+            return bound.every((b) => b.holdsOnlyUngatedRows === true);
+         }
+         return (
+            (plan.sourceEligibility?.ungated ?? []).includes(sourceID) &&
+            ungatedTables.has(
+               buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+            )
+         );
+      };
       // The stored types of the columns a bound `storage=` table's own gate
       // reads, for the policy's exactness rule; the router reads each
       // query's. A table not bound yet has none to read, and is judged once
@@ -379,6 +401,8 @@ export class ServeVerdicts {
                   {
                      tier,
                      ownGateKept: tier === "storage" && ownGateKept(sourceID),
+                     holdsOnlyUngatedRows:
+                        tier === "storage" && holdsOnlyUngatedRows(sourceID),
                      ...(tier === "storage"
                         ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
                         : {}),

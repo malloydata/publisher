@@ -365,6 +365,35 @@ export class ConnectionController {
    }
 
    /**
+    * Whether caller SQL on this connection runs only as a single SELECT, and
+    * why: a managed DuckLake connection, or a locked-down DuckDB connection
+    * (the package sandbox, an environment `duckdb`, `ducklake` or
+    * `motherduck` connection; duckdb_lockdown.ts), whose confinement is
+    * read-only for raw SQL. Undefined for any other connection.
+    */
+   private singleSelectKind(
+      environment: Environment,
+      connectionName: string,
+   ): "managed database" | "locked-down DuckDB connection" | undefined {
+      if (this.isManagedConnection(environment, connectionName)) {
+         return "managed database";
+      }
+      let type: string | undefined;
+      try {
+         type = this.getApiConnectionForLookup(
+            environment,
+            connectionName,
+         ).type;
+      } catch (error) {
+         if (error instanceof ConnectionNotFoundError) return undefined;
+         throw error;
+      }
+      return type === "duckdb" || type === "ducklake" || type === "motherduck"
+         ? "locked-down DuckDB connection"
+         : undefined;
+   }
+
+   /**
     * A managed DuckLake connection (a platform database's connection view). A
     * name the environment does not configure is not one; the lookup that
     * follows answers it.
@@ -706,8 +735,9 @@ export class ConnectionController {
          parseEnvironmentName(environmentName),
          false,
       );
-      if (this.isManagedConnection(environment, connectionName)) {
-         await assertSingleSelect(connectionName, sqlStatement);
+      const singleSelect = this.singleSelectKind(environment, connectionName);
+      if (singleSelect) {
+         await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
 
       const malloyConnection = await this.getMalloyConnection(
@@ -909,13 +939,17 @@ export class ConnectionController {
          );
       environmentForAdmission.assertCanAdmitQuery();
 
-      // A managed database runs one SELECT and nothing else (single_select.ts).
-      const managed = this.isManagedConnection(
+      // A managed database or a locked-down DuckDB connection runs one SELECT
+      // and nothing else (single_select.ts).
+      const singleSelect = this.singleSelectKind(
          environmentForAdmission,
          connectionName,
       );
-      if (managed) {
-         await assertSingleSelect(connectionName, sqlStatement);
+      // Metering is keyed on `managed`, not on running as a single SELECT: a
+      // locked-down DuckDB connection is the deployment's own and no meter's.
+      const managed = singleSelect === "managed database";
+      if (singleSelect) {
+         await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
       // A managed connection is metered (statement_usage.ts): the statement
       // that runs below emits one usage record, whether it answers or fails.
@@ -1149,6 +1183,18 @@ export class ConnectionController {
       if (this.isManagedConnection(environmentForAdmission, connectionName)) {
          throw new BadRequestError(
             `'${connectionName}' is a managed database: raw SQL on it runs only as a single SELECT, so it cannot create a temporary table.`,
+         );
+      }
+      // On a locked-down DuckDB connection the caller's SQL is one SELECT;
+      // the CREATE around it is Publisher's own.
+      if (
+         this.singleSelectKind(environmentForAdmission, connectionName) ===
+         "locked-down DuckDB connection"
+      ) {
+         await assertSingleSelect(
+            connectionName,
+            sqlStatement,
+            "locked-down DuckDB connection",
          );
       }
 

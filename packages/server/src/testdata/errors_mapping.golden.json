@@ -2639,6 +2639,108 @@
       ]
     }
   },
+  "MaterializedTableDropRefusedError in use": {
+    "class": "MaterializedTableDropRefusedError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "a committed run names analytics.orders",
+        "reason": "TABLE_IN_USE"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: a committed run names analytics.orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: a committed run names analytics.orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "MaterializedTableDropRefusedError owned elsewhere": {
+    "class": "MaterializedTableDropRefusedError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "another package marked analytics.orders",
+        "reason": "TABLE_OWNED_ELSEWHERE"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: another package marked analytics.orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: another package marked analytics.orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "MaterializedTableDropRefusedError unverified": {
+    "class": "MaterializedTableDropRefusedError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "nothing proves analytics.orders is this package's",
+        "reason": "TABLE_OWNERSHIP_UNVERIFIED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: nothing proves analytics.orders is this package's",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: nothing proves analytics.orders is this package's",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "WriteConflictError": {
     "class": "WriteConflictError",
     "http": {

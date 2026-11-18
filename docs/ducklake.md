@@ -380,7 +380,7 @@ exactly the extensions the server installs at runtime:
 
 | Extension   | Kind      | Provides                                                                              |
 | ----------- | --------- | ------------------------------------------------------------------------------------- |
-| `httpfs`    | core      | HTTP(S) and S3/GCS/Azure object-storage access (also used by the per-package sandbox) |
+| `httpfs`    | core      | HTTP(S) and S3/GCS/Azure object-storage access                                        |
 | `aws`       | core      | AWS credential-chain resolution for S3                                                |
 | `azure`     | core      | Azure Blob Storage access                                                             |
 | `postgres`  | core      | Postgres connections, and the DuckLake Postgres catalog                               |

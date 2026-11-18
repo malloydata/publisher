@@ -1617,6 +1617,7 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--admin_port",
    "--admin-host",
    "--admin_host",
+   "--admin-request-timeout-ms",
    "--admin-storage-provider",
    "--admin-storage-key-id",
    "--admin-storage-region",

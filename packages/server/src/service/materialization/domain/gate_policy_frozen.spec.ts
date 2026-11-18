@@ -24,6 +24,7 @@ import {
    type GatedTable,
    type GateSwitches,
    legMayPassGate,
+   type TableRead,
    tableKeepsGates,
 } from "./gate_policy";
 
@@ -59,6 +60,16 @@ const LEG_UNION: Exactly<
 > = true;
 const SWITCH_KEYS: Exactly<keyof GateSwitches, keyof typeof GATE_SWITCH_KEYS> =
    true;
+// A table an answer read: a new field fails to compile here until the reads
+// below enumerate it.
+const READ_FIELDS: Exactly<
+   keyof TableRead,
+   | "tier"
+   | "ownGateKept"
+   | "holdsOnlyUngatedRows"
+   | "gateColumnTypes"
+   | "gatesReadNoColumn"
+> = true;
 void [
    TABLE_FIELDS,
    GATE_FIELDS,
@@ -66,6 +77,7 @@ void [
    TIER_UNION,
    LEG_UNION,
    SWITCH_KEYS,
+   READ_FIELDS,
 ];
 
 /** Every setting of every switch, from the switch keys. */
@@ -175,6 +187,24 @@ function legRows(): string[] {
       own_unlisted: [{ tier: "storage" as const, ownGateKept: true }],
       database_inexact: [
          { tier: "database" as const, gateColumnTypes: ["DOUBLE"] },
+      ],
+      // A `storage=` table proven to hold only ungated rows (g-mixed),
+      // alone, beside a database one, beside one admitted past its own
+      // gate, and beside one proven neither way.
+      ungated: [
+         { tier: "storage" as const, holdsOnlyUngatedRows: true, ...exact },
+      ],
+      ungated_database: [
+         { tier: "database" as const },
+         { tier: "storage" as const, holdsOnlyUngatedRows: true, ...exact },
+      ],
+      ungated_own: [
+         { tier: "storage" as const, ownGateKept: true, ...exact },
+         { tier: "storage" as const, holdsOnlyUngatedRows: true, ...exact },
+      ],
+      ungated_storage: [
+         { tier: "storage" as const, holdsOnlyUngatedRows: true, ...exact },
+         { tier: "storage" as const, ...exact },
       ],
       // The entry point's gates are locks reading no column: alone, beside
       // a database table, beside a `storage=` one without the mark, and
@@ -904,4 +934,81 @@ const FROZEN_LEG_ROWS: readonly string[] = [
    "keeps rollup read=own_database mz=1 gs=1 g3=1",
    "keeps rollup read=own_storage mz=1 gs=1 g3=1",
    "keeps rollup read=locks_storage mz=1 gs=1 g3=1",
+   // The `read=ungated*` reads with the gated-sources switch on: no change,
+   // the switch keeps every answer a leg past a gate produced.
+   "keeps view read=ungated mz=0 gs=1 g3=0",
+   "keeps view read=ungated_database mz=0 gs=1 g3=0",
+   "keeps view read=ungated_own mz=0 gs=1 g3=0",
+   "keeps view read=ungated_storage mz=0 gs=1 g3=0",
+   "keeps view read=ungated mz=0 gs=1 g3=1",
+   "keeps view read=ungated_database mz=0 gs=1 g3=1",
+   "keeps view read=ungated_own mz=0 gs=1 g3=1",
+   "keeps view read=ungated_storage mz=0 gs=1 g3=1",
+   "keeps view read=ungated mz=1 gs=1 g3=0",
+   "keeps view read=ungated_database mz=1 gs=1 g3=0",
+   "keeps view read=ungated_own mz=1 gs=1 g3=0",
+   "keeps view read=ungated_storage mz=1 gs=1 g3=0",
+   "keeps view read=ungated mz=1 gs=1 g3=1",
+   "keeps view read=ungated_database mz=1 gs=1 g3=1",
+   "keeps view read=ungated_own mz=1 gs=1 g3=1",
+   "keeps view read=ungated_storage mz=1 gs=1 g3=1",
+   "keeps rollup read=ungated mz=0 gs=1 g3=0",
+   "keeps rollup read=ungated_database mz=0 gs=1 g3=0",
+   "keeps rollup read=ungated_own mz=0 gs=1 g3=0",
+   "keeps rollup read=ungated_storage mz=0 gs=1 g3=0",
+   "keeps rollup read=ungated mz=0 gs=1 g3=1",
+   "keeps rollup read=ungated_database mz=0 gs=1 g3=1",
+   "keeps rollup read=ungated_own mz=0 gs=1 g3=1",
+   "keeps rollup read=ungated_storage mz=0 gs=1 g3=1",
+   "keeps rollup read=ungated mz=1 gs=1 g3=0",
+   "keeps rollup read=ungated_database mz=1 gs=1 g3=0",
+   "keeps rollup read=ungated_own mz=1 gs=1 g3=0",
+   "keeps rollup read=ungated_storage mz=1 gs=1 g3=0",
+   "keeps rollup read=ungated mz=1 gs=1 g3=1",
+   "keeps rollup read=ungated_database mz=1 gs=1 g3=1",
+   "keeps rollup read=ungated_own mz=1 gs=1 g3=1",
+   "keeps rollup read=ungated_storage mz=1 gs=1 g3=1",
+   "keeps served read=ungated mz=0 gs=1 g3=0",
+   "keeps served read=ungated_database mz=0 gs=1 g3=0",
+   "keeps served read=ungated_own mz=0 gs=1 g3=0",
+   "keeps served read=ungated_storage mz=0 gs=1 g3=0",
+   "keeps served read=ungated mz=0 gs=1 g3=1",
+   "keeps served read=ungated_database mz=0 gs=1 g3=1",
+   "keeps served read=ungated_own mz=0 gs=1 g3=1",
+   "keeps served read=ungated_storage mz=0 gs=1 g3=1",
+   "keeps served read=ungated mz=1 gs=1 g3=0",
+   "keeps served read=ungated_database mz=1 gs=1 g3=0",
+   "keeps served read=ungated_own mz=1 gs=1 g3=0",
+   "keeps served read=ungated_storage mz=1 gs=1 g3=0",
+   "keeps served read=ungated mz=1 gs=1 g3=1",
+   "keeps served read=ungated_database mz=1 gs=1 g3=1",
+   "keeps served read=ungated_own mz=1 gs=1 g3=1",
+   "keeps served read=ungated_storage mz=1 gs=1 g3=1",
+   // g-mixed (question 14, PR #1854): with the switch off, a served answer
+   // reading a `storage=` table proven to hold only ungated rows keeps the
+   // gates, as one reading a database table does, alone or beside a
+   // database table or a table admitted past its own gate. Beside a
+   // `storage=` table proven neither way (`read=ungated_storage`) it does
+   // not. The rollup leg follows below. Reviewed in the question-14 security
+   // review, including the P2 lock-gated join widening.
+   "keeps served read=ungated mz=0 gs=0 g3=1",
+   "keeps served read=ungated_database mz=0 gs=0 g3=1",
+   "keeps served read=ungated_own mz=0 gs=0 g3=1",
+   "keeps served read=ungated mz=1 gs=0 g3=1",
+   "keeps served read=ungated_database mz=1 gs=0 g3=1",
+   "keeps served read=ungated_own mz=1 gs=0 g3=1",
+   // g-mixed for a `storage=` rollup (question 14): with the switch off, the
+   // rollup leg keeps the gates for an answer reading a `storage=` table
+   // proven to hold only ungated rows, as the served copy does: a join
+   // branch over a rollup of an ungated joined source, beside the query
+   // source's own table in that destination (admitted past its own gate, or
+   // holding only ungated rows). Beside a `storage=` table proven neither
+   // way (`read=ungated_storage`) it does not. Needs the security review's
+   // sign-off.
+   "keeps rollup read=ungated mz=0 gs=0 g3=1",
+   "keeps rollup read=ungated_database mz=0 gs=0 g3=1",
+   "keeps rollup read=ungated_own mz=0 gs=0 g3=1",
+   "keeps rollup read=ungated mz=1 gs=0 g3=1",
+   "keeps rollup read=ungated_database mz=1 gs=0 g3=1",
+   "keeps rollup read=ungated_own mz=1 gs=0 g3=1",
 ];

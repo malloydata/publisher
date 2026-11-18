@@ -144,7 +144,10 @@ import {
 } from "./served_copy_containment";
 import { logger } from "../../../logger";
 import { lexAll, offsetOf } from "../text/malloy_lexer";
-import { confirmedAncestors, keptAncestorChain } from "../text/kept_ancestors";
+import {
+   confirmedAncestors,
+   keptAncestorChainOrDeclared,
+} from "../text/kept_ancestors";
 import { classificationFindingsBySource } from "../../classification_findings";
 import {
    readSourceClassifications,
@@ -614,7 +617,8 @@ function rerootFailureKey(
  * What a served copy's compile reads of a binding: everything but how fresh
  * the table is (`freshAsOf`, its window and fallback, which decide only
  * whether the pin reads it) and what the router reads of it beside the copy
- * (`ownGateKept`, `retypedColumns`, a rollup's key check). A field added to `Binding` is read
+ * (`ownGateKept`, `holdsOnlyUngatedRows`, `retypedColumns`, a rollup's key
+ * check). A field added to `Binding` is read
  * here until it is listed, so a new input recompiles rather than reuses.
  * Memoized per binding, which is replaced, never edited.
  */
@@ -627,6 +631,7 @@ export function compileInputOf(b: Binding): string {
          freshnessWindowSeconds: _window,
          freshnessFallback: _fallback,
          ownGateKept: _gateKept,
+         holdsOnlyUngatedRows: _ungated,
          retypedColumns: _retyped,
          rollupKey: _rollupKey,
          ...read
@@ -1439,11 +1444,15 @@ export class ServedCopyServe {
             ),
          };
          this.inFlightLanes.set(lane, started);
-         void started.promise.finally(() => {
-            if (this.inFlightLanes.get(lane) === started) {
-               this.inFlightLanes.delete(lane);
-            }
-         });
+         // The callers that await `started.promise` see its rejection; this
+         // derived promise only clears the slot, so its own is dropped.
+         started.promise
+            .finally(() => {
+               if (this.inFlightLanes.get(lane) === started) {
+                  this.inFlightLanes.delete(lane);
+               }
+            })
+            .catch(() => {});
          inFlight = started;
       }
       const awaited = await inFlight.promise;
@@ -1799,7 +1808,7 @@ export class ServedCopyServe {
    /**
     * The trailing `extend` runs of a `#(materialize)` source's ancestors, in
     * its own file or the files it imports, root first
-    * ({@link keptAncestorChain}, confirmed against each file's
+    * ({@link keptAncestorChainOrDeclared}, confirmed against each file's
     * text), which its re-root keeps ahead of its own blocks. Kept
     * for an extension table (P10), whose table holds every one of their rows
     * and stored columns, so it loses no measure, join or view any of them
@@ -1824,7 +1833,12 @@ export class ServedCopyServe {
          fileText,
          reroot.url,
          reroot.range,
-         keptAncestorChain(map, reroot.sourceID, reroot.url),
+         keptAncestorChainOrDeclared(
+            map,
+            reroot.sourceID,
+            reroot.url,
+            fileText,
+         ),
       );
       const needed =
          confirmed.some(

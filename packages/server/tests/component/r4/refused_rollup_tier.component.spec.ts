@@ -18,14 +18,14 @@ import {
 } from "../../../src/test_helpers/conformance/package_runner";
 import { RAW_MODEL } from "./conformance/data";
 
-/** A rollup refused for its hidden measure, placed as `placement` says. */
+/** A rollup refused for its hidden measure, declared by `annotation`. */
 const model = (
-   placement: string,
+   annotation: string,
 ) => `##! experimental { persistence access_modifiers }
 import "raw.malloy"
 
 source: orders is orders_raw extend {
-  #(rollup) grain=["region"]${placement}
+  ${annotation}
   private measure: secret_total is amount.sum()
 }
 `;
@@ -41,15 +41,31 @@ describe("a refused rollup's serve verdict", () => {
       await freshLoadPool();
    });
 
-   for (const [label, placement, tier] of [
-      ["a storage= rollup", ' storage="lake"', "storage"],
-      ["a database rollup", "", "database"],
+   for (const [label, annotation, tier] of [
+      [
+         "a storage= rollup",
+         '#(rollup) grain=["region"] storage="lake"',
+         "storage",
+      ],
+      ["a database rollup", '#(rollup) grain=["region"]', "database"],
+      // `#@ preaggregate` refuses a hidden measure in its own validation, and
+      // its record names the tier its `storage=` puts it in as well.
+      [
+         "a storage= #@ preaggregate",
+         '#@ preaggregate grain="region" storage=lake',
+         "storage",
+      ],
+      [
+         "a database #@ preaggregate",
+         '#@ preaggregate grain="region"',
+         "database",
+      ],
    ] as const) {
       it(`${label}: the record and the verdict both say ${tier}, origin rollup`, async () => {
          const loader = await loadFixture({
             ...DATA_FILES,
             "raw.malloy": RAW_MODEL,
-            "m.malloy": model(placement),
+            "m.malloy": model(annotation),
          });
          try {
             const refused = Object.entries(

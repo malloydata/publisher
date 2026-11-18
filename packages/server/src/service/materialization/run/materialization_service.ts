@@ -18,11 +18,17 @@ import {
    BadRequestError,
    BuildInstructionsInvalidError,
    BuildPlanUnavailableError,
+   ConnectionNotFoundError,
+   databaseAccessFailure,
+   InvalidArgumentError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationNotFoundError,
    PackageVersionError,
+   UnconfiguredConnectionError,
 } from "../../../errors";
+import { quoteTablePath, UnquotableIdentifierError } from "../../quoting";
+import { isUsableTableName } from "./manifest_loader";
 import { logger } from "../../../logger";
 import { getPersistCollisionEnforce } from "../../../config";
 import { MaterializationMode } from "../../../materialization_metrics";
@@ -380,6 +386,8 @@ export class MaterializationService {
                this.claims.withTableLock(environmentId, packageName, fn),
             );
          },
+         withTableLock: (environmentId, packageName, fn) =>
+            this.claims.withTableLock(environmentId, packageName, fn),
       });
       const real = this.realCollaborators();
       this.collaborators = {
@@ -1039,6 +1047,11 @@ export class MaterializationService {
                ledger: opts.ledger,
             },
          );
+         // What earlier deltas found missing, from the manifest bound now;
+         // a delta or skip carries it until a rebuild.
+         if (incremental) {
+            incremental.priorLateRows = pkg.boundLateRows?.();
+         }
 
          const derived = await this.deriveRunInstructions(
             run,
@@ -1856,6 +1869,84 @@ export class MaterializationService {
       // (Mirrors the load-time Environment.rebindServeBindingsFromLocalStore;
       // best-effort: a failure leaves the bindings for a later reload or build.)
       await this.committer.rebindLoadedVersions(environmentName, packageName);
+   }
+
+   /**
+    * Drop one database-tier table a materialization of the package built on
+    * `connectionName`, at a caller's request (`drop-materialized-table`),
+    * when Publisher can prove it is the package's and that nothing uses it
+    * (Reclaimer.dropConnectionTable). "absent" when the table is already
+    * gone and a run record of the package still names it there.
+    *
+    * Resolved here, before any lock: the version (404 unknown, 410
+    * archived), the run `materializationId` names (404 unless it is the
+    * package's), the table name (400 unless every dialect parses it and the
+    * connection's quotes it), the package (which may load it) and the
+    * connection it reaches by that name (404 otherwise).
+    */
+   async dropMaterializedTable(
+      environmentName: string,
+      packageName: string,
+      connectionName: string,
+      tableName: string,
+      options: { materializationId?: string; versionId?: VersionRef } = {},
+   ): Promise<"dropped" | "absent"> {
+      const versionId = options.versionId ?? VersionRef.LATEST;
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      const environment = await this.host.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
+      await this.resolveRunVersion(environmentName, packageName, versionId);
+      if (options.materializationId !== undefined) {
+         await this.getMaterialization(
+            environmentName,
+            packageName,
+            options.materializationId,
+            versionId,
+         );
+      }
+      if (!isUsableTableName(tableName)) {
+         throw new InvalidArgumentError(
+            `tableName '${tableName}' must be a table path with no empty part, no backslash or control character, and only whole quoted parts`,
+         );
+      }
+      const pkg = await environment.getPackage(
+         parsePackageName(packageName),
+         false,
+         { versionId },
+      );
+      let connection: Awaited<ReturnType<typeof pkg.getMalloyConnection>>;
+      try {
+         connection = await pkg.getMalloyConnection(connectionName);
+      } catch (error) {
+         if (error instanceof UnconfiguredConnectionError) {
+            throw new ConnectionNotFoundError(
+               `Package ${packageName} reaches no connection ${connectionName}`,
+            );
+         }
+         throw databaseAccessFailure(error) ?? error;
+      }
+      try {
+         quoteTablePath(tableName, connection.dialectName);
+      } catch (error) {
+         if (error instanceof UnquotableIdentifierError) {
+            throw new InvalidArgumentError(error.message);
+         }
+         throw error;
+      }
+      return this.reclaimer.dropConnectionTable({
+         environment,
+         environmentName,
+         environmentId,
+         packageName,
+         connectionName,
+         connection,
+         physicalTableName: tableName,
+         ...(options.materializationId !== undefined
+            ? { materializationId: options.materializationId }
+            : {}),
+      });
    }
 
    private resolveEnvironmentId(environmentName: string): Promise<string> {

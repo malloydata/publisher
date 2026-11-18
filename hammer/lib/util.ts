@@ -84,10 +84,18 @@ export interface RunResult {
    stderr: string;
 }
 
+export interface RunOptions {
+   stdin?: string;
+   cwd?: string;
+   env?: Record<string, string>;
+   /** Kill the command (SIGKILL) after this long; it then ends nonzero. */
+   timeoutMs?: number;
+}
+
 /** Run a command to completion, capturing output. Never throws on nonzero exit. */
 export async function run(
    cmd: string[],
-   opts: { stdin?: string; cwd?: string; env?: Record<string, string> } = {},
+   opts: RunOptions = {},
 ): Promise<RunResult> {
    const proc = Bun.spawn(cmd, {
       cwd: opts.cwd,
@@ -96,18 +104,36 @@ export async function run(
       stdout: "pipe",
       stderr: "pipe",
    });
-   const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-   ]);
-   const code = await proc.exited;
-   return { code, stdout, stderr };
+   let timedOut = false;
+   const timer =
+      opts.timeoutMs === undefined
+         ? undefined
+         : setTimeout(() => {
+              timedOut = true;
+              proc.kill("SIGKILL");
+           }, opts.timeoutMs);
+   try {
+      const [stdout, stderr] = await Promise.all([
+         new Response(proc.stdout).text(),
+         new Response(proc.stderr).text(),
+      ]);
+      const code = await proc.exited;
+      return {
+         code,
+         stdout,
+         stderr: timedOut
+            ? `${stderr}\n(killed after ${opts.timeoutMs}ms)`
+            : stderr,
+      };
+   } finally {
+      if (timer) clearTimeout(timer);
+   }
 }
 
 /** Like `run`, but throws with captured output on nonzero exit. */
 export async function runOrThrow(
    cmd: string[],
-   opts: { stdin?: string; cwd?: string; env?: Record<string, string> } = {},
+   opts: RunOptions = {},
 ): Promise<RunResult> {
    const r = await run(cmd, opts);
    if (r.code !== 0) {

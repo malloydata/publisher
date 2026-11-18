@@ -247,8 +247,7 @@
           {
             "kind": "materialized",
             "origin": "materialize",
-            "outcome": "skipped",
-            "reason": "ROW_LEVEL_GATE",
+            "outcome": "used",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -273,13 +272,17 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an access-filtered extension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -519,8 +522,7 @@
           {
             "kind": "materialized",
             "origin": "materialize",
-            "outcome": "skipped",
-            "reason": "ROW_LEVEL_GATE",
+            "outcome": "used",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -545,13 +547,17 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an access-filtered extension, another caller",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -783,8 +789,7 @@
           {
             "kind": "materialized",
             "origin": "materialize",
-            "outcome": "skipped",
-            "reason": "ROW_LEVEL_GATE",
+            "outcome": "used",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -809,13 +814,17 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an access-filtered extension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -1055,8 +1064,7 @@
           {
             "kind": "materialized",
             "origin": "materialize",
-            "outcome": "skipped",
-            "reason": "ROW_LEVEL_GATE",
+            "outcome": "used",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -1081,13 +1089,17 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an access-filtered extension, another caller",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     }
   ]

@@ -76,6 +76,12 @@ export interface PreaggregateViolation {
    fieldName?: string;
    /** The source's `sourceID`, when the compiled source carries one. */
    sourceID?: string;
+   /**
+    * The tables a refused measure's declarations would have built (each
+    * grain and its `storage=`), so each refusal names its own tier; absent
+    * on a violation that refuses no particular table.
+    */
+   tables?: { grain: string[]; storage?: string }[];
    /** Names the offending object and the fix; becomes user-facing error text. */
    message: string;
 }
@@ -422,6 +428,10 @@ function fieldViolations(
          code: "non_public_measure",
          sourceName,
          fieldName: name,
+         tables: declaration.grains.map((g) => ({
+            grain: g.dimensions,
+            storage: g.storage,
+         })),
          message: `Measure \`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, but the source does not publicly expose it. A rollup stores the measure's partial aggregate and serves it back under the measure's name, without the source's field visibility applying to the stored table — so no rollup is built for it here. If it should be pre-aggregated on \`${sourceName}\`, expose it publicly; if this source deliberately hides a measure it inherited the annotation with, nothing is wrong and the rollup on the source that exposes it is unaffected.`,
       });
       return;

@@ -261,7 +261,7 @@ describe("storedColumnCasts", () => {
       });
    });
 
-   it("leaves a big integer as declared on a dialect whose live answer rounds", () => {
+   it("leaves a float-stored big integer out on a dialect whose live answer rounds, and reads an integer one as HUGEINT", () => {
       const big = col("n", "measure", "number", {
          field: { name: "n", type: "number", numberType: "bigint" },
       });
@@ -270,7 +270,30 @@ describe("storedColumnCasts", () => {
             [{ name: "n", type: "DOUBLE" }],
             shape({ columns: [big], dialect: "postgres" }),
          ),
-      ).toEqual({ casts: new Map() });
+      ).toEqual({
+         refusal: "the stored `n` (DOUBLE) cannot hold live's integer exactly",
+      });
+      const exact = storedColumnCasts(
+         [{ name: "n", type: "BIGINT" }],
+         shape({ columns: [big], dialect: "postgres" }),
+      );
+      expect("casts" in exact && [...exact.casts]).toEqual([
+         ["n", { nativeCast: "HUGEINT" }],
+      ]);
+   });
+
+   it("leaves a big integer as declared on a dialect whose rounding is unmeasured", () => {
+      const big = col("n", "measure", "number", {
+         field: { name: "n", type: "number", numberType: "bigint" },
+      });
+      for (const type of ["DOUBLE", "BIGINT"]) {
+         expect(
+            storedColumnCasts(
+               [{ name: "n", type }],
+               shape({ columns: [big], dialect: "trino" }),
+            ),
+         ).toEqual({ casts: new Map() });
+      }
    });
 
    it("does not read a column it already casts as a big integer too", () => {
