@@ -493,11 +493,17 @@ describe("conformance: the parquet run reads Parquet", () => {
          try {
             const bound = await loader.bind();
             expect(bound.buildErrors).toEqual({});
+            // The origin's lake sits inside the package, which its locked-down
+            // sandbox is confined to (package_runner.ts).
             const dir =
-               variant === "storage" ? "lake_data" : "origin_parquet_data";
-            expect(files(path.join(loader.root, dir)).length).toBeGreaterThan(
-               0,
-            );
+               variant === "storage"
+                  ? path.join(loader.root, "lake_data")
+                  : path.join(
+                       loader.pkg.getPackagePath(),
+                       ".origin_parquet",
+                       "data",
+                    );
+            expect(files(dir).length).toBeGreaterThan(0);
          } finally {
             await loader.dispose();
             restore();

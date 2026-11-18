@@ -243,9 +243,9 @@ describe("every materialization over a column retyped upstream after its build",
 
       // Upstream, out of band: the source's column changes type.
       await warehouse.runSQL("ALTER TABLE t ALTER n TYPE VARCHAR");
-      await warehouse.runSQL(
-         "ALTER TABLE t2 ALTER fl TYPE BOOLEAN; ALTER TABLE t2 ALTER d TYPE DATE",
-      );
+      // One statement per call: the connection is locked down.
+      await warehouse.runSQL("ALTER TABLE t2 ALTER fl TYPE BOOLEAN");
+      await warehouse.runSQL("ALTER TABLE t2 ALTER d TYPE DATE");
       (warehouse as unknown as { schemaCache: object }).schemaCache = {};
       pkg = await env.getPackage(parsePackageName(PKG), true);
       // Live's answers, before the tables are bound again.

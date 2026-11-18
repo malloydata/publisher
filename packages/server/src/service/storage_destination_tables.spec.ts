@@ -355,10 +355,12 @@ describe("storage destination attach under destinations-only (DuckLake)", () => 
          }
       });
 
-      it("does not touch the global S3 config for GCS storage", async () => {
+      it("turns the global S3 config off for GCS storage too, once httpfs loads", async () => {
+         // Every httpfs load blanks the env-seeded S3 keys and turns the
+         // fallback off (duckdb_lockdown.ts), whatever the storage.
          await attach(lakeAt("gs://bucket/prefix", true));
-         expect(allStatements.join("\n")).not.toContain(
-            "enable_global_s3_configuration",
+         expect(allStatements.join("\n")).toContain(
+            "SET GLOBAL enable_global_s3_configuration=false",
          );
       });
 
