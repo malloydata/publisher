@@ -232,6 +232,24 @@ describe("gateReads: compares no string", () => {
       }
    });
 
+   it("lists the columns a computed field reads as entry paths, through a join too", () => {
+      expect(gateReads(ORDERS, ["late = $FLAG"], MODEL).entryPaths).toEqual([
+         ["late"],
+         ["region"],
+      ]);
+      const joined = {
+         type: "table",
+         sourceID: "j@m",
+         fields: [{ ...ORDERS, name: "o", join: "one" }],
+      };
+      const reads = gateReads(joined, ["o.is_m = $FLAG"], MODEL);
+      expect(reads.entryPaths).toEqual([
+         ["o", "is_m"],
+         ["o", "region"],
+      ]);
+      expect(reads.entryPathsComplete).toBe(true);
+   });
+
    it("does not hold for a where: over a dimension computed from a string", () => {
       const scoped = { ...ORDERS, filterList: [{ e: field(["is_m"]) }] };
       expect(gateReads(scoped, []).comparesNoString).toBe(false);
@@ -261,8 +279,9 @@ describe("gateReads: compares no string", () => {
          },
          fields: [{ name: "late", type: "boolean" }],
       };
-      expect(gateReads(q, ["late = $FLAG"], MODEL).comparesNoString).toBe(
-         false,
-      );
+      const reads = gateReads(q, ["late = $FLAG"], MODEL);
+      expect(reads.comparesNoString).toBe(false);
+      // Its reads have no path from the entry point.
+      expect(reads.entryPathsComplete).toBe(false);
    });
 });

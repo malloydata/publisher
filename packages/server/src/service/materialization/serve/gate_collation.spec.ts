@@ -5,7 +5,12 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { equalityOnlyExpr, storedTableCollationRefusal } from "./gate_reads";
+import {
+   equalityOnlyExpr,
+   gateReadsOfQuery,
+   storedTableCollationRefusal,
+   stringGateCollationRefusal,
+} from "./gate_reads";
 import {
    duckdbCollation,
    duckdbTableCollation,
@@ -331,3 +336,122 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
       ).toBe("binary");
    });
 });
+
+/**
+ * A gate over a dimension computed from a string column compares that
+ * column, so its collation is probed though the gate names only the
+ * dimension: through a rename of it, a nested dimension, and a join.
+ */
+describe.skipIf(!url)(
+   "a Postgres gate over a dimension computed from a string",
+   () => {
+      const MODEL = (
+         table: string,
+      ) => `##! experimental { givens access_modifiers }
+given: FLAG :: boolean
+source: rows is pg.table('public.${table}') extend {
+  primary_key: id
+  dimension:
+    late is region > 'M'
+    is_n is region = 'n'
+    is_n2 is is_n
+}
+#(access_filter) late = $FLAG
+source: g_late is rows extend {}
+#(access_filter) is_n = $FLAG
+source: g_is_n is rows extend {}
+#(access_filter) is_n2 = $FLAG
+source: g_nested is rows extend {}
+#(access_filter) r.is_n = $FLAG
+source: g_join is pg.table('public.${table}') extend {
+  primary_key: id
+  join_one: r is rows on id = r.id
+}
+`;
+      const conns: PostgresConnection[] = [];
+      const connect = (db: string | undefined) => {
+         const c = new PostgresConnection(
+            "pg",
+            () => ({}),
+            async () => ({
+               connectionString:
+                  db === undefined ? url : url!.replace(/\/[^/]*$/, `/${db}`),
+            }),
+         );
+         conns.push(c);
+         return c;
+      };
+      let def: PostgresConnection;
+      let cdb: PostgresConnection;
+
+      beforeAll(async () => {
+         def = connect(undefined);
+         await def
+            .runSQL(
+               `CREATE DATABASE gate_cdef LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
+            )
+            .catch(() => {});
+         cdb = connect("gate_cdef");
+         for (const pg of [def, cdb]) {
+            await pg.runSQL(
+               `DO $$ BEGIN CREATE COLLATION IF NOT EXISTS gate_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false); EXCEPTION WHEN others THEN NULL; END $$`,
+            );
+            for (const [t, collate] of [
+               ["gate_der_ci", "gate_ci"],
+               ["gate_der_c", '"C"'],
+            ]) {
+               await pg.runSQL(`DROP TABLE IF EXISTS ${t}`);
+               await pg.runSQL(
+                  `CREATE TABLE ${t} (id int, region text COLLATE ${collate})`,
+               );
+               await pg.runSQL(
+                  `INSERT INTO ${t} VALUES (1,'a'),(2,'B'),(3,'m'),(4,'N'),(5,'z')`,
+               );
+            }
+         }
+      });
+      afterAll(async () => {
+         for (const c of conns) {
+            for (const t of ["gate_der_ci", "gate_der_c"]) {
+               await c.runSQL(`DROP TABLE IF EXISTS ${t}`).catch(() => {});
+            }
+            await c.close();
+         }
+      });
+
+      const refusal = async (
+         pg: PostgresConnection,
+         table: string,
+         source: string,
+      ) => {
+         const q = new SingleConnectionRuntime({ connection: pg })
+            .loadModel(MODEL(table))
+            .loadQuery(`run: ${source} -> { group_by: id; order_by: id }`);
+         const reads = await gateReadsOfQuery(q as never);
+         return stringGateCollationRefusal({
+            authorRunnable: q as never,
+            reads,
+            stringStored: true,
+            givens: { FLAG: true },
+         });
+      };
+
+      it("refuses an equality through a dimension over a nondeterministic column", async () => {
+         for (const s of ["g_is_n", "g_nested", "g_join"]) {
+            expect(await refusal(def, "gate_der_ci", s), s).toBeDefined();
+         }
+      });
+
+      it("refuses an ordering through a dimension over a nondeterministic column, under a C default", async () => {
+         for (const s of ["g_late", "g_nested", "g_join"]) {
+            expect(await refusal(cdb, "gate_der_ci", s), s).toBeDefined();
+         }
+      });
+
+      it("still admits every one over a C column under a C default", async () => {
+         for (const s of ["g_late", "g_is_n", "g_nested", "g_join"]) {
+            expect(await refusal(cdb, "gate_der_c", s), s).toBeUndefined();
+         }
+      });
+   },
+);

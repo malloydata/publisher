@@ -49,6 +49,7 @@ import { identifier } from "../../malloy_text";
 import { capabilitiesOf } from "../domain/dialect";
 
 import type { GateReads } from "./gate_reads_types";
+import { fieldPathsIn } from "./gate_reads";
 
 type Collation = "binary" | "deterministic" | "unknown";
 
@@ -214,7 +215,10 @@ function probeOnce(
 /**
  * The entry-level paths that read a string field, or undefined when a path
  * cannot be followed (fail closed). A path through a join is followed into
- * the joined source's fields.
+ * the joined source's fields. A computed field compares the fields its
+ * expression reads, so each of those must be a path here too (the walk
+ * lists them), and a field of a query-shaped source, whose stage output may
+ * be computed from fields no path names, fails closed unless it is a string.
  */
 function stringPaths(
    struct: unknown,
@@ -224,19 +228,35 @@ function stringPaths(
    const seen = new Set<string>();
    for (const path of paths) {
       let at: unknown = struct;
-      let field: { type?: unknown } | undefined;
+      let owner: unknown = struct;
+      let field: { type?: unknown; e?: unknown } | undefined;
       for (const name of path) {
+         owner = at;
          field = (
             ((at as { fields?: unknown[] } | undefined)?.fields ?? []) as {
                name?: unknown;
                as?: unknown;
                type?: unknown;
+               e?: unknown;
             }[]
          ).find((f) => String(f.as ?? f.name) === name);
          if (!field) return undefined;
          at = field;
       }
-      if (field?.type !== "string") continue;
+      if (field?.type !== "string") {
+         if ((owner as { query?: unknown } | undefined)?.query !== undefined) {
+            return undefined;
+         }
+         if (field?.e !== undefined) {
+            const prefix = path.slice(0, -1);
+            const listed = new Set(paths.map((p) => p.join(".")));
+            const reads = fieldPathsIn(field.e);
+            if (!reads.every((p) => listed.has([...prefix, ...p].join(".")))) {
+               return undefined;
+            }
+         }
+         continue;
+      }
       const key = path.join(".");
       if (seen.has(key)) continue;
       seen.add(key);

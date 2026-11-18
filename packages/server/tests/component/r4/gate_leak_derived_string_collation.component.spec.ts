@@ -7,7 +7,8 @@
  * over `dimension: late is region > 'M'` orders `region`, and `'a' > 'M'`
  * holds byte-exact but not case-insensitively. Declared on a source that
  * extends a stored one, the dimension is computed from the stored string when
- * the table is read, so a case-insensitive column on either side (the
+ * the table is read (as is one declared on a `#@ persist` source itself),
+ * so a case-insensitive column on either side (the
  * source's `COLLATE NOCASE`, or the stored table's, altered after the build)
  * admits other rows than live does. Every caller of such a gate or scope gets
  * live's answer; a numeric dimension no collation changes (`length(region)`)
@@ -60,6 +61,11 @@ source: p_late_p is p_base extend { ${DIMENSIONS} }
 source: p_len is p_base extend { ${DIMENSIONS} }
 #(access_filter) late = $FLAG
 source: m_late is m_base extend { ${DIMENSIONS} }
+// Declared on the persisted source itself: its table stores region,
+// and late is computed when it is read.
+#(access_filter) late = $FLAG
+#@ persist name="p_self" storage="${LAKE}"
+source: p_self is rows extend { ${DIMENSIONS} }
 // The control: a gate over the string itself.
 #(access_filter) region = $R
 source: p_region is p_base extend {}
@@ -75,6 +81,7 @@ const CASES: [string, string][] = [
    "p_late_p",
    "p_len",
    "m_late",
+   "p_self",
    "p_region",
 ].map((s) => [s, sel(s)]);
 const CALLERS: Record<string, boolean | number | string>[] = [
@@ -149,7 +156,7 @@ for (const side of ["source", "stored"] as const) {
 
          it("builds every stored table", () => {
             expect(fixture.buildErrors).toEqual({});
-            expect(Object.keys(fixture.stored).length).toBe(2);
+            expect(Object.keys(fixture.stored).length).toBe(3);
          });
 
          for (const [name, malloy] of CASES) {
