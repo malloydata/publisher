@@ -19,6 +19,7 @@ import type { Manifest, PersistSource } from "@malloydata/malloy";
 import {
    BadRequestError,
    MaterializationEligibilityError,
+   TableOwnershipError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import type {
@@ -622,6 +623,10 @@ export function recordInstructedBuildFailure(
       connectionName: persistSource.connectionName,
       ...(instruction.destination
          ? { storageDestinationName: instruction.destination }
+         : {}),
+      // A bounded code beside the prose, for a refusal a client branches on.
+      ...(buildErr instanceof TableOwnershipError
+         ? { code: buildErr.code }
          : {}),
    };
    // Deprecated mirror into `entries` for consumers that read the failure

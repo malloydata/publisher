@@ -4,7 +4,7 @@
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import { recordConnectionType } from "./connection_type";
-import { nearMissGateLines } from "./materialization";
+import { nearMissGateLines, withRetainedAliases } from "./materialization";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -2138,6 +2138,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...deprecatedFormatWarnings(this.models),
          ...this.classificationWarningsMemoized(),
          ...this.joinBypassWarnings(),
+         ...this.gateLoadWarnings(),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -2157,7 +2158,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }),
       ];
       if (allWarnings.length > 0) {
-         metadata.warnings = allWarnings;
+         // A renamed code is repeated under the code 0.14.0 shipped, this
+         // release only.
+         metadata.warnings = withRetainedAliases(allWarnings);
       }
       return metadata;
    }
@@ -2477,6 +2480,33 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       ]
          .filter(Boolean)
          .join("\n");
+   }
+
+   /**
+    * One warning per non-fatal gate finding a model's load made: a gate an
+    * entry point cannot express (it denies every request), or one that reads
+    * no given or negates a membership test. Logged at load as well.
+    */
+   private gateLoadWarnings(): ApiPackageWarning[] {
+      // A source several models import is checked in each; it is reported
+      // once, on the first model that found it.
+      const seen = new Set<string>();
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         for (const w of model.gateLoadWarnings()) {
+            const key = `${w.code}\u0000${w.sourceName}\u0000${w.message}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            warnings.push({
+               model: modelPath,
+               subject: w.sourceName,
+               code: w.code,
+               severity: "warn",
+               message: w.message,
+            });
+         }
+      }
+      return warnings;
    }
 
    /**

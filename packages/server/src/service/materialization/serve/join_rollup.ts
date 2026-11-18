@@ -56,9 +56,9 @@
  * NULL on an unmatched parent's row when its join is keyed on a column of
  * the joined source, so it is read like the joined source's own column.
  *
- * Gates: a gated entry point skips every rollup (`CONTRACT`) as for the base
+ * Gates: a gated entry point skips every rollup (`ROW_LEVEL_GATE`) as for the base
  * branch; a joined source that declares a gate of its own is declined
- * (`CONTRACT`), since the rollup carries none.
+ * (`ROW_LEVEL_GATE`), since the rollup carries none.
  */
 
 import { requireUnique, type KeyVerdict } from "../domain/key_check";
@@ -83,7 +83,7 @@ interface JoinRollupRefusal {
    code:
       | "rollup_count_semantics"
       | "rollup_grain_too_coarse"
-      | "rollup_contract";
+      | "rollup_row_level_gate";
    callerDetail: string;
 }
 
@@ -182,7 +182,7 @@ function refusalOf(
    const name = join.name;
    if (plan.baseGated) {
       return refuse(
-         "rollup_contract",
+         "rollup_row_level_gate",
          `\`${name}\` joins a source with a gate of its own, which its rollup does not carry`,
       );
    }

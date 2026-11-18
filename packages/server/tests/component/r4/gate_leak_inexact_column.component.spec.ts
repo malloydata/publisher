@@ -430,7 +430,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
                if (goesLive) {
                   expect(got.answer.servedBy).toBe("live");
                   if (q.source === "acct_db_open") {
-                     expect(got.answer.servedSkip?.reason).toBe("WARNED");
+                     expect(got.answer.servedSkip?.reason).toBe("NOT_SERVED");
                   }
                } else {
                   expect(got.answer.via).toBe("served_copy");

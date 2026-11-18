@@ -50,7 +50,7 @@ const ENV = "e1";
 const ENV_ID = "env-1";
 const PKG = "pkg";
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
-const MISMATCH = "storage-column-type-mismatch";
+const MISMATCH = "database-column-type-mismatch";
 const METRIC = "publisher_storage_column_type_mismatch_total";
 
 const OUTPUT = `{

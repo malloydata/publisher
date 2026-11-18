@@ -592,11 +592,7 @@ interface RerootRefusal {
     * not keep, or the `include { … }` it keeps hides a column its table does
     * not store ({@link hiddenUnstored}).
     */
-   reason:
-      | "range_not_found"
-      | "definition_not_parsed"
-      | "not_query_shaped"
-      | "pair_join_not_found";
+   reason: "definition_not_parsed" | "not_query_shaped" | "pair_join_not_found";
    /**
     * With `definition_not_parsed`: the columns the declaration's kept
     * `include { … }` hides that its table does not store.
@@ -669,7 +665,7 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "range_not_found",
+               reason: "definition_not_parsed",
             });
          }
          continue;
@@ -696,7 +692,7 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "range_not_found",
+               reason: "definition_not_parsed",
             });
             continue;
          }

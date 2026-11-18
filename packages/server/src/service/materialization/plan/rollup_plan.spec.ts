@@ -179,7 +179,7 @@ source: orders is ${ROWS} extend {
          [["category", "line_kind"], ["total"]],
       ]);
       expect(refused.map((r) => [r.measure, r.tier, why(r)])).toEqual([
-         ["fleet", "unservable", "join_level"],
+         ["fleet", "unservable", "join_not_in_grain"],
       ]);
    });
 
@@ -228,7 +228,7 @@ source: orders is ${ROWS} extend {
       });
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.measure, why(r)])).toEqual([
-         ["gates", "join_level"],
+         ["gates", "join_not_in_grain"],
       ]);
    });
 });
@@ -525,7 +525,10 @@ source: orders is ${ROWS} extend {
    it("still serves live a join-level max whose join key the grain drops", async () => {
       const { plans, refused } = await plan(MODEL(`["category"]`));
       expect(plans).toEqual([]);
-      expect(refused.map((r) => why(r))).toEqual(["join_level", "join_level"]);
+      expect(refused.map((r) => why(r))).toEqual([
+         "join_not_in_grain",
+         "join_not_in_grain",
+      ]);
    });
 });
 

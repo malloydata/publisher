@@ -80,10 +80,15 @@ type ServeVerdictReason =
    /** Database, on a connection whose type creates no tables (P13). */
    | "connection_cannot_hold_table"
    /**
-    * A `#(materialize)` source, which only the served copy reads: the served
-    * copy is off (PUBLISHER_MATERIALIZE, or PERSIST_STORAGE_MODE for a
-    * `storage=` table), or no model's served copy re-roots it (see the
-    * `served-copy-not-served` warning).
+    * A `#(materialize)` source, which only the served copy reads, and the
+    * served copy is off (PUBLISHER_MATERIALIZE, or PERSIST_STORAGE_MODE for a
+    * `storage=` table): the same name `RefusedSource.reason` gives the setting.
+    */
+   | "materialization_off"
+   /**
+    * A `#(materialize)` source, which only the served copy reads, bound, but
+    * no model's served copy re-roots it (see the `served-copy-not-served`
+    * warning).
     */
    | "served_copy";
 
@@ -125,10 +130,10 @@ export interface ServeVerdict {
    tier: "database" | "storage";
    /**
     * `serves`: bound, and queries can be answered from its table.
-    * `not_built`: nothing is bound yet; queries will be answered from its
-    * table once a build binds it. `live`: no query will be, for `reason`.
+    * `awaiting_build`: nothing is bound yet; queries will be answered from
+    * its table once a build binds it. `live`: no query will be, for `reason`.
     */
-   verdict: "serves" | "not_built" | "live";
+   verdict: "serves" | "awaiting_build" | "live";
    reason?: ServeVerdictReason;
    /** What the verdict means for this source, in a sentence. */
    message: string;
@@ -387,7 +392,7 @@ function verdictFor(
 
    if (materialized === "off") {
       return live(
-         "served_copy",
+         "materialization_off",
          `${subject} is materialized with #(materialize), which only the ` +
             `served copy reads, and the served copy is off, so its queries are ` +
             `answered live.`,
@@ -572,7 +577,7 @@ function boundVerdict(
          return {
             ...base,
             ...withViews,
-            verdict: "not_built",
+            verdict: "awaiting_build",
             message: `${subject} will serve from storage once a build binds its table.`,
          };
       }
@@ -611,7 +616,7 @@ function boundVerdict(
    if (!facts.boundEntityIds.has(source.sourceEntityId)) {
       return {
          ...base,
-         verdict: "not_built",
+         verdict: "awaiting_build",
          message: `${subject} will serve from its table once a build binds it.`,
       };
    }

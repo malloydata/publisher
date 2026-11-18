@@ -190,7 +190,7 @@ describe("a package compiles once per thing a compile reads", () => {
       const pkg = await loadVersion(missing);
       expect(compiles).toHaveBeenCalledTimes(1);
       expect(pkg.getOperationalFields().manifestBindingStatus).toBe(
-         "live_fallback",
+         "bind_failed",
       );
       expect(pkg.materialization().getBuildManifestEntries()).toBeUndefined();
       expect(await total(pkg)).toBe(1);

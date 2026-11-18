@@ -6,6 +6,7 @@
 // orchestrated run of another version cannot overwrite one meanwhile.
 import { describe, expect, it } from "bun:test";
 import type { Materialization } from "../../../storage/DatabaseInterface";
+import { internalErrorToHttpError } from "../../../errors";
 import { TableClaims } from "./table_claims";
 
 const SHARED = "summary";
@@ -51,15 +52,25 @@ function claims(runs: Materialization[]): TableClaims {
 describe("assertTablesFree while an auto-run loads its manifest", () => {
    it("refuses an orchestrated run's table the loading run still claims", async () => {
       const a = loadingAutoRun({ writesTables: [SHARED] });
-      await expect(
-         claims([a]).assertTablesFree("env", "pkg", [SHARED], "b", true),
-      ).rejects.toThrow(/being written by materialization a/);
+      const refused = await claims([a])
+         .assertTablesFree("env", "pkg", [SHARED], "b", true)
+         .catch((error: unknown) => error as Error);
+      expect(refused?.message).toMatch(/being written by materialization a/);
+      expect(internalErrorToHttpError(refused as Error).json).toMatchObject({
+         code: 409,
+         reason: "MATERIALIZATION_CONFLICT",
+      });
    });
 
    it("refuses it as a shared table too, since the loading run recorded its manifest", async () => {
       const a = loadingAutoRun({});
-      await expect(
-         claims([a]).assertTablesFree("env", "pkg", [SHARED], "b", true),
-      ).rejects.toThrow(/one the versions of package pkg share/);
+      const refused = await claims([a])
+         .assertTablesFree("env", "pkg", [SHARED], "b", true)
+         .catch((error: unknown) => error as Error);
+      expect(refused?.message).toMatch(/one the versions of package pkg share/);
+      expect(internalErrorToHttpError(refused as Error).json).toMatchObject({
+         code: 409,
+         reason: "MATERIALIZATION_CONFLICT",
+      });
    });
 });

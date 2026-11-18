@@ -206,7 +206,7 @@ export interface QueryPathInput {
    /**
     * The storage tier is not routed (`PERSIST_STORAGE_MODE` off or write-only),
     * and the package warns about every `storage=` source for it. Its tables are
-    * then reported `WARNED`.
+    * then reported `NOT_SERVED`.
     */
    storageWarned?: boolean;
    rollups: readonly ModelRollup[];
@@ -492,7 +492,7 @@ function viewTableDecision(
       };
       if (viewDecision?.outcome === "used") {
          if (input.runFailed) {
-            skip(t, "RUN_FAILED");
+            skip(t, "READ_FAILED");
          } else {
             markUsed(t);
             return {
@@ -512,7 +512,7 @@ function viewTableDecision(
       } else if (input.view.stale) {
          skip(t, "STALE");
       } else if (viewDecision?.reason === "row_level_gate") {
-         skip(t, "CONTRACT");
+         skip(t, "ROW_LEVEL_GATE");
       } else if (viewDecision && viewDecision.reason !== "not_applicable") {
          skip(t, skipReasonOf(viewDecision), viewDecision.callerDetail);
       }
@@ -545,11 +545,11 @@ function storageTableDecisions(
          if (t.stale) {
             skip(t, "STALE");
          } else if (storageDecision.reason === "row_level_gate") {
-            skip(t, "CONTRACT");
+            skip(t, "ROW_LEVEL_GATE");
          } else if (storageDecision.outcome === "used") {
             if (!t.binding || !read.has(t.binding.tablePath)) continue;
             if (input.runFailed) {
-               skip(t, "RUN_FAILED");
+               skip(t, "READ_FAILED");
             } else {
                markUsed(t);
                storageAnswered = true;
@@ -566,7 +566,7 @@ function storageTableDecisions(
                t,
                skipReasonOf(decision),
                decision.callerDetail,
-               declineOfCode(decision.code)?.warnedCode,
+               declineOfCode(decision.code)?.code,
             );
          }
       }
@@ -584,12 +584,12 @@ function storageTableDecisions(
       const placed =
          storageAnswered ||
          considered.some(
-            (c) => c.outcome === "used" || c.reason === "RUN_FAILED",
+            (c) => c.outcome === "used" || c.reason === "READ_FAILED",
          );
       if (storageDecision.outcome === "used" && first && !placed) {
          const t = stateOfBinding(input, first, freshStorage);
          if (input.runFailed) {
-            skip(t, "RUN_FAILED");
+            skip(t, "READ_FAILED");
          } else {
             markUsed(t);
             storageAnswered = true;
@@ -598,7 +598,7 @@ function storageTableDecisions(
    } else {
       // Not routed at all (the tier is off or write-only): every storage table
       // carries the package's warning, and the query reads its own warehouse.
-      for (const t of storageTables) if (t.warned) skip(t, "WARNED");
+      for (const t of storageTables) if (t.warned) skip(t, "NOT_SERVED");
    }
    return storageAnswered;
 }
@@ -652,7 +652,7 @@ function databaseRollupDecisions(
          if (t.stale) {
             skip(t, "STALE");
          } else if (rollupDecision.reason === "row_level_gate") {
-            skip(t, "CONTRACT");
+            skip(t, "ROW_LEVEL_GATE");
          } else if (rollupDecision.reason === "not_applicable") {
             continue;
          } else if (rollupDecision.outcome === "used") {
@@ -685,28 +685,28 @@ function databaseRollupDecisions(
 
 /**
  * Whether a serve verdict explains a skip better than the query did. Only
- * skips where the router never tried the table: `NOT_BUILT` and `WARNED`
- * (nothing to try), and `CONTRACT` when the verdict is the same gate or a
+ * skips where the router never tried the table: `NOT_BUILT` and `NOT_SERVED`
+ * (nothing to try), and `ROW_LEVEL_GATE` when the verdict is the same gate or a
  * refusal (a gated extension the eligibility gate refused at build). A skip
  * the router reached by trying the table (`MISSING_FIELD`, `GRAIN_TOO_COARSE`,
  * `COUNT_SEMANTICS`, …) is this query's own reason, and a caller who can reach
  * a table no published entry point reaches is seeing exactly that; `STALE` and
- * `RUN_FAILED` are facts only the query knows.
+ * `READ_FAILED` are facts only the query knows.
  */
 function verdictExplains(reason: SkipReason | undefined, verdict: string) {
-   if (reason === "NOT_BUILT" || reason === "WARNED") return true;
+   if (reason === "NOT_BUILT" || reason === "NOT_SERVED") return true;
    return (
-      reason === "CONTRACT" &&
+      reason === "ROW_LEVEL_GATE" &&
       (verdict === "row_level_gate" || verdict === "refused")
    );
 }
 
 /**
  * Re-read each skipped table against its serve verdict: a table no query can
- * be answered from is reported `WARNED`, with the verdict's reason as `code`,
+ * be answered from is reported `NOT_SERVED`, with the verdict's reason as `code`,
  * in place of what this query alone showed when the verdict explains it
  * ({@link verdictExplains}): `NOT_BUILT` for a source the bind refuses,
- * `CONTRACT` for a rollup every entry point gates or a gated source the build
+ * `ROW_LEVEL_GATE` for a rollup every entry point gates or a gated source the build
  * refused. A table that answered stays
  * `used`. Returns one warning per such table whose source the caller may see.
  */
@@ -737,7 +737,7 @@ function applyServeVerdicts(
          // The table serves another source; the queried source's own verdict
          // may still explain why this query could not use it.
          if (own && ownVerdictExplains(candidate, own)) {
-            candidate.reason = "WARNED";
+            candidate.reason = "NOT_SERVED";
             candidate.code = own.verdict.reason;
             delete candidate.detail;
             // As below: a table whose other-tier copy answered gets no warning.
@@ -757,7 +757,7 @@ function applyServeVerdicts(
          }
          continue;
       }
-      candidate.reason = "WARNED";
+      candidate.reason = "NOT_SERVED";
       candidate.code = verdict.reason;
       delete candidate.detail;
       if (used.has(candidate.tableId) || warned.has(candidate.tableId)) {
@@ -794,7 +794,7 @@ function ownSourceVerdict(
 }
 
 /**
- * Whether the queried source's own verdict explains a skip: `CONTRACT` on any
+ * Whether the queried source's own verdict explains a skip: `ROW_LEVEL_GATE` on any
  * table (the gate that refused the source kept the query off it), and
  * `NOT_BUILT` only on the source's own table, which the refusal left unbuilt.
  * A skip the router reached by trying the table keeps its own reason.
@@ -803,7 +803,7 @@ function ownVerdictExplains(
    candidate: ApiCandidate,
    own: { ownTableId?: string },
 ): boolean {
-   if (candidate.reason === "CONTRACT") return true;
+   if (candidate.reason === "ROW_LEVEL_GATE") return true;
    return (
       candidate.reason === "NOT_BUILT" &&
       own.ownTableId !== undefined &&
@@ -830,6 +830,14 @@ function verdictWarningMessage(reason: string): string {
          return "Its storage table is bound to a different source of the same name, so its queries are answered live.";
       case "served_copy":
          return "Only the served copy reads this table, and it does not answer from it here, so its queries are answered live.";
+      case "materialization_off":
+         return "Only the served copy reads this table, and the served copy is off on this server, so its queries are answered live.";
+      case "stale":
+         return "This table is past its freshness window, so its queries are answered live until a build refreshes it.";
+      case "destination_missing":
+         return "This table's storage destination is not configured on this server, so its queries are answered live.";
+      case "connection_cannot_hold_table":
+         return "This table's connection cannot hold a table, so its queries are answered live.";
       default:
          return "This table carries a publish warning and serves live; the package's warnings say why.";
    }

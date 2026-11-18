@@ -305,30 +305,30 @@
       "path": {
         "considered": [
           {
-            "code": "served-copy-not-served",
+            "code": "served_copy",
             "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "NOT_SERVED",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
           },
           {
-            "code": "served-copy-not-served",
+            "code": "served_copy",
             "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "NOT_SERVED",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
           },
           {
-            "code": "served-copy-not-served",
+            "code": "served_copy",
             "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "NOT_SERVED",
             "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
           }
         ],
@@ -975,30 +975,30 @@
       "path": {
         "considered": [
           {
-            "code": "served-copy-not-served",
+            "code": "served_copy",
             "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "NOT_SERVED",
             "tableId": "42ab988725be5a10da59d4dfcfd9cf0eb6186ac3109d553bc8a362d8cd308dc5"
           },
           {
-            "code": "served-copy-not-served",
+            "code": "served_copy",
             "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "NOT_SERVED",
             "tableId": "00d0e92abe259082227975f4087359ecee8908192038e4bd8b47020dd75a8d13"
           },
           {
-            "code": "served-copy-not-served",
+            "code": "served_copy",
             "detail": "the query's source scopes its rows by a column a stored table does not hold exactly",
             "kind": "materialized",
             "origin": "materialize",
             "outcome": "skipped",
-            "reason": "WARNED",
+            "reason": "NOT_SERVED",
             "tableId": "4c8462933bea4ad5a18f5d69a16f80e4a82f7387ef86f18ce8632d17f3c62de7"
           }
         ],
