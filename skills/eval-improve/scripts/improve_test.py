@@ -7,6 +7,7 @@ exited 2 every time and the acceptance check reported BLOCKED for every cluster
 that made an edit. These tests run the real verifier through the real command
 builder, so a missing required argument fails here rather than in a run."""
 import argparse
+import json
 import pathlib
 import shutil
 import subprocess
@@ -34,6 +35,8 @@ class Invocation(unittest.TestCase):
         (self.set_dir / "cases.jsonl").write_text("")
         self.art = self.tmp / "art"
         self.art.mkdir()
+        (self.tmp / "model").mkdir()
+        (self.tmp / "model" / "ecommerce.malloy").write_text("source: a is x\n")
         self.a = argparse.Namespace(
             set_dir=self.set_dir, server_root=None, model_dir=self.tmp / "model",
             environment="samples", package="ecommerce",
@@ -87,6 +90,26 @@ class Invocation(unittest.TestCase):
         r = improve.verify_goldens(self.a, self.art, "   ")
         self.assertEqual(r["ran"], False)
         self.assertIn("no edit", r["why"])
+
+    def test_an_experiment_is_audited_against_the_configured_package_file(self):
+        # With --experiment, a.package is `<package>.<name>`, which no file is
+        # called; the lookup used to find nothing and drop --model.
+        self.a.experiment, self.a.model_package = "imp1", "ecommerce"
+        self.a.package = "ecommerce.imp1"
+        cmd = self.capture()
+        self.assertEqual(cmd[cmd.index("--model") + 1],
+                         str(self.tmp / "model" / "ecommerce.malloy"))
+
+    def test_with_no_model_found_the_audit_is_not_run_and_says_why(self):
+        # The verifier skips its model checks without --model and still exits
+        # 0, so running it here would report checks as clean that never ran.
+        (self.tmp / "model" / "ecommerce.malloy").unlink()
+        with mock.patch.object(improve.subprocess, "run") as run:
+            r = improve.verify_goldens(self.a, self.art, "a diff")
+        run.assert_not_called()
+        self.assertTrue(r["couldNotRun"])
+        self.assertNotIn("clean", r)
+        self.assertIn("stale-rubric and name checks", r["why"])
 
     def test_a_set_path_that_does_not_exist_returns_rather_than_crashes(self):
         # It used to run the verifier with cwd=set_dir, so a bad path raised
@@ -158,6 +181,8 @@ class NoTruthServerNamed(unittest.TestCase):
         (self.set_dir / "set.json").write_text('{"truthPackage": "t"}')
         self.art = self.tmp / "art"
         self.art.mkdir()
+        (self.tmp / "model").mkdir()
+        (self.tmp / "model" / "ecommerce.malloy").write_text("source: a is x\n")
         self.a = argparse.Namespace(
             set_dir=self.set_dir, server_root=None, model_dir=self.tmp / "model",
             environment="samples", package="ecommerce", truth_publisher=None)
@@ -432,7 +457,7 @@ class WhatTheImproverIsToldAndWhatItsDiffIsCheckedFor(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def improve(self, added: str, prior=(), experiment=None):
+    def improve(self, added: str, prior=(), experiment=None, issue=None, run=None):
         def agent(prompt, **kw):
             self.prompt = prompt
             self.helper = (self.model / improve.SYNC_HELPER).read_text()
@@ -444,16 +469,46 @@ class WhatTheImproverIsToldAndWhatItsDiffIsCheckedFor(unittest.TestCase):
             rest_url="http://x", environment="e", package="p", watch_mode=True, server_root=None,
             model_dir=self.model, set_dir=self.set, role_skills=[], roots=[], model="opus",
             mcp_url="http://x/mcp", max_turns=5, timeout=5, retries=0, isolate=True, force=False,
-            prior=list(prior), experiment=experiment)
-        a.keys, a.golden_queries = improve.golden_keys(self.cases, self.set)
+            prior=list(prior), experiment=experiment, run=run)
+        a.keys, a.golden_queries, a.accepted = improve.golden_keys(self.cases, self.set)
         with mock.patch.object(improve, "spawn_agent", side_effect=agent), \
                 mock.patch.object(improve, "verify_goldens", return_value={"ran": True, "clean": True}):
-            return improve.improve_cluster({"issue_id": "r:c1", "qids": ["q1"]}, self.cases, a,
-                                       self.root / "run" / "artifacts")
+            return improve.improve_cluster(issue or {"issue_id": "r:c1", "qids": ["q1"]},
+                                           self.cases, a, self.root / "run" / "artifacts")
 
     def test_an_edit_that_states_the_answer_is_reported(self):
         r = self.improve("  #(doc) Net sales, about 464,861 last year")
         self.assertEqual([(x["qid"], x["kind"]) for x in r["goldenLeak"]], [("q1", "value")])
+
+    def test_an_edit_that_states_a_figure_only_the_rubric_accepts_is_reported(self):
+        self.cases["q1"]["golden"]["rubric"] = (
+            "Accept $440,000-$450,000 (the realised basis). Reject $512,300.")
+        r = self.improve("  #(doc) Realised net sales were about 445K")
+        self.assertEqual([x["qid"] for x in r["goldenLeak"]], ["q1"])
+
+    def test_an_edit_that_pastes_a_canonical_query_is_reported(self):
+        q = "run: orders -> { where: status != 'Returned' aggregate: net is sale_price.sum() }"
+        self.cases["q1"]["golden"]["canonicalQuery"] = q
+        r = self.improve(f"  // {q}")
+        self.assertIn(("q1", "query"), [(x["qid"], x["kind"]) for x in r["goldenLeak"]])
+
+    def test_a_speed_issue_shows_the_replayed_queries_and_never_a_case_key(self):
+        # A replay times every split, so a speed issue can name a test case.
+        self.cases["t1"] = {"qid": "t1", "split": "test", "question": "SECRET QUESTION?",
+                            "golden": {"kind": "value", "value": 987654.32,
+                                       "rubric": "SECRET RUBRIC"}}
+        run = self.root / "replay"
+        run.mkdir()
+        (run / "results.jsonl").write_text(json.dumps(
+            {"qid": "t1", "source": "orders", "query": "run: orders -> by_month",
+             "median_ms": 812.5, "count": 3}) + "\n")
+        self.improve("  #@ persist", run=run, issue={
+            "issue_id": "perf-hot-orders", "qids": ["t1"], "component": "performance",
+            "owner": "model", "evidence": {"source": "orders"}})
+        self.assertIn("run: orders -> by_month", self.prompt)
+        self.assertIn("812.5", self.prompt)
+        for secret in ("SECRET QUESTION", "SECRET RUBRIC", "987654"):
+            self.assertNotIn(secret, self.prompt)
 
     def test_an_honest_edit_is_not(self):
         r = self.improve("  #(doc) Net sales. Excludes returned lines.")

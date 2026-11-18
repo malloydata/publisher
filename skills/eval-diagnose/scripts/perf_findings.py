@@ -126,11 +126,14 @@ def hot_source(rows: list[dict[str, Any]], persisted: set[str], named: set[Any]
             cost[src] = cost.get(src, 0.0) + ms
             qids.setdefault(src, []).append(r["qid"])
     total = sum((r.get("median_ms") or 0) * (r.get("count") or 1) for r in rows)
+    # Ruled out before the max, not after: a persisted source that costs more
+    # must not hide an unpersisted one that also clears HOT_SHARE.
+    cost = {s: c for s, c in cost.items() if s not in persisted and s not in named}
     if not cost or total <= 0:
         return None
     src = max(cost, key=lambda s: (cost[s], s))
     share = cost[src] / total
-    if src in persisted or src in named or share < HOT_SHARE:
+    if share < HOT_SHARE:
         return None
     return src, round(cost[src], 1), share, sorted(qids[src])
 

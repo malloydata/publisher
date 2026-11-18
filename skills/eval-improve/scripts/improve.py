@@ -265,6 +265,27 @@ acceptance check has nothing to weigh.
 """
 
 
+def model_under_test(a: argparse.Namespace) -> pathlib.Path | None:
+    """The edited model for the verifier's `--model`: `<package>.malloy`, else
+    the model directory when it holds any .malloy file, else None.
+
+    Named by the configured package, not `a.package`: with `--experiment` that
+    is `<package>.<name>`, which no file is called. The served copy is skipped
+    for an experiment too, because it is the main package, which the agent
+    never edits.
+    """
+    name = getattr(a, "model_package", None) or a.package
+    served = (a.server_root / "publisher_data" / a.environment / name
+              if a.server_root and not getattr(a, "experiment", None) else None)
+    for cand in (served, a.model_dir):
+        if cand and (cand / f"{name}.malloy").exists():
+            return cand / f"{name}.malloy"
+    # The verifier takes a package directory as well as a file.
+    if a.model_dir and a.model_dir.is_dir() and any(a.model_dir.rglob("*.malloy")):
+        return a.model_dir
+    return None
+
+
 def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
                    diff: str) -> dict[str, Any]:
     """Run golden verification against the edited model."""
@@ -290,12 +311,13 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
     if not diff.strip():
         return {"ran": False, "why": "no edit to invalidate anything"}
 
-    model = None
-    for cand in (a.server_root / "publisher_data" / a.environment / a.package
-                 if a.server_root else None, a.model_dir):
-        if cand and (cand / f"{a.package}.malloy").exists():
-            model = cand / f"{a.package}.malloy"
-            break
+    model = model_under_test(a)
+    # Without `--model` the verifier skips its stale-rubric and name checks and
+    # still exits 0, so a clean result would claim checks that never ran.
+    if model is None:
+        return {"ran": False, "couldNotRun": True,
+                "why": f"no .malloy file in {a.model_dir}, so the stale-rubric and "
+                       f"name checks cannot run against the edited model"}
     # `--set` is required by the verifier and was never passed, so argparse
     # exited 2 on every call: `clean` was false whenever there was a diff, and
     # the acceptance check below reported BLOCKED for every cluster that made an
@@ -324,8 +346,7 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
     # getattr: older callers and the tests build this Namespace by hand.
     if getattr(a, "definitions", None):
         cmd += ["--definitions", str(a.definitions)]
-    if model:
-        cmd += ["--model", str(model)]
+    cmd += ["--model", str(model)]
     # The isolation guard needs to know what is under test; without it the
     # guard reads `set.json`'s `targetPackage`, which nothing writes.
     if a.package:
@@ -353,39 +374,65 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
         return {"ran": False, "couldNotRun": True,
                 "why": f"verify_goldens could not run (exit {p.returncode}); "
                        f"see artifacts/clusters/*/verify_goldens.txt",
-                "model": str(model) if model else None,
+                "model": str(model),
                 "tail": (p.stderr or p.stdout or "").strip().splitlines()[-25:]}
     return {"ran": True, "clean": p.returncode == 0,
-            "model": str(model) if model else None,
+            "model": str(model),
             "tail": (p.stdout or p.stderr or "").strip().splitlines()[-25:]}
 
 
 def golden_keys(cases: dict[str, Any], set_dir: pathlib.Path | None
-                ) -> tuple[dict[str, Any], dict[str, list[str]]]:
-    """Every case's key and its golden queries, for the leak check. A key
-    whose rows cannot be read is left out: there is nothing to look for."""
+                ) -> tuple[dict[str, Any], dict[str, list[str]], dict[str, str]]:
+    """Every case's key, its golden queries and the answers its rubric and
+    mustState accept, for the leak check. A key whose rows cannot be read is
+    left out: there is nothing to look for."""
     keys: dict[str, Any] = {}
     queries: dict[str, list[str]] = {}
+    accepted: dict[str, str] = {}
     for qid, c in cases.items():
         g = c.get("golden") or {}
         try:
             keys[qid] = golden_rows.key_value(g, set_dir, qid)
         except golden_rows.GoldenRowsError:
             pass
-        qs = [g.get("query"), (g.get("verification") or {}).get("verifyQuery")]
+        # `canonicalQuery` is the field the case format defines; there is no
+        # `golden.query`, so reading that left every primary query unchecked.
+        qs = [g.get("canonicalQuery"), (g.get("verification") or {}).get("verifyQuery")]
         queries[qid] = [q for q in qs if isinstance(q, str)]
-    return keys, queries
+        accepted[qid] = golden_leak.accepted_text(g)
+    return keys, queries, accepted
+
+
+REPLAY_FIELDS = ("qid", "source", "query", "givens", "modelPath", "count",
+                 "median_ms", "error")
 
 
 def cluster_members(issue: dict[str, Any], cases: dict[str, Any],
-                    set_dir: pathlib.Path | None) -> list[dict[str, Any]]:
-    """Each case in the cluster with its question, key and rubric.
+                    set_dir: pathlib.Path | None,
+                    run: pathlib.Path | None = None) -> list[dict[str, Any]]:
+    """What the improver is shown about each case in the cluster.
 
-    The key comes through `golden_rows`, so a rows golden kept in
-    `golden.path` reaches the improver as its rows rather than as no key.
+    A speed issue gets the replayed queries and their timings, read from the
+    replay's results, and nothing from the case: a replay times every split,
+    so its qids include test and holdout cases whose keys the improver must
+    never see, and a speed edit needs the query, not the answer.
+
+    Any other issue gets each case's question, key and rubric. The key comes
+    through `golden_rows`, so a rows golden kept in `golden.path` reaches the
+    improver as its rows rather than as no key. A `test` case is skipped:
+    diagnose never puts one in a cluster, and this keeps its key out even if
+    an issue names one.
     """
+    if issue.get("component") == "performance":
+        want = set(issue.get("qids", []))
+        rows = (ledger.read_jsonl(run / "results.jsonl")
+                if run and (run / "results.jsonl").is_file() else [])
+        return [{k: r.get(k) for k in REPLAY_FIELDS}
+                for r in rows if r.get("qid") in want]
     out = []
     for q in issue.get("qids", []):
+        if (cases.get(q) or {}).get("split") == "test":
+            continue
         g = (cases.get(q) or {}).get("golden") or {}
         out.append({"qid": q, "question": (cases.get(q) or {}).get("question"),
                     "golden": golden_rows.key_value_or_note(g, set_dir, q),
@@ -423,7 +470,7 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
     helper.write_text(SYNC_SCRIPT.format(sync=sync, reload=reload_cmd))
     helper.chmod(0o755)
 
-    members = cluster_members(issue, cases, a.set_dir)
+    members = cluster_members(issue, cases, a.set_dir, getattr(a, "run", None))
 
     r = spawn_agent(
         IMPROVE_PROMPT.format(
@@ -464,7 +511,7 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
     # re-answered. An edit that states a case's answer passes that case for
     # nothing, and one that was already rejected would cost two runs to
     # reject again.
-    leak = golden_leak.check(diff, a.keys, a.golden_queries)
+    leak = golden_leak.check(diff, a.keys, a.golden_queries, a.accepted)
     again = attempts.same_edit(a.prior, diff)
 
     helper.unlink(missing_ok=True)
@@ -627,6 +674,7 @@ def run(argv: list[str] | None, started: dict[str, Any]) -> int:
         experiment.sync(cfg, a.experiment, a.model_dir, build=False)
         started.update(cfg=cfg, name=a.experiment)
         publish.warm(cfg, a.environment, publish.experiment_package(a.package, a.experiment))
+        a.model_package = a.package
         a.package = publish.experiment_package(a.package, a.experiment)
         print(f"edits are served as {a.environment}/{a.package}; the main package is untouched")
     elif not a.watch_mode and not a.server_root:
@@ -653,7 +701,7 @@ def run(argv: list[str] | None, started: dict[str, Any]) -> int:
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
     a.prior = attempts.read(a.set_dir)
-    a.keys, a.golden_queries = golden_keys(cases, a.set_dir)
+    a.keys, a.golden_queries, a.accepted = golden_keys(cases, a.set_dir)
 
     status: dict[str, str] = {}
     for e in events:

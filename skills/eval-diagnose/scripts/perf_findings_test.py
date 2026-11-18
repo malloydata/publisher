@@ -94,6 +94,13 @@ class HotSource(unittest.TestCase):
         rows = [{**row("a", "orders", 10, False), "count": 40}, row("b", "items", 90, False)]
         self.assertEqual(self.findings(rows, persisted=["orders"]), {})
 
+    def test_a_persisted_leader_does_not_hide_the_next_unpersisted_source(self):
+        rows = [row("a", "orders", 50, False), row("b", "items", 40, False),
+                row("c", "users", 10, False)]
+        got = self.findings(rows, persisted=["orders"])
+        self.assertEqual(list(got), ["perf-hot-items"])
+        self.assertIn("40%", got["perf-hot-items"]["diagnosis"])
+
     def test_time_spread_thin_across_sources_names_none(self):
         rows = [row(str(n), f"s{n}", 10, False) for n in range(5)]      # 20% each
         self.assertEqual(self.findings(rows), {})
