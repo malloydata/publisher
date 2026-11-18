@@ -113,7 +113,7 @@ source: orders is duckdb.table('orders_raw') extend {
    });
 });
 
-describe("C1b: a colocated rollup and its query read the same manifest", () => {
+describe("C1b: a database rollup and its query read the same manifest", () => {
    let restore: () => void;
    let fixture: R4Fixture;
    let undo: (() => void) | undefined;
@@ -124,7 +124,7 @@ describe("C1b: a colocated rollup and its query read the same manifest", () => {
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: orders is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 `,

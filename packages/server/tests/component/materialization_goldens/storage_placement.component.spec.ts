@@ -129,14 +129,14 @@ describe("one placement rule", () => {
       }
    }
 
-   it("#(materialize) and #(preaggregate) build into the destination and serve", async () => {
+   it("#(materialize) and #(rollup) build into the destination and serve", async () => {
       const { served } = await run(
          "own-routes",
          `#(materialize) storage="lake"
 source: mat is orders_raw extend { measure: n is count() }
 
 source: agg is orders_raw extend {
-  #(preaggregate) grain=["region"] storage="lake"
+  #(rollup) grain=["region"] storage="lake"
   measure: total is amount.sum()
 }`,
          [
@@ -182,17 +182,17 @@ source: bad is orders_raw extend { measure: n is count() }`,
       },
       {
          route: "#@ preaggregate",
-         code: "preaggregate-invalid",
+         code: "rollup-invalid",
          declaration: (st) => `source: bad is orders_raw extend {
   #@ preaggregate grain="region" storage=${st}
   measure: total is amount.sum()
 }`,
       },
       {
-         route: "#(preaggregate)",
-         code: "preaggregate-invalid",
+         route: "#(rollup)",
+         code: "rollup-invalid",
          declaration: (st) => `source: bad is orders_raw extend {
-  #(preaggregate) grain=["region"] storage=${st}
+  #(rollup) grain=["region"] storage=${st}
   measure: total is amount.sum()
 }`,
       },

@@ -8,7 +8,7 @@
  * table of ROWS rows. Counts the run's statements that scan the raw rows and
  * times the child's build, then times the child built from the warehouse
  * (its planned SQL) on the same connection. With `rollup`, the same for a
- * colocated `#@ persist` base and its `#@ preaggregate` rollup
+ * database `#@ persist` base and its `#@ preaggregate` rollup
  * (rollup_reuse_bench.ts has more).
  *
  *   bun tests/perf/chain_reuse_bench.ts [rows] [rollup]
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
       ).entries,
    );
    const rollup = entries.find((e) =>
-      CHAIN ? e.sourceName === "child" : e.origin === "preaggregate",
+      CHAIN ? e.sourceName === "child" : e.origin === "rollup",
    )!;
    const creates = statements.filter((s) => /^\s*CREATE\b/i.test(s.sql));
    const rawScans = creates.filter((s) => s.sql.includes(MARK)).length;

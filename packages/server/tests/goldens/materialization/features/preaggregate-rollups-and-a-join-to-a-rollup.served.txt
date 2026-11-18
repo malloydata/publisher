@@ -7,7 +7,7 @@ import { lines } from "m.malloy.rollup-author.malloy"
 import { orders__rollup__region__409e9efb__built is orders__rollup__region__409e9efb } from "m.malloy.preaggregate.malloy"
 source: orders__rollup__region__409e9efb__served is orders__rollup__region__409e9efb__built extend {
   measure:
-    #(preaggregate) grain=["region"]
+    #(rollup) grain=["region"]
     total is total__partial.sum()
 }
 source: orders is orders__rollup__region__409e9efb__served include { internal: total__partial public: * }
@@ -28,7 +28,7 @@ source: orders__rollup__m_region__7877d8b1__served is __served_copy_alias_of_lak
   dimension:
     m is m__tf.month
   measure:
-    #(preaggregate) grain=["region", "m"] storage="lake"
+    #(rollup) grain=["region", "m"] storage="lake"
     n is n__partial.sum()
 }
 source: orders is orders__rollup__m_region__7877d8b1__served include { internal: n__partial public: * }
@@ -41,7 +41,7 @@ import { lines } from "m.malloy.rollup-author.malloy"
 import { orders__rollup__region__409e9efb__built is orders__rollup__region__409e9efb } from "m.malloy.preaggregate.malloy"
 source: orders__rollup__region__409e9efb__served is orders__rollup__region__409e9efb__built extend {
   measure:
-    #(preaggregate) grain=["region"]
+    #(rollup) grain=["region"]
     total is total__partial.sum()
 }
 source: orders is orders__rollup__region__409e9efb__served include { internal: total__partial public: * } extend {
@@ -65,18 +65,18 @@ source: orders__rollup__region__409e9efb is orders__rollup_base -> {
 import "raw.malloy"
 
 source: lines is lines_raw extend {
-  #(preaggregate) grain=["order_id"]
+  #(rollup) grain=["order_id"]
   measure: qty_total is qty.sum()
-  #(preaggregate) grain=["order_id", "sku"]
+  #(rollup) grain=["order_id", "sku"]
   measure: line_n is count()
 }
 
 source: orders is orders_raw extend {
   join_many: lines on lines.order_id = id
   dimension: m is created_at.month
-  #(preaggregate) grain=["region"]
+  #(rollup) grain=["region"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["region", "m"] storage="lake"
+  #(rollup) grain=["region", "m"] storage="lake"
   measure: n is count()
   view: by_region is { group_by: region; aggregate: total }
 }

@@ -265,7 +265,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
          gatedSources: false,
          gatedStorageRollupsReviewed: false,
       };
-      const g3 = { colocatedReadsKeepGates: true };
+      const g3 = { databaseReadsKeepGates: true };
       // As the router judges them: each storage table with its gate columns'
       // stored types listed (this source's gate reads none).
       const listed = (tables: readonly Binding[]) =>
@@ -327,7 +327,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
                ).sourceIDOf("X")!,
             ],
          },
-         { tier: "colocated" },
+         { tier: "database" },
          { kind: "materialize" },
       ];
       for (const change of changes) {

@@ -8,9 +8,9 @@
  * column is read through a faithful cast, or left out so that only a query
  * reading it answers live: every answer equals live's.
  *
- * The drift is made after the build with a real `ALTER TABLE`. A colocated
+ * The drift is made after the build with a real `ALTER TABLE`. A database
  * table's types are then read from its warehouse as a package's bind reads
- * them (`observeDatabaseColumns`), for each colocated mechanism:
+ * them (`observeDatabaseColumns`), for each database mechanism:
  * `#(materialize)`, `#@ persist` and a rollup. A `storage=` table's binding
  * carries its schema from the run that bound it, so its schema is altered
  * with it, as a run that bound the altered table would.
@@ -24,8 +24,8 @@
  * | flag   | BOOLEAN   | INTEGER     | cast to BOOLEAN          |
  * | d2     | DATE      | TIMESTAMP   | cast to DATE             |
  *
- * The `storage=` table and the colocated ones are held to the same answers.
- * A colocated rollup whose column drifted is read through a typed source, as
+ * The `storage=` table and the database ones are held to the same answers.
+ * A database rollup whose column drifted is read through a typed source, as
  * a `storage=` rollup is, so only a query reading that column answers live
  * (database_table_drift_substituted.component.spec.ts holds every drift kind
  * on a rollup, a persisted view and a persisted query). The
@@ -74,18 +74,18 @@ source: ${name} is ev extend {
   measure: total is ${measure}
 }
 `,
-      colocated: undefined,
+      database: undefined,
       servedFrom: "storage",
    },
    {
-      label: "#(materialize) colocated",
+      label: "#(materialize) database",
       model: (name: string, measure: string, table: string) =>
          `#(materialize) name="${table}"
 source: ${name} is ev extend {
   measure: total is ${measure}
 }
 `,
-      colocated: undefined,
+      database: undefined,
       servedFrom: "database",
    },
    {
@@ -96,7 +96,7 @@ source: ${name} is ev -> { select: * } extend {
   measure: total is ${measure}
 }
 `,
-      colocated: ["drift", "drift_m"],
+      database: ["drift", "drift_m"],
       servedFrom: "database",
    },
 ] as const;
@@ -198,8 +198,8 @@ ${tier.model("drift", "n.sum()", "drift_t")}
 ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
             },
             seedSql: SEED,
-            ...(tier.colocated
-               ? { colocated: [...tier.colocated] }
+            ...(tier.database
+               ? { database: [...tier.database] }
                : { materialize: true }),
          });
          // Alter each stored table after its build.
@@ -222,7 +222,7 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
                );
             }
          } else {
-            // A colocated table's types, read from its warehouse at bind.
+            // A database table's types, read from its warehouse at bind.
             const observed = await fixture.observeDatabaseColumns();
             expect(observed.unread).toEqual([]);
             // One drift per table (the two sources may share one).
@@ -372,9 +372,9 @@ describe("R4 (rollup database): a rollup table whose column types drifted", () =
          files: {
             "m.malloy": `##! experimental { persistence }
 source: ev is duckdb.table('ev') extend {
-  #(preaggregate) grain=["flag"]
+  #(rollup) grain=["flag"]
   measure: hi is amt.max()
-  #(preaggregate) grain=["id"]
+  #(rollup) grain=["id"]
   measure: c is count()
 }
 `,

@@ -716,7 +716,7 @@ describe("R4 adversarial: stored dimensions, joins and extension tables over a s
    });
 });
 
-const colocatedModel = `##! experimental { givens access_modifiers }
+const databaseModel = `##! experimental { givens access_modifiers }
 given:
   ORG :: string is 'acme'
 
@@ -726,14 +726,14 @@ source: base is duckdb.table('ev') extend {
 }
 
 #(materialize)
-source: colocated is base extend { measure: total is amt.sum() }
+source: database is base extend { measure: total is amt.sum() }
 
 #(materialize) storage="lake" refresh="incremental" watermark="ts"
 source: incremental is base extend { measure: total is amt.sum() }
 
-// Colocated, no name=, writing its own term: built and served.
+// Database, no name=, writing its own term: built and served.
 #(materialize)
-source: colocated_own is duckdb.table('ev') extend {
+source: database_own is duckdb.table('ev') extend {
   where: org = $ORG
   dimension: mine is org = $ORG
   measure: total is amt.sum()
@@ -747,16 +747,16 @@ source: incremental_own is duckdb.table('ev') extend {
 }
 `;
 
-describe("R4 adversarial: colocated and incremental over a scoped base", () => {
+describe("R4 adversarial: database and incremental over a scoped base", () => {
    let fixture: R4Fixture;
    let built: string[];
    useMaterializationOn();
    beforeAll(async () => {
       fixture = await buildScenario({
-         files: { "m.malloy": colocatedModel },
+         files: { "m.malloy": databaseModel },
          seedSql,
          materialize: true,
-         colocated: ["colocated", "colocated_own"],
+         database: ["database", "database_own"],
       });
       built = fixture.bindings
          .flatMap((b) => b.sourceIDs ?? [])
@@ -769,9 +769,9 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
 
    it("never builds one caller's rows", async () => {
       // Both over the scoped base inherit its term and are refused; the
-      // sources that write their own are built, the colocated one with no
-      // name= (a colocated #(materialize) needs none).
-      expect(built).toEqual(["colocated_own", "incremental_own"]);
+      // sources that write their own are built, the database one with no
+      // name= (a database #(materialize) needs none).
+      expect(built).toEqual(["database_own", "incremental_own"]);
       for (const source of Object.keys(fixture.physicalTables)) {
          const orgs = await fixture.storedSQL(
             (t) => `SELECT DISTINCT org FROM ${t(source)} ORDER BY org`,
@@ -781,9 +781,9 @@ describe("R4 adversarial: colocated and incremental over a scoped base", () => {
    });
 
    for (const source of [
-      "colocated",
+      "database",
       "incremental",
-      "colocated_own",
+      "database_own",
       "incremental_own",
    ]) {
       it(`${source} answers each caller as live`, async () => {

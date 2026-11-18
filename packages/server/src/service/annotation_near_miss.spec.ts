@@ -134,9 +134,11 @@ describe("annotationNearMisses", () => {
             ['#(Materialize) name="t"', "#(materialize)"],
             ['# (materialize) name="t"', "#(materialize)"],
             ['#(materialize)name="t"', "#(materialize)"],
-            ['#(preaggregates) grain=["a"]', "#(preaggregate)"],
-            ['#(pre-aggregate) grain=["a"]', "#(preaggregate)"],
-            ['#(preagregate) grain=["a"]', "#(preaggregate)"],
+            ['#(preaggregates) grain=["a"]', "#(rollup)"],
+            ['#(pre-aggregate) grain=["a"]', "#(rollup)"],
+            ['#(preagregate) grain=["a"]', "#(rollup)"],
+            ['#(rollups) grain=["a"]', "#(rollup)"],
+            ['#(Rollup) grain=["a"]', "#(rollup)"],
          ]) {
             const [finding] = scan(text);
             expect(finding).toMatchObject({
@@ -146,15 +148,21 @@ describe("annotationNearMisses", () => {
             expect(finding?.message).toContain(`did you mean \`${meant}\`?`);
          }
          expect(scan('#(materialize) name="t"')).toEqual([]);
+         expect(scan('#(rollup) grain=["a"]')).toEqual([]);
+         // The deprecated spelling is read, not a near miss.
          expect(scan('#(preaggregate) grain=["a"]')).toEqual([]);
       });
    });
 
    it("with the materialize switch off, reads the v2 spellings as before they were registered", () => {
       withSettings({ env: { PUBLISHER_MATERIALIZE: "false" } }, () => {
-         // `#(preaggregate)` does nothing off; `#@ preaggregate` works.
-         const [finding] = scan('#(preaggregate) grain=["a"]');
-         expect(finding?.message).toContain("did you mean `#@ preaggregate`?");
+         // `#(rollup)` does nothing off; `#@ preaggregate` works.
+         for (const spelling of ["#(rollup)", "#(preaggregate)"]) {
+            const [finding] = scan(`${spelling} grain=["a"]`);
+            expect(finding?.message).toContain(
+               "did you mean `#@ preaggregate`?",
+            );
+         }
          expect(scan('#(materialize) name="t"')).toEqual([]);
          expect(scan('#(materialise) name="t"')).toEqual([]);
          expect(scan('#(preaggregates) grain=["a"]')).toEqual([]);

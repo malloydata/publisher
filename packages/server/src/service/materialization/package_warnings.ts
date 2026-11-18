@@ -13,18 +13,26 @@ import {
    MATERIALIZE_NOT_BUILT_CODE,
    PERSIST_NOT_BUILT_CODE,
    PERSIST_SOURCE_REFUSED_ALIAS_CODE,
-   PREAGGREGATE_NOT_BUILT_CODE,
+   ROLLUP_NOT_BUILT_CODE,
    type PackageAnnotationFinding,
 } from "../annotation_reader";
 import { components } from "../../api";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { CLASSIFICATION_COVERAGE } from "../classification";
 import type { Model } from "../model";
-import type { RefusalNotices, RefusedRollup } from "./plan/build_plan";
-import { preaggregateGateLines, refusalCodeOf } from "./plan/load_gate_text";
+import type {
+   BuildPlanOutcome,
+   RefusalNotices,
+   RefusedRollup,
+} from "./plan/build_plan";
+import {
+   loadGateText,
+   preaggregateGateLines,
+   refusalCodeOf,
+} from "./plan/load_gate_text";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
-import type { MaterializePlan } from "./domain/table_plans";
+import { isRollupOrigin, type MaterializePlan } from "./domain/table_plans";
 import type {
    BuildPlan,
    FreshnessManifest,
@@ -85,13 +93,30 @@ const DRIFT_HANDLING_TEXT: Record<
       `live until the table is rebuilt.`,
 };
 
+/**
+ * What a drift warning says when the table is as built but its source now
+ * declares another type: the table's content address did not move, so a run
+ * reuses it, and only a forced rebuild stores the declared type.
+ */
+const UPSTREAM_DRIFT_HANDLING_TEXT: Record<
+   DatabaseDriftFinding["mismatches"][number]["handling"],
+   (declaredType: string) => string
+> = {
+   cast: (declaredType) =>
+      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
+      `from the table; a forced rebuild (forceRefresh) clears this.`,
+   live: () =>
+      `No cast reads it as declared, so queries that read it are answered ` +
+      `live until the table is rebuilt with a forced refresh (forceRefresh): ` +
+      `its content address did not move, so a run reuses it.`,
+};
+
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type Models = ReadonlyMap<string, Model>;
 
 /** The code on the warning for a rollup whose build found its join_one key repeated. */
-const PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE =
-   "preaggregate-join-one-key-repeated";
+const ROLLUP_JOIN_ONE_KEY_REPEATED_CODE = "rollup-join-one-key-repeated";
 
 /**
  * The findings on authored annotations: an unservable one (a valid
@@ -113,7 +138,38 @@ export function annotationFindingWarnings(
 }
 
 /**
- * One warning per bound `#(preaggregate)` rollup whose last build found its
+ * What a load of a derived plan would say of its annotations, for a compile
+ * that checks the package without loading it: the load gate's lines, which
+ * fail the load (plan/load_gate_text.ts, the same text and order the load
+ * and a run read), and the warnings a valid annotation that is not built
+ * here leaves on the package. Read off the worker's plan, as a re-derivation
+ * reads it.
+ */
+export function loadVerdictOfPlan(
+   outcome: Pick<
+      BuildPlanOutcome,
+      | "plan"
+      | "annotationFindings"
+      | "incrementalDeclarations"
+      | "materializePlans"
+      | "modelGateLines"
+   >,
+   judgement: { enforceCollisions: boolean; versionScoped: boolean },
+): { refusals: string[]; warnings: ApiPackageWarning[] } {
+   const refusals = loadGateText(outcome, judgement)
+      .split("\n")
+      .filter(Boolean);
+   return {
+      refusals,
+      // A malformed finding is one of the refusals above.
+      warnings: annotationFindingWarnings(
+         outcome.annotationFindings.filter((f) => f.tier !== "malformed"),
+      ),
+   };
+}
+
+/**
+ * One warning per bound `#(rollup)` rollup whose last build found its
  * join_one key repeated (known limitation 29's check, `keyUniqueness`
  * false): the data breaks a `join_one` declared on that key, so queries that
  * read it beside other aggregates are answered live. Recomputed from what is
@@ -121,7 +177,7 @@ export function annotationFindingWarnings(
  */
 export function repeatedJoinOneKeyWarnings(
    plan: BuildPlan | null,
-   colocatedEntries: FreshnessManifest | undefined,
+   databaseEntries: FreshnessManifest | undefined,
    storageBindings: readonly Binding[],
 ): ApiPackageWarning[] {
    const warnings: ApiPackageWarning[] = [];
@@ -135,7 +191,7 @@ export function repeatedJoinOneKeyWarnings(
    // join_one keyed on the rollup's grain. A stored rollup's rides on its
    // binding, once per table.
    const checks = new Map<string, { keyColumn?: string; unique?: boolean }>(
-      Object.entries(colocatedEntries ?? {}).flatMap(([id, entry]) =>
+      Object.entries(databaseEntries ?? {}).flatMap(([id, entry]) =>
          entry.keyUniqueness ? [[id, entry.keyUniqueness]] : [],
       ),
    );
@@ -150,11 +206,11 @@ export function repeatedJoinOneKeyWarnings(
       warnings.push({
          ...(source?.modelPath ? { model: source.modelPath } : {}),
          subject: rollup.baseSourceName,
-         code: PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE,
+         code: ROLLUP_JOIN_ONE_KEY_REPEATED_CODE,
          severity: "warn",
          message:
             `holds \`${check.keyColumn}\` more than once, found by its ` +
-            `#(preaggregate) rollup's last build (grain ` +
+            `#(rollup) rollup's last build (grain ` +
             `${rollup.grainDimensions.join(", ")}): a join_one keyed on it ` +
             `is not unique in the data, so live repeats each joining row ` +
             `once per match. Queries that read that join_one beside other ` +
@@ -240,7 +296,7 @@ export function keptTableWarnings(
  * `refusedSources`, whatever the mechanism. A record a planner's finding
  * made carries that finding's code and subject ({@link RefusalNotices}). A
  * compile-time gate's refusal is coded by its mechanism with the gate's
- * message verbatim: a rollup's {@link PREAGGREGATE_NOT_BUILT_CODE}, naming
+ * message verbatim: a rollup's {@link ROLLUP_NOT_BUILT_CODE}, naming
  * its base and grain, with its BASE source as `subject` (its own name is
  * generated). A `#@ persist` source's gate refusal is repeated under
  * {@link PERSIST_SOURCE_REFUSED_ALIAS_CODE} for one release.
@@ -271,22 +327,23 @@ export function persistRefusalWarnings(
             },
          ];
       }
-      const preaggregate = source.tier === "preaggregate";
+      const preaggregate =
+         isRollupOrigin(source.origin) || source.tier === "preaggregate";
       const rollup = preaggregate
          ? (refusedRollups[sourceID] ?? plan?.sources?.[sourceID]?.preaggregate)
          : undefined;
       const subject = preaggregate ? rollup?.baseSourceName : source.name;
       const code = preaggregate
-         ? PREAGGREGATE_NOT_BUILT_CODE
+         ? ROLLUP_NOT_BUILT_CODE
          : materializePlans[sourceID]
            ? MATERIALIZE_NOT_BUILT_CODE
            : refusalCodeOf(sourceID, source.name);
       const warning: ApiPackageWarning = {
          message: preaggregate
             ? (rollup
-                 ? `#(preaggregate) rollup of source "${rollup.baseSourceName}" at ` +
+                 ? `#(rollup) rollup of source "${rollup.baseSourceName}" at ` +
                    `(${rollup.grainDimensions.join(", ")})`
-                 : "A #(preaggregate) rollup") +
+                 : "A #(rollup) rollup") +
               ` is not built, so its measures are served live: ` +
               source.message
             : source.message,
@@ -473,8 +530,11 @@ export function storedColumnTypeWarnings(
                   : `stores column \`${m.column}\` as ` +
                     `${m.storedType ?? "a type Malloy reads as no basic type"}, ` +
                     `not its declared Malloy type \`${m.declaredType}\`: `) +
-               `its table was altered outside a build. ` +
-               DRIFT_HANDLING_TEXT[m.handling](m.declaredType),
+               (m.declaredMoved
+                  ? `what its source reads changed type since the build. ` +
+                    UPSTREAM_DRIFT_HANDLING_TEXT[m.handling](m.declaredType)
+                  : `its table was altered outside a build. ` +
+                    DRIFT_HANDLING_TEXT[m.handling](m.declaredType)),
          });
       }
    }
@@ -482,7 +542,7 @@ export function storedColumnTypeWarnings(
 }
 
 /**
- * Warnings for colocated tables bound with no captured warehouse type for a
+ * Warnings for database tables bound with no captured warehouse type for a
  * big-integer column, one per source (by sourceID).
  */
 export function nativeSchemaWarnings(
@@ -517,7 +577,7 @@ export function nativeSchemaWarnings(
 /**
  * The publish warnings a serve verdict carries: `unreachable`, and the
  * deployment facts (a `storage=` destination the environment does not
- * configure, a colocated source on a connection that cannot create tables).
+ * configure, a database source on a connection that cannot create tables).
  * Unservable, not malformed: the source serves live, and a deployment warning
  * clears once the deployment changes, with no reload.
  */
@@ -599,7 +659,7 @@ export function persistencePolicyWarnings(
  * REJECTION lines for invalid `#@ preaggregate` declarations, each with its
  * code, strict at publish AND load: an ignored declaration would show correct
  * numbers and no acceleration, with no one told. A valid declaration Publisher
- * cannot build is refused alone (`preaggregate-not-built`).
+ * cannot build is refused alone (`rollup-not-built`).
  */
 export function formatInvalidPreaggregatePolicy(models: Models): string {
    return [...models]
@@ -649,7 +709,7 @@ function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
       );
    }
    return (
-      "This source's colocated table is bound with no captured warehouse " +
+      "This source's database table is bound with no captured warehouse " +
       "type for its big-integer columns (its manifest entry records none): " +
       `${parts.join("; ")}. The next full rebuild captures the types.`
    );
@@ -712,12 +772,12 @@ function servedCopyProblemMessage(
             (inlinedButKept
                ? "fix what keeps the inlined join from being answered from its stored columns (the warning on " +
                  "this join says what), materialize the joined source into the same destination, or keep this " +
-                 "source colocated."
+                 "source database."
                : takesInline
                  ? "inline the join (inline=), materialize the joined source into the same destination, or keep " +
-                   "this source colocated."
+                   "this source database."
                  : // `#@ persist` takes no `inline=`.
-                   "materialize the joined source into the same destination, or keep this source colocated.")
+                   "materialize the joined source into the same destination, or keep this source database.")
          );
       case "inline_join_kept":
          return (

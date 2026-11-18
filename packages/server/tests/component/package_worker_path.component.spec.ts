@@ -1314,7 +1314,7 @@ source: orders is duckdb.sql("""
                "persist:by_category",
                "persist:gated",
                // The rollup leg's name for the v1 rollup (the v1 cutover, G4).
-               "preaggregate:orders__rollup__category__81e09214",
+               "rollup:orders__rollup__category__81e09214",
             ]);
             // `stored` is a `storage=` source on the package's DuckDB
             // sandbox, which a storage build cannot read: the worker, which

@@ -4,14 +4,14 @@
 /**
  * The G3 models: sources under their own row-level gate (an
  * `#(access_filter)` row filter, an `#(authorize)` lock, both, or inherited),
- * stored colocated and in a `storage=` destination (g3_gates, once per
+ * stored in the database tier and in a `storage=` destination (g3_gates, once per
  * tier). Shared with the served copy's worker parity spec, which compares
  * the gates' grafts on both threads.
  */
 
 // Each materialized source selects its own columns, so no two share a
 // content address (a shared table is refused when any sharer is).
-export const G3_COLOCATED_MODEL = `##! experimental { givens }
+export const G3_DATABASE_MODEL = `##! experimental { givens }
 import "raw.malloy"
 
 given: REGIONS :: string[]

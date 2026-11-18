@@ -6,15 +6,16 @@ import type { MaterializePlan } from "../domain/table_plans";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import {
    applyObservedColumns,
-   bindColocatedEntries,
+   bindDatabaseEntries,
    bindStorageEntries,
-   deriveColocatedServeBindings,
+   deriveDatabaseServeBindings,
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./bind";
 import type { BuildPlan, ManifestEntry } from "../domain/types";
 import { boundTablePath, buildVirtualMap } from "./bindings";
 import type { Binding } from "../domain/binding";
+import { databaseDriftFindings } from "./storage_bindings";
 
 const ID = "orders@file:///pkg/m.malloy";
 
@@ -50,7 +51,7 @@ function derive(
       eligible?: boolean;
    } = {},
 ) {
-   return deriveColocatedServeBindings({
+   return deriveDatabaseServeBindings({
       entries: {
          addr1: {
             tableName: "analytics.orders_all",
@@ -65,12 +66,12 @@ function derive(
    });
 }
 
-describe("deriveColocatedServeBindings", () => {
-   it("binds a colocated #(materialize) table on its own connection, keyed by its content address", () => {
+describe("deriveDatabaseServeBindings", () => {
+   it("binds a database #(materialize) table on its own connection, keyed by its content address", () => {
       expect(derive()).toEqual([
          {
             kind: "materialize",
-            tier: "colocated",
+            tier: "database",
             sourceName: "orders",
             sourceIDs: [ID],
             destinationName: "pg",
@@ -130,7 +131,7 @@ describe("deriveColocatedServeBindings", () => {
 
    it("binds nothing for a v1 #@ persist source (no #(materialize) plan) or a manifest without its address", () => {
       expect(
-         deriveColocatedServeBindings({
+         deriveDatabaseServeBindings({
             entries: { addr1: { tableName: "t" } },
             planSources: { [ID]: SOURCE },
             materializePlans: {},
@@ -138,7 +139,7 @@ describe("deriveColocatedServeBindings", () => {
          }),
       ).toEqual([]);
       expect(
-         deriveColocatedServeBindings({
+         deriveDatabaseServeBindings({
             entries: { other: { tableName: "t" } },
             planSources: { [ID]: SOURCE },
             materializePlans: { [ID]: plan() },
@@ -146,7 +147,7 @@ describe("deriveColocatedServeBindings", () => {
          }),
       ).toEqual([]);
       expect(
-         deriveColocatedServeBindings({
+         deriveDatabaseServeBindings({
             entries: undefined,
             planSources: { [ID]: SOURCE },
             materializePlans: { [ID]: plan() },
@@ -155,8 +156,8 @@ describe("deriveColocatedServeBindings", () => {
       ).toEqual([]);
    });
 
-   it("puts a colocated table's path in the virtual map as bound, a storage table's quoted for DuckDB", () => {
-      const colocated = {
+   it("puts a database table's path in the virtual map as bound, a storage table's quoted for DuckDB", () => {
+      const database = {
          ...derive()[0],
          destinationName: "bq",
          tablePath: "proj.ds.orders_all",
@@ -170,9 +171,9 @@ describe("deriveColocatedServeBindings", () => {
          tablePath: "main.s",
          schema: [],
       };
-      expect(boundTablePath(colocated)).toBe("proj.ds.orders_all");
+      expect(boundTablePath(database)).toBe("proj.ds.orders_all");
       expect(boundTablePath(storage)).toBe('"main"."s"');
-      expect(buildVirtualMap([colocated, storage])).toEqual(
+      expect(buildVirtualMap([database, storage])).toEqual(
          new Map([
             ["bq", new Map([["addr1", "proj.ds.orders_all"]])],
             ["lake", new Map([["addr2", '"main"."s"']])],
@@ -231,7 +232,7 @@ describe("storedColumnsOfOutput", () => {
    });
 });
 
-describe("deriveColocatedServeBindings: v1 colocated #@ persist (the v1 cutover, G1)", () => {
+describe("deriveDatabaseServeBindings: v1 database #@ persist (the v1 cutover, G1)", () => {
    const V1 = "daily@file:///pkg/m.malloy";
    const VIEW = "ov__by_region__view@file:///pkg/m.malloy";
    const sources = {
@@ -255,7 +256,7 @@ describe("deriveColocatedServeBindings: v1 colocated #@ persist (the v1 cutover,
       storage?: boolean;
       eligible?: boolean;
    }) =>
-      deriveColocatedServeBindings({
+      deriveDatabaseServeBindings({
          entries: {
             "addr-v1": {
                tableName: "daily",
@@ -297,7 +298,7 @@ describe("deriveColocatedServeBindings: v1 colocated #@ persist (the v1 cutover,
       expect(derive({ schema: captured })).toEqual([
          {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             sourceName: "daily",
             sourceIDs: [V1],
             destinationName: "duckdb",
@@ -498,9 +499,9 @@ describe("bindStorageEntries", () => {
    });
 });
 
-describe("bindColocatedEntries", () => {
+describe("bindDatabaseEntries", () => {
    it("keeps the eligible entries, quoted for their dialect, and declines the rest", () => {
-      const bound = bindColocatedEntries({
+      const bound = bindDatabaseEntries({
          entries: {
             a: { tableName: "order" },
             b: { tableName: "kept" },
@@ -532,7 +533,7 @@ describe("bindColocatedEntries", () => {
    });
 
    it("declines only an entry whose name its dialect cannot read or quote, and binds the rest", () => {
-      const bound = bindColocatedEntries({
+      const bound = bindDatabaseEntries({
          entries: {
             bad: { tableName: "`ds`.`a``b`" },
             good: { tableName: "`ds`.`a\\`b`" },
@@ -560,7 +561,7 @@ describe("bindColocatedEntries", () => {
    });
 
    it("declines every entry when the plan's eligibility is unknown", () => {
-      const bound = bindColocatedEntries({
+      const bound = bindDatabaseEntries({
          entries: { a: { tableName: "t" } },
          eligibility: undefined,
          dialects: new Map(),
@@ -675,8 +676,8 @@ describe("the bind functions at their edges", () => {
       ]);
    });
 
-   it("passes a colocated name already quoted, and says why an unrefused miss declines", () => {
-      const bound = bindColocatedEntries({
+   it("passes a database name already quoted, and says why an unrefused miss declines", () => {
+      const bound = bindDatabaseEntries({
          entries: {
             a: { tableName: '"order"' },
             b: { tableName: "missed" },
@@ -713,7 +714,7 @@ describe("applyObservedColumns", () => {
    ];
    const binding: Binding = {
       kind: "materialize",
-      tier: "colocated",
+      tier: "database",
       sourceName: "orders",
       sourceIDs: [ID],
       destinationName: "pg",
@@ -1012,6 +1013,146 @@ describe("applyObservedColumns", () => {
                leftOut: true,
             },
          ]);
+      });
+
+      // F-40: the table is as built, but its source now declares another
+      // type (a warehouse column retyped upstream since the build).
+      it("treats a column its source now declares as another type than the table holds as moved", () => {
+         const run = (declaredType: string) =>
+            applyObservedColumns({
+               entries: {
+                  v1: {
+                     tableName: "t",
+                     connectionName: "duckdb",
+                     schema: [
+                        { name: "cat", type: "VARCHAR" },
+                        { name: "total", type: "BIGINT" },
+                     ],
+                  },
+               },
+               bindings: [],
+               observed: new Map([
+                  [
+                     "v1",
+                     {
+                        dialect: "duckdb",
+                        columns: [
+                           { name: "cat", type: "VARCHAR" },
+                           { name: "total", type: "BIGINT" },
+                        ],
+                     },
+                  ],
+               ]),
+               declared: () => ({
+                  columns: [
+                     { name: "cat", type: "string" },
+                     { name: "total", type: declaredType },
+                  ],
+                  connectionName: "duckdb",
+               }),
+            });
+         const moved = run("string");
+         expect(moved.drifted).toEqual([
+            {
+               sourceEntityId: "v1",
+               columns: [
+                  {
+                     column: "total",
+                     builtType: "BIGINT",
+                     observedType: "BIGINT",
+                     declaredMoved: true,
+                     leftOut: true,
+                  },
+               ],
+            },
+         ]);
+         // Read through the table's held types, the column marked moved, so
+         // the leg checks it against live's type.
+         expect(moved.entries.v1?.heldRead?.columns).toContainEqual({
+            name: "total",
+            type: "BIGINT",
+            moved: true,
+         });
+         // Declared as built: nothing moved, the entry read as it is.
+         const unchanged = run("number");
+         expect(unchanged.drifted).toEqual([]);
+         expect(unchanged.entries.v1?.heldRead).toBeUndefined();
+      });
+
+      it("reads a column the build writes as another type by design (a date truncation as a timestamp) through its cast, unreported", () => {
+         const out = applyObservedColumns({
+            entries: {
+               v1: {
+                  tableName: "t",
+                  connectionName: "duckdb",
+                  schema: [
+                     { name: "m", type: "TIMESTAMP" },
+                     { name: "flag", type: "INTEGER" },
+                  ],
+               },
+            },
+            bindings: [],
+            observed: new Map([
+               [
+                  "v1",
+                  {
+                     dialect: "duckdb",
+                     columns: [
+                        { name: "m", type: "TIMESTAMP" },
+                        { name: "flag", type: "INTEGER" },
+                     ],
+                  },
+               ],
+            ]),
+            declared: () => ({
+               columns: [
+                  { name: "m", type: "date" },
+                  { name: "flag", type: "boolean" },
+               ],
+               connectionName: "duckdb",
+            }),
+         });
+         // Moved, so the leg reads each through its faithful cast (a
+         // retype upstream into the same pair reads correctly), but marked
+         // cast-only, so no warning or count reports it.
+         expect(out.drifted).toEqual([
+            {
+               sourceEntityId: "v1",
+               columns: [
+                  {
+                     column: "m",
+                     builtType: "TIMESTAMP",
+                     observedType: "TIMESTAMP",
+                     declaredMoved: true,
+                     castOnly: true,
+                  },
+                  {
+                     column: "flag",
+                     builtType: "INTEGER",
+                     observedType: "INTEGER",
+                     declaredMoved: true,
+                     castOnly: true,
+                  },
+               ],
+            },
+         ]);
+         expect(
+            out.entries.v1?.heldRead?.columns.filter((c) => c.moved),
+         ).toHaveLength(2);
+         // Declared in the plan as the source declares them now: no warning.
+         const plan = {
+            sources: {
+               "v@file:///m.malloy": {
+                  name: "v",
+                  sourceEntityId: "v1",
+                  columns: [
+                     { name: "m", type: "date" },
+                     { name: "flag", type: "boolean" },
+                  ],
+               },
+            },
+         } as unknown as BuildPlan;
+         expect(databaseDriftFindings(out.drifted, plan, {})).toEqual([]);
       });
 
       // C1/H1: a move inside one Malloy type that may round a value is left
@@ -1376,7 +1517,7 @@ describe("applyObservedColumns", () => {
    });
 });
 
-/** One colocated served-copy binding over `x`, with what its build captured. */
+/** One database served-copy binding over `x`, with what its build captured. */
 function bindSpelled(args: {
    declared: string;
    builtNative?: string;
@@ -1396,7 +1537,7 @@ function bindSpelled(args: {
    };
    const binding = {
       kind: "materialize",
-      tier: "colocated",
+      tier: "database",
       sourceName: "s",
       destinationName: "c",
       virtualHandle: "e",

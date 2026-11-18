@@ -121,6 +121,7 @@ import { buildSource } from "./source_build";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
 import { uncarryUnownedTables } from "./table_ownership";
+import { isRollupOrigin } from "../domain/table_plans";
 
 /** What a run is asked to do: createMaterialization's options, resolved. */
 export interface RunBuildOptions {
@@ -1058,7 +1059,7 @@ export class MaterializationService {
             reportSourceRefused(
                {
                   kind: buildKindOf(compiled, refusal.sourceID),
-                  tier: refusal.tier === "storage" ? "storage" : "colocated",
+                  tier: refusal.tier === "storage" ? "storage" : "database",
                   sourceName: refusal.name,
                },
                refusal.reason,
@@ -1710,8 +1711,8 @@ export class MaterializationService {
          }
          reportSourceReused(
             kindByAddress.get(address) ??
-               (entry.origin === "preaggregate" ? "rollup" : "persist"),
-            entry.storageDestinationName ? "storage" : "colocated",
+               (isRollupOrigin(entry.origin) ? "rollup" : "persist"),
+            entry.storageDestinationName ? "storage" : "database",
          );
       }
       // A run that lost sources is partial: its manifest is missing tables a

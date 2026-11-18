@@ -480,7 +480,7 @@ async function withoutLeakedBuilds(
 
 /**
  * Each plan with its build source's compiled output columns
- * ({@link MaterializePlan.storedColumns}): what a colocated build writes,
+ * ({@link MaterializePlan.storedColumns}): what a database build writes,
  * which its serve binding declares. A nested column is kept only on DuckDB,
  * whose tables hold nests natively; elsewhere a nest is stored as JSON, which
  * the served copy cannot declare, so the column is left out and the source

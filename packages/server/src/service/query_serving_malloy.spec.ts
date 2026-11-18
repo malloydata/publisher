@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Real-compiler contract for `recordingManifest` (query_serving.ts). The path
-// report names a colocated table as having answered exactly when Malloy looked
+// report names a database table as having answered exactly when Malloy looked
 // its manifest entry up, and tells that lookup apart from Malloy's own
 // enumeration of the entries by which object each reads. Neither is documented
 // Malloy API: both are observed behaviour of the pinned @malloydata/malloy. So
