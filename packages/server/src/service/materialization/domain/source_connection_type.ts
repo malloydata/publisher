@@ -42,6 +42,19 @@ export function unreadableSourceConnectionMessage(
    source: { name: string; connectionName: string },
    type: string | undefined,
 ): string {
+   // A `publisher` connection is a proxy to the host the package is
+   // published to, with no credentials here: neither fix below applies on
+   // this server, and the host builds the source.
+   if (type === "publisher") {
+      return (
+         `Source '${source.name}' cannot be materialized into a storage ` +
+         `destination on this server: its connection ` +
+         `'${source.connectionName}' is a 'publisher' connection, a proxy to ` +
+         `the host the package is published to; this server holds no ` +
+         `warehouse credentials for it. A 'storage=' build runs on that host, not on ` +
+         `this server. The source is answered live here.`
+      );
+   }
    const what =
       type === undefined
          ? `is not one of the environment's connections (the package's own ` +

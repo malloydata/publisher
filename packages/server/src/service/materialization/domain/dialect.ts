@@ -125,6 +125,13 @@ export interface Capabilities {
     */
    foldsTableNameCase: boolean;
    /**
+    * Publisher's sessions on it run in UTC, so a stored timestamp reads alike
+    * with or without its zone: a column altered from one to the other after
+    * its build is no drift (DuckDB). Elsewhere the session's zone is the
+    * warehouse's, which Publisher cannot see.
+    */
+   utcSessions: boolean;
+   /**
     * The longest leaf a table Publisher names itself may have
     * (`domain/table_name.ts`): its identifier limit less the 13 characters a
     * build appends for its staging and aside copies, capped at 120 for
@@ -143,6 +150,22 @@ export interface Capabilities {
     * Snowflake's NUMBER already arrive as DECIMAL.
     */
    passthroughNumericAsDouble: boolean;
+   /**
+    * A table the session's grants do not show is missing from its catalog
+    * views (Snowflake, MySQL), so a probe that finds none cannot tell a
+    * dropped table from a hidden one.
+    */
+   catalogHidesTables: boolean;
+   /**
+    * How a string column's comparison is read, for a gate or a `where:` a
+    * `storage=` copy re-applies byte-exact (`serve/gate_collation.ts`):
+    * `binary` (always byte-exact), `instance` (byte-exact unless the DuckDB
+    * instance sets a `default_collation` or a `COLLATE` is written), `column`
+    * (the column's own collation, read with Postgres's `pg_collation_for`);
+    * absent when it
+    * cannot be read, which keeps no gate over a string column there.
+    */
+   stringCollation: "binary" | "instance" | "column" | undefined;
 }
 
 const NONE: Capabilities = Object.freeze({
@@ -161,8 +184,11 @@ const NONE: Capabilities = Object.freeze({
    castsToIntegerType: false,
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
+   utcSessions: false,
    leafBudget: 50,
    passthroughNumericAsDouble: false,
+   catalogHidesTables: false,
+   stringCollation: undefined,
 });
 
 /** Each dialect's capabilities. */
@@ -179,10 +205,13 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       driverKeepsBigIntegers: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
+      utcSessions: true,
       leafBudget: 120,
+      stringCollation: "instance",
    }),
    postgres: Object.freeze({
       ...NONE,
+      stringCollation: "column",
       passthroughNumericAsDouble: true,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
@@ -205,9 +234,11 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       castsToIntegerType: true,
       onlyBigIntegerType: "INT64",
       leafBudget: 120,
+      stringCollation: "binary",
    }),
    snowflake: Object.freeze({
       ...NONE,
+      catalogHidesTables: true,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
       merge: true,
@@ -239,6 +270,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
    }),
    mysql: Object.freeze({
       ...NONE,
+      catalogHidesTables: true,
       tableOwnership: true,
    }),
    sqlserver: Object.freeze({

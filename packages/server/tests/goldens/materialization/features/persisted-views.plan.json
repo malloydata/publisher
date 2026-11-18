@@ -64,6 +64,7 @@
       "code": "persist-view-not-built",
       "message": "#@ persist on view \"recent\" of source \"orders\" is not built, so the view is served live: its result reads the current time, so it differs per read.",
       "model": "m.malloy",
+      "reason": "current_time",
       "severity": "warn",
       "subject": "orders -> recent"
     }
@@ -97,6 +98,7 @@
         "message": "#@ persist on view \"recent\" of source \"orders\" is not built, so the view is served live: its result reads the current time, so it differs per read.",
         "modelPath": "m.malloy",
         "name": "orders__recent__view",
+        "origin": "view",
         "reason": "current_time",
         "sourceID": "orders__recent__view@<pkg>/m.malloy.persist-view.malloy",
         "tier": "storage"
@@ -126,7 +128,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders__by_region__view",
-        "origin": "persist",
+        "origin": "view",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -153,7 +155,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders__by_status__view",
-        "origin": "persist",
+        "origin": "view",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -180,7 +182,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders__two_stage__view",
-        "origin": "persist",
+        "origin": "view",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

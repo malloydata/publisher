@@ -247,7 +247,7 @@ source: views is orders_raw extend {
 }
 
 source: rollups is orders_raw extend {
-  #(preaggregate) grain=["region"] storage="lake"
+  #(rollup) grain=["region"] storage="lake"
   measure: r_storage is amount.sum()
 }
 

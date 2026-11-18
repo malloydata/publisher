@@ -69,7 +69,7 @@ import {
    type WatermarkBound,
 } from "./incremental_apply";
 import { isDecimalDeltaGuardFailure } from "./postgres_numeric_precision";
-import { capturedNativeSchema } from "./colocated_native_types";
+import { capturedNativeSchema } from "./database_native_types";
 import type { IncrementalDeclaration } from "../domain/incremental";
 
 /**
@@ -171,7 +171,7 @@ export function indexCallerLedger(
  * lineage the source's declaration implies, or undefined when the run declared
  * none, the source has no content address, or it is not a delta candidate
  * ({@link incrementalLineage}). A table in a storage destination is written in
- * DuckDB; a colocated one in the source's own dialect. The build dispatch and
+ * DuckDB; a database one in the source's own dialect. The build dispatch and
  * the skip-if-unchanged check share this one predicate so they never disagree.
  */
 export function sourceIncrementalRefresh(
@@ -214,14 +214,14 @@ export function incrementalLineage(params: {
    /** The SOURCE's dialect, which has to be able to express a bounded range. */
    dialect: string;
    /**
-    * The dialect the DML will be issued in — the source's own for a colocated
+    * The dialect the DML will be issued in — the source's own for a database
     * table, `duckdb` for one in a `storage=` destination.
     */
    targetDialect: string;
    physicalTableName: string;
    connectionName: string;
    /**
-    * The storage destination the table lives in, absent when colocated. Part of
+    * The storage destination the table lives in, absent when database. Part of
     * the boundary's table identity, so a source that moves between destinations
     * cannot read a boundary measured on the table it left behind.
     */
@@ -256,8 +256,8 @@ export function incrementalLineage(params: {
    // resolved must never be ISSUED. No lineage means a seed: slower, but correct.
    if (mergeKeys.length > 0 && d.scopeIncomplete) return undefined;
    // A pair table's delta replaces whole parents by its key, in DuckDB, the
-   // target of every `storage=` table and of a colocated table in a DuckDB
-   // warehouse (pairDeltaStatements). Anything else seeds: a colocated pair
+   // target of every `storage=` table and of a database table in a DuckDB
+   // warehouse (pairDeltaStatements). Anything else seeds: a database pair
    // table in another warehouse, which its plan already rebuilds in full with
    // a package warning (`materialize-pair-full-refresh`), so this is only a
    // backstop, or a pair whose merge key is not its parent key, which was
@@ -303,7 +303,7 @@ export async function planSourceRefresh(params: {
    lineage: IncrementalLineage;
    /**
     * Where the DML lands and how its rows are produced:
-    * {@link warehouseDeltaTarget} for a colocated source, the storage target for
+    * {@link warehouseDeltaTarget} for a database source, the storage target for
     * a `storage=` one. Its build SQL must be the MANIFEST-RESOLVED form, so a
     * chained source reads its upstream's materialized table; the raw form would
     * silently recompute the upstream.
@@ -511,7 +511,7 @@ export async function advanceLedgerAfterSeed(params: {
 }
 
 /**
- * Apply the step a plan decided on and report what happened, for both colocated
+ * Apply the step a plan decided on and report what happened, for both database
  * and `storage=` tables.
  *
  * Shared because the ORDER is load-bearing: the DML commits, and only then is the
@@ -561,7 +561,12 @@ export async function applyIncrementalStep(params: {
    // together (see deltaScript). A failure leaves the table and the boundary
    // as they were; the next run recomputes the same range.
    try {
-      await applyDeltaScript(target.runner, target.dialect, step.statements);
+      await applyDeltaScript(
+         target.runner,
+         target.dialect,
+         step.statements,
+         target.abortSignal,
+      );
    } catch (err) {
       // A pair delta whose parent-row check failed was rolled back: rebuild
       // in full, which writes the flag over the whole table (fail safe).
@@ -699,7 +704,7 @@ export function ledgerFields(
       ledger: {
          connectionName: lineage.connectionName,
          physicalTableName: lineage.physicalTableName,
-         // Absent (not undefined) for a colocated table: absence MEANS colocated
+         // Absent (not undefined) for a database table: absence MEANS database
          // on the wire.
          ...(lineage.storageDestinationName
             ? { storageDestinationName: lineage.storageDestinationName }
@@ -813,8 +818,8 @@ export async function refreshOneSourceIncrementally(params: {
    params.manifest.update(sourceEntityId, {
       tableName: target.quotedTablePath,
    });
-   // A colocated table's warehouse column types, read again as a full build
-   // reads them (colocated_native_types.ts): the entry replaces the last
+   // A database table's warehouse column types, read again as a full build
+   // reads them (database_native_types.ts): the entry replaces the last
    // build's, and without them its big-integer columns would answer live.
    const nativeSchema =
       lineage.storageDestinationName === undefined
@@ -868,19 +873,21 @@ export function storageRefreshFor(params: {
    const { context, lineage, persistSource, instruction } = params;
    return {
       plan: async ({ session, sourceType, handle, quotedTablePath }) => {
-         const { target, readCost } = storageDeltaTarget({
-            session,
-            sourceType,
-            handle,
-            destinationName: params.destinationName,
-            destinationSchema: params.destinationSchema,
-            physicalTableName: params.physicalTableName,
-            quotedTablePath,
-            lineage,
-            persistSource,
-            buildSQL: params.buildSQL,
-            queryMetadata: params.queryMetadata,
-         });
+         const { target, readCost, numericColumnsStoredAsDouble } =
+            storageDeltaTarget({
+               session,
+               sourceType,
+               handle,
+               destinationName: params.destinationName,
+               destinationSchema: params.destinationSchema,
+               physicalTableName: params.physicalTableName,
+               quotedTablePath,
+               lineage,
+               persistSource,
+               buildSQL: params.buildSQL,
+               queryMetadata: params.queryMetadata,
+            });
+         const reseeding = instruction.reseed || context.forceRefresh;
          // A table an older build typed (incremental_recast.spec.ts): a delta
          // only INSERTs into the columns it has, so only a re-seed's CTAS casts
          // them.
@@ -889,6 +896,10 @@ export function storageRefreshFor(params: {
             quotedTablePath,
             persistSource,
          );
+         // A Postgres numeric a build before the decimal-precision fix stored
+         // as DOUBLE, which serves float sums until the table is seeded again
+         // (postgres_numeric_precision.ts); a seed now stores it exactly.
+         const doubles = reseeding ? [] : await numericColumnsStoredAsDouble();
          // The stored table's columns, under the names the delta's SQL
          // emits them (a renamed field's column under its own name), so a
          // delta of a source with a `rename:` matches the table.
@@ -900,17 +911,34 @@ export function storageRefreshFor(params: {
             columns: deriveColumns(persistSource).map((c) =>
                toStored(String(c.name)),
             ),
-            reseed: instruction.reseed || recast.length > 0,
+            reseed:
+               instruction.reseed || recast.length > 0 || doubles.length > 0,
          });
-         if (
-            recast.length > 0 &&
-            step.mode === "seed" &&
-            step.reasonCode === "forced" &&
-            !instruction.reseed &&
-            !context.forceRefresh
-         ) {
+         const recastOnly =
+            step.mode === "seed" && step.reasonCode === "forced" && !reseeding;
+         if (recastOnly && doubles.length > 0) {
+            // No metric label of its own: the stored column's shape cannot
+            // hold the source's exact values, as a decimal delta that does
+            // not fit re-seeds, and the reason names the cause.
             step = {
-               ...step,
+               mode: "seed",
+               reasonCode: "shape_mismatch",
+               reason:
+                  `the stored table holds the Postgres numeric ${doubles
+                     .map((c) => `\`${c}\``)
+                     .join(", ")} as DOUBLE, which serves float sums ` +
+                  `where live is exact; a rebuild stores it as DECIMAL, ` +
+                  `and a delta cannot change a column's type`,
+            };
+            logger.info("Re-seeding to store Postgres numerics exactly", {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               sourceName: persistSource.name,
+               columns: doubles,
+            });
+         } else if (recastOnly && recast.length > 0) {
+            step = {
+               mode: "seed",
+               reasonCode: "forced",
                reason:
                   `the stored table holds ${recast
                      .map((m) => `\`${m.column}\` as ${m.storedType}`)

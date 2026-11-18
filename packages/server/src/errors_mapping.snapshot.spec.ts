@@ -35,6 +35,8 @@ import {
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationEligibilityError,
+   TableOwnershipError,
+   BuildInstructionsInvalidError,
    MaterializationNotFoundError,
    ModelCompilationError,
    ModelNotFoundError,
@@ -56,6 +58,7 @@ import {
    ServiceUnavailableError,
    SkillNotFoundError,
    StorageCatalogNotFoundError,
+   StorageAccessDeniedError,
    StorageDestinationNotFoundError,
    TableNotFoundError,
    UnconfiguredConnectionError,
@@ -310,6 +313,14 @@ const CASES: Array<[string, () => unknown]> = [
          ),
    ],
    [
+      "StorageAccessDeniedError",
+      () =>
+         new StorageAccessDeniedError(
+            "HTTP Error: HTTP GET error on 'https://storage.googleapis.com/bucket/org_1/db_2/t/data_0.parquet' (HTTP 403 Forbidden)",
+            "trips",
+         ),
+   ],
+   [
       "UnsupportedCatalogFormatError",
       () => new UnsupportedCatalogFormatError("iceberg is not supported"),
    ],
@@ -365,6 +376,33 @@ const CASES: Array<[string, () => unknown]> = [
    ],
    ["FrozenConfigError", () => new FrozenConfigError()],
    ["AccessDeniedError", () => new AccessDeniedError("access refused")],
+   [
+      "AccessDeniedError row filter",
+      () => AccessDeniedError.forSource("orders", "row_filter"),
+   ],
+   [
+      "BuildInstructionsInvalidError",
+      () =>
+         new BuildInstructionsInvalidError(
+            "Instruction references unknown sourceEntityId 'e9'",
+         ),
+   ],
+   [
+      "TableOwnershipError owned elsewhere",
+      () =>
+         new TableOwnershipError(
+            "table-owned-elsewhere",
+            "another package holds analytics.orders",
+         ),
+   ],
+   [
+      "TableOwnershipError unverified",
+      () =>
+         new TableOwnershipError(
+            "table-ownership-unverified",
+            "who holds analytics.orders could not be read",
+         ),
+   ],
    [
       "AccessDeniedError authorize denial",
       () =>

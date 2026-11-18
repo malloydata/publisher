@@ -74,7 +74,7 @@ source: fl is ${TABLE} extend {
 query: by_carrier is fl -> { group_by: carrier; aggregate: n, dist; order_by: dist desc }
 
 #@ persist
-query: by_carrier_colocated is fl -> { group_by: carrier; aggregate: n, dist; order_by: dist desc, carrier }
+query: by_carrier_database is fl -> { group_by: carrier; aggregate: n, dist; order_by: dist desc, carrier }
 
 #@ persist
 query: top is fl -> { group_by: carrier; aggregate: n; order_by: n desc, carrier; limit: 2 }
@@ -226,9 +226,9 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
    const served: [label: string, model: string, malloy: string][] = [
       ["an exact call, storage=", "m.malloy", "run: by_carrier"],
       ["a backticked call", "m.malloy", "run: `by_carrier`"],
-      ["an exact call, colocated", "m.malloy", "run: by_carrier_colocated"],
+      ["an exact call, database", "m.malloy", "run: by_carrier_database"],
       ["a limited query", "m.malloy", "run: top"],
-      ["a timeframe column, colocated", "m.malloy", "run: by_month"],
+      ["a timeframe column, database", "m.malloy", "run: by_month"],
       ["a timeframe column, storage=", "m.malloy", "run: by_month_stored"],
       ["a query that selects", "m.malloy", "run: listing"],
       ["a query that selects duplicate rows", "m.malloy", "run: with_dupes"],
@@ -242,7 +242,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "run: by_carrier -> { aggregate: total is dist.sum() }",
       ],
       [
-         "a query that goes on past it, colocated",
+         "a query that goes on past it, database",
          "m.malloy",
          "run: top -> { select: carrier; where: n > 1; order_by: carrier }",
       ],
@@ -266,13 +266,13 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "a refinement",
          "m.malloy",
          "run: by_carrier + { limit: 1 }",
-         "MISSING_FIELD",
+         "SHAPE_MISMATCH",
       ],
       [
          "a refinement that filters a limited query",
          "m.malloy",
          "run: top + { where: carrier = 'cc' }",
-         "MISSING_FIELD",
+         "SHAPE_MISMATCH",
       ],
       [
          "a use inside another definition of the model",
@@ -346,21 +346,21 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
       expect(fixture.built.map((b) => `${b.name}:${b.tier}`).sort()).toEqual(
          [
             "by_carrier__query:storage",
-            "by_carrier_colocated__query:colocated",
-            "by_month__query:colocated",
+            "by_carrier_database__query:database",
+            "by_month__query:database",
             "by_month_stored__query:storage",
-            "elsewhere__query:colocated",
-            "flagged__query:colocated",
-            "inline_target__query:colocated",
-            "listing__query:colocated",
-            "with_dupes__query:colocated",
-            "having_only__query:colocated",
-            "totals__query:colocated",
-            "null_flag__query:colocated",
-            "top__query:colocated",
-            "two_stage__query:colocated",
-            "vq__query:colocated",
-            "vs__by_tenant__view:colocated",
+            "elsewhere__query:database",
+            "flagged__query:database",
+            "inline_target__query:database",
+            "listing__query:database",
+            "with_dupes__query:database",
+            "having_only__query:database",
+            "totals__query:database",
+            "null_flag__query:database",
+            "top__query:database",
+            "two_stage__query:database",
+            "vq__query:database",
+            "vs__by_tenant__view:database",
          ].sort(),
       );
       const notBuilt = fixture.warnings
@@ -551,7 +551,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "a join to a named query that reads the run target",
          "query",
          "m.malloy",
-         "run: by_carrier_colocated -> { extend: { join_one: f is fl_q on carrier = f.carrier }; select: carrier, f.c; order_by: carrier }",
+         "run: by_carrier_database -> { extend: { join_one: f is fl_q on carrier = f.carrier }; select: carrier, f.c; order_by: carrier }",
          "names the named query `fl_q` beside",
       ],
       [
@@ -603,7 +603,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
             (c) => (c.kind as string) === leg,
          );
          expect(considered?.outcome).toBe("skipped");
-         expect(considered?.reason).toBe("MISSING_FIELD");
+         expect(considered?.reason).toBe("SHAPE_MISMATCH");
          expect(considered?.detail).toContain(detail);
       });
    }
@@ -637,8 +637,8 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          "a join to another model source after the query",
          "query",
          "m.malloy",
-         // A colocated table: a storage= one cannot join a warehouse source.
-         "run: by_carrier_colocated -> { extend: { join_one: cc is carrier_counts on carrier = cc.carrier }; select: carrier, n, cc.c; order_by: carrier }",
+         // A database table: a storage= one cannot join a warehouse source.
+         "run: by_carrier_database -> { extend: { join_one: cc is carrier_counts on carrier = cc.carrier }; select: carrier, n, cc.c; order_by: carrier }",
       ],
    ];
 
@@ -717,12 +717,12 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
                });
             return {
                queryUsed: await count("query", "used", "NONE"),
-               queryMissingField: await count(
+               queryShapeMismatch: await count(
                   "query",
                   "skipped",
-                  "MISSING_FIELD",
+                  "SHAPE_MISMATCH",
                ),
-               queryContract: await count("query", "skipped", "CONTRACT"),
+               queryContract: await count("query", "skipped", "ROW_LEVEL_GATE"),
                viewUsed: await count("view", "used", "NONE"),
                liveUsed: await count("live", "used", "NONE"),
             };
@@ -734,7 +734,7 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
 
       const none = {
          queryUsed: 0,
-         queryMissingField: 0,
+         queryShapeMismatch: 0,
          queryContract: 0,
          viewUsed: 0,
          liveUsed: 0,
@@ -747,10 +747,10 @@ describe("R4: a persisted named query answers its exact call, equal to live", ()
          });
       });
 
-      it("counts a refinement as the query leg skipped MISSING_FIELD, then live", async () => {
+      it("counts a refinement as the query leg skipped SHAPE_MISMATCH, then live", async () => {
          expect(await counted("run: by_carrier + { limit: 1 }")).toEqual({
             ...none,
-            queryMissingField: 1,
+            queryShapeMismatch: 1,
             liveUsed: 1,
          });
       });
@@ -831,5 +831,56 @@ describe("R4: a persisted named query with PUBLISHER_MATERIALIZE off", () => {
          );
       expect(byName.path?.servedBy.kind ?? "live").toBe("live");
       expect(byName.compactResult as unknown).toEqual(outcome.rows);
+   });
+});
+
+describe("R4: a persisted view with PUBLISHER_MATERIALIZE off", () => {
+   /** One valid persisted view, and a model whose view's line is invalid. */
+   const VIEWS = `##! experimental.persistence
+source: fl is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="fl_by_carrier"
+  view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`;
+   const INVALID = VIEWS.replace(
+      '#@ persist name="fl_by_carrier"',
+      '#@ persist name="fl_by_carrier" watermark=ts',
+   );
+   let restore: () => void;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "false" },
+      }).restore;
+      await freshLoadPool();
+   });
+   afterAll(() => restore());
+
+   it("a valid line loads, warns persist-view-not-built (materialization_off), and the view answers live", async () => {
+      const loaded = await loadFixture({ "m.malloy": VIEWS });
+      try {
+         const fixture = await loaded.bind();
+         const warned = fixture.warnings.filter(
+            (w) => w.code === "persist-view-not-built",
+         );
+         expect(warned.map((w) => w.subject)).toEqual(["fl -> by_carrier"]);
+         expect(warned[0]?.message).toContain("PUBLISHER_MATERIALIZE");
+         expect(fixture.built.filter((b) => b.name.endsWith("__view"))).toEqual(
+            [],
+         );
+         const outcome = answerOf(
+            await fixture.run("m.malloy", "run: fl -> by_carrier"),
+         );
+         expect(outcome.servedBy).toBe("live");
+         expect(outcome.rows.length).toBe(3);
+      } finally {
+         await loaded.dispose();
+      }
+   });
+
+   it("an invalid line fails the load, as with the switch on", async () => {
+      await expect(loadFixture({ "m.malloy": INVALID })).rejects.toThrow(
+         /persist-view-invalid|incremental key/,
+      );
    });
 });

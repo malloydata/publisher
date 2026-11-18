@@ -89,7 +89,10 @@ export function readTimeTermsOf(
    | {
         ok: false;
         reason: string;
-        refusal: "inherited_where_with_given" | "given_in_persisted_query";
+        refusal:
+           | "inherited_where_with_given"
+           | "reads_given"
+           | "given_where_over_unstored_field";
      } {
    const located = classified.flatMap(({ dependsOn }) =>
       dependsOn.kind === "given"
@@ -114,7 +117,7 @@ export function readTimeTermsOf(
          return {
             ok: false,
             reason: `${shown} reads a given that could not be read back, so it cannot be left out of the build`,
-            refusal: "given_in_persisted_query",
+            refusal: "reads_given",
          };
       }
       // Only its own declaration's: the served copy keeps no base's text, so
@@ -137,7 +140,7 @@ export function readTimeTermsOf(
                `${shown} reads a given and a field the table does not store ` +
                `(only dimensions of this source are stored), so it ` +
                `could not be re-applied over the table at read`,
-            refusal: "given_in_persisted_query",
+            refusal: "given_where_over_unstored_field",
          };
       }
       // The generated `where:` reads each given by the name the author wrote,
@@ -154,7 +157,7 @@ export function readTimeTermsOf(
          return {
             ok: false,
             reason: `${shown} reads a given whose declaration could not be read back, so the build cannot re-write the term`,
-            refusal: "given_in_persisted_query",
+            refusal: "reads_given",
          };
       }
       for (const d of declared as { name: string; url: string }[]) {

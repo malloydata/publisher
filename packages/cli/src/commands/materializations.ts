@@ -27,11 +27,14 @@ const SUCCESS_STATUSES = ["MANIFEST_FILE_READY"];
  */
 export const BUILT_NOT_SERVED_EXIT_CODE = 2;
 
-// Each run records metadata.trigger (SCHEDULER | ON_DEMAND) so a scheduled
-// rebuild is distinguishable from a manual one; it lives in the free-form
-// metadata object rather than a top-level field.
+// Each run records metadata.trigger (scheduler | on_demand; servers before
+// 0.15 wrote SCHEDULER | ON_DEMAND) so a scheduled rebuild is distinguishable
+// from a manual one; it lives in the free-form metadata object rather than a
+// top-level field. Shown lower-cased, so both spellings read the same.
 function triggerOf(m: any): string {
-  return (m?.metadata as { trigger?: string } | null)?.trigger ?? "";
+  return (
+    (m?.metadata as { trigger?: string } | null)?.trigger ?? ""
+  ).toLowerCase();
 }
 
 export async function listMaterializations(
@@ -200,17 +203,11 @@ export async function deleteMaterialization(
   environmentName: string,
   packageName: string,
   materializationId: string,
-  dropTables?: boolean,
 ): Promise<void> {
   await client.deleteMaterialization(
     environmentName,
     packageName,
     materializationId,
-    dropTables,
   );
-  logSuccess(
-    dropTables
-      ? `Deleted materialization and dropped its tables: ${materializationId}`
-      : `Deleted materialization: ${materializationId}`,
-  );
+  logSuccess(`Deleted materialization: ${materializationId}`);
 }

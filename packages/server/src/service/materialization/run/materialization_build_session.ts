@@ -18,6 +18,7 @@
  * logs and counts.
  */
 
+import { BuildCancelledError } from "../domain/build_cancelled";
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -50,7 +51,9 @@ import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
 import { fromSubselect } from "../subselect";
 import {
    type BuildCastOptions,
+   canonicalRenames,
    castToDeclaredTypes,
+   wideIntegerColumns,
    isCastConversionError,
    keepsWarehouseType,
    STORED_COLUMN_TYPE_MISMATCH_CODE,
@@ -67,6 +70,8 @@ import {
 import {
    bigQueryQueryLabelValue,
    snowflakeQueryTagValue,
+   snowflakeSessionCheckSQL,
+   snowflakeSessionParitySQL,
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
 import {
@@ -77,6 +82,12 @@ import {
    type BuildReadCost,
 } from "./build_read_cost";
 import { BIGQUERY_COST_COLUMNS, snowflakeCostSQL } from "./warehouse_sql";
+import {
+   bigQueryJobLister,
+   markBigQueryRead,
+   trackBigQueryJobs,
+   type BigQueryJobListerFactory,
+} from "./bigquery_job_cancel";
 import { recordAttributionSkipped } from "../../../materialization_metrics";
 import type { QueryMetadata } from "../../query_metadata";
 import {
@@ -91,6 +102,7 @@ import {
 } from "../../connection";
 import type { WatermarkBound } from "./incremental_apply";
 import { storageDestinationRoot } from "../../connection_config";
+import { lockDownDuckDBSession } from "../../duckdb_lockdown";
 import {
    DEFAULT_DESTINATION_SCHEMA,
    destinationSchemaOf,
@@ -172,6 +184,65 @@ function orderByExpressions(
 }
 
 /**
+ * Give a Snowflake build session the session parameters Malloy's live
+ * connection runs with (`snowflakeSessionParitySQL`), before any read, so the
+ * stored rows are the rows live computes: the same UTC day and the same
+ * Sunday week, and the same column-name case. Each is set the way the query
+ * tag is; then `TIMEZONE` and `WEEK_START` are read back on the same handle
+ * (`snowflakeSessionCheckSQL`), and a session that does not hold them fails
+ * the build: its day and week buckets could differ from live's and be
+ * served as exact. `QUOTED_IDENTIFIERS_IGNORE_CASE` is best-effort, logged
+ * when refused: the build stores each column under its declared name either
+ * way (`canonicalRenames`).
+ */
+async function alignSnowflakeSession(
+   session: DuckDBConnection,
+   handle: string,
+): Promise<void> {
+   for (const sql of snowflakeSessionParitySQL(handle)) {
+      try {
+         await session.runSQL(sql);
+      } catch (error) {
+         logger.warn(
+            "Could not set a Malloy session setting on the Snowflake build session",
+            {
+               statement: sql,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+      }
+   }
+   for (const check of snowflakeSessionCheckSQL(handle)) {
+      let held: string | null = null;
+      try {
+         held = settingValueOf(await session.runSQL(check.sql), check.name);
+      } catch (error) {
+         throw new Error(
+            `The Snowflake build session's ${check.name} could not be read back, so the build cannot be sure its buckets match live's: ${error instanceof Error ? error.message : String(error)}`,
+         );
+      }
+      if (held !== check.value) {
+         throw new Error(
+            `The Snowflake build session holds ${check.name} = ${held ?? "(not reported)"}, not Malloy's ${check.value}, so its day and week buckets could differ from live's; the build is refused. Allow ALTER SESSION SET ${check.name} for the build's role.`,
+         );
+      }
+   }
+}
+
+/** The `value` a `SHOW PARAMETERS` result reports for `name`, or null. */
+function settingValueOf(result: unknown, name: string): string | null {
+   for (const row of resultRows(result)) {
+      const lower = Object.fromEntries(
+         Object.entries(row).map(([k, v]) => [k.toLowerCase(), v]),
+      );
+      if (String(lower.key ?? "").toUpperCase() === name) {
+         return str(lower.value);
+      }
+   }
+   return null;
+}
+
+/**
  * Tag every subsequent read on a Snowflake build session with this build's
  * query metadata.
  *
@@ -189,6 +260,8 @@ async function tagSnowflakeSession(
    queryMetadata: QueryMetadata | undefined,
 ): Promise<void> {
    if (sourceType !== "snowflake") return;
+   // Malloy's session settings first, so the build reads as live does.
+   await alignSnowflakeSession(session, handle);
    const sql = snowflakeSetQueryTagSQL(queryMetadata, handle);
    if (sql === undefined) return;
    try {
@@ -342,6 +415,11 @@ export async function issuePassthroughRead(
    buildSQL: string,
    queryMetadata: QueryMetadata | undefined,
 ): Promise<PassthroughRead> {
+   // Marked so a cancelled build can find its job and cancel it
+   // (bigquery_job_cancel.ts); unchanged for any other engine.
+   if (sourceType === "bigquery") {
+      buildSQL = markBigQueryRead(session, buildSQL);
+   }
    const label =
       sourceType === "bigquery"
          ? bigQueryQueryLabelValue(queryMetadata)
@@ -672,7 +750,17 @@ export async function withDestinationSession<T>(
       destinationConnection: ApiConnection;
       environmentPath: string;
    },
-   options: { purpose: string; attachAs?: string; build?: boolean },
+   options: {
+      purpose: string;
+      attachAs?: string;
+      build?: boolean;
+      /**
+       * The run's cancel signal: on abort the session is interrupted
+       * ({@link interruptOnAbort}), so its statement in flight stops at
+       * DuckDB's next poll and nothing after it runs.
+       */
+      signal?: AbortSignal;
+   },
    fn: (session: DuckDBConnection) => Promise<T>,
 ): Promise<T> {
    const { destinationName, destinationConnection, environmentPath } =
@@ -682,29 +770,84 @@ export async function withDestinationSession<T>(
    return withIsolatedSession(
       `${options.purpose}_${destinationName}`,
       async (session) => {
-         await attachDestinationReadWrite(
-            session,
-            alias,
-            destinationConnection,
-            environmentPath,
-         );
-         if (options.build) {
-            await assertDestinationSchemaExists(
-               session,
-               alias,
-               destinationName,
-               destinationConnection,
-            );
-            if (destinationConnection.type === "ducklake") {
-               await session.runSQL(
-                  "SET ducklake_default_data_inlining_row_limit=0",
-               );
-            }
-            await pinSessionToUTC(session);
+         const stopInterrupting = interruptOnAbort(session, options.signal);
+         try {
+            return await onDestinationSession(session);
+         } finally {
+            stopInterrupting();
          }
-         return fn(session);
       },
    );
+
+   async function onDestinationSession(session: DuckDBConnection): Promise<T> {
+      await attachDestinationReadWrite(
+         session,
+         alias,
+         destinationConnection,
+         environmentPath,
+      );
+      if (options.build) {
+         await assertDestinationSchemaExists(
+            session,
+            alias,
+            destinationName,
+            destinationConnection,
+         );
+         if (destinationConnection.type === "ducklake") {
+            await session.runSQL(
+               "SET ducklake_default_data_inlining_row_limit=0",
+            );
+         }
+         await pinSessionToUTC(session);
+      }
+      return fn(session);
+   }
+}
+
+/**
+ * Stop `session`'s work when `signal` aborts (now, if it already has), until
+ * the returned function is called. A statement in flight is interrupted,
+ * and DuckDB stops it at its next poll; every statement after the abort is
+ * refused with {@link BuildCancelledError} before it starts, so an abort that
+ * lands while the session is idle (between the federation and the CTAS, say)
+ * is not lost. A read DuckDB makes through a warehouse extension
+ * (BigQuery's) is not cancelled in the warehouse by the interrupt: a
+ * BigQuery build cancels its jobs itself (bigquery_job_cancel.ts).
+ */
+export function interruptOnAbort(
+   session: DuckDBConnection,
+   signal: AbortSignal | undefined,
+): () => void {
+   if (!signal) return () => {};
+   const original = session.runSQL;
+   const guarded: typeof session.runSQL = (...args) =>
+      signal.aborted
+         ? Promise.reject(new BuildCancelledError())
+         : original.apply(session, args);
+   session.runSQL = guarded;
+   const interrupt = () => {
+      // The node-api connection is library-internal, as in dispose.
+      const connection = (
+         session as unknown as { connection?: { interrupt?: () => void } }
+      ).connection;
+      try {
+         connection?.interrupt?.();
+      } catch (err) {
+         logger.warn("Could not interrupt a cancelled build's session", {
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   };
+   const release = () => {
+      signal.removeEventListener("abort", interrupt);
+      if (session.runSQL === guarded) session.runSQL = original;
+   };
+   if (signal.aborted) {
+      interrupt();
+      return release;
+   }
+   signal.addEventListener("abort", interrupt, { once: true });
+   return release;
 }
 
 /** Result of building one source into a storage destination. */
@@ -792,6 +935,10 @@ export interface StorageIncrementalRefresh {
 export interface BuildSessionDeps {
    federate?: typeof federateSourceForPassthrough;
    read?: typeof issuePassthroughRead;
+   /** The Postgres column-type read a build stores exact numerics by. */
+   numericColumns?: typeof postgresNumericColumns;
+   /** The BigQuery jobs API a cancelled build cancels its reads through. */
+   bigQueryJobs?: BigQueryJobListerFactory;
 }
 
 /**
@@ -876,6 +1023,8 @@ export async function buildSourceIntoStorage(params: {
    incremental?: StorageIncrementalRefresh;
    /** See StorageBuildRequest.replacesView. */
    replacesView?: string[];
+   /** The run's cancel signal: interrupts the build's session on abort. */
+   signal?: AbortSignal;
    /**
     * Test seam for federation and the passthrough read; production passes
     * nothing. Lets a spec prove the `finally` closes a proxied source's tunnel
@@ -898,7 +1047,7 @@ export async function buildSourceIntoStorage(params: {
    try {
       return await withDestinationSession(
          params,
-         { purpose: "build", build: true },
+         { purpose: "build", build: true, signal: params.signal },
          async (session) => {
             const federated = await federate(
                session,
@@ -906,6 +1055,28 @@ export async function buildSourceIntoStorage(params: {
                sourceFederationConfig(sourceConnection),
             );
             federatedClose = federated.close;
+            // A BigQuery read outlives DuckDB's interrupt, so a cancel also
+            // cancels the build's jobs in BigQuery, under the read's own key.
+            const stopTrackingJobs =
+               sourceType === "bigquery"
+                  ? trackBigQueryJobs(session, params.signal, () =>
+                       (params.deps?.bigQueryJobs ?? bigQueryJobLister)(
+                          federated.handle,
+                          sourceConnection.bigqueryConnection
+                             ?.serviceAccountKeyJson,
+                       ),
+                    )
+                  : async () => {};
+            // Setup done (the destination attached, the source federated):
+            // confine the session to them (duckdb_lockdown.ts). The
+            // configuration is left unlocked because the build itself sets
+            // per-step options (threads around a partitioned write); no caller
+            // or author SQL runs in DuckDB here, as the build's SQL runs in the
+            // source warehouse through the passthrough.
+            await lockDownDuckDBSession(session, {
+               allow: destinationAllowlist(params),
+               lockConfiguration: false,
+            });
             try {
                return await buildOnFederatedSession(
                   params,
@@ -914,6 +1085,7 @@ export async function buildSourceIntoStorage(params: {
                   federated.handle,
                );
             } finally {
+               await stopTrackingJobs();
                await clearSnowflakeSessionTag(
                   session,
                   sourceType,
@@ -988,7 +1160,12 @@ async function buildOnFederatedSession(
    // text instead, staged, and stored as the DECIMAL that holds it
    // (postgres_numeric_precision.ts).
    const numeric = capabilitiesOf(sourceType).passthroughNumericAsDouble
-      ? await postgresNumericColumns(session, handle, buildSQL, sourceType)
+      ? await (params.deps?.numericColumns ?? postgresNumericColumns)(
+           session,
+           handle,
+           buildSQL,
+           sourceType,
+        )
       : { columns: [], numeric: [] };
    const passthrough = await read(
       session,
@@ -1085,6 +1262,8 @@ async function buildOnFederatedSession(
  * source, so `incremental` is not consulted here.
  */
 async function buildSameCatalogIntoStorage(params: {
+   /** The run's cancel signal: interrupts the build's session on abort. */
+   signal?: AbortSignal;
    destinationName: string;
    destinationConnection: ApiConnection;
    sourceConnection: ApiConnection;
@@ -1109,9 +1288,15 @@ async function buildSameCatalogIntoStorage(params: {
    }
    return withDestinationSession(
       params,
-      { purpose: "build", attachAs: alias, build: true },
+      { purpose: "build", attachAs: alias, build: true, signal: params.signal },
       async (session) => {
          await session.runSQL(managedSearchPathSql(alias));
+         // Confined to the catalog before the build's SQL runs, unlocked for the
+         // build's own per-step options (see buildSourceIntoStorage).
+         await lockDownDuckDBSession(session, {
+            allow: destinationAllowlist(params),
+            lockConfiguration: false,
+         });
          const target = quoteManifestTablePath(
             storageTablePath(
                alias,
@@ -1224,6 +1409,17 @@ export async function planChainedDownstream(params: {
     * with fewer columns than live. Absent: not checked.
     */
    recomputes?: PersistSource;
+   /**
+    * With `recomputes`: every column must also be declared as the type the
+    * recompute declares it, or the build is a shape it could not carry (a
+    * rollup over a stored base, whose aggregates could type otherwise).
+    */
+   sameDeclaredTypes?: boolean;
+   /**
+    * The downstream's build must read no given: a table holds one value's
+    * rows, which no caller's query may read as its own.
+    */
+   givenFree?: boolean;
 }): Promise<{ sql: string; downstream: PersistSource }> {
    const { model: build, downstreamName } = params;
    const virtualMap = new Map(
@@ -1307,6 +1503,41 @@ export async function planChainedDownstream(params: {
                `read through a definition no stored upstream carries`,
          });
       }
+      if (params.sameDeclaredTypes) {
+         const typed = (source: PersistSource) =>
+            JSON.stringify(
+               storageBuildCasts(source).declaredColumns.map((c) => [
+                  c.name,
+                  c.type,
+               ]),
+            );
+         let same = false;
+         try {
+            same = typed(params.recomputes) === typed(downstream);
+         } catch {
+            // An unreadable surface is not proven the same.
+         }
+         if (!same) {
+            throw new MaterializationEligibilityError({
+               message:
+                  `Chained build model of '${downstreamName}' over the rebound ` +
+                  `parents does not declare its columns as the types a ` +
+                  `recompute declares them`,
+            });
+         }
+      }
+   }
+   if (
+      params.givenFree &&
+      targets.connections.some((c) =>
+         c.targets.some(
+            (t) => t.readsGivens && t.sources.some((s) => s === downstream),
+         ),
+      )
+   ) {
+      throw new MaterializationEligibilityError({
+         message: `Chained build model of '${downstreamName}' reads a given`,
+      });
    }
    // The CTAS runs on a read-write session on the destination, as a
    // same-catalog build does, so the same rule holds: only SQL Malloy
@@ -1356,6 +1587,10 @@ export async function buildDownstreamIntoStorage(params: {
    downstreamName: string;
    /** See planChainedDownstream's `recomputes`. */
    recomputes?: PersistSource;
+   /** See planChainedDownstream's `sameDeclaredTypes`. */
+   sameDeclaredTypes?: boolean;
+   /** See planChainedDownstream's `givenFree`. */
+   givenFree?: boolean;
    /** connection → handle → quoted physical path for the upstream virtuals. */
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
@@ -1384,6 +1619,8 @@ export async function buildDownstreamIntoStorage(params: {
             downstreamName,
             virtualMap,
             ...(params.recomputes ? { recomputes: params.recomputes } : {}),
+            ...(params.sameDeclaredTypes ? { sameDeclaredTypes: true } : {}),
+            ...(params.givenFree ? { givenFree: true } : {}),
             connections: new FixedConnectionMap(
                new Map([[connectionName, session]]),
                connectionName,
@@ -1665,6 +1902,23 @@ async function attachDestinationReadWrite(
    );
 }
 
+/**
+ * What a build session on a destination reads and writes, beyond what its
+ * attach recorded (duckdb_lockdown.ts): the plain-DuckDB destinations' root,
+ * and the DuckLake destination's configured data path.
+ */
+function destinationAllowlist(params: {
+   destinationConnection: ApiConnection;
+   environmentPath: string;
+}): string[] {
+   const dataPath =
+      params.destinationConnection.ducklakeConnection?.storage?.bucketUrl;
+   return [
+      storageDestinationRoot(params.environmentPath),
+      ...(dataPath ? [dataPath] : []),
+   ];
+}
+
 /** Throw a clean 422 unless the destination is a supported storage type. */
 function assertSupportedDestination(
    destinationName: string,
@@ -1765,40 +2019,82 @@ export async function createTableWithDeclaredTypes(
       options.sourceType,
       options.described,
    );
-   const cast = castToDeclaredTypes(selectSQL, columns, declared);
-   if (cast === selectSQL) {
-      return createTableAndDescribe(
-         session,
-         quotedTablePath,
-         selectSQL,
-         options,
-      );
+   options = {
+      ...options,
+      declaredNames: declared.columns.map((c) => c.name),
+   };
+   const exactIntegers = await computedWideIntegers(
+      session,
+      selectSQL,
+      options.sourceType,
+      options.described,
+   );
+   // Each class of cast is tried alone after the whole set fails, so one
+   // value past 38 digits does not leave every other column uncast: the
+   // declared-type casts and the exact-integer casts, then the computed
+   // types as they are.
+   const attempts = [
+      castToDeclaredTypes(selectSQL, columns, { ...declared, exactIntegers }),
+      castToDeclaredTypes(selectSQL, columns, { ...declared }),
+      castToDeclaredTypes(selectSQL, [], { exactIntegers }),
+      selectSQL,
+   ].filter((sql, i, all) => all.indexOf(sql) === i);
+   for (const [i, sql] of attempts.entries()) {
+      try {
+         return await createTableAndDescribe(
+            session,
+            quotedTablePath,
+            sql,
+            options,
+         );
+      } catch (err) {
+         if (!isCastConversionError(err) || i === attempts.length - 1) {
+            throw err;
+         }
+         // Once per build, as before: one cast failed.
+         if (i === 0) recordStoredColumnTypeMismatch("build", "cast_failed");
+         logger.warn(
+            "A declared-type cast could not convert a stored value; storing that class of column as the warehouse computed it",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               table: quotedTablePath,
+               // Not the message: it quotes the value the cast refused.
+               errorCode: errorCodeOf(err),
+            },
+         );
+      }
    }
+   throw new Error("unreachable: the last attempt returns or throws");
+}
+
+/**
+ * The output columns a DuckDB-computed build (same-catalog or chained: no
+ * passthrough `sourceType`) produces as a 128-bit integer, which DuckLake
+ * would store as a DOUBLE (P4-01): stored as `DECIMAL(38,0)` instead
+ * ({@link wideIntegerColumns}). Read by describing the SELECT in the
+ * destination's session, which prepares it and runs nothing: the SELECT
+ * reads only the destination's own tables. A passthrough's columns arrive
+ * in the warehouse's types (a BigQuery INT64 as BIGINT, a Snowflake or
+ * Postgres number as DECIMAL), so it is not described, though a description
+ * the caller already holds is read. A describe that fails casts nothing; the
+ * build itself reports the error.
+ */
+async function computedWideIntegers(
+   session: DuckDBConnection,
+   selectSQL: string,
+   sourceType: FederatedSourceType | undefined,
+   described: readonly { name: string; type: string }[] | undefined,
+): Promise<string[]> {
+   if (described) return wideIntegerColumns(described);
+   if (sourceType !== undefined) return [];
    try {
-      return await createTableAndDescribe(
-         session,
-         quotedTablePath,
-         cast,
-         options,
-      );
+      return wideIntegerColumns(await describeTable(session, `(${selectSQL})`));
    } catch (err) {
-      if (!isCastConversionError(err)) throw err;
-      recordStoredColumnTypeMismatch("build", "cast_failed");
       logger.warn(
-         "A declared-type cast could not convert a stored value; storing the warehouse's types instead",
-         {
-            code: STORED_COLUMN_TYPE_MISMATCH_CODE,
-            table: quotedTablePath,
-            // Not the message: it quotes the value the cast refused.
-            errorCode: errorCodeOf(err),
-         },
+         "Could not describe a storage build's computed columns; storing its integers as computed",
+         { errorCode: errorCodeOf(err) },
       );
-      return await createTableAndDescribe(
-         session,
-         quotedTablePath,
-         selectSQL,
-         options,
-      );
+      return [];
    }
 }
 
@@ -1868,6 +2164,12 @@ export async function createTableAndDescribe(
        * (leftover_name_views.ts).
        */
       replacesView?: string[];
+      /**
+       * The column names the build source declares: a stored column that
+       * matches one only by a unique case fold is renamed to it, in the same
+       * transaction ({@link canonicalRenames}).
+       */
+      declaredNames?: readonly string[];
    } = {},
 ): Promise<WireColumn[]> {
    // In the transaction, not create-then-drop-on-failure: a DROP after the
@@ -1880,6 +2182,14 @@ export async function createTableAndDescribe(
       await session.runSQL(
          `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
       );
+      const described = await describeTable(session, quotedTablePath);
+      const renames = canonicalRenames(described, options.declaredNames ?? []);
+      if (renames.length === 0) return described;
+      for (const { from, to } of renames) {
+         await session.runSQL(
+            `ALTER TABLE ${quotedTablePath} RENAME COLUMN ${quoteIdentifier(from, STORAGE_DIALECT)} TO ${quoteIdentifier(to, STORAGE_DIALECT)}`,
+         );
+      }
       return await describeTable(session, quotedTablePath);
    });
 }

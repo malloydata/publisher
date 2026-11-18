@@ -1,0 +1,109 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * P2-29 (F-08): an `except:` on a `#(materialize)` source names a column its
+ * table never stores, so the re-root drops the item (`dropExceptItems`), as a
+ * v1 re-root always has: the source is served from its table, its answers
+ * equal live, the excluded column stays out of reach, and the served copy
+ * reports no problem. Before, the re-root kept the item, Malloy refused it,
+ * and every query answered live behind a `served-copy-not-served` warning.
+ */
+
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
+import {
+   buildScenario,
+   disposeScenarios,
+   rowDifference,
+   type R4Fixture,
+} from "./harness";
+
+const seedSql = [
+   `CREATE TABLE ev AS SELECT * FROM (VALUES
+      (1, 'east', 'x', 10.5, 'm1'),
+      (2, 'east', 'y', 20.0, 'm2'),
+      (3, 'west', 'x', 5.5, 'm3'),
+      (4, 'west', 'z', 11.0, 'm4'),
+      (5, 'east', 'z', 2.0, 'm5')
+    ) AS t(id, region, sub, amt, mark)`,
+];
+
+const model = `source: ev is duckdb.table('ev')
+
+#(materialize) name="one_except"
+source: one_except is ev extend {
+  except: mark
+}
+
+#(materialize) name="two_except"
+source: two_except is ev extend {
+  except: mark, sub
+  measure: total is amt.sum()
+}
+
+source: clipped_base is ev extend {
+  except: mark
+  measure: total is amt.sum()
+}
+
+#(materialize) name="clipped_base_mat"
+source: clipped_root is clipped_base extend {
+  where: amt > 3
+}
+
+#(materialize) name="clipped_ext"
+source: clipped_ext is clipped_root extend {
+  where: region = 'east'
+}
+`;
+
+describe("P2-29: an except: on a #(materialize) source is served from its table", () => {
+   let fixture: R4Fixture;
+   useMaterializationOn();
+   beforeAll(async () => {
+      fixture = await buildScenario({
+         files: { "m.malloy": model },
+         seedSql,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      await disposeScenarios();
+   });
+
+   const served = [
+      [
+         "an except: of one column",
+         "run: one_except -> { group_by: region, sub; aggregate: n is count() }",
+      ],
+      [
+         "an except: of two columns",
+         "run: two_except -> { group_by: region; aggregate: total }",
+      ],
+      [
+         "an extension table whose base, in the same file, writes except:",
+         "run: clipped_ext -> { group_by: sub; aggregate: total }",
+      ],
+   ] as const;
+   for (const [name, malloy] of served) {
+      it(name, async () => {
+         const run = await fixture.run({ name, malloy });
+         expect(run.servedVia).toBe("served_copy");
+         expect(run.servedBy?.kind).toBe("materialized");
+         expect(run.servedFrom).not.toBeNull();
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   }
+
+   it("keeps the excluded column out of reach, as live does", async () => {
+      fixture.setBindings(fixture.bindings);
+      await expect(
+         fixture.runAsIs("run: one_except -> { group_by: mark }"),
+      ).rejects.toThrow(/mark/);
+   });
+
+   it("raises no served-copy-not-served problem", async () => {
+      expect(await fixture.servedCopyProblems()).toEqual([]);
+   });
+});

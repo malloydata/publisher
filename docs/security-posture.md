@@ -51,7 +51,7 @@ stands in front of Publisher and does all of the following:
      `"frozenConfig": true` so the server refuses them.
    - the materialization routes (`…/packages/{packageName}/materializations` and everything under
      them). A run's record carries its build manifest, and each entry names the physical table a
-     source was built into. A colocated entry also lists `nativeSchema`: every column of the table,
+     source was built into. A database entry also lists `nativeSchema`: every column of the table,
      including ones the model marks private or internal, with its warehouse type. No row value is
      returned, but the names and types describe your warehouse, so restrict these routes to
      operators.
@@ -105,8 +105,9 @@ Concretely:
   imports the compile resolved, never text that merely looks like an import. Virtual files (a request's overlay, `/compile`'s `__compile_check.malloy`, the
   generated companions) are served from memory before the disk is asked. This bounds the
   compiler, not the query: SQL a model runs through DuckDB (`read_text`, `read_blob`,
-  `read_csv`, `read_parquet`) reaches the filesystem through the connection and is not confined
-  by this rule (see gap 6), which remains the larger open hole for a package author.
+  `read_csv`, `read_parquet`) reaches the filesystem through the connection, and is confined
+  by the connection's DuckDB lockdown instead: the sandbox to its package, an environment
+  connection to its environment directory or its data paths (see gap 6).
 - **A package's `publisher.json` is read and written only as a file inside the package.** A
   manifest that is a link out of the package, to anything or to nothing, a directory, or a file
   Publisher cannot read, gets one answer, that the manifest does not exist, and none of what it
@@ -190,6 +191,16 @@ Concretely:
   naming the path of a refused one widens nothing; it does mean an unauthenticated reader of
   `/status` learns the layout of the server's data directory, which the gateway in front is
   expected to keep from the public.
+- **Error bodies name no storage path.** Driver text that reaches a caller (a 4xx body, a Malloy
+  error, compile diagnostics, MCP error text, a run's recorded errors, `/status` `loadErrors`) has
+  every object-store and HTTP URL replaced with `<storage path>`, and the server log masks a signed
+  URL's signature, credential and token. An object store refusing a read (`HTTP … error on
+  '<url>' (HTTP 401|403)`, and Azure's and DuckDB's other forms) answers 403 on the query and raw `sqlQuery` routes, naming the source or connection the caller
+  read and no URL: `STORAGE_ACCESS_DENIED`, saying the query is fine, only for a URL under a data
+  path the environment configures, and `PATH_ACCESS_DENIED` for a path the query or model reads
+  itself. The full text, bucket and path included, is in the server
+  log. Hiding a schema a host's catalog uses (such as a managed `materialized` schema)
+  from models is the host's to configure, not Publisher's.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, and a package's `index.malloy` surface constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:
@@ -236,6 +247,13 @@ a source that should not answer schema questions to outsiders wants a lock as we
   accepting ACL-model disclosure: a gate reading `childtable.name` names a relationship the caller
   may not otherwise see, so a failure to attach the gate returns an opaque error naming no column,
   join, or expression — only the source.
+- **A gate is evaluated with the query it is grafted into.** A gate on a field computed from a
+  timestamp follows the query's `timezone:`, and a gate inherited through a `->` derivation filters
+  the derivation's output, after its `all()`, window functions and `limit` have run over every row.
+  For these two live behaviours served answers match a live run. Gate on a column that already
+  holds the date or key, and filter a derivation's input with a first-stage `where:` on the gate's
+  given when its global context is sensitive. See
+  [row-level-access.md § Where a gate is evaluated](row-level-access.md#where-a-gate-is-evaluated).
 - **A row-level gate's given values land in the warehouse query log.** The filter is inlined
   (`WHERE org_id IN (7, 8)`), not parameterized, so every caller's group set appears verbatim in
   the warehouse's own query logging. Weigh that when deciding what a given carries — a group set
@@ -250,10 +268,10 @@ a source that should not answer schema questions to outsiders wants a lock as we
   because the row-level change is what made it reachable — a whole-source gate denied on the source
   name before compiling anything.
 - **A stored table holds every caller's rows, with no gate.** A materialized source under its own
-  row-level gate (an `#(access_filter)`, an `#(authorize)` lock, or both) is built, colocated or in
+  row-level gate (an `#(access_filter)`, an `#(authorize)` lock, or both) is built, database or in
   a `storage=` destination, with every row, and the gate is re-applied each time Publisher reads
   the table. Only reads through Publisher are gated. Anyone who reads the table directly reads
-  every row: in the author's own warehouse for a colocated table, in the destination for a
+  every row: in the author's own warehouse for a database table, in the destination for a
   `storage=` one ([materialization.md](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
   Tables are named predictably, by package and source. So **never configure a storage
   destination's catalog, schema, data path or DuckDB file as an environment connection that models
@@ -289,6 +307,8 @@ layout, or a legacy `.malloynb`) is Malloy, markdown and renderer tags. It is de
 is what makes them reviewable in a pull request and agent-authorable. Keeping them that way is a
 deliberate property, not an accident of scope. It is not absolute today: gap 3 below is where a
 declarative artifact still carries author-controlled HTML.
+
+**Process backstop.** An unhandled promise rejection, whether from a connection driver (a fire-and-forget cancel, for one) or from Publisher's own code, is logged at error and counted on `publisher_unhandled_rejection_total`, and the server keeps running, including a rejection inside a package-load worker. An uncaught synchronous exception still ends the process, because it can leave state half-written.
 
 ## Known gaps
 
@@ -341,33 +361,91 @@ control is a deployment constraint rather than code: a worker reachable by more 
 must not expose MCP. The REST surface has no equivalent: every route is addressed under a
 specific environment, and none returns the whole set.
 
-**6. A shared worker must restrict caller-supplied Malloy itself, because DuckDB reaches the
-filesystem and the network by design.** Publisher creates its per-package DuckDB sandbox with
-DuckDB's defaults, so `enable_external_access` is on: a model can read a local file with
-`read_text('/etc/passwd')`, write one with `COPY ... TO`, or reach an address with
-`read_csv('http://169.254.169.254/...')`. On a single-tenant deployment that is not a gap -- it
-is the operator using their own machine, and the same capability is what lets a package read the
-CSV sitting beside it.
+**6. DuckDB is locked down, but org isolation inside one shared bucket needs scoped credentials.**
+Caller SQL reaches DuckDB (a raw `sqlQuery`, on the package sandbox too), and so does model text
+(`duckdb.sql(...)`, `duckdb.table(...)`). Every DuckDB instance Publisher creates now runs under one
+of two policies, chosen by what the instance legitimately needs
+(`packages/server/src/service/duckdb_lockdown.ts`):
 
-It becomes a gap the moment one worker process serves more than one tenant, because those reads
-happen on a host holding another tenant's data. The control belongs at the layer that knows a
-request is untrusted, which Publisher does not: **a multi-tenant deployment must reject
-caller-supplied Malloy constructs before they reach compile.** Malloy's restricted mode is the
-mechanism -- it refuses `.sql()`, `.table()`, direct SQL function calls and the `sql_*` functions,
-`import`, and `##!` flags (which also keeps out `given:` declarations) -- and the query path already
-uses it via `loadRestrictedQuery`. It does not stop a query from defining or extending sources, so
-a caller can still read an `internal:` field (`include { public: f }`); keep any data callers must
-not read in `private:` fields or behind an `#(authorize)` gate.
-An egress policy denying link-local is the network-layer
-backstop that survives a restricted-mode bypass.
+| Instance                                                                  | Policy                                                                                                                       |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| The per-package `duckdb` sandbox                                          | Malloy's `securityPolicy: "sandboxed"`: no network, no extension install, locked configuration, files confined to the package |
+| An environment `duckdb` connection with only `setupSQL`                   | The same confinement as options (the environment directory), then its `setupSQL`, then the lock                              |
+| An environment `duckdb` connection with `attachedDatabases`               | Its own setupSQL, attaches and secrets, then an allowlist (the environment directory and the URL scheme of each attached bucket), external access off, and the lock |
+| A `ducklake` connection, and a storage destination served from one        | Its catalog ATTACH and scoped secret, then an allowlist of exactly its data path, external access off, and the lock          |
+| A `motherduck` connection                                                 | Locked after open, like the networked readers                                                                                |
+| A build, load or copy session                                             | Its own attaches, then the allowlist and external access off; not configuration-locked, and no caller or author SQL runs in DuckDB on it |
 
-Do not reach for DuckDB's own `securityPolicy` to close this. `sandboxed` sets
-`enable_external_access=false` and adds an `allowed_directories` carve-out, but DuckDB resolves a
-relative path against the process working directory for its permission check rather than against
-`file_search_path` -- so `duckdb.table('data/sales.csv')`, which is how a package addresses its
-own files, is refused. Measured against the connector: absolute paths pass, relative ones do not,
-and `allowed_paths` does not rescue them. Publisher compiles packages in `worker_threads` sharing
-one process working directory, so per-package `chdir` is not available either.
+Under every policy: no file outside the allowlist (`..` and symlinks included), no ambient `AWS_*`
+credentials (httpfs's env-seeded settings are blanked and its global S3 fallback is off), no
+cloud-metadata or other non-allowlisted URL, no ATTACH of another catalog, no extension install or
+load beyond what the instance's own setup loaded (extension autoload is off), no persistent
+secret, and no `SET`/`RESET` once locked. On a locked instance, Publisher also refuses, before
+DuckDB sees it, any statement that creates or drops a secret, that reaches DuckDB's logging or
+profiling (which DuckDB's configuration lock does not cover), or that runs SQL taken from text
+(`query()`, a serialized plan, `IMPORT DATABASE`). It reads each statement with DuckDB's own
+parser where the parser can serialize it, and every statement with a fail-closed lexical check
+that re-reads comment and string text, so a construct read differently from DuckDB hides nothing.
+Publisher's own renewal of a storage secret is the one secret statement it admits. The lockdown is part of each instance's configuration identity, so an instance is never
+shared with a connection that needs a different setup or a different policy.
+
+What it does not cover, so a multi-tenant deployment still has to:
+
+- **Raw SQL is read-only; the connection's own work is not.** Caller and author SQL on a
+  DuckDB-backed connection (the sandbox, and an environment `duckdb`, `ducklake` or `motherduck`
+  connection) runs only as a single SELECT, CTEs included, decided by DuckDB's parser: at the
+  connection SQL routes, and, for a model, when the package loads (a `.sql()` source must be one
+  SELECT and a raw SQL expression one expression of one SELECT, or the package does not load). What still writes inside a connection's roots is the operator's `setupSQL`
+  and Publisher's own work (a `#@ persist` build, a temporary table it creates around a caller's
+  SELECT).
+- **A single SELECT can still change state.** The gate decides by statement shape, so a SELECT
+  that calls a function with a side effect is not refused: `checkpoint()`, `nextval()`, or a
+  `ducklake_*` maintenance function. For a catalog that serves callers, a read-only attach is the
+  control (a `ducklake` connection attaches read-only unless its config says otherwise).
+- **An attached `s3` or `gcs` bucket allowlists its whole URL scheme.** These entries name no
+  bucket, so a `duckdb` connection with one may reach any URL of that scheme, and the secret is the
+  control: callers cannot create, replace or drop secrets on a locked instance, so the only
+  credential and endpoint in force are the configured ones. Give such a credential access to the
+  buckets the connection should read and nothing else.
+- **`setupSQL` on a `duckdb` connection with `attachedDatabases` runs before the lock.** It runs
+  first, with external access still on, because the attaches that follow it need the network.
+  Allowing `setupSQL` (`PUBLISHER_ALLOW_DUCKDB_SETUP_SQL`) trusts its authors with the host for that
+  connection; on a connection with only `setupSQL`, it runs confined.
+
+- **Org isolation inside one shared bucket.** The allowlist confines a connection to its data path
+  as DuckDB compares paths, and that comparison is not a security boundary for object-store URLs. A
+  connection that runs author or caller SQL with a credential for a shared bucket can reach other
+  prefixes that credential can read. Isolating orgs inside one bucket requires credentials the host
+  scopes per org (a GCS Credential Access Boundary, AWS STS session policies, or a bucket per org),
+  so the credential itself cannot read another org's prefix.
+- **Network reach through a database extension.** An instance whose own setup loads a database
+  extension (the Postgres catalog of a DuckLake connection, an attached Postgres, BigQuery or
+  Snowflake database) keeps that extension's own client, which DuckDB's external-access setting does
+  not govern. Egress policy is the control.
+- **The host's credential chain.** An instance whose own setup resolves the host's identity
+  (`provider: credential_chain`) can resolve it again; the allowlist still bounds what it can read
+  with it. `S3_CREDENTIAL_CHAIN_POLICY` restricts which connections may use the chain at all.
+- **Relative reads in the sandbox** resolve against the process working directory for DuckDB's
+  permission check, so the package's top-level names are allowed there too, unless the working
+  directory already holds that name. A sandbox may therefore create, but never overwrite or read
+  someone else's, a file of one of those names in the server's working directory; run Publisher
+  from a directory nothing else reads. The names are taken when the instance opens, so a name
+  created in the working directory after that is still allowed for that instance's lifetime. A relative glob over the package's top level
+  (`'*.csv'`) is refused, because it lists the working directory; a glob in a subdirectory
+  (`'data/*.csv'`), a named file, or an absolute path reads.
+- **Windows** has no `sandboxed` policy (Malloy refuses it off POSIX, and its `local` policy
+  refuses every file). There the package sandbox is confined to its package the way an
+  environment connection with only `setupSQL` is: an allowlist, external access off, and the
+  lock, without Malloy's own path checks.
+- **MotherDuck** connections are locked like the networked readers, but are untested: they have
+  not been exercised against MotherDuck with external access off. The lock fails safe: if any step
+  of it, or a catalog read after it, fails, the connection fails with an error naming MotherDuck
+  and the step, and is never served half-locked.
+- **Malloy's restricted mode** remains the control for caller-supplied Malloy on a shared worker:
+  it refuses `.sql()`, `.table()`, raw SQL functions, `import` and `##!` flags, and the query path
+  uses it via `loadRestrictedQuery`. The DuckDB lockdown bounds what the SQL that remains can reach;
+  it does not decide which SQL a caller may run. An egress policy denying link-local addresses is
+  the network-layer backstop.
 
 **7. With package versioning on, an older version keeps its own governance.** A published
 version serves its own files, so its own `#(authorize)` gates, row filters and `index.malloy`

@@ -9,7 +9,7 @@
  * serving path now reads a column whose author field Malloy types as a
  * `bigint` number through its native type (`::"HUGEINT"`), so it stays served
  * from the table and comes back exact: the served copy over `#@ persist
- * storage=` and over `#(materialize)`, `storage=` and colocated, and the
+ * storage=` and over `#(materialize)`, `storage=` and database, and the
  * storage serve shape. A column no cast reads exactly is left out per query.
  *
  * On Postgres live itself rounds (its rows come back through JSON): served
@@ -94,6 +94,12 @@ interface Case {
    live?: true;
    /** The DuckDB tiers only (HUGEINT columns). */
    duckdbOnly?: true;
+   /**
+    * Answered live from a `storage=` table (P4-01): a storage destination is
+    * DuckLake, whose Parquet files hold a 128-bit integer as a DOUBLE, so the
+    * column has no exact read there. Served from a database DuckDB table.
+    */
+   liveOnStorage?: true;
 }
 
 const DUCKDB_CASES: Case[] = [
@@ -136,6 +142,7 @@ const DUCKDB_CASES: Case[] = [
          "run: s -> { group_by: g; aggregate: th is h.sum(), top is hmax.max(); order_by: g }",
       expect: { column: "top", values: [`${HUGE_MAX}`, "-5"] },
       duckdbOnly: true,
+      liveOnStorage: true,
    },
 ];
 
@@ -205,6 +212,8 @@ interface Tier {
    cases: Case[];
    /** Postgres: live rounds past 2^53, and served must equal that. */
    rounds?: true;
+   /** A `storage=` (DuckLake in production) tier. */
+   storage?: true;
    scenario: () => Promise<R4Scenario & { cleanup?: () => Promise<void> }>;
 }
 
@@ -213,6 +222,7 @@ const duckdbCases = [...DUCKDB_CASES, ...AUTHOR_FIELD_CASES];
 const tiers: Tier[] = [
    {
       label: "#@ persist storage=, served copy",
+      storage: true,
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       cases: duckdbCases,
       scenario: async () => ({
@@ -222,6 +232,7 @@ const tiers: Tier[] = [
    },
    {
       label: "#(materialize) storage=",
+      storage: true,
       env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
       cases: [...duckdbCases, ...JOIN_CASES],
       scenario: async () => ({
@@ -233,7 +244,7 @@ const tiers: Tier[] = [
       }),
    },
    {
-      label: "colocated #(materialize), DuckDB",
+      label: "database #(materialize), DuckDB",
       env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
       cases: [...duckdbCases, ...JOIN_CASES],
       scenario: async () => ({
@@ -247,7 +258,7 @@ const tiers: Tier[] = [
    ...(POSTGRES_URL
       ? [
            {
-              label: "colocated #(materialize), Postgres",
+              label: "database #(materialize), Postgres",
               env: {
                  PERSIST_STORAGE_MODE: "off",
                  PUBLISHER_MATERIALIZE: "true",
@@ -336,7 +347,7 @@ for (const tier of tiers) {
             expect(bigintFields(run.servedFields)).toEqual(
                bigintFields(run.liveFields),
             );
-            if (c.live) {
+            if (c.live || (c.liveOnStorage && tier.storage)) {
                expect(run.servedVia).toBeUndefined();
                return;
             }
@@ -431,12 +442,12 @@ source: s is base -> { select: * } extend {
 }
 
 /**
- * The v1 cutover's colocated tables (`#@ persist` with no `storage=`, under
+ * The v1 cutover's database tables (`#@ persist` with no `storage=`, under
  * the v1 cutover): the served copy reads them in the source's
  * own warehouse, and a big-integer column through the warehouse's own bigint
  * type, so it stays served and exact.
  */
-describe("R4: integers past 2^53 served from storage equal live (v1 colocated #@ persist, the v1 cutover)", () => {
+describe("R4: integers past 2^53 served from storage equal live (v1 database #@ persist, the v1 cutover)", () => {
    const values = seed("", true)[0].replace(/^CREATE TABLE big AS /, "");
    const model = `##! experimental { persistence }
 source: base is duckdb.sql("""${values}""")
@@ -467,8 +478,8 @@ source: s is base -> { select: * } extend {
       await freshLoadPool();
    });
 
-   it("binds the table colocated", () => {
-      expect(fixture.built).toEqual([{ name: "s", tier: "colocated" }]);
+   it("binds the table database", () => {
+      expect(fixture.built).toEqual([{ name: "s", tier: "database" }]);
    });
 
    for (const c of duckdbCases) {
@@ -508,7 +519,7 @@ const PAST_HUGEINT = 2n ** 127n;
 const HALF_PAST_INT64 = 6000000000000000001n;
 
 /**
- * A colocated column wider than any type Malloy names for a `bigint` number
+ * A database column wider than any type Malloy names for a `bigint` number
  * (review of #1714): read through a cast to exactly the type its build
  * captured from the warehouse's catalog, or, with no such cast, answered
  * live. Never narrowed: a served read that fails where live answers is a
@@ -631,7 +642,7 @@ source: s is pg.table('${schema}.v') -> {
 ];
 
 for (const tier of narrowingTiers) {
-   describe(`R4: a colocated big integer wider than Malloy's bigint type is never narrowed (${tier.label})`, () => {
+   describe(`R4: a database big integer wider than Malloy's bigint type is never narrowed (${tier.label})`, () => {
       let restore: () => void;
       let fixture: R4Fixture;
       let cleanup: (() => Promise<void>) | undefined;

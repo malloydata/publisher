@@ -29,7 +29,7 @@ describe("fetchManifestEntries", () => {
       return file;
    }
 
-   it("maps physicalTableName to the Malloy runtime tableName (colocated entries)", async () => {
+   it("maps physicalTableName to the Malloy runtime tableName (database entries)", async () => {
       const file = await writeManifest({
          builtAt: new Date().toISOString(),
          strict: false,
@@ -62,7 +62,7 @@ describe("fetchManifestEntries", () => {
       ];
       const file = await writeManifest({
          entries: {
-            // colocated: in-warehouse substitution
+            // database: in-warehouse substitution
             wh: {
                sourceEntityId: "wh",
                physicalTableName: "orders_v1",
@@ -100,7 +100,7 @@ describe("fetchManifestEntries", () => {
       });
    });
 
-   it("carries the host-supplied freshness fields verbatim (colocated)", async () => {
+   it("carries the host-supplied freshness fields verbatim (database)", async () => {
       const dataAsOf = "2026-07-07T00:00:00.000Z";
       const file = await writeManifest({
          entries: {
@@ -282,4 +282,59 @@ describe("splitManifestEntries", () => {
          warn.mockRestore();
       }
    });
+});
+
+describe("splitManifestEntries: table names it cannot read safely", () => {
+   const entry = (physicalTableName: string, storage?: string) =>
+      ({
+         sourceEntityId: "x",
+         sourceName: "s",
+         physicalTableName,
+         connectionName: "duckdb",
+         ...(storage ? { storageDestinationName: storage } : {}),
+      }) as never;
+
+   for (const from of ["host", "store"] as const) {
+      it(`refuses a backslash, quotes that do not parse, or an empty part, from the ${from}, on either tier`, () => {
+         const split = splitManifestEntries(
+            {
+               a: entry("t\\'; DROP TABLE x --"),
+               b: entry('"s.t'),
+               c: entry('s"x.t'),
+               d: entry("sch\\.t", "lake"),
+               e: entry("a..b"),
+               f: entry(".t"),
+               g: entry("s.", "lake"),
+            },
+            "test",
+            from,
+         );
+         expect(split.tableNameManifest).toEqual({});
+         expect(split.storageEntries).toEqual({});
+      });
+
+      it(`keeps every name a writer sends, from the ${from}`, () => {
+         const split = splitManifestEntries(
+            {
+               a: entry("analytics.orders__g001__0a1b2c3d"),
+               b: entry("s.t"),
+               c: entry("proj-1.ds.t"),
+               d: entry("it's.t"),
+               // An author's own manifestLocation manifest, or a legacy one.
+               e: entry('"My Schema"."T x"'),
+               f: entry("`proj.ds.t`"),
+            },
+            "test",
+            from,
+         );
+         expect(Object.keys(split.tableNameManifest).sort()).toEqual([
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "f",
+         ]);
+      });
+   }
 });

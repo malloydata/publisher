@@ -14,7 +14,7 @@ import {
 } from "../../../test_helpers/materialization_service_harness";
 
 /**
- * buildOneSource: the colocated CTAS/swap, the SQL it issues and the metadata
+ * buildOneSource: the database CTAS/swap, the SQL it issues and the metadata
  * it carries, and the upstream reuse it reports.
  */
 
@@ -75,12 +75,12 @@ describe("buildOneSource", () => {
                if (metadata?.connection) {
                   return { queryMetadata: metadata.connection };
                }
-               throw new Error("no connection config in this colocated test");
+               throw new Error("no connection config in this database test");
             },
             getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
-         // A colocated build with no prior storage upstreams.
+         // A database build with no prior storage upstreams.
          builtEntries: {},
          buildMetadata: metadata
             ? {
@@ -110,7 +110,7 @@ describe("buildOneSource", () => {
 
       const bags = runSQL.getCalls().map((c) => c.args[1]?.queryMetadata);
       // The staging drop, the CTAS, the swap, and the read of the built
-      // table's column types (colocated_native_types.ts).
+      // table's column types (database_native_types.ts).
       expect(bags).toHaveLength(4);
       for (const bag of bags) {
          expect(bag).toEqual({
@@ -166,7 +166,7 @@ describe("buildOneSource", () => {
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          'BEGIN TRANSACTION;\nDROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";\nCOMMIT;',
-         // Then the built table's column types (colocated_native_types.ts).
+         // Then the built table's column types (database_native_types.ts).
          'DESCRIBE "orders_v1"',
       ]);
       expect(entry.physicalTableName).toBe("orders_v1");
@@ -296,11 +296,11 @@ describe("buildOneSource", () => {
       expect(entry.physicalTableName).toBe("ds.orders_v1");
    });
 
-   it("colocated build excludes a storage upstream from its warehouse manifest (mixed chain)", async () => {
-      // A colocated downstream that reads a storage-materialized
+   it("database build excludes a storage upstream from its warehouse manifest (mixed chain)", async () => {
+      // A database downstream that reads a storage-materialized
       // upstream must NOT get the lake table name in its warehouse build SQL —
       // the warehouse can't resolve it. The storage upstream is excluded (⇒
-      // inlined/recomputed); a colocated upstream is kept. The build SQL is
+      // inlined/recomputed); a database upstream is kept. The build SQL is
       // the first render; the second is the permissive full-manifest render
       // the reuse classification compares it with.
       const runSQL = sinon.stub().resolves();
@@ -340,7 +340,7 @@ describe("buildOneSource", () => {
          }
       ).buildOneSource({
          persistSource: down,
-         // No destination: colocated.
+         // No destination: database.
          instruction: {
             sourceEntityId: "downdowndowndown",
             materializedTableId: "mt",
@@ -351,7 +351,7 @@ describe("buildOneSource", () => {
          manifest,
          environment: {
             getApiConnection: () => {
-               throw new Error("unused in the colocated build");
+               throw new Error("unused in the database build");
             },
             getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",

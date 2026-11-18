@@ -14,9 +14,9 @@
  * their mark names ({@link provenOwnView}: a view repointed in place keeps
  * its comment, so the mark alone never decides):
  *
- * - a drop of a table (a run deleted with its tables, a version's tables
- *   reclaimed) also drops each such view the package's runs recorded over
- *   it ({@link dropLeftoverNameViews}), so no view is left reading nothing
+ * - a reclaim's drop of a table (a version's tables reclaimed) also drops
+ *   each such view the package's runs recorded over it
+ *   ({@link dropLeftoverNameViews}), so no view is left reading nothing
  *   (and on Postgres, where a view binds to its table, the table's drop is
  *   not refused);
  * - a build at an author's `name=` (v1 `#@ persist` or `#(materialize)`)
@@ -154,7 +154,12 @@ export async function provenOwnView(
    const definition =
       answer === undefined ? undefined : field(answer, "definition");
    return typeof definition === "string" &&
-      viewDefinitionReadsOnly(definition, target, field(answer!, "view_schema"))
+      viewDefinitionReadsOnly(
+         definition,
+         target,
+         field(answer!, "view_schema"),
+         site.dialect,
+      )
       ? { name, target, comment, definition }
       : undefined;
 }

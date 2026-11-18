@@ -6,7 +6,7 @@
  * behalf (ms2data/service#7802):
  *
  * - a published version bound to a manifest compiles once: its models are
- *   hydrated over the manifest's colocated entries, so the bind that follows
+ *   hydrated over the manifest's database entries, so the bind that follows
  *   does not reload them, and it serves what the load-then-reload served;
  * - a rebind whose entries differ only in what a compile does not read
  *   (freshness, schemas) binds them without a package compile;
@@ -101,6 +101,9 @@ describe("a package compiles once per thing a compile reads", () => {
 
    afterEach(async () => {
       compiles.mockRestore();
+      // Release every loaded package: a table a rebind could not read keeps
+      // a retry timer that would otherwise fire into a later spec file.
+      await env.closeAllConnections().catch(() => {});
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
@@ -111,7 +114,7 @@ describe("a package compiles once per thing a compile reads", () => {
          sourceLocation: null,
       });
 
-   /** A host manifest binding `summary` to `summary_a`, and its colocated entries. */
+   /** A host manifest binding `summary` to `summary_a`, and its database entries. */
    async function writeManifest(
       pkg: Package,
    ): Promise<{ file: string; entries: FreshnessManifest }> {
@@ -187,7 +190,7 @@ describe("a package compiles once per thing a compile reads", () => {
       const pkg = await loadVersion(missing);
       expect(compiles).toHaveBeenCalledTimes(1);
       expect(pkg.getOperationalFields().manifestBindingStatus).toBe(
-         "live_fallback",
+         "bind_failed",
       );
       expect(pkg.materialization().getBuildManifestEntries()).toBeUndefined();
       expect(await total(pkg)).toBe(1);
@@ -232,9 +235,9 @@ describe("a package compiles once per thing a compile reads", () => {
       expect(pkg.getModel("m.malloy")).toBe(model);
       const bound = (
          pkg.materialization() as unknown as {
-            boundColocatedEntries(): FreshnessManifest;
+            boundDatabaseEntries(): FreshnessManifest;
          }
-      ).boundColocatedEntries();
+      ).boundDatabaseEntries();
       expect(bound[id]).toMatchObject({
          dataAsOf: "2026-11-02T00:00:00Z",
          schema: [
@@ -253,6 +256,26 @@ describe("a package compiles once per thing a compile reads", () => {
       ).toBe(true);
       expect(compiles).toHaveBeenCalledTimes(2);
       expect(pkg.getManifestLocation()).toBeNull();
+   });
+
+   it("cancels an unread table's retry when the package is released, and schedules none after", async () => {
+      const probe = await loadVersion(null);
+      const { entries } = await writeManifest(probe);
+      const [id] = Object.keys(entries);
+      const pkg = await loadVersion(null);
+      // `summary_b` does not exist: the bind cannot read it, and retries.
+      await pkg.reloadAllModels(
+         { [id]: { ...entries[id], tableName: "summary_b" } },
+         { ifChanged: true },
+      );
+      const unread = () =>
+         (pkg.getPackageMetadata().warnings ?? []).find(
+            (w) => w.code === "database-table-unread",
+         );
+      expect(pkg.materialization().hasUnreadDatabaseTables()).toBe(true);
+      expect(unread()?.message).toContain("A retry is pending.");
+      await pkg.releaseConnections();
+      expect(unread()?.message).not.toContain("A retry is pending.");
    });
 
    it("keeps a version's stored manifestLocation through a load and every rebind", async () => {

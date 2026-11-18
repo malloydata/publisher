@@ -25,14 +25,23 @@ import {
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
-import type { ParentKeyCheck, RollupKeyCheck } from "../domain/table_plans";
+import type {
+   OverStoredBase,
+   ParentKeyCheck,
+   RollupKeyCheck,
+} from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
-import { buildSQLOf } from "../plan/addressing";
+import { buildSQLOf, presentAs } from "../plan/addressing";
+import { outputColumnsOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
    PersistSource,
 } from "@malloydata/malloy";
-import { BuildRunFailedError, combineRetryable } from "./build_failure_class";
+import {
+   BuildRunFailedError,
+   combineRetryable,
+   withFailedRunManifest,
+} from "./build_failure_class";
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -48,9 +57,19 @@ import {
 import { getPersistStorageMode } from "../../../config";
 import { withSpan } from "../../../telemetry";
 import { errMessage } from "../../../utils";
-import { quoteManifestTablePath } from "../../quoting";
-import { ColocatedTier } from "./colocated_build_strategy";
-import { StorageBuildStrategy } from "./storage_build_strategy";
+import {
+   quoteManifestTablePath,
+   UnquotableIdentifierError,
+} from "../../quoting";
+import { DatabaseTier } from "./database_build_strategy";
+import {
+   StorageBuildStrategy,
+   type StoredRollupBase,
+} from "./storage_build_strategy";
+import {
+   storageBuildCasts,
+   storedColumnTypeMismatches,
+} from "../stored_column_types";
 import {
    computeSourceEntityId,
    deriveAnnotationFields,
@@ -79,13 +98,14 @@ import {
    indexInstructions,
    recordInstructedBuildFailure,
    resolveInstruction,
-   type ColocatedRefusal,
+   type DatabaseRefusal,
    type InstructedBuildOptions,
    type InstructedRun,
    type PendingRefusal,
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
 import { freshnessOf } from "../domain/freshness";
+import { STORAGE_DIALECT } from "../domain/dialect";
 import {
    allSourcesRefusedError,
    BuildEnvironment,
@@ -127,7 +147,7 @@ import {
 } from "./run_telemetry";
 
 /** The tiers a key check runs through, where its table lives. */
-const COLOCATED = new ColocatedTier();
+const DATABASE = new DatabaseTier();
 // Only its key checks. A build goes through the service's adapter, which
 // routes a chained build through the run's collaborators; this one would not.
 const STORAGE: Pick<StorageBuildStrategy, "checkKey" | "keyCheckSql"> =
@@ -201,9 +221,9 @@ async function checkBuiltKeys(
             ),
          {
             notRun:
-               "A stored source's primary key check did not run; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+               "A stored source's primary key check did not run; its queries through a storage #(rollup) rollup read as a join_many are answered live",
             notUnique:
-               "A stored source holds its primary key more than once or NULL; its queries through a storage #(preaggregate) rollup read as a join_many are answered live",
+               "A stored source holds its primary key more than once or NULL; its queries through a storage #(rollup) rollup read as a join_many are answered live",
          },
          { source: persistSource.name, keyColumn: stored.keyColumn },
          // Recorded under its own sourceID.
@@ -339,34 +359,50 @@ export class InstructedBuild {
    /**
     * Quote a seeded upstream's physical path for the in-memory build Manifest,
     * mirroring the CREATE side ({@link quoteManifestTablePath}) so a downstream
-    * resolves it on a case-folding engine. Without a resolvable connection the
-    * path binds unquoted; on a case-folding engine the downstream CREATE then
-    * fails loudly.
+    * resolves it on a case-folding engine. Quoted for its own connection's
+    * dialect; with no connection named, for the one dialect every connection
+    * of this build shares. Undefined, never the name as given, when no dialect
+    * is found: the seed is not bound, and a downstream reads its upstream
+    * live (or, strict, fails its own compile). Throws
+    * {@link UnquotableIdentifierError} for a name its dialect cannot quote.
     */
    private quoteSeedTablePath(
       sourceEntityId: string,
       physicalTableName: string,
       connectionName: string | undefined,
       connections: Map<string, MalloyConnection>,
-   ): string {
-      const connection = connectionName
-         ? connections.get(connectionName)
-         : undefined;
-      if (!connection) {
-         // Only a named-but-absent connection is a real gap; a missing name is
-         // the benign older-caller default.
-         if (connectionName) {
-            recordManifestBindDegraded();
-            logger.warn(
-               "Seeded upstream names a connection not present in this build; " +
-                  "leaving its manifest path unquoted (a downstream build will " +
-                  "fail on a case-folding engine)",
-               { sourceEntityId, connectionName },
+   ): string | undefined {
+      if (connectionName) {
+         const connection = connections.get(connectionName);
+         if (connection) {
+            return quoteManifestTablePath(
+               physicalTableName,
+               connection.dialectName,
             );
          }
-         return physicalTableName;
+         recordManifestBindDegraded();
+         logger.warn(
+            "Seeded upstream names a connection not present in this build; " +
+               "not binding it for downstream reads",
+            { sourceEntityId, connectionName },
+         );
+         return undefined;
       }
-      return quoteManifestTablePath(physicalTableName, connection.dialectName);
+      // An older caller names no connection: the build's own dialect, when
+      // its connections agree on one.
+      const dialects = new Set(
+         [...connections.values()].map((c) => c.dialectName),
+      );
+      if (dialects.size === 1) {
+         return quoteManifestTablePath(physicalTableName, [...dialects][0]);
+      }
+      logger.warn(
+         "Seeded upstream names no connection, and this build's connections " +
+            "do not share one dialect to quote it in; not binding it for " +
+            "downstream reads",
+         { sourceEntityId },
+      );
+      return undefined;
    }
 
    /**
@@ -473,6 +509,10 @@ export class InstructedBuild {
       };
       try {
          await this.buildEveryTable(run, builds, tables, connections);
+         // Stopped during the last source: the loop has nothing left to
+         // check before, so the run settles CANCELLED here rather than
+         // committing a partial manifest that would serve (P5-10).
+         if (run.signal?.aborted) throw new BuildCancelledError();
 
          settled = settleRefusals(run);
 
@@ -480,24 +520,27 @@ export class InstructedBuild {
          // attached. Thrown inside the try so it takes the same cleanup path as
          // any other total failure.
          if (run.builtSources.length === 0 && run.failedReasons.length > 0) {
-            throw new BuildRunFailedError(
-               [
-                  ...run.failedReasons,
-                  ...run.refusals.map((e) => e.message),
-                  ...priorRefusals.map((r) => r.message),
-               ].join("; "),
-               // Every source's own answer (a refusal is recorded in
-               // `failures` as `false` too), plus auto-run's refusals, which
-               // never reached this loop and are deterministic.
-               combineRetryable([
-                  ...Object.values(run.failures).map((f) => f.retryable),
-                  ...priorRefusals.map(() => false),
-               ]),
+            throw failedRunError(
+               run,
+               new BuildRunFailedError(
+                  [
+                     ...run.failedReasons,
+                     ...run.refusals.map((e) => e.message),
+                     ...priorRefusals.map((r) => r.message),
+                  ].join("; "),
+                  // Every source's own answer (a refusal is recorded in
+                  // `failures` as `false` too), plus auto-run's refusals, which
+                  // never reached this loop and are deterministic.
+                  combineRetryable([
+                     ...Object.values(run.failures).map((f) => f.retryable),
+                     ...priorRefusals.map(() => false),
+                  ]),
+               ),
             );
          }
          // Every instructed source was refused by its own gate: the refusal is
          // the answer. Not when a source its own gate admits was held back only
-         // because a colocated sibling on its table is refused: the address
+         // because a database sibling on its table is refused: the address
          // fails in `failures`, as an address with a refused source always
          // has, and the run is not failed for it.
          if (
@@ -505,11 +548,11 @@ export class InstructedBuild {
             run.refusals.length > 0 &&
             !run.heldBackBySibling
          ) {
-            throw allSourcesRefusedError(run.refusals);
+            throw failedRunError(run, allSourcesRefusedError(run.refusals));
          }
       } catch (err) {
-         // A run that commits no manifest leaves its written tables unreachable
-         // to manifest-driven GC, so reclaim them before rethrowing.
+         // A failed run's manifest records no entry, so its written tables are
+         // unreachable to manifest-driven GC: reclaim them before rethrowing.
          // Best-effort: the build's own failure is what the caller needs.
          if (owner) {
             reportRetainedStorageTables(run.retainedThisRun, owner.packageName);
@@ -684,7 +727,10 @@ export class InstructedBuild {
             // every other table has, so a base this run builds is there
             // to read. Nothing a run builds reads a rollup's table.
             const table = tables[persistSource.sourceID];
-            if (table?.kind === "rollup" && table.overStoredBase) {
+            if (
+               table?.kind === "rollup" &&
+               (table.overStoredBase || table.storedBase)
+            ) {
                deferred.push({
                   persistSource,
                   connectionName: build.connectionName,
@@ -752,14 +798,28 @@ export class InstructedBuild {
             // The build Manifest feeds a downstream `FROM` verbatim, so it needs
             // the quoting the table was CREATEd with. `entries` (the committed
             // manifest) keeps the logical, unquoted name.
-            manifest.update(sourceEntityId, {
-               tableName: this.quoteSeedTablePath(
+            let tableName: string | undefined;
+            try {
+               tableName = this.quoteSeedTablePath(
                   sourceEntityId,
                   entry.physicalTableName,
                   entry.connectionName,
                   connections,
-               ),
-            });
+               );
+            } catch (err) {
+               if (!(err instanceof UnquotableIdentifierError)) throw err;
+               // A name its dialect cannot quote is not bound: a downstream
+               // reads its upstream live (or, strict, fails its own compile),
+               // and the rest of the run goes on.
+               logger.warn(
+                  "Seeded upstream's table name cannot be quoted for its dialect; " +
+                     "not binding it for downstream reads",
+                  { sourceEntityId, error: err.message },
+               );
+            }
+            if (tableName !== undefined) {
+               manifest.update(sourceEntityId, { tableName });
+            }
          }
          entries[sourceEntityId] = entry;
       }
@@ -786,6 +846,15 @@ export class InstructedBuild {
       if (!gated) return;
       const { instruction, sourceEntityId, target } = gated;
       const { compiled } = run;
+      // Set by the `storage=` build when it grouped the base's stored table.
+      let stacked = false;
+      const offered = storedRollupBase(run, persistSource, gated);
+      const storedBase = offered && {
+         ...offered,
+         onStacked: () => {
+            stacked = true;
+         },
+      };
       const built = await this.buildGatedSource(
          run,
          (await overStoredBaseSource(run, persistSource, gated)) ??
@@ -793,8 +862,14 @@ export class InstructedBuild {
          graphConnectionName,
          connection,
          gated,
+         storedBase,
       );
       if (!built) return;
+      // A `storage=` rollup that grouped its base's stored table is anchored
+      // at that table, as a database one is.
+      if (storedBase && stacked) {
+         (run.readFrom ??= new Map()).set(sourceEntityId, [storedBase.address]);
+      }
       const entry = withRollupUpstreamReuse(
          run,
          persistSource,
@@ -805,7 +880,7 @@ export class InstructedBuild {
       reportSourceBuilt(
          {
             kind: buildKindOf(compiled, persistSource.sourceID),
-            tier: entry.storageDestinationName ? "storage" : "colocated",
+            tier: entry.storageDestinationName ? "storage" : "database",
             sourceEntityId,
             sourceName: persistSource.name,
             physicalTableName: instruction.physicalTableName,
@@ -836,7 +911,7 @@ export class InstructedBuild {
 
    /**
     * The gates before one instructed source's build: its instruction, its
-    * eligibility, a colocated sibling's refusal, the storage re-assert, and
+    * eligibility, a database sibling's refusal, the storage re-assert, and
     * another route to a table this run built or failed. What the build needs,
     * or undefined when the source is not built (any refusal recorded).
     */
@@ -871,13 +946,33 @@ export class InstructedBuild {
             compiled.tableFolds,
          );
 
-      // A colocated table is served by its address, so the bind refuses the
+      // A host-supplied name its dialect cannot quote (it does not parse, or
+      // holds a part the dialect cannot hold) fails the same way on every
+      // attempt, so this source alone is refused, not built and retried.
+      const unquotable = unquotableTargetName(persistSource, instruction);
+      if (unquotable) {
+         recordPendingRefusal(
+            run,
+            persistSource,
+            instruction,
+            sourceEntityId,
+            new MaterializationEligibilityError({
+               message:
+                  `'${persistSource.name}' is not built: its table name ` +
+                  `cannot be written as SQL. ${unquotable}`,
+            }),
+            true,
+         );
+         return undefined;
+      }
+
+      // A database table is served by its address, so the bind refuses the
       // whole address when any source on it is refused
-      // (collectColocatedSourceEligibility). Building it would write a table
+      // (collectDatabaseSourceEligibility). Building it would write a table
       // nothing serves; refuse this source with its sibling's reason instead,
       // so every source on the address gets one outcome whatever the order.
       if (!instruction.destination) {
-         const sibling = colocatedRefusalOn(
+         const sibling = databaseRefusalOn(
             run,
             sourceEntityId,
             persistSource.sourceID,
@@ -893,7 +988,7 @@ export class InstructedBuild {
                   message:
                      `'${persistSource.name}' is not built: it shares its ` +
                      `table with '${sibling.name}', which the eligibility ` +
-                     `gate refuses for a colocated build, and a colocated ` +
+                     `gate refuses for a database build, and a database ` +
                      `table is served to every source on it. ` +
                      sibling.message,
                }),
@@ -970,6 +1065,7 @@ export class InstructedBuild {
       graphConnectionName: string,
       connection: MalloyConnection,
       { instruction, orchestrated, sourceEntityId, target }: GatedSource,
+      storedBase?: StoredRollupBase,
    ): Promise<ManifestEntry | undefined> {
       const { compiled } = run;
       // An auto-run's table at the author's own `name=`, which another
@@ -1042,13 +1138,18 @@ export class InstructedBuild {
             contentSourceEntityId: sourceEntityId,
             planFacts: run.planFacts,
             ...(replacesView ? { replacesView } : {}),
+            ...(storedBase ? { storedBase } : {}),
+            ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
+               ? { rollup: true }
+               : {}),
+            ...(run.signal ? { signal: run.signal } : {}),
          });
          // A manifest travels without its build plan, so this is the only
          // signal that a table belongs to a rollup in no model file; served
          // as an ordinary binding it would be silently dropped (see
          // preaggregation_serve_bindings).
          if (compiled.tables[persistSource.sourceID]?.rollup) {
-            built = { ...built, origin: "preaggregate" as const };
+            built = { ...built, origin: "rollup" as const };
          }
          if (ownedTarget) {
             await markBuiltOwnedTable(
@@ -1062,7 +1163,7 @@ export class InstructedBuild {
       };
       try {
          // An instructed destination that cannot be honored REFUSES, never
-         // falls through to a colocated build: that would write the caller's
+         // falls through to a database build: that would write the caller's
          // name into the source's own warehouse and answer success.
          assertInstructedDestinationWritable(
             persistSource,
@@ -1122,8 +1223,8 @@ export class InstructedBuild {
             orchestrated &&
             !!instruction.destination &&
             getPersistStorageMode() !== "off";
-         // Every other instruction (colocated, or any build while the mode is
-         // off) takes the colocated gate however it was instructed, unless
+         // Every other instruction (database, or any build while the mode is
+         // off) takes the database gate however it was instructed, unless
          // auto-run already cleared the source through one of the two gates.
          // Never both: the storage gate already runs the same IR walk.
          // Its own placement, never a sibling's (assertPlacementNamed).
@@ -1334,6 +1435,20 @@ function settleRefusals(run: InstructedRun): {
 }
 
 /**
+ * A run that built nothing, as the error it throws, carrying the manifest its
+ * FAILED record keeps: every source's own failure, a refusal included
+ * ({@link settleRefusals}). No entries: a seeded entry names a table an
+ * earlier run built, and a failure's deprecated mirror names the previous
+ * generation's, so neither belongs to this run, and deleting its record must
+ * never drop them.
+ */
+function failedRunError<
+   E extends BuildRunFailedError | MaterializationEligibilityError,
+>(run: InstructedRun, err: E): E {
+   return withFailedRunManifest(err, { failures: { ...run.failures } });
+}
+
+/**
  * Record a `storage=` source whose connection the build cannot read as
  * refused, as the plan's gate would have (storage_build_strategy.ts), so the
  * run goes on. Returns whether `err` was that refusal.
@@ -1363,6 +1478,27 @@ function refusedForItsConnection(
       true,
    );
    return true;
+}
+
+/**
+ * Why `instruction`'s table name cannot be quoted for the dialect it is
+ * written in (the source's own, or the storage destination's), or undefined
+ * when it can.
+ */
+function unquotableTargetName(
+   persistSource: PersistSource,
+   instruction: BuildInstruction,
+): string | undefined {
+   try {
+      quoteManifestTablePath(
+         instruction.physicalTableName,
+         instruction.destination ? STORAGE_DIALECT : persistSource.dialectName,
+      );
+      return undefined;
+   } catch (err) {
+      if (err instanceof UnquotableIdentifierError) return err.message;
+      throw err;
+   }
 }
 
 /**
@@ -1405,6 +1541,7 @@ function recordPendingRefusal(
          // Marks the failure permanent, so a caller that retries failures can
          // tell it from one that may clear.
          refused: true,
+         ...(err.reason ? { refusalReason: err.reason } : {}),
          retryable: false,
          connectionName: persistSource.connectionName,
          ...(instruction.destination
@@ -1423,12 +1560,9 @@ function recordPendingRefusal(
       refused: refusalRecord(
          persistSource,
          err,
-         run.compiled.tables[persistSource.sourceID]?.rollup
-            ? "preaggregate"
-            : instruction.destination
-              ? "storage"
-              : "colocated",
+         instruction.destination ? "storage" : "database",
          run.compiled.tables[persistSource.sourceID]?.modelPath,
+         run.compiled.tables[persistSource.sourceID]?.kind,
       ),
       sourceID: persistSource.sourceID,
       own,
@@ -1436,18 +1570,18 @@ function recordPendingRefusal(
 }
 
 /**
- * Another planned source on `address` that the colocated gate refuses, or
+ * Another planned source on `address` that the database gate refuses, or
  * undefined. Only the sources on that address are gated, once per address per
  * run, so an unrelated source can never fail this build. Any error from the
- * gate refuses, as the bind's collectColocatedSourceEligibility treats it, so
+ * gate refuses, as the bind's collectDatabaseSourceEligibility treats it, so
  * build and serve agree on the address. The first refused source in sourceID
  * order is named, so the reason never depends on run order.
  */
-function colocatedRefusalOn(
+function databaseRefusalOn(
    run: InstructedRun,
    address: string,
    sourceID: string,
-): ColocatedRefusal | undefined {
+): DatabaseRefusal | undefined {
    const { compiled } = run;
    if (!run.sourceIDsByAddress) {
       const byAddress = new Map<string, string[]>();
@@ -1470,8 +1604,8 @@ function colocatedRefusalOn(
       }
       run.sourceIDsByAddress = byAddress;
    }
-   run.colocatedRefusalsByAddress ??= new Map();
-   let refusals = run.colocatedRefusalsByAddress.get(address);
+   run.databaseRefusalsByAddress ??= new Map();
+   let refusals = run.databaseRefusalsByAddress.get(address);
    if (!refusals) {
       refusals = [];
       const ids = [...(run.sourceIDsByAddress.get(address) ?? [])].sort();
@@ -1483,7 +1617,7 @@ function colocatedRefusalOn(
          } catch (err) {
             if (!(err instanceof MaterializationEligibilityError)) {
                logger.warn(
-                  "The colocated gate could not decide a source; refusing its address, as the bind does",
+                  "The database gate could not decide a source; refusing its address, as the bind does",
                   {
                      packageName: run.owner?.packageName,
                      sourceName: source.name,
@@ -1502,7 +1636,7 @@ function colocatedRefusalOn(
             });
          }
       }
-      run.colocatedRefusalsByAddress.set(address, refusals);
+      run.databaseRefusalsByAddress.set(address, refusals);
    }
    return refusals.find((refusal) => refusal.sourceID !== sourceID);
 }
@@ -1614,7 +1748,7 @@ async function storedJoinOf(
  * its own (a join_one keyed on its grain, known limitation 29) and its base's
  * primary key, both over the base's rows on the source's own connection, the
  * rows a build from the author's definition groups; and the primary key of
- * each query source that reads a colocated rollup through a join_many on it.
+ * each query source that reads a database rollup through a join_many on it.
  *
  * A build that stacked on a stored upstream (`upstreamReuse: "reused"`)
  * grouped that table's rows instead, which a check over the base's own rows
@@ -1639,7 +1773,7 @@ async function checkRollupKeys(
    const own = rollupKeyCheckOf(compiled, sourceID);
    if (own && !groupsBaseRows) {
       logger.info(
-         "A #(preaggregate) rollup was built over a stored upstream, so its key check over the base's rows is not run; queries through its join_one that need the key unique are answered live",
+         "A #(rollup) rollup was built over a stored upstream, so its key check over the base's rows is not run; queries through its join_one that need the key unique are answered live",
          { rollup: persistSource.name, keyColumn: own.keyColumn },
       );
    }
@@ -1648,12 +1782,12 @@ async function checkRollupKeys(
          ledger,
          address,
          "rollup",
-         () => COLOCATED.checkKey({ connection }, own, table),
+         () => DATABASE.checkKey({ connection }, own, table),
          {
             notRun:
-               "A #(preaggregate) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
+               "A #(rollup) rollup's key check did not run; queries through its join_one that need the key unique are answered live",
             notUnique:
-               "A #(preaggregate) rollup's base holds its join_one key more than once; queries that read that join_one beside other aggregates are answered live",
+               "A #(rollup) rollup's base holds its join_one key more than once; queries that read that join_one beside other aggregates are answered live",
          },
          { rollup: persistSource.name, keyColumn: own.keyColumn },
       );
@@ -1718,12 +1852,12 @@ async function checkParentKeys(
          ledger,
          address,
          "parent",
-         () => COLOCATED.checkKey({ connection }, check, table),
+         () => DATABASE.checkKey({ connection }, check, table),
          {
             notRun:
-               "A query source's primary key check did not run; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+               "A query source's primary key check did not run; its queries through a #(rollup) rollup read as a join_many are answered live",
             notUnique:
-               "A query source holds its primary key more than once or NULL; its queries through a #(preaggregate) rollup read as a join_many are answered live",
+               "A query source holds its primary key more than once or NULL; its queries through a #(rollup) rollup read as a join_many are answered live",
          },
          {
             rollup: rollupName,
@@ -1755,7 +1889,7 @@ async function checkPairLeafKeys(
          ledger,
          address,
          "pair_leaf",
-         () => COLOCATED.checkKey({ connection }, check, table),
+         () => DATABASE.checkKey({ connection }, check, table),
          {
             notRun:
                "A pair table's leaf key check did not run; counts through its inlined join_many are answered live",
@@ -1968,28 +2102,6 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
 }
 
 /**
- * The source a colocated rollup builds from when this run holds its base's
- * table: the rollup compiled over that table (rollup_compile.ts), so its
- * build reads the table rather than the warehouse, through the build
- * manifest as any chained build does. Only when every one of these holds,
- * otherwise undefined and the rollup builds from the warehouse as planned:
- *
- *  - the rollup builds colocated, and its base is a colocated `#@ persist`
- *    source (the plan offers the compile only then);
- *  - the run's entries hold the base's table at the address the plan gives
- *    it, built this run or carried under the reuse rules, colocated and at
- *    the tier the base declares now. The colocated gate refused nothing on
- *    that address, or it would not be built or carried, and a table's rows
- *    do not depend on any gate: each is applied when a query reads it;
- *  - the compiled source has the rollup's own address, so it builds the
- *    same table.
- *
- *  - with a declared window, the base's table is new enough
- *    ({@link baseFreshEnough}), whoever instructed the run.
- *
- * Records the base as what the rollup read, for its freshness anchor.
- */
-/**
  * Whether a rollup with a declared window may read its base's table: the
  * base was built in this run, or its data anchor is known and inside the
  * rollup's window at the run's start. A table of unknown age is never read
@@ -2014,6 +2126,27 @@ function baseFreshEnough(
    );
 }
 
+/**
+ * The source a database rollup builds from when this run holds its base's
+ * table: the rollup compiled over that table (rollup_compile.ts), so its
+ * build reads the table rather than the warehouse, through the build
+ * manifest as any chained build does. Only when every one of these holds,
+ * otherwise undefined and the rollup builds from the warehouse as planned:
+ *
+ *  - the rollup builds in the database tier, and its base is a database `#@ persist`
+ *    source or a database `#(materialize)` plain table (the plan offers the
+ *    compile only then);
+ *  - the run's entries hold the base's table at the address the plan gives
+ *    it, built this run or carried under the reuse rules, database and at
+ *    the tier the base declares now. The database gate refused nothing on
+ *    that address, or it would not be built or carried, and a table's rows
+ *    do not depend on any gate: each is applied when a query reads it;
+ *  - with a declared window, the base's table is new enough
+ *    ({@link baseFreshEnough}), whoever instructed the run;
+ *  - the compiled source builds the planned table ({@link buildsPlannedTable}).
+ *
+ * Records the base as what the rollup read, for its freshness anchor.
+ */
 async function overStoredBaseSource(
    run: InstructedRun,
    persistSource: PersistSource,
@@ -2025,7 +2158,9 @@ async function overStoredBaseSource(
    if (gated.instruction.destination) return undefined;
    const baseID = table.rollup.baseSourceID;
    const base = baseID === undefined ? undefined : compiled.tables[baseID];
-   if (!base || base.kind !== "persist") return undefined;
+   if (!base || (base.kind !== "persist" && base.kind !== "materialize")) {
+      return undefined;
+   }
    let baseAddress: string;
    try {
       baseAddress = computeSourceEntityId(
@@ -2048,21 +2183,25 @@ async function overStoredBaseSource(
    if (!baseFreshEnough(run, gated.sourceEntityId, baseAddress, baseEntry)) {
       return undefined;
    }
-   let variant: PersistSource | undefined;
+   let variant: OverStoredBase | undefined;
    try {
       variant = await table.overStoredBase();
    } catch {
       return undefined;
    }
-   if (!variant) return undefined;
+   if (
+      !variant ||
+      (base.kind === "materialize") !== (variant.baseBuildSource !== undefined)
+   ) {
+      return undefined;
+   }
    try {
       if (
-         computeSourceEntityId(
-            variant,
-            compiled.connectionDigests,
-            undefined,
-            compiled.tableFolds,
-         ) !== gated.sourceEntityId
+         !buildsPlannedTable(run, persistSource, variant, {
+            base: base.source,
+            baseAddress,
+            rollupAddress: gated.sourceEntityId,
+         })
       ) {
          return undefined;
       }
@@ -2070,11 +2209,179 @@ async function overStoredBaseSource(
       return undefined;
    }
    (run.readFrom ??= new Map()).set(gated.sourceEntityId, [baseAddress]);
-   return variant;
+   return variant.source;
 }
 
 /**
- * A colocated rollup's entry with `upstreamReuse` saying what its build read: `reused`
+ * Whether `variant`, the rollup compiled over its base's stored table, builds
+ * the table the plan gives the rollup `planned`:
+ *
+ *  - over a `#@ persist` base, it has the rollup's own planned address: its
+ *    SQL, the base's inlined, is the plan's;
+ *  - over a `#(materialize)` base, the base is re-rooted on its generated
+ *    build source, which moves the rollup's SQL, so its own address cannot
+ *    match. The build source must instead be at the base's planned address
+ *    (the same build source, so the same table), the rollup's SQL rendered
+ *    over the base's entry alone must read that table, and its columns must
+ *    be the planned rollup's, by name, type and numeric subtype. The rows
+ *    are the base's either way, as an extension's build over its parent's
+ *    table (P10).
+ *
+ * The three `#(materialize)` checks are defensive: a compile that re-roots
+ * the base as planned passes all three, so none is false in practice. Each
+ * guards a drift between the second compile and the plan (another build
+ * source, a rollup that no longer reads the base's table, other columns) and
+ * fails closed, to the warehouse build. Exported for its unit spec.
+ */
+export function buildsPlannedTable(
+   run: InstructedRun,
+   planned: PersistSource,
+   variant: OverStoredBase,
+   at: { base: PersistSource; baseAddress: string; rollupAddress: string },
+): boolean {
+   const { compiled } = run;
+   if (!variant.baseBuildSource) {
+      return (
+         computeSourceEntityId(
+            variant.source,
+            compiled.connectionDigests,
+            undefined,
+            compiled.tableFolds,
+         ) === at.rollupAddress
+      );
+   }
+   const buildSource = presentAs(variant.baseBuildSource, {
+      name: at.base.name,
+      sourceID: at.base.sourceID,
+   });
+   if (
+      computeSourceEntityId(
+         buildSource,
+         compiled.connectionDigests,
+         undefined,
+         compiled.tableFolds,
+      ) !== at.baseAddress
+   ) {
+      return false;
+   }
+   const table = run.manifest.buildManifest.entries[at.baseAddress]?.tableName;
+   if (table === undefined) return false;
+   const only = new Manifest();
+   only.update(at.baseAddress, { tableName: table });
+   if (!readsTable(buildSQLOf(variant.source, only.buildManifest), table)) {
+      return false;
+   }
+   return sameColumns(variant.source, planned);
+}
+
+/**
+ * Whether `sql` reads the table `table` (a manifest's table path) by its whole
+ * reference: not as the tail of another schema's path, nor as the head of a
+ * longer one.
+ */
+function readsTable(sql: string, table: string): boolean {
+   const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(sql);
+}
+
+/**
+ * Whether two sources output the same columns, by name, type and numeric
+ * subtype, in order: an integer column where the plan has a float is drift.
+ */
+function sameColumns(a: PersistSource, b: PersistSource): boolean {
+   return (
+      JSON.stringify(outputColumnsOf(a)) === JSON.stringify(outputColumnsOf(b))
+   );
+}
+
+/**
+ * The base a `storage=` rollup may build over in its destination
+ * (storage_build_strategy.ts), or undefined, and the rollup builds from the
+ * warehouse as planned. Only when every one of these holds:
+ *
+ *  - the plan offers it: a `storage=` rollup over a base whose own
+ *    `#@ persist`, or `#(materialize)` planned as a plain table, stores it
+ *    in the same destination, with no gate (rollup_compile.ts);
+ *  - the run's entries hold the base's table at the address the plan gives
+ *    it, built this run or carried, in that destination, at the tier the
+ *    base declares now, with the column list its build reads it by. A
+ *    rollup over a gated base is never planned there: it builds from the
+ *    warehouse (rollup_compile.ts's `baseGated` guard);
+ *  - with a declared window, the base's table is new enough
+ *    ({@link baseFreshEnough}), whoever instructed the run.
+ *
+ * The build keeps the table only when it has the columns, and their types,
+ * the planned build writes; the address is the planned one either way.
+ */
+function storedRollupBase(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   gated: Pick<GatedSource, "instruction" | "sourceEntityId">,
+): StoredRollupBase | undefined {
+   const { compiled } = run;
+   const table = compiled.tables[persistSource.sourceID];
+   if (table?.kind !== "rollup" || !table.storedBase) return undefined;
+   const destination = gated.instruction.destination;
+   if (!destination) return undefined;
+   const base = compiled.tables[table.storedBase.baseSourceID];
+   // A `#@ persist` base, or a `#(materialize)` base's plain table (a pair
+   // table holds a row per pair, never the base's rows).
+   if (!base || (base.kind !== "persist" && base.kind !== "materialize")) {
+      return undefined;
+   }
+   let address: string;
+   try {
+      address = computeSourceEntityId(
+         base.source,
+         compiled.connectionDigests,
+         base.target,
+         compiled.tableFolds,
+      );
+   } catch {
+      return undefined;
+   }
+   const entry = run.entries[address];
+   if (
+      !entry?.physicalTableName ||
+      entry.storageDestinationName !== destination ||
+      !entry.schema?.length ||
+      !upstreamEntryIsCurrent(address, entry, run.planFacts)
+   ) {
+      return undefined;
+   }
+   if (!baseFreshEnough(run, gated.sourceEntityId, address, entry)) {
+      return undefined;
+   }
+   // The table must hold every column the base's current build writes, each
+   // of a physical type that serves as its declared type: a carried table
+   // whose types drifted is not grouped as if it were the base.
+   let declared: ReturnType<typeof storageBuildCasts>["declaredColumns"];
+   try {
+      declared = storageBuildCasts(base.source).declaredColumns;
+   } catch {
+      return undefined;
+   }
+   const stored = entry.schema.flatMap((c) =>
+      c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+   );
+   const storedNames = new Set(stored.map((c) => c.name));
+   if (
+      declared.some((c) => !storedNames.has(c.name)) ||
+      storedColumnTypeMismatches(stored, declared).length > 0
+   ) {
+      return undefined;
+   }
+   return {
+      baseSourceID: table.storedBase.baseSourceID,
+      baseName: base.source.name,
+      address,
+      entry,
+      companion: table.storedBase.companion,
+   };
+}
+
+/**
+ * A database rollup's entry with `upstreamReuse` saying what its build read: `reused`
  * when it built from its base's stored table ({@link overStoredBaseSource}),
  * absent when it built from the warehouse. Its build source names the base
  * only in the author's text, which the classification reads, so the
@@ -2088,7 +2395,8 @@ function withRollupUpstreamReuse(
    address: string,
    entry: ManifestEntry,
 ): ManifestEntry {
-   // A `storage=` build reports what it stacked on itself (stackOnParents).
+   // A `storage=` build reports what it read itself: `reused` only when it
+   // stacked on a stored table (storage_build_strategy.ts, `rollup`).
    if (
       run.compiled.tables[persistSource.sourceID]?.kind !== "rollup" ||
       entry.storageDestinationName

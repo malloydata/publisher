@@ -31,7 +31,12 @@
 import { trace } from "@opentelemetry/api";
 import type { GivenValue, ModelDef } from "@malloydata/malloy";
 import type { components } from "../api";
-import { errorKind, internalErrorToHttpError, type ErrorKind } from "../errors";
+import {
+   type AccessDeniedError,
+   errorKind,
+   internalErrorToHttpError,
+   type ErrorKind,
+} from "../errors";
 import { logger, traceIdOf } from "../logger";
 import { redactConnectionSecretShapes } from "../pg_helpers";
 import { settings } from "../settings";
@@ -287,7 +292,9 @@ export async function summarizeQueryAccess(args: {
 type AccessOutcome =
    | "ok"
    | "denied_lock"
+   | "denied_filter"
    | "refused_surface"
+   | "not_found"
    | "bad_request"
    | "cancelled"
    | "error";
@@ -295,12 +302,21 @@ type AccessOutcome =
 /** The outcome a thrown error means, by its kind; the status it maps to is the route's. */
 export function outcomeOf(error: unknown, status: number): AccessOutcome {
    const kind = errorKind(error);
-   if (kind === "access_denied") return "denied_lock";
-   if (kind === "model_not_found" || status === 404) {
+   if (kind === "access_denied") {
+      return (error as AccessDeniedError).gate === "row_filter"
+         ? "denied_filter"
+         : "denied_lock";
+   }
+   // The package's curation kept the source off the surface.
+   if (kind === "not_queryable" || kind === "off_surface") {
       return "refused_surface";
    }
-   if (status === 403) return "denied_lock";
+   // A missing environment, package, model or source: no curation decided
+   // it. The record is the operator's, so naming it reveals nothing.
+   if (status === 404) return "not_found";
    if (status === 400) return "bad_request";
+   // Any other 403 (the storage behind a table, a frozen config) is not a
+   // gate's: the request failed.
    return "error";
 }
 
@@ -310,7 +326,7 @@ interface AccessPathCandidate {
    kind: string;
    outcome: string;
    reason?: string;
-   /** The serve verdict's reason on a `WARNED` skip, when the report gives one. */
+   /** The serve verdict's reason on a `NOT_SERVED` skip, when the report gives one. */
    code?: string;
 }
 
@@ -320,9 +336,20 @@ interface AccessPath {
     * `via: "served_copy"` when the served copy answered, which is how a query
     * through a row-level gate is answered from a stored table (R3).
     */
-   servedBy: { kind: string; tableId?: string; via?: "served_copy" };
+   servedBy: {
+      kind: string;
+      /** The mechanism that declared the table that answered. */
+      origin?: string;
+      /** Where that table lives: `database` or `storage`. */
+      tier?: "database" | "storage";
+      tableId?: string;
+      via?: "served_copy";
+   };
    considered: AccessPathCandidate[];
 }
+
+/** The mechanisms a path report's `origin` names; anything else is dropped. */
+const ORIGINS = new Set(["persist", "materialize", "view", "query", "rollup"]);
 
 /**
  * The access record's copy of a path report: which table answered and each
@@ -337,7 +364,13 @@ interface AccessPath {
 const SAFE_CODE = /^[a-z_]+$/;
 
 export function accessPathOf(report: {
-   servedBy: { kind: string; tableId?: string; via?: string };
+   servedBy: {
+      kind: string;
+      origin?: string;
+      tier?: string;
+      tableId?: string;
+      via?: string;
+   };
    considered: readonly {
       tableId: string;
       kind: string;
@@ -352,6 +385,15 @@ export function accessPathOf(report: {
    return {
       servedBy: {
          kind: report.servedBy.kind,
+         // Coded values only, as `code` below.
+         ...(report.servedBy.origin !== undefined &&
+         ORIGINS.has(report.servedBy.origin)
+            ? { origin: report.servedBy.origin }
+            : {}),
+         ...(report.servedBy.tier === "database" ||
+         report.servedBy.tier === "storage"
+            ? { tier: report.servedBy.tier }
+            : {}),
          ...(report.servedBy.tableId !== undefined
             ? { tableId: report.servedBy.tableId }
             : {}),

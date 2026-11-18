@@ -5,12 +5,12 @@
  * A materialized table past its source's own row-level gate under G3, with
  * the gated-sources switch off, adversarially, through the real package path
  * (conformance/package_harness.ts): the plan's eligibility, the bind, the
- * router and `govern()`. Once per tier: a colocated `#(materialize)` table,
+ * router and `govern()`. Once per tier: a database `#(materialize)` table,
  * and a `storage=` table under `#(materialize)` and v1 `#@ persist` alike.
  *
  * G3 serves a table past the entry point's own row-level gate because the
  * gate is re-applied when it is read. A maintainer-approved exception made
- * ahead of the question-14 review, for consistency: colocated and `storage=`
+ * ahead of the question-14 review, for consistency: database and `storage=`
  * behave the same under a source's own row-level gate (an `#(access_filter)`
  * row filter, an `#(authorize)` lock, the two together, or a lock inherited
  * from a base). These specs pin that, and no further:
@@ -34,7 +34,7 @@ import { QueryMaterializer } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
-import { G3_COLOCATED_MODEL, G3_STORAGE_MODEL } from "./g3_models";
+import { G3_DATABASE_MODEL, G3_STORAGE_MODEL } from "./g3_models";
 import {
    freshLoadPool,
    type LoadedFixture,
@@ -91,13 +91,13 @@ interface Tier {
    checkTables(fixture: LoadedFixture, loader: Loader): Promise<void>;
    /** With the switch on: the query read from storage and the verdicts. */
    switchOn: { malloy: string; liveOnly: boolean; verdicts: string[] };
-   /** The caller in the north region; the colocated model also reads STATUS. */
+   /** The caller in the north region; the database model also reads STATUS. */
    north: Givens;
 }
 
-const COLOCATED: Tier = {
-   label: "colocated #(materialize)",
-   model: G3_COLOCATED_MODEL,
+const DATABASE: Tier = {
+   label: "database #(materialize)",
+   model: G3_DATABASE_MODEL,
    cases: [
       {
          name: "the gated source",
@@ -153,7 +153,7 @@ const COLOCATED: Tier = {
          ...SERVED,
       },
       {
-         name: "a storage= table under its own gate, admitted as colocated (G3)",
+         name: "a storage= table under its own gate, admitted as database (G3)",
          malloy: "run: gated_sto -> { group_by: region; aggregate: n }",
          ...SERVED_ROWS,
       },
@@ -279,7 +279,7 @@ const STORAGE: Tier = {
          (p) => `run: ${p}_mix -> { group_by: region; aggregate: n }`,
          SERVED_ROWS,
       ),
-      // Refused on this tier as on colocated: built nowhere, answered live.
+      // Refused on this tier as on database: built nowhere, answered live.
       ...both(
          "a row filter inherited from its base, refused",
          (p) => `run: ${p}_inh_rows -> { group_by: region; aggregate: n }`,
@@ -290,7 +290,7 @@ const STORAGE: Tier = {
          (p) => `run: ${p}_baked -> { group_by: region; aggregate: n }`,
          LIVE,
       ),
-      // Refused itself; a query on it is answered live, as on colocated, but
+      // Refused itself; a query on it is answered live, as on database, but
       // not from the joined gated table either: that table is in the
       // destination, which the live source cannot join across connections
       // (`CROSS_CONNECTION`), so live it is, not a gate difference.
@@ -300,13 +300,15 @@ const STORAGE: Tier = {
             "run: mz_joiner -> { group_by: g.region; aggregate: n_customers, g.n }",
          via: "live",
       },
-      // A G3 table beside a table G3 did not admit (an ungated storage=
-      // one): the answer stays live.
+      // A G3 table beside an ungated storage= one: the ungated table holds
+      // only ungated rows, so it is a G3 table too (g-mixed, pending the
+      // question-14 review), and the answer is served. One not proven
+      // ungated keeps it live (the respelled checks below).
       ...both(
          "an answer reading the gated table and an ungated storage= table",
          (p) =>
             `run: ${p}_mix -> { group_by: c.segment, region; aggregate: n }`,
-         LIVE,
+         SERVED_ROWS,
       ),
       // A caller join into a gated source: Publisher does not enforce a
       // joined source's gate on the parent, live or served (the
@@ -348,7 +350,7 @@ const STORAGE: Tier = {
       "mz_gated:serves",
       "v1_gated:serves",
       // A v1 extension inherits `#@ persist` and shares the table, its gate
-      // grafted through the extension as on colocated.
+      // grafted through the extension as on database.
       "v1_ext:serves",
       "mz_lock:serves",
       "v1_lock:serves",
@@ -360,7 +362,7 @@ const STORAGE: Tier = {
       "mz_mix:serves",
       "v1_mix:serves",
       // An inherited row filter, a joined gate, a given the build would
-      // substitute: refused as on colocated.
+      // substitute: refused as on database.
       "mz_inh_rows:live:refused",
       "v1_inh_rows:live:refused",
       "mz_joiner:live:refused",
@@ -472,7 +474,7 @@ const filesOf = (model: string) => ({
    "m.malloy": model,
 });
 
-for (const tier of [COLOCATED, STORAGE]) {
+for (const tier of [DATABASE, STORAGE]) {
    const NORTH = tier.north;
    const CALLERS = [NORTH, EAST_WEST, NO_GROUP, NOBODY];
    /** Interleaved, then repeated, so a graft or cache shared across callers shows. */
@@ -685,6 +687,13 @@ for (const tier of [COLOCATED, STORAGE]) {
                   tablesRead: { sourceName: string }[];
                   gateTablesRead?: { sourceName: string }[];
                };
+               /** The judged tables with the ungated one's proof dropped. */
+               const unproven = (answer: Served) =>
+                  answer.gateTablesRead?.map((b) =>
+                     b.sourceName === "cust_sto"
+                        ? { ...b, holdsOnlyUngatedRows: false }
+                        : b,
+                  );
                /**
                 * Run `malloy` with the served copy's SQL also reading the
                 * ungated `g3s_cust` table, quoted unlike its bound path, so
@@ -708,9 +717,11 @@ for (const tier of [COLOCATED, STORAGE]) {
                   copy.loadQuery = async (...args) => {
                      const answer = await loadQuery.apply(copy, args);
                      served.push(answer);
+                     // `g3s_cust` as a table the plan could not prove holds
+                     // only ungated rows (g-mixed would admit it).
                      return dropJudged
                         ? { ...answer, gateTablesRead: undefined }
-                        : answer;
+                        : { ...answer, gateTablesRead: unproven(answer) };
                   };
                   const getSQL = QueryMaterializer.prototype.getSQL;
                   const spy = spyOn(
@@ -823,10 +834,11 @@ for (const tier of [COLOCATED, STORAGE]) {
    });
 }
 
-describe("a served answer that names a storage= table beside a colocated one, spelled another way (G3, gated sources off)", () => {
-   // A gated colocated table and an ungated storage= table, both bound in
+describe("a served answer that names a storage= table beside a database one, spelled another way (G3, gated sources off)", () => {
+   // A gated database table and an ungated storage= table, both bound in
    // the served copy. G3 admits an answer past the gate only when every
-   // table it reads is colocated.
+   // table it reads is a G3 table; the storage= one is held here as one the
+   // plan could not prove holds only ungated rows.
    const MIXED = `##! experimental { givens }
 import "raw.malloy"
 
@@ -884,7 +896,15 @@ source: gated_mix is orders_raw -> {
       copy.loadQuery = async (...args) => {
          const answer = await loadQuery.apply(copy, args);
          served.push(answer);
-         return answer;
+         // The storage table as one the plan could not prove holds only
+         // ungated rows (g-mixed would admit `g3w_cust`).
+         return {
+            ...answer,
+            gateTablesRead: answer.gateTablesRead?.map((b) => ({
+               ...b,
+               holdsOnlyUngatedRows: false,
+            })),
+         };
       };
       const getSQL = QueryMaterializer.prototype.getSQL;
       // The served copy's SQL also reads the storage table, quoted
@@ -920,7 +940,7 @@ source: gated_mix is orders_raw -> {
       ]);
    });
 
-   it("baseline: a colocated-only answer is served from the copy past its gate", async () => {
+   it("baseline: a database-only answer is served from the copy past its gate", async () => {
       const { outcome, served } = await runRecording(false);
       if ("error" in outcome || "error" in live) throw new Error("failed");
       expect(outcome.answer.via).toBe("served_copy");
@@ -928,15 +948,15 @@ source: gated_mix is orders_raw -> {
          rowDifference(live.answer.rows, outcome.answer.rows),
       ).toBeUndefined();
       expect(served.at(-1)?.gateTablesRead?.map((b) => b.tier)).toEqual([
-         "colocated",
+         "database",
       ]);
    });
 
    it("judges the answer to read the storage table too, and answers live, not from the copy past its gate", async () => {
       const { outcome, served } = await runRecording(true);
-      // The served copy's exact match finds the colocated table alone…
+      // The served copy's exact match finds the database table alone…
       expect(served.at(-1)?.tablesRead.map((b) => b.tier)).toEqual([
-         "colocated",
+         "database",
       ]);
       // …and the gate judgement sees the storage binding beside it.
       expect(
@@ -944,7 +964,7 @@ source: gated_mix is orders_raw -> {
             .at(-1)
             ?.gateTablesRead?.map((b) => b.tier)
             .sort(),
-      ).toEqual(["colocated", "storage"]);
+      ).toEqual(["database", "storage"]);
       // So the router keeps it off G3: answered exactly as live.
       if ("error" in live) throw new Error(live.error);
       if ("error" in outcome) throw new Error(outcome.error);
@@ -958,7 +978,7 @@ source: gated_mix is orders_raw -> {
 describe("a persisted view or query over a gated source, the same on both tiers", () => {
    // Its own leg reads it past the gate only with the gated-sources switch
    // on (the view leg; the query leg never). Off, neither tier builds the
-   // view; on, the colocated view is built as before and the storage= view
+   // view; on, the database view is built as before and the storage= view
    // stays refused. A persisted query that reaches a gate is never planned,
    // whatever the switch (persisted_query.component.spec.ts): answered live.
    const VIEWS = `##! experimental { givens persistence }
@@ -989,7 +1009,7 @@ query: q_col is g_orders -> { group_by: region; aggregate: c is count() }
    ];
 
    for (const gated of [false, true]) {
-      it(`gated sources ${gated ? "on" : "off"}: ${gated ? "the colocated view is built, the storage= view refused" : "no view is built on either tier"}, and every caller gets live's rows`, async () => {
+      it(`gated sources ${gated ? "on" : "off"}: ${gated ? "the database view is built, the storage= view refused" : "no view is built on either tier"}, and every caller gets live's rows`, async () => {
          const restore = installSettings({
             env: {
                ...G3_ONLY,
@@ -1026,13 +1046,13 @@ query: q_col is g_orders -> { group_by: region; aggregate: c is count() }
             ).toEqual(
                (gated
                   ? [
-                       "g_orders__by_region_sto__view:storage:authorize",
-                       "q_col__query:colocated:access_filter",
+                       "g_orders__by_region_sto__view:storage:access_filter",
+                       "q_col__query:database:access_filter",
                     ]
                   : [
-                       "g_orders__by_region_col__view:colocated:authorize",
-                       "g_orders__by_region_sto__view:storage:authorize",
-                       "q_col__query:colocated:access_filter",
+                       "g_orders__by_region_col__view:database:access_filter",
+                       "g_orders__by_region_sto__view:storage:access_filter",
+                       "q_col__query:database:access_filter",
                     ]
                ).sort(),
             );
@@ -1045,7 +1065,7 @@ query: q_col is g_orders -> { group_by: region; aggregate: c is count() }
                   expect(
                      rowDifference(l.answer.rows, served.answer.rows),
                   ).toBeUndefined();
-                  // Only the colocated view, with the switch on, is read past
+                  // Only the database view, with the switch on, is read past
                   // the gate.
                   expect([q, served.answer.servedBy]).toEqual([
                      q,

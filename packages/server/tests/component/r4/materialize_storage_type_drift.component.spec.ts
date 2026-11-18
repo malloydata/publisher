@@ -2,14 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * R4: a `#(materialize)` table whose stored column types drifted from live's
- * (the upstream column's type changed under the same content address, or the
- * table was altered out of band) is never read with its stored type. Each
- * drifted column is read through a faithful cast, or left out so that only a
- * query reading it answers live: every answer equals live's.
+ * R4: a stored table whose column types drifted from live's (the upstream
+ * column's type changed under the same content address, or the table was
+ * altered out of band) is never read with its stored type. Each drifted
+ * column is read through a faithful cast, or left out so that only a query
+ * reading it answers live: every answer equals live's.
  *
- * The drift is made after the build, by altering the stored table and the
- * binding's schema together, as a run that bound the altered table would.
+ * The drift is made after the build with a real `ALTER TABLE`. A database
+ * table's types are then read from its warehouse as a package's bind reads
+ * them (`observeDatabaseColumns`), for each database mechanism:
+ * `#(materialize)`, `#@ persist` and a rollup. A `storage=` table's binding
+ * carries its schema from the run that bound it, so its schema is altered
+ * with it, as a run that bound the altered table would.
  *
  * | Column | Live      | Stored      | Read                     |
  * | ------ | --------- | ----------- | ------------------------ |
@@ -20,11 +24,16 @@
  * | flag   | BOOLEAN   | INTEGER     | cast to BOOLEAN          |
  * | d2     | DATE      | TIMESTAMP   | cast to DATE             |
  *
- * The `storage=` table and a colocated one (its binding carrying the drifted
- * types) are held to the same answers. The `storage-column-type-mismatch`
- * warning's cast or live handling is pinned in storage_bindings.spec.ts.
+ * The `storage=` table and the database ones are held to the same answers.
+ * A database rollup whose column drifted is read through a typed source, as
+ * a `storage=` rollup is, so only a query reading that column answers live
+ * (database_table_drift_substituted.component.spec.ts holds every drift kind
+ * on a rollup, a persisted view and a persisted query). The
+ * `storage-column-type-mismatch` warning's cast or live handling is pinned in
+ * storage_bindings.spec.ts.
  */
 
+import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
@@ -55,15 +64,39 @@ const DRIFT: Record<string, string> = {
    d2: "TIMESTAMP",
 };
 
+/** Each mechanism and tier whose table is altered: how its model declares it. */
 const TIERS = [
    {
-      label: "storage=",
-      place: (_name: string) => ` storage="${DESTINATION}"`,
+      label: "#(materialize) storage=",
+      model: (name: string, measure: string) =>
+         `#(materialize) storage="${DESTINATION}"
+source: ${name} is ev extend {
+  measure: total is ${measure}
+}
+`,
+      database: undefined,
       servedFrom: "storage",
    },
    {
-      label: "colocated",
-      place: (name: string) => ` name="${name}"`,
+      label: "#(materialize) database",
+      model: (name: string, measure: string, table: string) =>
+         `#(materialize) name="${table}"
+source: ${name} is ev extend {
+  measure: total is ${measure}
+}
+`,
+      database: undefined,
+      servedFrom: "database",
+   },
+   {
+      label: "#@ persist database",
+      model: (name: string, measure: string) =>
+         `#@ persist
+source: ${name} is ev -> { select: * } extend {
+  measure: total is ${measure}
+}
+`,
+      database: ["drift", "drift_m"],
       servedFrom: "database",
    },
 ] as const;
@@ -149,7 +182,7 @@ const LIVE: R4Query[] = [
 ];
 
 for (const tier of TIERS) {
-   describe(`R4 (${tier.label}): a #(materialize) table whose column types drifted`, () => {
+   describe(`R4 (${tier.label}): a table whose column types drifted`, () => {
       let restore: () => void;
       let fixture: R4Fixture;
       beforeAll(async () => {
@@ -158,23 +191,18 @@ for (const tier of TIERS) {
          }).restore;
          fixture = await buildScenario({
             files: {
-               "m.malloy": `source: ev is duckdb.table('ev')
+               "m.malloy": `##! experimental { persistence }
+source: ev is duckdb.table('ev')
 
-#(materialize)${tier.place("drift_t")}
-source: drift is ev extend {
-  measure: total is n.sum()
-}
-
-#(materialize)${tier.place("drift_m_t")}
-source: drift_m is ev extend {
-  measure: total is amt.sum()
-}
-`,
+${tier.model("drift", "n.sum()", "drift_t")}
+${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
             },
             seedSql: SEED,
-            materialize: true,
+            ...(tier.database
+               ? { database: [...tier.database] }
+               : { materialize: true }),
          });
-         // Alter each stored table, and its binding's schema with it.
+         // Alter each stored table after its build.
          for (const source of ["drift", "drift_m"]) {
             for (const [column, type] of Object.entries(DRIFT)) {
                await fixture.storedSQL(
@@ -182,12 +210,30 @@ source: drift_m is ev extend {
                      `ALTER TABLE ${t(source)} ALTER ${column} TYPE ${type}`,
                );
             }
-            const [binding] = fixture.bindings.filter(
-               (b) => b.sourceName === source,
-            );
-            binding.schema = binding.schema.map((c) =>
-               DRIFT[c.name] ? { ...c, type: DRIFT[c.name] } : c,
-            );
+         }
+         if (tier.servedFrom === "storage") {
+            // The run that bound the altered table carries its schema.
+            for (const source of ["drift", "drift_m"]) {
+               const [binding] = fixture.bindings.filter(
+                  (b) => b.sourceName === source,
+               );
+               binding.schema = binding.schema.map((c) =>
+                  DRIFT[c.name] ? { ...c, type: DRIFT[c.name] } : c,
+               );
+            }
+         } else {
+            // A database table's types, read from its warehouse at bind.
+            const observed = await fixture.observeDatabaseColumns();
+            expect(observed.unread).toEqual([]);
+            // One drift per table (the two sources may share one).
+            expect(observed.drifted.length).toBeGreaterThan(0);
+            for (const d of observed.drifted) {
+               expect(d.columns.map((c) => c.column).sort()).toEqual(
+                  // `n`, INTEGER altered to BIGINT, is the same Malloy type
+                  // with another native type: retyped, read alike.
+                  ["amt", "d", "d2", "flag", "n"].sort(),
+               );
+            }
          }
       }, 120_000);
       afterAll(async () => {
@@ -314,3 +360,180 @@ source: flights_wide is duckdb.table('flights') extend {
       });
    }
 });
+
+describe("R4 (rollup database): a rollup table whose column types drifted", () => {
+   let restore: () => void;
+   let fixture: R4Fixture;
+   beforeAll(async () => {
+      restore = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+      }).restore;
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `##! experimental { persistence }
+source: ev is duckdb.table('ev') extend {
+  #(rollup) grain=["flag"]
+  measure: hi is amt.max()
+  #(rollup) grain=["id"]
+  measure: c is count()
+}
+`,
+         },
+         seedSql: SEED,
+         preaggregate: true,
+      });
+      // The max partial of the rollup by `flag`, altered to text after its
+      // build; the rollup by `id` is left as built.
+      const altered: string[] = [];
+      for (const table of Object.values(fixture.rollupTables)) {
+         const columns = (await fixture.duckdb.runSQL(`DESCRIBE ${table}`))
+            .rows as { column_name: string }[];
+         for (const { column_name } of columns) {
+            if (
+               !column_name.includes("partial") ||
+               !column_name.startsWith("hi")
+            ) {
+               continue;
+            }
+            await fixture.duckdb.runSQL(
+               `ALTER TABLE ${table} ALTER "${column_name}" TYPE VARCHAR`,
+            );
+            altered.push(column_name);
+         }
+      }
+      expect(altered.length).toBe(1);
+      const observed = await fixture.observeDatabaseColumns();
+      expect(observed.unread).toEqual([]);
+      expect(observed.drifted).toEqual([
+         expect.objectContaining({
+            columns: [
+               expect.objectContaining({
+                  column: altered[0],
+                  observedType: "VARCHAR",
+               }),
+            ],
+         }),
+      ]);
+   }, 120_000);
+   afterAll(async () => {
+      restore();
+      await disposeScenarios();
+   });
+
+   it("a max over the drifted partial is answered live: live's 10, never the stored text's 9.0", async () => {
+      const run = await fixture.run({
+         name: "max",
+         malloy: "run: ev -> { aggregate: hi }",
+      });
+      expect(run.served).toEqual([{ hi: 10 }]);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(run.servedBy?.kind).toBe("live");
+   });
+
+   it("the rollup left as built still answers, equal to live", async () => {
+      const run = await fixture.run({
+         name: "count by id",
+         malloy: "run: ev -> { group_by: id; aggregate: c; order_by: id }",
+      });
+      expect(run.live.length).toBeGreaterThan(0);
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      expect(run.servedBy?.kind).toBe("rollup");
+   });
+});
+
+const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
+const PG_SCHEMA = "r4_observed_drift";
+
+describe.skipIf(!POSTGRES_URL)(
+   "R4 (#(materialize) database, Postgres): a table altered after its build",
+   () => {
+      let restore: () => void;
+      let fixture: R4Fixture;
+      let pg: PostgresConnection;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "off", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         pg = new PostgresConnection({
+            name: "pg",
+            connectionString: POSTGRES_URL!,
+         });
+         await pg.runSQL(`DROP SCHEMA IF EXISTS ${PG_SCHEMA} CASCADE`);
+         await pg.runSQL(`CREATE SCHEMA ${PG_SCHEMA}`);
+         fixture = await buildScenario({
+            files: {
+               "m.malloy": `source: ev is pg.table('${PG_SCHEMA}.ev')
+
+#(materialize) name="pg_drift_t"
+source: drift is ev extend {
+  measure: total is n.sum()
+}
+`,
+            },
+            seedSql: [
+               `CREATE TABLE ${PG_SCHEMA}.ev AS SELECT * FROM (VALUES
+                  (1, 9.0::NUMERIC(10,1), 1, DATE '2026-01-15', true),
+                  (2, 10.0::NUMERIC(10,1), 2, DATE '2026-02-03', false),
+                  (3, 2.5::NUMERIC(10,1), 3, DATE '2026-02-28', true)
+                ) AS t(id, amt, n, d, flag)`,
+            ],
+            materialize: true,
+            warehouse: { name: "pg", connection: pg, schema: PG_SCHEMA },
+         });
+         const table = fixture.physicalTables.drift;
+         expect(table).toBeDefined();
+         // Out of band: the warehouse's own ALTER, after the build.
+         await pg.runSQL(
+            `ALTER TABLE ${table} ALTER COLUMN amt TYPE VARCHAR USING amt::varchar`,
+         );
+         await pg.runSQL(
+            `ALTER TABLE ${table} ALTER COLUMN flag TYPE INTEGER USING flag::int`,
+         );
+         const observed = await fixture.observeDatabaseColumns();
+         expect(observed.unread).toEqual([]);
+         expect(observed.drifted).toEqual([
+            expect.objectContaining({
+               columns: [
+                  expect.objectContaining({ column: "amt" }),
+                  expect.objectContaining({ column: "flag" }),
+               ],
+            }),
+         ]);
+      }, 120_000);
+      afterAll(async () => {
+         restore();
+         await disposeScenarios();
+         await pg.runSQL(`DROP SCHEMA IF EXISTS ${PG_SCHEMA} CASCADE`);
+         await pg.close();
+      });
+
+      it("a number now stored as text: answered live, live's 10", async () => {
+         const run = await fixture.run({
+            name: "max",
+            malloy: "run: drift -> { aggregate: m is amt.max() }",
+         });
+         expect(run.served).toEqual([{ m: 10 }]);
+         expect(run.servedFrom).not.toBe("database");
+      });
+
+      it("a boolean now stored as an integer: read through a cast, served, equal to live", async () => {
+         const run = await fixture.run({
+            name: "flag",
+            malloy:
+               "run: drift -> { group_by: flag; aggregate: c is count(); order_by: flag }",
+         });
+         expect(run.live.length).toBeGreaterThan(0);
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedFrom).toBe("database");
+      });
+
+      it("a column left as built: served, equal to live", async () => {
+         const run = await fixture.run({
+            name: "total",
+            malloy: "run: drift -> { aggregate: total }",
+         });
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedFrom).toBe("database");
+      });
+   },
+);

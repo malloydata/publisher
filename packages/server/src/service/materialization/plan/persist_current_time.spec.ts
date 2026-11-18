@@ -202,7 +202,7 @@ describe("assertTierEligible: the current_time refusal on both tiers", () => {
       [`#@ persist name="p"`, false],
       [`#@ persist name="p" storage=lake`, true],
    ] as const) {
-      it(`refuses ${storage ? "storage=" : "colocated"} with current_time`, async () => {
+      it(`refuses ${storage ? "storage=" : "database"} with current_time`, async () => {
          const source = await persistSource(
             `${annotation}\nsource: p is ev -> { where: ts < now; select: * }`,
          );
@@ -219,7 +219,7 @@ describe("assertTierEligible: the current_time refusal on both tiers", () => {
          expect((caught as Error).message).toContain("answered live");
       });
 
-      it(`admits ${storage ? "storage=" : "colocated"} with now in its own extend block`, async () => {
+      it(`admits ${storage ? "storage=" : "database"} with now in its own extend block`, async () => {
          const source = await persistSource(
             `${annotation}\nsource: p is ev extend { where: ts < now }`,
          );
@@ -263,7 +263,7 @@ source: ok is ev -> { select: * } extend { where: ts < now }
 });
 
 describe("a given that defaults to now", () => {
-   it("is refused as given_in_persisted_query when the persisted query reads it", async () => {
+   it("is refused as reads_given when the persisted query reads it", async () => {
       const { sources } = await compilePersistSources(
          connections,
          `##! experimental { persistence givens }
@@ -281,7 +281,7 @@ source: p is ev -> { where: ts < $CUTOFF; select: * }
       }
       expect(caught).toBeInstanceOf(MaterializationEligibilityError);
       expect((caught as MaterializationEligibilityError).reason).toBe(
-         "given_in_persisted_query",
+         "reads_given",
       );
    });
 });

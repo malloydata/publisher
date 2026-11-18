@@ -41,7 +41,7 @@ import {
 } from "../../malloy_text";
 import { noteSource } from "../text/field_notes";
 import type { MaterializeReadTimeTerm } from "../domain/read_time_terms";
-import { storedMalloyType, storedTypeText } from "../stored_column_types";
+import { storedMalloyType } from "../stored_column_types";
 
 export { storedMalloyType };
 import {
@@ -160,12 +160,21 @@ export interface Reroot {
     */
    keepsIncludes?: true;
    /**
-    * With {@link keepsIncludes}: an `except:` item naming no stored column
-    * (a v1 `storage=` table does not store one its source drops) is deleted
-    * from the kept text, since the re-rooted source has nothing of that name
-    * to exclude and Malloy refuses the statement (`dropExceptItems`).
+    * An `except:` item naming no stored column (no build stores a column its
+    * source drops) is deleted from the kept text, ancestors' kept blocks
+    * included, since the re-rooted source has nothing of that name to
+    * exclude and Malloy refuses the statement (`dropExceptItems`). Set on
+    * every re-root; an item naming a stored column is kept.
     */
    dropsUnstoredExcepts?: true;
+   /**
+    * With {@link keepsIncludes}: the query's own output names, under which a
+    * v1 query-shaped table stores its columns. The kept `rename:`s read
+    * those names as written, so no column stored under one is renamed back
+    * first, even when a rename's new name is also an output name (a swap,
+    * `rename: n is total; rename: total is n` by way of a third name).
+    */
+   outputNames?: readonly string[];
    /**
     * A v1 `#@ persist` source declared by refinement alone (`high_value is
     * raw extend { where: … }`) whose base chain carries no filter and no
@@ -583,11 +592,7 @@ interface RerootRefusal {
     * not keep, or the `include { … }` it keeps hides a column its table does
     * not store ({@link hiddenUnstored}).
     */
-   reason:
-      | "range_not_found"
-      | "definition_not_parsed"
-      | "not_query_shaped"
-      | "pair_join_not_found";
+   reason: "definition_not_parsed" | "not_query_shaped" | "pair_join_not_found";
    /**
     * With `definition_not_parsed`: the columns the declaration's kept
     * `include { … }` hides that its table does not store.
@@ -660,7 +665,7 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "range_not_found",
+               reason: "definition_not_parsed",
             });
          }
          continue;
@@ -687,7 +692,7 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "range_not_found",
+               reason: "definition_not_parsed",
             });
             continue;
          }
@@ -919,6 +924,7 @@ export function rerootDeclaration(
       | "computedAtRead"
       | "keepsIncludes"
       | "dropsUnstoredExcepts"
+      | "outputNames"
       | "zone"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
@@ -953,22 +959,22 @@ export function rerootDeclaration(
       if (edited === undefined) return undefined;
       kept = edited.text;
    }
-   // The table stores a renamed field under its new name; the kept text
-   // renames it from the old one, so the old name is given back first.
-   const renames = inverseRenameBlocks(
-      kept,
-      new Set((r.columns ?? []).map((c) => c.name)),
+   // A table that stores a renamed field under its new name: the kept text
+   // renames it from the old one, so the old name is given back first. A
+   // column stored under the query's own output name is read by the kept
+   // renames as it is, and is never renamed back.
+   const outputs = new Set(r.outputNames ?? []);
+   const renamedStore = new Set(
+      (r.columns ?? []).map((c) => c.name).filter((n) => !outputs.has(n)),
    );
+   const renames = inverseRenameBlocks(kept, renamedStore);
    if (renames === undefined) return undefined;
    const columns = r.columns ?? [];
    const redefined = timeframedColumns(columns, reserved);
    // A cast column the inverse renames give an old name back cannot be read
    // under its stored name after them: it is cast in a block of its own just
    // ahead of them, and the renames then rename the cast field.
-   const renamedBack = inverselyRenamedColumns(
-      kept,
-      new Set(columns.map((c) => c.name)),
-   );
+   const renamedBack = inverselyRenamedColumns(kept, renamedStore);
    const early = redefined.filter(
       (c) => c.nativeCast !== undefined && renamedBack.has(c.name),
    );
@@ -1565,8 +1571,15 @@ export function typeDeclaration(
    );
    // malloy-text: the author's own notes, then names through identifier and a Malloy type name
    const fields = [...r.columns, ...joined]
-      .map(
-         (c) =>
+      .flatMap((c) => {
+         // A column no Malloy type declares (a BLOB, an INTERVAL, a MAP) is
+         // left out, so a query reading it finds no field and answers live:
+         // there is no type to write (`json` is not one a `type:` takes).
+         const type = c.timestamptz
+            ? "timestamptz"
+            : (c.declaredType ?? storedMalloyType(c.type));
+         if (type === undefined) return [];
+         return [
             // A timeframe or cast column's notes go on its redefined field
             // instead, all but its `#(classification)`, which stays on the
             // column too: the internal name it is renamed to keeps it, so a
@@ -1579,9 +1592,9 @@ export function typeDeclaration(
                : (c.notes ?? [])
             )
                .map((note) => noteSource(note, "   "))
-               .join("") +
-            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : (c.declaredType ?? storedTypeText(c.type))}`,
-      )
+               .join("") + `   ${identifier(c.name)}::${type}`,
+         ];
+      })
       .join(",\n");
    return `type: ${identifier(r.typeName)} is {\n${fields}\n}`;
 }

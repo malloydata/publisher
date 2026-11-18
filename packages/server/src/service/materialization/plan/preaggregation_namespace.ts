@@ -3,7 +3,7 @@
 
 /**
  * Where a rollup's table is placed. A leaf: the two rollup readers
- * (`#@ preaggregate` and `#(preaggregate)`) and the inheritance from a base's
+ * (`#@ preaggregate` and `#(rollup)`) and the inheritance from a base's
  * `name=` all apply it.
  *
  * A rollup's `name=` places and prefixes its table: everything before its

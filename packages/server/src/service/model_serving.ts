@@ -699,7 +699,7 @@ export class ModelServing {
                : {}),
          },
          // The served copy is the author's text, gates included, as are a
-         // persisted view's and a `#(preaggregate)` rollup's variants: a
+         // persisted view's and a `#(rollup)` rollup's variants: a
          // row-level gate is grafted and proven on its own compile, so the
          // routed answer keeps it (R3), and an answer let past an entry-point
          // gate is re-proven there. Any other routed shape carries no
@@ -760,7 +760,7 @@ export class ModelServing {
       // No post-hoc gate check is possible on a serve-shape or v1
       // `#@ preaggregate` runnable (it carries no annotations): their
       // correctness rests entirely on `queryEntryPointHasRowLevelGate`. The
-      // served copy, a persisted view and a `#(preaggregate)` rollup are the
+      // served copy, a persisted view and a `#(rollup)` rollup are the
       // exceptions (R3): each keeps the author's gates on the run target's
       // own `sourceID`, and `govern()` above grafted and proved them on its
       // own compile.
@@ -819,7 +819,7 @@ export class ModelServing {
    /**
     * Run the governed runnable with what the answer names: a run on a
     * virtual map (the served copy, a `storage=` view or rollup) takes no
-    * manifest; a colocated rollup reads the full pinned one, a colocated
+    * manifest; a database rollup reads the full pinned one, a database
     * persisted view the one without rollups, and the live compile an empty
     * one. Prepare runs INSIDE the run's try/catch, so a given-binding throw
     * at prepare gets the same error mapping as run instead of escaping as a
@@ -1037,6 +1037,7 @@ export class ModelServing {
          packageName: this.host.packageName,
          modelPath: this.host.modelPath,
          failurePrefix: "Query execution failed",
+         subject: governed.compiledSource ?? sourceName ?? undefined,
          // A connection-classified failure (exhausted pool) keeps its own
          // status rather than reading as a bad query.
          passThrough: [ConnectionError],
@@ -1672,7 +1673,7 @@ export class ModelServing {
    }
 }
 
-/** The pinned build manifest, or undefined when nothing colocated is bound. */
+/** The pinned build manifest, or undefined when nothing database is bound. */
 function pinnedManifest(pinned: Pinned): BuildManifest | undefined {
    return pinned.hasEntries ? pinned.compilerManifest : undefined;
 }

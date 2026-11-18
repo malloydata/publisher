@@ -19,8 +19,8 @@
 //   ## Model [<pkg>/]<path.malloy>      + a ```malloy block                  -> write model
 //   ## Publish [<pkg>] [(forceRefresh, sources=a[+b])]  [body: `expect binding: src -> conn`]
 //   ## Delete [<pkg>]                    -> unload + DELETE the package from serving
-//   ## Reclaim [<pkg>]                   -> DELETE the latest materialization with dropTables
-//                                        (destination-aware physical-table drop / GC)
+//   ## Forget [<pkg>]                    -> DELETE the latest successful materialization's
+//                                        record (record-only: its tables stay)
 //   ## Destination tables|files|drop <table>|cleanup [(dest=lake, schema=main, snapshots=7d, files=1d)]
 //                                        -> the storage-destination table routes; `tables` and
 //                                        `files` take an Expect: table (`name` / `table`),
@@ -31,7 +31,7 @@
 //                                        redaction check can name a secret only the harness knows]
 //   ## Compile <label> (pkg=P[, refused]) + ```malloy (appended source) + `cites:` -> /compile
 //   ## Warns [<pkg>]                     [body: `cites: <substring>`]  -> package warning
-//   ## Preview [<pkg>]                   + `- <source>[.<view>]: serves|live|not_built` lines ->
+//   ## Preview [<pkg>]                   + `- <source>[.<view>]: serves|live|awaiting_build` lines ->
 //                                        POST /packages?dryRun=true on the package's own tree,
 //                                        asserting each source's serve verdict, or one view's
 //   ## Republish [refused] [<pkg>]       [body: `cites: <substring>`]  -> POST /packages (the
@@ -45,7 +45,7 @@
 //                                        `(failed)` = instructed but expected to FAIL, asserted
 //                                        against the manifest's `failures`. An unmarked source is
 //                                        asserted built AND absent from `failures`.
-//   ## Build refusals [(pkg=P)]          + GFM table `source [| tier | reason]` -> assert the
+//   ## Build refusals [(pkg=P)]          + GFM table `source [| tier | reason | origin]` -> assert the
 //                                        compiled build plan's REFUSED sources (examined and
 //                                        refused, as opposed to never present). An EMPTY table
 //                                        asserts nothing was refused. Runs nothing.
@@ -175,7 +175,7 @@ type Step =
         mode: PersistStorageMode;
      }
    | {
-        kind: "reclaim";
+        kind: "forget";
         pub?: string;
         env: string;
         pkg: string;
@@ -421,7 +421,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    },
    await: { attrs: ["label"] },
    delete: {},
-   reclaim: {},
+   forget: {},
    destination: {
       attrs: ["dest", "schema", "snapshots", "files", "within"],
       keys: ["deleted", "status"],
@@ -751,9 +751,9 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             });
             break;
          }
-         case "reclaim": {
+         case "forget": {
             steps.push({
-               kind: "reclaim",
+               kind: "forget",
                pub,
                env,
                pkg: arg.trim() || defaultPackage,
@@ -1120,7 +1120,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             }[] = [];
             for (const line of sec.body) {
                const m =
-                  /^\s*-\s*([A-Za-z_][\w]*)(?:\.([A-Za-z_][\w]*))?\s*:\s*(serves|live|not_built)\s*$/.exec(
+                  /^\s*-\s*([A-Za-z_][\w]*)(?:\.([A-Za-z_][\w]*))?\s*:\s*(serves|live|awaiting_build)\s*$/.exec(
                      line,
                   );
                if (m) {
@@ -1133,7 +1133,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             }
             if (expects.length === 0) {
                throw new Error(
-                  `## Preview ${arg}: expected at least one \`- <source>[.<view>]: serves|live|not_built\` line`,
+                  `## Preview ${arg}: expected at least one \`- <source>[.<view>]: serves|live|awaiting_build\` line`,
                );
             }
             steps.push({
@@ -2624,7 +2624,12 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   buildPlan?: {
                      refusedSources?: Record<
                         string,
-                        { name?: string; tier?: string; reason?: string }
+                        {
+                           name?: string;
+                           tier?: string;
+                           reason?: string;
+                           origin?: string;
+                        }
                      >;
                   };
                };
@@ -2639,8 +2644,8 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                );
                // One row per DISTINCT source name, sorted both sides so the
                // comparison is order-independent — plan iteration order is not a
-               // contract. `tier` and `reason` are opt-in columns, the same way
-               // `## Build targets` treats `entity`.
+               // contract. `tier`, `reason` and `origin` are opt-in columns, the
+               // same way `## Build targets` treats `entity`.
                const actual = [
                   ...new Map(
                      refused
@@ -2651,6 +2656,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                               source: r.name!,
                               tier: r.tier ?? "",
                               reason: r.reason ?? "",
+                              origin: r.origin ?? "",
                            },
                         ]),
                   ).values(),
@@ -3125,14 +3131,14 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                }
                break;
             }
-            case "reclaim": {
-               // Reclaim the latest successful materialization: DELETE it with
-               // dropTables (the destination-aware read-write drop of the physical
-               // table). A following `## Restart` re-establishes serving from the
-               // store — now empty for this source — so it reverts to live.
+            case "forget": {
+               // Delete the latest successful materialization's record
+               // (record-only: its tables stay). The post-delete rebind, or a
+               // following `## Restart`, re-establishes serving from the store,
+               // now empty for this source, so it reverts to live.
                const rest = await serverFor(step.pub, step.env);
-               const id = await rest.reclaimLatest(step.pkg);
-               assert.ok(`reclaim ${step.pkg}`, !!id, `reclaimed ${id}`);
+               const id = await rest.forgetLatest(step.pkg);
+               assert.ok(`forget ${step.pkg}`, !!id, `deleted ${id}`);
                break;
             }
             case "delete": {

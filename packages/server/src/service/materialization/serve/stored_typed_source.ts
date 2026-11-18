@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The typed source a persisted result's `storage=` table is read through,
- * shared by the view and query legs: a `type:` with one field per stored
+ * The typed source a persisted result's or rollup's stored table is read
+ * through (a `storage=` table, or a database table altered outside its
+ * build), shared by the view, query and rollup legs: a `type:` with one field per stored
  * column, a source over the table's `virtual()` handle cast to it, and the
  * timeframe and cast restatements its columns need to read as live's.
  *
@@ -17,6 +18,20 @@ import { identifier, stringLiteral } from "../../malloy_text";
 import type { Binding } from "../domain/binding";
 import { timeframeRestatements, typeDeclaration } from "./served_copy";
 import { servedCopyAlias } from "./served_copy_config";
+import { canonicalStoredSchema } from "../stored_column_types";
+
+/**
+ * The connection a stored table is read through: a storage destination under
+ * its server-only alias, a database table on its source's own connection,
+ * which the package's connections already hold (as the served copy reads it).
+ */
+function storedConnectionOf(
+   binding: Pick<Binding, "destinationName"> & Partial<Pick<Binding, "tier">>,
+): string {
+   return binding.tier === "database"
+      ? binding.destinationName
+      : servedCopyAlias(binding.destinationName);
+}
 
 /** How a stored column is read: through a faithful cast, or a big integer's native type. */
 export type ColumnCast =
@@ -49,11 +64,19 @@ interface ResultColumn {
 export function storedTypedSource(args: {
    columns: readonly ResultColumn[];
    casts: ReadonlyMap<string, ColumnCast>;
-   binding: Pick<Binding, "schema" | "destinationName" | "virtualHandle">;
+   binding: Pick<Binding, "schema" | "destinationName" | "virtualHandle"> &
+      Partial<Pick<Binding, "tier">>;
    typeName: string;
    stored: string;
 }): { typeText: string; timeframes: string } {
    const { columns, casts, binding, typeName, stored } = args;
+   // Each stored column under the name the result declares where it matches
+   // only by a unique case fold (a warehouse that folded the build's quoted
+   // aliases, P3-06..09): DuckDB reads it under either spelling.
+   const schema = canonicalStoredSchema(
+      binding.schema,
+      columns.map((c) => c.name),
+   );
    const columnNotes = new Map(
       columns.map((c) => [
          c.name,
@@ -65,7 +88,7 @@ export function storedTypedSource(args: {
    const zoned = new Set(
       columns.filter((c) => c.timestamptz).map((c) => c.name),
    );
-   const typed = binding.schema.map((c) => {
+   const typed = schema.map((c) => {
       const notes = columnNotes.get(c.name);
       return {
          name: c.name,
@@ -82,10 +105,10 @@ export function storedTypedSource(args: {
          const notes = c.kind === "measure" ? [] : c.notes;
          return { ...c, notes, ...cast };
       }),
-      binding.schema.map((c) => c.name),
+      schema.map((c) => c.name),
    );
    // malloy-text: the type emitter and names through identifier
    const typeText = `${typeDeclaration({ typeName, columns: typed })}
-source: ${identifier(stored)} is ${identifier(servedCopyAlias(binding.destinationName))}.virtual(${stringLiteral(binding.virtualHandle)})::${identifier(typeName)}`;
+source: ${identifier(stored)} is ${identifier(storedConnectionOf(binding))}.virtual(${stringLiteral(binding.virtualHandle)})::${identifier(typeName)}`;
    return { typeText, timeframes };
 }

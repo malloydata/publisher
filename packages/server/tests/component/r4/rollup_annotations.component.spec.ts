@@ -2,17 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * R4 for a `#(preaggregate)` rollup's annotations: a rollup answer returns
+ * R4 for a `#(rollup)` rollup's annotations: a rollup answer returns
  * each column with the annotations live's does (`#(classification)`, `#(doc)`,
  * render tags such as `# currency` and `# label`), on both legs (a source's
- * own rollup, colocated and `storage=`; a joined source's rollup read through
+ * own rollup, database and `storage=`; a joined source's rollup read through
  * the join, A7), and the governance that reads annotations reads the same
  * compile as live: the access record's field classes, and the `#(carries)`
  * ceiling, which refuses a query a rollup could otherwise answer.
  *
  * The variant re-emits each stored measure (`total is total__partial.sum()`)
  * and, for a `storage=` rollup, each grain column (a `type:` field), so the
- * author's notes are written on them again; a colocated grain column is a
+ * author's notes are written on them again; a database grain column is a
  * `group_by:` output and keeps its dimension's notes from Malloy itself.
  */
 
@@ -58,7 +58,7 @@ source: lines is duckdb.table('lines_raw') include {
   #(classification) "none"
   #(doc) "Units shipped"
   # number="#,##0.0"
-  #(preaggregate) grain=["order_id", "kind"]
+  #(rollup) grain=["order_id", "kind"]
   measure: shipped is qty.sum()
 }
 
@@ -84,8 +84,8 @@ source: orders is duckdb.table('orders_raw') include {
   #|
     # description="Net of refunds"
   |#
-  #(preaggregate) grain=["region"]${placement}
-  #(preaggregate) grain=["region", "buyer", "region_tag", "order_month"]${placement}
+  #(rollup) grain=["region"]${placement}
+  #(rollup) grain=["region", "buyer", "region_tag", "order_month"]${placement}
   measure: revenue is amount.sum()
 }
 
@@ -99,7 +99,7 @@ source: open_orders is duckdb.table('orders_raw') include {
   primary_key: id
   #(classification) "none"
   # currency
-  #(preaggregate) grain=["region"]${placement}
+  #(rollup) grain=["region"]${placement}
   measure: open_revenue is amount.sum()
 }
 `;
@@ -114,10 +114,10 @@ interface Answer {
 }
 
 describe.each([
-   ["colocated", ""],
+   ["database", ""],
    ["in a storage destination", ` storage="${DESTINATION}"`],
 ] as const)(
-   "R4: a #(preaggregate) rollup %s answers with live's annotations",
+   "R4: a #(rollup) rollup %s answers with live's annotations",
    (_label, placement) => {
       let fixture: R4Fixture;
       useMaterializationOn();
@@ -234,7 +234,7 @@ describe.each([
          expect(live.error).toContain("carries [none]");
          expect(served.error).toBe(live.error);
          // Under the data-management bypass, which skips the ceiling, a
-         // colocated rollup answers it (a `storage=` one cannot read the
+         // database rollup answers it (a `storage=` one cannot read the
          // caller's join, which is on the source's own connection): what
          // refused it was the ceiling, read on live.
          const bypassed = await answer(malloy, true, true);
@@ -256,7 +256,7 @@ describe.each([
       });
 
       if (placement === "") {
-         // A7: a joined source's colocated rollup, read through the join.
+         // A7: a joined source's database rollup, read through the join.
          for (const [name, malloy, column] of [
             [
                "a joined stored measure",

@@ -8,7 +8,7 @@
  * compiler emits: `x.sum()` is `{fn: "sum"}`, `carriers.count()` is
  * `{fn: "count", structPath: ["carriers"]}`, `count(x)` is `{fn: "distinct"}`.
  *
- * `#(preaggregate)` reads a measure's partials from its text (it has to emit
+ * `#(rollup)` reads a measure's partials from its text (it has to emit
  * Malloy text, and the compiler offers no printer), and checks that reading
  * against this one: a measure whose text the grammar decomposed into leaves
  * the compiler does not agree with is not stored. Anything here that is not a

@@ -252,6 +252,19 @@ export function rollupBuildCopyName(
    return `${importPath}.${baseDeclaredName}.rollup-build.malloy`;
 }
 
+/**
+ * The copy a rollup's `#(materialize)` base is imported from when the rollup
+ * builds from the base's stored table (rollup_compile.ts): the base's
+ * declaring file, `importPath`, with the base re-rooted on its generated
+ * build source, beside it so its own imports resolve.
+ */
+export function rollupStoredBaseCopyName(
+   importPath: string,
+   baseDeclaredName: string,
+): string {
+   return `${importPath}.${baseDeclaredName}.rollup-stored-base.malloy`;
+}
+
 /** Whether a rollup's base is read from its build copy. */
 export function readsBuildCopy(
    plan: Pick<RollupVariantPlan, "readTimeTerms" | "privateGrain">,
@@ -268,13 +281,18 @@ export function readsBuildCopy(
  * replaced by `true` (each found where the compiler says it is, {@link
  * termSpans}) and, with `lift`, its own access modifiers lifted and its
  * declaration wrapped in `include { public: * }` under the flag that needs
- * (as a `#(materialize)` build copy lifts them). Made the same by the plan's
+ * (as a `#(materialize)` build copy lifts them), and those of the sources
+ * it extends that declare a private grain dimension (`liftedAncestors`).
+ * Made the same by the plan's
  * companion and the serving variant, so the build source's SQL, and so its
  * table, is one. Or why it cannot be made.
  */
 export function rollupBuildCopyText(
    text: string,
-   plan: Pick<RollupVariantPlan, "readTimeTerms" | "declaration">,
+   plan: Pick<
+      RollupVariantPlan,
+      "readTimeTerms" | "declaration" | "liftedAncestors"
+   >,
    lift: boolean,
 ): { copy: string } | { reason: string } {
    const edits: TextEdit[] = [];
@@ -307,6 +325,30 @@ export function rollupBuildCopyText(
          { start: to, end: to, insert: " include { public: * }" },
          { start: 0, end: 0, insert: "##! experimental.access_modifiers\n" },
       );
+      // A private grain dimension a source it extends declares: that
+      // source's statement, and each between it and the base, lifted too,
+      // so the field reaches the base public in the copy.
+      for (const ancestor of plan.liftedAncestors ?? []) {
+         const at = offsetOf(text, ancestor.range.start);
+         const end = offsetOf(text, ancestor.range.end);
+         const ancestorLifts =
+            at >= 0 && end >= at
+               ? accessLiftEdits(text.slice(at, end))
+               : undefined;
+         if (!ancestorLifts) {
+            return {
+               reason:
+                  "the declaration of a source it extends could not be read to lift its access modifiers for the build",
+            };
+         }
+         edits.push(
+            ...ancestorLifts.map((e) => ({
+               ...e,
+               start: at + e.start,
+               end: at + e.end,
+            })),
+         );
+      }
    }
    const copy = applyEdits(text, edits);
    return copy === undefined ? { reason: TERM_NOT_FOUND } : { copy };
@@ -316,12 +358,14 @@ export function rollupBuildCopyText(
  * The generated build companion for one declaring model, or undefined when it
  * declares no rollup. Every planned base is declared in that model, so each is
  * imported from it by `importPath`, or from its build copy beside it when its
- * plans have one. The experimental flag lives here, so the author's file
- * needs none.
+ * plans have one, or, for a base named in `storedBases`, from the copy that
+ * re-roots it on its stored table ({@link rollupStoredBaseCopyName}). The
+ * experimental flag lives here, so the author's file needs none.
  */
 export function generateRollupBuildFile(
    plans: readonly RollupVariantPlan[],
    importPath: string,
+   storedBases: ReadonlySet<string> = new Set(),
 ): string | undefined {
    if (plans.length === 0) return undefined;
    const bases = [...new Set(plans.map((p) => p.baseDeclaredName))].sort(
@@ -333,7 +377,7 @@ export function generateRollupBuildFile(
    const imports = bases
       .map(
          (base) =>
-            `import { ${identifier(rollupBaseAlias(base))} is ${identifier(base)} } from ${doubleQuotedString(copied.has(base) ? rollupBuildCopyName(importPath, base) : importPath)}`,
+            `import { ${identifier(rollupBaseAlias(base))} is ${identifier(base)} } from ${doubleQuotedString(copied.has(base) ? rollupBuildCopyName(importPath, base) : storedBases.has(base) ? rollupStoredBaseCopyName(importPath, base) : importPath)}`,
       )
       .join("\n");
    // `include { public: * }` (an internal gate field in a grain) needs the

@@ -4,9 +4,10 @@
 /**
  * A valid rollup a compile-time gate refuses alone (a read-only dialect, a
  * base scoped by a given, a shared table name, the `storage=` gate) is
- * reported as `preaggregate-not-built`, its message naming its base, its grain
- * and the gate's reason, while a refused `#@ persist` source keeps
- * `persist-source-refused`. Which rollups are refused does not change.
+ * reported as `rollup-not-built`, its message naming its base, its grain
+ * and the gate's reason, while a refused `#@ persist` source is
+ * `persist-not-built`. Each carries the record's reason. Which rollups are
+ * refused does not change.
  */
 import { rollupPlansIn } from "../../test_helpers/materialization_test_fixtures";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
@@ -41,7 +42,7 @@ afterEach(() => buildPlanPackages.cleanup());
 const ORDERS = `source: orders is duckdb.sql("""
   SELECT * FROM (VALUES (10, 'A'), (20, 'B')) AS t(amount, category)
 """) extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 `;
@@ -69,7 +70,7 @@ const GATE_MESSAGE =
    "Pre-aggregation rollup 'orders__category__0a1b2c3d' cannot be built: the reason.";
 
 function refusedPlan(
-   tier: "preaggregate" | "colocated",
+   tier: "preaggregate" | "database",
    sources: BuildPlan["sources"] = {},
 ): BuildPlan {
    return {
@@ -80,14 +81,14 @@ function refusedPlan(
             sourceID: "r@file:///m.malloy",
             modelPath: "m.malloy",
             tier,
-            reason: "read_only_dialect",
+            reason: "connection_cannot_hold_table",
             message: GATE_MESSAGE,
          },
       },
    } as unknown as BuildPlan;
 }
 
-describe("preaggregate-not-built", () => {
+describe("rollup-not-built", () => {
    it(
       "names the refused rollup's base and grain, and keeps it refused",
       async () => {
@@ -97,7 +98,7 @@ describe("preaggregate-not-built", () => {
          const [rollupID] = Object.keys(rollupPlansIn(compiled));
          expect(rollupID).toBeDefined();
          // A rollup on a dialect whose connection creates no table: the
-         // colocated gate refuses it, and nothing else about it changes. The
+         // database gate refuses it, and nothing else about it changes. The
          // dialect is shadowed on the compiled source itself, so the plan
          // still projects that same object and keeps the rollup in
          // `sources`, as a real read-only-dialect refusal does.
@@ -109,7 +110,11 @@ describe("preaggregate-not-built", () => {
          const outcome = deriveBuildPlanOutcome(compiled, null);
          expect(
             outcome.plan?.refusedSources?.[rollupID as string],
-         ).toMatchObject({ tier: "preaggregate", reason: "read_only_dialect" });
+         ).toMatchObject({
+            origin: "rollup",
+            tier: "database",
+            reason: "connection_cannot_hold_table",
+         });
          expect(
             outcome.plan?.sources?.[rollupID as string]?.preaggregate,
          ).toMatchObject({
@@ -130,13 +135,13 @@ describe("preaggregate-not-built", () => {
          ).persistRefusalWarnings();
          expect(warnings).toHaveLength(1);
          expect(warnings[0]).toMatchObject({
-            code: "preaggregate-not-built",
+            code: "rollup-not-built",
             severity: "warn",
             subject: "orders",
             model: "orders.malloy",
          });
          expect(warnings[0]?.message).toStartWith(
-            '#(preaggregate) rollup of source "orders" at (category) is not built, so its measures are served live: Pre-aggregation rollup',
+            '#(rollup) rollup of source "orders" at (category) is not built, so its measures are served live: Pre-aggregation rollup',
          );
          expect(warnings[0]?.message).not.toContain("file://");
       },
@@ -151,11 +156,12 @@ describe("preaggregate-not-built", () => {
          },
       }).persistRefusalWarnings();
       expect(warning).toEqual({
-         code: "preaggregate-not-built",
+         code: "rollup-not-built",
+         reason: "connection_cannot_hold_table",
          severity: "warn",
          model: "m.malloy",
          subject: "orders",
-         message: `#(preaggregate) rollup of source "orders" at (category, region) is not built, so its measures are served live: ${GATE_MESSAGE}`,
+         message: `#(rollup) rollup of source "orders" at (category, region) is not built, so its measures are served live: ${GATE_MESSAGE}`,
       });
    });
 
@@ -163,16 +169,16 @@ describe("preaggregate-not-built", () => {
       const [warning] = holding(
          refusedPlan("preaggregate"),
       ).persistRefusalWarnings();
-      expect(warning?.code).toBe("preaggregate-not-built");
+      expect(warning?.code).toBe("rollup-not-built");
       expect(warning?.subject).toBeUndefined();
       expect(warning?.message).toBe(
-         `A #(preaggregate) rollup is not built, so its measures are served live: ${GATE_MESSAGE}`,
+         `A #(rollup) rollup is not built, so its measures are served live: ${GATE_MESSAGE}`,
       );
    });
 
-   it("warns persist-not-built for a refused #@ persist source, and its former code beside it for one release", () => {
+   it("warns persist-not-built for a refused #@ persist source, with its reason, and no longer its 0.14 alias", () => {
       const warnings = holding(
-         refusedPlan("colocated"),
+         refusedPlan("database"),
       ).persistRefusalWarnings();
       const expected = {
          severity: "warn" as const,
@@ -181,18 +187,21 @@ describe("preaggregate-not-built", () => {
          message: GATE_MESSAGE,
       };
       expect(warnings).toEqual([
-         { ...expected, code: "persist-not-built" },
-         { ...expected, code: "persist-source-refused" },
+         {
+            ...expected,
+            code: "persist-not-built",
+            reason: "connection_cannot_hold_table",
+         },
       ]);
    });
 });
 
-describe("preaggregate-invalid", () => {
+describe("rollup-invalid", () => {
    // After the file's settings: a load worker keeps the settings it started with.
    usePackageLoadPool();
 
    it(
-      "fails the load for a malformed #(preaggregate) line",
+      "fails the load for a malformed #(rollup) line",
       async () => {
          let error: unknown;
          try {
@@ -200,7 +209,7 @@ describe("preaggregate-invalid", () => {
                "orders.malloy": `source: orders is duckdb.sql("""
   SELECT * FROM (VALUES (10, 'A')) AS t(amount, category)
 """) extend {
-  #(preaggregate) grain=[]
+  #(rollup) grain=[]
   measure: total is amount.sum()
 }
 `,
@@ -212,9 +221,9 @@ describe("preaggregate-invalid", () => {
          expect(error).toBeInstanceOf(BadRequestError);
          const message = (error as Error).message;
          expect(message).toContain(
-            '#(preaggregate) on measure "total" of source "orders"',
+            '#(rollup) on measure "total" of source "orders"',
          );
-         expect(message).toContain("[preaggregate-invalid]");
+         expect(message).toContain("[rollup-invalid]");
       },
       { timeout: 60000 },
    );

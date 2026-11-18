@@ -1,7 +1,7 @@
 # `materialization/run/`
 
 Makes the tables a run's instructions name and records what it made: claims
-the tables, builds each in its tier (colocated in the source's warehouse, or
+the tables, builds each in its tier (in the source's warehouse, or
 `storage=` into DuckDB or DuckLake), runs the key checks, commits one manifest
 per run and reclaims what no manifest holds. This is where the module's
 warehouse SQL, run store, clock, metrics and logs live.
@@ -16,10 +16,11 @@ warehouse SQL, run store, clock, metrics and logs live.
 | `run_instructions.ts`               | The instructions a self-instructed run derives, and its table names                                                                                                                     | the service                                                                                           |
 | `run_lifecycle.ts`                  | A run's state machine and its life in this process                                                                                                                                      | the service, the committer, the reclaimer                                                             |
 | `instructed_build.ts`               | One instructed run's build loop, per tier and in dependency order                                                                                                                       | the service                                                                                           |
-| `source_build.ts`                   | One source's build: render, classify its stored upstreams, then the colocated or `storage=` tier                                                                                        | the instructed build, the service                                                                     |
-| `colocated_build_strategy.ts`       | The colocated tier's adapter (`ColocatedTier`): a delta, else a staging CTAS and swap in the source's own warehouse; its schema capture; a table's drop and key check on its connection | the source build, the instructed build's key checks, the reclaimer                                    |
-| `colocated_native_types.ts`         | A colocated table's columns as the warehouse's catalog types them                                                                                                                       | the colocated strategy, incremental build                                                             |
-| `incremental_delta_strategy.ts`     | A colocated incremental table's bounded delta, or `undefined` for a full rebuild                                                                                                        | the colocated tier                                                                                    |
+| `source_build.ts`                   | One source's build: render, classify its stored upstreams, then the database or `storage=` tier                                                                                        | the instructed build, the service                                                                     |
+| `database_build_strategy.ts`       | The database tier's adapter (`DatabaseTier`): a delta, else a staging CTAS and swap in the source's own warehouse; its schema capture; a table's drop and key check on its connection | the source build, the instructed build's key checks, the reclaimer                                    |
+| `database_column_read.ts`           | The bind's read of each bound database table's columns from its warehouse: batched catalog queries, bounded concurrency, a timeout, unread answers live                                 | the facade's bind, the R4 harness                                                                     |
+| `database_native_types.ts`         | A database table's columns as the warehouse's catalog types them                                                                                                                       | the database strategy, incremental build                                                             |
+| `incremental_delta_strategy.ts`     | A database incremental table's bounded delta, or `undefined` for a full rebuild                                                                                                        | the database tier                                                                                    |
 | `incremental_build.ts`              | The run-level half of incremental materialization: seed or delta, and the ledger                                                                                                        | the strategies, the instructed build, the service                                                     |
 | `incremental_apply.ts`              | Generating and applying a delta: bounds, probes, range replace, merge and pair delta                                                                                                    | incremental build and storage, the build session                                                      |
 | `incremental_storage.ts`            | The delta target of a `storage=` table, across two engines                                                                                                                              | incremental build                                                                                     |
@@ -30,6 +31,7 @@ warehouse SQL, run store, clock, metrics and logs live.
 | `same_catalog_build.ts`             | Whether a source and a destination are the same DuckLake catalog                                                                                                                        | the build session, the `storage=` tier                                                                |
 | `build_query_tag.ts`                | A build's query-metadata bag in each warehouse's tagging grammar                                                                                                                        | the build session                                                                                     |
 | `build_read_cost.ts`                | What a build read from the warehouse, from session history                                                                                                                              | the build session, incremental storage                                                                |
+| `bigquery_job_cancel.ts`            | A cancelled `storage=` build's BigQuery jobs: each read marked, and the marked ones cancelled in BigQuery                                                                               | the build session, incremental storage                                                                |
 | `inline_uniqueness.ts`              | The join_one and pair key checks, and the ledger that skips a proven repeat                                                                                                             | the instructed build, the service, the committer, the failure classes                                 |
 | `freshness_stamp.ts`                | A standalone run's freshness facts: declared windows stamped on its entries, and which carried tables are past theirs                                                                   | the service                                                                                           |
 | `manifest_committer.ts`             | A run's manifest, from commit to serving                                                                                                                                                | the service                                                                                           |
@@ -40,14 +42,14 @@ warehouse SQL, run store, clock, metrics and logs live.
 | `table_ownership.ts`                | Who owns a table an auto-run writes at an author's name                                                                                                                                 | the instructed build, the service, the reclaimer                                                      |
 | `table_site.ts`                     | Where a table's marks are read: its connection, or a session on its destination                                                                                                         | table ownership, the instructed build, the service, the reclaimer, leftover views                     |
 | `table_mark_sql.ts`                 | The marks on a table and on a leftover `name=` view, and reading them back                                                                                                              | table ownership, leftover views, table sites, the instructed build, the service, the reclaimer        |
-| `warehouse_sql.ts`                  | The SQL text that differs by dialect: literals, probes, the ownership mark, a delta's transaction, the swap, the catalog read, read cost, the query tag                                 | the marks, ownership, leftover views, the incremental refresh, the colocated tier, the build session  |
+| `warehouse_sql.ts`                  | The SQL text that differs by dialect: literals, probes, the ownership mark, a delta's transaction, the swap, the catalog read, read cost, the query tag                                 | the marks, ownership, leftover views, the incremental refresh, the database tier, the build session  |
 | `leftover_name_views.ts`            | Dropping this package's own `name=` views an earlier release left                                                                                                                       | the instructed build, the reclaimer                                                                   |
 | `reclaimer.ts`                      | Dropping the tables no manifest holds, through each table's tier adapter, and their leftover views                                                                                      | the service, `main_server.ts` (as the service's `reclaimer`), `index.ts`                              |
 | `run_telemetry.ts`                  | The run and build events and counters                                                                                                                                                   | the service, the instructed build, the lifecycle                                                      |
 | `build_failure_class.ts`            | Whether retrying a failed build could succeed                                                                                                                                           | the instructed build, the lifecycle, telemetry                                                        |
 | `error_code.ts`                     | An error reduced to a code a log may carry                                                                                                                                              | the strategies, the build session, telemetry                                                          |
 | `cron_evaluator.ts`                 | Evaluating a 5-field cron expression in UTC                                                                                                                                             | the scheduler, the facade, package skills                                                             |
-| `tier.ts`                           | The tier port (`TierAdapter`): building, dropping and key-checking a table where it lives; the colocated build's request; each tier's site                                              | the source build, the instructed build, the reclaimer, the two tier adapters                          |
+| `tier.ts`                           | The tier port (`TierAdapter`): building, dropping and key-checking a table where it lives; the database build's request; each tier's site                                              | the source build, the instructed build, the reclaimer, the two tier adapters                          |
 
 ## Lock order
 
@@ -63,6 +65,12 @@ A run's locks are taken in one order, so no two callers wait on each other:
    and mark it, and nothing else is taken while it is held. A table the
    package cannot prove its own is retired (`tableNotOwned`, which takes the
    locks above) once the lock is let go.
+
+A run's start takes 1 (unversioned) or 2 then 3 (a version) for its
+active-run check. The rename reclaim (`Reclaimer.reclaimRenamedTables`)
+takes the same locks in the same order (`withRunLock`) to decide and drop,
+and takes them only after its rebind, which needs 1: so no run starts while
+it decides, and it never waits on a lock while holding one a start needs.
 
 `TableClaims.withTableLock` refuses, under test, to be taken while an
 owned-name lock is held (logged otherwise); the package and version locks
@@ -96,7 +104,7 @@ A warehouse dialect is one table in two halves, keyed by Malloy's
    read. Each switch's `default` says what an unnamed dialect gets. Add it to
    `dialect_statements.spec.ts`'s dialects and regenerate the golden, so its
    statements are pinned, and give it a catalog row in
-   `colocated_native_types.spec.ts`.
+   `database_native_types.spec.ts`.
 3. `quoting.ts`, if its identifier quote is not the double quote.
 4. If its connection cannot create a table: `READ_ONLY_DIALECTS`
    (`plan/materialization_eligibility.ts`), which must agree with that

@@ -18,7 +18,7 @@
  * Pure: the caller passes the instant.
  *
  * One model for every mechanism and mode: a `#@ persist`, `#(materialize)` or
- * rollup table, colocated or `storage=`, built by a standalone run or a host,
+ * rollup table, database or `storage=`, built by a standalone run or a host,
  * carries the same three facts on its manifest entry, and they mean the same
  * thing. A host stamps them on the manifest it distributes; a standalone run
  * stamps them from the declarations ({@link declaredFreshnessFacts}).

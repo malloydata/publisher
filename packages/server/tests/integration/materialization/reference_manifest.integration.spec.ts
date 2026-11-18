@@ -105,12 +105,9 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
       );
    }
 
-   /** Delete a terminal materialization record (optionally dropping its tables). */
-   async function deleteRun(id: string, dropTables = false): Promise<void> {
-      await fetch(
-         url(`/materializations/${id}${dropTables ? "?dropTables=true" : ""}`),
-         { method: "DELETE" },
-      );
+   /** Delete a terminal materialization record (record-only). */
+   async function deleteRun(id: string): Promise<void> {
+      await fetch(url(`/materializations/${id}`), { method: "DELETE" });
    }
 
    /** Build one source alone and drive it to a terminal state. */
@@ -167,7 +164,7 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
             },
          });
          expect(baseRun.status).toBe("MANIFEST_FILE_READY");
-         await deleteRun(baseRun.id as string); // keep the physical table
+         await deleteRun(baseRun.id as string); // the physical table stays
 
          // 2) Build the downstream `orders_rollup` ALONE, referencing the
          // upstream's physical table under strictUpstreams. Success is only
@@ -194,11 +191,9 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
          });
          expect(rollupRun.status).toBe("MANIFEST_FILE_READY");
 
-         // Cleanup both physical tables and records.
-         await deleteRun(rollupRun.id as string, true);
-         // Drop the upstream table via a fresh no-op build+drop is overkill;
-         // the environment teardown removes the project. Best-effort direct drop
-         // is unnecessary for correctness here.
+         // Cleanup the record; the environment teardown removes the project
+         // and the tables with it.
+         await deleteRun(rollupRun.id as string);
       },
       { timeout: 120_000 },
    );
@@ -231,7 +226,7 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
          expect(run.status).toBe("FAILED");
          expect(String(run.error ?? "")).toContain("manifest");
 
-         await deleteRun(run.id as string, true);
+         await deleteRun(run.id as string);
       },
       { timeout: 120_000 },
    );

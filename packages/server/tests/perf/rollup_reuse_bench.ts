@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * What a colocated rollup saves by building from its base's stored table: a
- * standalone run of a `#@ persist` base and its `#@ preaggregate` rollup over
- * a synthetic DuckDB table of ROWS rows, counting the run's statements that
- * scan the raw rows and timing the rollup's build, then timing the same
- * rollup built from the warehouse (its planned SQL) on the same connection.
+ * What a database rollup saves by building from its base's stored table: a
+ * standalone run of a base and its rollup over a synthetic DuckDB table of
+ * ROWS rows, counting the run's statements that scan the raw rows and timing
+ * the rollup's build, then timing the same rollup built from the warehouse
+ * (its planned SQL) on the same connection. Two bases: a `#@ persist` one
+ * grouped to 50k rows with a `#@ preaggregate` rollup, and a `#(materialize)`
+ * one that stores the raw rows with a computed dimension, with a
+ * `#(rollup)` rollup at that dimension.
  *
  *   bun tests/perf/rollup_reuse_bench.ts [rows]
  */
@@ -27,11 +30,13 @@ import { writePackageFiles } from "../../src/test_helpers/temp_package";
 const ROWS = Number(process.argv[2] ?? 5_000_000);
 const MARK = "bench_raw_rows";
 
-const MODEL = `##! experimental.persistence
-source: raw is duckdb.sql("""
+const RAW = `source: raw is duckdb.sql("""
   SELECT i % 50 AS cat, i % 1000 AS sub, (i % 97) * 1.5 AS amt, '${MARK}' AS mark
   FROM range(${ROWS}) AS t(i)
-""")
+""")`;
+
+const PERSIST_MODEL = `##! experimental.persistence
+${RAW}
 
 #@ persist
 source: daily is raw -> {
@@ -45,7 +50,20 @@ source: daily is raw -> {
 }
 `;
 
-async function main(): Promise<void> {
+const MATERIALIZE_MODEL = `##! experimental.persistence
+${RAW}
+
+#(materialize) name="bench_orders"
+source: orders is raw extend {
+  dimension: band is concat('band-', cast(cat % 10 as string))
+  #(rollup) grain=["band"]
+  measure: grand is amt.sum()
+  #(rollup) grain=["band"]
+  measure: rows is count()
+}
+`;
+
+async function bench(base: string, model: string): Promise<unknown> {
    const root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "rollup-reuse-bench-")),
    );
@@ -53,7 +71,7 @@ async function main(): Promise<void> {
    fs.mkdirSync(envPath);
    writePackageFiles(
       path.join(envPath, "pkg"),
-      { "m.malloy": MODEL },
+      { "m.malloy": model },
       { manifest: { name: "pkg", description: "bench" } },
    );
    const db = new DuckDBConnection(":memory:");
@@ -106,7 +124,7 @@ async function main(): Promise<void> {
          }
       ).entries,
    );
-   const rollup = entries.find((e) => e.origin === "preaggregate")!;
+   const rollup = entries.find((e) => e.origin === "rollup")!;
    const creates = statements.filter((s) => /^\s*CREATE\b/i.test(s.sql));
    const rawScans = creates.filter((s) => s.sql.includes(MARK)).length;
    const reused = creates.find((s) =>
@@ -127,25 +145,29 @@ async function main(): Promise<void> {
    );
    const warehouseMs = performance.now() - started;
 
-   console.log(
-      JSON.stringify(
-         {
-            rows: ROWS,
-            tablesBuilt: creates.length,
-            buildStatementsScanningRawRows: rawScans,
-            rollupUpstreamReuse: rollup.upstreamReuse ?? null,
-            rollupBuildReadsBaseTable: !reused.sql.includes(MARK),
-            rollupBuildMsFromBaseTable: Math.round(reused.ms),
-            rollupBuildMsFromWarehouse: Math.round(warehouseMs),
-         },
-         null,
-         2,
-      ),
-   );
+   const result = {
+      base,
+      rows: ROWS,
+      tablesBuilt: creates.length,
+      buildStatementsScanningRawRows: rawScans,
+      rollupUpstreamReuse: rollup.upstreamReuse ?? null,
+      rollupBuildReadsBaseTable: !reused.sql.includes(MARK),
+      rollupBuildMsFromBaseTable: Math.round(reused.ms),
+      rollupBuildMsFromWarehouse: Math.round(warehouseMs),
+   };
    MalloyDuckDBConnection.prototype.runSQL = runSQL;
    await env.closeAllConnections().catch(() => undefined);
    await db.close();
    fs.rmSync(root, { recursive: true, force: true });
+   return result;
+}
+
+async function main(): Promise<void> {
+   const results = [
+      await bench("#@ persist", PERSIST_MODEL),
+      await bench("#(materialize)", MATERIALIZE_MODEL),
+   ];
+   console.log(JSON.stringify(results, null, 2));
 }
 
 main().then(

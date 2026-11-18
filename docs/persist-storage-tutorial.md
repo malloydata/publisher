@@ -20,7 +20,7 @@ eligibility refusals) so you can see exactly what the feature does and doesn't
 do. Every step here was run against a real server; the outputs shown are real.
 
 > **Terminology.** `storage=` is the authoring keyword on the persist
-> annotation. The default (no `storage=`) is a **colocated** materialization: the
+> annotation. The default (no `storage=`) is a **database** materialization: the
 > source materializes into and serves from its own warehouse, unchanged. This
 > tutorial is about **external** materialization — materialize into a _separate_
 > DuckLake store and serve from there. That store is a **storage destination**:
@@ -468,20 +468,17 @@ window is the job of a caller that assigns physical names per build and
 distributes serve bindings (the orchestrated build path), not of the auto-run
 server.
 
-A materialization record can be reclaimed by deleting it with `dropTables=true` —
-a destination-aware drop (Publisher only ever drops a table name it recorded
-building, never a catalog scan):
+Deleting a materialization record is record-only: the table it built stays in
+the destination. Drop it yourself afterwards, once no remaining run of any
+version names a table with that name, in any place
+([Dropping a run's tables](materialization.md#dropping-a-runs-tables)):
 
 ```bash
 # delete a materialization (find its id in the list)
 curl -s -X DELETE \
-  "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/<ID>?dropTables=true" \
+  "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/<ID>" \
   -o /dev/null -w "HTTP %{http_code}\n"
 # -> HTTP 204
-```
-
-```
-info: Dropped materialized storage table on delete { physicalTableName: "daily_orders", storageDestinationName: "lake" }
 ```
 
 ---
@@ -684,7 +681,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
   "reasons": [
     {
       "name": "secret_rollup",
-      "reason": "given_in_persisted_query",
+      "reason": "reads_given",
       "message": "Source 'secret_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read."
     }
   ]
@@ -751,8 +748,8 @@ onto every served query and proven there exactly as on live: rows come back filt
 or the caller is denied, as live. The gate is not absent at read; it is absent **at
 rest**. The table holds every caller's rows, ungated, and a `storage=` destination may
 be a separate, shared store, readable by anyone with direct access to it. Admitting a
-gated `storage=` source is a maintainer-approved exception made ahead of the managed
-tier's security review, for consistency with colocated. A colocated build has no
+gated `storage=` source is allowed ahead of the managed tier's security review, so the
+two tiers behave the same. A database build has no
 separate store: the table stays in your own warehouse. When admitted, what is frozen is
 the data the gate DECIDES AGAINST — the gating column's values are whatever they were at
 build time, so a row that changes hands keeps being served to its former owner until
@@ -797,20 +794,21 @@ Everything you need is on the package status and the logs:
   That fallback line is the only per-query account of a storage-tier miss, since
   the response reports it as a bare `null` (see the caveat below).
 - Metrics (OpenTelemetry, under the `publisher` meter):
-  - `publisher_query_route_total{leg,outcome,reason}` — the serve hit rate; the
-    headline signal for "is the tier actually serving?" `outcome="fallback"`
-    (`reason="RUN_FAILED"`) is the one to watch: the query **routed** and then the
-    store failed under it, so the caller still got a correct answer from the
-    warehouse while the tier is broken. The hit rate alone will not show that.
-
-    Two things to get right before building a dashboard on this. **It covers the
-    `storage=` tier only** — a colocated `#@ persist` hit never reaches the
-    routing decision, so it is in neither the numerator nor the denominator; the
-    rate is silent about that tier, not pessimistic about it. And **`live_fallback`
-    here is not `QueryResult.servedFrom`'s `live_fallback`.** This label means the
-    transform was *ineligible*, which the field reports as `null`; the run-time
-    store failure the field calls `live_fallback` is `runtime_live_fallback` here.
-    Correlating the two on the token is wrong in both directions.
+  - `publisher_query_route_total{leg,outcome,reason}` — one count per serving
+    leg the router considered for a query: `leg` is `view`, `query`, `rollup`,
+    `materialized` (the served copy, which reads both `storage=` and database
+    tables) or `live`; `outcome` is `used`, `skipped` or `fallback`; `reason` is
+    `NONE` when used, else the path report's skip reason (`NOT_BUILT`,
+    `NOT_SERVED`, `OPTED_OUT`, `MISSING_FIELD`, `SHAPE_MISMATCH`,
+    `ROW_LEVEL_GATE`, `GRAIN_TOO_COARSE`, `TIME_ZONE`, `CROSS_CONNECTION`,
+    `COUNT_SEMANTICS`, `STALE`). `outcome="fallback"` with
+    `reason="READ_FAILED"` is the one to watch: the router chose a table and
+    reading it failed, so the caller still got a correct answer, from the
+    warehouse, while the table is broken. `live` counts `used` whenever live
+    answered a query that had a candidate. A query with no applicable leg
+    counts nothing, and a database `#@ persist` table that Malloy substitutes
+    into a live run is not a routing decision, so it is not counted here (read
+    `servedFrom: "database"` on the result, or the attribute below).
   - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_shape_fallback|strict_refused|infra_failure}`
     — for a chained source, whether it built by reading its parent's stored table
     (`parent_reuse`) or fell back to recompute-from-raw (`inline_fallback`
@@ -820,16 +818,12 @@ Everything you need is on the package status and the logs:
     `warehouseReach: refuse` refused. `infra_failure` is a destination that
     was unreachable, kept distinct from the shape limits so a store outage is not
     read as an un-carriable query.
-  - `malloy_model_query_duration` tags a routed query with
-    `served_from=storage` or `served_from=database` by the tier that answered,
-    or `served_from=live_fallback` when a run-time store failure degraded it to
-    live (so a fallback never counts as a storage hit).
-    Note this attribute follows `QueryResult.servedFrom`'s vocabulary, not the
-    counter's directly above it — so `served_from=live_fallback` and
-    `outcome=live_fallback` are different events despite sitting two bullets
-    apart.
-    The attribute is absent for a query that never routed, so an `off`
-    deployment's histogram is unchanged.
+  - `malloy_model_query_duration` carries `malloy.model.query.served_from`,
+    `QueryResult.servedFrom`'s value: `storage` or `database` by the tier
+    whose table answered, or `live_fallback` when the routed read failed and
+    live answered (so a fallback never counts as a hit; it is the same event
+    as the route counter's `outcome="fallback"`). The attribute is absent for
+    a query no table answered.
 
 `PERSIST_STORAGE_MODE` (`off` default | `write-only` | `on`) is read at startup;
 change it by restarting. It's a kill switch: moving it **down** never fails a

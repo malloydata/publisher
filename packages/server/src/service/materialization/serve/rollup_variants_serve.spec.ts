@@ -57,13 +57,13 @@ async function outcomeOf(
    };
 }
 
-describe("RollupVariantServe (colocated)", () => {
+describe("RollupVariantServe (database)", () => {
    let f: PersistedResultFixture;
    let tableId: string;
    beforeAll(async () => {
       f = await persistedResultFixture(MODEL);
       const planned = [...f.catalog.planned.values()].find(
-         (t) => t.origin === "preaggregate",
+         (t) => t.origin === "rollup",
       );
       if (!planned) throw new Error("no rollup planned");
       tableId = planned.sourceEntityId;
@@ -244,7 +244,7 @@ const STORAGE_MODEL = `##! experimental { persistence composite_sources }
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES (10, 'A', 'east'), (20, 'B', 'west')) AS t(amount, category, region)
 """) extend {
-  #(preaggregate) grain=["category"] storage="lake"
+  #(rollup) grain=["category"] storage="lake"
   measure: total is amount.sum()
 }
 `;
@@ -296,7 +296,7 @@ describe("RollupVariantServe (storage=)", () => {
       const pinned = pinnedOf([
          mine,
          { ...mine, kind: "persist" },
-         { ...mine, tier: "colocated" },
+         { ...mine, tier: "database" },
       ]);
       expect(f.rollups.rollupBindings(pinned, "bound")).toEqual([mine]);
       expect(f.rollups.rollupBindings(pinned, "fresh")).toEqual([mine]);
@@ -315,6 +315,24 @@ describe("RollupVariantServe (storage=)", () => {
          virtualMap: answer.virtualMap,
       } as never);
       expect(sql).toContain('"main"."rollup_t"');
+   });
+
+   // P3-06..09: a table a Snowflake session stored with its aliases folded
+   // upper-case is matched by a unique case fold, as the served copy matches.
+   it("P3-07: answers from a stored table whose columns a warehouse upper-cased", async () => {
+      const binding = bindingFor(f, {
+         schema: [
+            { name: "CATEGORY", type: "VARCHAR" },
+            { name: "TOTAL__PARTIAL", type: "DOUBLE" },
+         ],
+      });
+      const answer = await f.rollups.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned: pinnedOf([binding]),
+      });
+      expect(answer.binding).toBe(binding);
    });
 
    it("declines a fresh binding with no destination to read it as not built", async () => {
@@ -389,7 +407,7 @@ describe("RollupVariantServe (storage=)", () => {
             .filter(
                (call) =>
                   (call.args as unknown as [string])[0] ===
-                  "A #(preaggregate) rollup variant did not compile",
+                  "A #(rollup) rollup variant did not compile",
             );
          expect(compileWarnings.length).toBe(1);
       } finally {
@@ -402,13 +420,13 @@ const JOIN_MODEL = `source: segments is duckdb.sql("""
   select * from (values (10, 1, 'p', 2.0), (11, 1, 'q', 3.0)) as t(seg_id, flight_id, kind, miles)
 """) extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: seg_miles is miles.sum()
 }
 
 source: crew is duckdb.sql("select * from (values (1, 3)) as t(flight_id, size)") extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: crew_size is size.sum()
 }
 
@@ -419,6 +437,65 @@ source: flights is duckdb.sql("select * from (values (1, 'AA', 100)) as t(id, ca
   measure: flight_count is count()
 }
 `;
+
+/**
+ * P4-03 (F-14): a rollup with no `storage=` that a host instructed into a
+ * storage destination (a database origin) is bound as a storage table, and
+ * the binding decides the tier: it is read from the destination exactly as a
+ * `storage=` rollup's is, never looked for in the database manifest.
+ */
+describe("RollupVariantServe (a host-chosen destination, no storage=)", () => {
+   let f: PersistedResultFixture;
+   const query = "run: orders -> { group_by: category; aggregate: total }";
+   beforeAll(async () => {
+      f = await persistedResultFixture(
+         STORAGE_MODEL.replace(' storage="lake"', ""),
+         {
+            noBuildPlan: true,
+            destinations: {
+               lake: new DuckDBConnection("lake_f14r", ":memory:"),
+            },
+         },
+      );
+   });
+   afterAll(async () => {
+      await f?.cleanup();
+   });
+
+   it("P4-03: answers from the storage binding through its destination", async () => {
+      const [rollup] = f.rollups.rollups();
+      const declared = splitSourceID(rollup.baseSourceID);
+      const companion = rollupCompanionURLOf(declared!.url);
+      const binding: Binding = {
+         kind: "rollup",
+         tier: "storage",
+         sourceName: rollup.rollupSourceName,
+         sourceIDs: [`${rollup.rollupSourceName}@${companion!.href}`],
+         destinationName: "lake",
+         virtualHandle: "vh_rollup",
+         tablePath: "main.rollup_t",
+         schema: [
+            { name: "category", type: "VARCHAR" },
+            { name: "total__partial", type: "DOUBLE" },
+         ],
+      };
+      const answer = await f.rollups.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned: pinnedOf([binding]),
+      });
+      expect(answer.binding).toBe(binding);
+      expect(answer.virtualMap).toBeDefined();
+      // The leg reports this binding as the table it read, so the gate
+      // policy judges the answer as a storage= rollup's (F-14).
+      expect(answer.binding?.tier).toBe("storage");
+      const { sql } = await answer.runnable.getPreparedResult({
+         virtualMap: answer.virtualMap,
+      } as never);
+      expect(sql).toContain('"main"."rollup_t"');
+   });
+});
 
 describe("RollupVariantServe (a joined source's rollup, read through the join)", () => {
    let f: PersistedResultFixture;

@@ -6,7 +6,7 @@
  * `freshness.fallback=` as on `#@ persist` and `#(materialize)`, where a key
  * outside the group or a value the publisher cannot read is a malformed
  * declaration, which fails the publish and the load (the load-vs-refused
- * policy). Read by both rollup spellings, `#(preaggregate)` and
+ * policy). Read by both rollup spellings, `#(rollup)` and
  * `#@ preaggregate`.
  *
  * Pure.

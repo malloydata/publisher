@@ -5,7 +5,7 @@
  * Every statement whose text depends on the warehouse dialect, per dialect,
  * frozen in `dialect_statements.golden.json`: the ownership probe and mark,
  * the relation and view probes and the view drop, the incremental refresh's
- * probes, bounds, range replace, merge and pair delta, the colocated swap
+ * probes, bounds, range replace, merge and pair delta, the database swap
  * and drop, the native-type catalog read, the read-cost and query-tag
  * statements, and the leftover `name=` view's in-transaction drop. A statement a dialect
  * refuses is recorded as the refusal's message.
@@ -22,10 +22,12 @@ import * as fs from "fs";
 import * as path from "path";
 import {
    bigQueryQueryLabelValue,
+   snowflakeSessionCheckSQL,
+   snowflakeSessionParitySQL,
    snowflakeSetQueryTagSQL,
 } from "./build_query_tag";
-import { ColocatedTier, swapIntoPlace } from "./colocated_build_strategy";
-import { capturedNativeSchema } from "./colocated_native_types";
+import { DatabaseTier, swapIntoPlace } from "./database_build_strategy";
+import { capturedNativeSchema } from "./database_native_types";
 import { describeDialects } from "../domain/dialect";
 import {
    decodeTablePathSegments,
@@ -73,11 +75,15 @@ const DIALECTS = [
    "unknown_dialect",
 ] as const;
 
-/** A table path of one, two and three segments, with a quote and a space. */
+/**
+ * A table path of one, two and three segments, with a quote and a space, and
+ * one whose parts hold each dialect's quote characters and a backslash.
+ */
 const PATHS: Record<string, string[]> = {
    one: ["orders"],
    two: ["Sales Data", "orders'x"],
    three: ["cat", "sch", "Orders"],
+   hostile: ["p`j\\", 'd"s\\`', "t`'x"],
 };
 
 /** A statement, or the refusal a dialect answers it with. */
@@ -146,6 +152,7 @@ async function statements(): Promise<Record<string, unknown>> {
    // The relation, ownership and view probes, the mark and the view drop.
    out.relationProbeSupported = perDialect((d) => relationProbeSupported(d));
    out.sqlString = perDialect((d) => sqlString("it's \\ here", d));
+   out["sqlString.lineBreaks"] = perDialect((d) => sqlString("a\nb\rc", d));
    for (const [shape, segments] of Object.entries(PATHS)) {
       out[`relationProbeSql.${shape}`] = perDialect((d) =>
          relationProbeSql(segments, d),
@@ -183,6 +190,7 @@ async function statements(): Promise<Record<string, unknown>> {
       bare: decodeTablePathSegments(d, "Cat.Sch.Orders") ?? null,
       quoted: decodeTablePathSegments(d, '"Cat"."sch"."Or ders"') ?? null,
       backtick: decodeTablePathSegments(d, "`p-1`.ds.t") ?? null,
+      escapedBacktick: decodeTablePathSegments(d, "`p\\`1\\\\`.ds.t") ?? null,
    }));
    out.probeSelect = perDialect((d) => probeSelect(d, "SELECT 1 AS n"));
    out.probeTargetColumns = await perDialectAsync(async (d) => {
@@ -284,7 +292,7 @@ async function statements(): Promise<Record<string, unknown>> {
    ]);
    out.deltaScript = deltaScript(["BEGIN", "DELETE FROM t", "COMMIT"]);
 
-   // The colocated swap, as the statements it sends on a clean run.
+   // The database swap, as the statements it sends on a clean run.
    out.swapIntoPlace = await perDialectAsync(async (d) => {
       const r = recorder();
       await swapIntoPlace({
@@ -364,22 +372,29 @@ async function statements(): Promise<Record<string, unknown>> {
       failingSwap(d, 3),
    );
 
-   // The colocated drop: the table, then the staging and backup names a
+   // The database drop: the table, then the staging and backup names a
    // crash can leave beside it when the table names its source.
-   const colocatedDrop = (leftoversOf?: string) =>
+   const databaseDrop = (
+      leftoversOf?: string,
+      physicalTableName = "sch.Orders x__m1",
+   ) =>
       perDialectAsync(async (d) => {
          const r = recorder();
-         await new ColocatedTier().drop(
+         await new DatabaseTier().drop(
             {
                connection: { runSQL: r.run, dialectName: d } as never,
                runOptions: {},
             },
-            { physicalTableName: "sch.Orders x__m1", leftoversOf },
+            { physicalTableName, leftoversOf },
          );
          return r.statements;
       });
-   out["ColocatedTier.drop"] = await colocatedDrop();
-   out["ColocatedTier.drop.leftoversOf"] = await colocatedDrop("orders");
+   out["DatabaseTier.drop"] = await databaseDrop();
+   out["DatabaseTier.drop.leftoversOf"] = await databaseDrop("orders");
+   out["DatabaseTier.drop.hostile"] = await databaseDrop(
+      undefined,
+      's`c\\.Or"d`ers__m1',
+   );
 
    // The native-type catalog read.
    for (const [shape, segments] of Object.entries(PATHS)) {
@@ -405,6 +420,9 @@ async function statements(): Promise<Record<string, unknown>> {
    };
    const metadata = { team: "a\\b's", run: "r1" } as never;
    out.snowflakeSetQueryTagSQL = snowflakeSetQueryTagSQL(metadata, "sec'ret");
+   // P3-06..09: Malloy's live session parameters, set on the build session.
+   out.snowflakeSessionParitySQL = snowflakeSessionParitySQL("sec'ret");
+   out.snowflakeSessionCheckSQL = snowflakeSessionCheckSQL("sec'ret");
    out.bigQueryQueryLabelValue = bigQueryQueryLabelValue(metadata) ?? null;
    return out;
 }

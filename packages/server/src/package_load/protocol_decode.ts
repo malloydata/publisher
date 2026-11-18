@@ -84,7 +84,7 @@ const OPTIONAL_MODEL_FIELDS: ReadonlyArray<[keyof SerializedModel, Expect]> = [
    ["compileDurationMs", "number"],
    ["problems", "array"],
    ["compilationError", "object"],
-   ["authorizeWarnings", "string[]"],
+   ["gateWarnings", "array"],
    ["renderTagResults", "array"],
    ["renderTagResultsDigest", "string"],
    ["preaggregateCompanion", "object"],

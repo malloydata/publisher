@@ -68,18 +68,19 @@ cites: does not publicly expose
 Under the one code every rollup refused alone carries; the build plan's
 `refusedSources` holds its reason (`hidden_field`).
 
-cites: preaggregate-not-built
+cites: rollup-not-built
 
 ## Build refusals (pkg=ph)
 
 The refusal is a record in the plan like any other, keyed by the measure's path on its
-base.
+base. Its tier is where the rollup's table would have lived, the `storage=` it declares;
+`origin: rollup` is what says it is a rollup.
 
 Expect:
 
-| source       | tier         | reason       |
-| ------------ | ------------ | ------------ |
-| orders.total | preaggregate | hidden_field |
+| source       | tier    | reason       | origin |
+| ------------ | ------- | ------------ | ------ |
+| orders.total | storage | hidden_field | rollup |
 
 ## Query by category
 

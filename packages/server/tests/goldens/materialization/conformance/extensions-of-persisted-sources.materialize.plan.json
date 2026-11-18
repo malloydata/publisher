@@ -153,7 +153,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "base_daily",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

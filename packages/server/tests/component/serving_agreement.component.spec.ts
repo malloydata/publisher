@@ -6,6 +6,10 @@
 // source an `index.malloy` re-exports, an inherited `#@ preaggregate`, serving
 // after a connection edit, and the verdicts, path report, preview and package
 // warnings agreeing about one package.
+import {
+   castToDeclaredTypes,
+   wideIntegerColumns,
+} from "../../src/service/materialization/stored_column_types";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -94,7 +98,7 @@ source: orders is duckdb.sql("""
 }
 `;
 
-/** Build every planned rollup (one table per address) and bind it colocated. */
+/** Build every planned rollup (one table per address) and bind it database. */
 async function buildRollups(pkg: Package): Promise<string> {
    const ids = [...pkg.materialization().getPreaggregateEntityIds()];
    expect(ids).toHaveLength(1);
@@ -109,7 +113,7 @@ async function buildRollups(pkg: Package): Promise<string> {
       `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
    );
    pkg.materialization().bind({
-      colocated: {
+      database: {
          [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
       } as never,
    });
@@ -137,18 +141,24 @@ describe("a rollup on a source an index.malloy re-exports", () => {
          expect(JSON.stringify(result)).toContain("built_rollup");
          expect(result.path?.servedBy).toEqual({
             kind: "rollup",
+            origin: "rollup",
             tier: "database",
             tableId: rollupId,
          });
          expect(result.path?.considered).toEqual([
-            { tableId: rollupId, kind: "rollup", outcome: "used" },
+            {
+               tableId: rollupId,
+               kind: "rollup",
+               origin: "rollup",
+               outcome: "used",
+            },
          ]);
       }
       // The verdict agrees with the path report.
       const verdicts = pkg
          .materialization()
          .serveVerdicts()
-         .filter((v) => v.origin === "preaggregate");
+         .filter((v) => v.origin === "rollup");
       expect(verdicts.length).toBeGreaterThan(0);
       expect(verdicts.every((v) => v.verdict === "serves")).toBe(true);
    });
@@ -179,7 +189,7 @@ describe("a #@ preaggregate measure reused in a persisted query", () => {
          [],
       );
       expect(pkg.materialization().formatInvalidPreaggregatePolicy()).toBe("");
-      expect(planEntry(pkg, "daily").origin).not.toBe("preaggregate");
+      expect(planEntry(pkg, "daily").origin).not.toBe("rollup");
    });
 
    it("still refuses an annotation written on a dimension, named once, by the file that declares it", async () => {
@@ -220,7 +230,7 @@ async function buildDaily(pkg: Package, table: string): Promise<string> {
    )) as DuckDBConnection;
    await connection.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
    pkg.materialization().bind({
-      colocated: {
+      database: {
          [entry.sourceEntityId]: { tableName: table, connectionName: "duck" },
       } as never,
    });
@@ -261,6 +271,7 @@ describe("serving after a connection edit and a rebuild", () => {
       expect(JSON.stringify(second)).toContain("built_after");
       expect(second.path?.servedBy).toEqual({
          kind: "materialized",
+         origin: "persist",
          tier: "database",
          tableId: after,
          via: "served_copy",
@@ -299,7 +310,7 @@ source: daily_s is orders -> {
   view: by_region is { group_by: region; aggregate: tt is t.sum() }
 }
 
-// Its own lock: read past it from the shared table (G3, as colocated).
+// Its own lock: read past it from the shared table (G3, as database).
 #(authorize) 'admin' in $ROLES
 source: daily_s_locked is daily_s extend { dimension: r2 is region }
 
@@ -341,12 +352,12 @@ function lakeDestination(dir: string): {
    return { lake, config };
 }
 
-/** Build every planned table: colocated in `duckdb`, `storage=` in `lake`. */
+/** Build every planned table: database in `duckdb`, `storage=` in `lake`. */
 async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
    const warehouse = (await pkg.getMalloyConnection(
       "duckdb",
    )) as DuckDBConnection;
-   const colocated: Record<string, Record<string, unknown>> = {};
+   const database: Record<string, Record<string, unknown>> = {};
    const stored: Record<string, Record<string, unknown>> = {};
    const seen = new Set<string>();
    // One table per address, recorded under the source that declares it (an
@@ -363,16 +374,28 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
       const table = `t_${entry.sourceEntityId.slice(0, 12)}`;
       const storage = entry.annotationFields?.storage;
       if (storage) {
-         await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
+         // As a real build stores a sum: a warehouse's numeric arrives as a
+         // DECIMAL, and a DuckDB-computed 128-bit integer is cast to
+         // DECIMAL(38,0), which a lake keeps exactly (P4-01).
+         const computed = await lake.runSQL(`DESCRIBE (${entry.sql})`);
+         const select = castToDeclaredTypes(entry.sql, [], {
+            exactIntegers: wideIntegerColumns(
+               (
+                  computed.rows as {
+                     column_name: string;
+                     column_type: string;
+                  }[]
+               ).map((r) => ({ name: r.column_name, type: r.column_type })),
+            ),
+         });
+         await lake.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${select}`);
          const described = await lake.runSQL(`DESCRIBE ${table}`);
          stored[entry.sourceEntityId] = {
             sourceEntityId: entry.sourceEntityId,
             sourceName: entry.name,
             physicalTableName: table,
             storageDestinationName: storage,
-            ...(entry.origin === "preaggregate"
-               ? { origin: "preaggregate" }
-               : {}),
+            ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
             schema: (
                described.rows as { column_name: string; column_type: string }[]
             ).map((r) => ({ name: r.column_name, type: r.column_type })),
@@ -381,13 +404,13 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
          await warehouse.runSQL(
             `CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`,
          );
-         colocated[entry.sourceEntityId] = {
+         database[entry.sourceEntityId] = {
             tableName: table,
             connectionName: "duckdb",
          };
       }
    }
-   pkg.materialization().bind({ colocated: colocated as never });
+   pkg.materialization().bind({ database: database as never });
    pkg.materialization().bind({ storage: stored as never });
 }
 
@@ -421,7 +444,7 @@ describe("the verdicts, path report, preview and warnings agree on one package",
       const query = (text: string, givens?: Record<string, unknown>) =>
          run(pkg, "index.malloy", text, { givens });
 
-      // Colocated: serves, and the path report names its table.
+      // Database: serves, and the path report names its table.
       expect(verdictOf("daily_c").verdict).toBe("serves");
       const c = await query(
          "run: daily_c -> { group_by: region; aggregate: x is t.sum() }",
@@ -443,7 +466,7 @@ describe("the verdicts, path report, preview and warnings agree on one package",
 
       // The rollup on the re-exported base: serves, and the path report
       // names the rollup.
-      const rollups = verdicts.filter((v) => v.origin === "preaggregate");
+      const rollups = verdicts.filter((v) => v.origin === "rollup");
       expect(rollups.length).toBeGreaterThan(0);
       expect(rollups.every((v) => v.verdict === "serves")).toBe(true);
       const r = await query(
@@ -452,7 +475,7 @@ describe("the verdicts, path report, preview and warnings agree on one package",
       expect(r.path?.servedBy.kind).toBe("rollup");
 
       // The locked extension shares its base's table and is read past its
-      // own lock, from storage, as a colocated one is (G3).
+      // own lock, from storage, as a database one is (G3).
       expect(verdictOf("daily_s_locked")).toMatchObject({
          verdict: "serves",
          tier: "storage",

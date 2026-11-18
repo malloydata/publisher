@@ -72,10 +72,10 @@ function judged(outcome: BuildPlanOutcome) {
          refused: sorted(Object.keys(outcome.sourceEligibility.refused)),
          gateKept: sorted(outcome.sourceEligibility.gateKept ?? []),
       },
-      colocatedSourceEligibility: {
-         eligible: sorted(outcome.colocatedSourceEligibility.eligibleEntityIds),
+      databaseSourceEligibility: {
+         eligible: sorted(outcome.databaseSourceEligibility.eligibleEntityIds),
          refused: sorted(
-            Object.keys(outcome.colocatedSourceEligibility.refused),
+            Object.keys(outcome.databaseSourceEligibility.refused),
          ),
       },
       compilerKeys: Object.entries(outcome.compilerKeys).sort(),
@@ -146,6 +146,90 @@ describe("the load worker and compilePackageBuildPlan plan alike", () => {
             (f) => f.code === "materialization-table-collision",
          ),
       ).toEqual([]);
+   });
+
+   it("refuses a name= the readable name would rewrite in a version of a scope: version package, on both paths", async () => {
+      const model = `${RAW}#@ persist name="analytics.My-Table"
+source: a is raw -> { group_by: c }
+#(materialize) name="2024_t"
+source: b is raw extend { where: id > 0 }
+#@ persist name="Plain_T"
+source: c is raw -> { group_by: id }
+source: d is raw extend {
+  #@ persist name="by__c"
+  view: by_c is { group_by: c }
+}
+`;
+      const published = { versionId: "1.0.0", scope: "version" };
+      const manifest = { materialization: { scope: "version" } };
+      const { main, worker } = await bothPaths(
+         packages,
+         model,
+         manifest,
+         published,
+      );
+      expect(worker?.ok).toBe(true);
+      if (!worker?.ok) return;
+      expect(judged(worker.outcome)).toEqual(judged(main));
+      // Each fails the load under its route's code; a name= lowercasing
+      // alone changes (`Plain_T`) is planned.
+      expect(
+         main.annotationFindings
+            .filter((f) => f.tier === "malformed")
+            .map((f) => [f.code, f.subject])
+            .sort(),
+      ).toEqual([
+         ["materialize-invalid", "b"],
+         ["persist-invalid", "a"],
+         ["persist-view-invalid", "d -> by_c"],
+      ]);
+      const [a] = main.annotationFindings.filter((f) => f.subject === "a");
+      expect(a.message).toContain('would write "My-Table" as "my_table"');
+      expect(
+         Object.values(main.plan?.sources ?? {}).map((s) => s.name),
+      ).toEqual(["c"]);
+      // Outside a version, a name= is the table's exact name: not refused.
+      const unversioned = await bothPaths(packages, model, manifest);
+      expect(
+         unversioned.main.annotationFindings.filter(
+            (f) => f.tier === "malformed",
+         ),
+      ).toEqual([]);
+   });
+
+   it("refuses a pair table's name= the readable name would rewrite, and reports a name= an earlier check refused once", async () => {
+      const model = `${RAW}source: lines is duckdb.sql("""SELECT 7 AS line_id, 1 AS order_id, 5 AS qty""") extend {
+  primary_key: line_id
+}
+#(materialize) name="My-Pair" inline=["lines"]
+source: orders is raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+}
+#@ persist name='analytics."Orders"'
+source: q is raw -> { group_by: c }
+`;
+      const { main, worker } = await bothPaths(
+         packages,
+         model,
+         { materialization: { scope: "version" } },
+         { versionId: "1.0.0", scope: "version" },
+      );
+      expect(worker?.ok).toBe(true);
+      if (!worker?.ok) return;
+      expect(judged(worker.outcome)).toEqual(judged(main));
+      const malformed = main.annotationFindings
+         .filter((f) => f.tier === "malformed")
+         .map((f) => [f.code, f.subject]);
+      expect(malformed).toContainEqual(["materialize-invalid", "orders"]);
+      expect(
+         malformed.filter(([code]) => code === "persist-invalid"),
+      ).toHaveLength(1);
+      // The pair is not planned; the source an earlier check refused stays
+      // as that check left it (the load fails on its finding).
+      expect(
+         Object.values(main.plan?.sources ?? {}).map((s) => s.name),
+      ).toEqual(["q"]);
    });
 
    it("judges a collision before an unbuildable incremental declaration", async () => {

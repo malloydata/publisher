@@ -12,8 +12,8 @@
  *    query-shaped, read directly.
  *
  * Every case answers equal to live, served or declined, in a `storage=`
- * destination (the colocated variant is the conformance shape "persist over
- * a zoned base", which binds v1 colocated tables as a package does). A refinement of a base that sets only the zone is served, its
+ * destination (the database variant is the conformance shape "persist over
+ * a zoned base", which binds v1 database tables as a package does). A refinement of a base that sets only the zone is served, its
  * zone kept; one over a base that also declares zoned dimensions is not
  * re-rooted (`fields_not_carried`), so it answers live.
  */
@@ -86,7 +86,7 @@ source: jb is duckdb.table('ev') extend {
  * value stored in New York read in another zone; `WARNED`: the served copy
  * does not carry the source, here `fields_not_carried`).
  */
-type Outcome = "served" | "unrouted" | "TIME_ZONE" | "WARNED";
+type Outcome = "served" | "unrouted" | "TIME_ZONE" | "NOT_SERVED";
 
 const CASES: [string, string, Outcome][] = [
    [
@@ -127,12 +127,12 @@ const CASES: [string, string, Outcome][] = [
    [
       "inherited, over a base with zoned dimensions: hour(ts)",
       "run: inh -> { group_by: h is hour(ts); aggregate: n is count() }",
-      "WARNED",
+      "NOT_SERVED",
    ],
    [
       "inherited, over a base with zoned dimensions: the base's dimension",
       "run: inh -> { group_by: ts_day; aggregate: total }",
-      "WARNED",
+      "NOT_SERVED",
    ],
    [
       "inherited, over a zone-only base: hour(ts)",

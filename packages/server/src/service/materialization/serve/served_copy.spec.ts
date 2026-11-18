@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { storedTypeText } from "../stored_column_types";
 import { describe, expect, it } from "bun:test";
 import {
    buildServedCopy,
@@ -252,28 +251,44 @@ describe("typeDeclaration", () => {
          "type: daily__served is {\n   r::string,\n   `date`::date,\n   total::number\n}",
       );
    });
+
+   it("leaves out a column no Malloy type declares, rather than writing json", () => {
+      // `::json` does not compile (json is a reserved word, and no type a
+      // `type:` takes): a rollup over a BLOB or INTERVAL grain wrote it.
+      expect(
+         typeDeclaration({
+            typeName: "r__served",
+            columns: [
+               { name: "b", type: "BLOB" },
+               { name: "iv", type: "INTERVAL" },
+               { name: "m", type: "MAP(VARCHAR, INTEGER)" },
+               { name: "total", type: "DOUBLE" },
+            ],
+         }),
+      ).toBe("type: r__served is {\n   total::number\n}");
+   });
 });
 
-describe("storedTypeText", () => {
+describe("storedMalloyType", () => {
    it("writes a persisted nest's list of structs as Malloy's record array", () => {
-      expect(storedTypeText("STRUCT(status VARCHAR, n BIGINT)[]")).toBe(
+      expect(storedMalloyType("STRUCT(status VARCHAR, n BIGINT)[]")).toBe(
          "{ status::string, n::number }[]",
       );
       expect(
-         storedTypeText('STRUCT("line total" DOUBLE, "select" VARCHAR)[]'),
+         storedMalloyType('STRUCT("line total" DOUBLE, "select" VARCHAR)[]'),
       ).toBe("{ `line total`::number, `select`::string }[]");
-      expect(storedTypeText("STRUCT(a STRUCT(b INTEGER)[])[]")).toBe(
+      expect(storedMalloyType("STRUCT(a STRUCT(b INTEGER)[])[]")).toBe(
          "{ a::{ b::number }[] }[]",
       );
-      expect(storedTypeText("STRUCT(d DECIMAL(10,2))")).toBe("{ d::number }");
-      expect(storedTypeText("VARCHAR[]")).toBe("string[]");
+      expect(storedMalloyType("STRUCT(d DECIMAL(10,2))")).toBe("{ d::number }");
+      expect(storedMalloyType("VARCHAR[]")).toBe("string[]");
    });
 
-   it("keeps the serve shape's scalar mapping, and its fallback for what it cannot read", () => {
-      expect(storedTypeText("DECIMAL(18,2)")).toBe("number");
-      expect(storedTypeText("TIMESTAMP WITH TIME ZONE")).toBe("timestamp");
-      expect(storedTypeText("MAP(VARCHAR, INTEGER)")).toBe("json");
-      expect(storedTypeText("STRUCT(a VARCHAR")).toBe("json");
+   it("keeps the serve shape's scalar mapping, and declares nothing it cannot read", () => {
+      expect(storedMalloyType("DECIMAL(18,2)")).toBe("number");
+      expect(storedMalloyType("TIMESTAMP WITH TIME ZONE")).toBe("timestamp");
+      expect(storedMalloyType("MAP(VARCHAR, INTEGER)")).toBeUndefined();
+      expect(storedMalloyType("STRUCT(a VARCHAR")).toBeUndefined();
    });
 
    it("storedMalloyType: undefined for what the type: could only call json", () => {
@@ -359,7 +374,7 @@ source: weekly is ev -> { group_by: r }
          {
             sourceName: "daily",
             url: "file:///m.malloy",
-            reason: "range_not_found",
+            reason: "definition_not_parsed",
          },
       ]);
    });
@@ -499,7 +514,9 @@ source: raw is duckdb.sql("""SELECT r, total, id FROM t""") include {
 
    it("refuses every re-root of a file it cannot read", () => {
       const copy = buildServedCopy([reroot(file, "daily")], () => undefined);
-      expect(copy.refused.map((r) => r.reason)).toEqual(["range_not_found"]);
+      expect(copy.refused.map((r) => r.reason)).toEqual([
+         "definition_not_parsed",
+      ]);
    });
 });
 

@@ -20,6 +20,8 @@ import {
    ConnectionNotFoundError,
    databaseAccessFailure,
    statementRejection,
+   StorageAccessDeniedError,
+   storageAccessFailure,
    InvalidArgumentError,
    PackageNotFoundError,
    PayloadTooLargeError,
@@ -212,15 +214,40 @@ function classifyDriverFailure(error: unknown): Error {
  * statement itself (400 with the driver's message, or 404 for a table it does
  * not have).
  */
-function sqlRunFailure(error: unknown): Error {
+function sqlRunFailure(
+   error: unknown,
+   subject?: string,
+   environment?: Pick<Environment, "isConfiguredStorageUrl">,
+): Error {
    // Already classified (an exhausted pool), with a message written for the
    // caller.
    if (error instanceof ConnectionError) return error;
    return (
       databaseAccessFailure(error) ??
+      // The storage behind a table refused the read: 403, as on the query
+      // route, rather than an outage's 502. Only this case changes; every
+      // other warehouse rejection keeps its status.
+      judgedStorageRefusal(
+         storageAccessFailure(error, subject, "connection"),
+         environment,
+      ) ??
       statementRejection(error) ??
       new ConnectionError((error as Error).message)
    );
+}
+
+/**
+ * `refusal` marked managed when its URL lies under a data path `environment`
+ * configures (StorageAccessDeniedError.managed).
+ */
+function judgedStorageRefusal(
+   refusal: StorageAccessDeniedError | undefined,
+   environment: Pick<Environment, "isConfiguredStorageUrl"> | undefined,
+): StorageAccessDeniedError | undefined {
+   if (refusal?.url !== undefined && environment) {
+      refusal.managed = environment.isConfiguredStorageUrl(refusal.url);
+   }
+   return refusal;
 }
 
 /**
@@ -320,6 +347,35 @@ export class ConnectionController {
          };
       }
       return environment.getApiConnection(connectionName);
+   }
+
+   /**
+    * Whether caller SQL on this connection runs only as a single SELECT, and
+    * why: a managed DuckLake connection, or a locked-down DuckDB connection
+    * (the package sandbox, an environment `duckdb`, `ducklake` or
+    * `motherduck` connection; duckdb_lockdown.ts), whose confinement is
+    * read-only for raw SQL. Undefined for any other connection.
+    */
+   private singleSelectKind(
+      environment: Environment,
+      connectionName: string,
+   ): "managed database" | "locked-down DuckDB connection" | undefined {
+      if (this.isManagedConnection(environment, connectionName)) {
+         return "managed database";
+      }
+      let type: string | undefined;
+      try {
+         type = this.getApiConnectionForLookup(
+            environment,
+            connectionName,
+         ).type;
+      } catch (error) {
+         if (error instanceof ConnectionNotFoundError) return undefined;
+         throw error;
+      }
+      return type === "duckdb" || type === "ducklake" || type === "motherduck"
+         ? "locked-down DuckDB connection"
+         : undefined;
    }
 
    /**
@@ -664,8 +720,9 @@ export class ConnectionController {
          parseEnvironmentName(environmentName),
          false,
       );
-      if (this.isManagedConnection(environment, connectionName)) {
-         await assertSingleSelect(connectionName, sqlStatement);
+      const singleSelect = this.singleSelectKind(environment, connectionName);
+      if (singleSelect) {
+         await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
 
       const malloyConnection = await this.getMalloyConnection(
@@ -867,9 +924,14 @@ export class ConnectionController {
          );
       environmentForAdmission.assertCanAdmitQuery();
 
-      // A managed database runs one SELECT and nothing else (single_select.ts).
-      if (this.isManagedConnection(environmentForAdmission, connectionName)) {
-         await assertSingleSelect(connectionName, sqlStatement);
+      // A managed database or a locked-down DuckDB connection runs one SELECT
+      // and nothing else (single_select.ts).
+      const singleSelect = this.singleSelectKind(
+         environmentForAdmission,
+         connectionName,
+      );
+      if (singleSelect) {
+         await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
 
       const malloyConnection = await this.getMalloyConnection(
@@ -987,7 +1049,11 @@ export class ConnectionController {
                // If the timer fired, runWithQueryTimeout replaces this with
                // a QueryTimeoutError, so this matters only for real driver
                // failures.
-               throw sqlRunFailure(error);
+               throw sqlRunFailure(
+                  error,
+                  connectionName,
+                  environmentForAdmission,
+               );
             }
          }, getQueryTimeoutMs());
          return { data: JSON.stringify(streamed), queryCorrelationId };
@@ -1004,7 +1070,7 @@ export class ConnectionController {
                optionsWithSignal,
             );
          } catch (error) {
-            throw sqlRunFailure(error);
+            throw sqlRunFailure(error, connectionName, environmentForAdmission);
          }
       }, getQueryTimeoutMs());
 
@@ -1077,6 +1143,18 @@ export class ConnectionController {
             `'${connectionName}' is a managed database: raw SQL on it runs only as a single SELECT, so it cannot create a temporary table.`,
          );
       }
+      // On a locked-down DuckDB connection the caller's SQL is one SELECT;
+      // the CREATE around it is Publisher's own.
+      if (
+         this.singleSelectKind(environmentForAdmission, connectionName) ===
+         "locked-down DuckDB connection"
+      ) {
+         await assertSingleSelect(
+            connectionName,
+            sqlStatement,
+            "locked-down DuckDB connection",
+         );
+      }
 
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -1115,7 +1193,7 @@ export class ConnectionController {
             // The timeout wrapper converts this; do not bury it in a
             // ConnectionError.
             if (signal.aborted) throw error;
-            throw sqlRunFailure(error);
+            throw sqlRunFailure(error, connectionName, environmentForAdmission);
          }
       }, getQueryTimeoutMs());
    }

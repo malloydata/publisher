@@ -6,7 +6,7 @@
  * planned table with its kind fixed at plan, and, as plain data the build and
  * the serving legs both read, a `#(materialize)` source's plan (its stored
  * columns, read-time terms, pair layout and the bases its served copy keeps),
- * a persisted view's and a persisted named query's, a `#(preaggregate)`
+ * a persisted view's and a persisted named query's, a `#(rollup)`
  * rollup's and a table's classified gate, with the one reader of the
  * `sourceID` that keys each of them.
  *
@@ -83,8 +83,8 @@ export function isPersistedResultSourceID(sourceID: string): boolean {
 
 /**
  * Whether `sourceID` is a persisted named query's generated build source
- * (`<query>__query`), not a persisted view's. Its table keeps the name it
- * always had; only how it is reported changes.
+ * (`<query>__query`), not a persisted view's: how it is reported, and its
+ * table's readable name, which reads as the query (`sourceLabel`).
  */
 export function isPersistedQuerySourceID(sourceID: string): boolean {
    return (
@@ -339,7 +339,7 @@ export interface MaterializePlan {
    /**
     * The build source's compiled output, each column in DuckDB's type
     * spelling (`storedColumnsOfOutput`), read off the compiled companion.
-    * A colocated table's schema is not captured at build, so its serve
+    * A database table's schema is not captured at build, so its serve
     * binding declares these. Absent before the companion compiles.
     */
    storedColumns?: StoredColumn[];
@@ -394,8 +394,8 @@ export interface MaterializePlan {
     */
    pairFullRefresh?: string;
    /**
-    * The table takes the source's own name because the declaration has no
-    * `name=`, which the refusal of a colliding table name says (see
+    * The table takes Publisher's readable default name because the
+    * declaration has no `name=`, which the refusal of a colliding table name says (see
     * `refuseCollidingMaterialize`).
     */
    nameDefaulted?: true;
@@ -411,21 +411,22 @@ export interface MaterializePlan {
 export interface MaterializeParent {
    /** The parent's identity: its `sourceID` (the keying rule). */
    sourceID: string;
-   /** The parent's name in the shared declaring file; display only. */
+   /** The parent's name in its declaring file; display only. */
    sourceName: string;
    /** The parent's declaration in that file, which the build copy re-roots. */
    declaration: TermUse;
    /**
     * The declarations from just below the parent to the extension's own,
-    * root first, each an `extend` or a rename of the one before, in the same
-    * file: what a `storage=` build carries over the parent's stored table.
+    * root first, each an `extend` or a rename of the one before, in the
+    * parent's file, a file between or the extension's: what a `storage=`
+    * build carries over the parent's stored table.
     */
    path: TermUse[];
    /**
     * For a `storage=` pair, set with the build copy: the text the extension's
     * build compiles in its destination over the parent's stored table
     * ({@link extensionOverStoredModel}). Absent until the build copy is
-    * written; absent for a colocated pair, whose build reads the parent's
+    * written; absent for a database pair, whose build reads the parent's
     * build source in its own warehouse.
     */
    overStored?: StoredChain;
@@ -439,6 +440,29 @@ export interface MaterializeParent {
     * raw chain instead: an omission never changes what the build reads.
     */
    omit?: TermUse[];
+   /**
+    * Set when the parent is declared in another file than the extension (an
+    * `import`ed parent): the parent's model file, which plans it in a
+    * companion of its own, and the generated file that declares its build
+    * source there. The extension's build copy imports a copy of the
+    * parent's file, the parent re-rooted on that build source, in place of
+    * the file itself (materialize_compile.ts).
+    */
+   crossFile?: {
+      /** The parent's model file, as an absolute path. */
+      modelFile: string;
+      /** The URL of the generated file declaring the parent's build source. */
+      buildSourceURL: string;
+      /**
+       * The model files the chain passes through between the extension's
+       * file and the parent's, as absolute paths, the extension's side
+       * first: each declares a source on the chain and none of them
+       * `#(materialize)`. Absent when the extension's file imports the
+       * parent's directly. Each one's build copy imports the next one's copy
+       * in its place, so the chain reaches the re-rooted parent.
+       */
+      via?: string[];
+   };
 }
 
 /**
@@ -483,13 +507,13 @@ export interface RollupMeasure {
 }
 
 /**
- * One `#(preaggregate)` rollup: one base, one grain, one placement, one table.
+ * One `#(rollup)` rollup: one base, one grain, one placement, one table.
  * A {@link RollupPlan} for the build plan's plumbing (its wire `preaggregate`
  * entry, eligibility and run instructions), with what the variant needs.
  */
 export interface RollupVariantPlan extends RollupPlan {
    /**
-    * Marks a rollup the rollup leg plans and serves: a `#(preaggregate)`
+    * Marks a rollup the rollup leg plans and serves: a `#(rollup)`
     * one, or a v1 `#@ preaggregate` line read as one.
     */
    variant: true;
@@ -512,9 +536,15 @@ export interface RollupVariantPlan extends RollupPlan {
    /**
     * Every gate of the base is its own (none inherited from a source it
     * extends, none through a join or a derivation): what the gate policy
-    * keeps under G3 for a colocated rollup with the gated-sources switch off.
+    * keeps under G3 for a database rollup with the gated-sources switch off.
     */
    baseGateOwn?: true;
+   /**
+    * Every gate of the base, own or inherited, is an `#(authorize)` lock whose
+    * text reads only givens and literals: it admits or refuses the whole
+    * query, so the gate policy keeps it on either tier (`lockOnly`).
+    */
+   baseGateLocksOnly?: true;
    /**
     * Grain dimensions the base declares `internal`, stored, and redeclared
     * `internal` on the variant, so no query selects one (a gate or a
@@ -522,11 +552,19 @@ export interface RollupVariantPlan extends RollupPlan {
     */
    internalGrain: string[];
    /**
-    * Grain dimensions the base itself declares `private`: stored, read by the
+    * Grain dimensions `private` on the base, its own or declared by a source
+    * it extends in its file ({@link liftedAncestors}): stored, read by the
     * build through its build copy's lift, and redeclared `private` on the
     * variant. Absent: none.
     */
    privateGrain?: string[];
+   /**
+    * For a private grain dimension a source the base extends declares: the
+    * statements of the sources it extends, down to that one, all in the
+    * base's file, whose access modifiers its build copy lifts as well, so
+    * the build can read it. Absent: none.
+    */
+   liftedAncestors?: TermUse[];
    /**
     * The base's own given-reading `where:` terms, each over grain dimensions
     * only: left out of the build (replaced by `true` in its build copy), so
@@ -539,7 +577,7 @@ export interface RollupVariantPlan extends RollupPlan {
    /**
     * The uniqueness check of the grain's one dimension (known limitation 29):
     * set when the grain is one dimension of the base and the companion
-    * compiled the check, for a colocated and a `storage=` rollup alike. A run builds it only
+    * compiled the check, for a database and a `storage=` rollup alike. A run builds it only
     * when a join_one in the package is keyed on that dimension (see
     * {@link joinOneKeysOf}); the join-to-rollup branch (A7) reads its outcome.
     */
@@ -618,6 +656,58 @@ export interface PersistSourceGateOutcome {
  */
 type TableKind = "persist" | "materialize" | "pair" | "rollup" | "view";
 
+/**
+ * The mechanism that declared a stored table, in its annotation's words: the
+ * `origin` the wire reports on a plan entry, a refusal record, a storage
+ * binding and the path report. `persist` is `#@ persist` on a source,
+ * `materialize` is `#(materialize)`, `view` and `query` are `#@ persist` on
+ * a view or a named query, and `rollup` is a rollup (`#(rollup)`, or v1's
+ * `#@ preaggregate`).
+ */
+export type TableOrigin =
+   | "persist"
+   | "materialize"
+   | "view"
+   | "query"
+   | "rollup";
+
+/**
+ * Whether an `origin` names a rollup: `rollup`, or `preaggregate`, the word
+ * releases before this one wrote, which a host may still echo back on a
+ * manifest entry it stored.
+ */
+export function isRollupOrigin(origin: string | null | undefined): boolean {
+   return origin === "rollup" || origin === "preaggregate";
+}
+
+/** An `origin` as read off a plan or an entry: `preaggregate` read as `rollup`, absent as `persist`. */
+export function originOf(
+   origin: TableOrigin | "preaggregate" | null | undefined,
+): TableOrigin {
+   if (origin === "preaggregate") return "rollup";
+   return origin ?? "persist";
+}
+
+/** A table's origin, from its kind and its sourceID (a view's or a query's). */
+export function originOfTable(
+   kind: TableKind | "query",
+   sourceID: string,
+): TableOrigin {
+   switch (kind) {
+      case "rollup":
+         return "rollup";
+      case "materialize":
+      case "pair":
+         return "materialize";
+      case "query":
+         return "query";
+      case "view":
+         return isPersistedQuerySourceID(sourceID) ? "query" : "view";
+      default:
+         return "persist";
+   }
+}
+
 /** What every planned table carries, whatever its kind. */
 interface TablePlanFacts {
    /** The planned source, as Malloy's persistence planner planned it. */
@@ -671,15 +761,39 @@ export type TablePlan = TablePlanFacts &
            rollup: RollupPlan;
            materialize?: undefined;
            /**
-            * The rollup as compiled over its base's stored table, at the same
-            * address: set for a colocated rollup over a colocated
-            * `#@ persist` base, and compiled on the first call
+            * The rollup as compiled over its base's stored table: set for a
+            * database rollup over a database `#@ persist` or
+            * `#(materialize)` base, and compiled on the first call
             * (rollup_compile.ts). A run builds from it only when its build
             * manifest holds the base's table (instructed_build.ts).
             */
-           overStoredBase?: () => Promise<PersistSource | undefined>;
+           overStoredBase?: () => Promise<OverStoredBase | undefined>;
+           /**
+            * For a `storage=` rollup over a base stored in the same
+            * destination: the base, and the rollup's own generated build
+            * file, which a run compiles there over the base re-rooted on its
+            * table when its manifest holds that table (instructed_build.ts,
+            * storage_build_strategy.ts).
+            */
+           storedBase?: {
+              baseSourceID: string;
+              companion: { url: string; text: string };
+           };
         }
    );
+
+/**
+ * A rollup compiled to build from its base's stored table (rollup_compile.ts).
+ * Over a `#@ persist` base, `source` is the rollup at its planned address.
+ * Over a `#(materialize)` base, the base is re-rooted on its generated build
+ * source, so `source`'s SQL, and so its own address, differs from the plan's,
+ * and `baseBuildSource` is that build source as the same compile holds it:
+ * the table the rollup reads, which a run checks is the base's table.
+ */
+export interface OverStoredBase {
+   source: PersistSource;
+   baseBuildSource?: PersistSource;
+}
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */
 export function materializeKindOf(

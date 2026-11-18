@@ -32,7 +32,7 @@
  *
  * so the result keeps the view's name, its columns in their order, its
  * ordering and its render tags. The table is read where it was built: a
- * `storage=` view through `virtual()` on the destination, a colocated one by
+ * `storage=` view through `virtual()` on the destination, a database one by
  * importing its build source from the companion and letting the build
  * manifest substitute its table.
  *
@@ -82,14 +82,24 @@ import {
 } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import type { Binding, Pinned } from "../domain/binding";
+import {
+   type Binding,
+   heldReadBinding,
+   isDatabase,
+   type Pinned,
+   storageLookupOf,
+} from "../domain/binding";
 import type { MaterializedTableCatalog } from "./query_path";
 import { fieldNotes, noteSource } from "../text/field_notes";
 import { TIMEFRAMES } from "./served_copy";
 import { type ColumnCast, storedTypedSource } from "./stored_typed_source";
 import { servedCopyAlias, servedCopyConfig } from "./served_copy_config";
 import { LegDecline } from "../domain/leg_decline";
-import { storedColumnReadPlan } from "../stored_column_types";
+import {
+   canonicalStoredSchema,
+   nativeTypeLookup,
+   storedColumnReadPlan,
+} from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
 
 type VirtualMap = Map<string, Map<string, string>>;
@@ -131,7 +141,7 @@ export interface ViewAnswer {
 export interface ViewTable {
    /** The table's `sourceEntityId`, when the plan knows it. */
    tableId?: string;
-   tier: "storage" | "colocated";
+   tier: "storage" | "database";
    /** Bound to the package at all. */
    built: boolean;
    /** Bound, but past its freshness window. */
@@ -143,8 +153,15 @@ export interface ResolvedTable extends ViewTable {
    virtualMap?: VirtualMap;
    quotedPath?: string;
    binding?: Binding;
-   /** A colocated table's name as the manifest substitutes it. */
-   colocatedTable?: string;
+   /** A database table's name as the manifest substitutes it. */
+   databaseTable?: string;
+   /**
+    * A database table's stored columns no faithful cast reads as declared
+    * since it was altered outside a build (the bind's `leftOutColumns`):
+    * every query on a persisted result reads all its columns, so the leg
+    * declines while one is.
+    */
+   leftOut?: readonly string[];
 }
 
 export interface CompiledVariant {
@@ -240,12 +257,19 @@ export class PersistedViewServe {
    reportedTable(queryString: string, pinned: Pinned): ViewTable | undefined {
       const called = this.calledView(queryString);
       if (!called) return undefined;
-      const { virtualMap, quotedPath, binding, colocatedTable, ...table } =
-         this.tableOf(called.plan, pinned, pinned.compilerManifest);
+      const {
+         virtualMap,
+         quotedPath,
+         binding,
+         databaseTable,
+         leftOut,
+         ...table
+      } = this.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
       void quotedPath;
       void binding;
-      void colocatedTable;
+      void databaseTable;
+      void leftOut;
       return table;
    }
 
@@ -266,7 +290,7 @@ export class PersistedViewServe {
       this.compiledOver(args.pinned);
       const called = this.calledView(args.queryString);
       if (!called) {
-         throw new LegDecline("view_missing_field");
+         throw new LegDecline("view_shape_mismatch");
       }
       const { call, plan } = called;
       const refined =
@@ -319,8 +343,15 @@ export class PersistedViewServe {
       if (!table.built) {
          throw new LegDecline("view_not_built");
       }
-      if (table.stale || (!table.virtualMap && !table.colocatedTable)) {
+      if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("view_stale");
+      }
+      const altered = alteredColumnsRefusal(table);
+      if (altered) {
+         throw new LegDecline(
+            "view_missing_field",
+            `the stored result cannot answer \`${call.view}\` with live's columns: ${altered}`,
+         );
       }
       const variant = await this.compiledVariant(plan, localName, table);
       if (variant.refusal) {
@@ -341,14 +372,14 @@ export class PersistedViewServe {
    }
 
    /**
-    * The key Malloy substitutes `buildSourceID`'s colocated table under,
+    * The key Malloy substitutes `buildSourceID`'s database table under,
     * where it is not the table's address (see PlannedTable.compilerKey).
     */
    compilerKeyOf(buildSourceID: string): string | undefined {
       return this.host.catalog()?.planned.get(buildSourceID)?.compilerKey;
    }
 
-   /** A persisted result's table: a `storage=` binding, or a colocated manifest entry. */
+   /** A persisted result's table: a `storage=` binding, or a database manifest entry. */
    tableOf(
       plan: Pick<PersistedViewPlan, "buildSourceID" | "storage">,
       pinned: Pinned,
@@ -357,11 +388,13 @@ export class PersistedViewServe {
       const planned = this.host.catalog()?.planned.get(plan.buildSourceID);
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
-      if (plan.storage !== undefined) {
-         const lookup = pinned.tableFor(
-            plan.buildSourceID,
-            isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
-         );
+      const lookup = storageLookupOf(
+         pinned,
+         plan.buildSourceID,
+         isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
+         plan.storage !== undefined,
+      );
+      if (lookup) {
          if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
          }
@@ -401,23 +434,54 @@ export class PersistedViewServe {
       const bound =
          tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
       if (!bound || tableId === undefined) {
-         return { ...withId, tier: "colocated", built: false, stale: false };
+         return { ...withId, tier: "database", built: false, stale: false };
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
       const fresh = freshManifest?.entries[tableId]?.tableName;
+      const leftOut = bound.leftOutColumns?.length
+         ? { leftOut: bound.leftOutColumns }
+         : {};
+      // Altered outside its build: read as a `storage=` table is, through a
+      // typed source on its own connection, never by the substitution.
+      const held =
+         fresh !== undefined
+            ? heldReadBinding(
+                 isPersistedQuerySourceID(plan.buildSourceID)
+                    ? "query"
+                    : "view",
+                 tableId,
+                 bound,
+              )
+            : undefined;
+      if (held) {
+         return {
+            ...withId,
+            ...dataAsOf,
+            tier: "database",
+            built: true,
+            stale: false,
+            binding: held,
+            quotedPath: held.tablePath,
+            virtualMap: new Map([
+               [held.destinationName, new Map([[tableId, held.tablePath]])],
+            ]),
+            ...leftOut,
+         };
+      }
       return fresh
          ? {
               ...withId,
               ...dataAsOf,
-              tier: "colocated",
+              tier: "database",
               built: true,
               stale: false,
-              colocatedTable: fresh,
+              databaseTable: fresh,
+              ...leftOut,
            }
          : {
               ...withId,
               ...dataAsOf,
-              tier: "colocated",
+              tier: "database",
               built: true,
               stale: true,
            };
@@ -433,7 +497,7 @@ export class PersistedViewServe {
          localName,
          table.binding
             ? `${table.binding.destinationName}/${table.binding.virtualHandle}`
-            : "colocated",
+            : "database",
       ].join("\u0000");
       let compiled = this.compiled.get(key);
       if (!compiled) {
@@ -486,7 +550,7 @@ export class PersistedViewServe {
          table,
          shape,
          redeclare: { sourceID: plan.sourceID },
-         colocatedAlias: `${plan.buildSourceName}__built`,
+         databaseAlias: `${plan.buildSourceName}__built`,
          emit: (read) => {
             // malloy-text: the source's own gate expressions, as the author wrote them, one per line (see gateLines)
             const gates = read.gates;
@@ -522,7 +586,7 @@ ${viewBody}
  * re-rooting the author's own file. A `storage=` table is read through a
  * typed source, each stored column whose type or value does not serve as
  * live's through the served copy's faithful cast (or the variant is refused);
- * a colocated one through its build source, imported from the companion over
+ * a database one through its build source, imported from the companion over
  * the copy so its address is the one the build plan computed. `emit` writes
  * the leg's own declarations over that stored source.
  */
@@ -548,8 +612,8 @@ export async function compilePersistedResultVariant(args: {
            alsoRedeclared: string[];
            alsoExported?: string[];
         };
-   /** The name a colocated build source is imported under. */
-   colocatedAlias: string;
+   /** The name a database build source is imported under. */
+   databaseAlias: string;
    emit(read: {
       gates: string;
       sourceName: string;
@@ -562,7 +626,21 @@ export async function compilePersistedResultVariant(args: {
 }): Promise<CompiledVariant> {
    const { packagePath, packageConfig, plan, table, shape } = args;
    const read = table.binding
-      ? storedColumnCasts(table.binding.schema, shape)
+      ? storedColumnCasts(
+           // Matched by a unique case fold too, as the served copy matches:
+           // a warehouse that folded the build's quoted aliases (P3-06..09).
+           canonicalStoredSchema(
+              table.binding.schema,
+              shape.columns.map((c) => c.name),
+           ),
+           shape,
+           isDatabase(table.binding)
+              ? {
+                   database: true,
+                   nativeTypeOf: nativeTypeLookup(table.binding.nativeSchema),
+                }
+              : {},
+        )
       : { casts: new Map<string, ColumnCast>() };
    if ("refusal" in read) return { refusal: read.refusal };
    // The source's own time zone: a `storage=` read truncates each stored
@@ -573,7 +651,7 @@ export async function compilePersistedResultVariant(args: {
       : "";
    const modelFile = path.join(packagePath, args.modelPath);
    const config =
-      table.binding && args.destinations
+      table.binding && !isDatabase(table.binding) && args.destinations
          ? servedCopyConfig(
               packageConfig,
               args.destinations(),
@@ -618,7 +696,7 @@ export async function compilePersistedResultVariant(args: {
          if (!text) return { error: "no companion" };
          const companion = persistedViewCompanionHref(declaringURL.href);
          addFile(new URL(companion), text);
-         const name = args.colocatedAlias;
+         const name = args.databaseAlias;
          return args.emit({
             gates,
             sourceName,
@@ -648,7 +726,7 @@ export async function readStoredVariant(args: {
    subject: string;
    /** The graft cache scope of this variant. */
    cacheScope: string;
-   /** The key Malloy substitutes a colocated table under, when not its address. */
+   /** The key Malloy substitutes a database table under, when not its address. */
    compilerKey?: string;
 }): Promise<ViewAnswer> {
    const { variant, table } = args;
@@ -695,19 +773,29 @@ export async function readStoredVariant(args: {
       );
    }
    // The compiled SQL must read the table, never recompute the result.
-   const read = table.virtualMap ? table.quotedPath : table.colocatedTable;
+   const read = table.virtualMap ? table.quotedPath : table.databaseTable;
    if (!read || !sql.includes(read)) {
       throw new LegDecline("view_stale");
    }
-   const { virtualMap, quotedPath, binding, colocatedTable, ...reported } =
-      table;
+   const {
+      virtualMap,
+      quotedPath,
+      binding,
+      databaseTable,
+      leftOut,
+      ...reported
+   } = table;
    void quotedPath;
-   void colocatedTable;
+   void databaseTable;
+   void leftOut;
    return {
       runnable,
       table: reported,
       ...(virtualMap ? { virtualMap } : {}),
-      ...(binding ? { binding } : {}),
+      // A database table read through its typed source is still a database
+      // table to the path report and the gate policy, as through the
+      // substitution: only a `storage=` table's binding is reported.
+      ...(binding && !isDatabase(binding) ? { binding } : {}),
       graftScope: {
          modelDef: variant.modelDef,
          materializer: variant.materializer,
@@ -897,6 +985,26 @@ async function viewShape(
 }
 
 /**
+ * Why a database persisted result cannot answer with live's columns: a
+ * stored column altered outside its build that no faithful cast reads as
+ * declared (the bind's `leftOutColumns`), which every query on the result
+ * reads. Undefined when none is.
+ */
+export function alteredColumnsRefusal(
+   table: Pick<ResolvedTable, "leftOut">,
+): string | undefined {
+   return table.leftOut?.length
+      ? alteredColumnsDetail(table.leftOut)
+      : undefined;
+}
+
+/** Why a stored table's columns the bind left out cannot be read, for a decline. */
+export function alteredColumnsDetail(leftOut: readonly string[]): string {
+   const detail = `its table was altered outside a build, and no cast reads ${leftOut.map((c) => `\`${c}\``).join(", ")} as declared`;
+   return detail;
+}
+
+/**
  * The stored columns of a `storage=` view's table read through a cast, by
  * name ({@link storedColumnReadPlan}: a faithful `DATE` or `BOOLEAN`, or a big
  * integer's native read), or why the stored table cannot give live's values:
@@ -908,6 +1016,15 @@ async function viewShape(
 export function storedColumnCasts(
    schema: readonly { name: string; type: string }[],
    shape: Pick<ViewShape, "columns" | "queryTimezone" | "dialect">,
+   /**
+    * Where the table is: a database table (`database`, read where it was
+    * built, each big integer through the type its catalog names, `nativeTypeOf`),
+    * else a `storage=` table in DuckLake.
+    */
+   site: {
+      database?: boolean;
+      nativeTypeOf?: (column: string) => string | undefined;
+   } = {},
 ): { casts: Map<string, ColumnCast> } | { refusal: string } {
    const native = shape.columns.find(
       (c) => c.type === "sql native" || c.type === "json",
@@ -923,6 +1040,10 @@ export function storedColumnCasts(
    const plan = storedColumnReadPlan(schema, declared, {
       queryTimezone: shape.queryTimezone,
       dialect: shape.dialect,
+      ...(site.database
+         ? { database: true, nativeTypeOf: site.nativeTypeOf }
+         : // A storage destination is DuckLake.
+           { ducklake: true }),
    });
    const [unservable] = plan.leftOut;
    if (unservable) {
@@ -1084,7 +1205,7 @@ function groupedColumn(c: ViewColumn): string {
 export function refinedCallDecline(call: RunViewCall): LegDecline | undefined {
    if (call.refined) {
       return new LegDecline(
-         "view_missing_field",
+         "view_shape_mismatch",
          `the query refines \`${call.view}\` (\`+ { … }\`), and the stored result holds only the view as written`,
       );
    }
@@ -1118,11 +1239,15 @@ export function callerTextDecline(
       contents: Record<string, unknown> | undefined;
       declaringURL: string | undefined;
    },
+   /** The leg that asks, which the decline's code is attributed to. */
+   leg: "view" | "query" = "view",
 ): LegDecline | undefined {
+   const code =
+      leg === "query" ? "query_shape_mismatch" : "view_shape_mismatch";
    const named = redeclared.find((n) => n !== undefined && otherNames.has(n));
    if (named !== undefined) {
       return new LegDecline(
-         "view_missing_field",
+         code,
          `the query text names \`${named}\` beside the call of \`${name}\`, a name the stored result's variant gives to the stored rows`,
       );
    }
@@ -1137,7 +1262,7 @@ export function callerTextDecline(
          | undefined;
       if (entry?.type === "query") {
          return new LegDecline(
-            "view_missing_field",
+            code,
             `the query text names the named query \`${other}\` beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
          );
       }
@@ -1150,7 +1275,7 @@ export function callerTextDecline(
             : undefined);
       if (declaredIn === undefined || declaredIn !== model.declaringURL) {
          return new LegDecline(
-            "view_missing_field",
+            code,
             `the query text names \`${other}\`, declared in another file than the stored result's, beside the call of \`${name}\`, which may read the stored rows where live reads its source`,
          );
       }
@@ -1171,7 +1296,7 @@ export function callTargetDecline(
 ): LegDecline | undefined {
    if (!localName || sourceID !== plan.sourceID) {
       return new LegDecline(
-         "view_missing_field",
+         "view_shape_mismatch",
          `the query does not call \`${call.view}\` on the source that declares it`,
       );
    }
@@ -1190,7 +1315,7 @@ export function exactCallDecline(
 ): LegDecline | undefined {
    if (resultName !== plan.viewName) {
       return new LegDecline(
-         "view_missing_field",
+         "view_shape_mismatch",
          `the query is not a call of \`${call.view}\``,
       );
    }

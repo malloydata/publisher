@@ -42,7 +42,6 @@ type Reason =
    | "cross_connection_unbuilt"
    | "column_types"
    | "no_declaration"
-   | "range_not_found"
    | "definition_not_parsed"
    | "pair_join_not_found"
    | "pair_not_compiled"
@@ -224,7 +223,7 @@ source: s is base -> { select: x }
       },
    },
    {
-      reasons: ["range_not_found"],
+      reasons: ["definition_not_parsed"],
       name: "a declaration past the end of its file",
       scenario: {
          files: { "m.malloy": PERSISTED_EVENTS },
@@ -308,10 +307,13 @@ source: shared_statement is duckdb.table('flights') extend {
       name: "fields inherited from a base the re-root replaces",
       scenario: {
          files: {
-            "m.malloy": `import "kept.malloy"
+            // Imported under another name, which the text cannot confirm as
+            // the base the compiled model records, so its blocks are not
+            // kept (a base imported under its own name is, P2-22).
+            "m.malloy": `import { kept_base is kept } from "kept.malloy"
 
 #(materialize) storage="lake"
-source: kept_west is kept extend {
+source: kept_west is kept_base extend {
   where: org = 'globex'
 }
 
@@ -477,7 +479,7 @@ describe("served-copy reason goldens", () => {
       // classifies past the compile of record); it is pinned on real
       // compiles in served_copy_classification_ceiling.spec.ts.
       const covered = new Set(CASES.flatMap((c) => c.reasons));
-      expect(covered.size).toBe(13);
+      expect(covered.size).toBe(12);
       expect(covered.has("classification_not_kept")).toBe(false);
    });
 

@@ -3,11 +3,11 @@
 
 /**
  * The rollup leg's plans are memoised per model, and since 6f
- * they depend on `PUBLISHER_MATERIALIZE` (`readsPreaggregateDeclarations`: `#(preaggregate)` is read
+ * they depend on `PUBLISHER_MATERIALIZE` (`readsRollupDeclarations`: `#(rollup)` is read
  * only with it on) as well as on the v1 cutover (`readsPreaggregateLines`). A memo keyed on
  * the model alone kept the plans read under whichever switch asked first, so
  * a model queried with the materialize switch off and then on never routed a
- * `#(preaggregate)` rollup: the gated-sources golden recorded both of its
+ * `#(rollup)` rollup: the gated-sources golden recorded both of its
  * gated rollups as live under the switch on, built and never read.
  */
 
@@ -17,7 +17,7 @@ import { FEATURE_SHAPES } from "../materialization_goldens/feature_shapes";
 import { runCase } from "../materialization_goldens/package_case";
 
 describe("the rollup leg's plans follow the switches they read", () => {
-   it("routes a gated #(preaggregate) rollup under the switch on after a query under the switch off", async () => {
+   it("routes a gated #(rollup) rollup under the switch on after a query under the switch off", async () => {
       const shape = FEATURE_SHAPES.find(
          (s) => s.name === "gated sources, gated switch on",
       )!;

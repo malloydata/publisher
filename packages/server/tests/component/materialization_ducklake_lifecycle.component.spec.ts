@@ -96,7 +96,7 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: amount is amt.sum()
 }
 `;
@@ -132,7 +132,13 @@ type Entry = {
 type Answer = {
    rows: Record<string, unknown>[];
    servedFrom: string | null;
-   servedBy: { kind: string; tableId?: string; tier?: string; via?: string };
+   servedBy: {
+      kind: string;
+      origin?: string;
+      tableId?: string;
+      tier?: string;
+      via?: string;
+   };
 };
 
 describe.skipIf(process.platform === "win32")(
@@ -499,7 +505,7 @@ describe.skipIf(process.platform === "win32")(
          }
          expect(daily.origin).toBeUndefined();
          expect(orders.origin).toBeUndefined();
-         expect(sales.origin).toBe("preaggregate");
+         expect(sales.origin).toBe("rollup");
          expect(daily.schema).toEqual([
             { name: "cat", type: "VARCHAR" },
             { name: "total", type: "DECIMAL(38,1)" },
@@ -561,10 +567,12 @@ describe.skipIf(process.platform === "win32")(
          }
          expect((await ask("daily")).servedBy).toMatchObject({
             kind: "materialized",
+            origin: "persist",
             via: "served_copy",
          });
          expect((await ask("orders")).servedBy).toMatchObject({
             kind: "materialized",
+            origin: "materialize",
             via: "served_copy",
          });
          expect((await ask("sales")).servedBy.kind).toBe("rollup");
@@ -590,7 +598,7 @@ describe.skipIf(process.platform === "win32")(
          expect(await catalogTables()).toEqual(tablesBefore);
          expect(await dataFiles()).toEqual(filesBefore);
 
-         // Deleting the record alone (no dropTables) touches no catalog and
+         // Deleting the record (record-only) touches no catalog and
          // leaves the first run serving.
          attaches.length = 0;
          await service.deleteMaterialization(ENV, PKG, reused.id);
@@ -658,18 +666,16 @@ describe.skipIf(process.platform === "win32")(
          }
       });
 
-      it("reclaims: a superseded run's drop keeps the shared tables, the last run's drop removes them and serving goes live", async () => {
+      it("deletes are record-only: the tables stay in the catalog, and once no run is left serving goes live", async () => {
          const filesBefore = await dataFiles();
          const tables = NAMES.map(
             (n) => firstEntries[n].physicalTableName,
          ).sort();
 
-         // The first run's tables carry the same names the forced run serves,
-         // so its drop skips every one: no read-write attach at all.
+         // Deleting the superseded run touches no catalog, and the forced
+         // run still serves the tables both name.
          attaches.length = 0;
-         await service.deleteMaterialization(ENV, PKG, first.id, {
-            dropTables: true,
-         });
+         await service.deleteMaterialization(ENV, PKG, first.id);
          expect(attaches).toEqual([]);
          expect(await catalogTables()).toEqual(tables);
          await reopenServe();
@@ -677,31 +683,13 @@ describe.skipIf(process.platform === "win32")(
             expect((await ask(name)).servedFrom).toBe("storage");
          }
 
-         // The last run's drop: per entry, a read-write session that checks no
-         // other package has marked the table, then one that drops it (and
-         // its backup name).
-         attaches.length = 0;
-         await service.deleteMaterialization(ENV, PKG, second.id, {
-            dropTables: true,
-         });
-         expect(attaches).toEqual(
-            [...NAMES, ...NAMES].map(() => ({ fn: "readWrite", dbName: LAKE })),
-         );
+         // Deleting the last run touches no catalog either: its tables stay
+         // for the operator to drop through the connection.
+         await service.deleteMaterialization(ENV, PKG, second.id);
+         expect(attaches).toEqual([]);
          expect(await repo.getMaterializationById(second.id)).toBeFalsy();
-         expect(await catalogTables()).toEqual([]);
-         await inspect(async (c) => {
-            const left = await c.runSQL(
-               `SELECT table_name FROM duckdb_tables() WHERE database_name = '${LAKE}'`,
-            );
-            expect(left.rows).toEqual([]);
-         });
-         // A drop retires the table in the catalog; its Parquet files stay on
-         // disk until a file cleanup, which the reclaim does not run.
-         for (const table of tables) {
-            for (const file of filesBefore[table]) {
-               expect(fs.existsSync(file)).toBe(true);
-            }
-         }
+         expect(await catalogTables()).toEqual(tables);
+         expect(await dataFiles()).toEqual(filesBefore);
 
          // No run is left, so the package is rebound to nothing and serves live.
          await reopenServe();
@@ -943,7 +931,9 @@ class LakeFixture {
                // Recorded from here on: the build's own statements.
                const run = session.runSQL.bind(session);
                session.runSQL = (async (sql: string, ...rest: unknown[]) => {
-                  this.statements.push(sql);
+                  // The session's lockdown (duckdb_lockdown.ts) runs once the
+                  // source is federated; it is not the build's own SQL.
+                  if (!LOCKDOWN_STATEMENT.test(sql)) this.statements.push(sql);
                   await this.onStatement?.(sql);
                   const result = await (run as (...a: unknown[]) => unknown)(
                      sql,
@@ -1339,11 +1329,15 @@ describe.skipIf(process.platform === "win32")(
 describe.skipIf(process.platform === "win32")(
    "an incremental storage= source refreshed by a delta inside the DuckLake session",
    () => {
-      // The warehouse rows live in a CSV under the fixture's root, which the
-      // warehouse and every build session read, so a case can add rows
-      // between runs.
-      const csv = (root: string) => path.join(root, "events.csv");
+      // The warehouse rows live in a CSV, which the warehouse and every build
+      // session read (the fake passthrough runs locally), so a case can add
+      // rows between runs. It sits where both are confined to
+      // (duckdb_lockdown.ts): the environment directory, for the warehouse,
+      // and its storage-destinations root, for a build session.
+      const csv = (root: string) =>
+         path.join(root, "env", ".storage-destinations", "events.csv");
       const lake = new LakeFixture("incremental", (root) => {
+         fs.mkdirSync(path.dirname(csv(root)), { recursive: true });
          fs.writeFileSync(
             csv(root),
             "id,cat,amt,wm\n1,a,1.0,10\n2,a,2.0,20\n3,b,4.0,30\n",
@@ -1472,6 +1466,7 @@ source: events is warehouse.sql("""
          expect(served.servedFrom).toBe("storage");
          expect(served.servedBy).toMatchObject({
             kind: "materialized",
+            origin: "materialize",
             tableId: address,
          });
          expect(served.rows).toEqual(live.rows);
@@ -1508,10 +1503,13 @@ source: events is warehouse.sql("""
             advancedByMaterializationId: m.id,
          });
          expect(lake.attaches).toEqual([{ fn: "readWrite", dbName: LAKE }]);
-         // No CTAS: the shape and emptiness probes on the lake table, the
-         // frontier through the passthrough, the delta's column types (a
-         // describe, which runs nothing), then the delta as one script.
+         // No CTAS: the recast probe, the stored types (a DOUBLE column would
+         // be probed in Postgres for a numeric to re-seed; there is none), the
+         // shape and emptiness probes on the lake table, the frontier through
+         // the passthrough, the delta's column types (a describe, which runs
+         // nothing), then the delta as one script.
          expect(lake.statements.map(statementShape)).toEqual([
+            `DESCRIBE "lake"."${TABLE}"`,
             `DESCRIBE "lake"."${TABLE}"`,
             'SELECT column_name AS "column_name"',
             `SELECT 1 AS present FROM "lake"."${TABLE}" LIMIT 1`,
@@ -1672,6 +1670,7 @@ source: plain is raw extend { measure: total is amt.sum() }
          );
          expect(failures).toEqual([
             {
+               code: "table-owned-elsewhere",
                sourceEntityId: expect.any(String),
                sourceName: "owned",
                materializedTableId: expect.stringMatching(/^local-/),
@@ -1755,7 +1754,7 @@ source: plain is raw extend { measure: total is amt.sum() }
          );
       });
 
-      it("a drop skips a table another package has marked since, and drops this package's table with its backup name", async () => {
+      it("a reclaim's drop skips a table another package has marked since, and drops this package's table with its backup name", async () => {
          const owned = lake.entriesByName(builtRun).owned;
          // Another package has built `plain`'s table since, and an earlier
          // release left `shared_t`'s backup name behind.
@@ -1774,25 +1773,20 @@ source: plain is raw extend { measure: total is amt.sum() }
             backup,
          ]);
 
-         // The refused run's drop: `plain` is still the built run's, so
-         // nothing is dropped or attached.
+         // The built run's tables, dropped as a reclaim drops them: `plain`
+         // is probed and skipped; `shared_t` is probed, then dropped with its
+         // backup name in one session.
          lake.attaches.length = 0;
-         await lake.service.deleteMaterialization(ENV, PKG, refusedRun.id, {
-            dropTables: true,
-         });
-         expect(lake.attaches).toEqual([]);
-         expect(await lake.catalogTables()).toEqual([
-            PLAIN,
-            "shared_t",
-            backup,
-         ]);
-
-         // The built run's drop: `plain` is probed and skipped; `shared_t` is
-         // probed, then dropped with its backup name in one session.
-         lake.attaches.length = 0;
-         await lake.service.deleteMaterialization(ENV, PKG, builtRun.id, {
-            dropTables: true,
-         });
+         await lake.service.reclaimer.dropManifestEntries(
+            lake.env,
+            ENV,
+            PKG,
+            builtRun.id,
+            "reclaim",
+            Object.values(builtRun.manifest?.entries ?? {}),
+            new Set(),
+            (name) => lake.pkg.getMalloyConnection(name),
+         );
          expect(lake.attaches).toEqual([
             { fn: "readWrite", dbName: LAKE },
             { fn: "readWrite", dbName: LAKE },
@@ -2001,7 +1995,7 @@ describe.skipIf(process.platform === "win32")(
          expect(orders.rows).toEqual(live.orders);
       });
 
-      it("fails a run whose every build fails, commits no manifest, and leaves the catalog and serving as they were", async () => {
+      it("F-17: fails a run whose every build fails, records each source's failure on a manifest that is never served, and leaves the catalog and serving as they were", async () => {
          const filesBefore = await lake.dataFiles();
          const failed = await failing(
             (sql) => {
@@ -2012,7 +2006,26 @@ describe.skipIf(process.platform === "win32")(
             () => lake.run({ forceRefresh: true }),
          );
          expect(failed.status).toBe("FAILED");
-         expect(failed.manifest ?? null).toBeNull();
+         // Each source's own reason, and no entry: the run names no table.
+         // This is the full service path, so a failure dropped anywhere
+         // between the build and the record fails here.
+         expect(failed.manifest?.entries).toEqual({});
+         // Nothing was built, so no build time: `completedAt` says when.
+         expect(failed.manifest?.builtAt).toBeUndefined();
+         expect(
+            Object.values(failed.manifest?.failures ?? {})
+               .map((f) => [f.sourceName, f.reason])
+               .sort(),
+         ).toEqual([
+            [
+               "daily",
+               "Failed to materialize source 'daily' into storage destination 'lake': injected: write failed",
+            ],
+            [
+               "orders",
+               "Failed to materialize source 'orders' into storage destination 'lake': injected: write failed",
+            ],
+         ]);
          expect(failed.error).toBe(
             "orders: Failed to materialize source 'orders' into storage destination 'lake': injected: write failed; " +
                "daily: Failed to materialize source 'daily' into storage destination 'lake': injected: write failed",
@@ -2025,12 +2038,17 @@ describe.skipIf(process.platform === "win32")(
       });
 
       it("a failed first build leaves no table behind", async () => {
-         // Every run's tables dropped, so `orders` has never been built.
+         // Every run deleted and its tables dropped by hand, so `orders` has
+         // never been built.
          for (const m of await lake.service.listMaterializations(ENV, PKG)) {
-            await lake.service.deleteMaterialization(ENV, PKG, m.id, {
-               dropTables: true,
-            });
+            await lake.service.deleteMaterialization(ENV, PKG, m.id);
          }
+         const left = await lake.catalogTables();
+         await lake.inspect(async (c) => {
+            for (const table of left) {
+               await c.runSQL(`DROP TABLE ${LAKE}.main."${table}"`);
+            }
+         }, false);
          expect(await lake.catalogTables()).toEqual([]);
          lake.statements.length = 0;
          const m = await failing(failOrdersReadBack, () => lake.run());
@@ -2051,6 +2069,10 @@ describe.skipIf(process.platform === "win32")(
       });
    },
 );
+
+/** A statement of a build session's lockdown, not of the build. */
+const LOCKDOWN_STATEMENT =
+   /^(SELECT current_setting\(|SELECT extension_name FROM duckdb_extensions\(\)|SELECT count\(\*\) FROM duckdb_secrets\(\)|SET (GLOBAL )?(enable_global_s3_configuration|s3_|autoinstall_known_extensions|autoload_known_extensions|allowed_directories|allowed_paths|enable_external_access|TimeZone|file_search_path)|(INSTALL|LOAD) excel)/;
 
 const SHAPES_MODEL = `##! experimental.persistence
 source: raw is warehouse.sql("""
@@ -2220,12 +2242,14 @@ describe.skipIf(process.platform === "win32")(
          }
          expect((await lake.ask(QUERIES.view)).servedBy).toEqual({
             kind: "view",
+            origin: "view",
             tableId: entries.ops__by_cat__view.sourceEntityId,
             tier: "storage",
          });
          for (const name of ["pairs", "parent", "child"] as const) {
             expect((await lake.ask(QUERIES[name])).servedBy).toEqual({
                kind: "materialized",
+               origin: "materialize",
                tableId: entries[name].sourceEntityId,
                tier: "storage",
                via: "served_copy",
@@ -2274,7 +2298,7 @@ source: sb_viewed is sb_raw extend {
 query: sb_query is sb_raw -> { group_by: cat; aggregate: total is amt.sum() }
 
 source: sb_sales is sb_raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: total is amt.sum()
 }
 `,
@@ -2301,9 +2325,9 @@ source: sb_sales is sb_raw extend {
                "persist-not-built:sb_daily",
                "persist-query-not-built:sb_query__query",
                "persist-view-not-built:sb_viewed__by_cat__view",
+               "rollup-not-built:sb_sales",
+               // Its 0.14 code, repeated beside it this release only.
                "preaggregate-not-built:sb_sales",
-               // No repeat under the former `persist-source-refused`: no
-               // earlier release raised this refusal.
             ].sort(),
          );
          const plan = lake.pkg.getBuildPlan();

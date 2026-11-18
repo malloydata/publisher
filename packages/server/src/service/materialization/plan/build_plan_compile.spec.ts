@@ -24,7 +24,7 @@ import * as modelRuntime from "../../model_runtime";
 /**
  * Compiling a package's build plan on the main thread (build_plan_compile.ts):
  * the real-compiler main path, its failure paths, notebook/flag skipping and
- * cancellation, gate-outcome recording, and the projected plan's colocated
+ * cancellation, gate-outcome recording, and the projected plan's database
  * eligibility.
  */
 
@@ -314,7 +314,7 @@ source: gated is base -> { select: org_id } extend {}
          // expression, that payload is a STRING LITERAL, not a boolean, so
          // `resolveGateShape`'s probe fails to lift it and the outcome is
          // `rejected`. This is the invariant `build_plan.spec.ts`'s
-         // `colocatedSourceEligibility` "keys eligibility..." test protects
+         // `databaseSourceEligibility` "keys eligibility..." test protects
          // at the eligibility layer; this test pins the classification
          // itself, one level down.
          const pkg = await packages.create(`##! experimental.persistence
@@ -340,7 +340,7 @@ source: gated is base -> { select: org_id }
          // own (via query-source derivation from `base`), not reached
          // through a join. It is the CLASSIFICATION, not the attribution,
          // that the legacy quoted form flips to `rejected`; either alone
-         // (`rejected` OR `!attributed`) already refuses colocated
+         // (`rejected` OR `!attributed`) already refuses database
          // eligibility (`materialization_eligibility.ts`), so this pins the
          // specific mechanism findings-r2 is about rather than the
          // coarser "somehow refused" shape.
@@ -426,14 +426,14 @@ source: scoped is base -> { where: category = $TENANT; group_by: category }
             expect(droppedPersistSources).toEqual([]);
             const refused = Object.values(plan?.refusedSources ?? {});
             expect(refused.map((r) => [r.name, r.reason])).toEqual([
-               ["scoped", "given_in_persisted_query"],
+               ["scoped", "reads_given"],
             ]);
          },
          { timeout: 20000 },
       );
    });
 
-   describe("colocatedSourceEligibility", () => {
+   describe("databaseSourceEligibility", () => {
       const packages = tempBuildPlanPackages();
       afterEach(() => packages.cleanup());
 
@@ -441,7 +441,7 @@ source: scoped is base -> { where: category = $TENANT; group_by: category }
          "keys eligibility so a same-NAMED source in a DIFFERENT model is judged independently — one eligible, one refused",
          async () => {
             // Two models each declare a persist source named "s". model_a's is
-            // row-level and attributed (colocated-eligible); model_b's carries a
+            // row-level and attributed (database-eligible); model_b's carries a
             // gate that classifies REJECTED (a literal-vs-field comparison). A
             // name-keyed positive check ("is `s` eligible anywhere in the
             // package?") would incorrectly authorize model_b's binding off
@@ -478,7 +478,7 @@ source: s is base_b -> { select: org_id }
             });
 
             const compiled = await compilePackageBuildPlan(pkg);
-            const { colocatedSourceEligibility } =
+            const { databaseSourceEligibility } =
                await computePackageBuildPlan(pkg);
 
             const sourceIDA = Object.keys(sourcesIn(compiled)).find(
@@ -505,10 +505,10 @@ source: s is base_b -> { select: org_id }
             // Distinct content ⇒ distinct entity ids, which is what makes this a
             // real collision-avoidance test rather than a tautology.
             expect(idA).not.toBe(idB);
-            expect(colocatedSourceEligibility.eligibleEntityIds.has(idA)).toBe(
+            expect(databaseSourceEligibility.eligibleEntityIds.has(idA)).toBe(
                true,
             );
-            expect(colocatedSourceEligibility.eligibleEntityIds.has(idB)).toBe(
+            expect(databaseSourceEligibility.eligibleEntityIds.has(idB)).toBe(
                false,
             );
          },
@@ -562,7 +562,7 @@ source: s is duckdb.sql("select 1 as x") extend {
             });
 
             const compiled = await compilePackageBuildPlan(pkg);
-            const { colocatedSourceEligibility } =
+            const { databaseSourceEligibility } =
                await computePackageBuildPlan(pkg);
 
             const sourceIDA = Object.keys(sourcesIn(compiled)).find(
@@ -588,8 +588,8 @@ source: s is duckdb.sql("select 1 as x") extend {
             );
             // Same id: this is the real collision, not a tautology.
             expect(idA).toBe(idB);
-            expect(colocatedSourceEligibility.refused[idA]).toBeDefined();
-            expect(colocatedSourceEligibility.eligibleEntityIds.has(idA)).toBe(
+            expect(databaseSourceEligibility.refused[idA]).toBeDefined();
+            expect(databaseSourceEligibility.eligibleEntityIds.has(idA)).toBe(
                false,
             );
          },
@@ -597,14 +597,14 @@ source: s is duckdb.sql("select 1 as x") extend {
       );
 
       it(
-         "one unreadable source costs the package that source's binding, not its whole colocated tier",
+         "one unreadable source costs the package that source's binding, not its whole database tier",
          async () => {
-            // The colocated gate deliberately admits a given-referencing source
-            // (materialization_eligibility.spec.ts's mz_colocated_given), and
+            // The database gate deliberately admits a given-referencing source
+            // (materialization_eligibility.spec.ts's mz_database_given), and
             // `bad`'s given has no default, so getSQL() — and every content
             // address derived from it — throws. An escaping throw would leave
-            // colocatedSourceEligibility undefined, and colocated is the default
-            // tier: bindColocatedServeManifest would then drop EVERY binding for
+            // databaseSourceEligibility undefined, and database is the default
+            // tier: bindDatabaseServeManifest would then drop EVERY binding for
             // the package, reverting `good` to live recompute too.
             const pkg = await packages.create({
                "m.malloy": `##! experimental.persistence
@@ -622,7 +622,7 @@ source: bad is base -> { where: org_id = $ORG; select: org_id, amount }
 `,
             });
 
-            const { plan, colocatedSourceEligibility } =
+            const { plan, databaseSourceEligibility } =
                await computePackageBuildPlan(pkg);
 
             expect(
@@ -630,10 +630,10 @@ source: bad is base -> { where: org_id = $ORG; select: org_id, amount }
             ).toEqual(["good"]);
             // `good` keeps a usable binding; `bad` contributes neither an
             // eligibility nor a refusal, since it has no id to key either under.
-            expect(colocatedSourceEligibility.eligibleEntityIds.size).toBe(1);
+            expect(databaseSourceEligibility.eligibleEntityIds.size).toBe(1);
             const [good] = Object.values(plan?.sources ?? {});
             expect(
-               colocatedSourceEligibility.eligibleEntityIds.has(
+               databaseSourceEligibility.eligibleEntityIds.has(
                   good.sourceEntityId,
                ),
             ).toBe(true);

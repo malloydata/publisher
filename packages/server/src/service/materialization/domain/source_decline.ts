@@ -21,12 +21,13 @@ const SOURCE_DECLINES = {
    build_plan_unavailable: { stage: "bind" },
    refused: { stage: "bind" },
    missing_table: { stage: "bind" },
+   // A manifest entry's table name its dialect cannot read or quote.
+   unquotable_name: { stage: "bind" },
    // The served copy's compile (`serve/served_copy_serve.ts`).
    compile_failed: { stage: "served_copy" },
    cross_connection_unbuilt: { stage: "served_copy" },
    column_types: { stage: "served_copy" },
    no_declaration: { stage: "served_copy" },
-   range_not_found: { stage: "served_copy" },
    definition_not_parsed: { stage: "served_copy" },
    pair_join_not_found: { stage: "served_copy" },
    pair_not_compiled: { stage: "served_copy" },

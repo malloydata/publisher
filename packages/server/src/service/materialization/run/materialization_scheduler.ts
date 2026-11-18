@@ -220,7 +220,8 @@ export class MaterializationScheduler {
     * A published version's schedulable cron, or null. Read from the loaded
     * version when it is in memory (as for a package), otherwise from its
     * publisher.json, without loading it. A version bound to a host's
-    * manifest is the host's to build (Guard 2). Publishing refuses an invalid
+    * manifest, or bound by one before (`hostOwned`), is the host's to build
+    * (Guard 2). Publishing refuses an invalid
     * persistence policy, so an unloaded version needs only the schedule's own
     * conditions: `scope: version`, and a cron that parses.
     */
@@ -228,7 +229,7 @@ export class MaterializationScheduler {
       env: MaterializationEnvironment,
       version: Version,
    ): Promise<string | null> {
-      if (version.manifestPath) return null;
+      if (version.manifestPath || version.hostOwned) return null;
       const loaded = env.peekVersion(version.packageName, version.versionId);
       if (loaded) return this.schedulableCron(loaded);
       const manifest = await env
@@ -408,7 +409,7 @@ export class MaterializationScheduler {
             packageName,
             {
                forceRefresh: true,
-               trigger: "SCHEDULER",
+               trigger: "scheduler",
                ...(versionId !== undefined
                   ? { versionId: VersionRef.parse(versionId) }
                   : {}),

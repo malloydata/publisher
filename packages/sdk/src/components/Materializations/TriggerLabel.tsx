@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Tooltip, Typography } from "@mui/material";
-import { MaterializationMetadata, triggerLabel } from "./utils";
+import { isScheduledRun, MaterializationMetadata, triggerLabel } from "./utils";
 
 /**
  * How a run was initiated — Scheduled (the standalone scheduler fired the
@@ -19,7 +19,7 @@ export default function TriggerLabel({
 }: {
    meta: MaterializationMetadata;
 }) {
-   const scheduled = meta.trigger === "SCHEDULER";
+   const scheduled = isScheduledRun(meta);
    return (
       <Tooltip
          title={

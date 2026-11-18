@@ -23,10 +23,14 @@ import {
    readableTableName,
    readableVersion,
    sourceLabel,
+   hasReservedTableSuffix,
+   tableNameParts,
+   tableNamesMeet,
 } from "../domain/table_name";
+import { isPersistedQuerySourceID } from "../domain/table_plans";
 import { getPersistStorageMode } from "../../../config";
 import {
-   BadRequestError,
+   BuildInstructionsInvalidError,
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
@@ -95,19 +99,66 @@ export interface SelfTableNaming {
 }
 
 /**
- * A table an auto-run built under its readable name, in place of the table an
- * earlier run built for the same source under the name Publisher gave before
- * readable names. The old table is reclaimed once the run commits, only when
- * every guard holds (Reclaimer.reclaimRenamedTables).
+ * A table an auto-run built under a new name or in a new place, in place of
+ * the table an earlier run built for the same source (the same content
+ * address) on the same connection: its name changed, or its `storage=`
+ * destination did. Once the run commits, the old table is reclaimed when
+ * Publisher can prove it is its own, and is otherwise kept, and listed as
+ * kept when it sits at an author's `name=` (Reclaimer.reclaimRenamedTables).
  */
 export interface RenamedTable {
    sourceEntityId: string;
-   /** The earlier run's table: exactly the name Publisher derived for it then. */
+   /** The source the table is built for, which a kept table's warning names. */
+   sourceName?: string;
+   /** The earlier run's table. */
    previousName: string;
    /** The table this run builds instead. */
    physicalTableName: string;
    connectionName: string;
+   /** Where this run builds the table: its storage destination, if any. */
    storageDestinationName?: string;
+   /**
+    * Where the earlier table is, when that is not where this run builds:
+    * its storage destination, or none for the source's own database. Absent
+    * when the place is the same.
+    */
+   previousPlace?: { storageDestinationName?: string };
+}
+
+/**
+ * Whether two written names, in one place, may be one table: compared
+ * unquoted and case-folded, with {@link tableNamesMeet}'s container rule. The
+ * conservative answer, for deciding a table is NOT another: an over-wide
+ * match only keeps a table.
+ */
+export function mayBeOneTable(a: string, b: string): boolean {
+   const canon = (name: string) =>
+      name
+         .split(".")
+         .map((s) => s.replace(/["`[\]]/g, "").toLowerCase())
+         .join(".");
+   return tableNamesMeet(canon(a), canon(b));
+}
+
+/**
+ * A written name's table segment, unquoted and case-folded: the key a
+ * reclaim or a run's delete compares names by. Containers are left out, since
+ * a container does not say which table a name reaches (on DuckDB a two-part
+ * name may be a catalog's or a schema's: `memory.t` and `main.t` are one
+ * table), and nor does a place (two names for one DuckLake).
+ */
+export function tableLeafKey(name: string): string {
+   const parts = name.split(".");
+   return parts[parts.length - 1].replace(/["`[\]]/g, "").toLowerCase();
+}
+
+/**
+ * Whether two written names may be one table wherever each is, compared by
+ * table segment alone ({@link tableLeafKey}). The conservative answer for
+ * deciding whether to drop a table: an over-wide match only keeps one.
+ */
+export function mayBeOneTableAnywhere(a: string, b: string): boolean {
+   return tableLeafKey(a) === tableLeafKey(b);
 }
 
 /*
@@ -158,11 +209,11 @@ function gateSources(
          if (include && !include.has(persistSource.name)) continue;
 
          // A source that DECLARES `storage=` must never silently downgrade
-         // to a colocated CTAS into its own warehouse when
+         // to a database CTAS into its own warehouse when
          // PERSIST_STORAGE_MODE=off: the author did not ask for that, and
          // production grants read-only warehouse access. It serves LIVE and
          // Package.storageWarnings reports it. A plain `#@ persist` is
-         // unaffected; colocated is its intent.
+         // unaffected; database is its intent.
          if (
             getPersistStorageMode() === "off" &&
             declaredStorage(persistSource)
@@ -179,7 +230,7 @@ function gateSources(
          // ineligible source does not stop the rest of the package refreshing.
          // The run throws only when nothing else is left to build, or when
          // `sourceNames` asked for exactly this source.
-         // A colocated `#@ persist` is just as frozen as a storage build, so
+         // A database `#@ persist` is just as frozen as a storage build, so
          // an authorize-gated source materialized there would be served to
          // every caller.
          try {
@@ -207,12 +258,9 @@ function gateSources(
                refused[persistSource.sourceID] = refusalRecord(
                   persistSource,
                   err,
-                  isRollup
-                     ? "preaggregate"
-                     : destination
-                       ? "storage"
-                       : "colocated",
+                  destination ? "storage" : "database",
                   compiled.tables[persistSource.sourceID]?.modelPath,
+                  compiled.tables[persistSource.sourceID]?.kind,
                );
                // A refused rollup never fails the run: the author asked for
                // nothing they can see.
@@ -229,7 +277,7 @@ function gateSources(
          }
          cleared.set(
             persistSource.sourceID,
-            destination ? "storage" : "colocated",
+            destination ? "storage" : "database",
          );
          sources.push({
             persistSource,
@@ -289,6 +337,7 @@ function labelOf(
    return sourceLabel(
       persistSource.name,
       rollup?.baseSourceName && rollup.grainDimensions ? rollup : undefined,
+      { persistedQuery: isPersistedQuerySourceID(persistSource.sourceID) },
    );
 }
 
@@ -375,6 +424,12 @@ function selfTableName(
 const READABLE_TAIL = /__p[0-9a-f]{8}$/;
 
 /**
+ * How a persisted query's readable name ended before its label dropped the
+ * build source's `__query` (`<query>__query`, sanitized to `<query>_query`).
+ */
+const LEGACY_QUERY_LABEL_END = "_query";
+
+/**
  * Whether a table an earlier run of this package built for the same source,
  * in the same destination, at `recorded`, keeps that name rather than taking
  * `fresh`: when `recorded` is a readable name this scheme gave it (all
@@ -402,6 +457,15 @@ function keepsReadableName(
       return false;
    }
    const head = (leaf: string) => leaf.replace(READABLE_TAIL, "");
+   // A persisted query's table named before its label dropped the build
+   // source's `__query` (`…__q_query__p…`): renamed, and rebuilt, once.
+   if (
+      isPersistedQuerySourceID(persistSource.sourceID) &&
+      head(was.leaf).endsWith(LEGACY_QUERY_LABEL_END) &&
+      !head(now.leaf).endsWith(LEGACY_QUERY_LABEL_END)
+   ) {
+      return false;
+   }
    // A `name=` that sets the prefix (under `scope: version`, or a rollup's
    // in any package) keeps the table's name only while the prefix is the
    // same; a readable name's own prefix (with `__`) stands for none.
@@ -486,12 +550,9 @@ function tableNameCollision(
             `answered live.`,
          reason: "table_name_collision",
       }),
-      compiled.tables[persistSource.sourceID]?.rollup
-         ? "preaggregate"
-         : destination
-           ? "storage"
-           : "colocated",
+      destination ? "storage" : "database",
       compiled.tables[persistSource.sourceID]?.modelPath,
+      compiled.tables[persistSource.sourceID]?.kind,
    );
 }
 
@@ -574,16 +635,10 @@ function tableNameDecision(
    previous: string | undefined;
    renaming: boolean;
    tableName: string;
-   /**
-    * A rollup's table an earlier run built under another readable name of
-    * this package's (its `name=` leaf changed), which this run renames:
-    * reclaimed once the run commits, as a pre-readable name is.
-    */
-   leafRenamed?: string;
 } {
    // Orchestrated builds use the host-supplied `physicalTableName`. A
    // storage build replaces its table atomically (`CREATE OR REPLACE` in
-   // ONE transaction), and a colocated one swaps it in, so a rebuild
+   // ONE transaction), and a database one swaps it in, so a rebuild
    // never empties the table it serves and no generation is needed.
    const named =
       !!naming &&
@@ -626,23 +681,6 @@ function tableNameDecision(
       )
          ? prior!.physicalTableName
          : fresh;
-   const leafRenamed =
-      naming &&
-      naming.ownedVersion === undefined &&
-      !!compiled.tables[persistSource.sourceID]?.rollup &&
-      sameDestination &&
-      !renaming &&
-      tableName === fresh &&
-      prior!.physicalTableName !== fresh &&
-      READABLE_TAIL.test(prior!.physicalTableName) &&
-      !takenByAnother(
-         persistSource,
-         destination,
-         prior!.physicalTableName,
-         sourceEntityId,
-      )
-         ? prior!.physicalTableName
-         : undefined;
    return {
       named,
       prior,
@@ -650,8 +688,102 @@ function tableNameDecision(
       previous,
       renaming,
       tableName,
-      ...(leafRenamed !== undefined ? { leafRenamed } : {}),
    };
+}
+
+/**
+ * The table an earlier run built for this source that the table this run
+ * builds (`built`, in `destination`) replaces, as a {@link RenamedTable}, or
+ * undefined when there is none or it may be the same table. The earlier
+ * table must be on the source's connection: a connection change is a new
+ * content address, and out of scope.
+ */
+function supersededTable(
+   prior: ManifestEntry | undefined,
+   persistSource: PersistSource,
+   sourceEntityId: string,
+   destination: string | undefined,
+   built: string,
+): RenamedTable | undefined {
+   if (!prior?.physicalTableName) return undefined;
+   if (prior.connectionName !== persistSource.connectionName) return undefined;
+   // The bare name a run built before package-owned names (the source's
+   // own name, unsuffixed), which another package on the same schema may
+   // have written since: not provably this package's, nor an author's
+   // name=, so neither reclaimed nor listed.
+   if (
+      !hasReservedTableSuffix(prior.physicalTableName) &&
+      mayBeOneTable(
+         tableNameParts(prior.physicalTableName).leaf,
+         persistSource.name,
+      )
+   ) {
+      return undefined;
+   }
+   const before = prior.storageDestinationName ?? undefined;
+   const moved = before !== destination;
+   if (!moved && mayBeOneTable(prior.physicalTableName, built)) {
+      return undefined;
+   }
+   return {
+      sourceEntityId,
+      sourceName: persistSource.name,
+      previousName: prior.physicalTableName,
+      physicalTableName: built,
+      connectionName: persistSource.connectionName,
+      ...(destination ? { storageDestinationName: destination } : {}),
+      ...(moved
+         ? {
+              previousPlace: before ? { storageDestinationName: before } : {},
+           }
+         : {}),
+   };
+}
+
+/**
+ * `renamed` less any old table this run writes or carries in the same place
+ * under a name that may be the same table: it is another source's now, or
+ * this source's own again, and never offered for a drop.
+ */
+function notWrittenThisRun(
+   renamed: RenamedTable[],
+   instructions: BuildInstruction[],
+   carried: Record<string, ManifestEntry>,
+   sources: ClearedSource[],
+): RenamedTable[] {
+   const connectionOf = new Map(
+      sources.map((s) => [s.sourceEntityId, s.persistSource.connectionName]),
+   );
+   const written = [
+      ...instructions.map((i) => ({
+         connectionName: connectionOf.get(i.sourceEntityId),
+         storageDestinationName: i.destination,
+         physicalTableName: i.physicalTableName,
+      })),
+      ...Object.values(carried).map((e) => ({
+         connectionName: e.connectionName,
+         storageDestinationName: e.storageDestinationName ?? undefined,
+         physicalTableName: e.physicalTableName,
+      })),
+   ];
+   return renamed.filter((t) => {
+      const where = previousDestinationOf(t);
+      return !written.some(
+         (w) =>
+            w.connectionName === t.connectionName &&
+            (w.storageDestinationName ?? undefined) === where &&
+            mayBeOneTable(w.physicalTableName, t.previousName),
+      );
+   });
+}
+
+/** The storage destination a {@link RenamedTable}'s earlier table is in, if any. */
+export function previousDestinationOf(
+   t: Pick<RenamedTable, "storageDestinationName" | "previousPlace">,
+): string | undefined {
+   return t.previousPlace
+      ? t.previousPlace.storageDestinationName
+      : t.storageDestinationName;
 }
 
 /**
@@ -742,24 +874,17 @@ export function deriveSelfInstructions(
       if (seen.has(sourceEntityId)) continue;
       seen.add(sourceEntityId);
 
-      const {
-         named,
-         prior,
-         sameDestination,
-         previous,
-         renaming,
-         tableName,
-         leafRenamed,
-      } = tableNameDecision(
-         compiled,
-         persistSource,
-         sourceEntityId,
-         destination,
-         priorEntries,
-         freshNames.get(sourceEntityId)!,
-         takenByAnother,
-         naming,
-      );
+      const { named, prior, sameDestination, previous, renaming, tableName } =
+         tableNameDecision(
+            compiled,
+            persistSource,
+            sourceEntityId,
+            destination,
+            priorEntries,
+            freshNames.get(sourceEntityId)!,
+            takenByAnother,
+            naming,
+         );
       if (naming && !named) {
          const key = tableKeyOf(
             persistSource.connectionName,
@@ -817,10 +942,10 @@ export function deriveSelfInstructions(
       // `name=` removed or changed, a v1 source moved to `#(materialize)`,
       // a table named before readable names, or the unsuffixed table a run
       // before package-owned names built, which another package on the same
-      // schema may have written since) is rebuilt under its name now; the
-      // old table stays with the runs that name it, and goes when they are
-      // deleted with their tables, or for a name Publisher gave it, once
-      // this run commits.
+      // schema may have written since) is rebuilt under its name now, and
+      // the old table is offered to the reclaim once this run commits
+      // (supersededTable), which drops it only when Publisher can prove it
+      // is its own.
       if (
          !deltaEligible &&
          !options.forceRefresh &&
@@ -842,15 +967,18 @@ export function deriveSelfInstructions(
          continue;
       }
 
-      if ((renaming && logicalName === tableName) || leafRenamed) {
-         renamed.push({
+      // The table this one replaces, decided once the run commits
+      // (Reclaimer.reclaimRenamedTables).
+      const superseded =
+         naming &&
+         supersededTable(
+            prior,
+            persistSource,
             sourceEntityId,
-            previousName: leafRenamed ?? previous!,
-            physicalTableName: tableName,
-            connectionName: persistSource.connectionName,
-            ...(destination ? { storageDestinationName: destination } : {}),
-         });
-      }
+            destination,
+            logicalName,
+         );
+      if (superseded) renamed.push(superseded);
       instructions.push(instruction);
    }
 
@@ -872,7 +1000,14 @@ export function deriveSelfInstructions(
       throw allSourcesRefusedError(refusals);
    }
 
-   return { instructions, carried, refused, cleared, recheck, renamed };
+   return {
+      instructions,
+      carried,
+      refused,
+      cleared,
+      recheck,
+      renamed: notWrittenThisRun(renamed, instructions, carried, sources),
+   };
 }
 
 /** What {@link rebuildStaleUpstreams} reads. */
@@ -956,7 +1091,7 @@ export function validateInstructions(
    runReseed = false,
 ): void {
    if (!plan) {
-      throw new BadRequestError(
+      throw new BuildInstructionsInvalidError(
          "Package has no persist sources; buildInstructions cannot be applied",
       );
    }
@@ -967,13 +1102,13 @@ export function validateInstructions(
 
    for (const instruction of instructions) {
       if (!plannedSourceEntityIds.has(instruction.sourceEntityId)) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Instruction references unknown sourceEntityId '${instruction.sourceEntityId}'`,
          );
       }
       // COPY-only for now; SNAPSHOT lands once clone semantics are defined.
       if (instruction.realization === "SNAPSHOT") {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             "realization=SNAPSHOT is not supported (COPY only)",
          );
       }
@@ -1036,7 +1171,7 @@ export function validateInstructions(
             ? `in storage destination '${entry.storageDestinationName}'`
             : `on connection '${entry.connectionName}'`);
       if (seen.has(key)) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry for table ${table} appears more than once`,
          );
       }
@@ -1057,20 +1192,20 @@ export function validateInstructions(
          if (entry.storageDestinationName === undefined && storedHere) {
             continue;
          }
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry names table ${table}, which this run's ` +
                `instructions do not build`,
          );
       }
       if (target.reseed) continue;
       if (target.refresh !== "incremental") {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry names table ${table}, whose source does not ` +
                `declare refresh="incremental"`,
          );
       }
       if (entry.sourceEntityId !== target.sourceEntityId) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry for table ${table} was measured under a ` +
                `different definition of its source (its sourceEntityId does ` +
                `not match the plan's) — expected after a publish or ` +

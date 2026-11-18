@@ -29,6 +29,11 @@ import {
 } from "./persist_source_fields";
 import type { SourceBuild } from "../domain/compiled_build_plan";
 import { notesDeclarePersist } from "./declaration";
+import { reachableSourceIDs } from "../text/source_map";
+import {
+   plannedModelDefOf,
+   sourceDefOf,
+} from "../../governance/ir/compiled_model";
 
 /** Project Malloy's targets for one connection into a {@link SourceBuild}. */
 function sourceBuildOf(
@@ -38,12 +43,9 @@ function sourceBuildOf(
    const order: string[] = [];
    const dependsOn: Record<string, string[]> = {};
    for (const target of build.targets) {
-      const reads = target.dependsOn.flatMap((t) =>
-         t.sources.map((s) => s.sourceID),
-      );
       for (const source of target.sources) {
          order.push(source.sourceID);
-         dependsOn[source.sourceID] = reads;
+         dependsOn[source.sourceID] = upstreamsOf(source, target);
       }
    }
    // Malloy reports an unbuildable source without the tables it reads.
@@ -53,6 +55,40 @@ function sourceBuildOf(
       dependsOn[source.sourceID] = [];
    }
    return { connectionName: build.connectionName, order, dependsOn };
+}
+
+/**
+ * The upstream sources `source` reads, of those its target depends on. Malloy
+ * groups same-SQL sources into one target and gives each target the union of
+ * its sources' upstream targets, so a target's dependency holds every source
+ * of the upstream target: a database twin and its `storage=` twin alike. Each
+ * upstream target is narrowed to the sources `source`'s own definition reaches
+ * ({@link reachableSourceIDs}); an upstream target none of whose sources it is
+ * seen to reach keeps every source, so an edge is never lost to a walk that
+ * could not read the definition.
+ */
+function upstreamsOf(source: PersistSource, target: BuildTarget): string[] {
+   const reached = reachedBy(source);
+   return target.dependsOn.flatMap((upstream) => {
+      const ids = upstream.sources.map((s) => s.sourceID);
+      if (reached === undefined) return ids;
+      const read = ids.filter((id) => reached.has(id));
+      return read.length > 0 ? read : ids;
+   });
+}
+
+/** The sourceIDs `source`'s definition reaches, or undefined when unreadable. */
+function reachedBy(source: PersistSource): Set<string> | undefined {
+   try {
+      const def = sourceDefOf(source as unknown as { _sourceDef: unknown });
+      if (def === undefined || def === null) return undefined;
+      return reachableSourceIDs(
+         [def],
+         plannedModelDefOf(source as { _model?: { _modelDef?: unknown } }),
+      );
+   } catch {
+      return undefined;
+   }
 }
 
 /**
@@ -326,8 +362,8 @@ export function compilerBuildId(
  * destination it declares with `storage=`, when
  * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` is on and
  * `PERSIST_STORAGE_MODE` is not `off` (off, `storage=` is inert and the source
- * builds colocated). Undefined for every colocated source, so turning the
- * switch on moves no colocated address (P12).
+ * builds in the database tier). Undefined for every database source, so turning the
+ * switch on moves no database address (P12).
  */
 export function addressDestination(source: PersistSource): string | undefined {
    if (!getPersistAddressIncludesDestination()) return undefined;
@@ -335,7 +371,7 @@ export function addressDestination(source: PersistSource): string | undefined {
    try {
       return declaredStorage(source);
    } catch {
-      // An unreadable annotation addresses as colocated.
+      // An unreadable annotation addresses as database.
       return undefined;
    }
 }
@@ -347,7 +383,7 @@ export function addressDestination(source: PersistSource): string | undefined {
  * of the same build names (or stores) another table
  * ({@link foldDistinctTableNames}). The target's `sql` carries no annotation
  * bytes, so without this a source moved to `storage=` would keep its
- * colocated address, and two `name=`s on one build would get one
+ * database address, and two `name=`s on one build would get one
  * table.
  *
  * The destination is derived here rather than passed in so every caller
@@ -406,7 +442,7 @@ export function declaresOwnPersist(source: PersistSource): boolean {
 
 /**
  * The columns a `storage=` build of `source` stores (as
- * projectToStoredColumns writes them), sorted; "" for a colocated source,
+ * projectToStoredColumns writes them), sorted; "" for a database source,
  * whose build writes its whole query, or one whose columns cannot be read
  * (its storage build refuses on its own).
  */
@@ -503,10 +539,19 @@ export function planAddressOf(
  * then sit on two addresses at one table, which is the author's collision,
  * reported, and refused by an auto-run (see sharedTables).
  *
- * So only an address that held sources naming or storing different tables
- * moves, and the result does not depend on build order. A source moves when
- * a same-build source naming another table is added or removed, so its table
- * is rebuilt once then.
+ * Likewise twins: two sources of one build in two places, one in its own
+ * warehouse and one with `storage=` (or two destinations), are two tables.
+ * Each `storage=` twin is addressed with its destination folded in and the
+ * database one keeps the plain address, so a run's manifest holds both and
+ * the database chain over the database twin is never handed the stored
+ * one. `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` folds every
+ * `storage=` destination in already, so there no twin shares an address.
+ *
+ * So only an address that held sources naming or storing different tables,
+ * or building in different places, moves, and the result does not depend on
+ * build order. A source moves when a same-build source naming another table
+ * (or building in another place) is added or removed, so its table is rebuilt
+ * once then.
  *
  * Names are compared as persistTableTarget compares them: case folded where
  * the destination folds it, and two names that may be one table
@@ -547,6 +592,7 @@ export function foldDistinctTableNames(
          stores: string;
          declaration: string;
          declares: boolean;
+         tier: string;
       }[]
    >();
    for (const [sourceID, table] of Object.entries(plan.tables)) {
@@ -590,6 +636,7 @@ export function foldDistinctTableNames(
          stores: rollup ? "" : storedProjection(source, storedColumns),
          declaration: declarationOf(source),
          declares: declaresOwnPersist(source),
+         tier: storedTierOf(source),
       });
       groups.set(address, group);
    }
@@ -600,7 +647,7 @@ export function foldDistinctTableNames(
       );
       const nameOf = (m: (typeof group)[number]) =>
          m.defaulted ? "" : tables.get(m.name)!;
-      // A colocated build stores its whole query, so only `storage=`
+      // A database build stores its whole query, so only `storage=`
       // sources are told apart by what they store, and only one declaration
       // from another: an extension that inherits its base's `#@ persist` is
       // its base's table, whatever it renames or adds.
@@ -623,17 +670,46 @@ export function foldDistinctTableNames(
       const storesOf = (m: (typeof group)[number]) =>
          m.stores === "" ? "" : declared.get(m.declaration)!.stores;
       const projections = new Set(group.map(storesOf).filter((p) => p !== ""));
-      const keyOf = (m: (typeof group)[number]) =>
+      // Twins: one SQL built in two places (database and `storage=`, or two
+      // destinations) are two tables, so each `storage=` member folds in its
+      // destination and the database one keeps the plain address. An address
+      // whose sources all build in one place never moves.
+      const tiers = new Set(group.map((m) => m.tier));
+      const tableOf = (m: (typeof group)[number]) =>
          storesOf(m) !== "" && projections.size > 1
             ? `${nameOf(m)}\u0000${storesOf(m)}`
             : nameOf(m);
+      const keyOf = (m: (typeof group)[number]) =>
+         tiers.size > 1 && m.tier !== ""
+            ? `${tableOf(m)}\u0003stored in: ${m.tier}`
+            : tableOf(m);
       if (new Set(group.map(keyOf)).size < 2) continue;
+      // When only where they build tells them apart (twins under one name,
+      // or none), only the stored twins move: the database twin keeps its
+      // plain address, whatever `name=` both declare.
+      const byTierOnly = new Set(group.map(tableOf)).size < 2;
       for (const member of group) {
+         if (byTierOnly && member.tier === "") continue;
          const key = keyOf(member);
          if (key) folds[member.sourceID] = key;
       }
    }
    return folds;
+}
+
+/**
+ * The storage destination a source builds into, "" for its own warehouse:
+ * its `storage=`, unless `PERSIST_STORAGE_MODE` is `off`, where a `storage=`
+ * source is not built at all (it is skipped and served live), so it is no
+ * twin of anything. An unreadable annotation reads as database.
+ */
+function storedTierOf(source: PersistSource): string {
+   if (getPersistStorageMode() === "off") return "";
+   try {
+      return declaredStorage(source)?.trim() ?? "";
+   } catch {
+      return "";
+   }
 }
 
 /**

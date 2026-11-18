@@ -3,7 +3,7 @@
 
 /**
  * A routed answer that writes again its run target's given-reading `where:`
- * terms (a `#(preaggregate)` rollup's variant, whose build left them out) is
+ * terms (a `#(rollup)` rollup's variant, whose build left them out) is
  * re-proven in `govern()`: the routed compile's run target must apply exactly
  * the given-reading terms the live run target does, by text. A routed form
  * that lost one, added one, or reads another would answer rows live refuses,

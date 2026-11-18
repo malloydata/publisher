@@ -45,6 +45,8 @@ source: accounts_src is duckdb.table('accounts') extend {
    dimension: area is region
    measure: n is count()
 }
+
+source: accounts_narrow is accounts_src extend { except: org_id }
 `;
 
 /** What the route knows before it runs; the same on every golden. */
@@ -250,7 +252,21 @@ describe("access record goldens, one per decision path", () => {
    it("denied by row level: the row filter's given is unbound", async () => {
       const record = await golden("run: accounts_src -> { aggregate: n }", {});
       const { error, ...rest } = record;
-      expect(rest).toEqual({ ...RECORD, outcome: "denied_lock", status: 403 });
+      expect(rest).toEqual({
+         ...RECORD,
+         outcome: "denied_filter",
+         status: 403,
+      });
+      expect(typeof error).toBe("string");
+   });
+
+   it("denied, failing closed: a row filter the entry point cannot express", async () => {
+      const record = await golden("run: accounts_narrow -> { aggregate: n }", {
+         ORGS: ["o1"],
+      } as never);
+      const { error, ...rest } = record;
+      // The row filter's refusal, as the row-level metric books it.
+      expect(rest).toMatchObject({ outcome: "denied_filter", status: 403 });
       expect(typeof error).toBe("string");
    });
 

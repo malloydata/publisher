@@ -58,7 +58,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PersistSource } from "@malloydata/malloy";
-import { BadRequestError } from "../../../errors";
+import { TableOwnershipError } from "../../../errors";
 import { logger } from "../../../logger";
 import { externalEnv } from "../../../settings/external";
 import type { Materialization } from "../../../storage/DatabaseInterface";
@@ -96,14 +96,7 @@ export const TABLE_OWNERSHIP_UNVERIFIED = "table-ownership-unverified";
  * something that is not this package's, or by something it cannot read.
  * `code` is one of the two codes above (an open string).
  */
-export class TableOwnershipError extends BadRequestError {
-   constructor(
-      readonly code: string,
-      message: string,
-   ) {
-      super(message);
-   }
-}
+export { TableOwnershipError };
 
 /**
  * One server's builds at the author's `name=`, serialized by name: two
@@ -434,6 +427,28 @@ export async function ownedElsewhere(
       // Unknown: the caller drops.
    }
    return undefined;
+}
+
+/**
+ * Whether a table (not a view) named `physicalTableName` exists at `site`,
+ * or undefined when the probe cannot tell (a dialect it cannot ask, or a
+ * failed probe). Never throws.
+ */
+export async function tableExistsAt(
+   site: Pick<TableSite, "dialect" | "segments" | "run">,
+   physicalTableName: string,
+): Promise<boolean | undefined> {
+   if (!tableOwnershipDialectSupported(site.dialect)) return undefined;
+   try {
+      const rows = await site.run(
+         ownedTableProbeSql(site.segments(physicalTableName), site.dialect),
+      );
+      return rows.some(
+         (row) => String(field(row, "kind") ?? "").toUpperCase() !== "VIEW",
+      );
+   } catch {
+      return undefined;
+   }
 }
 
 /**

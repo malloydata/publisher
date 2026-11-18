@@ -98,6 +98,20 @@ import {
 } from "./gcs_s3_utils";
 import { recordConnectionType } from "./connection_type";
 import {
+   allowForLockdown,
+   azureAllowPrefix,
+   clearAmbientS3Settings,
+   cloudStorageAllowPrefixes,
+   duckDBInstanceOf,
+   isConfigurationFrozen,
+   installDuckDBStatementLockdown,
+   isLockedByOptions,
+   lockDownDuckDBSession,
+   relativeReadEntries,
+   runAsInternalStatement,
+} from "./duckdb_lockdown";
+import { installDuckDBStatementGate } from "./duckdb_statement_gate";
+import {
    hardCloseOwnedDuckDBConnections,
    installDuckDBHardClose,
    ownDuckDBConnection,
@@ -107,9 +121,15 @@ import { quoteIdentifier } from "./quoting";
 
 // One DuckDB instance per database file (duckdb_instance_sharing.ts).
 installDuckDBInstanceSharing();
+// One statement at a time per DuckDB connection (duckdb_statement_gate.ts),
+// installed before the hard close so that counts queued statements.
+installDuckDBStatementGate();
 // Retired DuckDB connections free their native database at once
 // (duckdb_hard_close.ts).
 installDuckDBHardClose();
+// Statements a locked instance refuses, checked before any of the above
+// (duckdb_lockdown.ts).
+installDuckDBStatementLockdown();
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -246,8 +266,18 @@ export async function applySessionResourceLimits(
    connection: DuckDBConnection,
    { tempDirectory }: { tempDirectory?: string } = {},
 ): Promise<void> {
+   // A locked instance (duckdb_lockdown.ts) takes no SET: Malloy's locked
+   // tiers carry the memory limit and temp directory as options, and a
+   // networked instance was bounded before its lock.
+   if (isConfigurationFrozen(connection)) return;
    const memoryLimit = getDuckDBMemoryLimit();
-   const temp = tempDirectory ?? getDuckDBTempDirectory();
+   // A networked instance's own private temp directory (its options, which
+   // key its instance) is where it spills, unless the session names one.
+   const ownTemp = (
+      connection as unknown as { normalized?: { tempDirectory?: string } }
+   ).normalized?.tempDirectory;
+   const temp =
+      tempDirectory ?? (ownTemp ? undefined : getDuckDBTempDirectory());
    if (sessionLimitsApplied.has(connection)) {
       const applied = sessionLimitsApplied.get(connection);
       // Only a session-owned directory revises an earlier decision; the memory
@@ -307,6 +337,11 @@ export async function applyExtensionSessionSettings(
    if (!disableAutoinstall || extensionSessionPinned.has(connection)) {
       return;
    }
+   // A locked instance has auto-install off already (duckdb_lockdown.ts).
+   if (isConfigurationFrozen(connection)) {
+      extensionSessionPinned.add(connection);
+      return;
+   }
    try {
       await connection.runSQL("SET autoinstall_known_extensions=false;");
       // DuckDB's default, set explicitly so a baked extension still loads.
@@ -357,6 +392,11 @@ export async function installAndLoadExtension(
    try {
       await connection.runSQL(`LOAD ${extensionName};`);
       logger.info(`${extensionName} extension loaded`);
+      if (extensionName === "httpfs") {
+         // httpfs seeds the S3 settings from the AWS_* environment; blank them
+         // so no SQL on this session reads them back (duckdb_lockdown.ts).
+         await clearAmbientS3Settings(connection, { httpfsLoaded: true });
+      }
    } catch (error) {
       if (policy === "local-only") {
          const detail = error instanceof Error ? error.message : String(error);
@@ -1348,6 +1388,15 @@ async function attachDuckLakeWithMode(
          throw error;
       }
    }
+   if (!storage) {
+      // No storage secret: the catalog's data path is what its lock allows.
+      const root =
+         dataPath ||
+         (await recordedCatalogSettings(connection, dbName, metadataSchema)
+            .then((settings) => settings.data_path)
+            .catch(() => undefined));
+      if (root) allowForLockdown(connection, root);
+   }
    if (storage) {
       // The storage secret, scoped to the catalog's prefix. After the ATTACH,
       // which reaches the catalog database and no data file, so a catalog whose
@@ -1376,6 +1425,8 @@ async function attachDuckLakeWithMode(
             );
          }
          await attachCloudStorage(connection, storage, options.origin, scope);
+         // The lock allows exactly what the secret is scoped to.
+         allowForLockdown(connection, scope);
       } catch (error) {
          await connection
             .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)
@@ -2372,13 +2423,26 @@ async function attachCloudStorage(
       credentials.provider === "credential_chain" &&
       typeof renewable.setStorageSecretRenewer === "function"
    ) {
-      renewable.setStorageSecretRenewer(async () => {
+      const renewOn = async (target: DuckDBConnection) => {
          // Replaced in place on the live connection; no in-flight query is
-         // disturbed.
-         await connection.runSQL(
-            buildCloudStorageSecretSQL(secretName, credentials),
-         );
-      });
+         // disturbed. Admitted past a locked instance's secret gate for this
+         // one statement only (duckdb_lockdown.ts).
+         const sql = buildCloudStorageSecretSQL(secretName, credentials);
+         await runAsInternalStatement(sql, () => target.runSQL(sql));
+      };
+      renewable.setStorageSecretRenewer(() => renewOn(connection));
+      // The secret is the instance's: a later connection joining the locked
+      // instance, which runs no attach of its own, renews it the same way.
+      const instance = duckDBInstanceOf(connection);
+      if (instance) instanceSecretRenewers.set(instance, renewOn);
+   }
+
+   if (scope === undefined) {
+      // An attached database names no bucket: its reads are any URL of its
+      // scheme the secret reaches.
+      for (const prefix of cloudStorageAllowPrefixes(attachedDb.type ?? "")) {
+         allowForLockdown(connection, prefix);
+      }
    }
 
    logger.info(`Created ${storageType} secret: ${secretName}`);
@@ -2396,6 +2460,10 @@ async function attachAzureStorage(
    }
 
    const config = attachedDb.azureConnection;
+   const allowPrefix = azureAllowPrefix(
+      config.authType === "sas_token" ? config.sasUrl : config.fileUrl,
+   );
+   if (allowPrefix) allowForLockdown(connection, allowPrefix);
 
    // Extensions are loaded once in attachDatabasesToDuckDB.
    const secretName = sanitizeSecretName(`azure_${attachedDb.name}`);
@@ -3288,6 +3356,15 @@ function isDuckDBConnection(
    return connection instanceof DuckDBConnection;
 }
 
+/** Managed DuckLake connections that set their search path on a locked instance. */
+const managedSearchPathSet = new WeakSet<Connection>();
+
+/** Each instance's storage-secret renewer, for connections that join it. */
+const instanceSecretRenewers = new WeakMap<
+   object,
+   (target: DuckDBConnection) => Promise<void>
+>();
+
 /** Environment config builds so far, numbering each one's generation. */
 let environmentConfigGenerations = 0;
 
@@ -3366,6 +3443,10 @@ export function buildEnvironmentMalloyConfig(
          return;
       }
 
+      // A locked instance already holds this setup: its key digests the
+      // attached databases (duckdb_lockdown.ts), and no ATTACH could run on it.
+      if (isConfigurationFrozen(connection)) return;
+
       let attachPromise = attachPromises.get(connection);
       if (!attachPromise) {
          // One ATTACH run per connection object per config generation.
@@ -3404,9 +3485,14 @@ export function buildEnvironmentMalloyConfig(
                   duckLakeCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
+               // A locked instance holds this exact catalog setup (its key
+               // digests the DuckLake config, duckdb_lockdown.ts), and no
+               // ATTACH could run on it: an edit opens a fresh instance.
+               const frozen = isConfigurationFrozen(connection);
                if (
-                  isUpdateConnectionRequest ||
-                  !(await isDatabaseAttached(connection, name!))
+                  !frozen &&
+                  (isUpdateConnectionRequest ||
+                     !(await isDatabaseAttached(connection, name!)))
                ) {
                   await attachDuckLake(
                      connection,
@@ -3417,6 +3503,23 @@ export function buildEnvironmentMalloyConfig(
                         managed: metadata.apiConnection.managed === true,
                      },
                   );
+                  if (metadata.apiConnection.managed === true) {
+                     await setManagedSearchPath(connection, name!);
+                  }
+               } else if (frozen && !managedSearchPathSet.has(connection)) {
+                  managedSearchPathSet.add(connection);
+                  // A connection joining the locked instance renews the
+                  // instance's storage secret as the attaching one did.
+                  const renew = instanceSecretRenewers.get(
+                     duckDBInstanceOf(connection) ?? {},
+                  );
+                  if (renew) {
+                     connection.setStorageSecretRenewer(() =>
+                        renew(connection),
+                     );
+                  }
+                  // The search path is per session, and allowed after the
+                  // lock: a joining connection sets its own.
                   if (metadata.apiConnection.managed === true) {
                      await setManagedSearchPath(connection, name!);
                   }
@@ -3589,6 +3692,41 @@ export function buildEnvironmentMalloyConfig(
                // per-package sandbox is pinned in package.ts.)
                if (isDuckDBConnection(connection)) {
                   await applyExtensionSessionSettings(connection);
+                  // A networked instance's setup is done: lock it before any
+                  // caller or model SQL reaches it. Malloy locks the sandboxed
+                  // and local tiers itself (duckdb_lockdown.ts).
+                  if (!isLockedByOptions(connection)) {
+                     // A `duckdb` connection with attached databases still
+                     // reads its environment's local files, relative ones
+                     // included; a DuckLake catalog reads only its data path.
+                     const localRoot =
+                        metadata &&
+                        !metadata.isDuckLake &&
+                        metadata.attachedDatabases.length > 0
+                           ? metadata.workingDirectory
+                           : undefined;
+                     const relative = localRoot
+                        ? relativeReadEntries(localRoot)
+                        : { directories: [], files: [] };
+                     await lockDownDuckDBSession(connection, {
+                        ...(metadata?.apiConnection.type === "motherduck"
+                           ? { motherDuck: name ?? "motherduck" }
+                           : {}),
+                        allow: localRoot
+                           ? [localRoot, ...relative.directories]
+                           : [],
+                        // Its own database file, which checkpoints write.
+                        paths: [
+                           ...(metadata?.databasePath
+                              ? [
+                                   metadata.databasePath,
+                                   `${metadata.databasePath}.wal`,
+                                ]
+                              : []),
+                           ...relative.files,
+                        ],
+                     });
+                  }
                }
                // Its configured type, which a `storage=` build's eligibility
                // reads (a dialect does not tell DuckDB from DuckLake).
