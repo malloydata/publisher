@@ -380,8 +380,23 @@ class GateReadWalk {
          // over a string (`late is region > 'M'`) orders that string.
          if (!this.leavesNotString(f.e, source)) this.comparesNoString = false;
          const reads = fieldPathsIn(f.e);
-         // An expression that names no field it reads (a composite's field,
-         // resolved per member at compile) has no path a probe could read.
+         if (
+            reads.length === 0 &&
+            (f.e as { node?: unknown }).node === "compositeField" &&
+            f.type === "string"
+         ) {
+            // A composite's string field is resolved per member at compile:
+            // the probe reads the field itself, and each member's table holds
+            // it as a column under its name.
+            const flattened =
+               joins.length === 0
+                  ? []
+                  : along.map((n) => [...joins, n].join("__"));
+            this.columns.push([...new Set([...along, ...flattened])]);
+            return;
+         }
+         // Any other expression that names no field it reads has no path a
+         // probe could read.
          if (reads.length === 0) this.entryPathsComplete = false;
          for (const p of reads) {
             // The columns a computed field reads are what its comparison

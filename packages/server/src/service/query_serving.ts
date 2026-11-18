@@ -313,10 +313,19 @@ async function assertRowScopeExact(
    // A gated entry point's scope is judged by the gate policy, past the gate
    // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
    if (reads !== undefined && (!reads.scoped || reads.gated)) return;
+   // The tables the scope was judged on, so the path report names each one
+   // skipped for it (a database `#@ persist` table included).
+   const tableIds = tables.flatMap((t) => {
+      const handle = (t as { virtualHandle?: unknown }).virtualHandle;
+      return typeof handle === "string" ? [handle] : [];
+   });
    const decline = (why: string) =>
       leg === "served"
-         ? new LegDecline("served_copy_not_served", why)
-         : new LegDecline("rollup_row_level_gate", why, { shapeCheck: true });
+         ? new LegDecline("served_copy_not_served", why, { tableIds })
+         : new LegDecline("rollup_row_level_gate", why, {
+              shapeCheck: true,
+              tableIds,
+           });
    // The exactness rule is the served copy's; the rollup leg judges its own
    // stored columns (`storedRollupReads`), so it is asked only the
    // comparison rules below.
@@ -414,6 +423,7 @@ async function storedComparisonRefusal(
       virtualMap: answer.virtualMap,
       authorRunnable,
       reads,
+      ...(givens ? { givens } : {}),
    });
 }
 

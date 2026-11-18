@@ -264,6 +264,23 @@ describe("gateReads: compares no string", () => {
       expect(reads.comparesNoString).toBe(false);
    });
 
+   it("reads a composite's string field as the column each member holds", () => {
+      const composite = {
+         ...ORDERS,
+         fields: [
+            ...ORDERS.fields,
+            { name: "c_reg", type: "string", e: { node: "compositeField" } },
+         ],
+      };
+      const reads = gateReads(
+         { ...composite, filterList: [{ e: field(["c_reg"]) }] },
+         [],
+      );
+      expect(reads.entryPathsComplete).toBe(true);
+      expect(reads.comparesNoString).toBe(false);
+      expect(reads.columns).toContainEqual(["c_reg"]);
+   });
+
    it("does not hold for a where: over a dimension computed from a string", () => {
       const scoped = { ...ORDERS, filterList: [{ e: field(["is_m"]) }] };
       expect(gateReads(scoped, []).comparesNoString).toBe(false);
