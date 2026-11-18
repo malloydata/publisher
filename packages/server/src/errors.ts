@@ -131,8 +131,12 @@ export type ErrorReason =
    | "MATERIALIZATION_REFUSED"
    // 400: a build's `name=` is held by a table this package does not own.
    | "TABLE_OWNED_ELSEWHERE"
-   // 400: who holds a build's `name=` could not be read.
+   // 400: who holds a build's `name=` could not be read. Both answer 409
+   // instead on a caller's drop of a materialized table (MaterializedTableDropRefusedError).
    | "TABLE_OWNERSHIP_UNVERIFIED"
+   // 409: a caller's drop of a materialized table refused because a
+   // committed run of the package, or a loaded package's binding, names it.
+   | "TABLE_IN_USE"
    // 400: a materialization create's body or build instructions are not a
    // run this package can take (a field of the wrong shape, an unknown
    // source, a table named twice, a ledger entry that does not fit); the
@@ -1339,6 +1343,29 @@ export class MaterializationConflictError extends Error {
 }
 
 /**
+ * A caller's drop of a materialized table, refused: the table is in use
+ * (`TABLE_IN_USE`), another's (`TABLE_OWNED_ELSEWHERE`), or not provably the
+ * package's (`TABLE_OWNERSHIP_UNVERIFIED`). 409 with that `reason`: the
+ * table's state, not the request, refuses it. A build refused for the same
+ * ownership reasons answers 400 instead ({@link TableOwnershipError}).
+ */
+export class MaterializedTableDropRefusedError extends Error {
+   get kind(): "materialized_table_drop_refused" {
+      return "materialized_table_drop_refused";
+   }
+
+   constructor(
+      readonly reason:
+         | "TABLE_IN_USE"
+         | "TABLE_OWNED_ELSEWHERE"
+         | "TABLE_OWNERSHIP_UNVERIFIED",
+      message: string,
+   ) {
+      super(message);
+   }
+}
+
+/**
  * A write that found the file other than the caller expected: someone else
  * saved first (`expectedHash` no longer matches), or a create-only write
  * found a file already at the path (`reason` FILE_EXISTS, so a caller
@@ -1616,6 +1643,7 @@ interface ErrorByKind {
    off_surface: OffSurfaceError;
    materialization_not_found: MaterializationNotFoundError;
    materialization_conflict: MaterializationConflictError;
+   materialized_table_drop_refused: MaterializedTableDropRefusedError;
    write_conflict: WriteConflictError;
    installed_from_location: InstalledFromLocationError;
    write_rolled_back: WriteRolledBackError;
@@ -1702,6 +1730,7 @@ const ERROR_CLASSES: {
    off_surface: OffSurfaceError,
    materialization_not_found: MaterializationNotFoundError,
    materialization_conflict: MaterializationConflictError,
+   materialized_table_drop_refused: MaterializedTableDropRefusedError,
    write_conflict: WriteConflictError,
    installed_from_location: InstalledFromLocationError,
    write_rolled_back: WriteRolledBackError,
@@ -2135,6 +2164,11 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    materialization_conflict: {
       status: 409,
       reason: "MATERIALIZATION_CONFLICT",
+      mcp: { advice: "internal" },
+   },
+   materialized_table_drop_refused: {
+      status: 409,
+      reason: (error) => error.reason,
       mcp: { advice: "internal" },
    },
    invalid_state_transition: { status: 409, mcp: { advice: "internal" } },

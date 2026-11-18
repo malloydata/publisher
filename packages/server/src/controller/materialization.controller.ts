@@ -494,6 +494,28 @@ export class MaterializationController {
       );
    }
 
+   /**
+    * `drop-materialized-table`: drop one database-tier table a run of the
+    * package built on one of its connections, when Publisher can prove it
+    * is the package's and unused (MaterializationService.dropMaterializedTable).
+    * Answers nothing: 204 whether the table was dropped or was already gone.
+    */
+   async dropMaterializedTable(
+      environmentName: string,
+      packageName: string,
+      connectionName: string,
+      tableName: string,
+      options: { materializationId?: string; versionId?: VersionRef } = {},
+   ): Promise<void> {
+      await this.materializationService.dropMaterializedTable(
+         environmentName,
+         packageName,
+         connectionName,
+         tableName,
+         options,
+      );
+   }
+
    async deleteMaterialization(
       environmentName: string,
       packageName: string,

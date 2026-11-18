@@ -73,6 +73,12 @@ interface MaterializationPackage extends BuildPlanPackage {
     * address, which an incremental delta carries until a rebuild.
     */
    boundLateRows?(): ReadonlyMap<string, LateRows>;
+   /**
+    * The physical names of the database tables this copy is bound to now,
+    * as the bind wrote them (possibly quoted): a caller's drop refuses any of
+    * them (Reclaimer.dropConnectionTable).
+    */
+   boundTableNames?(): string[];
 }
 
 /** The part of an environment's version registry a run consults. */

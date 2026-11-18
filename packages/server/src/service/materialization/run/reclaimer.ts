@@ -17,6 +17,14 @@
  */
 
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
+import {
+   databaseAccessFailure,
+   InvalidArgumentError,
+   MaterializationConflictError,
+   MaterializationNotFoundError,
+   MaterializedTableDropRefusedError,
+   TableNotFoundError,
+} from "../../../errors";
 import { logger } from "../../../logger";
 import { UnquotableIdentifierError } from "../../quoting";
 import {
@@ -36,6 +44,7 @@ import {
    isVersionOwnedRun,
    newestServingEntries,
    readsRun,
+   tableIdentity,
    type ServingReader,
    tableNamesIn,
    WRITES_TABLES_KEY,
@@ -51,7 +60,9 @@ import {
 import { DatabaseTier } from "./database_build_strategy";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import {
+   backupSuffix,
    BuildEnvironment,
+   stagingSuffix,
    statementRunOptions,
    isActiveRun,
    redactConnectionSecrets,
@@ -64,8 +75,20 @@ import {
    type RecordedNameView,
 } from "./leftover_name_views";
 import { packageOwner } from "./table_mark_sql";
-import { ownedElsewhere, tableExistsAt } from "./table_ownership";
-import { atTableSite, type TableSiteContext } from "./table_site";
+import {
+   ownedElsewhere,
+   markedFor,
+   tableExistsAt,
+   type TableHolder,
+   withOwnedNameLock,
+} from "./table_ownership";
+import { ownedTableProbeSql } from "./warehouse_sql";
+import { dependedOn } from "./database_build_strategy";
+import {
+   atTableSite,
+   databaseTableSite,
+   type TableSiteContext,
+} from "./table_site";
 import { capabilitiesOf } from "../domain/dialect";
 import type { RunLifecycle } from "./run_lifecycle";
 import {
@@ -747,6 +770,88 @@ function keptAfter(
    };
 }
 
+/** The connection's config, for redacting its secrets; undefined for the sandbox. */
+function apiConnectionOf(
+   environment: MaterializationEnvironment,
+   connectionName: string,
+): unknown {
+   try {
+      return environment.getApiConnection(connectionName);
+   } catch {
+      return undefined;
+   }
+}
+
+/** The SQLSTATE an error, or one it wraps, carries; undefined for none. */
+function sqlStateOf(err: unknown): string | undefined {
+   for (let e: unknown = err, depth = 0; e && depth < 8; depth++) {
+      const code = (e as { code?: unknown }).code;
+      if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return code;
+      e = (e as { cause?: unknown }).cause;
+   }
+   return undefined;
+}
+
+/**
+ * A caller's drop the warehouse refused for a reason the caller can act on,
+ * answered with the reason it fits; undefined for any other failure (a 5xx).
+ * Objects that depend on the table (Postgres 2BP01, DuckDB's "depend on it"):
+ * `TABLE_IN_USE`. A connection not allowed to drop it (SQLSTATE 42501), or
+ * an object that is not a table (42809): `TABLE_OWNED_ELSEWHERE`, since the
+ * connection Publisher builds with does not hold it as a table of its own.
+ */
+function dropRefusalOf(
+   err: unknown,
+   where: string,
+): MaterializedTableDropRefusedError | undefined {
+   if (dependedOn(err)) {
+      return new MaterializedTableDropRefusedError(
+         "TABLE_IN_USE",
+         `Table ${where} is not dropped (TABLE_IN_USE): other objects in the ` +
+            `warehouse (a view, a foreign key) depend on it. Drop or repoint ` +
+            `them first.`,
+      );
+   }
+   const state = sqlStateOf(err);
+   // By SQLSTATE alone: a message that says "permission denied" may be a
+   // file the database could not write (DuckDB, DuckLake), a server error.
+   if (state === "42501") {
+      return new MaterializedTableDropRefusedError(
+         "TABLE_OWNED_ELSEWHERE",
+         `Table ${where} is not dropped (TABLE_OWNED_ELSEWHERE): the ` +
+            `connection may not drop it, so it is not a table this ` +
+            `package's builds own.`,
+      );
+   }
+   if (state === "42809") {
+      return new MaterializedTableDropRefusedError(
+         "TABLE_OWNED_ELSEWHERE",
+         `Table ${where} is not dropped (TABLE_OWNED_ELSEWHERE): the name ` +
+            `holds something other than a table, which no build of this ` +
+            `package makes.`,
+      );
+   }
+   return undefined;
+}
+
+/**
+ * Every reader that may serve from a package's runs: its unversioned slot,
+ * and each version the runs name, read as a `scope: package` version and as
+ * a `scope: version` one (which it is is the package's setting, not the
+ * run's). Over-wide on purpose: a reader that does not exist only keeps a
+ * table.
+ */
+function servingReadersOf(runs: Materialization[]): ServingReader[] {
+   const readers: ServingReader[] = [{}];
+   const versions = new Set(
+      runs.map((m) => m.version).filter((v): v is string => v !== null),
+   );
+   for (const v of versions) {
+      readers.push({ versionId: v }, { versionId: v, owned: v });
+   }
+   return readers;
+}
+
 /** A drop of a run's manifest entries; see {@link Reclaimer.dropManifestEntries}. */
 type DropManifestEntries = Reclaimer["dropManifestEntries"];
 
@@ -780,6 +885,17 @@ export class Reclaimer {
             environmentId: string,
             packageName: string,
             versionId: string | undefined,
+            fn: () => Promise<T>,
+         ) => Promise<T>;
+         /**
+          * Run `fn` under the package's table lock (TableClaims), which a
+          * version's run start takes for its active-run check. A caller's
+          * drop holds it under the package's lock, so no run of any version
+          * starts while it decides and drops. Absent: no lock (a spec's).
+          */
+         withTableLock?: <T>(
+            environmentId: string,
+            packageName: string,
             fn: () => Promise<T>,
          ) => Promise<T>;
       },
@@ -880,6 +996,408 @@ export class Reclaimer {
       if (pkg) return (name) => pkg.getMalloyConnection(name);
       return async (name) =>
          name === "duckdb" ? undefined : environment.getMalloyConnection(name);
+   }
+
+   /**
+    * A caller's drop of one database-tier table a materialization of the
+    * package built on `connection` (one the package reaches; resolved by the
+    * caller, outside every lock, since resolving may load the package). It
+    * refuses rather than skips, and says why: unlike a reclaim, nothing in
+    * Publisher's records asked for this drop.
+    *
+    * Decided and dropped under the package's lock and its table lock (so no
+    * run of any version starts) and then the name's owned-name lock (so no
+    * `name=` build claims it), in the run lock order (run/README.md), from a
+    * fresh read of the package's runs:
+    *
+    * 1. No run of the package is active: `MaterializationConflictError`.
+    *    A build's staging or backup copy of a table a run records is
+    *    refused (`InvalidArgumentError`): it is dropped with its table.
+    * 2. Not in use (`TABLE_IN_USE`): no committed run of the package, of any
+    *    version, other than `materializationId`'s names a table with this
+    *    table segment in any place (a name does not say where it is); the
+    *    run `materializationId` names is not the newest any version or the
+    *    package reads; and no loaded copy of any package in the environment
+    *    is bound to a table with this identity.
+    * 3. The package's (probed at the table's site): a table marked as
+    *    another package's, or a view Publisher did not make or another
+    *    package's, is `TABLE_OWNED_ELSEWHERE`. A table with no mark is
+    *    dropped only when the terminal run `materializationId` names records
+    *    exactly this table on this connection; otherwise, or when the probe
+    *    fails or the dialect cannot be asked, `TABLE_OWNERSHIP_UNVERIFIED`.
+    * 4. No table at the name: nothing to drop. "absent" when a terminal run
+    *    of the package records the table on this connection (a retried
+    *    drop), else `TableNotFoundError`: nothing proves it was ever the
+    *    package's.
+    *
+    * Then the table is dropped through the database tier, quoted as the
+    * build quoted it, with the staging and backup copies a crash can leave
+    * when a record names its source; counted (occasion `caller`) and
+    * logged; and its incremental boundary forgotten.
+    */
+   async dropConnectionTable(request: {
+      environment: MaterializationEnvironment;
+      environmentName: string;
+      environmentId: string;
+      packageName: string;
+      connectionName: string;
+      connection: MalloyConnection;
+      physicalTableName: string;
+      materializationId?: string;
+   }): Promise<"dropped" | "absent"> {
+      const { environment, environmentId, packageName, physicalTableName } =
+         request;
+      const withRunLock =
+         this.deps.withRunLock ??
+         (<T>(
+            _e: MaterializationEnvironment,
+            _i: string,
+            _p: string,
+            _v: string | undefined,
+            fn: () => Promise<T>,
+         ) => fn());
+      const withTableLock =
+         this.deps.withTableLock ??
+         (<T>(_i: string, _p: string, fn: () => Promise<T>) => fn());
+      return withRunLock(
+         environment,
+         environmentId,
+         packageName,
+         undefined,
+         () =>
+            withTableLock(environmentId, packageName, () =>
+               withOwnedNameLock(physicalTableName, async () => {
+                  const runs =
+                     (await this.repository.listMaterializations(
+                        environmentId,
+                        packageName,
+                     )) ?? [];
+                  const evidence = this.assertDroppable(request, runs);
+                  // A loaded copy's binding: read after the records, under the
+                  // lock no run's start or commit passes.
+                  await this.assertNotBound(request);
+                  return this.probeAndDrop(request, evidence);
+               }),
+            ),
+      );
+   }
+
+   /**
+    * Guards 1 and 2 of {@link dropConnectionTable} on the package's runs:
+    * throws when a run is active or a committed run names the table.
+    * Returns what the records say about the table: the run
+    * `materializationId` names, if it records it here, and the entry of any
+    * terminal run that does.
+    */
+   private assertDroppable(
+      request: Parameters<Reclaimer["dropConnectionTable"]>[0],
+      runs: Materialization[],
+   ): { namedRecordsIt: boolean; recorded?: ManifestEntry } {
+      const {
+         packageName,
+         connectionName,
+         physicalTableName,
+         materializationId,
+      } = request;
+      const active = runs.find((m) => isActiveRun(m.status));
+      if (active) {
+         throw new MaterializationConflictError(
+            `Run ${active.id} of package ${packageName} is ${active.status}; ` +
+               `drop the table once it settles.`,
+         );
+      }
+      const named =
+         materializationId === undefined
+            ? undefined
+            : runs.find((m) => m.id === materializationId);
+      if (materializationId !== undefined && !named) {
+         throw new MaterializationNotFoundError(
+            `Materialization ${materializationId} not found for package ${packageName}`,
+         );
+      }
+      const inUse = (why: string) =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_IN_USE",
+            `Table '${physicalTableName}' on connection '${connectionName}' ` +
+               `is not dropped (TABLE_IN_USE): ${why}. Delete or replace ` +
+               `that run first.`,
+         );
+      const namesIt = (e: ManifestEntry) =>
+         !!e.physicalTableName &&
+         mayBeOneTableAnywhere(e.physicalTableName, physicalTableName);
+      const committedNaming = runs.find(
+         (m) =>
+            m.id !== materializationId &&
+            m.status === "MANIFEST_FILE_READY" &&
+            Object.values(m.manifest?.entries ?? {}).some(namesIt),
+      );
+      if (committedNaming) {
+         throw inUse(
+            `committed run ${committedNaming.id} of the package names a ` +
+               `table '${physicalTableName}'`,
+         );
+      }
+      if (
+         named?.status === "MANIFEST_FILE_READY" &&
+         Object.values(named.manifest?.entries ?? {}).some(namesIt) &&
+         servingReadersOf(runs).some(
+            (reader) => newestServingRun(runs, reader)?.id === named.id,
+         )
+      ) {
+         throw inUse(
+            `run ${named.id} is the newest run the package or one of its ` +
+               `versions serves from`,
+         );
+      }
+      // A build's staging or backup copy goes with its table (its leftovers),
+      // never alone: a backup carries its table's mark, and the next build
+      // restores it.
+      // By table segment, as the in-use check compares: a copy reached
+      // under another container or case is still the copy.
+      const copyOf = runs
+         .flatMap((m) => reclaimableEntries(m))
+         .find(
+            (e) =>
+               e.physicalTableName &&
+               [stagingSuffix, backupSuffix].some((suffix) =>
+                  mayBeOneTableAnywhere(
+                     physicalTableName,
+                     `${e.physicalTableName}${suffix(e.sourceEntityId)}`,
+                  ),
+               ),
+         );
+      if (copyOf) {
+         throw new InvalidArgumentError(
+            `Table '${physicalTableName}' is the staging or backup copy of ` +
+               `'${copyOf.physicalTableName}', and is dropped with it: drop ` +
+               `'${copyOf.physicalTableName}' instead.`,
+         );
+      }
+      const recordsHere = (m: Materialization) =>
+         reclaimableEntries(m).find(
+            (e) =>
+               !e.storageDestinationName &&
+               e.connectionName === connectionName &&
+               e.physicalTableName === physicalTableName,
+         );
+      const namedEntry = named ? recordsHere(named) : undefined;
+      let recorded = namedEntry;
+      for (const m of runs) {
+         if (recorded) break;
+         if (!isActiveRun(m.status)) recorded = recordsHere(m);
+      }
+      return {
+         namedRecordsIt: namedEntry !== undefined,
+         ...(recorded ? { recorded } : {}),
+      };
+   }
+
+   /**
+    * Guard 2's bindings: no loaded copy of any package in the environment
+    * (its unversioned slot or a loaded version) is bound to a table with
+    * this identity. By identity alone, whatever the connection: an
+    * over-wide match only refuses.
+    */
+   private async assertNotBound(
+      request: Parameters<Reclaimer["dropConnectionTable"]>[0],
+   ): Promise<void> {
+      const { environment, environmentId, connectionName, physicalTableName } =
+         request;
+      const identity = tableIdentity(physicalTableName);
+      const copies: { label: string; names: string[] }[] = [];
+      for (const pkg of environment.getLoadedPackages()) {
+         copies.push({
+            label: `package '${pkg.getPackageName()}'`,
+            names: pkg.boundTableNames?.() ?? [],
+         });
+      }
+      const versions =
+         environment.getVersionService() === null
+            ? []
+            : await this.repository.listVersionsByEnvironment(environmentId);
+      for (const row of versions) {
+         const pkg = environment.peekVersion(row.packageName, row.versionId);
+         if (!pkg) continue;
+         copies.push({
+            label: `version ${row.versionId} of package '${row.packageName}'`,
+            names: pkg.boundTableNames?.() ?? [],
+         });
+      }
+      const bound = copies.find((c) =>
+         c.names.some((name) => tableIdentity(name) === identity),
+      );
+      if (bound) {
+         throw new MaterializedTableDropRefusedError(
+            "TABLE_IN_USE",
+            `Table '${physicalTableName}' on connection '${connectionName}' ` +
+               `is not dropped (TABLE_IN_USE): ${bound.label} is bound to a ` +
+               `table by that name and may be serving it. Rebind it (build ` +
+               `again, or delete the run it serves) first.`,
+         );
+      }
+   }
+
+   /** Guards 3 and 4 of {@link dropConnectionTable}, then the drop. */
+   private async probeAndDrop(
+      request: Parameters<Reclaimer["dropConnectionTable"]>[0],
+      evidence: { namedRecordsIt: boolean; recorded?: ManifestEntry },
+   ): Promise<"dropped" | "absent"> {
+      const {
+         environment,
+         environmentName,
+         environmentId,
+         packageName,
+         connectionName,
+         connection,
+         physicalTableName,
+         materializationId,
+      } = request;
+      const where = `'${physicalTableName}' on connection '${connectionName}'`;
+      const unverified = (why: string) =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_OWNERSHIP_UNVERIFIED",
+            `Table ${where} is not dropped (TABLE_OWNERSHIP_UNVERIFIED): ${why}.`,
+         );
+      const runOptions = statementRunOptions(environment, connectionName, {
+         queryClass: "ops",
+         environment: environmentName,
+         package: packageName,
+         ...(materializationId ? { runId: materializationId } : {}),
+      });
+      const site = databaseTableSite(connection, runOptions);
+      if (!capabilitiesOf(site.dialect).tableOwnership) {
+         throw unverified(
+            `whose it is cannot be read on dialect '${site.dialect}'`,
+         );
+      }
+      const owner = packageOwner(environmentName, packageName);
+      // The driver's text can name a host or echo SQL or a secret: logged
+      // redacted, never answered.
+      const redacted = (err: unknown) =>
+         redactConnectionSecrets(
+            errMessage(err),
+            apiConnectionOf(environment, connectionName),
+         );
+      let holder: TableHolder;
+      try {
+         const segments = site.segments(physicalTableName);
+         // A mark is proof only on the place it names, which the probe
+         // reads from the catalog wherever the name resolved: a renamed,
+         // moved or copied table carries its source's mark (markedFor).
+         holder = markedFor(
+            await site.run(ownedTableProbeSql(segments, site.dialect)),
+            owner,
+         );
+      } catch (err) {
+         logger.warn("Could not read who holds a table a caller would drop", {
+            environmentName,
+            packageName,
+            connectionName,
+            physicalTableName,
+            error: redacted(err),
+         });
+         throw unverified("whose it is could not be read (the probe failed)");
+      }
+      // Only this package's own leftover name= view, or nothing: no table.
+      if (holder.state === "free" || (holder.state === "ours" && holder.view)) {
+         if (evidence.recorded) return "absent";
+         throw new TableNotFoundError(
+            `No table ${where}, and no run of package ${packageName} records ` +
+               `one there.`,
+         );
+      }
+      if (holder.state === "taken") {
+         // Who holds it (another package's name, a view's) is logged, not
+         // answered: the caller learns only that it is not this package's.
+         logger.warn("Refused a caller's drop of a table another holds", {
+            environmentName,
+            packageName,
+            connectionName,
+            physicalTableName,
+            holder: holder.holder,
+         });
+         throw new MaterializedTableDropRefusedError(
+            "TABLE_OWNED_ELSEWHERE",
+            `Table ${where} is not dropped (TABLE_OWNED_ELSEWHERE): the name ` +
+               `is held by a table or view that is not package ` +
+               `${packageName}'s.`,
+         );
+      }
+      if (holder.state === "unmarked" && !evidence.namedRecordsIt) {
+         throw unverified(
+            materializationId === undefined
+               ? `it carries no Publisher ownership mark. Pass the ` +
+                    `materializationId of the run that built it, while that ` +
+                    `run's record exists`
+               : `it carries no Publisher ownership mark, and run ` +
+                    `${materializationId} does not record it on this connection`,
+         );
+      }
+      const leftoversOf = evidence.recorded?.sourceEntityId;
+      const tier = { connection, runOptions };
+      try {
+         // The table alone: what the answer reports on.
+         await DATABASE.drop(tier, { physicalTableName });
+      } catch (err) {
+         recordDropTables("failure", "database", "caller");
+         logger.warn(
+            "Failed to drop a materialized table at a caller's request",
+            {
+               environmentName,
+               packageName,
+               connectionName,
+               physicalTableName,
+               error: redacted(err),
+            },
+         );
+         throw (
+            dropRefusalOf(err, where) ??
+            databaseAccessFailure(err) ??
+            new Error(`Dropping table ${where} failed: ${redacted(err)}`)
+         );
+      }
+      recordDropTables("success", "database", "caller");
+      logger.info("Dropped a materialized table at a caller's request", {
+         environmentName,
+         packageName,
+         connectionName,
+         physicalTableName,
+         ...(materializationId ? { runId: materializationId } : {}),
+         mark: holder.state,
+      });
+      // Then the staging and backup copies a crashed build can leave,
+      // best-effort: the table is gone whatever comes of them, and a copy
+      // that cannot be dropped is logged and counted as a failed drop.
+      if (leftoversOf) {
+         for (const copy of [
+            `${physicalTableName}${stagingSuffix(leftoversOf)}`,
+            `${physicalTableName}${backupSuffix(leftoversOf)}`,
+         ]) {
+            await DATABASE.drop(tier, { physicalTableName: copy }).catch(
+               (err: unknown) => {
+                  recordDropTables("failure", "database", "caller");
+                  logger.warn(
+                     "Dropped a table at a caller's request, but not a build's leftover copy of it",
+                     {
+                        environmentName,
+                        packageName,
+                        connectionName,
+                        physicalTableName: copy,
+                        error: redacted(err),
+                     },
+                  );
+               },
+            );
+         }
+      }
+      await this.forgetBoundaries(environmentId, [
+         {
+            sourceEntityId: leftoversOf ?? "",
+            connectionName,
+            physicalTableName,
+         },
+      ]);
+      return "dropped";
    }
 
    /**

@@ -158,8 +158,12 @@ function quotedPath(segments: string[], dialect: DialectName): string {
 /**
  * A query answering what holds the name `segments` names: no row when
  * nothing does, otherwise one row per relation with `kind` (`VIEW` for a
- * view, anything else for a table) and `comment` (its comment, or null).
- * table_ownership.ts reads the answer. Refuses an unknown dialect.
+ * view, anything else for a table), `comment` (its comment, or null) and
+ * where the relation actually is, as the warehouse's own catalog spells it:
+ * `location_database` (absent on MySQL), `location_schema` and
+ * `location_name`, whatever schema search or default the name resolved
+ * through. table_ownership.ts reads the answer; an ownership mark names the
+ * location it was written at (relationLocationOf). Refuses an unknown dialect.
  */
 export function relationProbeSql(segments: string[], dialect: string): string {
    const lit = (v: string) => sqlString(v, dialect);
@@ -169,8 +173,10 @@ export function relationProbeSql(segments: string[], dialect: string): string {
       case "duckdb": {
          const match = (column: string) => duckdbNameMatch(segments, column);
          return (
-            `SELECT 'VIEW' AS kind, comment FROM duckdb_views() WHERE NOT internal AND ${match("view_name")} ` +
-            `UNION ALL SELECT 'TABLE' AS kind, comment FROM duckdb_tables() WHERE ${match("table_name")}`
+            `SELECT 'VIEW' AS kind, comment, database_name AS location_database, schema_name AS location_schema, view_name AS location_name ` +
+            `FROM duckdb_views() WHERE NOT internal AND ${match("view_name")} ` +
+            `UNION ALL SELECT 'TABLE' AS kind, comment, database_name AS location_database, schema_name AS location_schema, table_name AS location_name ` +
+            `FROM duckdb_tables() WHERE ${match("table_name")}`
          );
       }
       case "postgres":
@@ -181,7 +187,9 @@ export function relationProbeSql(segments: string[], dialect: string): string {
          return (
             `SELECT row_to_json(p) AS "row" FROM (` +
             `SELECT CASE c.relkind WHEN 'v' THEN 'VIEW' ELSE 'TABLE' END AS kind, ` +
-            `obj_description(c.oid, 'pg_class') AS comment FROM pg_class c ` +
+            `obj_description(c.oid, 'pg_class') AS comment, ` +
+            `current_database() AS location_database, n.nspname AS location_schema, c.relname AS location_name ` +
+            `FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace ` +
             `WHERE c.oid = to_regclass(${lit(quotedPath(segments, knownDialect))})) AS p`
          );
       case "standardsql": {
@@ -192,7 +200,8 @@ export function relationProbeSql(segments: string[], dialect: string): string {
          }
          const schema = `${quotedPath(segments.slice(0, -1), knownDialect)}.INFORMATION_SCHEMA`;
          return (
-            `SELECT t.table_type AS kind, o.option_value AS comment ` +
+            `SELECT t.table_type AS kind, o.option_value AS comment, ` +
+            `t.table_catalog AS location_database, t.table_schema AS location_schema, t.table_name AS location_name ` +
             `FROM ${schema}.TABLES t LEFT JOIN ${schema}.TABLE_OPTIONS o ` +
             `ON o.table_name = t.table_name AND o.option_name = 'description' ` +
             `WHERE t.table_name = ${lit(name)}`
@@ -209,7 +218,8 @@ export function relationProbeSql(segments: string[], dialect: string): string {
                ? "CURRENT_SCHEMA()"
                : lit(segments[segments.length - 2]);
          return (
-            `SELECT TABLE_TYPE AS "kind", COMMENT AS "comment" FROM ${from} ` +
+            `SELECT TABLE_TYPE AS "kind", COMMENT AS "comment", ` +
+            `TABLE_CATALOG AS "location_database", TABLE_SCHEMA AS "location_schema", TABLE_NAME AS "location_name" FROM ${from} ` +
             `WHERE TABLE_SCHEMA = ${schema} AND TABLE_NAME = ${lit(name)}`
          );
       }
@@ -229,12 +239,14 @@ export function relationProbeSql(segments: string[], dialect: string): string {
                  : "current_schema";
          if (knownDialect === "databricks") {
             return (
-               `SELECT table_type AS kind, comment FROM ${from} ` +
+               `SELECT table_type AS kind, comment, ` +
+               `table_catalog AS location_database, table_schema AS location_schema, table_name AS location_name FROM ${from} ` +
                `WHERE table_schema = ${schema} AND table_name = lower(${lit(name)})`
             );
          }
          return (
-            `SELECT t.table_type AS kind, c.comment AS comment FROM ${from} t ` +
+            `SELECT t.table_type AS kind, c.comment AS comment, ` +
+            `t.table_catalog AS location_database, t.table_schema AS location_schema, t.table_name AS location_name FROM ${from} t ` +
             `LEFT JOIN system.metadata.table_comments c ON c.catalog_name = t.table_catalog ` +
             `AND c.schema_name = t.table_schema AND c.table_name = t.table_name ` +
             `WHERE t.table_schema = ${schema} AND t.table_name = lower(${lit(name)})`
@@ -244,7 +256,8 @@ export function relationProbeSql(segments: string[], dialect: string): string {
          assertSqlServerShape(segments);
          return (
             `SELECT CASE o.type WHEN 'V' THEN 'VIEW' ELSE 'TABLE' END AS kind, ` +
-            `CAST(ep.value AS nvarchar(4000)) AS comment FROM sys.objects o ` +
+            `CAST(ep.value AS nvarchar(4000)) AS comment, ` +
+            `DB_NAME() AS location_database, SCHEMA_NAME(o.schema_id) AS location_schema, o.name AS location_name FROM sys.objects o ` +
             `LEFT JOIN sys.extended_properties ep ON ep.class = 1 AND ep.major_id = o.object_id ` +
             `AND ep.minor_id = 0 AND ep.name = N'MS_Description' ` +
             `WHERE o.object_id = OBJECT_ID(${lit(quotedPath(segments, knownDialect))})`
@@ -504,7 +517,8 @@ export function ownedTableProbeSql(
             ? lit(segments[segments.length - 2])
             : "DATABASE()";
       return (
-         `SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment FROM information_schema.TABLES ` +
+         `SELECT TABLE_TYPE AS kind, TABLE_COMMENT AS comment, ` +
+         `TABLE_SCHEMA AS location_schema, TABLE_NAME AS location_name FROM information_schema.TABLES ` +
          `WHERE TABLE_SCHEMA = ${schema} AND TABLE_NAME = ${lit(name)}`
       );
    }
@@ -518,7 +532,8 @@ export function ownedTableProbeSql(
             ? `${quoteTablePath(segments[0], dialect)}.information_schema.tables`
             : "information_schema.tables";
       return (
-         `SELECT table_type AS kind, CAST(NULL AS varchar) AS comment FROM ${from} ` +
+         `SELECT table_type AS kind, CAST(NULL AS varchar) AS comment, ` +
+         `table_catalog AS location_database, table_schema AS location_schema, table_name AS location_name FROM ${from} ` +
          `WHERE table_schema = ${schema} AND table_name = lower(${lit(name)})`
       );
    }

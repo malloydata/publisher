@@ -302,7 +302,7 @@ describe("materialization_metrics", () => {
             { outcome: "success", tier: "storage", occasion: "delete" },
          ),
       ).toBe(1);
-      expect(DROP_OCCASIONS).toEqual(["delete", "reclaim"]);
+      expect(DROP_OCCASIONS).toEqual(["delete", "reclaim", "caller"]);
       expect(
          await harness.collectCounter(
             "publisher_materialization_connection_digest_skipped_total",
