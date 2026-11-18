@@ -32,7 +32,12 @@ queries differently, and a replay of a new run's queries compared only 5 of 18
 with the record it followed. `eval.py routine --kind speed` replays the last
 record replay's queries for this reason, and `--baseline record` names that
 replay. A replay in which every query errored is marked `aborted`: it timed
-nothing, so it is never the record and is not shared.
+nothing, so it is never the record and is not shared. Nor is a replay of part
+of the queries (`--only`, `--slice`, `--tag`), one of a workload file
+(`--queries`), or one in which a stored answer changed rows or broke against
+its `--baseline`: it would become the next replay's baseline, and the change
+would read as settled. When the change is meant, replay once with no
+`--baseline` to start a new record.
 
 `--target-version 1.1.0` pins a published version on every request. REST can pin
 a version, unlike the MCP tools, so nothing has to be promoted to `latest`.

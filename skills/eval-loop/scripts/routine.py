@@ -218,9 +218,13 @@ class Routine:
             if check_set.ours(self.cfg, role, self.cfg.get(role, "port")):
                 continue          # already ours and up: use it, and leave it up
             code = self.do(f"serve {role}", "serve", role, *self.s)
+            # serve exits 2 (a package did not load) and 3 (retrieval not
+            # ready) with the server up and its pidfile kept. Left out of
+            # `started`, it outlived the routine and the next --serve reused it.
+            if code == 0 or check_set.ours(self.cfg, role, self.cfg.get(role, "port")):
+                self.started.append(role)
             if code != 0:
                 return code
-            self.started.append(role)
         return 0
 
     def stop(self) -> None:
@@ -228,16 +232,22 @@ class Routine:
             step(f"stop {role}", "serve", role, *self.s, "--stop")
 
     def share(self) -> None:
-        """Last, so the shared copy holds the diagnosis. A shared run never changes."""
+        """Last, so the shared copy holds the diagnosis. A shared run never changes.
+        Only a record is shared (run_index.not_a_record): a replay whose stored
+        answers changed rows stays here, so it never becomes the next baseline."""
+        import run_index
         import run_store
         if run_store.kind(self.cfg) is None:
             self.result["shared"] = "no [store]: the run stays in the workdir"
             return
+        why = run_index.why_not_record(self.cfg, self.run_dir)
+        if why:
+            self.result["shared"] = f"not shared: {why}"
+            print(f"\n  {self.result['shared']}")
+            return
         try:
-            run_store.after_run(self.cfg, self.run_dir, False)
-            held = self.label in run_store.listed(self.cfg) if run_store.can_list(self.cfg) else None
-            self.result["shared"] = ("in the store" if held else "not shared: not a record"
-                                     if held is False else "pushed (the store cannot list)")
+            print(run_store.push(self.cfg, self.run_dir))
+            self.result["shared"] = "in the store"
         except SystemExit as e:
             self.result["shared"] = f"not shared: {e}"
             print(f"\n! {self.result['shared']}")

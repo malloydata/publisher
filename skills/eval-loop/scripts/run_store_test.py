@@ -62,6 +62,7 @@ class Store(unittest.TestCase):
                        f'push = "mkdir -p {remote} && cp -R {{run}} {remote}/{{run_id}}"\n'
                        f'pull = "cp -R {remote}/{{run_id}} {{dest}}"\n'
                        f'list = "ls {remote}"\n')
+        remote.mkdir()
         r = self.make_run(cfg, "base")
         run_store.push(cfg, r)
         self.assertEqual(run_store.listed(cfg), ["base"])
@@ -69,13 +70,65 @@ class Store(unittest.TestCase):
         run_store.pull(cfg, "base")
         self.assertTrue((cfg.workdir() / "runs" / "base" / "run.json").exists())
 
-    def test_what_shares_itself(self):
-        full = {"status": "complete", "package": "p"}
-        self.assertTrue(run_store.is_record(full, 2, 2))
-        self.assertFalse(run_store.is_record(full, 2, 1))                         # partial
-        self.assertFalse(run_store.is_record({**full, "slice": {"name": "x"}}, 2, 2))
-        self.assertFalse(run_store.is_record({**full, "package": "p.exp"}, 2, 2, "p"))  # experiment
-        self.assertTrue(run_store.is_record({**full, "phase": "query-replay"}, 2, None))
+    def test_a_command_store_never_overwrites_a_name_it_lists(self):
+        remote = self.root / "remote"
+        remote.mkdir()
+        cfg = self.cfg('[store]\n'
+                       f'push = "cp -R {{run}} {remote}/{{run_id}}"\n'
+                       f'pull = "cp -R {remote}/{{run_id}} {{dest}}"\n'
+                       f'list = "ls {remote}"\n')
+        r = self.make_run(cfg, "base")
+        run_store.push(cfg, r)
+        self.assertIn("already in the store", run_store.push(cfg, r))
+        (r / "events.jsonl").write_text("another machine's run\n")
+        with self.assertRaises(SystemExit) as e:
+            run_store.push(cfg, r)
+        self.assertIn("different run named base", str(e.exception))
+        self.assertNotIn("another", (remote / "base" / "events.jsonl").read_text())
+
+    def test_a_command_store_with_no_list_pushes_nothing(self):
+        cfg = self.cfg(f'[store]\npush = "touch {self.root / "pushed"}"\n')
+        with self.assertRaises(SystemExit) as e:
+            run_store.push(cfg, self.make_run(cfg, "base"))
+        self.assertIn("no list command", str(e.exception))
+        self.assertFalse((self.root / "pushed").exists())
+
+    def test_a_copy_in_progress_is_not_a_run(self):
+        cfg = self.cfg(f'[store]\npath = "{self.root / "store"}"\n')
+        half = self.root / "store" / "s" / "runs" / ".base-x1y2"
+        half.mkdir(parents=True)
+        (half / "run.json").write_text("{}")
+        self.assertEqual(run_store.listed(cfg), [])
+        here = cfg.workdir() / "runs" / ".pull-base-x1y2"
+        here.mkdir(parents=True)
+        (here / "run.json").write_text('{"status": "complete"}')
+        import run_index
+        self.assertEqual(run_index.set_runs(cfg), [])
+
+    def test_a_failed_pull_leaves_nothing_and_is_tried_again(self):
+        remote = self.root / "remote"
+        (remote / "base").mkdir(parents=True)
+        (remote / "base" / "events.jsonl").write_text("")      # no run.json yet
+        cfg = self.cfg('[store]\n'
+                       f'pull = "cp -R {remote}/{{run_id}} {{dest}}"\n')
+        with self.assertRaises(SystemExit):
+            run_store.pull(cfg, "base")
+        self.assertEqual(list((cfg.workdir() / "runs").iterdir()), [])
+        (remote / "base" / "run.json").write_text('{"status": "complete"}')
+        self.assertEqual(run_store.pull(cfg, "base"), "pulled base")
+
+    def test_a_replay_that_changed_rows_stays_local(self):
+        import contextlib
+        import io
+        cfg = self.cfg(f'[store]\npath = "{self.root / "store"}"\n')
+        r = self.make_run(cfg, "perf-2", phase="query-replay")
+        (r / "summary.json").write_text(json.dumps({"compare": {
+            "baseline": "perf-1", "rows_changed": ["a"], "broke": []}}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            run_store.after_run(cfg, r, share=False)
+        self.assertIn("stays local: 1 stored answer(s) changed rows", out.getvalue())
+        self.assertEqual(run_store.listed(cfg), [])
 
     def test_no_store_means_nothing_to_sync(self):
         self.assertEqual(run_store.sync(self.cfg("")), [])

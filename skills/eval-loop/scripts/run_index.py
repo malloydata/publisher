@@ -52,6 +52,7 @@ from ledger import read_jsonl  # noqa: E402
 from publisher_rest import package_versions  # noqa: E402
 
 WORKING_COPY = "working copy"
+PERF_PHASE = "query-replay"
 UNPUBLISHED = "(unpublished)"
 
 
@@ -90,16 +91,82 @@ def experiment_of(package: str | None, main: str | None) -> str | None:
     return package[len(main) + 1:] if package.startswith(main + ".") else package
 
 
+def attempted(run: pathlib.Path) -> set[str]:
+    """The cases a run answered."""
+    return ({e["qid"] for e in read_jsonl(run / "events.jsonl") if e.get("kind") == "attempt"}
+            if (run / "events.jsonl").is_file() else set())
+
+
+def not_a_record(run: pathlib.Path, meta: dict[str, Any], n_cases: int | None,
+                 main_package: str | None) -> str | None:
+    """Why a run is not one the team compares against, or None when it is.
+
+    The one rule: the store's `after_run` shares by it and `record` picks
+    `--baseline record` by it, so a run is never shared as a record and then
+    passed over, or the reverse. A record is a complete run of the main line
+    (no experiment) over the whole set: every case for an answer run, and for
+    a query replay the stored queries, all of them, with no stored answer's
+    rows changed. A replay whose rows changed would otherwise become the
+    baseline the next replay compares with, and the change would read as
+    settled.
+    """
+    if meta.get("status") != "complete":
+        return f"it is {meta.get('status')!r}, not complete"
+    if experiment_of(meta.get("package"), main_package):
+        return f"it measured an experiment ({meta.get('package')})"
+    if meta.get("slice"):
+        return "it covered a slice of the cases"
+    if meta.get("phase") == PERF_PHASE:
+        if meta.get("mode") == "workload":
+            return "it timed a workload file, not the stored queries"
+        try:
+            c = json.loads((run / "summary.json").read_text()).get("compare") or {}
+        except (OSError, ValueError):
+            c = {}
+        if c.get("rows_changed") or c.get("broke"):
+            return (f"{len(c.get('rows_changed') or [])} stored answer(s) changed rows and "
+                    f"{len(c.get('broke') or [])} now error against {c.get('baseline')}. If the "
+                    f"change is meant, replay with no --baseline to start a new record")
+        return None
+    if not n_cases or len(attempted(run)) != n_cases:
+        return "it did not answer every case of the set"
+    return None
+
+
+def why_not_record(cfg: config.Config, run: pathlib.Path) -> str | None:
+    """`not_a_record` for a run of this set, read from its directory."""
+    try:
+        meta = json.loads((run / "run.json").read_text())
+    except (OSError, ValueError):
+        return "it has no readable run.json"
+    return not_a_record(run, meta, set_size(cfg), main_line(cfg))
+
+
+def set_size(cfg: config.Config) -> int | None:
+    cases = cfg.set_dir / "cases.jsonl"
+    return len(read_jsonl(cases)) if cases.is_file() else None
+
+
+def main_line(cfg: config.Config) -> str | None:
+    return cfg.get("model", "package") or cfg.set_meta.get("targetPackage")
+
+
+def run_dirs(runs_dir: pathlib.Path) -> list[pathlib.Path]:
+    """The run directories under `runs_dir`. A name starting with `.` is a copy
+    still in progress (a push or a pull writes there, then renames), never a run."""
+    return sorted(rj.parent for rj in runs_dir.glob("*/run.json")
+                  if not rj.parent.name.startswith("."))
+
+
 def runs(workdir: pathlib.Path, n_cases: int | None = None,
          main_package: str | None = None) -> list[dict[str, Any]]:
     """One row per run directory that holds a run.json, oldest first."""
     out = []
-    for rj in sorted((workdir / "runs").glob("*/run.json")):
+    for run in run_dirs(workdir / "runs"):
         try:
-            meta = json.loads(rj.read_text())
+            meta = json.loads((run / "run.json").read_text())
         except (OSError, ValueError):
             continue
-        run = rj.parent
         pv = meta.get("packageVersion") or {}
         row: dict[str, Any] = {
             "run": run.name, "path": str(run), "started": meta.get("started"),
@@ -117,7 +184,9 @@ def runs(workdir: pathlib.Path, n_cases: int | None = None,
             "answererModel": meta.get("answererModel"),
             "judgeModel": meta.get("judgeModel"),
         }
-        if meta.get("phase") == "query-replay":
+        why = not_a_record(run, meta, n_cases, main_package)
+        row["record"], row["notRecord"] = why is None, why
+        if meta.get("phase") == PERF_PHASE:
             row["kind"] = "perf"
             summary = {}
             try:
@@ -144,10 +213,9 @@ def runs(workdir: pathlib.Path, n_cases: int | None = None,
         else:
             row["kind"] = "slice" if meta.get("slice") else "run"
             row["passed"], row["decided"] = score_of(run)
-            attempted = {e["qid"] for e in read_jsonl(run / "events.jsonl")
-                         if e.get("kind") == "attempt"} if (run / "events.jsonl").is_file() else set()
-            row["cases"] = len(attempted)
-            row["full"] = bool(n_cases) and row["kind"] == "run" and len(attempted) == n_cases
+            answered = attempted(run)
+            row["cases"] = len(answered)
+            row["full"] = bool(n_cases) and row["kind"] == "run" and len(answered) == n_cases
         out.append(row)
     out.sort(key=lambda r: (r.get("started") or "", r["run"]))
     return out
@@ -155,21 +223,18 @@ def runs(workdir: pathlib.Path, n_cases: int | None = None,
 
 def set_runs(cfg: config.Config) -> list[dict[str, Any]]:
     """Every run in the set's workdir, with `full` decided against the set's cases."""
-    cases = cfg.set_dir / "cases.jsonl"
-    return runs(cfg.workdir(), len(read_jsonl(cases)) if cases.is_file() else None,
-                cfg.get("model", "package") or cfg.set_meta.get("targetPackage"))
+    return runs(cfg.workdir(), set_size(cfg), main_line(cfg))
 
 
 def record(rows: list[dict[str, Any]], kind: str = "run") -> dict[str, Any] | None:
-    """The run `--baseline record` names: the newest complete run of the main
-    line (no experiment), full for an answer run. `kind` is "run" or "perf".
+    """The run `--baseline record` names: the newest of `kind` ("run" or
+    "perf") that `not_a_record` passes.
 
     Not matched on datasetSha: a set edit that touched no case (a convention,
     a description) changes the sha, and a comparison already sets aside each
     case whose question or key changed.
     """
-    fits = [r for r in rows if r.get("status") == "complete" and not r.get("experiment")
-            and r["kind"] == kind and (kind != "run" or r.get("full"))]
+    fits = [r for r in rows if r.get("record") and r["kind"] == kind]
     return max(fits, key=lambda r: (r.get("started") or "", r["run"]), default=None)
 
 

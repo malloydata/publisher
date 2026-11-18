@@ -523,8 +523,13 @@ def replay(a: argparse.Namespace, cfg: config.Config) -> int:
         "latencyBand": a.band, "materialization": mat,
         "harnessVersion": ledger.skills_git_sha(),
     }
-    if picked:
-        pins["slice"] = picked
+    # Pinned so a replay of part of the stored queries, or of a workload file,
+    # is never taken for the record (run_index.not_a_record): the next replay
+    # would time that subset or that one day's queries as the fixed workload.
+    if picked or a.only:
+        pins["slice"] = picked or {"name": "only", "qids": sorted(set(a.only))}
+    if a.queries:
+        pins["mode"] = "workload"
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(**pins), indent=1) + "\n")
     (a.out / "rows").mkdir(exist_ok=True)
     for r in rows:

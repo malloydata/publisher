@@ -186,6 +186,12 @@ class Kinds(unittest.TestCase):
                                   {"query-replay": lambda: self.replay_run(self.run_dir, compare=blocked)})
         self.assertEqual((code, ran[-1]), (4, "history"))
         self.assertIn("1 stored answer(s) changed rows", r["reason"])
+        # Not shared, and not tomorrow's baseline: the change would read as settled.
+        self.assertIn("not shared: 1 stored answer(s) changed rows", r["shared"])
+        self.assertEqual(run_store.listed(run_store.config.load(self.set)), [])
+        import run_index
+        self.assertEqual(run_index.record(run_index.set_runs(run_store.config.load(self.set)),
+                                          "perf")["run"], "old-perf")
 
     def test_a_replay_in_which_every_query_errored_has_no_number(self):
         self.answer_run(self.work / "runs" / "base")
@@ -213,6 +219,12 @@ class Kinds(unittest.TestCase):
         with mock.patch("check_set.ours", return_value=False):
             code, ran, _, _ = self.go("quality", {"serve model": 1}, None, "--serve")
         self.assertEqual((code, ran), (1, ["serve model"]))
+
+    def test_a_server_left_up_by_a_failed_serve_is_still_stopped(self):
+        # serve exits 2 when a package did not load, with the server up.
+        with mock.patch("check_set.ours", side_effect=[False, True]):
+            code, ran, _, _ = self.go("quality", {"serve model": 2}, None, "--serve")
+        self.assertEqual((code, ran), (1, ["serve model", "stop model"]))
 
     def test_improve_mode_with_a_dirty_repository_stops_before_anything_runs(self):
         # Found live: a run and its diagnosis were paid for, and only then did

@@ -54,9 +54,13 @@ edit somebody will pay to reject again.
 
 "Nothing but the model changed" covers the judge, its prompt, the answerer, the
 turn cap and the effort: a run at `--max-turns 40` against a record made at 30
-is two changes. The two runs must be two runs: the same label named twice, or
-the baseline named as a candidate, is refused. It exits 0 when every rule
-holds, 1 when one does not, and 3 when it could not check at all.
+is two changes. The two runs must be two runs of one edit: the same label
+named twice, the baseline named as a candidate, or candidates whose model
+content differs (`packageVersion.contentHash`, `packageSha` or `modelSha` in
+run.json), is refused. So is any named run, candidate, baseline or `--aa`, that
+is not `complete`. A target case whose question or key changed since the
+baseline is set aside and listed, not counted as fixed. It exits 0 when every
+rule holds, 1 when one does not, and 3 when it could not check at all.
 
 - **Per-case, not aggregate.** No previously-passing case may regress: diff the
   new run's verdicts against the baseline, case by case (`jq` over the two

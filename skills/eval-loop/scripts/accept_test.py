@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Tests for accept.py: each rule it checks, failing for the reason it names."""
+import contextlib
+import io
 import json
 import pathlib
 import shutil
@@ -14,13 +16,13 @@ import accept  # noqa: E402
 import config  # noqa: E402
 
 
-def run(d: pathlib.Path, verdicts: dict, **pins) -> pathlib.Path:
+def run(d: pathlib.Path, verdicts: dict, shas: dict | None = None, **pins) -> pathlib.Path:
     d.mkdir(parents=True)
     (d / "run.json").write_text(json.dumps({"status": "complete", "judgeModel": "sonnet",
-                                            "modelGitSha": d.name, **pins}))
+                                            "modelGitSha": d.name, "modelSha": "m", **pins}))
     ev = []
     for q, v in verdicts.items():
-        ev += [{"kind": "attempt", "qid": q, "question_sha": "s"},
+        ev += [{"kind": "attempt", "qid": q, "question_sha": (shas or {}).get(q, "s")},
                {"kind": "score", "qid": q, "verdict": v}]
     (d / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in ev))
     return d
@@ -80,6 +82,18 @@ class Rules(unittest.TestCase):
                        run(self.runs / "b", good, datasetSha="new"))
         self.assertTrue(r["rules"]["one change"]["ok"])
 
+    def test_a_target_whose_question_changed_is_set_aside_not_fixed(self):
+        # The baseline failed `fix`; the candidates pass it under a new
+        # question. That is not the edit fixing it, so it is no target.
+        good = {"fix": "match", "keep": "match", "held": "match"}
+        r = self.check(run(self.runs / "a", good, shas={"fix": "s2"}),
+                       run(self.runs / "b", good, shas={"fix": "s2"}))
+        self.assertEqual((r["targets"], r["targetsFixed"], r["setAsideTargets"], r["setAside"]),
+                         ([], [], ["fix"], ["fix"]))
+        self.assertFalse(r["rules"]["targets fixed"]["ok"])
+        self.assertIn("set aside", r["rules"]["targets fixed"]["detail"])
+        self.assertFalse(r["accepted"])
+
     def test_a_doubted_golden_halts_it(self):
         good = {"fix": "match", "keep": "match", "held": "match"}
         r = self.check(run(self.runs / "a", good, doubtedGoldens=[{"qid": "held"}]),
@@ -110,6 +124,32 @@ class OneRunIsNotTwo(unittest.TestCase):
 
     def test_a_missing_run_exits_3_not_1(self):
         self.assertEqual(self.main("--run", "nope", "--run", "nope2"), 3)
+
+    def test_two_runs_of_different_edits_cannot_be_checked(self):
+        good = {"fix": "match", "keep": "match", "held": "match"}
+        run(self.runs / "a", good, modelSha="edit-A"), run(self.runs / "b", good, modelSha="edit-B")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.main("--run", "a", "--run", "b", "--no-record"), 3)
+        self.assertIn("modelSha is edit-A in a, edit-B in b", err.getvalue())
+
+    def test_candidates_with_no_content_pin_cannot_be_checked(self):
+        good = {"fix": "match", "keep": "match", "held": "match"}
+        run(self.runs / "a", good, modelSha=None), run(self.runs / "b", good, modelSha=None)
+        self.assertEqual(self.main("--run", "a", "--run", "b", "--no-record"), 3)
+
+    def test_a_run_that_did_not_finish_cannot_be_checked(self):
+        good = {"fix": "match", "keep": "match", "held": "match"}
+        run(self.runs / "a", good), run(self.runs / "b", good, status="incomplete")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.main("--run", "a", "--run", "b", "--no-record"), 3)
+        self.assertIn("b is 'incomplete', not complete", err.getvalue())
+        # a named baseline is held to the same rule
+        run(self.runs / "c", good)
+        shutil.rmtree(self.base)
+        run(self.base, {"fix": "no_match", "keep": "match", "held": "match"}, status="incomplete")
+        self.assertEqual(self.main("--run", "a", "--run", "c", "--no-record"), 3)
 
     def test_two_runs_that_hold_exit_0(self):
         good = {"fix": "match", "keep": "match", "held": "match"}

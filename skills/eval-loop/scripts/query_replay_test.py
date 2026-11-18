@@ -316,6 +316,8 @@ class Replay(unittest.TestCase):
         self.assertEqual((s["total_ms"], s["weighted_ms"]), (24.0, 72.0))   # 12 ms each: 5 + 1
         self.assertEqual(s["by_source"]["orders"]["weighted_ms"], 60.0)
         self.assertEqual(json.loads((d / "run.json").read_text())["fromRun"], "day.jsonl")
+        # one day's queries are not the stored workload, so never the record
+        self.assertIsNone(ri.record(ri.set_runs(qr.config.load(self.set)), "perf"))
         # the same file tomorrow names its queries the same, so the two compare
         again = qr.workload(wl, "m.malloy")
         self.assertEqual(sorted(q["qid"] for q in again), sorted(r["qid"] for r in rows))
@@ -361,6 +363,16 @@ class Replay(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual([json.loads(x)["qid"] for x in (d / "results.jsonl").read_text().splitlines()],
                          ["q1"])
+
+    def test_a_replay_of_some_queries_is_never_the_record(self):
+        code, _, d = self.replay("perf-o", "--only", "q2")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads((d / "run.json").read_text())["slice"],
+                         {"name": "only", "qids": ["q2"]})
+        self.assertIsNone(ri.record(ri.set_runs(qr.config.load(self.set)), "perf"))
+        self.replay("perf-all")
+        self.assertEqual(ri.record(ri.set_runs(qr.config.load(self.set)), "perf")["run"],
+                         "perf-all")
 
     def test_versions_shows_each_versions_replay_and_the_speed_between(self):
         w = self.root / "w"

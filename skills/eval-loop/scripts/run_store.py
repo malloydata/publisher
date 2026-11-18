@@ -30,7 +30,12 @@ The rules are the same whichever it is:
 - `eval.py run` pushes a full run of the main line by itself when a store is
   set, and `query-replay` pushes a replay of the main line. Those are the
   team's record. A slice, an experiment or a partial replay stays local unless
-  run with `--share`.
+  run with `--share`. What counts as a record is one rule,
+  `run_index.not_a_record`, and `--baseline record` reads the same rule.
+- A command store checks its `list` before pushing, and pulls a run listed
+  under the same name to compare it. Two machines pushing one name at the
+  same moment can still both pass that check; only a push command that
+  refuses to overwrite closes it.
 """
 from __future__ import annotations
 
@@ -43,7 +48,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "eval-answer" / "scripts"))
@@ -100,6 +104,14 @@ def push(cfg: config.Config, run: pathlib.Path) -> str:
     if k == "command":
         if not cfg.get("store", "push"):
             raise SystemExit(f"[store] in {cfg.file_hint} has no push command")
+        # A push command overwrites whatever is under the name (`aws s3 sync`
+        # does), so the name is checked first. Without `list` it cannot be.
+        if not can_list(cfg):
+            raise SystemExit("nothing pushed: " + NO_LIST.format(hint=cfg.file_hint)
+                             + ". A shared run never changes, and without a list the "
+                               "store cannot say whether the name is taken")
+        if run.name in listed(cfg):
+            return held_already(cfg, run)
         shell(cfg.get("store", "push"), run=str(run), run_id=run.name, set=cfg.set_name)
         return f"pushed {run.name} with the store's push command"
     dest = folder(cfg) / run.name
@@ -113,6 +125,21 @@ def push(cfg: config.Config, run: pathlib.Path) -> str:
     shutil.copytree(run, tmp, dirs_exist_ok=True, ignore=shutil.ignore_patterns("export"))
     tmp.rename(dest)          # whole or not at all: a reader never sees half a run
     return f"pushed {run.name} to {dest}"
+
+
+def held_already(cfg: config.Config, run: pathlib.Path) -> str:
+    """The command store lists a run under this name: the same run, or refused."""
+    if not cfg.get("store", "pull"):
+        raise SystemExit(f"the store already holds a run named {run.name}, and with no pull "
+                         f"command in {cfg.file_hint} it cannot be compared. A shared run never "
+                         f"changes. Fix: run again under another --label")
+    with tempfile.TemporaryDirectory() as t:
+        there = pathlib.Path(t) / run.name
+        shell(cfg.get("store", "pull"), run_id=run.name, dest=str(there), set=cfg.set_name)
+        if content_sha(there) != content_sha(run):
+            raise SystemExit(f"the store already holds a different run named {run.name}. A "
+                             f"shared run never changes. Fix: run again under another --label")
+    return f"{run.name} is already in the store"
 
 
 def can_list(cfg: config.Config) -> bool:
@@ -129,8 +156,9 @@ def listed(cfg: config.Config) -> list[str]:
     k = kind(cfg)
     if k == "folder":
         d = folder(cfg)
-        return sorted(p.name for p in d.iterdir()
-                      if (p / "run.json").exists()) if d.is_dir() else []
+        # A dot name is a push still copying, or one that crashed: never a run.
+        return sorted(p.name for p in d.iterdir() if not p.name.startswith(".")
+                      and (p / "run.json").exists()) if d.is_dir() else []
     if k == "command" and cfg.get("store", "list"):
         return sorted(filter(None, (x.strip() for x in
                                     shell(cfg.get("store", "list"), set=cfg.set_name).splitlines())))
@@ -142,18 +170,26 @@ def pull(cfg: config.Config, run_id: str) -> str:
     if dest.exists():
         return f"{run_id} is already here"
     k = kind(cfg)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if k == "folder":
-        src = folder(cfg) / run_id
-        if not (src / "run.json").exists():
-            raise SystemExit(f"the store has no run {run_id} ({folder(cfg)})")
-        shutil.copytree(src, dest)
-    elif k == "command" and cfg.get("store", "pull"):
-        shell(cfg.get("store", "pull"), run_id=run_id, dest=str(dest), set=cfg.set_name)
-        if not (dest / "run.json").exists():
-            raise SystemExit(f"the pull command ran but {dest} holds no run.json")
-    else:
+    if not (k == "folder" or (k == "command" and cfg.get("store", "pull"))):
         raise SystemExit(f"no way to pull: [store] in {cfg.file_hint} has no path or pull command")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Copied beside the runs under a dot name, then renamed: `dest` exists only
+    # whole, so a pull that fails leaves nothing and the next one tries again.
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix=f".pull-{run_id}-", dir=dest.parent))
+    try:
+        got = tmp / run_id
+        if k == "folder":
+            src = folder(cfg) / run_id
+            if not (src / "run.json").exists():
+                raise SystemExit(f"the store has no run {run_id} ({folder(cfg)})")
+            shutil.copytree(src, got)
+        else:
+            shell(cfg.get("store", "pull"), run_id=run_id, dest=str(got), set=cfg.set_name)
+            if not (got / "run.json").exists():
+                raise SystemExit(f"the pull command ran but left no run.json for {run_id}")
+        got.rename(dest)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return f"pulled {run_id}"
 
 
@@ -176,33 +212,16 @@ def sync(cfg: config.Config, quiet: bool = False) -> list[str]:
     return new
 
 
-def is_record(meta: dict[str, Any], n_cases: int | None, attempted: int | None,
-              main_package: str | None = None) -> bool:
-    """Does this run share itself? A complete run of the main line (the set's own
-    package, not an experiment): a full answer run, or a query replay of every
-    stored query."""
-    if meta.get("status") != "complete" or (main_package and meta.get("package")
-                                            and meta["package"] != main_package):
-        return False
-    if meta.get("phase") == "query-replay":
-        return not meta.get("slice")
-    return not meta.get("slice") and bool(n_cases) and attempted == n_cases
-
-
 def after_run(cfg: config.Config, run: pathlib.Path, share: bool) -> None:
     """Push a just-finished run when it is a record, or when asked to."""
     if kind(cfg) is None or not (run / "run.json").exists():
         return
-    meta = json.loads((run / "run.json").read_text())
-    from ledger import read_jsonl
-    cases = cfg.set_dir / "cases.jsonl"
-    n = len(read_jsonl(cases)) if cases.exists() else None
-    attempted = len({e["qid"] for e in read_jsonl(run / "events.jsonl")
-                     if e.get("kind") == "attempt"}) if (run / "events.jsonl").exists() else None
-    if share or is_record(meta, n, attempted, cfg.get("model", "package")):
+    import run_index
+    why = run_index.why_not_record(cfg, run)
+    if share or why is None:
         print(push(cfg, run))
     else:
-        print(f"  {run.name} stays local (a slice, an experiment or a partial run). "
+        print(f"  {run.name} stays local: {why}. "
               f"Share it with: eval.py push --set {cfg.set_dir} --label {run.name}")
 
 

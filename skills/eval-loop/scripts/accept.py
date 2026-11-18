@@ -7,8 +7,9 @@
 It checks what reference/acceptance-check.md states as rules and a script can
 decide, over the cases the candidate runs answered:
 
-  twice        at least two different candidate runs (the same run named twice,
-               or the baseline named as a candidate, is refused)
+  twice        at least two different candidate runs of one model (the same
+               run named twice, the baseline named as a candidate, or
+               candidates whose model content differs, is refused)
   no regression  no case passing in the baseline fails in any candidate run
   targets fixed  every target case passes in every candidate run (default
                targets: the cases the baseline did not pass)
@@ -27,6 +28,10 @@ default target and a named one is not required to pass. A regression on one is
 not evidence either, so it does not fail the edit. Both are listed. With no
 second run, noise is not measured, the check says so, and every case counts.
 
+A case whose question or key changed since the baseline is SET ASIDE: it is
+in no rule, and as a target it is dropped and listed, so a key correction
+alone never reads as a fix.
+
 A case on the `test` split is left out of every rule. It is the number that is
 reported, so no decision may be made on it.
 
@@ -38,7 +43,8 @@ It decides nothing a rule cannot: a judge's verdict is taken as given, a
 suspect golden still halts the check (read `doubtedGoldens` in run.json), and
 whether a fix clears the flip-count bar for its size (measurement.md) is yours.
 Exit 0 when every rule holds, 1 when one does not, 3 when it could not check
-(a run that is not there, the same run named twice).
+(a run that is not there or did not finish, the same run named twice,
+candidates that served different models).
 The result is written to <workdir>/acceptances/, with a checkpoint commit
 message that names the runs.
 """
@@ -91,6 +97,12 @@ def resolve(cfg: config.Config, name: str, kind: str = "run") -> pathlib.Path:
     p = p if p.is_dir() else cfg.workdir() / "runs" / name
     if not (p / "run.json").exists():
         raise CannotCheck(f"no run at {p}")
+    # A run that did not finish (`latest` moved mid-run, cases left open after
+    # --recover) is not a measurement of anything, whoever named it.
+    status = run_config(p).get("status")
+    if status != "complete":
+        raise CannotCheck(f"{p.name} is {status!r}, not complete, so it measures nothing. "
+                          f"Fix: name a run that finished, or run it again")
     return p
 
 
@@ -107,6 +119,35 @@ def distinct(baseline: pathlib.Path, candidates: list[pathlib.Path]) -> None:
                               f"its own answers. Fix: run the edit a second time under "
                               f"another --label and name both")
         seen[r] = c.name
+
+
+# The pins that name the model's bytes, by name and how to read each.
+MODEL_CONTENT = (
+    ("packageVersion.contentHash", lambda r: (r.get("packageVersion") or {}).get("contentHash")),
+    ("packageSha", lambda r: r.get("packageSha")),
+    ("modelSha", lambda r: r.get("modelSha")))
+
+
+def one_model(candidates: list[pathlib.Path]) -> None:
+    """Refuse candidates that served different models. "Twice" is two runs of ONE
+    edit: a run of edit A and a run of edit B are one measurement of each.
+
+    Compared on every content pin all the candidates recorded. `modelGitSha` is
+    not one: the commit moves with unrelated changes in the repository.
+    """
+    shared = [(k, [get(run_config(c)) for c in candidates]) for k, get in MODEL_CONTENT]
+    shared = [(k, vs) for k, vs in shared if None not in vs]
+    if not shared:
+        raise CannotCheck(f"none of {', '.join(c.name for c in candidates)} records the model's "
+                          f"content ({', '.join(k for k, _ in MODEL_CONTENT)}), so they cannot "
+                          f"be shown to be runs of one edit. Fix: run the edit with "
+                          f"eval.py run, which records modelSha")
+    for k, vs in shared:
+        if len(set(vs)) > 1:
+            raise CannotCheck(f"the candidates served different models: {k} is "
+                              + ", ".join(f"{v} in {c.name}" for c, v in zip(candidates, vs))
+                              + ". Two runs of one edit share it. Fix: name runs of the same "
+                                "edit, or run this edit a second time")
 
 
 def same_measurement(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -159,20 +200,24 @@ def check(cfg: config.Config, baseline: pathlib.Path, candidates: list[pathlib.P
     runs = {c.name: decided_on(verdicts(c)) for c in candidates}
     answered = sorted(set().union(*[set(v) for v in runs.values()]))
     unstable = set(unstable_cases(B, decided_on(verdicts(aa)))) if aa else set()
+    # A case whose question or key changed since the baseline compares with
+    # nothing. As a target, a key correction alone would read as a fix.
+    moved = {name: incomparable(B, C) for name, C in runs.items()}
+    set_aside = set().union(*[set(m) for m in moved.values()])
     named = targets is not None
     if targets is None:
         targets = [q for q in answered if q in B and not B[q]["passed"]]
     unstable_targets = sorted(q for q in targets if q in unstable)
-    targets = [q for q in targets if q not in unstable and q not in held_out]
+    set_aside_targets = sorted(q for q in targets if q in set_aside)
+    targets = [q for q in targets
+               if q not in unstable and q not in held_out and q not in set_aside]
     rules: dict[str, dict[str, Any]] = {}
     rules["twice"] = {"ok": len(candidates) >= 2,
                       "detail": f"{len(candidates)} candidate run(s)"}
-    regressions, unfixed, set_aside, noise = [], [], set(), []
+    regressions, unfixed, noise = [], [], []
     for name, C in runs.items():
-        moved = incomparable(B, C)
-        set_aside |= set(moved)
         for q in C:
-            if q in moved or q not in B:
+            if q in moved[name] or q not in B:
                 continue
             if B[q]["passed"] and C[q]["passed"] is False:
                 (noise if q in unstable else regressions).append(f"{q} in {name}")
@@ -186,9 +231,10 @@ def check(cfg: config.Config, baseline: pathlib.Path, candidates: list[pathlib.P
                               "detail": (", ".join(unfixed) if unfixed else
                                          f"{len(targets)} target(s) pass in every run")
                               if targets else (
-                                  "every target is unstable: it passes or fails with "
-                                  "nothing changed, so passing now shows nothing"
-                                  if unstable_targets else
+                                  "every target is unstable or set aside: it passes or "
+                                  "fails with nothing changed, or its question or key "
+                                  "changed, so passing now shows nothing"
+                                  if unstable_targets or set_aside_targets else
                                   "no targets: the baseline passed every "
                                   "case answered. Name them with --targets")}
     has_holdout = "holdout" in split.values()
@@ -221,7 +267,8 @@ def check(cfg: config.Config, baseline: pathlib.Path, candidates: list[pathlib.P
             "noise": sorted(set(noise)), "regressions": sorted(set(regressions)),
             "targetsFixed": fixed, "testCasesLeftOut": len(held_out),
             "replay": replay.name if replay else None, "targets": targets,
-            "setAside": sorted(set_aside), "doubtedGoldens": sorted(set(filter(None, doubted))),
+            "setAside": sorted(set_aside), "setAsideTargets": set_aside_targets,
+            "doubtedGoldens": sorted(set(filter(None, doubted))),
             "rules": rules,
             "accepted": all(r["ok"] for r in rules.values()) and not doubted}
 
@@ -267,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         candidates = [resolve(cfg, r) for r in a.run]
         replay = resolve(cfg, a.replay, "perf") if a.replay else None
         distinct(baseline, candidates)
+        one_model(candidates)
         aa = (None if a.aa == "none" else resolve(cfg, a.aa) if a.aa
               else find_aa(cfg, baseline))
         if aa is not None and aa.resolve() in {c.resolve() for c in candidates}:
@@ -300,6 +348,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {r['testCasesLeftOut']} case(s) on the test split left out of every rule")
     if r["setAside"]:
         print(f"  set aside (question or key changed since the baseline): {', '.join(r['setAside'])}")
+        if r["setAsideTargets"]:
+            print(f"    not counted as targets (set aside): {', '.join(r['setAsideTargets'])}")
     if r["doubtedGoldens"]:
         print(f"  HALT: the judge doubts the key on {', '.join(r['doubtedGoldens'])}. "
               f"Settle each through the golden side door first (golden-side-door.md).")
@@ -318,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         where = attempts.append(cfg.set_dir, attempts.row(
             what=a.what, outcome="accepted" if r["accepted"] else "rejected",
             baseline=r["baseline"], aa=r["aa"], candidates=r["candidates"],
-            targets=r["targets"] + r["unstableTargets"], issue_ids=a.issue,
+            targets=r["targets"] + r["unstableTargets"] + r["setAsideTargets"], issue_ids=a.issue,
             failed={k: v["detail"] for k, v in r["rules"].items() if not v["ok"]}
             | ({"doubted goldens": ", ".join(r["doubtedGoldens"])} if r["doubtedGoldens"] else {}),
             effect={"targets": len(r["targets"]), "targetsFixed": len(r["targetsFixed"]),

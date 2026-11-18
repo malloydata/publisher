@@ -40,7 +40,13 @@ list = "aws s3 ls s3://team-evals/{set}/runs/ | awk '{{print $2}}' | tr -d /"
 A brace that is part of the command, like awk's, is doubled, because single
 braces mark the four placeholders. `list` prints one run id per line. Without
 it the store cannot say what it holds: `pull` with no `--label`, `runs --store`
-and `--baseline record` say so and use only the runs already here.
+and `--baseline record` say so and use only the runs already here, and `push`
+refuses, because it cannot tell whether the name is taken.
+
+`aws s3 sync` overwrites, so `push` runs `list` first. A run already listed
+under the same name is pulled and compared: the same run does nothing, a
+different one is refused. Two machines pushing one name at the same moment can
+both pass that check. Only a push command that refuses to overwrite closes it.
 
 ```bash
 eval.py push --set <set> --label tip-01     # share one run
@@ -60,11 +66,13 @@ The rules, whichever store it is:
 - **A run is shared whole, once, and never changes after.** Pushing a run the
   store already holds with the same content does nothing; with other content it
   is refused. Two runs are two directories, so nothing ever appends to
-  anything, and two people pushing at once cannot collide.
+  anything. A folder store cannot collide; a command store can, as above.
 - **Records share themselves.** With a store set, a full answer run of the main
-  line, and a query replay of it, push when they finish. A slice, an experiment
-  or a partial run stays local unless run with `--share` or pushed by hand. An
-  experiment is yours; a record is the team's.
+  line, and a query replay of all its stored queries whose rows held, push
+  when they finish. A slice, an experiment, a partial run, a workload-file
+  replay, or a replay whose rows changed stays local unless run with `--share`
+  or pushed by hand, and `--baseline record` never names one, wherever it
+  came from. An experiment is yours; a record is the team's.
 - **`--baseline record` reaches the store.** It pulls whatever the store holds
   that you do not, then takes the newest full main-line run, so an experiment is
   compared against the team's record, not against whatever happens to be on

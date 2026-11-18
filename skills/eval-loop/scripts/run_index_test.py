@@ -96,6 +96,52 @@ class Index(unittest.TestCase):
                          ["1.10.0", "1.2.0", "1.2.0-rc1", "0.9.9", "junk"])
 
 
+class Record(unittest.TestCase):
+    """One rule decides what the store shares and what `--baseline record` names."""
+
+    def setUp(self):
+        self.w = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.w, ignore_errors=True)
+
+    def perf(self, name, started, compare=None, **meta):
+        d = self.w / "runs" / name
+        d.mkdir(parents=True)
+        (d / "run.json").write_text(json.dumps({"phase": "query-replay", "status": "complete",
+                                                "started": started, "package": "p", **meta}))
+        (d / "summary.json").write_text(json.dumps({"queries": 2, "errors": 0,
+                                                    **({"compare": compare} if compare else {})}))
+
+    def why(self, name):
+        return next(r for r in ri.runs(self.w, 2, "p") if r["run"] == name)["notRecord"]
+
+    def test_what_is_a_record(self):
+        write_run(self.w, "full", {"a": "match", "b": "match"}, package="p")
+        write_run(self.w, "part", {"a": "match"}, package="p")
+        write_run(self.w, "exp", {"a": "match", "b": "match"}, package="p.try")
+        write_run(self.w, "cut", {"a": "match", "b": "match"}, package="p",
+                  slice_={"name": "x", "qids": ["a", "b"]})
+        self.perf("perf", "2026-11-02")
+        self.assertIsNone(self.why("full"))
+        self.assertIsNone(self.why("perf"))
+        self.assertIn("every case", self.why("part"))
+        self.assertIn("experiment", self.why("exp"))
+        self.assertIn("slice", self.why("cut"))
+
+    def test_a_replay_that_changed_rows_or_timed_part_or_a_file_never_becomes_the_record(self):
+        self.perf("old", "2026-11-01")
+        self.perf("changed", "2026-11-02",
+                  {"baseline": "old", "rows_changed": ["q1"], "broke": []})
+        self.perf("broke", "2026-11-03", {"baseline": "old", "rows_changed": [], "broke": ["q2"]})
+        self.perf("only", "2026-11-04", slice={"name": "only", "qids": ["q1"]})
+        self.perf("day", "2026-11-05", mode="workload")
+        self.assertIn("changed rows", self.why("changed"))
+        self.assertIn("1 now error", self.why("broke"))
+        self.assertIn("workload file", self.why("day"))
+        self.assertEqual(ri.record(ri.runs(self.w, 2, "p"), "perf")["run"], "old")
+
+
 class Cli(unittest.TestCase):
     def test_versions_reads_the_set_workdir_and_the_server(self):
         root = pathlib.Path(tempfile.mkdtemp())
