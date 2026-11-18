@@ -263,7 +263,6 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       const switches = {
          materialize: true,
          gatedSources: false,
-         gatedStorageRollupsReviewed: false,
       };
       const g3 = { databaseReadsKeepGates: true };
       // As the router judges them: each storage table with its gate columns'
