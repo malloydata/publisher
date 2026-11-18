@@ -38,6 +38,7 @@ import {
    probeTableHolder,
    tableHolderOf,
    tableLocationOf,
+   relationLocationOf,
    TableOwnershipError,
    TABLE_OWNED_ELSEWHERE,
    TABLE_OWNERSHIP_UNVERIFIED,
@@ -140,11 +141,16 @@ describe("the ownership mark", () => {
       expect(parseOwnedTableMark(ownedTableComment(A))).toEqual({ owner: A });
       expect(parseOwnedTableComment(ownedTableComment(A))).toBe(A);
       // Where a probe found the one table, else nothing.
-      const at = (location: unknown, kind = "BASE TABLE") => ({
-         kind,
-         comment: null,
-         location,
-      });
+      const at = (location: string | null, kind = "BASE TABLE") => {
+         const [d, sc, n] = location?.split(".") ?? [];
+         return {
+            kind,
+            comment: null,
+            location_database: d,
+            location_schema: sc,
+            location_name: n,
+         };
+      };
       expect(tableLocationOf([at("db.s.t")])).toBe("db.s.t");
       expect(tableLocationOf([at("db.s.v", "VIEW"), at("db.s.t")])).toBe(
          "db.s.t",
@@ -154,10 +160,65 @@ describe("the ownership mark", () => {
       expect(tableLocationOf([at(null)])).toBeUndefined();
    });
 
-   it("a caller's drop accepts a mark only on the place it names", () => {
-      const row = (comment: string, location: string | null = "db.s.t") => [
-         { kind: "BASE TABLE", comment, location },
+   it("encodes each part of a location, so a dot in a name cannot spell another place", () => {
+      const at = (
+         database: string | undefined,
+         schema: string,
+         name: string,
+      ) => ({
+         location_database: database,
+         location_schema: schema,
+         location_name: name,
+      });
+      expect(relationLocationOf(at("db", "s", "t"))).toBe("db.s.t");
+      // MySQL reports no database.
+      expect(relationLocationOf(at(undefined, "s", "t"))).toBe("s.t");
+      // `a.b`.`c` and `a`.`b.c` are two places.
+      const one = relationLocationOf(at("db", "a.b", "c"));
+      const two = relationLocationOf(at("db", "a", "b.c"));
+      expect(one).toBe("db.a%2Eb.c");
+      expect(two).toBe("db.a.b%2Ec");
+      expect(one).not.toBe(two);
+      expect(relationLocationOf(at("d b", "s'x", "t%"))).toBe("d%20b.s'x.t%25");
+      // Unreadable: no schema or no name.
+      expect(relationLocationOf({ location_name: "t" })).toBeUndefined();
+      expect(relationLocationOf({ location_schema: "s" })).toBeUndefined();
+      // The mark round-trips the encoded location, and the drop compares
+      // the same spelling: a mark for one place is not proof on the other.
+      const row = (location: Record<string, string>, comment: string) => [
+         { kind: "BASE TABLE", comment, ...location },
       ];
+      const placeOne = {
+         location_database: "db",
+         location_schema: "a.b",
+         location_name: "c",
+      };
+      const placeTwo = {
+         location_database: "db",
+         location_schema: "a",
+         location_name: "b.c",
+      };
+      const markOne = ownedTableComment(A, one);
+      expect(parseOwnedTableMark(markOne)?.table).toBe(one);
+      expect(markedFor(row(placeOne, markOne), A)).toEqual({ state: "ours" });
+      expect(markedFor(row(placeTwo, markOne), A)).toEqual({
+         state: "unmarked",
+      });
+   });
+
+   it("a caller's drop accepts a mark only on the place it names", () => {
+      const row = (comment: string, location: string | null = "db.s.t") => {
+         const [d, sc, n] = location?.split(".") ?? [];
+         return [
+            {
+               kind: "BASE TABLE",
+               comment,
+               location_database: d,
+               location_schema: sc,
+               location_name: n,
+            },
+         ];
+      };
       expect(markedFor(row(ownedTableComment(A, "db.s.t")), A)).toEqual({
          state: "ours",
       });

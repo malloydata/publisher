@@ -419,7 +419,9 @@ describe("the build loop: one ownership decision per shared table", () => {
                         {
                            kind: "BASE TABLE",
                            comment: holder,
-                           location: "memory.main.named_t",
+                           location_database: "memory",
+                           location_schema: "main",
+                           location_name: "named_t",
                         },
                      ],
                   };

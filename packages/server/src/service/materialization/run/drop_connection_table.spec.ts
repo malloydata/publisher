@@ -192,10 +192,22 @@ function harness(
    };
 }
 
-/** One table at `location` (the probe's reading of where it is). */
-const table = (comment: string | null, location: string | null = LOC) => [
-   { kind: "BASE TABLE", comment, location },
-];
+/**
+ * One table at `location` (`database.schema.name`, the probe's reading of
+ * where it is, as its three columns).
+ */
+const table = (comment: string | null, location: string | null = LOC) => {
+   const [database, schema, name] = location?.split(".") ?? [];
+   return [
+      {
+         kind: "BASE TABLE",
+         comment,
+         location_database: database ?? null,
+         location_schema: schema ?? null,
+         location_name: name ?? null,
+      },
+   ];
+};
 
 async function refusal(p: Promise<unknown>): Promise<Error> {
    return p.then(

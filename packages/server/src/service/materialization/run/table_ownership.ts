@@ -39,7 +39,8 @@
  * The mark is a comment on the table, `malloy-publisher:table
  * owner=<env>/<pkg> table=<location>` (each value URI-encoded; `location`
  * is where the table is, fully qualified, as the warehouse's catalog reports
- * it when the mark is written, see relationProbeSql; a mark before 0.16.0,
+ * it when the mark is written, each part URI-encoded and joined with `.`,
+ * see relationLocationOf; a mark before 0.16.0,
  * or one whose location could not be read, has no `table`), the warehouse
  * half of ownership: it is what decides between
  * two packages whose records both name the table (a collision from before the
@@ -212,7 +213,7 @@ export function ownedTableComment(owner: string, table?: string): string {
 
 /**
  * Where the one table among the probe's `rows` is, as the warehouse's catalog
- * spells it (`location`, see relationProbeSql), or undefined when the rows
+ * spells it ({@link relationLocationOf}), or undefined when the rows
  * hold no table, more than one, or none with a location.
  */
 export function tableLocationOf(
@@ -222,10 +223,31 @@ export function tableLocationOf(
       (row) => String(field(row, "kind") ?? "").toUpperCase() !== "VIEW",
    );
    if (tables.length !== 1) return undefined;
-   const location = field(tables[0], "location");
-   return typeof location === "string" && location !== ""
-      ? location
-      : undefined;
+   return relationLocationOf(tables[0]);
+}
+
+/**
+ * Where a probe row's relation is, as a mark records it: its catalog
+ * location's parts (`location_database`, absent on MySQL, then
+ * `location_schema` and `location_name`), each URI-encoded with its dots
+ * too, joined with `.`, so a database or schema name holding a dot cannot
+ * spell the same location as another. Undefined when the row has no schema
+ * or name: that location cannot be read, and proves nothing.
+ */
+export function relationLocationOf(
+   row: Record<string, unknown>,
+): string | undefined {
+   const part = (key: string) => {
+      const value = field(row, key);
+      return typeof value === "string" && value !== "" ? value : undefined;
+   };
+   const schema = part("location_schema");
+   const name = part("location_name");
+   if (schema === undefined || name === undefined) return undefined;
+   const database = part("location_database");
+   return [...(database === undefined ? [] : [database]), schema, name]
+      .map((p) => encodeURIComponent(p).replace(/\./g, "%2E"))
+      .join(".");
 }
 
 /** The dialects whose tables' holders can be read (and marked). */
@@ -305,7 +327,7 @@ export function tableHolderOf(
  * {@link tableHolderOf} for a caller's drop, which accepts a mark as proof
  * only on the very table it names: `ours` becomes `unmarked` (proof must
  * come from a run record) unless every table row's mark names that row's
- * own `location`, the fully qualified place the warehouse's catalog reports
+ * own location ({@link relationLocationOf}), the place the warehouse's catalog reports
  * for it (wherever a search path or default schema resolved the name). A
  * renamed, moved or copied table carries the mark of the table it came from,
  * which names another place; a mark an earlier release wrote names none, and
@@ -320,13 +342,9 @@ export function markedFor(
    if (holder.state !== "ours" || holder.view) return holder;
    for (const row of rows) {
       if (String(field(row, "kind") ?? "").toUpperCase() === "VIEW") continue;
-      const location = field(row, "location");
+      const location = relationLocationOf(row);
       const marked = parseOwnedTableMark(field(row, "comment"))?.table;
-      if (
-         typeof location !== "string" ||
-         location === "" ||
-         marked !== location
-      ) {
+      if (location === undefined || marked !== location) {
          return { state: "unmarked" };
       }
    }
