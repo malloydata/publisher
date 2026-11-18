@@ -95,12 +95,14 @@ export const ENGINE_TABLES = [
    "catalog_embeddings",
    "dimension_values",
    "value_embeddings",
+   "dimension_value_reads",
 ] as const;
 
 /**
  * Remove a deleted package's rows (or, with no `packageName`, a deleted
- * environment's) from every engine table. `dimension_values` and
- * `value_embeddings` hold warehouse values, so a delete must not leave them.
+ * environment's) from every engine table. `dimension_values`,
+ * `dimension_value_reads` and `value_embeddings` hold warehouse values, so a
+ * delete must not leave them.
  */
 export async function deleteEngineRows(
    db: DuckDBConnection,

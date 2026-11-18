@@ -892,7 +892,8 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
     )
   `);
    // The engine's value index (retrieval/index/values_index.ts): stored values of
-   // `#(index)` dimensions on ungated sources, and value lists from docs.
+   // `#(index)` dimensions on ungated sources and on sources keyed by the
+   // configured givens, and value lists from docs.
    // Rewritten at each load; the engine searches its in-memory copy.
    await db.run(`
     CREATE TABLE IF NOT EXISTS dimension_values (
@@ -909,7 +910,8 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
    // The embeddings of those values (`retrieval.fcj.valueEmbeddings`): one row
    // per distinct value string (node_key is the value, facet is "value"), the
    // same columns and sync rule as catalog_embeddings, so a reload embeds only
-   // values it has not seen. A gated source's values are never here.
+   // values it has not seen. A gated source's values are here only when its
+   // gate is keyed and its keys are configured.
    await db.run(`
     CREATE TABLE IF NOT EXISTS value_embeddings (
       environment_name VARCHAR NOT NULL,
@@ -922,6 +924,24 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
       embedding FLOAT[] NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       PRIMARY KEY (environment_name, package_name, node_key, facet)
+    )
+  `);
+   // Each read of an `#(index)` dimension, once per combination of the
+   // configured givens (`givens` is that combination as JSON, "" with none),
+   // so a later build reuses it while `read_key` matches and it is younger
+   // than the reuse limit (values_index.ts). `read_values` is a JSON list of
+   // [value, count] or [value, count, key].
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS dimension_value_reads (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      dimension_key VARCHAR NOT NULL,
+      givens VARCHAR NOT NULL,
+      read_key VARCHAR NOT NULL,
+      truncated BOOLEAN NOT NULL,
+      read_values VARCHAR NOT NULL,
+      read_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, dimension_key, givens)
     )
   `);
 }
@@ -979,6 +999,7 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "catalog_embeddings",
       "dimension_values",
       "value_embeddings",
+      "dimension_value_reads",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

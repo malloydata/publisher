@@ -674,6 +674,14 @@ those dimensions, while the old one keeps answering. The cool-down is one minute
 build leaves values unread, up to an hour. Any other failed read (a query error, a missing table) is skipped until the package
 reloads, since reading again would fail the same way. A dimension that holds no values is not a failure.
 
+**Reads are stored and reused.** Each read is stored in the server's database, once per dimension and per
+combination of listed givens. A later build reuses it instead of reading again, whether after a model
+edit, a reload or a restart. A stored read is reused while it is less than 24 hours old and its source's
+compiled definition is unchanged, apart from docs and line positions. So editing a doc reads nothing.
+Changing anything else in a source (its table, a `where:`, a join, any field, a gate) reads that source's
+`#(index)` dimensions again, and other sources keep theirs. Listing one more report reads only that
+report. Starting with `--init` drops the database and every stored read with it.
+
 **Access.** A value is data, and a gate applies to it as it does to `execute_query`.
 
 - **A source whose only gate splits rows by a given** is indexed for the values of that given you list
@@ -685,13 +693,19 @@ reloads, since reading again would fail the same way. A dimension that holds no 
   whose `givens` name that report, as hosted Credible does. Nothing reads every report at once: on a
   production model that is a scan of the whole table, and the cap would keep values for almost none of
   the reports.
-- **Any other gated source** is never read at index time and its values are never embedded. A
-  `dimensional_value` target that pins one of its dimensions reads the values when asked, through the
-  query path, with the caller's givens:
+- **Any other gated source** is never read at index time and its values are never embedded. When a
+  `dimensional_value` target reaches one of its dimensions, because the target is scoped to it or because
+  the search picked it by its name or doc, the values are read when asked, through the query path, with
+  the caller's givens. The same read answers for a report-gated source's dimension when the caller's
+  report is not listed.
   - `#(authorize)`: a caller whose givens do not pass gets no values from that source. The source still
     returns, with its dimensions and no `values`, and a warning says the values were withheld.
   - `#(access_filter)`: values come only from rows the filter admits. With no givens the gate cannot
     apply and the source is withheld.
+
+  That read takes up to 2,000 values in no set order, so a rare value can be missed, and a dimension the
+  search did not pick is not read. For a report-gated source, listing the reports in
+  `retrieval.dimensionValues.givens` is the reliable path.
 - `get_context` takes an optional `givens` argument, with the trust `execute_query`'s `givens` has: the
   caller asserts them. It is read by this lookup, and it picks which report's stored values a search
   returns. See [authorize.md](authorize.md#security-model).

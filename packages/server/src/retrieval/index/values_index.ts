@@ -39,6 +39,7 @@
  * store that value, the same idea as rare-word weighting in keyword search.
  */
 
+import { createHash } from "crypto";
 import { QueryTimeoutError, ServiceUnavailableError } from "../../errors";
 import { logger } from "../../logger";
 import type { PackageLookup } from "../../service/environment_ports";
@@ -169,6 +170,25 @@ const VALUE_READ_TIMEOUT_MS = 60_000;
  * cool-down) reads them, and only them.
  */
 const VALUE_READ_BUDGET_MS = 300_000;
+
+/**
+ * How long a stored read is reused while its source's definition is
+ * unchanged (`dimension_value_reads`). A model edit, a reload and a restart
+ * all reuse it; past this age the data is read again, so values still follow
+ * the warehouse.
+ */
+const VALUE_REUSE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** One stored read: one dimension under one combination of givens. */
+interface StoredRead {
+   dimension: string;
+   /** The combination as JSON, "" with none (givensId). */
+   givens: string;
+   readKey: string;
+   truncated: boolean;
+   values: CountedValues["values"];
+   readAt: number;
+}
 
 /**
  * The read: the `limit` most frequent non-null values of one dimension,
@@ -554,13 +574,14 @@ async function readEachCombination(
    combinations: ReadonlyArray<Record<string, unknown> | undefined>,
    read: (
       givens: Record<string, unknown> | undefined,
+      i: number,
    ) => Promise<CountedValues>,
 ): Promise<CountedValues> {
-   if (combinations.length === 1) return read(combinations[0]);
+   if (combinations.length === 1) return read(combinations[0], 0);
    const merged = new Map<string, CountedValues["values"][number]>();
    let truncated = false;
-   for (const givens of combinations) {
-      const got = await read(givens);
+   for (const [i, givens] of combinations.entries()) {
+      const got = await read(givens, i);
       truncated ||= got.truncated;
       for (const v of got.values) {
          const id = `${v.key ?? ""}\u0000${v.value}`;
@@ -688,16 +709,18 @@ export async function buildValueIndex(args: {
       /** The read; indexValueFetcherFor in production, a stand-in in a spec. */
       fetcher: IndexValueFetcher;
    };
+   /**
+    * Where the index is written, and where each read is stored and found
+    * again: a read stored by an earlier build is reused while its source's
+    * definition, the dimension, the cap and the givens are unchanged and it
+    * is younger than {@link VALUE_REUSE_MAX_AGE_MS}.
+    */
    db?: DuckDBConnection;
    shouldStop?: () => boolean;
-   /**
-    * The index this build replaces, after some of its reads failed. A
-    * dimension it read is not read again: its values are reused. Only the
-    * dimensions in its report's `failed` are read.
-    */
-   previous?: { index: ValueIndex; report: ValueBuildReport };
    /** Test seam for {@link VALUE_READ_BUDGET_MS}. */
    readBudgetMs?: number;
+   /** Test seam for {@link VALUE_REUSE_MAX_AGE_MS}. */
+   reuseMaxAgeMs?: number;
    /**
     * `retrieval.dimensionValues.givens` for this package: every dimension is
     * read once per combination of these values, with that combination as
@@ -707,18 +730,20 @@ export async function buildValueIndex(args: {
 }): Promise<{ index: ValueIndex; report: ValueBuildReport }> {
    const started = Date.now();
    const budgetMs = args.readBudgetMs ?? VALUE_READ_BUDGET_MS;
-   const reread = args.previous
-      ? new Set(args.previous.report.failed.map((f) => f.dimension))
-      : undefined;
-   const previousValues = new Map<string, IndexedValue[]>();
-   for (const v of args.previous?.index.values ?? []) {
-      if (v.origin !== "data") continue;
-      const list = previousValues.get(v.dimension) ?? [];
-      list.push(v);
-      previousValues.set(v.dimension, list);
-   }
+   const maxAgeMs = args.reuseMaxAgeMs ?? VALUE_REUSE_MAX_AGE_MS;
+   const stored =
+      args.db && args.read
+         ? await loadReads(
+              args.db,
+              args.read.environmentName,
+              args.read.packageName,
+           )
+         : new Map<string, StoredRead>();
+   /** Every read this build holds, reused or new: what is stored at the end. */
+   const reads: StoredRead[] = [];
    const values: IndexedValue[] = [];
    const givenCombinations = combinationsOf(args.givens);
+   const givenIds = givenCombinations.map(givensId);
    const report: ValueBuildReport = {
       dimensionsRead: 0,
       dimensionsReused: 0,
@@ -762,19 +787,22 @@ export async function buildValueIndex(args: {
          continue;
       }
       if (args.shouldStop?.()) break;
-      if (reread && !reread.has(node.key)) {
-         // Read by the build this one replaces: keep what it got.
-         const kept = previousValues.get(node.key) ?? [];
-         values.push(...kept);
-         report.dimensionsReused += 1;
-         report.valuesFromData += kept.length;
-         const cut = args.previous!.report.cut.find(
-            (c) => c.dimension === node.key,
-         );
-         if (cut) report.cut.push(cut);
-         continue;
-      }
-      if (Date.now() - started >= budgetMs) {
+      const source = args.catalog.sources.get(node.sourceKey);
+      const partitionKey = source?.partitionKey;
+      const readKey = source?.readDefinition
+         ? readKeyOf(source.readDefinition, node, args.cap, partitionKey)
+         : undefined;
+      const now = Date.now();
+      const kept = givenIds.map((id) => {
+         const old = stored.get(`${node.key}\u0000${id}`);
+         return readKey &&
+            old?.readKey === readKey &&
+            now - old.readAt < maxAgeMs
+            ? old
+            : undefined;
+      });
+      const allKept = kept.every((k) => k !== undefined);
+      if (!allKept && Date.now() - started >= budgetMs) {
          report.failed.push({
             dimension: node.key,
             reason: `not read: this build's value reads used their ${Math.round(budgetMs / 1000)} s budget`,
@@ -782,27 +810,44 @@ export async function buildValueIndex(args: {
          continue;
       }
       const fetcher = args.read.fetcher;
-      const partitionKey = args.catalog.sources.get(
-         node.sourceKey,
-      )?.partitionKey;
       try {
-         const got = await readEachCombination(givenCombinations, (givens) =>
-            fetcher({
-               environmentStore: args.read!.environmentStore,
-               environmentName: args.read!.environmentName,
-               packageName: args.read!.packageName,
-               modelPath: node.modelPaths[0],
-               source: node.source,
-               dimension: node.name,
-               limit: args.cap,
-               timeoutMs: VALUE_READ_TIMEOUT_MS,
-               ...(givens ? { givens } : {}),
-               ...(partitionKey
-                  ? { partitionColumns: partitionKey.map((p) => p.column) }
-                  : {}),
-            }),
+         const got = await readEachCombination(
+            givenCombinations,
+            async (givens, i) => {
+               const old = kept[i];
+               if (old) {
+                  reads.push(old);
+                  return { values: old.values, truncated: old.truncated };
+               }
+               const fresh = await fetcher({
+                  environmentStore: args.read!.environmentStore,
+                  environmentName: args.read!.environmentName,
+                  packageName: args.read!.packageName,
+                  modelPath: node.modelPaths[0],
+                  source: node.source,
+                  dimension: node.name,
+                  limit: args.cap,
+                  timeoutMs: VALUE_READ_TIMEOUT_MS,
+                  ...(givens ? { givens } : {}),
+                  ...(partitionKey
+                     ? { partitionColumns: partitionKey.map((p) => p.column) }
+                     : {}),
+               });
+               if (readKey) {
+                  reads.push({
+                     dimension: node.key,
+                     givens: givenIds[i],
+                     readKey,
+                     truncated: fresh.truncated,
+                     values: fresh.values,
+                     readAt: Date.now(),
+                  });
+               }
+               return fresh;
+            },
          );
-         report.dimensionsRead += 1;
+         if (allKept) report.dimensionsReused += 1;
+         else report.dimensionsRead += 1;
          if (got.truncated)
             report.cut.push({ dimension: node.key, kept: got.values.length });
          for (const { value, count, key } of got.values) {
@@ -839,6 +884,12 @@ export async function buildValueIndex(args: {
             args.read.packageName,
             values,
          );
+         await saveReads(
+            args.db,
+            args.read.environmentName,
+            args.read.packageName,
+            reads,
+         );
       } catch (error) {
          logger.warn(
             "[get_context fcj] The value index could not be written to its table",
@@ -850,6 +901,133 @@ export async function buildValueIndex(args: {
    }
    report.ms = Date.now() - started;
    return { index: new ValueIndex(values), report };
+}
+
+/** A combination of givens as text that does not depend on key order. */
+function givensId(givens: Record<string, unknown> | undefined): string {
+   if (!givens) return "";
+   return JSON.stringify(
+      Object.keys(givens)
+         .sort()
+         .map((k) => [k, givens[k]]),
+   );
+}
+
+/** What a stored read of `node` must match to be reused. */
+function readKeyOf(
+   readDefinition: string,
+   node: CatalogNode,
+   cap: number,
+   partitionKey: ReadonlyArray<{ column: string }> | undefined,
+): string {
+   return createHash("sha256")
+      .update(
+         JSON.stringify([
+            readDefinition,
+            node.modelPaths[0],
+            node.source,
+            node.name,
+            cap,
+            (partitionKey ?? []).map((p) => p.column),
+         ]),
+         "utf8",
+      )
+      .digest("hex");
+}
+
+/** The package's stored reads, by dimension and givens. Empty when unreadable. */
+async function loadReads(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+): Promise<Map<string, StoredRead>> {
+   const out = new Map<string, StoredRead>();
+   let rows: Array<Record<string, unknown>>;
+   try {
+      rows = await db.all<Record<string, unknown>>(
+         `SELECT dimension_key, givens, read_key, truncated, read_values, epoch_ms(read_at) AS read_ms
+          FROM dimension_value_reads WHERE environment_name = ? AND package_name = ?`,
+         [environmentName, packageName],
+      );
+   } catch (error) {
+      logger.warn(
+         "[get_context fcj] Stored value reads could not be loaded; every dimension is read",
+         { error: error instanceof Error ? error.message : String(error) },
+      );
+      return out;
+   }
+   for (const row of rows) {
+      let parsed: unknown;
+      try {
+         parsed = JSON.parse(String(row.read_values));
+      } catch {
+         continue;
+      }
+      if (!Array.isArray(parsed)) continue;
+      const values: CountedValues["values"] = [];
+      for (const v of parsed) {
+         if (!Array.isArray(v) || typeof v[0] !== "string") continue;
+         values.push({
+            value: v[0],
+            count: Number(v[1]) || 0,
+            ...(typeof v[2] === "string" ? { key: v[2] } : {}),
+         });
+      }
+      const read: StoredRead = {
+         dimension: String(row.dimension_key),
+         givens: String(row.givens),
+         readKey: String(row.read_key),
+         truncated: Boolean(row.truncated),
+         values,
+         readAt: Number(row.read_ms),
+      };
+      out.set(`${read.dimension}\u0000${read.givens}`, read);
+   }
+   return out;
+}
+
+/** Replace the package's stored reads with this build's. */
+async function saveReads(
+   db: DuckDBConnection,
+   environmentName: string,
+   packageName: string,
+   reads: readonly StoredRead[],
+): Promise<void> {
+   await db.run(
+      `DELETE FROM dimension_value_reads WHERE environment_name = ? AND package_name = ?`,
+      [environmentName, packageName],
+   );
+   const seen = new Set<string>();
+   const rows: unknown[][] = [];
+   for (const r of reads) {
+      const id = `${r.dimension}\u0000${r.givens}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push([
+         environmentName,
+         packageName,
+         r.dimension,
+         r.givens,
+         r.readKey,
+         r.truncated,
+         JSON.stringify(
+            r.values.map((v) =>
+               v.key === undefined
+                  ? [v.value, v.count]
+                  : [v.value, v.count, v.key],
+            ),
+         ),
+         new Date(r.readAt).toISOString(),
+      ]);
+   }
+   for (let i = 0; i < rows.length; i += 50) {
+      const batch = rows.slice(i, i + 50);
+      await db.run(
+         `INSERT INTO dimension_value_reads (environment_name, package_name, dimension_key, givens, read_key, truncated, read_values, read_at)
+          VALUES ${batch.map(() => "(?, ?, ?, ?, ?, ?, ?, ?)").join(", ")}`,
+         batch.flat(),
+      );
+   }
 }
 
 async function saveValues(
