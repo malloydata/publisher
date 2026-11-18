@@ -73,6 +73,8 @@ export async function prepareAndRun(
       /** Emit a usage record when the executing connection is metered. */
       usage?: {
          metered: (connectionName: string) => boolean;
+         /** The DuckLake catalog of a metered connection, for its record. */
+         catalog?: (connectionName: string) => string | undefined;
          environment: string;
          package?: string;
       };
@@ -94,6 +96,8 @@ async function prepareAndRunUntraced(
       ) => QueryMetadata | undefined | Promise<QueryMetadata | undefined>;
       usage?: {
          metered: (connectionName: string) => boolean;
+         /** The DuckLake catalog of a metered connection, for its record. */
+         catalog?: (connectionName: string) => string | undefined;
          environment: string;
          package?: string;
       };
@@ -132,6 +136,7 @@ async function prepareAndRunUntraced(
                  connection: prepared.connectionName,
                  surface: "serve",
                  package: usage.package,
+                 catalog: safeCatalog(usage.catalog, prepared.connectionName),
               },
               execute,
               (r) => r.data.rowCount,
@@ -268,6 +273,18 @@ export function isGivenBindingFailure(err: unknown): boolean {
       Array.isArray(problems) &&
       problems.some((p) => isGivenCode((p as { code?: unknown })?.code))
    );
+}
+
+/** Reading a record's catalog must never fail a query either. */
+function safeCatalog(
+   catalog: ((connectionName: string) => string | undefined) | undefined,
+   connectionName: string,
+): string | undefined {
+   try {
+      return catalog?.(connectionName);
+   } catch {
+      return undefined;
+   }
 }
 
 /** A metering check must never fail a query. */

@@ -1723,6 +1723,7 @@ function statementUsage(
 ):
    | {
         metered: (connectionName: string) => boolean;
+        catalog?: (connectionName: string) => string | undefined;
         environment: string;
         package: string;
      }
@@ -1730,6 +1731,7 @@ function statementUsage(
    if (!input?.meteredConnection || !input.environment) return undefined;
    return {
       metered: input.meteredConnection,
+      catalog: input.meteredCatalog,
       environment: input.environment,
       package: packageName,
    };

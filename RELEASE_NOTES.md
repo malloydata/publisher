@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — raw SQL on a managed connection is metered, and a usage record names its statement, catalog and worker
+
+**Fixed: raw SQL on a `managed` connection emitted no `statement_usage` record.** A `managed` connection's statements are metered, but the raw-SQL route (`sqlQuery`) ran its SELECT without a record, so only model queries, builds and admin loads were counted. It now emits one record per statement that runs, with the new surface `sql`, streamed or buffered, answered or failed. A statement refused because it is not a single SELECT never ran and emits none. A collector that switches on `surface` should expect `sql`.
+
+**New fields on the `statement_usage` record.** `statement_id` is a UUID of the record's own, so a collector that delivers a record twice can count it once. `catalog` is the DuckLake catalog the statement ran on (the connection's `catalog.metadataSchema`), so a record is attributed to a catalog rather than to whatever a connection is named. `threads` is the `duckdb.threads` setting and `worker` the host name of the process, for a meter that rates by size. The existing fields and their names are unchanged. See [docs/ducklake.md](docs/ducklake.md).
+
 ## [Unreleased] — (BREAKING) upgrading from 0.15: the checklist
 
 This release is a breaking minor for two changes to what a build writes, each explained in full in its own section below: every database table a build writes now carries Publisher's ownership mark, which **replaces the table's comment**, and an incremental refresh with a date or timestamp watermark now re-reads from the newest stored row and, **without `merge_key=`, removes the stored rows in that range that the source no longer holds**. Nothing is removed or renamed: every wire value, alias, setting name, metric label and route that 0.15.0 produced or accepted, its "retained, no longer produced" aliases and deprecated names included, is still accepted here, and a package that loads on 0.15.0 still loads. This list is what to check, in the order to check it.
