@@ -64,6 +64,13 @@ export const PG_SEED = [
    // The persisted-copy shape's own table, so its copy re-roots no other
    // shape's source: the same big integers as orders.big.
    `CREATE TABLE big_copy AS SELECT id, region, big FROM orders`,
+   // Integers whose nearest double's shortest text is not its exact integer
+   // (from about 2^55): live reads 9223372036854775807 as 9223372036854776000.
+   `CREATE TABLE extremes (id bigint PRIMARY KEY, region text, big bigint)`,
+   `INSERT INTO extremes VALUES
+      (1, 'north', 9223372036854775807),
+      (2, 'south', -9223372036854775808),
+      (3, 'north', 36028797018963971)`,
    // 200 values near 9e18, whose sums pass 1e21, where live's answer turns
    // from a string to an exponential JSON number.
    `CREATE TABLE huge AS SELECT g AS id,
@@ -712,6 +719,59 @@ source: h_roll is pg.table('public.huge') extend {
             name: "a rollup's sum re-aggregated across its grain",
             model: "huge.malloy",
             malloy: "run: h_roll -> { aggregate: h_total }",
+            expect: "rollup",
+         },
+      ],
+   },
+   {
+      name: "bigint extremes",
+      about: "BIGINT's limits and 36028797018963971, whose nearest double's shortest text (as live reads it) is not the double's exact integer: selected and maxed from a persisted copy, and maxed and grouped by from a rollup",
+      files: {
+         "extremes.malloy": `${HEADER}
+
+@PERSIST()
+source: x_copy is pg.table('public.extremes') extend {
+  primary_key: id
+  measure: x_hi is big.max()
+  measure: x_lo is big.min()
+}
+
+source: x_roll is pg.table('public.extremes') extend {
+  primary_key: id
+  @PREAGG(region)
+  measure: r_hi is big.max()
+  @PREAGG(region)
+  measure: r_lo is big.min()
+  @PREAGG(big)
+  measure: r_n is count()
+}
+`,
+      },
+      queries: [
+         {
+            name: "each extreme, selected from a copy",
+            model: "extremes.malloy",
+            malloy: "run: x_copy -> { select: id, big; order_by: id }",
+            expect: "served",
+         },
+         {
+            name: "a max and min over them, from a copy",
+            model: "extremes.malloy",
+            malloy:
+               "run: x_copy -> { group_by: region; aggregate: x_hi, x_lo; order_by: region }",
+            expect: "served",
+         },
+         {
+            name: "a max and min over them, from a rollup across its grain",
+            model: "extremes.malloy",
+            malloy: "run: x_roll -> { aggregate: r_hi, r_lo }",
+            expect: "rollup",
+         },
+         {
+            name: "each extreme as a rollup grain",
+            model: "extremes.malloy",
+            malloy:
+               "run: x_roll -> { group_by: big; aggregate: r_n; order_by: big }",
             expect: "rollup",
          },
       ],

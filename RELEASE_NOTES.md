@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a `storage=` answer on a Postgres source gives an integer past 2^53 as live does: a JSON string
+
+On 0.15.0, a query on a Postgres source answered from a `storage=` table (a `#(rollup)`, a `#(materialize)` or `#@ persist` served copy, or a persisted view) returned a `bigint` value past 2^53 as a JSON number, where live returns the same value as a JSON string: `9007199254740992` served against `"9007199254740992"` live. The digits matched, since live on Postgres rounds such a value through JSON (known limitation 12), but a client that reads the type, or a strict generated client, saw two answers to one query. The stored column is now read with live's `bigint` type, and the answer is rounded as live's is after the query runs, so a served answer equals live's in value and in type, sums included: a sum past 1e21, which live gives as a JSON number in exponent form (`1.8e+21`), is served the same way. A `bigint` column a `storage=` table holds as a float is left out and answered live, since its digits are lost. Database-tier tables are unchanged. Only Postgres is changed: the other dialects whose live answer rounds big integers (Trino, Presto, Databricks, SQL Server) are unmeasured and keep 0.15.0's behaviour. **How to tell:** on 0.15.0, a `bigint` field past 2^53 in a served answer (`servedFrom: "storage"`) on a Postgres source is a number rather than a string.
+
 ## [0.15.0] — (BREAKING) upgrading from 0.14: the checklist
 
 This release is a breaking minor. Every item below is explained in full in its own section further down; this list is what to check, in the order to check it.
@@ -503,10 +507,6 @@ A DuckDB instance Publisher retires (a package's sandbox on unload, eviction or 
 ## [0.15.0] — the v1 cutover conformance script runs again without NODE_ENV=test
 
 `bun scripts/v1-cutover-conformance.ts` runs again as a standalone CLI. In 0.14.0 it exited 3 on every package unless `NODE_ENV=test` was set. A CI job that set it as a workaround can drop it.
-
-## [Unreleased] — a `storage=` answer on a Postgres source gives an integer past 2^53 as live does: a JSON string
-
-On 0.15.0, a query on a Postgres source answered from a `storage=` table (a `#(rollup)`, a `#(materialize)` or `#@ persist` served copy, or a persisted view) returned a `bigint` value past 2^53 as a JSON number, where live returns the same value as a JSON string: `9007199254740992` served against `"9007199254740992"` live. The digits matched, since live on Postgres rounds such a value through JSON (known limitation 12), but a client that reads the type, or a strict generated client, saw two answers to one query. The stored column is now read with live's `bigint` type, and the answer is rounded as live's is after the query runs, so a served answer equals live's in value and in type, sums included: a sum past 1e21, which live gives as a JSON number in exponent form (`1.8e+21`), is served the same way. A `bigint` column a `storage=` table holds as a float is left out and answered live, since its digits are lost. Database-tier tables are unchanged. Only Postgres is changed: the other dialects whose live answer rounds big integers (Trino, Presto, Databricks, SQL Server) are unmeasured and keep 0.15.0's behaviour. **How to tell:** on 0.15.0, a `bigint` field past 2^53 in a served answer (`servedFrom: "storage"`) on a Postgres source is a number rather than a string.
 
 ## [0.14.0] — a `storage=` table under its source's own row-level gate is built and served with the gate re-applied, as a colocated one is
 

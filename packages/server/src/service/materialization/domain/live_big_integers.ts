@@ -9,7 +9,8 @@
  * becomes the nearest JavaScript number, and Malloy gives a field it types
  * as a `bigint` number that value as a BigInt: 9007199254740993 answers as
  * 9007199254740992n, which a caller receives as the JSON string
- * `"9007199254740992"`. From 1e21 that number's text is exponential
+ * `"9007199254740992"`, and 9223372036854775807 as `"9223372036854776000"`
+ * (the double's shortest text, not its exact integer). From 1e21 that number's text is exponential
  * (`1.8e+21`), and Malloy's normaliser keeps such a value a number, so a
  * caller receives the JSON number `1.8e+21`. A `storage=` table is read in DuckDB, through a cast
  * that keeps the field's `bigint` subtype and every digit
@@ -61,9 +62,12 @@ export interface ResultRows {
 
 /**
  * A big integer as live's JSON stage and Malloy's normaliser give it: the
- * nearest double, as a BigInt (a string, where it ran as one) of that
- * double's integer, or as the number itself where its text is exponential
- * (from 1e21), which the normaliser keeps a number.
+ * nearest double, read back from that double's shortest text (`String`), as
+ * the normaliser reads it, never from the double's exact integer. From about
+ * 2^55 the two differ: 9223372036854775807 is 9223372036854776000 to live,
+ * not 9223372036854775808. A BigInt (a string, where it ran as one), or the
+ * number itself where that text is exponential (from 1e21), which the
+ * normaliser keeps a number.
  */
 function roundedAsLive(value: unknown): unknown {
    const exact =
@@ -72,7 +76,7 @@ function roundedAsLive(value: unknown): unknown {
    if (!exact) return value;
    const nearest = Number(value);
    if (/e/i.test(String(nearest))) return nearest;
-   return typeof value === "bigint" ? BigInt(nearest) : String(BigInt(nearest));
+   return typeof value === "bigint" ? BigInt(String(nearest)) : String(nearest);
 }
 
 function roundValue(value: unknown, field: ResultField): unknown {

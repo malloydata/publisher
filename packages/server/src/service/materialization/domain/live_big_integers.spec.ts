@@ -95,6 +95,24 @@ describe("roundBigIntegersAsLive", () => {
    });
 });
 
+describe("roundBigIntegersAsLive from about 2^55", () => {
+   it("reads the double back from its shortest text, as Malloy's normaliser does, not from its exact integer", () => {
+      const r = result([
+         { big: 9223372036854775807n },
+         { big: -9223372036854775808n },
+         { big: 36028797018963971n },
+         { big: "9223372036854775807" },
+      ]);
+      roundBigIntegersAsLive(r);
+      expect(r._queryResult.result.map((row) => row.big)).toEqual([
+         9223372036854776000n,
+         -9223372036854776000n,
+         36028797018963970n,
+         "9223372036854776000",
+      ]);
+   });
+});
+
 describe("roundBigIntegersAsLive past 1e21", () => {
    it("gives a value whose nearest double prints exponentially as that number, as Malloy's normaliser keeps it", () => {
       const huge = 1800000000000000000123n;
