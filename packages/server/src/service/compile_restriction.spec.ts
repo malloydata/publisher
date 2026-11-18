@@ -605,7 +605,10 @@ source: published is duckdb.sql("select 1 as id") extend {
          const roots = [
             path.resolve(__dirname, "../../tests/fixtures"),
             path.resolve(__dirname, "../../../../examples"),
-            path.resolve(__dirname, "../../../skills/skills"),
+            // The repo's own skills/, not packages/skills/skills: that is a
+            // build output copied from it, absent unless the skills package
+            // was built earlier in the same checkout.
+            path.resolve(__dirname, "../../../../skills"),
          ];
          const refused: string[] = [];
          const walk = (dir: string) => {

@@ -17,10 +17,53 @@ workflow owns what, and the publishing rules that bite.
 `python_sdk_smoke_test` (drives a server built from the PR through the built Python SDK wheel; see
 *Publishing to PyPI*), and `cross_platform_test`, which calls `cross-platform-tests.yml`.
 
-`cross-platform-tests.yml` is `workflow_call`-only and is where the tests actually run, across Linux,
-macOS, and Windows: the server unit and integration suites, the skills package tests, and the
-create-malloy-package tests plus its e2e suite on Linux. It is reached on every PR through
-`build.yml`.
+`cross-platform-tests.yml` is `workflow_call`-only and is where the tests actually run: the SDK and
+Console suites (plus the SDK's two time-zone runs), the server unit, component and integration
+suites, the skills, examples, scripts, CLI and create-malloy-package tests, and the Linux-only CLI
+integration and scaffolder e2e suites. Its callers pick one of two shapes with its inputs:
+
+- **`linux: true`** (`build.yml`, every PR and every push to `main`): the whole suite on Linux, split
+  into parallel jobs: `Linux: server component (1/3..3/3)`, `Linux: server unit (1/2, 2/2)`,
+  `Linux: server integration`, and `Linux: SDK, Console, skills, examples, scripts, CLI, scaffolder`. On the PR that introduced the split each ran 6-9 minutes, about 2 of them setup, and a PR waited about 12 minutes in all, against about 29 for the single Linux leg before.
+  A gate job, `Platform: (ubuntu-latest)`, needs all of them and fails unless every one passed. It
+  is the **only** required check for the suite (`Cross Platform Tests / Platform: (ubuntu-latest)`,
+  the name the single Linux leg had before the split), so regrouping or resharding never touches
+  branch protection. Do not make the individual groups required.
+- **`macos_windows: true`**: the whole suite in one job per OS, `Platform: (macos-latest)` and
+  `Platform: (windows-latest)`, as every leg ran before the split, with the Windows Defender, `D:`
+  profile and time-zone handling it needs. Not run on PRs by default: each leg took 28-32 minutes
+  median, up to 66. `cross-platform-nightly.yml` runs it nightly (05:37 UTC) against `main`, on a PR
+  that carries the `cross-platform` label (when it is added and on every push while it stays), and on
+  `workflow_dispatch` against any ref. `release.yml` runs it too, before `prepare` (below). None of
+  these is a required check, which is what lets an unlabelled PR merge without them.
+
+The setup every test job shares (Bun, a frozen install, API types, the build that also bakes the
+DuckDB extensions) is the local composite action `.github/actions/setup-workspace`. The SDK time-zone
+runs and the example tests are `scripts/ci-sdk-tests-in-zone.sh` and `scripts/ci-example-tests.sh`,
+shared by the Linux job and the macOS/Windows legs; each script's header says why it is shaped the
+way it is.
+
+**The server shards are balanced by time.** `bun test --shard=N/M --timings=…` places files by the
+per-file durations in `packages/server/tests/shard-timings.json`; a file it does not list (a new
+spec) still runs, placed without a weight. Each shard uploads what it measured as a
+`shard-timings-<suite>-<N>` artifact. When the shards drift apart, download those artifacts from a
+green run and merge them into the file:
+
+```bash
+gh run download <run-id> -p 'shard-timings-*' -D /tmp/timings
+jq -s '{version: 1, files: (map(.files) | add | to_entries | sort_by(.key) | from_entries)}' \
+  /tmp/timings/*/shard-timings.json > packages/server/tests/shard-timings.json
+```
+
+Raise a shard count (the matrix and the `/M` in the same job) when a group's slowest shard passes
+about ten minutes of tests; the build in front of it is about two more.
+
+The Postgres-gated server specs (`PUBLISHER_TEST_POSTGRES_URL` and the rest) skip in these jobs and
+run against real services in `connection-integration-tests.yml`.
+
+A nightly failure is reported the way every scheduled run is today, by GitHub's own notification of
+the failed run. Slack reporting for the nightly workflows is tracked separately and will be a step of
+its own in each of them.
 
 The two npm publish workflows below do re-run their own package's suite, against the exact ref being
 published, because a PR run proves nothing about the ref a dispatch actually targets. What they do
@@ -86,8 +129,8 @@ timeout-minutes: 30
 ```
 
 The organization variable `CREDIBLE_RUNNERS` is the kill switch: set it to `false` and every such job
-goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, the Linux leg of
-`cross-platform-tests.yml`, `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
+goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, every Linux job of
+`cross-platform-tests.yml` (seven test jobs and the gate per PR), `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
 `image-scan.yml` (amd64 build only), `python-sdk.yml` when `build.yml` calls it (not when
 `release.yml` does), `release-sync.yml`, `skills-npm.yml`'s tarball check (not its publish job), and
 `hammer-nightly.yml`. `docker_smoke_test` reads a registry layer cache there and writes it only from
@@ -268,9 +311,16 @@ built (see *Publishing to PyPI*). `publish-packages` triggers the two other npm 
 `gh-release` cuts the tag, and
 only after npm and Docker have both succeeded.
 
-**`main-thread-check` runs first.** `prepare` needs it, so a release whose `main` fails the
-main-thread regression check stops before any branch is cut or anything is published, and a
-re-dispatch after a fix starts clean. It adds about ten minutes to a release. A release that must
+**`main-thread-check` and `cross-platform-tests` run first.** `prepare` needs both, so a release
+whose `main` fails the main-thread regression check, or fails the whole suite on macOS or Windows
+(`cross-platform-tests.yml` with `macos_windows: true`, against the commit being released), stops
+before any branch is cut or anything is published, and a re-dispatch after a fix starts clean. The
+main-thread check adds about ten minutes; the macOS and Windows legs run alongside it and add 30 to
+60, which is the price of PRs no longer running them. They run rather than look up last night's
+result because `main` usually moves between the nightly and a dispatch, so a green nightly on the
+release commit is rarely there to find. They restore no Actions cache (`restore_cache: false`), the
+rule for anything in front of a publish, and have no skip input: a release that cannot pass them
+waits for the fix. A release that must
 ship while the check itself is known to be wrong is dispatched with
 `skip_main_thread_check=true`: the job still runs and passes with a warning, rather than being
 skipped, because a skipped job would also skip every job downstream of `prepare`.
@@ -757,8 +807,8 @@ exact line it wrote. Without that it exits 0 announcing `SERVER_VERSION <unreada
 the new server still honours `--host`", and deriving the pin removes that prompt. Nothing else covers
 the thing that matters here, which is the **published** server this scaffolder is about to pin. The
 scaffolder's e2e suite does boot a server with `--host 127.0.0.1` and assert no LAN address answers
-(`packages/create-malloy-package/tests/e2e/scaffold.e2e.spec.ts:350-395`), run on every PR through
-`cross-platform-tests.yml` — but against the **repo's own build**, which is the one place the flag
+(`packages/create-malloy-package/tests/e2e/scaffold.e2e.spec.ts:350-395`), run on every PR in
+`cross-platform-tests.yml`'s Linux client job — but against the **repo's own build**, which is the one place the flag
 could not regress unnoticed anyway. The server itself has no unit test asserting the flag is parsed
 (`server.ts:112`), only the usage text at `:157`. The flag is not arbitrary — the server accepts an unknown flag without a word and falls back
 to binding `0.0.0.0`, so a release that renames or drops it does not fail a generated workspace, it

@@ -411,7 +411,7 @@ const queryRouteCounter = lazyCounter(
       "'query' is a persisted named query), " +
       "outcome ('used'|'skipped'|'fallback': a chosen leg whose run failed and " +
       "was answered live), reason ('NONE' when used, else the path report's " +
-      "SkipReason; 'RUN_FAILED' with 'fallback'). A leg that does not apply to " +
+      "SkipReason; 'READ_FAILED' with 'fallback'). A leg that does not apply to " +
       "the query is not counted; 'live' is counted 'used' when it answered a " +
       "query the router counted a leg for.",
 );

@@ -86,12 +86,37 @@ export const LAKE = "lake";
  * - `parquet`: a DuckLake catalog with row inlining off, as a real build
  *   session writes one (`ducklake_default_data_inlining_row_limit=0`,
  *   materialization_build_session.ts), so every stored row is read back from
- *   Parquet: the `storage=` destination, and the origin's own database (a
- *   `duckdb` connection that attached and USEd a DuckLake) for a database
- *   table. Parquet does not keep every type a DuckDB table keeps (F-13: a
- *   `HUGEINT` is written as a `DOUBLE`), which only this mode can show.
+ *   Parquet: the `storage=` destination, and the origin's own database for a
+ *   database table. Parquet does not keep every type a DuckDB table keeps
+ *   (F-13: a `HUGEINT` is written as a `DOUBLE`), which only this mode can
+ *   show. The origin is then an operator's environment DuckDB connection
+ *   ({@link PARQUET_ORIGIN}) whose `setupSQL` attaches and USEs the DuckLake,
+ *   as production configures one; the package sandbox takes no `setupSQL`,
+ *   and once locked can load no extension to attach one with.
  */
 export type LakeFormat = "duckdb" | "parquet";
+
+/**
+ * The origin warehouse of a `parquet` fixture: an environment DuckDB
+ * connection, confined to the environment directory, whose `setupSQL`
+ * attaches a DuckLake there and USEs it, so a database table is written to,
+ * and served from, Parquet. The fixture's models read it in place of the
+ * sandbox ({@link onParquetOrigin}).
+ */
+const PARQUET_ORIGIN = "wh";
+
+/**
+ * A fixture model read from {@link PARQUET_ORIGIN} instead of the sandbox: its
+ * `duckdb.sql(` / `duckdb.table(` sources, and its package-relative data paths
+ * spelled from the environment directory, where the origin's relative reads
+ * resolve.
+ */
+function onParquetOrigin(model: string): string {
+   return model
+      .replaceAll("duckdb.sql(", `${PARQUET_ORIGIN}.sql(`)
+      .replaceAll("duckdb.table(", `${PARQUET_ORIGIN}.table(`)
+      .replaceAll("'data/", "'pkg/data/");
+}
 
 /** The SQL that points a session at a DuckLake catalog under `dir`, every row in Parquet. */
 function parquetLakeSQL(dir: string, alias: string): string {
@@ -284,18 +309,48 @@ export async function loadFixture(
    const root = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-conform-"));
    const envPath = path.join(root, "env");
    fs.mkdirSync(envPath, { recursive: true });
+   const format = options.lake ?? "duckdb";
    if ("packageDir" in files && typeof files.packageDir === "string") {
+      if (format === "parquet") {
+         throw new Error(
+            "a parquet fixture rewrites its models onto its origin warehouse, which a copied package directory cannot take",
+         );
+      }
       fs.cpSync(files.packageDir, path.join(envPath, "pkg"), {
          recursive: true,
       });
    } else {
       writePackageFiles(
          path.join(envPath, "pkg"),
-         files as Record<string, string>,
+         format === "parquet"
+            ? Object.fromEntries(
+                 Object.entries(files as Record<string, string>).map(
+                    ([file, text]) => [
+                       file,
+                       file.endsWith(".malloy") ? onParquetOrigin(text) : text,
+                    ],
+                 ),
+              )
+            : (files as Record<string, string>),
          { manifest: { name: "pkg", description: "conformance fixture" } },
       );
    }
-   const format = options.lake ?? "duckdb";
+   // Inside the environment directory, the only place an environment
+   // connection's setupSQL reaches (duckdb_lockdown.ts).
+   const connections = [
+      ...(options.connections ?? []),
+      ...(format === "parquet"
+         ? [
+              {
+                 name: PARQUET_ORIGIN,
+                 type: "duckdb",
+                 duckdbConnection: {
+                    setupSQL: parquetLakeSQL(envPath, "origin_parquet"),
+                 },
+              },
+           ]
+         : []),
+   ];
    const lake =
       format === "parquet"
          ? // The catalog is attached under the destination's name, which a
@@ -321,15 +376,9 @@ export async function loadFixture(
       // sandbox stands in for a warehouse the plan's `storage=` gate admits.
       releaseSandbox = recordConnectionsAsForConformanceHarness({
          duckdb: "postgres",
-         ...Object.fromEntries(
-            (options.connections ?? []).map((c) => [c.name, "postgres"]),
-         ),
+         ...Object.fromEntries(connections.map((c) => [c.name, "postgres"])),
       });
-      env = await Environment.create(
-         "conform",
-         envPath,
-         (options.connections ?? []) as never,
-      );
+      env = await Environment.create("conform", envPath, connections as never);
       await env.addPackage("pkg");
       pkg = await env.getPackage(parsePackageName("pkg"), false);
    } catch (error) {
@@ -403,7 +452,6 @@ export async function loadFixture(
             pkg,
             lake,
             options,
-            format === "parquet" ? root : undefined,
          );
          // The served copy compiles at bind, asynchronously; settle it so its
          // warnings and its first answer are not a race.
@@ -571,20 +619,16 @@ export async function runPackageCase<Q extends CaseQuery, S>(
 
 /**
  * Build every planned table as a build would, one per content address:
- * in the origin warehouse (`duckdb`), `storage=` into the lake. A
- * `storage=` table is computed on the origin and copied through Parquet, since
- * the origin reads the package's files by relative path and the lake cannot.
+ * in the origin warehouse (the source's connection: the sandbox, or under
+ * `parquet` {@link PARQUET_ORIGIN}, already USEing its DuckLake), `storage=`
+ * into the lake. A `storage=` table is computed on the origin and copied
+ * through Parquet, since the origin reads the package's files by relative
+ * path and the lake cannot.
  */
 async function buildAll(
    pkg: Package,
    lake: DuckDBConnection,
    options: BindOptions = {},
-   /**
-    * Under `parquet`, the directory the origin's own DuckLake catalog is
-    * created in: the origin attaches and USEs it before a database table is
-    * built, so the table is written to Parquet and read from it at serve.
-    */
-   parquetOriginDir?: string,
 ): Promise<{
    built: LoadedFixture["built"];
    buildErrors: Record<string, string>;
@@ -593,37 +637,18 @@ async function buildAll(
 }> {
    // Each source is built on its own connection, a DuckDB one: the
    // fixture's, or a real package's snapshot (v1_cutover_runner.ts).
-   const parquetOrigins = new Set<DuckDBConnection>();
    const warehouseFor = async (connectionName: string | undefined) =>
       (await pkg.getMalloyConnection(
          connectionName ?? "duckdb",
       )) as DuckDBConnection;
-   /** The origin, pointed at its DuckLake under `parquet`, for a database table. */
-   const databaseFor = async (connectionName: string | undefined) => {
-      const warehouse = await warehouseFor(connectionName);
-      if (parquetOriginDir && !parquetOrigins.has(warehouse)) {
-         // The origin is the package's sandbox, locked down and confined to
-         // the package (duckdb_lockdown.ts): its lake sits inside the
-         // package, and row inlining is an ATTACH option, as no SET runs
-         // once the sandbox is locked.
-         const dir = path.join(pkg.getPackagePath(), ".origin_parquet");
-         fs.mkdirSync(dir, { recursive: true });
-         const q = (p: string) => p.replace(/'/g, "''");
-         await warehouse.runSQL(
-            `ATTACH IF NOT EXISTS 'ducklake:${q(path.join(dir, "origin_parquet.ducklake"))}' AS origin_parquet (DATA_PATH '${q(path.join(dir, "data"))}/', DATA_INLINING_ROW_LIMIT 0)`,
-         );
-         await warehouse.runSQL("USE origin_parquet");
-         parquetOrigins.add(warehouse);
-      }
-      return warehouse;
-   };
    const database: Record<string, Record<string, unknown>> = {};
    const stored: Record<string, Record<string, unknown>> = {};
    const built: LoadedFixture["built"] = [];
    const buildErrors: Record<string, string> = {};
    const seen = new Set<string>();
-   // Inside the package: its sandbox writes the Parquet, and is confined to
-   // the package directory (duckdb_lockdown.ts).
+   // Inside the package: the origin writes the Parquet, and is confined to
+   // the package directory (the sandbox) or the environment directory that
+   // holds it (an environment connection), duckdb_lockdown.ts.
    const scratch = fs.mkdtempSync(
       path.join(pkg.getPackagePath(), ".conform-build-"),
    );
@@ -762,7 +787,7 @@ async function buildAll(
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
-               const origin = await databaseFor(entry.connectionName);
+               const origin = await warehouseFor(entry.connectionName);
                await origin.runSQL(
                   `CREATE OR REPLACE TABLE ${quoted} AS ${entry.sql}`,
                );
