@@ -610,7 +610,7 @@ for (const [placement, gatedSources] of [
          }
       });
 
-      it("answers a joined source's rollup under a gated parent (A7) as live: from the rollup on the database tier (g-mixed), ROW_LEVEL_GATE without naming the gate in a storage destination", async () => {
+      it("answers a joined source's rollup under a gated parent (A7) as live: from the rollup on the database tier (g-mixed), live without naming the gate in a storage destination it is not stored in", async () => {
          const malloy =
             "run: gated_parent -> { group_by: category; aggregate: order_lines.qty_total }";
          const run = await fixture.run({
@@ -625,14 +625,15 @@ for (const [placement, gatedSources] of [
             expect(rowDifference(run.live, run.served)).toBeUndefined();
             return;
          }
+         // In a storage destination the parent here is not stored there, so
+         // the branch declines (`CROSS_CONNECTION`) before its gate is read;
+         // no decline names the gate.
          expectLive(run);
          fixture.setBindings(fixture.bindings);
          const { path } = await fixture.runAsIs(malloy, EAST.givens);
-         const contract = (path?.considered ?? []).filter(
-            (c) => (c as { reason?: string }).reason === "ROW_LEVEL_GATE",
-         );
-         expect(contract.length).toBeGreaterThan(0);
-         for (const c of contract) {
+         const skipped = path?.considered ?? [];
+         expect(skipped.length).toBeGreaterThan(0);
+         for (const c of skipped) {
             expect(JSON.stringify(c)).not.toContain("region");
          }
       });

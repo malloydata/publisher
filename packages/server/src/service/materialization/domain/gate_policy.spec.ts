@@ -266,7 +266,7 @@ describe("the gate policy at the router", () => {
       expect(answerKeepsGates("served", database, OFF, NO_G3)).toBe(false);
    });
 
-   it("counts a storage= table admitted past its own gate as a G3 table, and no other storage= table", () => {
+   it("counts a storage= table admitted past its own gate as a G3 table, and no other storage= table, on the served copy and the rollup leg", () => {
       const own = { tier: "storage" as const, ownGateKept: true, ...exact };
       const other = { tier: "storage" as const, ...exact };
       expect(answerKeepsGates("served", [own], OFF, G3)).toBe(true);
@@ -280,6 +280,24 @@ describe("the gate policy at the router", () => {
       expect(answerKeepsGates("view", [own], OFF, G3)).toBe(false);
       // A `storage=` rollup admitted past its base's own gates (P3/P4).
       expect(answerKeepsGates("rollup", [own], OFF, G3)).toBe(true);
+      // g-mixed for a `storage=` rollup: a join branch reads the query
+      // source's own table there beside a rollup that holds only ungated
+      // rows; beside a table proven neither way, it is not kept.
+      const ungatedRollup = {
+         tier: "storage" as const,
+         holdsOnlyUngatedRows: true,
+         ...exact,
+      };
+      expect(answerKeepsGates("rollup", [own, ungatedRollup], OFF, G3)).toBe(
+         true,
+      );
+      expect(answerKeepsGates("rollup", [ungatedRollup], OFF, NO_G3)).toBe(
+         false,
+      );
+      expect(answerKeepsGates("rollup", [other, ungatedRollup], OFF, G3)).toBe(
+         false,
+      );
+      expect(answerKeepsGates("rollup", [other], OFF, G3)).toBe(false);
    });
 
    it("L2: keeps no answer whose gate column is stored inexactly, under any switch", () => {

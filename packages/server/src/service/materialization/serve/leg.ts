@@ -237,21 +237,26 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
          return {
             runnable: answer.runnable,
             tablesRead: undefined,
-            // The rollup it read, for the gate policy (G3 for rollups): a
+            // The tables it read, for the gate policy (G3 for rollups) and
+            // the row-scope and collation checks: a join branch in a storage
+            // destination, the query source's tables there and the
+            // rollup's, as the branch lists them; else the rollup, a
             // `storage=` one by its binding, a database one through the
             // build manifest.
-            gateTablesRead: answer.binding
-               ? [answer.binding]
-               : [
-                    {
-                       tier: answer.virtualMap ? "storage" : "database",
-                       // The database rollup's table, for the check of its
-                       // own collation (`gate_collation.ts`).
-                       ...(answer.databaseTablePath
-                          ? { tablePath: answer.databaseTablePath }
-                          : {}),
-                    },
-                 ],
+            gateTablesRead:
+               answer.gateTablesRead ??
+               (answer.binding
+                  ? [answer.binding]
+                  : [
+                       {
+                          tier: answer.virtualMap ? "storage" : "database",
+                          // The database rollup's table, for the check of
+                          // its own collation (`gate_collation.ts`).
+                          ...(answer.databaseTablePath
+                             ? { tablePath: answer.databaseTablePath }
+                             : {}),
+                       },
+                    ]),
             // Every stored table the answer reads, when that is more than the
             // rollup's (a join branch answered in a storage destination reads
             // the query source's table there too): together they decide
