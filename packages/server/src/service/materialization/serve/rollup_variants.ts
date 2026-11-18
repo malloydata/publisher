@@ -72,7 +72,8 @@
  * DECLARING FILE (`declaring_file_variant.ts`), so it keeps the author's
  * `sourceID` and carries the run target's entry-point gates as note lines.
  * With `materialize.gatedSources` on, or under G3 with it off for a database
- * rollup (the gate policy, `domain/gate_policy.ts`), the router lets the leg
+ * rollup or for an entry point whose gates are locks reading no column on
+ * either tier (the gate policy, `domain/gate_policy.ts`), the router lets the leg
  * past a gated entry point; a rollup then answers only when it was built for
  * its gate
  * (`rollupGateEnforcedAtRead`) and the pre-proof holds (`proveGates`): the

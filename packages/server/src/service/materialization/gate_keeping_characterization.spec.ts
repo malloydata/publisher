@@ -30,6 +30,7 @@
  * tier, under an entry-point veto.
  */
 
+import { binaryCollationRuntime } from "../../test_helpers/binary_collation_runtime";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -646,11 +647,11 @@ const ROUTER: Record<string, Record<string, string>> = {
          "view, a kept and another storage table": "used, past the gate",
          "view, no table": "used, past the gate",
          "rollup, database tables": "used, past the gate",
-         "rollup, storage tables": "used, past the gate",
+         "rollup, storage tables": "skipped row_level_gate",
          "rollup, database and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
-            "used, past the gate",
-         "rollup, a kept and another storage table": "used, past the gate",
+            "skipped row_level_gate",
+         "rollup, a kept and another storage table": "skipped row_level_gate",
          "rollup, no table": "used, past the gate",
          "served, database tables": "used, past the gate",
          "served, storage tables": "used, past the gate",
@@ -693,11 +694,11 @@ const ROUTER: Record<string, Record<string, string>> = {
          "view, a kept and another storage table": "used, past the gate",
          "view, no table": "used, past the gate",
          "rollup, database tables": "used, past the gate",
-         "rollup, storage tables": "used, past the gate",
+         "rollup, storage tables": "skipped row_level_gate",
          "rollup, database and storage tables": "used, past the gate",
          "rollup, storage tables kept past their own gate":
-            "used, past the gate",
-         "rollup, a kept and another storage table": "used, past the gate",
+            "skipped row_level_gate",
+         "rollup, a kept and another storage table": "skipped row_level_gate",
          "rollup, no table": "used, past the gate",
          "served, database tables": "used, past the gate",
          "served, storage tables": "used, past the gate",
@@ -741,6 +742,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tier: "database" | "storage";
       sourceName: string;
       tablePath: string;
+      destinationName: string;
       schema: { name: string; type: string }[];
       ownGateKept?: boolean;
    } => ({
@@ -748,6 +750,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       tier,
       sourceName: `t_${tier}`,
       tablePath: `t_${tier}`,
+      destinationName: "lake",
       schema: [{ name: "id", type: "BIGINT" }],
    });
    const reads: Record<string, ReturnType<typeof table>[]> = {
@@ -765,10 +768,11 @@ describe("gate keeping at the router, under an entry-point veto", () => {
       ],
       "no table": [],
    };
-   const runnable = {} as never;
+   const runnable = { runtime: binaryCollationRuntime() } as never;
    // The author's compile the router lists the gate's columns from: a source
-   // whose stored columns the gate reads none of, so every table's gate
-   // columns are exact and the rows below are the policy's by tier alone.
+   // with a row filter on `id`, so the gate reads a column and the rows
+   // below are the policy's by tier (a gate reading no column, a lock alone,
+   // is `gatesReadNoColumn`, in gate_policy.spec.ts).
    const authorRunnable = {
       getPreparedQuery: async () => ({
          _query: { structRef: "s" },
@@ -783,6 +787,9 @@ describe("gate keeping at the router, under an entry-point veto", () => {
                   connection: "duckdb",
                   dialect: "duckdb",
                   fields: [{ name: "id", type: "number" }],
+                  annotations: {
+                     notes: [{ text: "#(access_filter) id = $ID\n" }],
+                  },
                },
             },
          },

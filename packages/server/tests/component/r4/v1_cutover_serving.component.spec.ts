@@ -2626,7 +2626,9 @@ source: through_join is duckdb.table('orders_raw') extend {
          ).toEqual([]);
       });
 
-      for (const c of CASES) {
+      // A lock alone reads no row field, so its rollup is built and read on
+      // either tier (gated_rollup_lock.component.spec.ts).
+      for (const c of CASES.filter((c) => c.source !== "by_lock")) {
          it(`answers ${c.kind} live, equal to live`, async () => {
             for (const caller of c.callers) {
                expectLive(

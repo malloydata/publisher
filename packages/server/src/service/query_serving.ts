@@ -33,7 +33,11 @@ import {
    type GateReads,
    gateColumnTypesOf,
    gateReadsOfQuery,
+   storedTableCollationRefusal,
+   storedTypeIsString,
+   stringGateCollationRefusal,
 } from "./materialization/serve/gate_reads";
+import { rowFilterOnComposite } from "./composite_row_filter";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
@@ -145,6 +149,10 @@ export function variantsOf(
       }
       return r;
    };
+   let composite: Promise<boolean> | undefined;
+   const compositeOnce = () =>
+      (composite ??= entryRowFilterOnComposite(facts.authorRunnable));
+   const givens = facts.givens as Record<string, unknown> | undefined;
    return legs.map((leg) => {
       // A leg with no row in the gate policy (the query leg) is never tried
       // past an entry-point gate: the policy fails closed.
@@ -157,21 +165,41 @@ export function variantsOf(
          keepsContracts:
             gateLeg !== undefined &&
             legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
-         keepsContractsFor: async (answer: LegAnswer) =>
-            gateLeg !== undefined &&
-            answerKeepsGates(
+         keepsContractsFor: async (answer: LegAnswer) => {
+            if (gateLeg === undefined) return false;
+            // Live refuses every caller of a source whose row filter was
+            // declared on a composite: no stored answer is kept for it.
+            if (await compositeOnce()) return false;
+            const read = answer.gateTablesRead ?? answer.tablesRead ?? [];
+            const tables = await withGateColumnTypes(read, gateReadsFor);
+            if (
+               (await storedComparisonRefusal(
+                  answer,
+                  tables,
+                  facts.authorRunnable,
+                  () => gateReadsFor(read),
+                  givens,
+               )) !== undefined
+            ) {
+               return false;
+            }
+            return answerKeepsGates(
                gateLeg,
-               await withGateColumnTypes(
-                  answer.gateTablesRead ?? answer.tablesRead ?? [],
-                  gateReadsFor,
-               ),
+               tables,
                switches,
                SERVING_GATE_CONTEXT,
-            ),
+            );
+         },
          attempt: async () => {
             const answer = await leg.attempt(facts, pinned);
-            if (leg.kind === "served") {
-               await assertRowScopeExact(answer, gateReadsFor);
+            if (leg.kind === "served" || leg.kind === "rollup") {
+               await assertRowScopeExact(
+                  answer,
+                  gateReadsFor,
+                  facts.authorRunnable,
+                  leg.kind,
+                  givens,
+               );
             }
             if (leg.kind === "served") {
                logger.debug("Serving query from the served copy (virtual)", {
@@ -231,9 +259,20 @@ async function withGateColumnTypes(
    );
    const typeOf = new Map(storage.map((t, i) => [t, types[i]]));
    const held = new Set((reads?.columns ?? []).flat());
+   // Locks only: the gates name no field at all, so no stored row can change
+   // their outcome (the gate policy's `gatesReadNoColumn`).
+   const readsNoColumn =
+      reads !== undefined &&
+      !reads.unresolved &&
+      reads.columns.length === 0 &&
+      reads.names.size === 0;
    return tables.map((t) => {
       if (t.tier === "storage") {
-         return { ...t, gateColumnTypes: typeOf.get(t) };
+         return {
+            ...t,
+            gateColumnTypes: typeOf.get(t),
+            ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
+         };
       }
       // A database table is built in the source's own types, so only a
       // column the bind found moved since then (altered in the warehouse, or
@@ -264,6 +303,9 @@ async function withGateColumnTypes(
 async function assertRowScopeExact(
    answer: LegAnswer,
    gateReadsFor: GateReadsFor,
+   authorRunnable: QueryMaterializer,
+   leg: "served" | "rollup",
+   givens: Record<string, unknown> | undefined,
 ): Promise<void> {
    const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
    const judged = await withGateColumnTypes(tables, gateReadsFor);
@@ -272,11 +314,101 @@ async function assertRowScopeExact(
    // A gated entry point's scope is judged by the gate policy, past the gate
    // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
    if (reads !== undefined && (!reads.scoped || reads.gated)) return;
-   if (judged.every(gateColumnsExact)) return;
-   throw new LegDecline(
-      "served_copy_not_served",
-      "the query's source scopes its rows by a column a stored table does not hold exactly",
-   );
+   const decline = (why: string) =>
+      leg === "served"
+         ? new LegDecline("served_copy_not_served", why)
+         : new LegDecline("rollup_contract", why, { shapeCheck: true });
+   // The exactness rule is the served copy's; the rollup leg judges its own
+   // stored columns (`storedRollupReads`), so it is asked only the
+   // comparison rules below.
+   if (leg === "served" && !judged.every(gateColumnsExact)) {
+      throw decline(
+         "the query's source scopes its rows by a column a stored table does not hold exactly",
+      );
+   }
+   if (
+      (await storedComparisonRefusal(
+         answer,
+         judged,
+         authorRunnable,
+         () => gateReadsFor(tables),
+         givens,
+      )) !== undefined
+   ) {
+      throw decline(
+         "the query's source scopes its rows by a column a stored table does not compare as its source does",
+      );
+   }
+}
+
+/**
+ * Whether the query's entry point reads a row filter declared on a composite
+ * source ({@link rowFilterOnComposite}); a compile that cannot be read
+ * reads true.
+ */
+async function entryRowFilterOnComposite(
+   runnable: QueryMaterializer,
+): Promise<boolean> {
+   try {
+      const prepared = await readPreparedQuery(runnable);
+      const struct = resolveStructRefSource(
+         prepared.structRef as never,
+         prepared.modelDef as never,
+      );
+      return rowFilterOnComposite(struct, prepared.modelDef);
+   } catch {
+      return true;
+   }
+}
+
+/** A stored type that carries a zone: compared in the reading session's zone. */
+const ZONED_STORED_TYPE = /\b(TIMESTAMP\s+WITH\s+TIME\s+ZONE|TIMESTAMPTZ)\b/i;
+
+/**
+ * Why a stored table an answer read does not compare the columns the entry
+ * point's gates and scopes read as the source compares them, or undefined
+ * when it does (the comparison rules, beside the exactness rule):
+ *
+ * - a column stored with a zone (`TIMESTAMP WITH TIME ZONE`) is compared in
+ *   the destination session's zone, not the source's;
+ * - a string column is compared byte-exact on a `storage=` table, which
+ *   matches the source only under its collation's terms, and every table
+ *   read is judged by its own collation as well (`serve/gate_collation.ts`).
+ */
+async function storedComparisonRefusal(
+   answer: LegAnswer,
+   tables: readonly TableRead[],
+   authorRunnable: QueryMaterializer,
+   readsOf: () => Promise<GateReads | undefined>,
+   givens: Record<string, unknown> | undefined,
+): Promise<string | undefined> {
+   const stored = tables.filter((t) => t.tier === "storage");
+   const types = stored.flatMap((t) => t.gateColumnTypes ?? []);
+   if (types.some((type) => ZONED_STORED_TYPE.test(type))) {
+      return "a gate column stored with a zone";
+   }
+   const reads = await readsOf();
+   if (stored.length > 0) {
+      const source = await stringGateCollationRefusal({
+         authorRunnable,
+         reads,
+         stringStored: types.some(storedTypeIsString),
+         ...(givens ? { givens } : {}),
+      });
+      if (source !== undefined) return source;
+   }
+   // The stored side: every table read, however it was admitted.
+   return storedTableCollationRefusal({
+      tables: tables as readonly (TableRead & {
+         virtualHandle?: string;
+         tablePath?: string;
+         destinationName?: string;
+      })[],
+      answerRunnable: answer.runnable,
+      virtualMap: answer.virtualMap,
+      authorRunnable,
+      reads,
+   });
 }
 
 /** The answer the router's decision describes, before anything runs. */

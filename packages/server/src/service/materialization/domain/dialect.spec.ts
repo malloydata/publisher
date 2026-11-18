@@ -65,6 +65,9 @@ const DECIDED: Record<Flag, DialectName[]> = {
    onlyBigIntegerType: ["standardsql"],
    foldsTableNameCase: ["databricks", "duckdb", "presto", "sqlserver", "trino"],
    utcSessions: ["duckdb"],
+   // A string column's comparison is read only where it can be: BigQuery is
+   // byte-exact, DuckDB and Postgres are probed (`serve/gate_collation.ts`).
+   stringCollation: ["duckdb", "postgres", "standardsql"],
 };
 
 /** Each dialect's leaf budget, as decided (`domain/table_name.ts`). */

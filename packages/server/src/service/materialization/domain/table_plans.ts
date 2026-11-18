@@ -540,6 +540,12 @@ export interface RollupVariantPlan extends RollupPlan {
     */
    baseGateOwn?: true;
    /**
+    * Every gate of the base, own or inherited, is an `#(authorize)` lock whose
+    * text reads only givens and literals: it admits or refuses the whole
+    * query, so the gate policy keeps it on either tier (`lockOnly`).
+    */
+   baseGateLocksOnly?: true;
+   /**
     * Grain dimensions the base declares `internal`, stored, and redeclared
     * `internal` on the variant, so no query selects one (a gate or a
     * re-applied `where:` reads it, as on live).

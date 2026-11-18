@@ -24,7 +24,8 @@
  * both, each field a grain dimension) is built and read past the gate the
  * same way, each caller getting exactly live's rows; one over an inherited
  * gate, a gate through a join or a gate field outside the grain is not
- * built, and a `storage=` one waits for its review.
+ * built, and a `storage=` one waits for its review unless its base's gates
+ * are locks alone.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -760,9 +761,17 @@ describe("R4: gated queries on storage= rollups with gated sources off", () => {
    });
 
    it("builds no storage= rollup over a gated base: it waits for its review", () => {
+      // A lock alone reads no row field, so its rollup is built on either
+      // tier (gated_rollup_lock.component.spec.ts).
+      expect(fixture.rollupRefusals.map((r) => r.sourceName)).not.toContain(
+         "by_lock",
+      );
       expect(
          fixture.rollupRefusals
-            .filter((r) => !["open", "order_lines"].includes(r.sourceName))
+            .filter(
+               (r) =>
+                  !["open", "order_lines", "by_lock"].includes(r.sourceName),
+            )
             .every(
                // Named by the gate's kind: a row filter or a lock.
                (r) =>
@@ -773,7 +782,7 @@ describe("R4: gated queries on storage= rollups with gated sources off", () => {
       ).toBe(true);
    });
 
-   for (const c of CASES) {
+   for (const c of CASES.filter((c) => c.source !== "by_lock")) {
       it(`answers ${c.kind} live, equal to live`, async () => {
          for (const caller of c.callers) {
             expectLive(
