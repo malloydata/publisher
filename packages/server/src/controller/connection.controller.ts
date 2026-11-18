@@ -44,6 +44,7 @@ import {
 } from "../service/connection_public_view";
 import { validateDuckdbApiSurface } from "../service/connection_config";
 import { assertSingleSelect } from "../service/single_select";
+import { usageCatalog, withStatementUsage } from "../service/statement_usage";
 import { ConnectionService } from "../service/connection_service";
 import {
    columnsOfSchema,
@@ -347,6 +348,20 @@ export class ConnectionController {
          };
       }
       return environment.getApiConnection(connectionName);
+   }
+
+   /** A managed connection's DuckLake catalog, for its usage records. */
+   private managedCatalog(
+      environment: Environment,
+      connectionName: string,
+   ): string | undefined {
+      try {
+         return usageCatalog(
+            this.getApiConnectionForLookup(environment, connectionName),
+         );
+      } catch {
+         return undefined;
+      }
    }
 
    /**
@@ -930,9 +945,35 @@ export class ConnectionController {
          environmentForAdmission,
          connectionName,
       );
+      // Metering is keyed on `managed`, not on running as a single SELECT: a
+      // locked-down DuckDB connection is the deployment's own and no meter's.
+      const managed = singleSelect === "managed database";
       if (singleSelect) {
          await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
+      // A managed connection is metered (statement_usage.ts): the statement
+      // that runs below emits one usage record, whether it answers or fails.
+      // One refused above, or by a check before the run, never ran and emits
+      // none.
+      const metered = <T extends { rows: unknown[] }>(
+         run: () => Promise<T>,
+      ): Promise<T> =>
+         managed
+            ? withStatementUsage(
+                 {
+                    environment: environmentName,
+                    connection: connectionName,
+                    surface: "sql",
+                    package: packageName,
+                    catalog: this.managedCatalog(
+                       environmentForAdmission,
+                       connectionName,
+                    ),
+                 },
+                 run,
+                 (result) => result.rows.length,
+              )
+            : run();
 
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -1033,11 +1074,13 @@ export class ConnectionController {
                abortSignal: signal,
             };
             try {
-               return await streamSqlWithBudget(
-                  malloyConnection,
-                  sqlStatement,
-                  optionsWithSignal,
-                  { maxRows, maxBytes },
+               return await metered(() =>
+                  streamSqlWithBudget(
+                     malloyConnection,
+                     sqlStatement,
+                     optionsWithSignal,
+                     { maxRows, maxBytes },
+                  ),
                );
             } catch (error) {
                // Already classified, with a message written for the caller.
@@ -1065,9 +1108,8 @@ export class ConnectionController {
             abortSignal: signal,
          };
          try {
-            return await malloyConnection.runSQL(
-               sqlStatement,
-               optionsWithSignal,
+            return await metered(() =>
+               malloyConnection.runSQL(sqlStatement, optionsWithSignal),
             );
          } catch (error) {
             throw sqlRunFailure(error, connectionName, environmentForAdmission);
