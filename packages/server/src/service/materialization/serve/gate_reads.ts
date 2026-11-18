@@ -302,6 +302,12 @@ class GateReadWalk {
       return equalityOnlyExpr(e) || this.leavesNotString(e, source);
    }
 
+   /** Whether the answer reads `source`'s own table (its `sourceID` is stored). */
+   private isStored(source: unknown): boolean {
+      const id = (source as { sourceID?: unknown } | undefined)?.sourceID;
+      return typeof id === "string" && this.stored.has(id);
+   }
+
    private tooDeep(): boolean {
       return ++this.steps > 4096;
    }
@@ -397,7 +403,15 @@ class GateReadWalk {
          this.unresolved = true;
          return;
       }
-      if ((source as { query?: unknown } | undefined)?.query !== undefined) {
+      // A stage output of a source whose own table the answer reads is a
+      // column of that table: its build evaluated the stage, in the source's
+      // own warehouse as live does, so the read compares only the stored
+      // column, as for any other column. A stage computed when the table is
+      // read (a query-shaped source over a stored one) is followed back.
+      if (
+         (source as { query?: unknown } | undefined)?.query !== undefined &&
+         !this.isStored(source)
+      ) {
          this.throughStages(source, stored, along, joins);
          return;
       }
@@ -529,9 +543,7 @@ class GateReadWalk {
       }
       this.scopeMembers(source, depth, at, own);
       this.scopeJoins(source, depth, at);
-      const built =
-         typeof s.sourceID === "string" && this.stored.has(s.sourceID);
-      if (s.query !== undefined && !built) {
+      if (s.query !== undefined && !this.isStored(source)) {
          this.scopeQuery(source, s.query, depth);
       }
    }
