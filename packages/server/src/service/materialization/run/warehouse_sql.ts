@@ -620,10 +620,11 @@ export function probeSelect(dialect: string, innerSelect: string): string {
 
 /**
  * `sql` bounded to `timeoutMs` on the warehouse itself, for a read that may be
- * given up on (the late-row check): Postgres takes a `SET LOCAL
- * statement_timeout` in the same simple-protocol call, which holds for that
- * call's implicit transaction alone, because Malloy's Postgres connection
- * cannot cancel a statement in flight. Every other dialect takes `sql` as it
+ * given up on (the late-row check): Postgres takes a transaction-local
+ * `statement_timeout` (`set_config(…, true)`) in the same simple-protocol
+ * call, which holds for that call's implicit transaction alone, because
+ * Malloy's Postgres connection cannot cancel a statement in flight; a
+ * stricter timeout the session already has is kept. Every other dialect takes `sql` as it
  * is: BigQuery, Snowflake and DuckDB cancel through the run options' abort
  * signal.
  */
@@ -633,9 +634,18 @@ export function withStatementTimeout(
    timeoutMs: number,
 ): string {
    const knownDialect = registeredDialect(dialect);
+   const ms = Math.max(1, Math.round(timeoutMs));
    switch (knownDialect) {
       case "postgres":
-         return `SET LOCAL statement_timeout = ${Math.max(1, Math.round(timeoutMs))}; ${sql}`;
+         return (
+            // The smaller of this and the session's own timeout (a
+            // connection's statementTimeoutMilliseconds, set when the session
+            // opens): a stricter one the connection chose is kept.
+            `SELECT set_config('statement_timeout', (SELECT CASE WHEN ` +
+            `setting::bigint > 0 AND setting::bigint < ${ms} THEN setting ` +
+            `ELSE '${ms}' END FROM pg_settings WHERE name = ` +
+            `'statement_timeout'), true); ${sql}`
+         );
       case "duckdb":
       case "standardsql":
       case "snowflake":
