@@ -231,9 +231,20 @@ async function withGateColumnTypes(
    );
    const typeOf = new Map(storage.map((t, i) => [t, types[i]]));
    const held = new Set((reads?.columns ?? []).flat());
+   // Locks only: the gates name no field at all, so no stored row can change
+   // their outcome (the gate policy's `gatesReadNoColumn`).
+   const readsNoColumn =
+      reads !== undefined &&
+      !reads.unresolved &&
+      reads.columns.length === 0 &&
+      reads.names.size === 0;
    return tables.map((t) => {
       if (t.tier === "storage") {
-         return { ...t, gateColumnTypes: typeOf.get(t) };
+         return {
+            ...t,
+            gateColumnTypes: typeOf.get(t),
+            ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
+         };
       }
       // A database table is built in the source's own types, so only a
       // column the bind found moved since then (altered in the warehouse, or
