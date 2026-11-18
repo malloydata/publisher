@@ -215,10 +215,9 @@ export interface ParentKeyNeed {
 
 /**
  * Whether a rollup at `placement` over a gated base may be read past its
- * base's gate (and so is worth building), by the gate policy: database,
- * under `materialize.gatedSources` or, with it off, under G3 when every gate
- * is the base's `own`; in a storage destination once the managed-tier review
- * allows it.
+ * base's gate (and so is worth building), by the gate policy: on either
+ * tier, under `materialize.gatedSources` or, with it off, under G3 when every
+ * gate is the base's `own`, or a lock reading no row field.
  */
 function rollupsServeGatedBases(
    placement: { storage?: string },
@@ -1296,9 +1295,7 @@ function declarationRefusal(
       return unservable(
          gate.reason.base,
          decl,
-         decl.storage !== undefined
-            ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
-            : "the source's row-level gate (`#(access_filter)` or `#(authorize)`) is inherited from a source it extends, and a rollup keeps only its base's own gate unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
+         "the source's row-level gate (`#(access_filter)` or `#(authorize)`) is inherited from a source it extends, and a rollup keeps only its base's own gate unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
       );
    }
    // A gate on a source the base joins is not the base's to graft: the

@@ -352,9 +352,9 @@ describe("the #(rollup) rollup candidate past an entry-point gate (row 1)", () =
                   shapeBindings: [],
                } as never);
             expect(await read("database")).toBe(true);
-            // A `storage=` rollup past a gate reading a column waits for its
-            // review, under either switch.
-            expect(await read("storage")).toBe(false);
+            // A `storage=` rollup plan did not mark keeps the gate only
+            // under the switch (P3/P4).
+            expect(await read("storage")).toBe(on);
          } finally {
             restore();
          }
