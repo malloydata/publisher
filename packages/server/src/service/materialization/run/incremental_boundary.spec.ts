@@ -284,12 +284,8 @@ describe("probeStoredWatermark, on DuckDB", () => {
       expect(watermarkTextSql("postgres", "timestamp", "MAX(x)")).toBe(
          "to_char(MAX(x), 'YYYY-MM-DD HH24:MI:SSOF')",
       );
-      // Transaction-local, and never looser than the session's own.
       expect(withStatementTimeout("postgres", "SELECT 1", 60_000)).toBe(
-         "SELECT set_config('statement_timeout', (SELECT CASE WHEN " +
-            "setting::bigint > 0 AND setting::bigint < 60000 THEN setting " +
-            "ELSE '60000' END FROM pg_settings WHERE name = " +
-            "'statement_timeout'), true); SELECT 1",
+         "SET LOCAL statement_timeout = 60000; SELECT 1",
       );
       expect(withStatementTimeout("standardsql", "SELECT 1", 60_000)).toBe(
          "SELECT 1",

@@ -108,6 +108,14 @@ export interface Capabilities {
     */
    driverKeepsBigIntegers: boolean;
    /**
+    * Its live answer rounds a 64-bit integer past 2^53 through JSON in the
+    * way measured (to the nearest double, a BigInt below 1e21 and a number
+    * from it), so a `storage=` answer is read exactly and rounded the same
+    * way after it runs (`live_big_integers.ts`). Postgres alone: the other
+    * dialects whose live answer rounds are unmeasured.
+    */
+   liveRoundsBigIntegersMeasured: boolean;
+   /**
     * Its `CAST` takes an integer type by its catalog name. Not MySQL, whose
     * `CAST` names no integer type (`CAST(x AS bigint)` is a syntax error).
     */
@@ -181,6 +189,7 @@ const NONE: Capabilities = Object.freeze({
    needsQualifiedTable: false,
    nestedColumns: false,
    driverKeepsBigIntegers: false,
+   liveRoundsBigIntegersMeasured: false,
    castsToIntegerType: false,
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
@@ -222,6 +231,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       relationProbe: true,
       tableOwnership: true,
       castsToIntegerType: true,
+      liveRoundsBigIntegersMeasured: true,
    }),
    standardsql: Object.freeze({
       ...NONE,

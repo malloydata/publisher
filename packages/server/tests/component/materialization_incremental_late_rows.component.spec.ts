@@ -18,7 +18,6 @@
  * Opt-in: set PUBLISHER_TEST_POSTGRES_URL.
  */
 
-import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
@@ -386,53 +385,6 @@ describe.skipIf(!POSTGRES_URL)(
          );
          await sql(`ALTER TABLE ${SCHEMA}.ev_moved RENAME TO ev`);
          expect(Date.now() - renamed).toBeLessThan(2_000);
-      });
-
-      it("keeps a connection's stricter statement timeout for the check", async () => {
-         // The session's own 2 s timeout, as a connection's
-         // statementTimeoutMilliseconds sets it, wins over the check's 60 s.
-         const strict = new PostgresConnection({
-            name: "strict",
-            connectionString: POSTGRES_URL,
-            setupSQL: "SET statement_timeout = 2000",
-         });
-         try {
-            const lineage = {
-               physicalTableName: q("ev"),
-               connectionName: "strict",
-               sourceEntityId: "sid",
-               watermarkName: "loaded_at",
-               watermarkType: "timestamp",
-               mergeKeys: ["id"],
-               scopeColumns: [],
-               strategy: "merge" as const,
-            };
-            const started = Date.now();
-            const found = await countLateRows({
-               target: warehouseDeltaTarget({
-                  dialect: "postgres",
-                  runner: (sql, options) => strict.runSQL(sql, options),
-                  quotedTablePath: q("ev"),
-                  lineage,
-                  sourceSQL: `SELECT id, loaded_at, amt, pg_sleep(3) AS s FROM ${q("ev")}`,
-               }),
-               lineage,
-               start: {
-                  malloyType: "timestamp",
-                  value: new Date().toISOString().slice(0, 19),
-               },
-               end: {
-                  malloyType: "timestamp",
-                  value: new Date(Date.now() + 4 * 3_600_000)
-                     .toISOString()
-                     .slice(0, 19),
-               },
-            });
-            expect(found.error).toContain("statement timeout");
-            expect(Date.now() - started).toBeLessThan(5_000);
-         } finally {
-            await strict.close();
-         }
       });
 
       it("refuses a stored watermark read in a session that is not UTC", async () => {

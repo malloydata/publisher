@@ -65,10 +65,10 @@ jobs:
     timeout-minutes: 45
     # These steps are a full frozen-lockfile install, a build and the package's
     # suite, and cross-platform-tests.yml already runs that suite on every PR
-    # (`Run create-malloy-package tests` at :169, plus the Linux-only e2e at
-    # :177) — reached through build.yml, which is the workflow that triggers,
-    # but NOT defined in it: grep build.yml for this package and you get
-    # nothing. Named precisely because the next person to trim
+    # (`Run create-malloy-package tests`, plus the Linux-only e2e, in its
+    # `linux_clients` job) — reached through build.yml, which is the workflow
+    # that triggers, but NOT defined in it: grep build.yml for this package and
+    # you get nothing. Named precisely because the next person to trim
     # cross-platform-tests.yml will otherwise check build.yml, find no
     # reference, and conclude the coverage was never there.
     runs-on: ubuntu-latest

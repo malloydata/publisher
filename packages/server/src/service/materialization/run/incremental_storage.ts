@@ -157,53 +157,6 @@ export function sessionRunner(session: DuckDBConnection): SqlRunner {
    };
 }
 
-/**
- * The late-row check's read of a stored source's window
- * (DeltaTarget.windowRows): only the columns it compares, so the warehouse
- * reads (and bills) those alone, through the seed's read path but not its
- * cost, which is the delta's. None on BigQuery: there the window is read by a
- * billed job issuePassthroughRead starts on the session, outside the check's
- * abort, so a check that timed out would leave the job running and the
- * session's next statement waiting behind it. A stored BigQuery source is not
- * checked.
- */
-function storageWindowRows(params: {
-   session: DuckDBConnection;
-   sourceType: FederatedSourceType;
-   handle: string;
-   persistSource: PersistSource;
-   buildSQL: string;
-   watermarkColumn: string;
-   queryMetadata?: QueryMetadata;
-}): Pick<DeltaTarget, "windowRows"> {
-   if (params.sourceType === "bigquery") return {};
-   const sourceDialect = params.persistSource.dialectName;
-   return {
-      windowRows: async (start, end, columns) => {
-         const projected =
-            `SELECT ${columns.map((c) => quoteIdentifier(c, sourceDialect)).join(", ")} ` +
-            `FROM (${projectToStoredColumns(
-               params.persistSource,
-               deltaSelect({
-                  dialect: sourceDialect,
-                  sourceSQL: params.buildSQL,
-                  watermarkName: params.watermarkColumn,
-                  start,
-                  end,
-               }),
-            )}) AS __c`;
-         const read = await issuePassthroughRead(
-            params.session,
-            params.sourceType,
-            params.handle,
-            projected,
-            params.queryMetadata,
-         );
-         return read.selectSQL;
-      },
-   };
-}
-
 export function storageDeltaTarget(params: {
    /** The build-scoped session: destination attached read-write, source federated. */
    session: DuckDBConnection;
@@ -341,15 +294,31 @@ export function storageDeltaTarget(params: {
                : read.selectSQL;
          },
 
-         ...storageWindowRows({
-            session,
-            sourceType,
-            handle,
-            persistSource,
-            buildSQL,
-            watermarkColumn,
-            queryMetadata,
-         }),
+         windowRows: async (start, end, columns) => {
+            // The late-row check's read: only the columns it compares, so the
+            // warehouse reads (and bills) those alone, through the seed's
+            // read path but not its cost, which is the delta's.
+            const projected =
+               `SELECT ${columns.map((c) => quoteIdentifier(c, sourceDialect)).join(", ")} ` +
+               `FROM (${projectToStoredColumns(
+                  persistSource,
+                  deltaSelect({
+                     dialect: sourceDialect,
+                     sourceSQL: buildSQL,
+                     watermarkName: watermarkColumn,
+                     start,
+                     end,
+                  }),
+               )}) AS __c`;
+            const read = await issuePassthroughRead(
+               session,
+               sourceType,
+               handle,
+               projected,
+               queryMetadata,
+            );
+            return read.selectSQL;
+         },
 
          probeSourceFrontier: async () => {
             // Source-dialect through the passthrough, so the warehouse aggregates

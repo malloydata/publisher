@@ -12460,9 +12460,7 @@ components:
             even after a widened `lookback=` has written the rows. `from` is
             where the first such window started. Absent when
             nothing was found since the last full rebuild. The check is
-            best-effort, and not run for a pair table, a string watermark or
-            a `storage=` source on BigQuery: it gives up after 60 seconds,
-            stopping its statement, and one that fails is
+            best-effort: it gives up after 60 seconds, and one that fails is
             logged and leaves what was carried. While the run's manifest is
             bound, the package also warns with code
             `persist-incremental-late-rows`.
