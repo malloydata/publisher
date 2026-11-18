@@ -522,8 +522,32 @@ function asAllowEntry(prefix: string): string {
  * session whose own steps still set DuckDB options and which runs no caller or
  * author SQL in DuckDB). Idempotent: an instance already locked is verified
  * and left alone. Throws (fails closed) when a step is refused.
+ *
+ * Calls on one instance run one at a time, so a lookup that arrives while
+ * another is locking the instance waits for it and then finds it locked,
+ * rather than setting an option the first has just locked.
  */
 export async function lockDownDuckDBSession(
+   connection: DuckDBConnection,
+   options: Parameters<typeof lockDownOnce>[1] = {},
+): Promise<void> {
+   const key = duckDBInstanceOf(connection) ?? connection;
+   const run = (lockdownsInFlight.get(key) ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => lockDownOnce(connection, options));
+   lockdownsInFlight.set(key, run);
+   try {
+      await run;
+   } finally {
+      if (lockdownsInFlight.get(key) === run) lockdownsInFlight.delete(key);
+   }
+}
+
+/** The lockdown running on each instance, which the next one waits for. */
+const lockdownsInFlight = new WeakMap<object, Promise<void>>();
+
+/** One {@link lockDownDuckDBSession}, with no other on its instance. */
+async function lockDownOnce(
    connection: DuckDBConnection,
    {
       allow = [],
