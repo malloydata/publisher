@@ -3,7 +3,9 @@
 
 /**
  * Whether a gate or a `where:` that a stored copy re-applies compares a string
- * column there as live compares it.
+ * column there as live compares it. The caller's own query filters are judged
+ * by the same rules, read as `GateReads` of their own
+ * (`queryFilterReadsOfQuery` in `gate_reads.ts`).
  *
  * A `storage=` table is read in a DuckLake destination, whose string
  * comparison is byte-exact. Live compares the source column under its own

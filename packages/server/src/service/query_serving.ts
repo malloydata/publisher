@@ -33,6 +33,7 @@ import {
    type GateReads,
    gateColumnTypesOf,
    gateReadsOfQuery,
+   queryFilterReadsOfQuery,
    storedTableCollationRefusal,
    storedTypeIsString,
    stringGateCollationRefusal,
@@ -72,6 +73,7 @@ import {
    type QueryFacts,
 } from "./materialization/serve/leg";
 import { originOfTable } from "./materialization/domain/table_plans";
+import { extractRunQueryCall, extractRunViewCall } from "./query_text";
 import {
    readPreparedQuery,
    resolveStructRefSource,
@@ -201,6 +203,12 @@ export function variantsOf(
                   givens,
                );
             }
+            await assertQueryFiltersCompareAsLive(
+               answer,
+               leg.kind,
+               facts,
+               givens,
+            );
             if (leg.kind === "served") {
                logger.debug("Serving query from the served copy (virtual)", {
                   modelPath: args.modelPath,
@@ -356,6 +364,94 @@ async function assertRowScopeExact(
       throw decline(
          "the query's source scopes its rows by a column a stored table does not compare as its source does",
       );
+   }
+}
+
+/**
+ * The caller's own query filters (`where:`, `having:`, a filtered measure's,
+ * a view's or a nest's) are applied to the stored rows an answer reads, so
+ * each string comparison they make must compare there as live compares it,
+ * by the same rules as the source's scope (`serve/gate_collation.ts`): the
+ * stored column's collation identity against its source's on a Postgres
+ * database table, the definition and the instance on DuckDB, and the source
+ * side's own rule on a `storage=` table. A filter that compares no string
+ * is not judged. Fails closed (the answer is declined, live answers) when
+ * the query's filters cannot be read.
+ *
+ * Which filters a leg applies to stored rows: every one on the served copy
+ * and a rollup (a rollup's build applied each measure it stores, so a
+ * measure's own filter is not one), and only the later stages' on a
+ * persisted view or named query, whose own stages its build applied.
+ */
+async function assertQueryFiltersCompareAsLive(
+   answer: LegAnswer,
+   leg: LegKind,
+   facts: QueryFacts,
+   givens: Record<string, unknown> | undefined,
+): Promise<void> {
+   let tables: readonly TableRead[];
+   let fromStage = 0;
+   if (leg === "view" || leg === "query") {
+      const later = (
+         leg === "view"
+            ? extractRunViewCall(facts.queryString)
+            : extractRunQueryCall(facts.queryString)
+      )?.laterStages;
+      // An exact call's result was computed by its build, as live's is.
+      if (later === 0) return;
+      const pipeline = (
+         await readPreparedQuery(facts.authorRunnable).catch(() => undefined)
+      )?.pipeline;
+      // Unread: every stage is judged, which only declines more.
+      if (later !== undefined && Array.isArray(pipeline)) {
+         fromStage = pipeline.length - later;
+      }
+      tables = answer.tablesRead ?? [];
+      if (answer.resultTableRead) tables = [...tables, answer.resultTableRead];
+   } else {
+      tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
+   }
+   // A served copy or rollup that reads no stored table applies nothing to
+   // one; a persisted result's later stages always read its table.
+   if (tables.length === 0 && leg !== "view" && leg !== "query") return;
+   const reads = await queryFilterReadsOfQuery(
+      facts.authorRunnable,
+      storedSourceIDs(tables),
+      { fromStage, namedMeasures: leg !== "rollup" },
+   );
+   if (reads !== undefined && !reads.unresolved && reads.comparesNoString) {
+      return;
+   }
+   const why =
+      reads === undefined
+         ? "the query's filters unread"
+         : tables.length === 0
+           ? "the stored result's table unread"
+           : await storedComparisonRefusal(
+                answer,
+                tables,
+                facts.authorRunnable,
+                async () => reads,
+                givens,
+             );
+   if (why === undefined) return;
+   const tableIds = tables.flatMap((t) => {
+      const handle = (t as { virtualHandle?: unknown }).virtualHandle;
+      return typeof handle === "string" ? [handle] : [];
+   });
+   const message = `the query filters on a column a stored table does not compare as its source does: ${why}`;
+   switch (leg) {
+      case "served":
+         throw new LegDecline("served_copy_not_served", message, { tableIds });
+      case "rollup":
+         throw new LegDecline("rollup_row_level_gate", message, {
+            shapeCheck: true,
+            tableIds,
+         });
+      case "view":
+         throw new LegDecline("view_missing_field", message);
+      case "query":
+         throw new LegDecline("query_missing_field", message);
    }
 }
 
