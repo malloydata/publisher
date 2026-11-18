@@ -144,8 +144,43 @@ describe("validateSourceLineGateGivenUsage", () => {
       expect(warnings).toEqual([
          expect.stringContaining(
             "source_line_gate_negated_membership: The #(authorize) gate on " +
-               'source "orders" nests too deeply to check',
+               'source "orders" is too deep to check',
          ),
       ]);
+      // It found no negation, so it never says it found one.
+      expect(warnings[0]).not.toContain("negates a membership test;");
+   });
+
+   it("does not call a deny-all `false` lock a gate that forgot its given", () => {
+      const warnings: string[] = [];
+      for (const e of [
+         { node: "false" },
+         { node: "()", e: { node: "false" } },
+      ]) {
+         validateSourceLineGateGivenUsage(
+            "orders",
+            "authorize",
+            struct([]),
+            { givenUsage: [] },
+            e,
+            { givens: {} } as unknown as ModelDef,
+            (cause) => warnings.push(cause),
+         );
+      }
+      expect(warnings).toEqual([]);
+   });
+
+   it("still warns that `true` reads no given", () => {
+      const warnings: string[] = [];
+      validateSourceLineGateGivenUsage(
+         "orders",
+         "authorize",
+         struct([]),
+         { givenUsage: [] },
+         { node: "true" },
+         { givens: {} } as unknown as ModelDef,
+         (cause) => warnings.push(cause),
+      );
+      expect(warnings).toEqual(["source_line_gate_no_given_reference"]);
    });
 });

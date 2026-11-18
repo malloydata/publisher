@@ -64,6 +64,7 @@
       "code": "persist-view-not-built",
       "message": "#@ persist on view \"recent\" of source \"orders\" is not built, so the view is served live: its result reads the current time, so it differs per read.",
       "model": "m.malloy",
+      "reason": "current_time",
       "severity": "warn",
       "subject": "orders -> recent"
     }

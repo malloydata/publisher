@@ -57,13 +57,13 @@
  * the joined source, so it is read like the joined source's own column.
  *
  * Gates: a joined source that declares a gate of its own is declined
- * (`CONTRACT`), since the rollup carries none. A gated query source is
+ * (`ROW_LEVEL_GATE`), since the rollup carries none. A gated query source is
  * answered from a database rollup of an ungated joined source when its gate
  * reads only its own plain columns: the variant redeclares it in its own
  * declaring file with its gates, where `govern()` grafts and proves them
  * (`joinGateDecline`, `compileJoinGated` in rollup_variants.ts; g-mixed for
  * rollups, question 14). Any other gate, and any in a storage destination,
- * declines (`CONTRACT`).
+ * declines (`ROW_LEVEL_GATE`).
  */
 
 import { requireUnique, type KeyVerdict } from "../domain/key_check";
@@ -88,7 +88,7 @@ interface JoinRollupRefusal {
    code:
       | "rollup_count_semantics"
       | "rollup_grain_too_coarse"
-      | "rollup_contract";
+      | "rollup_row_level_gate";
    callerDetail: string;
 }
 
@@ -187,7 +187,7 @@ function refusalOf(
    const name = join.name;
    if (plan.baseGated) {
       return refuse(
-         "rollup_contract",
+         "rollup_row_level_gate",
          `\`${name}\` joins a source with a gate of its own, which its rollup does not carry`,
       );
    }

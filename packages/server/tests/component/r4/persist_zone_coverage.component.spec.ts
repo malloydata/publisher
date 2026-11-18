@@ -86,7 +86,7 @@ source: jb is duckdb.table('ev') extend {
  * value stored in New York read in another zone; `WARNED`: the served copy
  * does not carry the source, here `fields_not_carried`).
  */
-type Outcome = "served" | "unrouted" | "TIME_ZONE" | "WARNED";
+type Outcome = "served" | "unrouted" | "TIME_ZONE" | "NOT_SERVED";
 
 const CASES: [string, string, Outcome][] = [
    [
@@ -127,12 +127,12 @@ const CASES: [string, string, Outcome][] = [
    [
       "inherited, over a base with zoned dimensions: hour(ts)",
       "run: inh -> { group_by: h is hour(ts); aggregate: n is count() }",
-      "WARNED",
+      "NOT_SERVED",
    ],
    [
       "inherited, over a base with zoned dimensions: the base's dimension",
       "run: inh -> { group_by: ts_day; aggregate: total }",
-      "WARNED",
+      "NOT_SERVED",
    ],
    [
       "inherited, over a zone-only base: hour(ts)",

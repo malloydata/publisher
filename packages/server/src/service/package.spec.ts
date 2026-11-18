@@ -966,6 +966,7 @@ describe("service/package", () => {
             declaredDeprecatedPersistAnnotations: () => [],
             persistedViewBuilds: () => [],
             servedCopyProblems: () => [],
+            gateLoadWarnings: () => [],
             storedColumnTypeMismatches: () => [],
             getModelDef: () => undefined,
          }) as unknown as Model;

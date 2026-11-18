@@ -1125,7 +1125,7 @@ source: orders is duckdb.sql("""
          expect(
             await harness.collectCounter("publisher_query_route_total", {
                outcome: "skipped",
-               reason: "CONTRACT",
+               reason: "ROW_LEVEL_GATE",
             }),
          ).toBe(0);
       },
@@ -1144,7 +1144,7 @@ source: orders is duckdb.sql("""
          expect(
             await harness.collectCounter("publisher_query_route_total", {
                outcome: "skipped",
-               reason: "CONTRACT",
+               reason: "ROW_LEVEL_GATE",
             }),
          ).toBe(0);
          expect(
@@ -1160,7 +1160,7 @@ source: orders is duckdb.sql("""
          expect(
             await harness.collectCounter("publisher_query_route_total", {
                outcome: "skipped",
-               reason: "CONTRACT",
+               reason: "ROW_LEVEL_GATE",
             }),
          ).toBe(1);
       },

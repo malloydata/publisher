@@ -15,13 +15,13 @@ import { BUILD_TIERS } from "../../materialization_metrics";
 import { tierOf } from "./plan/refusal_key";
 import {
    DEPRECATED_PREAGGREGATE_ANNOTATION_CODE,
-   PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+   ROLLUP_NAMESPACE_DEPRECATED_CODE,
    ROLLUP_INVALID_CODE,
    ROLLUP_NOT_BUILT_CODE,
 } from "../annotation_reader";
 import { isRollupOrigin, originOf, originOfTable } from "./domain/table_plans";
 
-// A Windows checkout ends lines with \r\n; the lookups below match \n.
+// Line endings normalized: a Windows checkout reads the file with CRLF.
 const API_DOC = fs
    .readFileSync(path.join(__dirname, "../../../../../api-doc.yaml"), "utf8")
    .replace(/\r\n/g, "\n");
@@ -72,14 +72,14 @@ describe("the rollup vocabulary", () => {
       expect(isRollupOrigin("persist")).toBe(false);
    });
 
-   it("names its codes for #(rollup), keeping the namespace warning's name", () => {
+   it("names its codes for #(rollup), the old spelling only on the warning about it", () => {
       expect(ROLLUP_NOT_BUILT_CODE).toBe("rollup-not-built");
       expect(ROLLUP_INVALID_CODE).toBe("rollup-invalid");
       expect(DEPRECATED_PREAGGREGATE_ANNOTATION_CODE).toBe(
          "deprecated-preaggregate-annotation",
       );
-      expect(PREAGGREGATE_NAMESPACE_DEPRECATED_CODE).toBe(
-         "deprecated-preaggregate-namespace",
+      expect(ROLLUP_NAMESPACE_DEPRECATED_CODE).toBe(
+         "deprecated-rollup-namespace",
       );
    });
 
@@ -114,7 +114,7 @@ describe("the rollup vocabulary", () => {
       }
    });
 
-   it("lists each renamed code as retained, no longer produced", () => {
+   it("lists each renamed code as retained", () => {
       for (const code of [
          "preaggregate-invalid",
          "preaggregate-unknown-key",
@@ -127,8 +127,9 @@ describe("the rollup vocabulary", () => {
       ]) {
          expect(API_DOC).toContain(`\`${code}\``);
       }
+      // The warning's old code is repeated beside the new one this release.
       expect(API_DOC).toMatch(
-         /`preaggregate-not-built` is retained, no longer produced/,
+         /`preaggregate-not-built` is\s+`rollup-not-built`'s former name/,
       );
       for (const code of [
          "rollup-not-a-measure",

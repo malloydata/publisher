@@ -374,7 +374,7 @@ source: weekly is ev -> { group_by: r }
          {
             sourceName: "daily",
             url: "file:///m.malloy",
-            reason: "range_not_found",
+            reason: "definition_not_parsed",
          },
       ]);
    });
@@ -514,7 +514,9 @@ source: raw is duckdb.sql("""SELECT r, total, id FROM t""") include {
 
    it("refuses every re-root of a file it cannot read", () => {
       const copy = buildServedCopy([reroot(file, "daily")], () => undefined);
-      expect(copy.refused.map((r) => r.reason)).toEqual(["range_not_found"]);
+      expect(copy.refused.map((r) => r.reason)).toEqual([
+         "definition_not_parsed",
+      ]);
    });
 });
 

@@ -79,7 +79,7 @@
  * (`rollupGateEnforcedAtRead`) and the pre-proof holds (`proveGates`): the
  * variant's run target is the author's `sourceID`, its gates equal the live
  * entry point's (`sameGateSet`, the rule `govern()` re-proves with) and each
- * field they read is a grain dimension. Else it is skipped `CONTRACT`, with a
+ * field they read is a grain dimension. Else it is skipped `ROW_LEVEL_GATE`, with a
  * detail that never names the gate. `govern()` then grafts the gates on the
  * variant's own scope; a denial there is a defect, not a routing outcome. A
  * join branch (A7) answers past a gate only over a database rollup of an
@@ -1094,7 +1094,7 @@ export class RollupVariantServe {
     * variant (route, then govern): the gates written on the variant's query
     * source must be exactly the live entry point's (`sameGateSet`, the rule
     * `govern()` re-proves with), so the author's gate notes survived its
-    * `include { *; except: … }`; else `CONTRACT`. Returns where `govern()`
+    * `include { *; except: … }`; else `ROW_LEVEL_GATE`. Returns where `govern()`
     * grafts them. Nothing past no gate.
     */
    private async joinGraft(
@@ -2400,7 +2400,7 @@ function pipelineSignature(pipeline: unknown): string {
  * {@link LegDecline} when that is more than fields: a `where:` of its own
  * (its rows are not the base's, `GRAIN_TOO_COARSE`), or a `timezone:` of its
  * own (`TIME_ZONE`). A gate of its own never reaches here: the router skips
- * the leg for a gated entry point (`CONTRACT`).
+ * the leg for a gated entry point (`ROW_LEVEL_GATE`).
  */
 function checkExtension(struct: object, baseDef: unknown): SourceDelta {
    const delta = sourceDelta(struct, baseDef);
@@ -3170,13 +3170,13 @@ function flagLine(modelDef: unknown): string {
 }
 
 /**
- * A rollup skipped for the query's gate (`CONTRACT`). Its detail never names
+ * A rollup skipped for the query's gate (`ROW_LEVEL_GATE`). Its detail never names
  * the gate's field or text: a caller may not learn a gate's shape from why
  * its query was answered live.
  */
 function contractSkip(): LegDecline {
    return new LegDecline(
-      "rollup_contract",
+      "rollup_row_level_gate",
       "the query's source has an access rule this rollup cannot apply",
       { shapeCheck: true },
    );
@@ -3194,7 +3194,7 @@ function contractSkip(): LegDecline {
  * gate that reads through any join (the re-pointed one above all: a filter on
  * a fanned-out rollup row admits a parent through one group while it
  * aggregates the others), a computed dimension, or a measure declines
- * (`CONTRACT`).
+ * (`ROW_LEVEL_GATE`).
  */
 function joinGateDecline(
    gates: EnforcedGates,
@@ -3257,7 +3257,7 @@ function liveEntryPointGates(
 
 /**
  * The pre-proof for a query let past an entry-point gate (R3 for rollups):
- * throw `CONTRACT` unless the variant's run target is the author's source (its
+ * throw `ROW_LEVEL_GATE` unless the variant's run target is the author's source (its
  * `sourceID`), the gates written on it are exactly the live entry point's
  * (by route and expression, `sameGateSet`: one rule with `govern()`'s
  * re-proof), and every field those gates read is one of the rollup's grain
@@ -3309,7 +3309,7 @@ function proveGates(
 
 /**
  * The pre-proof of the re-applied `where:` (R3 for given-reading terms): throw
- * `CONTRACT` unless the variant's run target writes exactly the given-reading
+ * `ROW_LEVEL_GATE` unless the variant's run target writes exactly the given-reading
  * terms the live run target applies, by text ({@link givenWhereCodes}), the
  * rule `govern()` re-proves on the routed compile. A rollup's build left them
  * out, so a variant without them would answer with every caller's rows.

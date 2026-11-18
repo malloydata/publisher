@@ -58,7 +58,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PersistSource } from "@malloydata/malloy";
-import { BadRequestError } from "../../../errors";
+import { TableOwnershipError } from "../../../errors";
 import { logger } from "../../../logger";
 import { externalEnv } from "../../../settings/external";
 import type { Materialization } from "../../../storage/DatabaseInterface";
@@ -96,14 +96,7 @@ export const TABLE_OWNERSHIP_UNVERIFIED = "table-ownership-unverified";
  * something that is not this package's, or by something it cannot read.
  * `code` is one of the two codes above (an open string).
  */
-export class TableOwnershipError extends BadRequestError {
-   constructor(
-      readonly code: string,
-      message: string,
-   ) {
-      super(message);
-   }
-}
+export { TableOwnershipError };
 
 /**
  * One server's builds at the author's `name=`, serialized by name: two

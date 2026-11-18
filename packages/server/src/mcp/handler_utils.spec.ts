@@ -223,7 +223,7 @@ describe("classifyToolError", () => {
       // message pattern replaces the generic suggestion list outright, so the
       // marker is the authorize advice, not "Malloy file".
       expect(advice(AccessDeniedError.forSource("orders"))).toContain(
-         "restricted by an authorize gate",
+         "restricted by a gate (#(authorize) or #(access_filter))",
       );
       expect(advice(new BadRequestError("Invalid query request."))).toContain(
          "Malloy file",

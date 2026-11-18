@@ -2416,7 +2416,7 @@ source: through_join is duckdb.table('orders_raw') extend {
                { ...EAST.givens, CARRIER: "AA" },
             );
             const skipped = (path?.considered ?? []).filter(
-               (c) => (c as { reason?: string }).reason === "CONTRACT",
+               (c) => (c as { reason?: string }).reason === "ROW_LEVEL_GATE",
             );
             expect(skipped.length).toBeGreaterThan(0);
             for (const c of skipped) {
@@ -2427,7 +2427,7 @@ source: through_join is duckdb.table('orders_raw') extend {
             }
          });
 
-         it("answers a joined source's rollup under a gated parent (A7) as live: from the rollup on the database tier (g-mixed), CONTRACT without naming the gate in a storage destination", async () => {
+         it("answers a joined source's rollup under a gated parent (A7) as live: from the rollup on the database tier (g-mixed), ROW_LEVEL_GATE without naming the gate in a storage destination", async () => {
             const malloy =
                "run: gated_parent -> { group_by: category; aggregate: order_lines.qty_total }";
             const run = await fixture.run({
@@ -2446,7 +2446,7 @@ source: through_join is duckdb.table('orders_raw') extend {
             fixture.setBindings(fixture.bindings);
             const { path } = await fixture.runAsIs(malloy, EAST.givens);
             const contract = (path?.considered ?? []).filter(
-               (c) => (c as { reason?: string }).reason === "CONTRACT",
+               (c) => (c as { reason?: string }).reason === "ROW_LEVEL_GATE",
             );
             expect(contract.length).toBeGreaterThan(0);
             for (const c of contract) {

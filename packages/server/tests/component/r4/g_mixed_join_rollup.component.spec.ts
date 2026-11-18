@@ -23,9 +23,9 @@
  * - a parent with no joined rows;
  * - a caller `all()` over the joined measure, never the global total;
  * - a gate that reads through the re-pointed join, or a computed dimension,
- *   declines (`CONTRACT`) and answers live;
+ *   declines (`ROW_LEVEL_GATE`) and answers live;
  *
- * In a `storage=` destination the branch declines past a gate (`CONTRACT`)
+ * In a `storage=` destination the branch declines past a gate (`ROW_LEVEL_GATE`)
  * and the query answers live: its variant is declared over the served
  * copy's files, not in an overlay of the query source's declaring file, so
  * the gate would not land on it. Every caller still gets live's answer.

@@ -146,9 +146,14 @@ describe("parseMetadata and triggerLabel", () => {
    });
 
    it("calls a run manual unless the scheduler says otherwise", () => {
+      expect(triggerLabel({ trigger: "scheduler" })).toBe("Scheduled");
+      expect(triggerLabel({ trigger: "on_demand" })).toBe("Manual");
+      expect(triggerLabel({})).toBe("Manual");
+   });
+
+   it("reads an older server's upper-case trigger the same", () => {
       expect(triggerLabel({ trigger: "SCHEDULER" })).toBe("Scheduled");
       expect(triggerLabel({ trigger: "ON_DEMAND" })).toBe("Manual");
-      expect(triggerLabel({})).toBe("Manual");
    });
 });
 

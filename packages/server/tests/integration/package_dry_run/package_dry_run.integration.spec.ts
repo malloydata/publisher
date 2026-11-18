@@ -139,7 +139,7 @@ source: orders_public is orders extend { measure: n is count() }
       const staging = verdicts.find((v) => v.sourceName === "staging");
       expect(staging).toMatchObject({ verdict: "live", reason: "unreachable" });
       expect(verdicts.find((v) => v.sourceName === "orders")?.verdict).toBe(
-         "not_built",
+         "awaiting_build",
       );
       const plan = json.buildPlan as {
          sources: Record<string, unknown>;

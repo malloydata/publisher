@@ -98,6 +98,7 @@ export function relaxedCollision(
    return {
       ...finding,
       tier: "unservable",
+      reason: "table_name_collision",
       // Each source under its own not-built code.
       code:
          finding.route !== "@"
@@ -342,7 +343,7 @@ export const PREAGG_WARN_ONLY: ReadonlyMap<
    // its base's annotation.
    ["non_public_measure", "hidden_field"],
    // A rollup over a fan-out join, as `#(rollup)` refuses one.
-   ["base_source_has_fanout_join", "join_level"],
+   ["base_source_has_fanout_join", "join_not_in_grain"],
 ]);
 
 /**

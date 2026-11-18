@@ -989,7 +989,8 @@ const FROZEN_LEG_ROWS: readonly string[] = [
    // gates, as one reading a database table does, alone or beside a
    // database table or a table admitted past its own gate. Beside a
    // `storage=` table proven neither way (`read=ungated_storage`) it does
-   // not. The rollup leg is unchanged. Signed off in the question-14 review.
+   // not. The rollup leg is unchanged. Reviewed in the question-14 security
+   // review, including the P2 lock-gated join widening.
    "keeps served read=ungated mz=0 gs=0 g3=1",
    "keeps served read=ungated_database mz=0 gs=0 g3=1",
    "keeps served read=ungated_own mz=0 gs=0 g3=1",

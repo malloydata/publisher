@@ -346,7 +346,7 @@ export function assertDatabasePersistNotAuthorizeGated(
             ? `Pre-aggregation rollup '${sourceName}'`
             : `Source '${sourceName}'`;
       throw new MaterializationEligibilityError({
-         reason: "read_only_dialect",
+         reason: "connection_cannot_hold_table",
          message:
             `${what} cannot be materialized (database '#@ persist'): its ` +
             `connection '${persistSource.connectionName}' is on the ` +
