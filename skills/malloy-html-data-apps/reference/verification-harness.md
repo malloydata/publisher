@@ -44,7 +44,7 @@ Serve a stand-in at the same root-relative path the page loads (`/sdk/publisher.
     queryFull: (m, q) => resolve(m, q).then((rows) => ({ data: rows })),
     setToken() {},
     // `on`/`emit` do nothing, since nothing embeds the page under test; the givens
-    // store works as on the real page (merge, `null` deletes, notify on change only).
+    // store approximates the real page's (merge, `null` deletes, notify on change only).
     on: () => () => {},
     emit: () => false,
     get givens() {

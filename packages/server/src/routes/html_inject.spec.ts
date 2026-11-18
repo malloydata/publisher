@@ -138,6 +138,12 @@ describe("injectAfterHeadStart", () => {
          ["unclosed closing tags in a script", `<script>${fill("</script ")}`],
          ["repeated unclosed metas", fill("<meta ")],
          ["repeated unclosed quoted attributes", fill('<a x="')],
+         [
+            "a stray quote then many tags then a quote",
+            fill(`<a "${"<a".repeat(60)}" `),
+         ],
+         ["quotes among unclosed tags", fill('<a"<a<a<a<a<a"')],
+         ["alternating quotes and unclosed tags", fill('<a"<a"<a')],
          ["repeated charset metas", fill("<meta charset=")],
          ["repeated closed-attribute charset metas", fill("<meta charset=x ")],
          ["repeated unclosed heads", fill("<head ")],
@@ -147,7 +153,7 @@ describe("injectAfterHeadStart", () => {
          it(`is fast on ${name}`, () => {
             const started = performance.now();
             injectAfterHeadStart(Buffer.from(html, "latin1"), SNIPPET);
-            expect(performance.now() - started).toBeLessThan(200);
+            expect(performance.now() - started).toBeLessThan(50);
          });
       }
    });
@@ -163,6 +169,7 @@ describe("injectAfterHeadStart", () => {
          ["<xmp>", "</xmp>"],
          ["<iframe>", "</iframe>"],
          ["<noembed>", "</noembed>"],
+         ["<noframes>", "</noframes>"],
          ["<!--", "-->"],
       ]) {
          const decoy = `${open}<head><meta charset="x">${close}`;
@@ -191,9 +198,27 @@ describe("injectAfterHeadStart", () => {
       );
    });
 
-   it("falls back to scanning on from a tag that never closes", () => {
+   it("scans on past the 2048-character cap of a tag that never closes", () => {
       expect(inject(`<!doctype html><p a="${"x".repeat(3000)}"><head>`)).toBe(
          `<!doctype html><p a="${"x".repeat(3000)}"><head>${SNIPPET}`,
+      );
+   });
+
+   it("reads a stray quote that opens no value as plain text", () => {
+      const page =
+         "<html lang=en data-tip=don't><head><meta charset=utf-8><title>It's here</title>";
+      expect(inject(`<!doctype html>${page}`)).toBe(
+         `<!doctype html>${page.replace("utf-8>", `utf-8>${SNIPPET}`)}`,
+      );
+      expect(inject(page)).toBe(page.replace("utf-8>", `utf-8>${SNIPPET}`));
+   });
+
+   it("ends the head and meta tags at their real `>`, past one inside a quoted value", () => {
+      expect(inject('<head data-x="a>b"><p>')).toBe(
+         `<head data-x="a>b">${SNIPPET}<p>`,
+      );
+      expect(inject('<meta charset=utf-8 data-x="a>b"><p>')).toBe(
+         `<meta charset=utf-8 data-x="a>b">${SNIPPET}<p>`,
       );
    });
 

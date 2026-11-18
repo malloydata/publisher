@@ -324,15 +324,17 @@ describe("In-package HTML data apps (E2E)", () => {
       }
    });
 
-   it("400s a path whose .. segments climb above public/ and walk back in", async () => {
+   it("400s a path whose .. segments climb above public/ and walk back in, on both URL shapes", async () => {
       for (const p of [
          "..%2f..%2f..%2f..%2fpublic%2findex.html",
          "sub%2f..%2f..%2fpublic%2findex.html",
       ]) {
-         const res = await fetch(
-            `${baseUrl}/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/${p}`,
-         );
-         expect(res.status).toBe(400);
+         for (const prefix of ["", "versions/1.0.0/public/"]) {
+            const res = await fetch(
+               `${baseUrl}/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/${prefix}${p}`,
+            );
+            expect(res.status).toBe(400);
+         }
       }
    });
 
@@ -376,6 +378,8 @@ describe("In-package HTML data apps (E2E)", () => {
          "bodymeta.html",
          "fitattr.html",
          "fitcomment.html",
+         "fitdecoy.html",
+         "fitquoted.html",
          "index.html",
          "nohead.html",
          "notfit.html",
@@ -419,6 +423,15 @@ describe("In-package HTML data apps (E2E)", () => {
       expect(dataApps.find((a) => a.path === "fitattr.html")?.fit).toBe(
          "viewport",
       );
+
+      // A `</head>` inside an attribute value must not end the head scan early,
+      // and a fit meta written inside one is not a tag.
+      expect(dataApps.find((a) => a.path === "fitquoted.html")?.fit).toBe(
+         "viewport",
+      );
+      expect(
+         dataApps.find((a) => a.path === "fitdecoy.html")?.fit,
+      ).toBeUndefined();
 
       // notfit.html carries the STANDARD <meta name="viewport"> (device-width),
       // a decoy <meta data-name="publisher:fit"> in <head>, and the real tag as

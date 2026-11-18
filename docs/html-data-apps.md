@@ -152,7 +152,9 @@ and adds nothing to the page's markup.
 | `Publisher.onGivensChange` | `(fn)` | an unsubscribe function; `fn(givens)` runs after a `setGivens` that changes the store |
 
 `on`, `emit` and the givens members are the page's side of the [host
-bus](#talking-to-the-host); they do nothing visible on a page that nobody embeds.
+bus](#talking-to-the-host). `on` and `emit` do nothing on a page that nobody
+embeds; the givens store (`setGivens`, `givens`, `onGivensChange`) works with or
+without a host.
 
 ### Querying
 
@@ -355,12 +357,16 @@ does not matter. Only the first 64 KiB is scanned. The block goes after the firs
 doctype, else at the start (past a UTF-8 byte-order mark) of a page that fits in
 that 64 KiB; a tag inside an HTML comment, a quoted attribute value, or a
 `<script>`, `<style>`, `<title>`, `<textarea>`, `<noscript>`, `<iframe>`,
-`<noembed>`, `<xmp>` or `<plaintext>` element does not count. A UTF-16 page, one over 2 MiB, and one with no
-insertion point in its first 64 KiB are sent unchanged (the runtime still pins
+`<noembed>`, `<noframes>`, `<xmp>` or `<plaintext>` element does not count. A
+UTF-16 page, one over 2 MiB, and one with no insertion point in its first 64 KiB are sent unchanged (the runtime still pins
 the version from the versioned path). An HTML response carries a weak `ETag`
 (a hash of the file's size and modification time, a format version and the
-injected block, none of them replica-specific, so a matching `If-None-Match` is answered `304` after a `stat`, without
-reading the file), `Cache-Control: no-cache` so every load revalidates; a
+injected block, so a matching `If-None-Match` is answered `304` after a `stat`,
+without reading the file; replicas copy a package without keeping its
+timestamps, so a request that lands on another replica is just a `200`, and, as
+with `express.static`, a same-size file swapped in with its old modification
+time can get a stale `304` in watch mode), `Cache-Control: no-cache` so every
+load revalidates; a
 `Range` request gets the whole page, since byte offsets into a rewritten body
 mean nothing. Other files are sent as they are.
 

@@ -107,11 +107,8 @@ const LEXICAL_PUBLIC_ROOT = path.join(path.sep, "public");
  * back in); empty for `public/` itself, with a trailing slash kept.
  */
 function containedSubPath(raw: string): string {
-   let depth = 0;
-   for (const segment of raw.split("/")) {
-      if (segment === "..") depth--;
-      else if (segment !== "" && segment !== ".") depth++;
-      if (depth < 0) throw new BadRequestError("Path is outside of public/");
+   if (stepsOutside(path.normalize(raw))) {
+      throw new BadRequestError("Path is outside of public/");
    }
    const joined = safeJoinUnderRoot(LEXICAL_PUBLIC_ROOT, raw);
    const rel = path
@@ -499,7 +496,13 @@ function stripNonTagText(input: string): string {
    for (let i = input.indexOf("<"); i !== -1; ) {
       const end = nonTagTextEnd(input, i);
       if (end === undefined) {
-         i = input.indexOf("<", openTagEnd(input, i) ?? i + 1);
+         const tag = openTagEnd(input, i);
+         if (tag?.closed) {
+            // Brackets inside attribute values are blanked, so they read as neither a tag nor a boundary.
+            kept += `${input.slice(copied, i)}<${input.slice(i + 1, tag.end - 1).replace(/[<>]/g, " ")}>`;
+            copied = tag.end;
+         }
+         i = input.indexOf("<", tag?.end ?? i + 1);
          continue;
       }
       kept += input.slice(copied, i);
