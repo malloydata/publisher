@@ -74,9 +74,9 @@ export function storedTypeIsString(type: string): boolean {
  * Why an answer that read a `storage=` table past the entry point's gates
  * does not compare a string column as live does, or undefined when every
  * string column it compares does. `stringStored` says whether any `storage=`
- * table the answer read holds a gate column as a string; when none does and
- * every comparison is a plain equality (no cast, `pick` or function that
- * could make a string), no probe runs.
+ * table the answer read holds a gate column as a string. No probe runs only
+ * when nothing the gates and scopes compare is a string
+ * (`GateReads.comparesNoString`).
  */
 export async function stringGateCollationRefusal(args: {
    authorRunnable: QueryMaterializer;
@@ -86,15 +86,10 @@ export async function stringGateCollationRefusal(args: {
    givens?: Record<string, unknown>;
 }): Promise<string | undefined> {
    const { reads } = args;
-   // No stored gate column is a string: nothing to compare under a
-   // collation, unless an expression makes one (a cast, a `pick`, a
-   // function), which `equalityOnly` already rules out.
-   if (
-      !args.stringStored &&
-      reads !== undefined &&
-      !reads.unresolved &&
-      reads.equalityOnly
-   ) {
+   // Nothing the gates and scopes compare is a string (an allow-list over
+   // every leaf: a given, a literal, a cast or a function that could make one
+   // reads false), so no collation can change what they admit.
+   if (reads !== undefined && !reads.unresolved && reads.comparesNoString) {
       return undefined;
    }
    if (reads === undefined || reads.unresolved) return "gate reads unread";
@@ -156,10 +151,10 @@ export async function stringGateCollationRefusal(args: {
    // over; the instance-wide check above needs none).
    if (entryName === undefined) return "no named entry point";
    if (!reads.entryPathsComplete) return "a scope from elsewhere";
-   // A comparison that is not a plain equality may compare a value an
-   // expression made a string (a cast, a `pick`): that compares under the
-   // database's default collation, which must be binary.
-   if (!reads.equalityOnly) {
+   // A comparison of a string the query makes (a given, a literal, a cast,
+   // a `pick`) compares under the database's default collation, which must
+   // then meet the comparison's need as a column's would.
+   if (!reads.comparesNoString) {
       const fallback = await probeOnce(
          modelDef,
          `${connectionName}\u0000default`,
@@ -168,8 +163,8 @@ export async function stringGateCollationRefusal(args: {
                await runtime.connections.lookupConnection(connectionName),
             ),
       );
-      if (fallback !== "binary") {
-         return `a computed comparison under a ${fallback} default collation`;
+      if (!need.includes(fallback)) {
+         return `a comparison under a ${fallback} default collation`;
       }
    }
    const paths = stringPaths(struct, reads.entryPaths);
@@ -577,40 +572,13 @@ async function entryConnectionOf(
 }
 
 /**
- * Whether the entry point's gates and scopes compare no string column, so no
- * stored table's collation can change what they admit: every compared path
- * from the entry point is followed and none is a string (a lock alone
- * compares none), or every table read is a `storage=` one whose gate columns
- * are all listed and none is stored as a string. Any doubt reads false.
+ * Whether the entry point's gates and scopes compare no string at all
+ * (`GateReads.comparesNoString`, an allow-list over every leaf), so no
+ * collation can change what they admit. Any doubt reads false.
  */
 async function comparesNoString(args: {
-   tables: readonly (StoredTable & { gateColumnTypes?: readonly string[] })[];
-   authorRunnable: QueryMaterializer;
    reads: GateReads | undefined;
 }): Promise<boolean> {
    const { reads } = args;
-   // Only a plain equality's types are those of the fields it reads: a cast,
-   // a `pick` or a function can make a string of anything.
-   if (reads === undefined || reads.unresolved || !reads.equalityOnly) {
-      return false;
-   }
-   if (reads.entryPathsComplete) {
-      try {
-         const prepared = await readPreparedQuery(args.authorRunnable);
-         const struct = resolveStructRefSource(
-            prepared.structRef as never,
-            prepared.modelDef as never,
-         );
-         const paths = stringPaths(struct, reads.entryPaths);
-         if (paths !== undefined && paths.length === 0) return true;
-      } catch {
-         // Fall through to the stored types.
-      }
-   }
-   return args.tables.every(
-      (t) =>
-         t.tier === "storage" &&
-         t.gateColumnTypes !== undefined &&
-         !t.gateColumnTypes.some(storedTypeIsString),
-   );
+   return reads !== undefined && !reads.unresolved && reads.comparesNoString;
 }

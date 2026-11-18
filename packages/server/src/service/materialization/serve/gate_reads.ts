@@ -18,6 +18,10 @@ import type {
    QueryMaterializer,
    SourceDef,
 } from "@malloydata/malloy";
+import {
+   ACCESS_FILTER_ROUTE,
+   canonicalAuthorizeRoute,
+} from "../../authorize_routes";
 import { collectEntryPointGates } from "../../gate_classification";
 import {
    readPreparedQuery,
@@ -111,6 +115,40 @@ function gatePaths(exprs: readonly string[]): {
 
 export type { GateReads } from "./gate_reads_types";
 
+/** The operators a comparison of non-string values may be built with. */
+const NON_STRING_OPERATORS = new Set([
+   "=",
+   "!=",
+   "<",
+   "<=",
+   ">",
+   ">=",
+   "in",
+   "not",
+   "and",
+   "or",
+   "()",
+   "is-null",
+   "is-not-null",
+]);
+
+/** A known type that is not a string. Unknown is not. */
+function nonStringType(t: unknown): boolean {
+   return typeof t === "string" && t !== "string";
+}
+
+/** The type of the field a path names on `source`, through joins. */
+function typeAt(source: unknown, path: readonly string[]): unknown {
+   let at: unknown = source;
+   let field: FieldLike | undefined;
+   for (const name of path) {
+      field = fieldsOf(at).get(name);
+      if (field === undefined) return undefined;
+      at = field;
+   }
+   return field?.type;
+}
+
 /** The IR nodes an equality-only comparison is built from. */
 const EQUALITY_NODES = new Set([
    "=",
@@ -189,6 +227,7 @@ class GateReadWalk {
    unresolved = false;
    scoped = false;
    equalityOnly = true;
+   comparesNoString = true;
    readonly entryPaths: string[][] = [];
    entryPathsComplete = true;
    private steps = 0;
@@ -197,6 +236,84 @@ class GateReadWalk {
       private readonly modelDef: unknown,
       private readonly stored: ReadonlySet<string>,
    ) {}
+
+   /** A given's declared type, by its id in the model, or undefined. */
+   givenType(id: unknown): string | undefined {
+      const g = (
+         this.modelDef as {
+            givens?: Record<string, { type?: { type?: unknown } }>;
+         }
+      )?.givens?.[String(id)];
+      const t = g?.type?.type;
+      return typeof t === "string" ? t : undefined;
+   }
+
+   /** The declared types of the givens named `name`, every one. */
+   givenTypesNamed(name: string): (string | undefined)[] {
+      const givens = (
+         this.modelDef as {
+            givens?: Record<
+               string,
+               { name?: unknown; type?: { type?: unknown } }
+            >;
+         }
+      )?.givens;
+      return Object.values(givens ?? {})
+         .filter((g) => g.name === name)
+         .map((g) =>
+            typeof g.type?.type === "string" ? g.type.type : undefined,
+         );
+   }
+
+   /**
+    * Whether every leaf of `e` is a non-string value ({@link GateReads}'s
+    * `comparesNoString`), its fields typed on `source`.
+    */
+   leavesNotString(e: unknown, source: unknown, depth = 0): boolean {
+      if (depth > 64 || e === null || typeof e !== "object") return false;
+      const n = e as { node?: unknown; path?: unknown; id?: unknown };
+      switch (n.node) {
+         case "field":
+            return (
+               Array.isArray(n.path) &&
+               nonStringType(typeAt(source, n.path as string[]))
+            );
+         case "given":
+            return nonStringType(this.givenType(n.id));
+         case "numberLiteral":
+         case "true":
+         case "false":
+         case "null":
+         case "dateLiteral":
+         case "timestampLiteral":
+            return true;
+         default:
+            if (
+               typeof n.node !== "string" ||
+               !NON_STRING_OPERATORS.has(n.node)
+            ) {
+               return false;
+            }
+      }
+      for (const [k, v] of Object.entries(e)) {
+         if (k === "node" || k === "at" || k === "typeDef") continue;
+         if (v === null || typeof v !== "object") continue;
+         const kids = Array.isArray(v) ? v : [v];
+         for (const kid of kids) {
+            // `kids: { left, right }` holds the operands one level down.
+            const operands =
+               kid !== null &&
+               typeof kid === "object" &&
+               !("node" in (kid as object))
+                  ? Object.values(kid as object)
+                  : [kid];
+            for (const o of operands) {
+               if (!this.leavesNotString(o, source, depth + 1)) return false;
+            }
+         }
+      }
+      return true;
+   }
 
    private tooDeep(): boolean {
       return ++this.steps > 4096;
@@ -391,6 +508,7 @@ class GateReadWalk {
          this.scoped = true;
          const e = (f as { e?: unknown }).e;
          if (!equalityOnlyExpr(e)) this.equalityOnly = false;
+         if (!this.leavesNotString(e, source)) this.comparesNoString = false;
          for (const p of fieldPathsIn(e)) {
             if (depth === 0) this.entryPaths.push(p);
             else this.entryPathsComplete = false;
@@ -462,6 +580,8 @@ class GateReadWalk {
                this.equalityOnly = false;
             }
             this.entryPathsComplete = false;
+            // A stage's term reads the stage's fields, not typed here.
+            this.comparesNoString = false;
             for (const p of fieldPathsIn((f as { e?: unknown }).e)) {
                if (i === 0) atBase(p);
                else if (p.length === 1) {
@@ -494,10 +614,30 @@ export function gateReads(
    exprs: readonly string[],
    modelDef?: unknown,
    stored: ReadonlySet<string> = new Set(),
+   /**
+    * The gate texts the warehouse compares (the row filters): a lock is
+    * decided in Publisher. Absent, every text is taken as one.
+    */
+   rowFilterExprs: readonly string[] = exprs,
 ): GateReads {
    const walk = new GateReadWalk(modelDef, stored);
    const read = gatePaths(exprs);
    if (read.unresolved) walk.unresolved = true;
+   // A row filter is `field = $GIVEN` or `field in $GIVEN`: its field and
+   // its given are the comparison's leaves.
+   const compared = gatePaths(rowFilterExprs);
+   if (
+      compared.unresolved ||
+      compared.paths.some((p) => !nonStringType(typeAt(struct, p))) ||
+      rowFilterExprs.some((expr) =>
+         [...expr.matchAll(/\$([A-Za-z_][A-Za-z_0-9]*)/g)].some((m) => {
+            const types = walk.givenTypesNamed(m[1]);
+            return types.length === 0 || !types.every(nonStringType);
+         }),
+      )
+   ) {
+      walk.comparesNoString = false;
+   }
    for (const p of read.paths) {
       walk.entryPaths.push(p);
       walk.resolve(struct, p, []);
@@ -512,6 +652,7 @@ export function gateReads(
       equalityOnly: walk.equalityOnly,
       entryPaths: walk.entryPaths,
       entryPathsComplete: walk.entryPathsComplete,
+      comparesNoString: walk.comparesNoString && !walk.unresolved,
    };
 }
 
@@ -540,6 +681,8 @@ export function gateReadNames(
 export function entryPointGateExprs(
    struct: unknown,
    modelDef: unknown,
+   /** Only the gates on this route; absent, both. */
+   route?: string,
 ): string[] | undefined {
    if (struct === undefined || modelDef === undefined) return undefined;
    try {
@@ -551,7 +694,13 @@ export function entryPointGateExprs(
       );
       // The walk's fail-closed deny (no entry point to graft on).
       if (entries.some((e) => e.struct === undefined)) return undefined;
-      return entries.flatMap((e) => [...e.exprs]);
+      return entries
+         .filter(
+            (e) =>
+               route === undefined ||
+               canonicalAuthorizeRoute(e.route) === route,
+         )
+         .flatMap((e) => [...e.exprs]);
    } catch {
       return undefined;
    }
@@ -604,9 +753,14 @@ export async function gateReadsOfQuery(
          prepared.modelDef as never,
       );
       const exprs = entryPointGateExprs(struct, prepared.modelDef);
-      return exprs === undefined
+      const rowFilters = entryPointGateExprs(
+         struct,
+         prepared.modelDef,
+         ACCESS_FILTER_ROUTE,
+      );
+      return exprs === undefined || rowFilters === undefined
          ? undefined
-         : gateReads(struct, exprs, prepared.modelDef, stored);
+         : gateReads(struct, exprs, prepared.modelDef, stored, rowFilters);
    } catch {
       return undefined;
    }

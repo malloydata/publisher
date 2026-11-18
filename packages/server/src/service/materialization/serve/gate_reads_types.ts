@@ -51,4 +51,15 @@ export interface GateReads {
     */
    readonly entryPaths: readonly (readonly string[])[];
    readonly entryPathsComplete: boolean;
+   /**
+    * Every comparison the row-level gates and scopes make is over values that
+    * are not strings: each leaf of each expression is a field whose type is
+    * known and not a string, a number, boolean, date or timestamp literal,
+    * null, or a given whose declared type is not a string, under only
+    * comparison and logical operators. A string, a cast, a function, a
+    * `pick` or a node this does not know reads false. A lock (`#(authorize)`)
+    * is decided in Publisher, exactly, not by the warehouse, so its text is
+    * not a comparison here.
+    */
+   readonly comparesNoString: boolean;
 }

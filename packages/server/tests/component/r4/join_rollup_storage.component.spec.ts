@@ -563,18 +563,30 @@ source: open_flights is duckdb.table('flights_raw') extend {
       );
    });
 
-   it("builds no storage= rollup over a gated joined source, which stays behind its review switch", async () => {
-      // The rollup over `p_segs` is not built (a `storage=` rollup over a
-      // gated base waits for the managed tier's review), so a query through
-      // the join reads no rollup.
+   it("reads a gated joined source's storage= rollup only on that source, never through the join", async () => {
+      // Since #1876 a `storage=` rollup over a base's own gate is built, as a
+      // database one is (P3/P4): `p_segs`'s rollup is bound, and a query on
+      // `p_segs` itself reads it with the gate re-applied.
       expect(
          fixture.bindings.some((b) =>
             (b.sourceIDs ?? []).some((id) => id.includes("p_segs")),
          ),
-      ).toBe(false);
+      ).toBe(true);
+      const direct = await fixture.run({
+         name: "the gated source itself",
+         malloy:
+            "run: p_segs -> { group_by: flight_id; aggregate: p_seg_miles; order_by: flight_id }",
+      });
+      expect(rowDifference(direct.live, direct.served)).toBeUndefined();
+      // Through the join, the joined source's gate is not a gate of the
+      // query (live does not apply it: row-level-access.md), and the join
+      // branch declines a rollup over a gated base: no rollup answers, and
+      // the answer equals live's.
       const malloy =
          "run: open_flights -> { group_by: carrier; aggregate: p_segs.p_seg_miles }";
-      expectNotFromRollup(await fixture.run({ name: "gated child", malloy }));
+      const through = await fixture.run({ name: "gated child", malloy });
+      expectNotFromRollup(through);
+      expect(rowDifference(through.live, through.served)).toBeUndefined();
       fixture.setBindings(fixture.bindings);
       const { path } = await fixture.runAsIs(malloy);
       expect(path?.servedBy.kind).not.toBe("rollup");
