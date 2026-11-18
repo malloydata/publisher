@@ -309,7 +309,6 @@ async function assertRowScopeExact(
 ): Promise<void> {
    const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
    const judged = await withGateColumnTypes(tables, gateReadsFor);
-   if (judged === tables) return;
    const reads = await gateReadsFor(tables);
    // A gated entry point's scope is judged by the gate policy, past the gate
    // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
@@ -321,7 +320,14 @@ async function assertRowScopeExact(
    // The exactness rule is the served copy's; the rollup leg judges its own
    // stored columns (`storedRollupReads`), so it is asked only the
    // comparison rules below.
-   if (leg === "served" && !judged.every(gateColumnsExact)) {
+   // Database tables none of whose columns moved (`judged === tables`) hold
+   // the source's types, so only their comparison is judged: a collation
+   // altered after the build changes no type.
+   if (
+      leg === "served" &&
+      judged !== tables &&
+      !judged.every(gateColumnsExact)
+   ) {
       throw decline(
          "the query's source scopes its rows by a column a stored table does not hold exactly",
       );
