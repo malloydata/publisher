@@ -88,16 +88,6 @@ export interface Binding {
     */
    ownGateKept?: boolean;
    /**
-    * A `storage=` table every source stored in it holds only ungated rows
-    * (`SourceEligibility.ungated`: no gate beneath any of them, joins and
-    * derivations included), marked under every name it is bound by: the
-    * router lets an answer reading it past a gated entry point's gate, as it
-    * does a database table's, and `govern()` grafts and proves that gate on
-    * the answer (g-mixed). Set by the bind; absent reads as not proven (fail
-    * closed).
-    */
-   holdsOnlyUngatedRows?: boolean;
-   /**
     * A database table's columns whose type the bind found moved since its
     * build, each with the type the warehouse holds it as now (its native
     * type when known): a column altered in the warehouse, and a 128-bit

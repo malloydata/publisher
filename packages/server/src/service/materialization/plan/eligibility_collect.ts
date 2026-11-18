@@ -31,7 +31,6 @@ import {
    assertPlacementNamed,
    assertTierEligible,
    gateEnforcedAtRead,
-   holdsOnlyUngatedRows,
    storageKeepsOwnGate,
    type TierGateInputs,
 } from "./materialization_eligibility";
@@ -557,15 +556,6 @@ export type SourceEligibility = {
     * read past that gate. Absent, as in a record made before it: none.
     */
    gateKept?: string[];
-   /**
-    * The eligible sourceIDs whose tables hold only ungated rows: no gate
-    * anywhere beneath the source, its joins and the sources it derives from
-    * included (`holdsOnlyUngatedRows`). A `storage=` table every source on
-    * whose address is listed here is read past a gated entry point's gate,
-    * as a database table is (g-mixed). Absent, as in a record made before
-    * it: none.
-    */
-   ungated?: string[];
 };
 
 export function collectSourceEligibility(
@@ -574,7 +564,6 @@ export function collectSourceEligibility(
 ): SourceEligibility {
    const eligible: string[] = [];
    const gateKept: string[] = [];
-   const ungated: string[] = [];
    const refused: Record<string, string> = {};
    for (const sourceID of Object.keys(compiled.tables)) {
       const storage = verdicts.get(sourceID)!.storage;
@@ -584,9 +573,8 @@ export function collectSourceEligibility(
       }
       eligible.push(sourceID);
       if (storage.gateKept) gateKept.push(sourceID);
-      if (storage.ungated) ungated.push(sourceID);
    }
-   return { eligible, refused, gateKept, ungated };
+   return { eligible, refused, gateKept };
 }
 
 /**
@@ -830,7 +818,7 @@ export interface TableVerdict {
       | (WireVerdict & { annotationFields: Record<string, string> })
       | { failed: unknown };
    /** Whether it may be served from a stored table ({@link SourceEligibility}). */
-   storage: { refused: string } | { gateKept: boolean; ungated: boolean };
+   storage: { refused: string } | { gateKept: boolean };
    /**
     * The database gate's refusal, before any table it shares
     * ({@link DatabaseSourceEligibility}, the database sibling rule).
@@ -923,11 +911,6 @@ function storageVerdict(
             (rollup !== undefined
                ? "baseGated" in rollup && rollup.baseGated === true
                : storageKeepsOwnGate(source, compiled)),
-         // A persisted view's or query's table is read only by its own
-         // leg, which decides a gate itself: never marked.
-         ungated:
-            !isPersistedResultSourceID(sourceID) &&
-            holdsOnlyUngatedRows(source),
       };
    } catch (err) {
       return { refused: errMessage(err) };

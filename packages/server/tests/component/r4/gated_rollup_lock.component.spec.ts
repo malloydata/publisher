@@ -609,21 +609,17 @@ for (const placement of ["database", "storage"] as const) {
          });
 
          for (const source of ["parent_locked", "parent_inherited"]) {
-            // A lock reads no field of the parent, so on the database tier
-            // the join branch answers past it (g-mixed for rollups, #1854):
-            // the variant redeclares the parent with its lock, which admits
-            // or denies the caller as live does. In a destination the
-            // parent is not stored here, so it declines as for `parent`.
-            it(`answers every caller of ${source} as live does, from the rollup on the database tier`, async () => {
+            it(`declines CONTRACT for ${source} and answers every caller as live does`, async () => {
+               fixture.setBindings(fixture.bindings);
+               const served = await fixture.runAsIs(query(source), ADMIN);
+               expect(rollupStep(served.path)?.reason).toBe("ROW_LEVEL_GATE");
                const run = await fixture.run({
                   name: `${source} admin`,
                   malloy: query(source),
                   givens: ADMIN,
-                  expectLive: placement === "storage",
+                  expectLive: true,
                });
-               expect(run.servedBy?.kind === "rollup").toBe(
-                  placement === "database",
-               );
+               expect(run.servedBy?.kind).not.toBe("rollup");
                expect(rowDifference(run.live, run.served)).toBeUndefined();
                for (const givens of <Givens[]>[{ ROLE: "viewer" }, {}]) {
                   await expectDeniedAsLive(fixture, query(source), givens);

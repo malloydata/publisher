@@ -326,11 +326,9 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
    },
    "a gate above it, materialize on, gated sources off": {
       mat_col: "planned | database | awaiting_build",
-      // g-mixed (question 14): a `storage=` table that holds only ungated
-      // rows serves a gated entry point above it, as a database table does.
-      mat_sto: "planned | storage | awaiting_build",
+      mat_sto: "planned | storage | live row_level_gate",
       pair_col: "planned | database | awaiting_build",
-      pair_sto: "planned | storage | awaiting_build",
+      pair_sto: "planned | storage | live row_level_gate",
       persist_col: "planned | database | awaiting_build",
       persist_sto: "planned | storage | awaiting_build",
       roll__rollup__category_region__7617040b:
@@ -714,6 +712,8 @@ describe("gate keeping at the router, under an entry-point veto", () => {
          _modelDef: {
             name: "m",
             exports: [],
+            // The gate's given, a number: the gate compares no string.
+            givens: { "given/ID": { name: "ID", type: { type: "number" } } },
             contents: {
                s: {
                   type: "table",

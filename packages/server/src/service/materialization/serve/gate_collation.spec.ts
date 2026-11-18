@@ -3,9 +3,9 @@
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
-import type { Connection } from "@malloydata/malloy";
+import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { equalityOnlyExpr } from "./gate_reads";
+import { equalityOnlyExpr, storedTableCollationRefusal } from "./gate_reads";
 import {
    duckdbCollation,
    duckdbTableCollation,
@@ -234,6 +234,25 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
       } finally {
          await icu.close();
       }
+   });
+
+   it("judges a database table with no path unknown, never binary", async () => {
+      const postgresAuthor = new SingleConnectionRuntime({ connection: pg })
+         .loadModel(`source: s is pg.sql("SELECT 'a' AS c")`)
+         .loadQuery("run: s -> { select: c }");
+      expect(
+         await storedTableCollationRefusal({
+            tables: [{ tier: "database" }],
+            answerRunnable: {
+               runtime: {
+                  connections: { lookupConnection: async () => pg },
+               },
+            } as never,
+            virtualMap: undefined,
+            authorRunnable: postgresAuthor as never,
+            reads: undefined,
+         }),
+      ).toBeDefined();
    });
 
    it("reads an empty source's column too", async () => {

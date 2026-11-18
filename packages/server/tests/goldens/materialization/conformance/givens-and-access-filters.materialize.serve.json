@@ -247,7 +247,8 @@
           {
             "kind": "materialized",
             "origin": "materialize",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "ROW_LEVEL_GATE",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -272,17 +273,13 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "materialized",
-          "origin": "materialize",
-          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "an access-filtered extension",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "off"
     },
     {
@@ -522,7 +519,8 @@
           {
             "kind": "materialized",
             "origin": "materialize",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "ROW_LEVEL_GATE",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -547,17 +545,13 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "materialized",
-          "origin": "materialize",
-          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "an access-filtered extension, another caller",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "off"
     },
     {
@@ -789,7 +783,8 @@
           {
             "kind": "materialized",
             "origin": "materialize",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "ROW_LEVEL_GATE",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -814,17 +809,13 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "materialized",
-          "origin": "materialize",
-          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "an access-filtered extension",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "on"
     },
     {
@@ -1064,7 +1055,8 @@
           {
             "kind": "materialized",
             "origin": "materialize",
-            "outcome": "used",
+            "outcome": "skipped",
+            "reason": "ROW_LEVEL_GATE",
             "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e"
           }
         ],
@@ -1089,17 +1081,13 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "materialized",
-          "origin": "materialize",
-          "tableId": "2b69286cf457bf6f154b27617edc214250de12c556ee4d57f1384435ad553a5e",
-          "tier": "storage",
-          "via": "served_copy"
+          "kind": "live"
         },
         "warnings": []
       },
       "query": "an access-filtered extension, another caller",
-      "servedBy": "materialized",
-      "servedFrom": "storage",
+      "servedBy": "live",
+      "servedFrom": null,
       "switch": "on"
     }
   ]
