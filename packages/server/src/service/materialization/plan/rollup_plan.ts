@@ -92,6 +92,7 @@ import { byReadCost } from "../domain/read_cost";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import { hasFanoutJoin } from "./preaggregation_validation";
 import { basePersistNamespace } from "./preaggregation_synthesis";
+import { rowFilterOnComposite } from "../../composite_row_filter";
 import { collectEntryPointGates } from "../../gate_classification";
 import { createHash } from "node:crypto";
 import {
@@ -105,7 +106,11 @@ import {
    type NotedSourceDef,
    type SourceScope,
 } from "../../governance/ir/declared_notes";
-import { canonicalAuthorizeRoute } from "../../authorize_routes";
+import {
+   AUTHORIZE_ROUTE,
+   canonicalAuthorizeRoute,
+} from "../../authorize_routes";
+import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import {
    ROLLUP_INVALID_CODE,
    DEPRECATED_PREAGGREGATE_ANNOTATION_CODE,
@@ -210,14 +215,14 @@ export interface ParentKeyNeed {
 
 /**
  * Whether a rollup at `placement` over a gated base may be read past its
- * base's gate (and so is worth building), by the gate policy: database,
- * under `materialize.gatedSources` or, with it off, under G3 when every gate
- * is the base's `own`; in a storage destination once the managed-tier review
- * allows it.
+ * base's gate (and so is worth building), by the gate policy: on either
+ * tier, under `materialize.gatedSources` or, with it off, under G3 when every
+ * gate is the base's `own`, or a lock reading no row field.
  */
 function rollupsServeGatedBases(
    placement: { storage?: string },
    own: boolean,
+   lockOnly: boolean,
 ): boolean {
    return tableKeepsGates(
       {
@@ -225,7 +230,7 @@ function rollupsServeGatedBases(
          tier: placement.storage === undefined ? "database" : "storage",
          v1: false,
          baseGateProven: true,
-         gate: baseGateOf(own),
+         gate: baseGateOf(own, lockOnly),
       },
       gateSwitches(),
    );
@@ -233,14 +238,24 @@ function rollupsServeGatedBases(
 
 /**
  * A rollup base's gates as the gate policy reads them: row-level, and
- * `attributed` when every one is the base's own (G3 for rollups).
+ * `attributed` when every one is the base's own (G3 for rollups); `lockOnly`
+ * when every one is a lock reading no row field.
  */
-function baseGateOf(own: boolean): {
+function baseGateOf(
+   own: boolean,
+   lockOnly: boolean,
+): {
    rowLevel: boolean;
    attributed: boolean;
    inheritedRowFilter: boolean;
+   lockOnly: boolean;
 } {
-   return { rowLevel: true, attributed: own, inheritedRowFilter: !own };
+   return {
+      rowLevel: true,
+      attributed: own,
+      inheritedRowFilter: !own,
+      lockOnly,
+   };
 }
 
 /**
@@ -281,7 +296,10 @@ export function rollupGateEnforcedAtRead(plan: unknown): boolean {
                : "storage",
          v1: !variant,
          baseGateProven: variant && plan.baseGated === true,
-         gate: baseGateOf(variant && plan.baseGateOwn === true),
+         gate: baseGateOf(
+            variant && plan.baseGateOwn === true,
+            variant && plan.baseGateLocksOnly === true,
+         ),
       },
       gateSwitches(),
    );
@@ -938,6 +956,11 @@ interface RollupFacts {
    joinUsage: ReturnType<SourceMap["fieldJoinsOf"]>;
    declaredName: string;
    gate: ReturnType<typeof gateFieldNames>;
+   /**
+    * A row filter in the base's gate set was declared on a composite source,
+    * wherever the gate walk reaches it ({@link rowFilterOnComposite}).
+    */
+   compositeRowFilter: boolean;
    /** The source's rows read the current time (S25b). */
    windowed: boolean;
    /**
@@ -1121,6 +1144,7 @@ function rollupFactsOf(
       scope,
       joinsRead,
       dialect: typeof def.dialect === "string" ? def.dialect : undefined,
+      compositeRowFilter: rowFilterOnComposite(def, map.model()),
       unservable,
    };
 }
@@ -1248,19 +1272,30 @@ function declarationRefusal(
          `the source's \`where:\` reads a given and ${[...new Set(ungrained)].map((c) => `\`${c}\``).join(", ")}, which the grain does not keep, so it could not be re-applied to the rollup's rows per caller`,
       );
    }
+   // A composite source's own row filter is not grafted on live (the
+   // filter binding guard denies every caller), so a rollup of it would
+   // answer what live refuses: it is not built.
+   if (gate.declared && facts.compositeRowFilter) {
+      return unservable(
+         gate.reason.base,
+         decl,
+         "the source reads a row-level gate (`#(access_filter)`) declared on a composite source, which live refuses every caller, so no rollup of it is read",
+      );
+   }
    // Row 21: a gated base's rollup is built only where a query can read
    // it past the gate; elsewhere its table would cost a build no query
    // reads.
    if (
       gate.declared &&
-      !(ctx.readUnderGates ?? rollupsServeGatedBases(decl, gate.own))
+      !(
+         ctx.readUnderGates ??
+         rollupsServeGatedBases(decl, gate.own, lockOnlyAt(decl, facts))
+      )
    ) {
       return unservable(
          gate.reason.base,
          decl,
-         decl.storage !== undefined
-            ? "the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a rollup in a storage destination is not read past a gate yet, so its table would cost a build no query reads; leave out storage= to build it in the source's own warehouse"
-            : "the source's row-level gate (`#(access_filter)` or `#(authorize)`) is inherited from a source it extends, and a rollup keeps only its base's own gate unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
+         "the source's row-level gate (`#(access_filter)` or `#(authorize)`) is inherited from a source it extends, and a rollup keeps only its base's own gate unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads",
       );
    }
    // A gate on a source the base joins is not the base's to graft: the
@@ -1460,6 +1495,9 @@ function rollupPlanOf(
       rollupMeasures: sorted,
       baseGated: gate.declared,
       ...(gate.declared && gate.own ? { baseGateOwn: true as const } : {}),
+      ...(gate.declared && lockOnlyAt(decl, facts)
+         ? { baseGateLocksOnly: true as const }
+         : {}),
       internalGrain: decl.grain.filter(
          (g) => byName.get(g)?.accessModifier === "internal",
       ),
@@ -1551,6 +1589,14 @@ function gateFieldNames(
    joinGated: boolean;
    /** Every gate is the base's own: none inherited, none from a derivation. */
    own: boolean;
+   /**
+    * Every gate, own or inherited, is an `#(authorize)` lock whose text reads
+    * only givens and literals: no identifier names a field, and no word but
+    * the lock grammar's remains once its givens and literals are removed. Such a lock
+    * admits or refuses the whole query, so pre-grouped rows cannot change
+    * its outcome. Any doubt reads false.
+    */
+   lockOnly: boolean;
    /** The refusal name for the base's own gates, and for its joins' ({@link gateRefusalReason}). */
    reason: { base: GateRefusalReason; joined: GateRefusalReason };
 } {
@@ -1604,12 +1650,80 @@ function gateFieldNames(
          base: gateRefusalReason(entries.map((e) => e.route)),
          joined: gateRefusalReason(joinedRoutes),
       },
+      lockOnly: locksReadNoRowField(entries, dimensions, unkeepable),
       own:
          entries.length > 0 &&
          unkeepable.size === 0 &&
          entries.every((e) => !e.selfContained && e.struct !== undefined) &&
          gateNotesDeclaredBy(def, scope),
    };
+}
+
+/**
+ * Whether a rollup at `decl`'s placement is read past its base's locks as a
+ * lock-only base's ({@link locksReadNoRowField}). On `storage=`, only when
+ * the base re-applies no given-reading `where:` of its own: the router counts
+ * such a term's columns as gate columns (`serve/gate_reads.ts`), so an entry
+ * point with one is not a lock-only answer there and every query would
+ * answer live. In the database, the router keeps any answer, so the terms do not
+ * matter.
+ */
+function lockOnlyAt(
+   decl: Pick<Declaration, "storage">,
+   facts: Pick<RollupFacts, "gate" | "given">,
+): boolean {
+   if (!facts.gate.lockOnly) return false;
+   if (decl.storage === undefined) return true;
+   return !("terms" in facts.given) || facts.given.terms.length === 0;
+}
+
+/**
+ * Whether every gate in `entries` is an `#(authorize)` lock that reads no row
+ * field: each was read off a resolved entry point, is on the lock route,
+ * names no field of `def` (`dimensions` and `unkeepable` empty: the same
+ * identifier walk the A4 check runs), and its text holds nothing but givens,
+ * literals and the lock grammar's words. A row filter always reads a field,
+ * so it is never lock-only.
+ */
+function locksReadNoRowField(
+   entries: ReturnType<typeof collectEntryPointGates>,
+   dimensions: ReadonlySet<string>,
+   unkeepable: ReadonlySet<string>,
+): boolean {
+   if (entries.length === 0) return false;
+   if (dimensions.size > 0 || unkeepable.size > 0) return false;
+   if (
+      !entries.every(
+         (e) =>
+            e.struct !== undefined &&
+            canonicalAuthorizeRoute(e.route) === AUTHORIZE_ROUTE,
+      )
+   ) {
+      return false;
+   }
+   return entries.every((e) => e.exprs.every(readsOnlyGivensAndLiterals));
+}
+
+/** Words a lock's text may hold besides givens and literals. */
+const LOCK_WORDS = new Set(["and", "in", "true", "false"]);
+
+/**
+ * Whether a gate's text names nothing but givens, literals and the lock
+ * grammar's words (`'admin' = $ROLE`, `true`, `false`): with its comments,
+ * string literals and `$GIVEN`s removed, no other identifier remains, and no
+ * quoted name. Conservative on purpose: any other word, a field or a
+ * function alike, reads as a row read.
+ */
+function readsOnlyGivensAndLiterals(expr: string): boolean {
+   if (expr.includes("`")) return false;
+   const rest = stripMalloyCommentsAndLiterals(expr).replace(
+      /\$[A-Za-z_][A-Za-z_0-9]*/g,
+      " ",
+   );
+   for (const m of rest.matchAll(/[A-Za-z_][A-Za-z_0-9]*/g)) {
+      if (!LOCK_WORDS.has(m[0].toLowerCase())) return false;
+   }
+   return true;
 }
 
 /**
