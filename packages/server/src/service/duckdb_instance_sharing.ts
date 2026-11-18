@@ -279,8 +279,20 @@ export function installDuckDBInstanceSharing(): void {
             // them in (Windows) loads them from disk, which external access,
             // off before Malloy's baseline loads them, would refuse.
             // And `ducklake`, for a catalog kept in a local file under the
-            // root (an env connection's setupSQL may attach one).
-            for (const extension of ["json", "icu", "ducklake"]) {
+            // root (an env connection's setupSQL may attach one). Not on an
+            // in-memory instance with no setupSQL (the package sandbox): no
+            // setup of its own can attach a catalog, and no connection with
+            // one shares it (setupSQL is in the share key). Loading it from
+            // disk checks its signature on a burst of short-lived hashing
+            // threads, about one per core, on every sandbox a package opens.
+            const attachesCatalog =
+               this.normalized.databasePath !== ":memory:" ||
+               (this.normalized.setupSQL ?? "").trim() !== "";
+            for (const extension of [
+               "json",
+               "icu",
+               ...(attachesCatalog ? ["ducklake"] : []),
+            ]) {
                await raw.run(`LOAD ${extension}`).catch(() => {});
             }
             await preloadExcel((sql) => raw.run(sql));
