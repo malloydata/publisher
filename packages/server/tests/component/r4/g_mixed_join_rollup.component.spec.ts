@@ -25,10 +25,13 @@
  * - a gate that reads through the re-pointed join, or a computed dimension,
  *   declines (`ROW_LEVEL_GATE`) and answers live;
  *
- * In a `storage=` destination the branch declines past a gate (`ROW_LEVEL_GATE`)
- * and the query answers live: its variant is declared over the served
- * copy's files, not in an overlay of the query source's declaring file, so
- * the gate would not land on it. Every caller still gets live's answer.
+ * In a `storage=` destination the query source is read from its own table
+ * there and the rollup from its table beside it. The variant is declared in
+ * an overlay of the served copy's own copy of the query source's declaring
+ * file, so it keeps the author's `sourceID` and the gate grafts on it. The
+ * answer keeps the gate only when every table read is a G3 table: the query
+ * source's (here admitted past its own gate) and the rollup's (holding only
+ * ungated rows); either unmarked, it answers live.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -250,11 +253,13 @@ for (const storage of [false, true]) {
             rollupKeyChecks: true,
             ...(storage ? { materialize: true } : {}),
          });
-         // As the bind marks it: a query source's `#(materialize)` table
-         // under its own row-level gate is admitted past it (G3).
+         // As the bind marks them: a query source's `#(materialize)` table
+         // under its own row-level gate is admitted past it (G3), and a
+         // rollup over an ungated base holds only ungated rows.
          for (const b of fixture.bindings) {
-            if (b.kind !== "rollup" && b.tier === "storage")
-               b.ownGateKept = true;
+            if (b.tier !== "storage") continue;
+            if (b.kind === "rollup") b.holdsOnlyUngatedRows = true;
+            else b.ownGateKept = true;
          }
       }, 240_000);
       afterAll(async () => {
@@ -263,7 +268,7 @@ for (const storage of [false, true]) {
       });
 
       for (const kase of CASES) {
-         it(`${kase.name}: every caller gets live's answer${kase.rollup && !storage ? ", from the rollup" : ", live"}`, async () => {
+         it(`${kase.name}: every caller gets live's answer${kase.rollup ? ", from the rollup" : ", live"}`, async () => {
             for (const givens of [...kase.callers, ...kase.callers]) {
                const out = await both(kase.malloy, givens);
                // Every caller here is admitted: a denial is a defect.
@@ -272,7 +277,7 @@ for (const storage of [false, true]) {
                }
                const { run } = out;
                expect(rowDifference(run.live, run.served)).toBeUndefined();
-               const fromRollup = kase.rollup && !storage;
+               const fromRollup = kase.rollup;
                expect([kase.name, run.servedBy?.kind]).toEqual([
                   kase.name,
                   fromRollup ? "rollup" : run.servedBy?.kind,
@@ -319,8 +324,51 @@ for (const storage of [false, true]) {
          if (out.run === undefined) {
             throw new Error(`live: ${out.live}; served: ${out.served}`);
          }
-         expect(out.run.servedBy?.kind === "rollup").toBe(!storage);
+         expect(out.run.servedBy?.kind).toBe("rollup");
          expect(out.run.served.map((r) => r.carrier)).toEqual(["BB"]);
       });
+
+      if (storage) {
+         for (const [what, unmark] of [
+            [
+               "the query source's own table there",
+               (b: R4Fixture["bindings"][number]) => {
+                  if (b.kind !== "rollup") b.ownGateKept = undefined;
+               },
+            ],
+            [
+               "the rollup's table",
+               (b: R4Fixture["bindings"][number]) => {
+                  if (b.kind === "rollup") b.holdsOnlyUngatedRows = undefined;
+               },
+            ],
+         ] as const) {
+            it(`answers live, equal to live, when ${what} is not a G3 table`, async () => {
+               const saved = fixture.bindings.map((b) => ({ ...b }));
+               for (const b of fixture.bindings) unmark(b);
+               try {
+                  for (const givens of [AA, BB]) {
+                     const out = await both(
+                        "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }",
+                        givens,
+                     );
+                     if (out.run === undefined) {
+                        throw new Error(
+                           `live: ${out.live}; served: ${out.served}`,
+                        );
+                     }
+                     expect(out.run.servedBy?.kind).not.toBe("rollup");
+                     expect(
+                        rowDifference(out.run.live, out.run.served),
+                     ).toBeUndefined();
+                  }
+               } finally {
+                  fixture.bindings.forEach((b, i) =>
+                     Object.assign(b, saved[i]),
+                  );
+               }
+            });
+         }
+      }
    });
 }

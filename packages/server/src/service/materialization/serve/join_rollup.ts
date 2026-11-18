@@ -58,12 +58,14 @@
  *
  * Gates: a joined source that declares a gate of its own is declined
  * (`ROW_LEVEL_GATE`), since the rollup carries none. A gated query source is
- * answered from a database rollup of an ungated joined source when its gate
- * reads only its own plain columns: the variant redeclares it in its own
- * declaring file with its gates, where `govern()` grafts and proves them
- * (`joinGateDecline`, `compileJoinGated` in rollup_variants.ts; g-mixed for
- * rollups, question 14). Any other gate, and any in a storage destination,
- * declines (`ROW_LEVEL_GATE`).
+ * answered from a rollup of an ungated joined source when its gate reads
+ * only its own plain columns: the variant redeclares it in its own
+ * declaring file with its gates (in a storage destination, the served
+ * copy's copy of that file), where `govern()` grafts and proves them
+ * (`joinGateDecline`, `compileJoinGated`, `compileJoinInDestinationGated`
+ * in rollup_variants.ts; g-mixed for rollups, question 14). In a storage
+ * destination the answer keeps the gate only when every table it reads is a
+ * G3 table. Any other gate declines (`ROW_LEVEL_GATE`).
  */
 
 import { requireUnique, type KeyVerdict } from "../domain/key_check";

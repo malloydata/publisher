@@ -82,10 +82,11 @@
  * field they read is a grain dimension. Else it is skipped `ROW_LEVEL_GATE`, with a
  * detail that never names the gate. `govern()` then grafts the gates on the
  * variant's own scope; a denial there is a defect, not a routing outcome. A
- * join branch (A7) answers past a gate only over a database rollup of an
- * ungated joined source, its gate reading the query source's own plain
- * columns (`joinGateDecline`), redeclared in its declaring file with its
- * gates (`compileJoinGated`) and proven by `joinGraft`.
+ * join branch (A7) answers past a gate only over a rollup of an ungated
+ * joined source, its gate reading the query source's own plain columns
+ * (`joinGateDecline`), redeclared in its declaring file with its gates
+ * (`compileJoinGated`; in a storage destination, in the served copy's copy
+ * of it, `compileJoinInDestinationGated`) and proven by `joinGraft`.
  *
  * Rollups are offered in the plan's order, cheapest read first (coarsest,
  * then database before `storage=`); the first that answers is used. A
@@ -270,6 +271,12 @@ interface RollupAnswer {
     * may be retried live.
     */
    bindings?: Binding[];
+   /**
+    * The tables a join branch answered in a storage destination is judged
+    * to read (`answerKeepsGates`, the row-scope and collation checks): the
+    * query source's tables there and the rollup's. Absent: the rollup's own.
+    */
+   gateTablesRead?: Binding[];
    /**
     * Where `govern()` grafts the run target's gates on the variant (R3): set
     * for every base variant, and for a join branch answered past an
@@ -634,14 +641,11 @@ export class RollupVariantServe {
          // rows are the author's, so it filters them as live does before
          // the re-pointed join is read (`joinGateDecline`).
          if (gates) {
-            // In a storage destination the variant is declared over the
-            // served copy's files, not in an overlay of the query source's
-            // declaring file, so the gate would not land on it: declined
-            // (fail closed) until it is.
-            const gated =
-               branch.plan.storage !== undefined
-                  ? contractSkip()
-                  : joinGateDecline(gates, struct, branch.plan);
+            // On either tier: in a storage destination the variant is
+            // declared in an overlay of the served copy's own copy of the
+            // query source's declaring file (`compileJoinInDestinationGated`),
+            // so the gate lands there as on a database rollup's variant.
+            const gated = joinGateDecline(gates, struct, branch.plan);
             if (gated) {
                first ??= gated;
                members.set(branch.plan.rollupSourceName, gated);
@@ -1232,6 +1236,7 @@ export class RollupVariantServe {
             localName: q.localName,
             branch,
             destination: { basis, keepsJoin },
+            ...(q.gates ? { gated: { sourceID: q.sourceID } } : {}),
          },
          table,
       );
@@ -1309,12 +1314,22 @@ export class RollupVariantServe {
          if (!isDeclineOf(error, "served_copy")) throw error;
          throw servedCopySkip(error, name);
       }
+      const graft = await this.joinGraft(q, runnable, variant);
       return {
          runnable,
          rollupSourceName: plan.rollupSourceName,
          virtualMap,
          binding: table.binding,
          bindings: [...tablesRead, table.binding],
+         ...graft,
+         // Every table the answer reads is judged: past a gate, the query
+         // source's own tables in the destination must each be a G3 table
+         // (admitted past its own gate, or holding only ungated rows), and
+         // the rollup one that holds only ungated rows, each holding the
+         // gate's columns exactly (the exactness rule, in the router); past a gate
+         // or under a row scope, each is compared as its source compares it
+         // (the stored-side collation check reads every one).
+         gateTablesRead: [...tablesRead, table.binding],
       };
    }
 
@@ -1881,6 +1896,22 @@ export class RollupVariantServe {
       if (
          use.kind === "join" &&
          use.destination &&
+         use.gated &&
+         table.binding &&
+         !isDatabase(table.binding) &&
+         reads
+      ) {
+         return this.compileJoinInDestinationGated(
+            plan,
+            { ...use, destination: use.destination, gated: use.gated },
+            table.binding,
+            reads,
+            { packagePath, modelPath, queryModelURL },
+         );
+      }
+      if (
+         use.kind === "join" &&
+         use.destination &&
          table.binding &&
          !isDatabase(table.binding) &&
          reads
@@ -2060,6 +2091,73 @@ ${declaration}
          modelDef: modelDefOf(model as unknown as { _modelDef: ModelDef }),
          runtime: runtime as unknown as GraftRuntime,
       };
+   }
+
+   /**
+    * Compile a join branch (A7) answered past an entry-point gate in a storage
+    * destination: {@link compileJoinGated}'s overlay, applied to the served
+    * copy's file set (`ServedCopyJoinBasis.files`, keyed by the author's own
+    * file URLs). The copy's text of the query source's declaring file is
+    * copied aside, and the declaring file is overlaid in place: it imports
+    * the file's other names from that copy, declares the rollup over its
+    * table in the destination, and redeclares the query source over the
+    * copy's, with its gates and the join re-pointed at the rollup. The run
+    * target keeps the author's `sourceID`, so `govern()` grafts and proves
+    * the gate on it.
+    */
+   private async compileJoinInDestinationGated(
+      plan: RollupVariantPlan,
+      use: Extract<VariantUse, { kind: "join" }> & {
+         destination: NonNullable<
+            Extract<VariantUse, { kind: "join" }>["destination"]
+         >;
+         gated: { sourceID: string };
+      },
+      binding: Binding,
+      reads: StoredRollupReads,
+      ctx: { packagePath: string; modelPath: string; queryModelURL: URL },
+   ): Promise<CompiledVariant> {
+      const modelDef = this.host.modelDef() as ModelDef | undefined;
+      if (!modelDef) return { error: "no model" };
+      const { basis } = use.destination;
+      const servedName = `${plan.rollupSourceName}__served`;
+      // A stored column no read gives live's values is not declared, so a
+      // query reading it does not compile against the rollup.
+      const read = withoutLeftOut(plan, modelDef, reads.leftOut);
+      return compileDeclaringFileVariant({
+         packagePath: ctx.packagePath,
+         modelPath: ctx.modelPath,
+         packageConfig: basis.config,
+         config: basis.config,
+         modelDef,
+         sourceID: use.gated.sourceID,
+         copySuffix: ".rollup-copy.malloy",
+         queryModelURL: ctx.queryModelURL,
+         flags: flagLine(modelDef),
+         basis: {
+            files: basis.files,
+            modelDef: basis.modelDef as ModelDef,
+         },
+         // The rollup and the copy's source the variant includes, seen from
+         // the query model too (see compileJoinGated).
+         alsoExported: [servedName, parentAlias(plan)],
+         declare: ({ gates, sourceName, copyName }) => {
+            const parent = parentAlias(plan);
+            const rollupText = storedRollupDeclaration(
+               read.plan,
+               binding,
+               reads,
+               servedName,
+               modelDef,
+               read.dropped,
+            );
+            // malloy-text: the author's own gate notes, as gateLines writes them for every declaring-file variant
+            const gateText = gates;
+            return `import { ${identifier(parent)} is ${identifier(sourceName)} } from ${doubleQuotedString(copyName)}
+${rollupText}
+${gateText}${sourceOverRollup(read.plan, { ...use, localName: sourceName }, servedName, "")}`;
+         },
+      });
    }
 
    /**

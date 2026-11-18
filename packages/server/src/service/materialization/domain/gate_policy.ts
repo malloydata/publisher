@@ -303,15 +303,13 @@ function g3Table(t: TableRead): boolean {
 /**
  * Whether a table a rollup answer read keeps the gates under G3: a database
  * one, a `storage=` one plan admitted past its base's own gates
- * (`ownGateKept`), or any one when the entry point's gates read no column
- * (locks only).
+ * (`ownGateKept`), a `storage=` one that holds only ungated rows (g-mixed: a
+ * join branch in a storage destination reads the query source's own tables
+ * there beside a rollup of an ungated joined source), or any one when the
+ * entry point's gates read no column (locks only).
  */
 function g3RollupTable(t: TableRead): boolean {
-   return (
-      t.tier === "database" ||
-      t.ownGateKept === true ||
-      t.gatesReadNoColumn === true
-   );
+   return g3Table(t) || t.gatesReadNoColumn === true;
 }
 
 /**
@@ -345,8 +343,8 @@ export function legMayPassGate(
  * one table and every one is a G3 table: for the served copy, database,
  * `storage=` admitted past its own gate, or `storage=` holding only ungated
  * rows; for the rollup leg, database, `storage=` admitted past its base's
- * own gates, or any tier when the entry point's gates are locks reading no
- * column.
+ * own gates, `storage=` holding only ungated rows,
+ * or any tier when the entry point's gates are locks reading no column.
  */
 export function answerKeepsGates(
    leg: GateLeg,

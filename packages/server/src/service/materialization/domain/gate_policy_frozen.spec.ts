@@ -989,7 +989,7 @@ const FROZEN_LEG_ROWS: readonly string[] = [
    // gates, as one reading a database table does, alone or beside a
    // database table or a table admitted past its own gate. Beside a
    // `storage=` table proven neither way (`read=ungated_storage`) it does
-   // not. The rollup leg is unchanged. Reviewed in the question-14 security
+   // not. The rollup leg follows below. Reviewed in the question-14 security
    // review, including the P2 lock-gated join widening.
    "keeps served read=ungated mz=0 gs=0 g3=1",
    "keeps served read=ungated_database mz=0 gs=0 g3=1",
@@ -997,4 +997,18 @@ const FROZEN_LEG_ROWS: readonly string[] = [
    "keeps served read=ungated mz=1 gs=0 g3=1",
    "keeps served read=ungated_database mz=1 gs=0 g3=1",
    "keeps served read=ungated_own mz=1 gs=0 g3=1",
+   // g-mixed for a `storage=` rollup (question 14): with the switch off, the
+   // rollup leg keeps the gates for an answer reading a `storage=` table
+   // proven to hold only ungated rows, as the served copy does: a join
+   // branch over a rollup of an ungated joined source, beside the query
+   // source's own table in that destination (admitted past its own gate, or
+   // holding only ungated rows). Beside a `storage=` table proven neither
+   // way (`read=ungated_storage`) it does not. Needs the security review's
+   // sign-off.
+   "keeps rollup read=ungated mz=0 gs=0 g3=1",
+   "keeps rollup read=ungated_database mz=0 gs=0 g3=1",
+   "keeps rollup read=ungated_own mz=0 gs=0 g3=1",
+   "keeps rollup read=ungated mz=1 gs=0 g3=1",
+   "keeps rollup read=ungated_database mz=1 gs=0 g3=1",
+   "keeps rollup read=ungated_own mz=1 gs=0 g3=1",
 ];

@@ -517,14 +517,14 @@ describe("bindStorageEntries", () => {
          refused: {},
          ungated: ["orders@m"],
       };
-      for (const kind of ["persist", "materialize"] as const) {
+      for (const kind of ["persist", "materialize", "rollup"] as const) {
          expect(ungated(kind, proven)).toEqual([
             ["orders", true],
             ["gated", false],
          ]);
       }
-      // A rollup, a persisted view or query decides a gate on its own leg.
-      for (const kind of ["rollup", "view", "query"] as const) {
+      // A persisted view or query decides a gate on its own leg.
+      for (const kind of ["view", "query"] as const) {
          expect(ungated(kind, proven)).toEqual([
             ["orders", false],
             ["gated", false],

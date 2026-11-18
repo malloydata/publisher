@@ -548,19 +548,20 @@ source: open_flights is duckdb.table('flights_raw') extend {
       await disposeScenarios();
    });
 
-   it("answers a gated entry point without the rollup, with its gate held (CONTRACT)", async () => {
+   it("answers a gated entry point from the ungated joined source's rollup, with its gate held (g-mixed)", async () => {
+      // The query source is redeclared in an overlay of the served copy's own
+      // copy of its file, so its gate is grafted and proven on the answer.
       const malloy =
          "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }";
-      const run = await fixture.run({
-         name: "gated",
-         malloy,
-         givens: { CARRIER: "AA" },
-      });
-      expectNotFromRollup(run);
-      expect(run.served.map((r) => r.carrier)).toEqual(["AA"]);
-      expect(await rollupReasons(fixture, malloy, { CARRIER: "AA" })).toContain(
-         "ROW_LEVEL_GATE",
-      );
+      for (const carrier of ["AA", "BB"]) {
+         const run = await fixture.run({
+            name: `gated ${carrier}`,
+            malloy,
+            givens: { CARRIER: carrier },
+         });
+         expectServedFromRollup(run);
+         expect(run.served.map((r) => r.carrier)).toEqual([carrier]);
+      }
    });
 
    it("reads a gated joined source's storage= rollup only on that source, never through the join", async () => {

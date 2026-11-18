@@ -193,16 +193,19 @@ export function bindStorageEntries(args: {
    );
    // A table that holds only ungated rows is read past a gated entry point's
    // gate as a database table is (g-mixed): every source stored at its
-   // address, by the plan, not only those bound, is proven ungated. Only a
-   // table the served copy reads past a gate is marked: a rollup's, a
-   // persisted view's or a persisted query's leg decides a gate on its own.
+   // address, by the plan, not only those bound, is proven ungated. A rollup
+   // too (its base ungated): the rollup leg's join branch reads one past a
+   // gated query source in a storage destination. A persisted view's or
+   // query's leg decides a gate on its own, so neither is marked.
    const ungatedTables = ungatedTableAddresses(
       eligibility?.ungated,
       plan?.sources ?? {},
    );
    const marked = bindings.map((binding) =>
       ungatedTables.has(binding.virtualHandle) &&
-      (binding.kind === "persist" || binding.kind === "materialize") &&
+      (binding.kind === "persist" ||
+         binding.kind === "materialize" ||
+         binding.kind === "rollup") &&
       (binding.sourceIDs ?? []).length > 0 &&
       (binding.sourceIDs ?? []).every((id) =>
          eligibility?.ungated?.includes(id),
