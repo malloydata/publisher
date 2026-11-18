@@ -80,6 +80,11 @@ import {
    type ServedFrom,
    servedFromOf,
 } from "./materialization/serve/leg";
+import {
+   liveRoundsBigIntegersAsPostgres,
+   type ResultRows,
+   roundBigIntegersAsLive,
+} from "./materialization/domain/live_big_integers";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import type { ApiQueryPath } from "./materialization/serve/query_path";
 import {
@@ -940,6 +945,9 @@ export class ModelServing {
          answer = answeredWith(answer, retried.read);
          executionTime = performance.now() - ctx.startTime;
       }
+      if (answer.leg !== "live" && !answer.runFailed) {
+         await roundStoredAnswerAsLive(run.result, prepared.liveRunnable);
+      }
       return { run, answer, executionTime, maxRows, maxBytes };
    }
 
@@ -1715,6 +1723,7 @@ function statementUsage(
 ):
    | {
         metered: (connectionName: string) => boolean;
+        catalog?: (connectionName: string) => string | undefined;
         environment: string;
         package: string;
      }
@@ -1722,6 +1731,7 @@ function statementUsage(
    if (!input?.meteredConnection || !input.environment) return undefined;
    return {
       metered: input.meteredConnection,
+      catalog: input.meteredCatalog,
       environment: input.environment,
       package: packageName,
    };
@@ -1757,4 +1767,24 @@ function governRequestOf(r: {
       ...(r.graft ?? { bypassAuthorize: false }),
       ceiling: r.ceiling,
    };
+}
+
+/**
+ * A stored answer's big integers rounded as live rounds them, when the
+ * query's live dialect is Postgres, the one whose rounding is measured
+ * (`liveRoundsBigIntegersAsPostgres`). A live compile that cannot say its
+ * dialect leaves the answer as it ran.
+ */
+async function roundStoredAnswerAsLive(
+   result: PreparedRun["result"],
+   liveRunnable: QueryMaterializer,
+): Promise<void> {
+   let dialect: string;
+   try {
+      dialect = (await liveRunnable.getPreparedQuery()).dialect;
+   } catch {
+      return;
+   }
+   if (!liveRoundsBigIntegersAsPostgres(dialect)) return;
+   roundBigIntegersAsLive(result as unknown as ResultRows);
 }

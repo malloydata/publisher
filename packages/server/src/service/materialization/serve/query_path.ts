@@ -338,6 +338,10 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    // runnable answered, unless a stored variant replaced the source.
    if (!storageAnswered && !rollupAnswered) {
       let answered = false;
+      // The served copy reads the queried source's own database table, the
+      // nearest on its chain: a gate it could not keep there is why that
+      // table did not answer, and is named rather than dropped.
+      let gateNamed = false;
       for (const t of tables) {
          if (
             t.tier !== "database" ||
@@ -352,13 +356,22 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
             markUsed(t);
             answered = true;
          } else if (
-            storageDecision?.code === "served_copy_column_left_out" &&
+            !gateNamed &&
+            storageDecision?.reason === "row_level_gate" &&
+            storageDecision.outcome !== "used"
+         ) {
+            skip(t, "ROW_LEVEL_GATE");
+            gateNamed = true;
+         } else if (
+            (storageDecision?.code === "served_copy_column_left_out" ||
+               storageDecision?.code === "served_copy_not_served") &&
             storageDecision.outcome !== "used" &&
             t.tableId !== undefined &&
             storageDecision.tableIds?.includes(t.tableId)
          ) {
-            // The served copy read this table and declined the query for a
-            // stored column its type leaves out: that is why it was not read.
+            // The served copy read this table and declined the query for it
+            // (a stored column its type leaves out, or a scope the table does
+            // not compare as its source does): that is why it was not read.
             skip(
                t,
                skipReasonOf(storageDecision),

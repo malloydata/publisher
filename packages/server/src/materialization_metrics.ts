@@ -202,9 +202,11 @@ export const BIND_OUTCOMES = [
  * Why a table was dropped (`publisher_materialization_drop_tables_total`):
  * `delete`, a caller deleted a storage destination's table; `reclaim`,
  * Publisher dropped a table on its own (a failed run's tables, a table a
- * readable name replaced, an archived or deleted version's tables).
+ * readable name replaced, an archived or deleted version's tables);
+ * `caller`, a caller dropped a package's materialized database table
+ * (`drop-materialized-table`), after Publisher's checks passed.
  */
-export const DROP_OCCASIONS = ["delete", "reclaim"] as const;
+export const DROP_OCCASIONS = ["delete", "reclaim", "caller"] as const;
 export type DropOccasion = (typeof DROP_OCCASIONS)[number];
 
 /**
@@ -397,7 +399,9 @@ const dropTablesCounter = lazyCounter(
       "storage destination's table, since a run's delete is record-only; " +
       "'reclaim' when Publisher dropped it on its own: " +
       "a failed run's tables, a table a readable name replaced, an archived " +
-      "or deleted version's tables).",
+      "or deleted version's tables; 'caller' when a caller dropped a " +
+      "package's materialized database table through " +
+      "DELETE .../materializedTables/{tableName}).",
 );
 const scheduledFireCounter = lazyCounter(
    "publisher_materialization_scheduled_fires_total",
@@ -411,7 +415,7 @@ const queryRouteCounter = lazyCounter(
       "'query' is a persisted named query), " +
       "outcome ('used'|'skipped'|'fallback': a chosen leg whose run failed and " +
       "was answered live), reason ('NONE' when used, else the path report's " +
-      "SkipReason; 'RUN_FAILED' with 'fallback'). A leg that does not apply to " +
+      "SkipReason; 'READ_FAILED' with 'fallback'). A leg that does not apply to " +
       "the query is not counted; 'live' is counted 'used' when it answered a " +
       "query the router counted a leg for.",
 );

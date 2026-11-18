@@ -105,7 +105,7 @@ import type {
    ChainBuildRequest,
    ChainBuildText,
 } from "./materialization/domain/chain_build";
-import type { KeptTable } from "./materialization/domain/types";
+import type { KeptTable, LateRows } from "./materialization/domain/types";
 import {
    confinedPackagePath,
    errMessage,
@@ -1672,8 +1672,27 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * tables drops their bound key checks first (see
     * PackageMaterialization.forgetKeyUniqueness).
     */
+   /** The host port's `boundLateRows` (PackageMaterialization.boundLateRows). */
+   public boundLateRows(): ReadonlyMap<string, LateRows> {
+      return this.mz.boundLateRows();
+   }
+
    public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
+   }
+
+   /** The host port's `boundTableNames`: every database table bound now. */
+   public boundTableNames(): string[] {
+      const names = new Set<string>();
+      for (const entries of [
+         this.mz.getBuildManifestEntries(),
+         this.mz.boundDatabaseEntries(),
+      ]) {
+         for (const entry of Object.values(entries ?? {})) {
+            if (entry.tableName) names.add(entry.tableName);
+         }
+      }
+      return [...names];
    }
 
    /**
@@ -2127,6 +2146,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.databaseTableUnreadWarnings(),
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
+         ...this.mz.lateRowWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),

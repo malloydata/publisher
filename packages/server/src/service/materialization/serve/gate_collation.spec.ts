@@ -5,7 +5,12 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { equalityOnlyExpr, storedTableCollationRefusal } from "./gate_reads";
+import {
+   equalityOnlyExpr,
+   gateReadsOfQuery,
+   storedTableCollationRefusal,
+   stringGateCollationRefusal,
+} from "./gate_reads";
 import {
    duckdbCollation,
    duckdbTableCollation,
@@ -331,3 +336,318 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
       ).toBe("binary");
    });
 });
+
+/**
+ * A gate over a dimension computed from a string column compares that
+ * column, so its collation is probed though the gate names only the
+ * dimension: through a rename of it, a nested dimension, and a join.
+ */
+describe.skipIf(!url)(
+   "a Postgres gate over a dimension computed from a string",
+   () => {
+      const MODEL = (
+         table: string,
+      ) => `##! experimental { givens access_modifiers composite_sources }
+given: FLAG :: boolean
+source: rows is pg.table('public.${table}') extend {
+  primary_key: id
+  dimension:
+    late is region > 'M'
+    is_n is region = 'n'
+    is_n2 is is_n
+}
+#(access_filter) late = $FLAG
+source: g_late is rows extend {}
+#(access_filter) is_n = $FLAG
+source: g_is_n is rows extend {}
+#(access_filter) is_n2 = $FLAG
+source: g_nested is rows extend {}
+#(access_filter) r.is_n = $FLAG
+source: g_join is pg.table('public.${table}') extend {
+  primary_key: id
+  join_one: r is rows on id = r.id
+}
+source: comp is compose(rows, rows extend { except: id })
+source: c_late is comp extend { where: late }
+source: c_is_n is comp extend { where: is_n }
+source: c_nested is comp extend {
+  dimension: l2 is late and id > 0
+  where: l2
+}
+`;
+      const conns: PostgresConnection[] = [];
+      const connect = (db: string | undefined) => {
+         const c = new PostgresConnection(
+            "pg",
+            () => ({}),
+            async () => ({
+               connectionString:
+                  db === undefined ? url : url!.replace(/\/[^/]*$/, `/${db}`),
+            }),
+         );
+         conns.push(c);
+         return c;
+      };
+      let def: PostgresConnection;
+      let cdb: PostgresConnection;
+
+      beforeAll(async () => {
+         def = connect(undefined);
+         await def
+            .runSQL(
+               `CREATE DATABASE gate_cdef LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
+            )
+            .catch(() => {});
+         cdb = connect("gate_cdef");
+         for (const pg of [def, cdb]) {
+            await pg.runSQL(
+               `DO $$ BEGIN CREATE COLLATION IF NOT EXISTS gate_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false); EXCEPTION WHEN others THEN NULL; END $$`,
+            );
+            for (const [t, collate] of [
+               ["gate_der_ci", "gate_ci"],
+               ["gate_der_c", '"C"'],
+            ]) {
+               await pg.runSQL(`DROP TABLE IF EXISTS ${t}`);
+               await pg.runSQL(
+                  `CREATE TABLE ${t} (id int, region text COLLATE ${collate})`,
+               );
+               await pg.runSQL(
+                  `INSERT INTO ${t} VALUES (1,'a'),(2,'B'),(3,'m'),(4,'N'),(5,'z')`,
+               );
+            }
+         }
+      });
+      afterAll(async () => {
+         for (const c of conns) {
+            for (const t of ["gate_der_ci", "gate_der_c"]) {
+               await c.runSQL(`DROP TABLE IF EXISTS ${t}`).catch(() => {});
+            }
+            await c.close();
+         }
+      });
+
+      const refusal = async (
+         pg: PostgresConnection,
+         table: string,
+         source: string,
+      ) => {
+         const q = new SingleConnectionRuntime({ connection: pg })
+            .loadModel(MODEL(table))
+            .loadQuery(`run: ${source} -> { group_by: id; order_by: id }`);
+         const reads = await gateReadsOfQuery(q as never);
+         return stringGateCollationRefusal({
+            authorRunnable: q as never,
+            reads,
+            stringStored: true,
+            givens: { FLAG: true },
+         });
+      };
+
+      it("refuses an equality through a dimension over a nondeterministic column", async () => {
+         for (const s of ["g_is_n", "g_nested", "g_join"]) {
+            expect(await refusal(def, "gate_der_ci", s), s).toBeDefined();
+         }
+      });
+
+      it("refuses an ordering through a dimension over a nondeterministic column, under a C default", async () => {
+         for (const s of ["g_late", "g_nested", "g_join"]) {
+            expect(await refusal(cdb, "gate_der_ci", s), s).toBeDefined();
+         }
+      });
+
+      it("refuses a scope through a composite's dimension, under a C default", async () => {
+         // A composite's field is resolved per member when the query compiles,
+
+         // so its expression names no column a probe could read.
+
+         for (const s of ["c_late", "c_is_n", "c_nested"]) {
+            expect(await refusal(cdb, "gate_der_ci", s), s).toBeDefined();
+         }
+      });
+
+      it("still admits every one over a C column under a C default", async () => {
+         for (const s of ["g_late", "g_is_n", "g_nested", "g_join"]) {
+            expect(await refusal(cdb, "gate_der_c", s), s).toBeUndefined();
+         }
+      });
+   },
+);
+
+/**
+ * A database table in Postgres sits in its source's own warehouse: a scope
+ * the absolute rule declines (an ordering under a non-C collation) is still
+ * kept when every stored column it reads has its source's own collation, by
+ * every name the column goes by, and the table's connection has the
+ * source's default. A column altered after the build, or a connection to
+ * another database whose same-named collation is defined otherwise, refuses.
+ */
+describe.skipIf(!url)(
+   "a Postgres database table under its source's own collation",
+   () => {
+      const MODEL = `
+source: s is pg.table('public.dsc_src') extend { where: region > 'M' }
+source: s_eq is pg.table('public.dsc_src') extend { where: region = 'n' }
+source: s_ren is pg.table('public.dsc_src') extend {
+  rename: reg is region
+  where: reg > 'M'
+}
+source: s_join is pg.table('public.dsc_base') extend {
+  join_one: u is pg.table('public.dsc_src') on u.id = id
+  where: u.region > 'M'
+}
+`;
+      const conns: PostgresConnection[] = [];
+      const connect = (db?: string) => {
+         const c = new PostgresConnection(
+            "pg",
+            () => ({}),
+            async () => ({
+               connectionString:
+                  db === undefined ? url : url!.replace(/\/[^/]*$/, `/${db}`),
+            }),
+         );
+         conns.push(c);
+         return c;
+      };
+      let pg: PostgresConnection;
+      let other: PostgresConnection;
+      const ci = (name: string, deterministic: boolean, locale: string) =>
+         `DO $$ BEGIN CREATE COLLATION IF NOT EXISTS ${name} (provider = icu, locale = '${locale}', deterministic = ${deterministic}); EXCEPTION WHEN others THEN NULL; END $$`;
+
+      beforeAll(async () => {
+         pg = connect();
+         await pg.runSQL(`CREATE DATABASE dsc_other`).catch(() => {});
+         other = connect("dsc_other");
+         await pg.runSQL(ci("gate_ci", false, "und-u-ks-level2"));
+         // The same name in another database, defined otherwise.
+         await other.runSQL(ci("gate_ci", true, "und"));
+         for (const c of [pg, other]) {
+            for (const t of [
+               "dsc_src",
+               "dsc_base",
+               "dsc_st",
+               "dsc_alt",
+               "dsc_join",
+               "dsc_none",
+            ]) {
+               await c.runSQL(`DROP TABLE IF EXISTS ${t}`);
+            }
+         }
+         await pg.runSQL(
+            `CREATE TABLE dsc_src (id int, region text COLLATE gate_ci)`,
+         );
+         await pg.runSQL(
+            `INSERT INTO dsc_src VALUES (1,'a'),(2,'B'),(3,'m'),(4,'N'),(5,'z')`,
+         );
+         await pg.runSQL(`CREATE TABLE dsc_base AS SELECT id FROM dsc_src`);
+         await pg.runSQL(`CREATE TABLE dsc_none (id int, other text)`);
+         // As a build writes them: CREATE TABLE AS keeps each column's collation.
+         await pg.runSQL(`CREATE TABLE dsc_st AS SELECT * FROM dsc_src`);
+         await pg.runSQL(`CREATE TABLE dsc_alt AS SELECT * FROM dsc_src`);
+         await pg.runSQL(
+            `ALTER TABLE dsc_alt ALTER COLUMN region TYPE text COLLATE "C"`,
+         );
+         await pg.runSQL(
+            `CREATE TABLE dsc_join AS SELECT b.id, u.region AS u__region FROM dsc_base b JOIN dsc_src u ON u.id = b.id`,
+         );
+         await other.runSQL(
+            `CREATE TABLE dsc_st (id int, region text COLLATE gate_ci)`,
+         );
+      });
+      afterAll(async () => {
+         for (const t of [
+            "dsc_src",
+            "dsc_base",
+            "dsc_st",
+            "dsc_alt",
+            "dsc_join",
+            "dsc_none",
+         ]) {
+            await pg.runSQL(`DROP TABLE IF EXISTS ${t}`).catch(() => {});
+         }
+         for (const c of conns) await c.close();
+         const admin = connect();
+         await admin
+            .runSQL(`DROP DATABASE IF EXISTS dsc_other WITH (FORCE)`)
+            .catch(() => {});
+         await admin.close();
+      });
+
+      const refusal = async (
+         source: string,
+         tablePath: string,
+         destinationName?: string,
+         kind?: string,
+      ) => {
+         const author = new SingleConnectionRuntime({ connection: pg })
+            .loadModel(MODEL)
+            .loadQuery(`run: ${source} -> { group_by: id }`);
+         return storedTableCollationRefusal({
+            tables: [
+               {
+                  tier: "database",
+                  tablePath,
+                  ...(destinationName ? { destinationName } : {}),
+                  ...(kind ? { kind } : {}),
+               },
+            ],
+            answerRunnable: {
+               runtime: {
+                  connections: {
+                     lookupConnection: async (name?: string) =>
+                        name === "other" ? other : pg,
+                  },
+               },
+            } as never,
+            virtualMap: undefined,
+            authorRunnable: author as never,
+            reads: await gateReadsOfQuery(author as never),
+         });
+      };
+
+      it("keeps an ordering and an equality over a column built under the source's own collation", async () => {
+         expect(await refusal("s", "dsc_st")).toBeUndefined();
+         expect(await refusal("s_eq", "dsc_st")).toBeUndefined();
+      });
+
+      it("maps a renamed column and a flattened join column to the stored ones", async () => {
+         expect(await refusal("s_ren", "dsc_st")).toBeUndefined();
+         expect(await refusal("s_join", "dsc_join")).toBeUndefined();
+      });
+
+      it("refuses a column altered to another collation after the build", async () => {
+         expect(await refusal("s", "dsc_alt")).toBeDefined();
+         expect(await refusal("s_ren", "dsc_alt")).toBeDefined();
+      });
+
+      it("refuses a table on another database whose same-named collation differs", async () => {
+         expect(await refusal("s", "dsc_st", "other")).toBeDefined();
+      });
+
+      it("refuses a table that does not hold a column the scope reads", async () => {
+         expect(await refusal("s_join", "dsc_none")).toBeDefined();
+         expect(await refusal("s", "dsc_none")).toBeDefined();
+      });
+
+      it("passes over a rollup's base's own where: column, which its build applied", async () => {
+         // `s`'s own `where: region > 'M'`: a rollup of `s` is built with it
+         // applied, so its table holds no `region`.
+         expect(
+            await refusal("s", "dsc_none", undefined, "rollup"),
+         ).toBeUndefined();
+      });
+
+      it("judges an inline extend that adds no where: or gate as the source it extends", async () => {
+         expect(
+            await refusal("s extend { dimension: z is 1 }", "dsc_st"),
+         ).toBeUndefined();
+         expect(
+            await refusal("s extend { dimension: z is 1 }", "dsc_alt"),
+         ).toBeDefined();
+         // A `where:` of its own: no named source reads its rows.
+         expect(
+            await refusal("s extend { where: id > 0 }", "dsc_st"),
+         ).toBeDefined();
+      });
+   },
+);

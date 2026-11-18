@@ -251,10 +251,13 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
                        {
                           tier: answer.virtualMap ? "storage" : "database",
                           // The database rollup's table, for the check of
-                          // its own collation (`gate_collation.ts`).
+                          // its own collation (`gate_collation.ts`), which
+                          // reads its kind: a rollup's build applied its
+                          // base's own `where:`.
                           ...(answer.databaseTablePath
                              ? { tablePath: answer.databaseTablePath }
                              : {}),
+                          ...{ kind: "rollup" },
                        },
                     ]),
             // Every stored table the answer reads, when that is more than the

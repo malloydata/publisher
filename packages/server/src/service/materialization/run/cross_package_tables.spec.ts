@@ -140,6 +140,17 @@ describe("two packages on one warehouse connection", () => {
       ).map((r) => String(r.table_name));
    }
 
+   /** Where DuckDB's catalog says `table` is, as a mark names it. */
+   async function locationOf(table: string): Promise<string> {
+      return String(
+         (
+            await sql(
+               `SELECT database_name || '.' || schema_name || '.' || table_name AS loc FROM duckdb_tables() WHERE table_name = '${table}'`,
+            )
+         )[0]?.loc,
+      );
+   }
+
    async function comment(table: string): Promise<unknown> {
       return (
          await sql(
@@ -191,7 +202,9 @@ describe("two packages on one warehouse connection", () => {
       expect(await tables()).toEqual(
          [`named_t`, summaryTable("pa"), summaryTable("pb")].sort(),
       );
-      expect(await comment("named_t")).toBe(ownedTableComment(`${ENV}/pa`));
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(`${ENV}/pa`, await locationOf("named_t")),
+      );
       // pb's name= is held by pa's table: refused, coded, nothing written.
       const reasons = failureReasons(b);
       expect(reasons).toHaveLength(1);
@@ -222,11 +235,15 @@ describe("two packages on one warehouse connection", () => {
       // pb builds `named_t` first; then the table is dropped outside
       // Publisher, and pa builds it.
       const b = await build("pb");
-      expect(await comment("named_t")).toBe(ownedTableComment(`${ENV}/pb`));
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(`${ENV}/pb`, await locationOf("named_t")),
+      );
       await sql("DROP TABLE named_t");
       const a = await build("pa");
       expect(a.status).toBe("MANIFEST_FILE_READY");
-      expect(await comment("named_t")).toBe(ownedTableComment(`${ENV}/pa`));
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(`${ENV}/pa`, await locationOf("named_t")),
+      );
       await tamper("named_t", "pa-stored-named");
 
       // pb's next build does not reuse the table its records name: it is
@@ -287,7 +304,9 @@ describe("two packages on one warehouse connection", () => {
       ).toEqual(["named_t", summaryTable("pa")].sort());
       // pa built first: its records name the unmarked `named_t`, so it
       // claimed it. pb's records name it too, but pa's mark decides.
-      expect(await comment("named_t")).toBe(ownedTableComment(`${ENV}/pa`));
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(`${ENV}/pa`, await locationOf("named_t")),
+      );
       expect(failureReasons(b).join(" ")).toContain(TABLE_OWNED_ELSEWHERE);
       expect(await who("pa", "summary")).toBe("pa");
       expect(await who("pb", "summary")).toBe("pb");
@@ -309,7 +328,7 @@ describe("two packages on one warehouse connection", () => {
          // The table holds the rows of the package its mark names.
          const holder = refused[0] === a ? "pb" : "pa";
          expect(await comment("named_t")).toBe(
-            ownedTableComment(`${ENV}/${holder}`),
+            ownedTableComment(`${ENV}/${holder}`, await locationOf("named_t")),
          );
          expect((await sql("SELECT who FROM named_t"))[0].who).toBe(holder);
          expect(await who("pa", "named")).toBe("pa");

@@ -203,6 +203,7 @@ export function splitManifestEntries(
          freshnessFallback: entry.freshnessFallback,
          ...boundSchemaOf(entry.schema),
          ...boundNativeSchemaOf(entry.nativeSchema),
+         ...(entry.lateRows ? { lateRows: entry.lateRows } : {}),
          // Set only by a bind from the local store (withRollupKeyRecords);
          // a host's manifest never carries it.
          ...(readKeyUniqueness && keyUniquenessOnEntry(entry)

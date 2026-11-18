@@ -882,6 +882,13 @@ paths:
         than serializing the response. Set PUBLISHER_MAX_QUERY_ROWS=0 to
         disable the cap. A caller-supplied rowLimit smaller than the cap is
         preserved; larger values are clamped down to cap+1.
+
+        On a DuckDB-backed connection (`duckdb`, including a package's
+        `duckdb` sandbox, `ducklake` and `motherduck`), `sqlStatement` runs
+        only as a single SELECT. Any other statement, more than one
+        statement, or SQL that does not parse answers 400 before anything
+        runs. `sqlSource` and `sqlTemporaryTable` apply the same rule to the
+        caller's SQL.
       parameters:
         - name: environmentName
           in: path
@@ -1293,7 +1300,8 @@ paths:
         resolved in the context of the named package, and returns the results.
 
         Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap as the
-        environment-level sqlQuery endpoint.
+        environment-level sqlQuery endpoint, and to the same single-SELECT
+        rule on a DuckDB-backed connection: any other statement answers 400.
       parameters:
         - name: environmentName
           in: path
@@ -4131,9 +4139,12 @@ paths:
       description: |
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
         materialization record. A delete is record-only: it never drops a
-        table, and the caller owns table GC. To drop a table this run produced,
-        check that no remaining run, of any version, names a table with that
-        name in any place, then drop it through its connection.
+        table, and the caller owns table GC. To drop a database table this run
+        produced, use `drop-materialized-table` (`DELETE
+        …/connections/{connectionName}/materializedTables/{tableName}`), which
+        checks that no remaining run, of any version, names a table with that
+        name in any place; a table built before 0.16.0 carries no ownership
+        mark, so drop it first, passing this run's id, then delete the run.
         `dropTables=true` is refused with 400 and deletes nothing, as is any
         value other than `true` or `false` (the fix is to omit it);
         `dropTables=false`, which older clients send, is accepted and ignored.
@@ -4151,6 +4162,126 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: Materialization cannot be deleted while it is active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          $ref: "#/components/responses/Gone"
+
+  /environments/{environmentName}/packages/{packageName}/connections/{connectionName}/materializedTables/{tableName}:
+    delete:
+      tags:
+        - materializations
+      operationId: drop-materialized-table
+      summary: Drop a materialized table from a package's connection
+      description: |
+        Drops one database-tier table a materialization of this package built
+        on one of the package's connections, with the staging and backup
+        copies a crashed build can leave beside it when a run record names
+        the table. This is the drop a caller makes after (or before) deleting
+        a run's record, which never drops a table. A `storage=` table lives in
+        a storage destination, which this route does not reach; the admin
+        API's catalog routes drop those.
+
+        Publisher does not authenticate the caller: the gateway in front of
+        it decides who may call this route, and should allow only the
+        operator that owns the package's materialization lifecycle. The
+        route itself refuses any table it cannot prove is this package's and
+        unused, under the package's run lock and the table name's lock, so no
+        run starts, commits or claims the name between the checks and the
+        drop:
+
+          * 400: the name cannot be quoted in the connection's dialect, or
+            it is the staging or backup copy a build makes of a table a run
+            of the package records, which is dropped only with that table.
+          * 404, with no `reason`: the package does not reach a connection by
+            that name (or the environment, package or `materializationId`
+            does not exist).
+          * 409 `MATERIALIZATION_CONFLICT`: a run of the package is active.
+            Retry once it settles.
+          * 409 `TABLE_IN_USE`: a committed run of the package, of any
+            version, other than the one `materializationId` names, names a
+            table with this name in any place; the run `materializationId`
+            names is the one a version or the package serves; or a loaded
+            copy of any package in the environment is bound to a table with
+            this name; or the warehouse refused the drop because other
+            objects depend on the table (Postgres 2BP01). Delete or replace
+            that run, or those objects, first.
+          * 409 `TABLE_OWNED_ELSEWHERE`: the table carries another package's
+            ownership mark, or the name is held by a view Publisher did not
+            create or another package's view; or the warehouse refused the
+            drop because the connection may not drop it (42501) or the name
+            holds something other than a table (42809). The answer does not
+            name the holder.
+          * 409 `TABLE_OWNERSHIP_UNVERIFIED`: the table carries no ownership
+            mark this route accepts, and the run `materializationId` names
+            (terminal, of this package) does not record it on this
+            connection; or who holds the name could not be read. A mark is
+            accepted only when it names this package and the very place the
+            warehouse's catalog says the name resolves to now (its fully
+            qualified location, recorded when the mark was written): a
+            comment travels with a renamed, moved or cloned table, so such a
+            copy, or another schema's table a search path finds first, is
+            treated as unmarked, as is a mark written before 0.16.0 (it names
+            no place). Drop such a table passing the id of the run
+            that records it, before deleting that run's record.
+          * 404 `TABLE_NOT_FOUND`: no table holds the name and no run record
+            of this package names it on this connection, so nothing proves it
+            was ever this package's.
+
+        A table that is already gone answers 204 when a run record of this
+        package still names it on this connection (pass its
+        `materializationId`, or retry before deleting the record), so a
+        retried drop succeeds; otherwise 404 `TABLE_NOT_FOUND`.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/packageName"
+        - name: connectionName
+          in: path
+          description: Name of the connection the table was built on, as the package reaches it
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: tableName
+          in: path
+          description: |
+            The table's full name as the run's manifest records it
+            (`physicalTableName`: `table`, `schema.table` or
+            `catalog.schema.table`), URL-encoded. It is quoted for the
+            connection's dialect as the build quoted it; a name the dialect
+            cannot quote answers 400.
+          required: true
+          schema:
+            type: string
+        - name: materializationId
+          in: query
+          required: false
+          description: |
+            The id of the run that built the table, as evidence that it is
+            this package's when it carries no ownership mark. That run is not
+            counted as using the table, unless it is the one a version or
+            the package serves. Must be a terminal run of this package
+            (404 otherwise; 409 `MATERIALIZATION_CONFLICT` while it is
+            active).
+          schema:
+            type: string
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "204":
+          description: |
+            The table was dropped, or is already gone and a run record of
+            this package names it on this connection.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            The table was not dropped: a run is active
+            (`MATERIALIZATION_CONFLICT`), the table is in use (`TABLE_IN_USE`),
+            it is another's (`TABLE_OWNED_ELSEWHERE`), or it cannot be proven
+            this package's (`TABLE_OWNERSHIP_UNVERIFIED`).
           content:
             application/json:
               schema:
@@ -6133,6 +6264,12 @@ components:
                   the same SQL on one connection, so they share one table and
                   one boundary, where at least one is incremental (one per
                   source; `warn`).
+                  `persist-incremental-late-rows`: an incremental source whose
+                  bound table a delta's late-row check found missing rows
+                  stamped just below where a delta started reading, which no
+                  later delta reads (its manifest entry's `lateRows`); it is
+                  carried until the source is rebuilt in full (one per source;
+                  `warn`).
                   `rollup-join-one-key-repeated`: a bound rollup whose last
                   build found the key of a `join_one` it reads repeated, so a
                   query reading that join beside other aggregates is answered
@@ -8776,7 +8913,7 @@ components:
             indistinguishable from a storage hit at the call site, and treating it
             as one would report a healthy hit rate for a broken store. On
             `publisher_query_route_total` the same event is the answering leg's
-            `outcome="fallback", reason="RUN_FAILED"`.
+            `outcome="fallback", reason="READ_FAILED"`.
 
             Null means no materialized table answered: the query was served
             live. `path`, the path report, says why each table that could have
@@ -10224,14 +10361,33 @@ components:
             answers the same: only the server's metrics and log tell those
             apart. A 403 with any other reason is not a gate's.
 
-            MATERIALIZATION_REFUSED, on a 422, means a valid materialization
-            declaration this server will not build. The body's `refusalReason`
-            is the refusal's `RefusedSource.reason`.
+            MATERIALIZATION_REFUSED means a valid materialization declaration
+            this server will not build, and the body's `refusalReason` is the
+            refusal's `RefusedSource.reason`. Reserved: no route answers with
+            it today. The eligibility gate runs inside a materialization run,
+            after `POST …/materializations` has answered 201, so a refusal is
+            recorded on the run instead: as a `SourceFailure` with `refused`
+            and `refusalReason` on a run with `buildInstructions`, otherwise
+            in the run's `metadata.refusedSources`, or its `error` when
+            nothing else was left to build.
 
             TABLE_OWNED_ELSEWHERE and TABLE_OWNERSHIP_UNVERIFIED, on a 400,
             mean a build was refused before it wrote because its `name=` is
             held by a table this package does not own, or because who holds
-            it could not be read.
+            it could not be read. On a 409 from dropping a materialized table
+            (`drop-materialized-table`), they mean the drop was refused for
+            the same reasons: the table is another's, or nothing proves it is
+            this package's.
+
+            TABLE_IN_USE, on a 409 from dropping a materialized table, means
+            the table may still be read: a committed run of the package, of
+            any version, names a table with that name (other than the run the
+            caller named, unless that run is the one a version or the package
+            serves); a loaded copy of any package in the environment, or any
+            loaded version of one, is bound to a table with that name; or the
+            warehouse refused the drop because other objects depend on the
+            table. Delete or replace that run, rebind that copy, or drop
+            those objects first.
 
             BUILD_INSTRUCTIONS_INVALID, on a 400 from creating a
             materialization, means its body or build instructions are not a
@@ -10292,7 +10448,7 @@ components:
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
             STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
             MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
-            TABLE_OWNERSHIP_UNVERIFIED, BUILD_INSTRUCTIONS_INVALID,
+            TABLE_OWNERSHIP_UNVERIFIED, TABLE_IN_USE, BUILD_INSTRUCTIONS_INVALID,
             MATERIALIZATION_CONFLICT, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
             VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
             PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
@@ -11563,10 +11719,23 @@ components:
             quoted string (`merge_key="order_id, region"`).
 
 
-            Both are validated at publish against the compiled output schema, so
-            a dangling or stale name is rejected rather than deferred to a build.
-            Neither participates in `sourceEntityId`: adding a watermark to an
-            existing source must not re-address its table.
+            * `lookback` — a duration (a positive whole number and one unit:
+            `seconds`, `minutes`, `hours`, `days` or `weeks`, singular or
+            plural, or `s`, `m`, `h`, `d` or `w`, as in `"2 days"` or `"36h"`;
+            at most 365 days). Each delta of a `date` or `timestamp` watermark
+            starts that much below the newest watermark the stored table holds,
+            and the merge key matches the rows read again. Valid only with
+            `refresh="incremental"`, a `date` or `timestamp` watermark and a
+            `merge_key`; absent means no lookback.
+
+
+            All three are checked at publish: `watermark` and `merge_key`
+            against the compiled output schema, and `lookback` against its
+            grammar, its limit and the keys it requires, so a dangling or stale
+            name, or an invalid lookback, is rejected rather than deferred to a
+            build. None participates in
+            `sourceEntityId`: adding a watermark to an existing source must not
+            re-address its table.
 
 
             For a synthesized rollup (`origin: rollup`) the annotation was
@@ -12108,7 +12277,8 @@ components:
             and bounds fail the same way on every attempt. It is reported for an
             eligibility refusal (always, beside `refused`), a Malloy or SQL
             compile defect (a syntax or parser error), a rejected credential or
-            missing grant (permission or access denied), and a source refused under
+            missing grant (a message that says permission or access denied), a
+            warehouse's own data or syntax error, and a source refused under
             `strictUpstreams` because a persisted upstream it reads failed
             deterministically earlier in the same run. That last source
             inherits its upstream's classification (`true` when any such
@@ -12116,6 +12286,20 @@ components:
             upstream's own failure. Also `false` for a source a strict build
             refused under `warehouseReach: refuse`, whose only build would
             recompute its stored upstreams from the warehouse.
+
+
+            A warehouse's own data or syntax error is one the warehouse names
+            as such: a Postgres or Snowflake SQLSTATE in class 22 (data
+            exception) or 42 (syntax error or access rule violation), or a
+            BigQuery `invalidQuery` or `invalid` job error, and a Postgres data
+            exception that reaches Publisher as text only (through a DuckDB
+            passthrough). Five SQLSTATEs in class 42 are left to the other rules:
+            a missing table or column (`42P01`, `42703`, `42S02`, `42S22`, and
+            a BigQuery `Unrecognized name` or `Not found`), which stays absent,
+            and `42501` (insufficient privilege). A Postgres `42501` still
+            reports `false`, because its message says permission denied; a
+            Snowflake `42501` stays absent. Transient codes (`40001`, `40P01`,
+            and BigQuery's backend and quota reasons) are never `false`.
 
 
             `true` is a transient failure, not a property of the inputs: the
@@ -12331,6 +12515,13 @@ components:
             Not a location: it does not name the table the rows came from.
             Absent for a source that reads no persisted upstream, which has one
             way to build and no choice to report.
+
+            A database rollup reports what its build actually read: `reused`
+            only when it built from its base's materialized table, and absent
+            when it built from the warehouse, even over a persisted base. Before
+            0.15.0 every rollup over a persisted base reported `reused`. A
+            `storage=` rollup reports `reused` only when it stacked on a stored
+            table.
         upstreamRecomputeReason:
           type: string
           description: >-
@@ -12388,6 +12579,56 @@ components:
             `refresh="full"`, or one whose declaration the delta path cannot act
             on at all (an unsupported source dialect), which the publish
             gate rejects anyway.
+        lateRows:
+          type: object
+          required: [count, from, to]
+          description: >-
+            For a source this run advanced by a delta (`refresh` is `delta`):
+            rows the source holds below where the delta started reading that
+            the stored table lacks. A delta reads from the newest watermark
+            the table holds (less the source's `lookback=`), so a row stamped
+            below that, landing after the rows above it were stored, is never
+            read, and the table undercounts it until it is rebuilt.
+
+            The check reads one window directly below the delta's start, as
+            wide as the delta's own range, so it finds a row stamped within
+            that window and not one older. With `merge_key=` a source row
+            counts when no stored row has its keys and its watermark (a
+            skipped restatement counts too); without one, it is the source's
+            rows in the window less the table's.
+
+            The window is capped, for a date or timestamp watermark, at
+            seven days or the source's `lookback=`, whichever is longer.
+
+            Carried until the source is rebuilt in full: a later delta or
+            skip reports what earlier ones found (read from the manifest
+            bound when it runs), with its own findings added to `count` and
+            `to` moved up, and a slice is checked once, so a row is counted
+            once, so `count` is a lower bound: a row that lands in a slice
+            already checked is not counted. It stays until a full rebuild,
+            even after a widened `lookback=` has written the rows. `from` is
+            where the first such window started. Absent when
+            nothing was found since the last full rebuild. The check is
+            best-effort, and not run for a pair table, a string watermark or
+            a `storage=` source on BigQuery: it gives up after 60 seconds,
+            stopping its statement, and one that fails is
+            logged and leaves what was carried. While the run's manifest is
+            bound, the package also warns with code
+            `persist-incremental-late-rows`.
+          properties:
+            count:
+              type: integer
+              description: Source rows in the window the stored table lacks.
+            from:
+              type: string
+              description: >-
+                Where the window starts (inclusive), as the watermark's value:
+                ISO-8601 for a date or timestamp, decimal text for a number.
+            to:
+              type: string
+              description: >-
+                Where it ends (exclusive): the delta's lower bound, spelled as
+                `from` is.
 
   parameters:
     includeHiddenFilesAndSources:
