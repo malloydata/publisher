@@ -472,3 +472,182 @@ source: c_nested is comp extend {
       });
    },
 );
+
+/**
+ * A database table in Postgres sits in its source's own warehouse: a scope
+ * the absolute rule declines (an ordering under a non-C collation) is still
+ * kept when every stored column it reads has its source's own collation, by
+ * every name the column goes by, and the table's connection has the
+ * source's default. A column altered after the build, or a connection to
+ * another database whose same-named collation is defined otherwise, refuses.
+ */
+describe.skipIf(!url)(
+   "a Postgres database table under its source's own collation",
+   () => {
+      const MODEL = `
+source: s is pg.table('public.dsc_src') extend { where: region > 'M' }
+source: s_eq is pg.table('public.dsc_src') extend { where: region = 'n' }
+source: s_ren is pg.table('public.dsc_src') extend {
+  rename: reg is region
+  where: reg > 'M'
+}
+source: s_join is pg.table('public.dsc_base') extend {
+  join_one: u is pg.table('public.dsc_src') on u.id = id
+  where: u.region > 'M'
+}
+`;
+      const conns: PostgresConnection[] = [];
+      const connect = (db?: string) => {
+         const c = new PostgresConnection(
+            "pg",
+            () => ({}),
+            async () => ({
+               connectionString:
+                  db === undefined ? url : url!.replace(/\/[^/]*$/, `/${db}`),
+            }),
+         );
+         conns.push(c);
+         return c;
+      };
+      let pg: PostgresConnection;
+      let other: PostgresConnection;
+      const ci = (name: string, deterministic: boolean, locale: string) =>
+         `DO $$ BEGIN CREATE COLLATION IF NOT EXISTS ${name} (provider = icu, locale = '${locale}', deterministic = ${deterministic}); EXCEPTION WHEN others THEN NULL; END $$`;
+
+      beforeAll(async () => {
+         pg = connect();
+         await pg.runSQL(`CREATE DATABASE dsc_other`).catch(() => {});
+         other = connect("dsc_other");
+         await pg.runSQL(ci("gate_ci", false, "und-u-ks-level2"));
+         // The same name in another database, defined otherwise.
+         await other.runSQL(ci("gate_ci", true, "und"));
+         for (const c of [pg, other]) {
+            for (const t of [
+               "dsc_src",
+               "dsc_base",
+               "dsc_st",
+               "dsc_alt",
+               "dsc_join",
+               "dsc_none",
+            ]) {
+               await c.runSQL(`DROP TABLE IF EXISTS ${t}`);
+            }
+         }
+         await pg.runSQL(
+            `CREATE TABLE dsc_src (id int, region text COLLATE gate_ci)`,
+         );
+         await pg.runSQL(
+            `INSERT INTO dsc_src VALUES (1,'a'),(2,'B'),(3,'m'),(4,'N'),(5,'z')`,
+         );
+         await pg.runSQL(`CREATE TABLE dsc_base AS SELECT id FROM dsc_src`);
+         await pg.runSQL(`CREATE TABLE dsc_none (id int, other text)`);
+         // As a build writes them: CREATE TABLE AS keeps each column's collation.
+         await pg.runSQL(`CREATE TABLE dsc_st AS SELECT * FROM dsc_src`);
+         await pg.runSQL(`CREATE TABLE dsc_alt AS SELECT * FROM dsc_src`);
+         await pg.runSQL(
+            `ALTER TABLE dsc_alt ALTER COLUMN region TYPE text COLLATE "C"`,
+         );
+         await pg.runSQL(
+            `CREATE TABLE dsc_join AS SELECT b.id, u.region AS u__region FROM dsc_base b JOIN dsc_src u ON u.id = b.id`,
+         );
+         await other.runSQL(
+            `CREATE TABLE dsc_st (id int, region text COLLATE gate_ci)`,
+         );
+      });
+      afterAll(async () => {
+         for (const t of [
+            "dsc_src",
+            "dsc_base",
+            "dsc_st",
+            "dsc_alt",
+            "dsc_join",
+            "dsc_none",
+         ]) {
+            await pg.runSQL(`DROP TABLE IF EXISTS ${t}`).catch(() => {});
+         }
+         for (const c of conns) await c.close();
+         const admin = connect();
+         await admin
+            .runSQL(`DROP DATABASE IF EXISTS dsc_other WITH (FORCE)`)
+            .catch(() => {});
+         await admin.close();
+      });
+
+      const refusal = async (
+         source: string,
+         tablePath: string,
+         destinationName?: string,
+         kind?: string,
+      ) => {
+         const author = new SingleConnectionRuntime({ connection: pg })
+            .loadModel(MODEL)
+            .loadQuery(`run: ${source} -> { group_by: id }`);
+         return storedTableCollationRefusal({
+            tables: [
+               {
+                  tier: "database",
+                  tablePath,
+                  ...(destinationName ? { destinationName } : {}),
+                  ...(kind ? { kind } : {}),
+               },
+            ],
+            answerRunnable: {
+               runtime: {
+                  connections: {
+                     lookupConnection: async (name?: string) =>
+                        name === "other" ? other : pg,
+                  },
+               },
+            } as never,
+            virtualMap: undefined,
+            authorRunnable: author as never,
+            reads: await gateReadsOfQuery(author as never),
+         });
+      };
+
+      it("keeps an ordering and an equality over a column built under the source's own collation", async () => {
+         expect(await refusal("s", "dsc_st")).toBeUndefined();
+         expect(await refusal("s_eq", "dsc_st")).toBeUndefined();
+      });
+
+      it("maps a renamed column and a flattened join column to the stored ones", async () => {
+         expect(await refusal("s_ren", "dsc_st")).toBeUndefined();
+         expect(await refusal("s_join", "dsc_join")).toBeUndefined();
+      });
+
+      it("refuses a column altered to another collation after the build", async () => {
+         expect(await refusal("s", "dsc_alt")).toBeDefined();
+         expect(await refusal("s_ren", "dsc_alt")).toBeDefined();
+      });
+
+      it("refuses a table on another database whose same-named collation differs", async () => {
+         expect(await refusal("s", "dsc_st", "other")).toBeDefined();
+      });
+
+      it("refuses a table that does not hold a column the scope reads", async () => {
+         expect(await refusal("s_join", "dsc_none")).toBeDefined();
+         expect(await refusal("s", "dsc_none")).toBeDefined();
+      });
+
+      it("passes over a rollup's base's own where: column, which its build applied", async () => {
+         // `s`'s own `where: region > 'M'`: a rollup of `s` is built with it
+         // applied, so its table holds no `region`.
+         expect(
+            await refusal("s", "dsc_none", undefined, "rollup"),
+         ).toBeUndefined();
+      });
+
+      it("judges an inline extend that adds no where: or gate as the source it extends", async () => {
+         expect(
+            await refusal("s extend { dimension: z is 1 }", "dsc_st"),
+         ).toBeUndefined();
+         expect(
+            await refusal("s extend { dimension: z is 1 }", "dsc_alt"),
+         ).toBeDefined();
+         // A `where:` of its own: no named source reads its rows.
+         expect(
+            await refusal("s extend { where: id > 0 }", "dsc_st"),
+         ).toBeDefined();
+      });
+   },
+);

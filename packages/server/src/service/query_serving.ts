@@ -309,19 +309,37 @@ async function assertRowScopeExact(
 ): Promise<void> {
    const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
    const judged = await withGateColumnTypes(tables, gateReadsFor);
-   if (judged === tables) return;
    const reads = await gateReadsFor(tables);
+   // Unreadable reads name no scope to judge: database tables none of whose
+   // columns moved are served as before; anything else fails closed below.
+   if (reads === undefined && judged === tables) return;
    // A gated entry point's scope is judged by the gate policy, past the gate
    // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
    if (reads !== undefined && (!reads.scoped || reads.gated)) return;
+   // The tables the scope was judged on, so the path report names each one
+   // skipped for it (a database `#@ persist` table included).
+   const tableIds = tables.flatMap((t) => {
+      const handle = (t as { virtualHandle?: unknown }).virtualHandle;
+      return typeof handle === "string" ? [handle] : [];
+   });
    const decline = (why: string) =>
       leg === "served"
-         ? new LegDecline("served_copy_not_served", why)
-         : new LegDecline("rollup_row_level_gate", why, { shapeCheck: true });
+         ? new LegDecline("served_copy_not_served", why, { tableIds })
+         : new LegDecline("rollup_row_level_gate", why, {
+              shapeCheck: true,
+              tableIds,
+           });
    // The exactness rule is the served copy's; the rollup leg judges its own
    // stored columns (`storedRollupReads`), so it is asked only the
    // comparison rules below.
-   if (leg === "served" && !judged.every(gateColumnsExact)) {
+   // Database tables none of whose columns moved (`judged === tables`) hold
+   // the source's types, so only their comparison is judged: a collation
+   // altered after the build changes no type.
+   if (
+      leg === "served" &&
+      judged !== tables &&
+      !judged.every(gateColumnsExact)
+   ) {
       throw decline(
          "the query's source scopes its rows by a column a stored table does not hold exactly",
       );
@@ -408,6 +426,7 @@ async function storedComparisonRefusal(
       virtualMap: answer.virtualMap,
       authorRunnable,
       reads,
+      ...(givens ? { givens } : {}),
    });
 }
 

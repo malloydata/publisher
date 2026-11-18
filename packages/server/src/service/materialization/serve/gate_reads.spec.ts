@@ -42,6 +42,57 @@ const stored = {
 const STORED = new Set(["stored@m"]);
 
 describe("gateReads: the row scope", () => {
+   it("reads an extension of a stored query-shaped source, its query unchanged, as that table", () => {
+      // `source: q is accounts -> { group_by: tenant is <computed> }`, stored;
+      // `q extend { where: tenant = … }` carries its query as it is.
+      const query = {
+         structRef: ACCOUNTS,
+         pipeline: [
+            {
+               type: "reduce",
+               queryFields: [
+                  {
+                     name: "tenant",
+                     type: "string",
+                     e: {
+                        node: "concat",
+                        kids: [{ node: "field", path: ["acct"] }],
+                     },
+                  },
+               ],
+            },
+         ],
+      };
+      const q = {
+         type: "query_result",
+         sourceID: "q@m",
+         query,
+         fields: [{ name: "tenant", type: "string" }],
+      };
+      const ext = {
+         ...q,
+         sourceID: "ext@m",
+         filterList: [
+            {
+               e: {
+                  node: "=",
+                  kids: {
+                     left: { node: "field", path: ["tenant"] },
+                     right: { node: "stringLiteral" },
+                  },
+               },
+            },
+         ],
+      };
+      const model = { contents: { q } };
+      const asTable = gateReads(ext, [], model, new Set(["q@m"]));
+      expect(asTable.entryPathsComplete).toBe(true);
+      expect(asTable.columns).toEqual([["tenant"]]);
+      // Not stored: the stage is followed back to what it computes from.
+      const followed = gateReads(ext, [], model, new Set());
+      expect(followed.entryPathsComplete).toBe(false);
+   });
+
    it("judges a stage's where: when no answer reads the source's table", () => {
       const reads = gateReads(stored, []);
       expect(reads.scoped).toBe(true);
@@ -260,6 +311,24 @@ describe("gateReads: compares no string", () => {
          ],
       };
       const reads = gateReads(composite, ["c_late = $FLAG"], MODEL);
+      expect(reads.entryPathsComplete).toBe(false);
+      expect(reads.comparesNoString).toBe(false);
+   });
+
+   it("leaves the entry paths incomplete for a composite's string field too", () => {
+      // Which member a query resolves to depends on the whole query, so
+      // the field's own path names no one column.
+      const composite = {
+         ...ORDERS,
+         fields: [
+            ...ORDERS.fields,
+            { name: "c_reg", type: "string", e: { node: "compositeField" } },
+         ],
+      };
+      const reads = gateReads(
+         { ...composite, filterList: [{ e: field(["c_reg"]) }] },
+         [],
+      );
       expect(reads.entryPathsComplete).toBe(false);
       expect(reads.comparesNoString).toBe(false);
    });
