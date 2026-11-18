@@ -99,7 +99,7 @@ export async function stringGateCollationRefusal(args: {
    const modelDef = prepared.modelDef as ModelDef | undefined;
    const entryName =
       typeof prepared.structRef === "string" ? prepared.structRef : undefined;
-   if (!modelDef || entryName === undefined) return "no named entry point";
+   if (!modelDef) return "no author compile";
    const struct = resolveStructRefSource(
       prepared.structRef as never,
       modelDef as never,
@@ -140,7 +140,10 @@ export async function stringGateCollationRefusal(args: {
          ? undefined
          : "an instance that compares strings under a collation";
    }
-   // Per column: only the entry point's own paths can be probed.
+   // Per column: only a named entry point's own paths can be probed (a
+   // caller's inline `extend` or `include` has no name to compile a probe
+   // over; the instance-wide check above needs none).
+   if (entryName === undefined) return "no named entry point";
    if (!reads.entryPathsComplete) return "a scope from elsewhere";
    const paths = stringPaths(struct, reads.entryPaths);
    if (paths === undefined) return "an unreadable gate path";
