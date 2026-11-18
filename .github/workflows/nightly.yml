@@ -1,0 +1,89 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# Nightly checks too slow for every pull request (issue #1897). Each is a job
+# of its own; none is a PR check and nothing depends on them. The hammer runs
+# nightly from hammer-nightly.yml.
+#
+# upgrade: the last released server (`@malloy-publisher/server@latest`) builds
+# materializations, then main's build starts on the same server root and data
+# and must keep serving them (hammer/upgrade/run.ts). It holds no secret and
+# reads no warehouse: a throwaway Postgres in the runner's Docker is the source
+# warehouse and the DuckLake catalog.
+#
+# Each job writes a job summary on every run, and uploads its report and logs
+# when it fails; a later reporting step (issue #1896) can post from either.
+
+name: nightly
+
+on:
+  schedule:
+    # 06:41 UTC: off the hour, and clear of hammer-nightly (07:17) and the
+    # warehouse conformance run (08:23).
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Released server version to upgrade from; empty is npm's latest"
+        required: false
+        default: ""
+
+env:
+  BUN_VERSION: 1.4.4
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+# One run at a time per ref, never cancelled, so a dispatch during the nightly
+# waits for it rather than cutting its logs short.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  upgrade:
+    name: upgrade (latest release -> main)
+    runs-on: ubuntu-latest
+    # A run takes about two minutes after the install and the build.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build the server
+        run: bun run build:server-only
+        working-directory: packages/server
+      - name: Run the upgrade test
+        env:
+          HAMMER_LOG_DIR: ${{ runner.temp }}/upgrade-logs
+          FROM: ${{ inputs.from }}
+        run: |
+          set -o pipefail
+          mkdir -p "$HAMMER_LOG_DIR"
+          args=()
+          if [ -n "$FROM" ]; then args+=(--from "$FROM"); fi
+          bun hammer/upgrade/run.ts "${args[@]}" 2>&1 | tee "$HAMMER_LOG_DIR/upgrade.log"
+      - name: Job summary
+        if: always()
+        env:
+          REPORT: ${{ runner.temp }}/upgrade-logs/upgrade-report.json
+        run: bun hammer/upgrade/summary.ts "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the report and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-logs
+          path: ${{ runner.temp }}/upgrade-logs
+          if-no-files-found: warn
+          retention-days: 14
