@@ -268,6 +268,7 @@ export const CARRIED_KEYS = [
    "refresh",
    "watermark",
    "merge_key",
+   "lookback",
 ] as const;
 
 /**

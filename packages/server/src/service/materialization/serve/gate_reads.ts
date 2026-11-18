@@ -30,6 +30,7 @@ import {
 import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import { malloyIdentifiers } from "../../query_text";
 
+import { fieldPathsIn } from "./gate_paths";
 import type { GateReads } from "./gate_reads_types";
 
 // The comparison rule beside the column rules, read by the router through
@@ -39,29 +40,6 @@ export {
    storedTypeIsString,
    stringGateCollationRefusal,
 } from "./gate_collation";
-
-/** Every field path an expression reads (`node: "field"`), at any depth. */
-export function fieldPathsIn(
-   e: unknown,
-   out: string[][] = [],
-   depth = 0,
-): string[][] {
-   if (depth > 64 || e === null || typeof e !== "object") return out;
-   if (Array.isArray(e)) {
-      for (const x of e) fieldPathsIn(x, out, depth + 1);
-      return out;
-   }
-   const n = e as { node?: unknown; path?: unknown };
-   if (
-      n.node === "field" &&
-      Array.isArray(n.path) &&
-      n.path.every((p) => typeof p === "string")
-   ) {
-      out.push(n.path as string[]);
-   }
-   for (const v of Object.values(e)) fieldPathsIn(v, out, depth + 1);
-   return out;
-}
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
 export function gateIdentifiers(exprs: readonly string[]): string[] {
@@ -342,12 +320,17 @@ class GateReadWalk {
       return base === null ? undefined : base;
    }
 
-   /** Follow a field path of `source` to the columns it reads. */
+   /**
+    * Follow a field path of `source` to the columns it reads. `entry`: the
+    * path, behind `joins`, is read from the entry point, so a computed
+    * field's reads are entry paths too.
+    */
    resolve(
       source: unknown,
       path: readonly string[],
       chain: readonly string[],
       joins: readonly string[] = [],
+      entry = false,
    ): void {
       if (this.tooDeep() || path.length === 0) {
          this.unresolved = true;
@@ -371,10 +354,11 @@ class GateReadWalk {
             path.slice(1),
             [...chain, path[0]],
             [...joins, path[0]],
+            entry,
          );
          return;
       }
-      this.field(source, f, chain, joins);
+      this.field(source, f, chain, joins, entry);
    }
 
    /** Follow one field: a rename, an expression, a stage output or a column. */
@@ -383,6 +367,7 @@ class GateReadWalk {
       f: FieldLike,
       chain: readonly string[],
       joins: readonly string[],
+      entry: boolean,
    ): void {
       const name = activeName(f);
       const stored = typeof f.name === "string" ? f.name : name;
@@ -391,8 +376,20 @@ class GateReadWalk {
       const along = [...chain, name, stored];
       if (f.e !== undefined) {
          if (!this.equalityOrNotString(f.e, source)) this.equalityOnly = false;
-         for (const p of fieldPathsIn(f.e))
-            this.resolve(source, p, along, joins);
+         // A computed field's own comparison is the gate's too: a boolean
+         // over a string (`late is region > 'M'`) orders that string.
+         if (!this.leavesNotString(f.e, source)) this.comparesNoString = false;
+         const reads = fieldPathsIn(f.e);
+         // An expression that names no field it reads (a composite's field,
+         // resolved per member at compile) has no path a probe could read.
+         if (reads.length === 0) this.entryPathsComplete = false;
+         for (const p of reads) {
+            // The columns a computed field reads are what its comparison
+            // compares: a probe reads their collation by these paths.
+            if (entry) this.entryPaths.push([...joins, ...p]);
+            else this.entryPathsComplete = false;
+            this.resolve(source, p, along, joins, entry);
+         }
          return;
       }
       if (f.join !== undefined) {
@@ -445,6 +442,12 @@ class GateReadWalk {
             next.push({ path: qf.path as string[], chain });
          } else if (qf.e !== undefined) {
             if (!equalityOnlyExpr(qf.e)) this.equalityOnly = false;
+            // A stage's expression reads the stage's input, not typed here,
+            // and has no path from the entry point.
+            if (!this.leavesNotString(qf.e, undefined)) {
+               this.comparesNoString = false;
+            }
+            this.entryPathsComplete = false;
             const read = fieldPathsIn(qf.e);
             if (read.length === 0) this.unresolved = true;
             for (const p of read) next.push({ path: p, chain });
@@ -649,9 +652,9 @@ export function gateReads(
    }
    for (const p of read.paths) {
       walk.entryPaths.push(p);
-      walk.resolve(struct, p, []);
+      walk.resolve(struct, p, [], [], true);
    }
-   walk.scope(struct, 0, (p) => walk.resolve(struct, p, []), true);
+   walk.scope(struct, 0, (p) => walk.resolve(struct, p, [], [], true), true);
    return {
       names: walk.names,
       columns: walk.columns,

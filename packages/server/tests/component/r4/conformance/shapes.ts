@@ -14,7 +14,7 @@
  *  - `materialize_database`: `#(materialize)` (v2, built in the origin
  *    warehouse)
  *
- * `@PREAGG(dim)` marks a rollup measure (`#@ preaggregate grain=…`, with
+ * `@PREAGG(dim)` (or `@PREAGG(a, b)`) marks a rollup measure (`#@ preaggregate grain=…`, with
  * `storage=` for the `storage` variant, and `#(rollup)` for
  * `materialize`, with `storage=` for `materialize` alone), and `@PVIEW(name)` a persisted view (`#@ persist name=…`).
  *
@@ -131,6 +131,12 @@ export function renderFiles(
    variant: Variant,
 ): Record<string, string> {
    const out: Record<string, string> = { "raw.malloy": RAW_MODEL };
+   // `@PREAGG(a, b)`: v1 takes the list as one string, v2 as a list.
+   const v2Grain = (grain: string) =>
+      grain
+         .split(",")
+         .map((g) => `"${g.trim()}"`)
+         .join(", ");
    for (const [file, text] of Object.entries(shape.files)) {
       out[file] = text
          .replace(/@PREAGG\(([^)]*)\)/g, (_m, grain: string) =>
@@ -139,8 +145,8 @@ export function renderFiles(
                : variant === "database"
                  ? `#@ preaggregate grain="${grain}"`
                  : variant === "materialize_database"
-                   ? `#(rollup) grain=["${grain}"]`
-                   : `#(rollup) grain=["${grain}"] storage="lake"`,
+                   ? `#(rollup) grain=[${v2Grain(grain)}]`
+                   : `#(rollup) grain=[${v2Grain(grain)}] storage="lake"`,
          )
          .replace(/@PVIEW\(([^)]*)\)/g, (_m, name: string) =>
             variant === "storage"

@@ -107,6 +107,7 @@ describe("the #@ route's keys", () => {
             "refresh",
             "watermark",
             "merge_key",
+            "lookback",
             "freshness",
             "queryMetadata",
             "partition",

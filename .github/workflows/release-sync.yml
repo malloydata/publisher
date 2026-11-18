@@ -62,7 +62,9 @@ concurrency:
 jobs:
   release_sync:
     name: Release sync
-    runs-on: ubuntu-latest
+    # On Credible's donated runners when CREDIBLE_RUNNERS is on.
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:

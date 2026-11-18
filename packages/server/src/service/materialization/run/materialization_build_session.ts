@@ -101,6 +101,7 @@ import {
    type PartitionKey,
 } from "../../connection";
 import type { WatermarkBound } from "./incremental_apply";
+import type { LateRows } from "../domain/types";
 import { storageDestinationRoot } from "../../connection_config";
 import { lockDownDuckDBSession } from "../../duckdb_lockdown";
 import {
@@ -898,6 +899,8 @@ interface StorageRefreshOutcome {
    refresh: "delta" | "none";
    /** What the delta's own warehouse read cost, when its shape reported it. */
    readCost: BuildReadCost | null;
+   /** What the late-row check found below the delta (domain/types.ts). */
+   lateRows?: LateRows;
 }
 
 /**
