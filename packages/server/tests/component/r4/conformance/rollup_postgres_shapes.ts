@@ -9,7 +9,9 @@
  * (`materialize_database`, built in Postgres) and `storage=`
  * (`materialize`, built into a DuckLake destination). Every query's served
  * answer is compared with live's; `expect` says whether a rollup answers it
- * or it is declined and answered live.
+ * or it is declined and answered live. One shape is no rollup but a
+ * persisted copy (`@PERSIST()`, `expect: "served"`), for the integers past
+ * 2^53 a stored read must give as live does on both paths.
  */
 
 import type { Shape } from "./shapes";
@@ -59,6 +61,9 @@ export const PG_SEED = [
          '2025-12-31 23:00:00', '2026-01-01 04:00:00+00', '2025-12-31'),
       (12, 3, 'south', 'placed', 5.5, 5.50, 0.7, 0.7, 7,
          '2026-01-01 00:00:00', '2026-01-01 05:00:00+00', '2026-01-01')`,
+   // The persisted-copy shape's own table, so its copy re-roots no other
+   // shape's source: the same big integers as orders.big.
+   `CREATE TABLE big_copy AS SELECT id, region, big FROM orders`,
    // Customer 5 has no orders; order 6's customer 9 has no row.
    `CREATE TABLE customers (id bigint PRIMARY KEY, segment text, home_region text)`,
    `INSERT INTO customers VALUES
@@ -569,6 +574,43 @@ source: f_ext is f_orders extend { where: status != 'returned' }
                "run: f_ext -> { group_by: region; aggregate: total; order_by: region }",
             expect: "live",
             reason: "GRAIN_TOO_COARSE",
+         },
+      ],
+   },
+   {
+      name: "a persisted copy's big integers",
+      about: "Not a rollup: a #(materialize) copy of the source, served from its table, whose bigint past 2^53 must answer as live's does, rounded and with live's type",
+      files: {
+         "copy.malloy": `${HEADER}
+
+@PERSIST()
+source: c_orders is pg.table('public.big_copy') extend {
+  primary_key: id
+  measure: big_sum is big.sum()
+  measure: big_hi is big.max()
+}
+`,
+      },
+      queries: [
+         {
+            name: "a bigint past 2^53, selected",
+            model: "copy.malloy",
+            malloy: "run: c_orders -> { select: id, big; order_by: id }",
+            expect: "served",
+         },
+         {
+            name: "a bigint past 2^53, grouped by",
+            model: "copy.malloy",
+            malloy:
+               "run: c_orders -> { group_by: big; aggregate: n is count(); order_by: big }",
+            expect: "served",
+         },
+         {
+            name: "a bigint sum and max past 2^53",
+            model: "copy.malloy",
+            malloy:
+               "run: c_orders -> { group_by: region; aggregate: big_sum, big_hi; order_by: region }",
+            expect: "served",
          },
       ],
    },

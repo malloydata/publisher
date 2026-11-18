@@ -605,9 +605,7 @@ describe("bigIntegerReads (known limitation 12)", () => {
          );
          expect(plan.leftOut.map((m) => m.column)).toEqual(["h", "i"]);
          expect(plan.refusals).toEqual([]);
-         expect(plan.casts.map((c) => c.column)).toEqual(
-            dialect === "duckdb" ? ["b"] : [],
-         );
+         expect(plan.casts.map((c) => c.column)).toEqual(["b"]);
       }
    });
 
@@ -659,11 +657,22 @@ describe("bigIntegerReads (known limitation 12)", () => {
       ).toEqual([{ column: "ID", castTo: "HUGEINT" }]);
    });
 
-   it("keeps a storage= table of a source whose live answer rounds as it is: served equals live", () => {
+   it("reads a storage= table of a source whose live answer rounds as HUGEINT too, for live's bigint subtype (the answer is rounded after it runs)", () => {
       expect(liveKeepsBigIntegers("postgres")).toBe(false);
       expect(
          bigIntegerReads(schema("BIGINT"), fields, { dialect: "postgres" }),
-      ).toEqual([]);
+      ).toEqual([{ column: "id", castTo: "HUGEINT" }]);
+   });
+
+   it("reads a float-stored big integer as HUGEINT only where live rounds to that float too", () => {
+      // Postgres: live's own value is the nearest double, so the float is it.
+      expect(
+         bigIntegerReads(schema("DOUBLE"), fields, { dialect: "postgres" }),
+      ).toEqual([{ column: "id", castTo: "HUGEINT" }]);
+      // DuckDB: live keeps every digit the float has lost.
+      expect(
+         bigIntegerReads(schema("DOUBLE"), fields, { dialect: "duckdb" }),
+      ).toEqual([{ column: "id" }]);
    });
 
    const database = (dialect: string, nativeType: string | undefined) =>

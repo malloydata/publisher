@@ -13,7 +13,8 @@
  * Each query is answered live before the build, then served after it. The
  * served answer must equal live's, by R4's comparison and the strict one
  * (`answer_difference.ts`), and must have been answered as the shape says:
- * from a rollup, in the tier's `servedFrom`, or declined and answered live.
+ * from a rollup (or, for the persisted-copy shape, the copy), in the tier's
+ * `servedFrom`, or declined and answered live.
  *
  * Opt-in: set PUBLISHER_TEST_POSTGRES_URL to a server the test may create
  * and drop databases on, e.g. `postgresql://postgres:pw@127.0.0.1:5432/postgres`.
@@ -305,7 +306,13 @@ describe.skipIf(!POSTGRES_URL)("rollup parity on a Postgres origin", () => {
             describe(shape.name, () => {
                for (const q of shape.queries) {
                   const want = expectedOf(q, tier.variant);
-                  it(`${q.name}: ${want === "rollup" ? "served from the rollup" : "declined, answered live"}, equal to live`, () => {
+                  const how =
+                     want === "rollup"
+                        ? "served from the rollup"
+                        : want === "served"
+                          ? "served from the persisted copy"
+                          : "declined, answered live";
+                  it(`${q.name}: ${how}, equal to live`, () => {
                      const l = live.get(q)!;
                      const s = served.get(q)!;
                      if ("error" in l)
@@ -321,8 +328,10 @@ describe.skipIf(!POSTGRES_URL)("rollup parity on a Postgres origin", () => {
                      expect(
                         strictRowDifference(l.answer.rows, s.answer.rows),
                      ).toBeUndefined();
-                     if (want === "rollup") {
-                        expect(s.answer.servedBy).toBe("rollup");
+                     if (want === "rollup" || want === "served") {
+                        expect(s.answer.servedBy).toBe(
+                           want === "rollup" ? "rollup" : "materialized",
+                        );
                         expect(s.answer.servedFrom).toBe(tier.servedFrom);
                      } else {
                         expect(s.answer.servedBy ?? "live").toBe("live");

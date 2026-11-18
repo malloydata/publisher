@@ -78,6 +78,7 @@ import {
    type Leg,
    runManifestOf,
    type ServedFrom,
+   roundStoredAnswerAsLive,
    servedFromOf,
 } from "./materialization/serve/leg";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
@@ -939,6 +940,9 @@ export class ModelServing {
          // NOT a storage hit: servedFromOf reads `live_fallback`.
          answer = answeredWith(answer, retried.read);
          executionTime = performance.now() - ctx.startTime;
+      }
+      if (answer.leg !== "live" && !answer.runFailed) {
+         await roundStoredAnswerAsLive(run.result, prepared.liveRunnable);
       }
       return { run, answer, executionTime, maxRows, maxBytes };
    }

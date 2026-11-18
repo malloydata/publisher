@@ -261,16 +261,19 @@ describe("storedColumnCasts", () => {
       });
    });
 
-   it("leaves a big integer as declared on a dialect whose live answer rounds", () => {
+   it("reads a big integer as HUGEINT on a dialect whose live answer rounds, a float-stored one too", () => {
       const big = col("n", "measure", "number", {
          field: { name: "n", type: "number", numberType: "bigint" },
       });
-      expect(
-         storedColumnCasts(
-            [{ name: "n", type: "DOUBLE" }],
+      for (const type of ["DOUBLE", "BIGINT"]) {
+         const out = storedColumnCasts(
+            [{ name: "n", type }],
             shape({ columns: [big], dialect: "postgres" }),
-         ),
-      ).toEqual({ casts: new Map() });
+         );
+         expect("casts" in out && [...out.casts]).toEqual([
+            ["n", { nativeCast: "HUGEINT" }],
+         ]);
+      }
    });
 
    it("does not read a column it already casts as a big integer too", () => {
