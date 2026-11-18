@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a `storage=` answer on a Postgres source gives an integer past 2^53 as live does: a JSON string
+
+On 0.15.0, a query on a Postgres source answered from a `storage=` table (a `#(rollup)`, a `#(materialize)` or `#@ persist` served copy, or a persisted view) returned a `bigint` value past 2^53 as a JSON number, where live returns the same value as a JSON string: `9007199254740992` served against `"9007199254740992"` live. The digits matched, since live on Postgres rounds such a value through JSON (known limitation 12), but a client that reads the type, or a strict generated client, saw two answers to one query. The stored column is now read with live's `bigint` type, and the answer is rounded as live's is after the query runs, so a served answer equals live's in value and in type, sums included: a sum past 1e21, which live gives as a JSON number in exponent form (`1.8e+21`), is served the same way. A `bigint` column a `storage=` table holds as a float is left out and answered live, since its digits are lost. Database-tier tables are unchanged. Only Postgres is changed: the other dialects whose live answer rounds big integers (Trino, Presto, Databricks, SQL Server) are unmeasured and keep 0.15.0's behaviour. **How to tell:** on 0.15.0, a `bigint` field past 2^53 in a served answer (`servedFrom: "storage"`) on a Postgres source is a number rather than a string.
+
 ## [Unreleased] — corrections to the 0.15.0 notes
 
 The 0.15.0 notes left out two API changes, overstated two others and understated one. The behaviour shipped in 0.15.0 and is unchanged; only the record is corrected, and `api-doc.yaml` now says the same.
