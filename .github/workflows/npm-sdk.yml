@@ -59,7 +59,7 @@ jobs:
           echo "::notice title=Current Version::Publishing SDK version $CURRENT_VERSION under npm dist-tag '$NPM_TAG'"
 
       - name: Install dependencies
-        run: bun install
+        run: scripts/ci-install-with-retry.sh bun install
 
       - name: Resolve workspace:* for publishing (in-memory only, not committed)
         run: |

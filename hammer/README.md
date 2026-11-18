@@ -320,7 +320,26 @@ then runs with `--workers 4` (a hosted runner has 4 cores).
 
 Set `HAMMER_LOG_DIR` to keep every publisher's log after the run removes its
 workdir; CI sets it and uploads that directory, with the run's own output as
-`hammer.log`, as the `hammer-logs-materialize-<value>` artifact.
+`hammer.log`, as the `hammer-logs-materialize-<value>` artifact. The run also
+writes `hammer-report.json` there: every scenario's verdict and each failed
+check with its detail (`hammer/lib/report.ts` has the shape).
+`bun hammer/summary.ts <report.json> [heading]` renders it as the Markdown each
+leg writes to its job summary.
+
+### The upgrade test
+
+`bun hammer/upgrade/run.ts` checks that a release's stored state survives an
+upgrade to this checkout. The last released server (npm's `latest`, or
+`--from <version>`) builds the fixture package in `hammer/upgrade/fixture`
+(`#@ persist` and `#(materialize)` into a DuckLake destination, a `storage=`
+rollup, and both on the database tier in DuckDB), the source data changes, and
+the answers are recorded. This checkout's build then starts on the same server
+root and data and must load cleanly, answer every probe from the same tier
+with the same rows, read every run record and manifest, and build again. It
+reuses this harness's Postgres, server and REST helpers, and its header lists
+the differences between releases it deliberately does not assert on.
+`nightly.yml` runs it every night; with `HAMMER_LOG_DIR` set it writes
+`upgrade-report.json`, which `bun hammer/upgrade/summary.ts` renders.
 
 ## Each scenario is a clean room
 

@@ -73,7 +73,22 @@ not repeat is the server suites and the Linux-only e2e suite.
 PR's branch included), against a server with package versioning on (playwright.config.ts starts it
 with `PUBLISHER_PACKAGE_VERSIONING=on`). The model viewer's specs get a pass of their own, against a server started
 with `PUBLISHER_MODEL_PAGE=viewer` (`EXPECT_MODEL_PAGE=viewer`),
-because the suite's server shows the default model page, the Explorer. `python-sdk.yml` is `workflow_call`-only (plus a
+because the suite's server shows the default model page, the Explorer.
+
+The suite runs in three shards, `Playwright shard (1/3..3/3)`. Each shard is on its own runner with
+its own Publisher, and runs on one worker inside the shard, because specs share server state. The
+spec files each shard runs are listed in `packages/app/tests/playwright/shards.json`, balanced by
+measured per-file durations. Shard 2 carries the least and also runs the model viewer pass.
+`shards.mjs check` runs first in every shard. It fails the shard when a spec is in no group, is in
+two, or a group names a file that is gone, so **a new spec must be added to `shards.json`**.
+A gate job, `Playwright (packages/app)`, needs every shard and fails unless all of them passed. It is the
+**only** required check for the suite, under the name the single job had before the split, so
+regrouping never touches branch protection. Do not make the shards required, and do not give one
+that name. Chromium's headless shell is cached under `PLAYWRIGHT_BROWSERS_PATH`, keyed on the
+`@playwright/test` version. Credible's image has Chromium's system packages, so apt runs there only
+if the browser is missing a library. GitHub's image does not have them all, so it takes `--with-deps`.
+
+`python-sdk.yml` is `workflow_call`-only (plus a
 manual dispatch): it builds and verifies the Python client, for `build.yml` on every PR and for
 `release.yml`, which publishes it to PyPI from a job of its own. It has published there since
 0.10.5 (2026-10-31); *Publishing to PyPI* below covers how.
@@ -94,6 +109,14 @@ package can come from its own file rather than from `build.yml`.** Know which jo
 a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
 `workflow_dispatch`. It is not a pull-request check and nothing depends on it. Two legs, one with
 `PUBLISHER_MATERIALIZE=true` and one with `false`, each upload their logs as an artifact.
+
+`nightly.yml` holds the nightly checks of issue #1897 other than the hammer, one job each, on a
+schedule (06:41 UTC) and `workflow_dispatch`. Its `upgrade` job runs `hammer/upgrade/run.ts`: the
+latest released server builds a fixture package's materializations, then `main`'s build must serve
+them unchanged from the same server root and data. Neither it nor `hammer-nightly.yml` holds a
+secret or is a pull-request check. Each job writes its job summary from a JSON report
+(`hammer-report.json`, `upgrade-report.json`) that is uploaded with the logs (the hammer's on every
+run, the upgrade's when it fails); post a nightly result from that report, never from raw logs.
 
 `main-thread-regression.yml` is the main-thread regression check
 (`packages/server/tests/perf/main-thread/README.md`): a storm-lite A/B of two server builds on
@@ -131,8 +154,9 @@ timeout-minutes: 30
 The organization variable `CREDIBLE_RUNNERS` is the kill switch: set it to `false` and every such job
 goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, every Linux job of
 `cross-platform-tests.yml` (seven test jobs and the gate per PR), `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
-`image-scan.yml` (amd64 build only), and `python-sdk.yml` when `build.yml` calls it (not when
-`release.yml` does). `docker_smoke_test` reads a registry layer cache there and writes it only from
+`image-scan.yml` (amd64 build only), `python-sdk.yml` when `build.yml` calls it (not when
+`release.yml` does), `release-sync.yml`, `skills-npm.yml`'s tarball check (not its publish job), and
+`hammer-nightly.yml`. `docker_smoke_test` reads a registry layer cache there and writes it only from
 `main`, through the `layer-cache-writer` identity bound to `main`'s OIDC subject.
 
 **Keep off them:** any job that uses a repository or organization secret, holds `id-token: write`
@@ -143,6 +167,17 @@ Actions cache (setup-bun's `no-cache: true`): any `main` job, here or on GitHub'
 (a reclaimed job fails "The operation was canceled." and a rerun covers it);
 `credible-ubuntu-24.04-ondemand` is the label for a job that must not be interrupted. Package
 installs go through pull-through caches whose credentials last an hour from job start.
+
+**Every `bun install` runs through `scripts/ci-install-with-retry.sh`**, in the composite action and
+in each workflow that installs on its own. The npm mirror intermittently answers a tarball GET with
+401 or 403 well inside that hour (one was seen 35 seconds after the job-started hook set it up), and
+with about seven installing jobs per PR, one such answer failed a PR or `main` often. The script
+re-runs the same command, unchanged, up to three attempts (15 s, then 45 s apart), against the same
+registry: it adds no fallback registry and touches no runner configuration, so a retried install
+resolves exactly what the first would have, which is why the publishing jobs use it too. A retry that
+rescues a job leaves a `Package install retried` warning annotation on the run, so a mirror that is
+getting worse stays visible instead of being absorbed; report a run of those to the runners' owners.
+A new install step should use the script too.
 
 ## Publishing
 

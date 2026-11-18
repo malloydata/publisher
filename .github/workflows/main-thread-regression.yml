@@ -122,7 +122,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.gate.outputs.run == 'true'
-        run: bun install --frozen-lockfile
+        run: scripts/ci-install-with-retry.sh bun install --frozen-lockfile
 
       - name: Unit-test the verdict
         if: steps.gate.outputs.run == 'true'
