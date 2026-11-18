@@ -1183,7 +1183,9 @@ async function resolveDeltaStart(
             "The newest stored watermark is not a UTC ISO-8601 date or " +
                "timestamp, so this incremental source is rebuilt in full on " +
                "every refresh. Check that the connection's setupSQL does not " +
-               "set a session time zone other than UTC",
+               "set a session time zone other than UTC (for a timestamp with " +
+               "time zone), and that the stored watermark holds no " +
+               "-infinity, which a storage= destination reads as text",
             {
                physicalTableName: lineage.physicalTableName,
                watermark: lineage.watermarkName,
@@ -1632,8 +1634,11 @@ function wireBoundValue(bound: WatermarkBound): string {
  * How long the late-row check may take before the run goes on without it.
  * The check is best-effort, so a slow read never holds up the end of a run.
  * Its statement is stopped too: on Postgres by a statement timeout of the
- * same length (withStatementTimeout), elsewhere by the abort signal (a
- * `storage=` session is interrupted, sessionRunner in incremental_storage.ts).
+ * same length or the session's own if stricter (withStatementTimeout),
+ * elsewhere by the abort signal (a `storage=` session's statement is
+ * interrupted, sessionRunner in incremental_storage.ts). A `storage=` source
+ * on BigQuery is not checked at all: its window would be read by a billed
+ * BigQuery job that an interrupt does not cancel (incremental_storage.ts).
  */
 const LATE_ROWS_CHECK_TIMEOUT_MS = 60_000;
 
@@ -1739,10 +1744,14 @@ export async function countLateRows(params: {
       if (abort.signal.aborted) {
          // Interrupted: let the statement wind down, briefly, so the
          // session or connection it held is free for the run's next one.
+         let settle: ReturnType<typeof setTimeout> | undefined;
          await Promise.race([
             check.catch(() => undefined),
-            new Promise((resolve) => setTimeout(resolve, LATE_ROWS_SETTLE_MS)),
+            new Promise((resolve) => {
+               settle = setTimeout(resolve, LATE_ROWS_SETTLE_MS);
+            }),
          ]);
+         clearTimeout(settle);
       }
       return { ...kept, error: errMessage(err), errorCode: errorCodeOf(err) };
    } finally {
