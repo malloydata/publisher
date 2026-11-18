@@ -53,10 +53,10 @@ jobs:
         run: |
           if [ "${{ steps.bun-cache.outputs.cache-hit }}" == "true" ]; then
             echo "Cache hit! Using cached dependencies..."
-            bun install --frozen-lockfile --no-summary
+            scripts/ci-install-with-retry.sh bun install --frozen-lockfile --no-summary
           else
             echo "Cache miss! Installing dependencies..."
-            bun install --frozen-lockfile
+            scripts/ci-install-with-retry.sh bun install --frozen-lockfile
           fi
           bun run generate-api-types
           bun run build:sdk
@@ -80,7 +80,7 @@ jobs:
       - name: Install dependencies
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
-          bun install --frozen-lockfile
+          scripts/ci-install-with-retry.sh bun install --frozen-lockfile
       - name: Check formatting
         run: bunx prettier './packages/**/*.{ts,tsx}' --check
       - name: Lint
@@ -187,7 +187,7 @@ jobs:
       - name: build server
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
-          bun install --frozen-lockfile
+          scripts/ci-install-with-retry.sh bun install --frozen-lockfile
           bun run build
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
@@ -688,7 +688,7 @@ jobs:
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
         run: |
-          bun install --frozen-lockfile
+          scripts/ci-install-with-retry.sh bun install --frozen-lockfile
           bun run build
 
       - name: Start the server

@@ -48,7 +48,8 @@ runs:
       env:
         BUN_INSTALL_CACHE_DIR: ${{ runner.os == 'Windows' && env.WINDOWS_BUN_CACHE_DIR || '' }}
         BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
-      run: bun install --frozen-lockfile --prefer-offline
+      # Retried against the same registry: scripts/ci-install-with-retry.sh.
+      run: scripts/ci-install-with-retry.sh bun install --frozen-lockfile --prefer-offline
       shell: bash
 
     - name: Generate API types
