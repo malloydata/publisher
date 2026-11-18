@@ -53,6 +53,7 @@ const DECIDED: Record<Flag, DialectName[]> = {
    nestedColumns: ["duckdb"],
    driverKeepsBigIntegers: ["duckdb"],
    liveRoundsBigIntegersMeasured: ["postgres"],
+   liveWritesFloat4Shortest: ["postgres"],
    castsToIntegerType: [
       "databricks",
       "duckdb",

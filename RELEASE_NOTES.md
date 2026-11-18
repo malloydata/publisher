@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a Postgres `real` column served from a `storage=` table answers as live does
+
+**Fixed: a Postgres `real` (float4) served from a `storage=` table answered with more digits than live.** Live on Postgres writes a `real` as its shortest text, so a column holding 0.1 answers `0.1`; served from a `storage=` (DuckLake) table the same value answered `0.10000000149011612`, the double the stored float4 widens to. The stored value was right and only its rendering differed, so no table needs rebuilding. A served answer is now written as live writes it: a `real` column selected or grouped by, and its `sum`, `min` and `max`, through `#(materialize)` and the served copy, a `#@ persist` source, view or query, and a `#(rollup)`. An `avg` of a `real`, and every number inside a nest, already matched live, which answers them as `double precision`. The behaviour predates 0.15.0.
+
+Who was affected: a package on a Postgres connection whose models read a `real` (or `float4`) column, or an aggregate of one, from a `storage=` table. A database-tier table is read in Postgres itself and always answered as live did, and `double precision` and `numeric` columns, and other dialects, are unchanged. How to tell: compare a served answer with live's for a query over such a column; before this release a value like 0.1 came back as `0.10000000149011612`, and a `sum` could differ from live's in its last digits (live sums a `real` as a `real`). One limit stays: a `sum` over many rows is summed in double precision and rounded once, where Postgres rounds after every row, so a long sum can still differ from live's in its last digit, as two live runs that add in a different order can.
+
 ## [0.16.0] — (BREAKING) upgrading from 0.15: the checklist
 ## [Unreleased] — raw SQL on a managed connection is metered, and a usage record names its statement, catalog and worker
 
