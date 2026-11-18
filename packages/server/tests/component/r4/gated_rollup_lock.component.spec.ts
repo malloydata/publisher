@@ -510,7 +510,7 @@ for (const placement of ["database", "storage"] as const) {
  * the join leg engages: database it answers from the rollup; on `storage=`
  * this harness cannot store the DuckDB parent in the destination, so it
  * declines `CROSS_CONNECTION`. Behind a lock, own or
- * inherited, the leg declines `CONTRACT` before the gate policy is asked (its
+ * inherited, the leg declines `ROW_LEVEL_GATE` before the gate policy is asked (its
  * variant redeclares the parent around the join and carries no gate), so
  * `gatesReadNoColumn` never widens it: every caller is answered as live is.
  */
@@ -609,17 +609,21 @@ for (const placement of ["database", "storage"] as const) {
          });
 
          for (const source of ["parent_locked", "parent_inherited"]) {
-            it(`declines CONTRACT for ${source} and answers every caller as live does`, async () => {
-               fixture.setBindings(fixture.bindings);
-               const served = await fixture.runAsIs(query(source), ADMIN);
-               expect(rollupStep(served.path)?.reason).toBe("CONTRACT");
+            // A lock reads no field of the parent, so on the database tier
+            // the join branch answers past it (g-mixed for rollups, #1854):
+            // the variant redeclares the parent with its lock, which admits
+            // or denies the caller as live does. In a destination the
+            // parent is not stored here, so it declines as for `parent`.
+            it(`answers every caller of ${source} as live does, from the rollup on the database tier`, async () => {
                const run = await fixture.run({
                   name: `${source} admin`,
                   malloy: query(source),
                   givens: ADMIN,
-                  expectLive: true,
+                  expectLive: placement === "storage",
                });
-               expect(run.servedBy?.kind).not.toBe("rollup");
+               expect(run.servedBy?.kind === "rollup").toBe(
+                  placement === "database",
+               );
                expect(rowDifference(run.live, run.served)).toBeUndefined();
                for (const givens of <Givens[]>[{ ROLE: "viewer" }, {}]) {
                   await expectDeniedAsLive(fixture, query(source), givens);

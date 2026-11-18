@@ -226,7 +226,7 @@ describe("MaterializationScheduler", () => {
          {
             env: "env1",
             pkg: "p",
-            opts: { forceRefresh: true, trigger: "SCHEDULER" },
+            opts: { forceRefresh: true, trigger: "scheduler" },
          },
       ]);
    });
@@ -389,8 +389,8 @@ describe("MaterializationScheduler: published versions", () => {
       expect(
          service.calls.map((c) => [c.pkg, c.opts.versionId, c.opts.trigger]),
       ).toEqual([
-         ["v", "1.0.0", "SCHEDULER"],
-         ["v", "2.0.0", "SCHEDULER"],
+         ["v", "1.0.0", "scheduler"],
+         ["v", "2.0.0", "scheduler"],
       ]);
       // Each version anchors on its own scheduled fires.
       expect(service.anchorsAsked).toEqual(["1.0.0", "2.0.0"]);

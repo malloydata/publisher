@@ -3,7 +3,7 @@
   "internal": {
     "annotationFindings": [
       {
-        "code": "deprecated-preaggregate-namespace",
+        "code": "deprecated-rollup-namespace",
         "message": "Measure \"regional\" of source \"orders\" places its rollup with namespace=\"rollups\": namespace= is deprecated: write name=\"rollups.<table>\" instead (its schema or dataset places the table, and <table> starts the table's name).",
         "model": "pa.malloy",
         "route": "rollup",

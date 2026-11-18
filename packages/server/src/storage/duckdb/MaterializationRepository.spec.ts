@@ -115,6 +115,15 @@ describe("MaterializationRepository.getLatestScheduledFireAt (real DuckDB)", () 
       expect(at!.toISOString().slice(0, 10)).toBe("2026-03-15");
    });
 
+   it("reads a scheduler run in either spelling: today's `scheduler` and an older server's `SCHEDULER`", async () => {
+      const { db, repo } = await freshRepo();
+      await insertRun(db, "s1", day("01-15"), "SCHEDULER");
+      await insertRun(db, "s2", day("04-15"), "scheduler");
+      await insertRun(db, "d1", day("06-01"), "on_demand");
+      const at = await repo.getLatestScheduledFireAt(ENV_ID, PKG);
+      expect(at!.toISOString().slice(0, 10)).toBe("2026-04-15");
+   });
+
    it("ignores ON_DEMAND and trigger-less runs even when they are newer", async () => {
       const { db, repo } = await freshRepo();
       await insertRun(db, "s1", day("02-01"), "SCHEDULER"); // the only match

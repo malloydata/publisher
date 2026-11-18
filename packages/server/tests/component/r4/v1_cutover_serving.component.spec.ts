@@ -2416,7 +2416,7 @@ source: through_join is duckdb.table('orders_raw') extend {
                { ...EAST.givens, CARRIER: "AA" },
             );
             const skipped = (path?.considered ?? []).filter(
-               (c) => (c as { reason?: string }).reason === "CONTRACT",
+               (c) => (c as { reason?: string }).reason === "ROW_LEVEL_GATE",
             );
             expect(skipped.length).toBeGreaterThan(0);
             for (const c of skipped) {
@@ -2427,23 +2427,30 @@ source: through_join is duckdb.table('orders_raw') extend {
             }
          });
 
-         it("declines a joined source's rollup under a gated parent (A7), as CONTRACT without naming the gate", async () => {
+         it("answers a joined source's rollup under a gated parent (A7) as live: from the rollup on the database tier (g-mixed), live without naming the gate in a storage destination it is not stored in", async () => {
             const malloy =
                "run: gated_parent -> { group_by: category; aggregate: order_lines.qty_total }";
-            expectLive(
-               await fixture.run({
-                  name: "gated parent",
-                  malloy,
-                  givens: EAST.givens,
-               }),
-            );
+            const run = await fixture.run({
+               name: "gated parent",
+               malloy,
+               givens: EAST.givens,
+            });
+            if (placement === "database") {
+               // The parent's own gate (a plain column) is grafted on the
+               // variant, which keeps the author's rows (question 14).
+               expect(run.servedBy?.kind).toBe("rollup");
+               expect(rowDifference(run.live, run.served)).toBeUndefined();
+               return;
+            }
+            // In a storage destination the parent here is not stored there,
+            // so the branch declines (`CROSS_CONNECTION`) before its gate is
+            // read; no decline names the gate.
+            expectLive(run);
             fixture.setBindings(fixture.bindings);
             const { path } = await fixture.runAsIs(malloy, EAST.givens);
-            const contract = (path?.considered ?? []).filter(
-               (c) => (c as { reason?: string }).reason === "CONTRACT",
-            );
-            expect(contract.length).toBeGreaterThan(0);
-            for (const c of contract) {
+            const skipped = path?.considered ?? [];
+            expect(skipped.length).toBeGreaterThan(0);
+            for (const c of skipped) {
                expect(JSON.stringify(c)).not.toContain("region");
             }
          });

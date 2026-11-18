@@ -154,7 +154,7 @@ describe("PersistedQueryServe (database)", () => {
       const decline = await declineOf(
          attempt("run: q_region + { limit: 1 }", built),
       );
-      expect(decline.code).toBe("query_missing_field");
+      expect(decline.code).toBe("query_shape_mismatch");
       expect(decline.callerDetail).toBe(
          "the query refines `q_region` (`+ { … }`), and the stored result holds only the query as written",
       );

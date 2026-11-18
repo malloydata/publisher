@@ -416,3 +416,360 @@ for (const gatedSources of [false, true]) {
       });
    });
 }
+
+/**
+ * A collated table elsewhere in a DuckDB warehouse leaves an unrelated
+ * database rollup served: the stored-side check reads the rollup's own table,
+ * and a lock alone compares no string column at all. Before, one `COLLATE`
+ * anywhere in the instance sent every gated database rollup on it live.
+ */
+const UNRELATED_MODEL = `##! experimental { givens access_modifiers }
+given: REGION :: string
+given: ROLE :: string
+source: orders_raw is ${BIN} extend { primary_key: id }
+#(authorize) 'admin' = $ROLE
+source: lock_plain is orders_raw extend {
+  #(rollup) grain=["category"]
+  measure: total is amount.sum()
+}
+#(access_filter) region = $REGION
+source: filt_plain is orders_raw extend {
+  #(rollup) grain=["category", "region"]
+  measure: total is amount.sum()
+}
+source: orders_ci is ${CI} extend { primary_key: id }
+source: open_ci is orders_ci extend {
+  #(rollup) grain=["category", "region"]
+  measure: total is amount.sum()
+}
+`;
+
+describe("a collated table elsewhere in the warehouse leaves an unrelated database rollup served", () => {
+   let restore: () => void;
+   let loader: Awaited<ReturnType<typeof loadFixture>>;
+   let fixture: LoadedFixture;
+   const givens = { REGION: "east", ROLE: "admin" };
+   const query = (s: string) =>
+      `run: ${s} -> { group_by: category; aggregate: total; order_by: category }`;
+   const live = new Map<string, Outcome>();
+
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         },
+      }).restore;
+      await freshLoadPool();
+      loader = await loadFixture({ "m.malloy": UNRELATED_MODEL });
+      for (const s of ["lock_plain", "filt_plain"]) {
+         live.set(s, await loader.run("m.malloy", query(s), givens));
+      }
+      fixture = await loader.bind({ includeRollups: true });
+   }, 900_000);
+
+   afterAll(async () => {
+      await fixture?.dispose();
+      await loader?.dispose().catch(() => {});
+      restore?.();
+      await freshLoadPool();
+   });
+
+   for (const s of ["lock_plain", "filt_plain"]) {
+      it(`${s}: is answered from its rollup, equal to live`, async () => {
+         const got = await fixture.run("m.malloy", query(s), givens);
+         expect(difference(live.get(s)!, got)).toBeUndefined();
+         expect("answer" in got && got.answer.servedBy).toBe("rollup");
+      });
+   }
+});
+
+/**
+ * A warehouse whose session compares strings case-insensitively, configured
+ * as an operator would: an environment DuckDB connection whose `setupSQL`
+ * sets the collation before the lockdown locks its configuration (the
+ * package sandbox takes no `setupSQL`, and refuses a `SET` once locked).
+ */
+const NOCASE_WAREHOUSE = {
+   name: "wh",
+   type: "duckdb",
+   duckdbConnection: { setupSQL: "SET default_collation = 'nocase'" },
+};
+
+/** A model read from {@link NOCASE_WAREHOUSE} instead of the sandbox. */
+function onNocaseWarehouse(model: string): string {
+   return model.replaceAll("duckdb.sql(", "wh.sql(");
+}
+
+/**
+ * A comparison that makes a string of something else (a cast, a `pick`)
+ * compares under a collation too, though no field it reads is a string: a
+ * NOCASE session on either side changes what it admits. On the destination
+ * (its `default_collation` set after the build) and on the source (the
+ * warehouse session's), every caller of a scope or gate written that way, on
+ * the served copy and on a `storage=` rollup, gets live's answer.
+ */
+const CAST_MODEL = `##! experimental { givens access_modifiers persistence }
+given: S :: string
+given: CAT :: string
+source: rows is duckdb.sql("""SELECT CAST(id AS BIGINT) AS id, CAST(amount AS DOUBLE) AS amount, category, CAST(active AS BOOLEAN) AS active
+  FROM (VALUES (1, 10.0, 'A', true), (2, 20.0, 'A', false), (3, 30.0, 'B', true), (4, 5.0, 'B', false)) AS t(id, amount, category, active)""") extend { primary_key: id }
+#(materialize) name="m_cast_eq" storage="${LAKE}"
+source: m_cast_eq is rows extend { where: active::string = $S }
+#(materialize) name="m_cast_ne" storage="${LAKE}"
+source: m_cast_ne is rows extend { where: active::string != $S }
+#(access_filter) category = $CAT
+#(materialize) name="m_g_cast_eq" storage="${LAKE}"
+source: m_g_cast_eq is rows extend { where: active::string = $S }
+#(materialize) name="m_pick_ne" storage="${LAKE}"
+source: m_pick_ne is rows extend { where: (pick 'yes' when active else 'no') != $S }
+source: r_cast_eq is rows extend {
+  where: active::string = $S
+  #(rollup) grain=["category", "active"] storage="${LAKE}"
+  measure: total is amount.sum()
+}
+source: r_cast_ne is rows extend {
+  where: active::string != $S
+  #(rollup) grain=["category", "active"] storage="${LAKE}"
+  measure: total is amount.sum()
+}
+#(access_filter) category = $CAT
+source: r_g_cast_eq is rows extend {
+  where: active::string = $S
+  #(rollup) grain=["category", "active"] storage="${LAKE}"
+  measure: total is amount.sum()
+}
+`;
+
+const CAST_CASES: [string, string][] = [
+   ["m_cast_eq", "run: m_cast_eq -> { group_by: id; order_by: id }"],
+   ["m_cast_ne", "run: m_cast_ne -> { group_by: id; order_by: id }"],
+   ["m_g_cast_eq", "run: m_g_cast_eq -> { group_by: id; order_by: id }"],
+   ["m_pick_ne", "run: m_pick_ne -> { group_by: id; order_by: id }"],
+   [
+      "r_cast_eq",
+      "run: r_cast_eq -> { group_by: category; aggregate: total; order_by: category }",
+   ],
+   [
+      "r_cast_ne",
+      "run: r_cast_ne -> { group_by: category; aggregate: total; order_by: category }",
+   ],
+   [
+      "r_g_cast_eq",
+      "run: r_g_cast_eq -> { group_by: category; aggregate: total; order_by: category }",
+   ],
+];
+const CAST_CALLERS: Record<string, string>[] = [
+   { S: "TRUE", CAT: "A" },
+   { S: "true", CAT: "A" },
+   { S: "YES", CAT: "A" },
+];
+
+for (const side of ["destination", "source"] as const) {
+   for (const gatedSources of [false, true]) {
+      describe(`a comparison that makes a string compares as live does, under a NOCASE ${side} (gated sources ${gatedSources ? "on" : "off"})`, () => {
+         let restore: () => void;
+         let loader: Awaited<ReturnType<typeof loadFixture>>;
+         let fixture: LoadedFixture;
+         const live = new Map<string, Outcome>();
+
+         beforeAll(async () => {
+            restore = installSettings({
+               env: {
+                  PERSIST_STORAGE_MODE: "on",
+                  PUBLISHER_MATERIALIZE: "true",
+                  PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+                  // The operator's opt-in to a connection's setupSQL.
+                  ...(side === "source"
+                     ? { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" }
+                     : {}),
+               },
+            }).restore;
+            await freshLoadPool();
+            loader =
+               side === "source"
+                  ? await loadFixture(
+                       { "m.malloy": onNocaseWarehouse(CAST_MODEL) },
+                       { connections: [NOCASE_WAREHOUSE] },
+                    )
+                  : await loadFixture({ "m.malloy": CAST_MODEL });
+            for (const [name, malloy] of CAST_CASES) {
+               for (const [i, g] of CAST_CALLERS.entries()) {
+                  live.set(
+                     `${name}${i}`,
+                     await loader.run("m.malloy", malloy, g),
+                  );
+               }
+            }
+            fixture = await loader.bind({ includeRollups: true });
+            if (side === "destination") {
+               await loader.lake.runSQL("SET default_collation = 'nocase'");
+            }
+         }, 900_000);
+
+         afterAll(async () => {
+            if (side === "destination") {
+               await loader?.lake
+                  .runSQL("SET default_collation = ''")
+                  .catch(() => {});
+            }
+            await fixture?.dispose();
+            await loader?.dispose().catch(() => {});
+            restore?.();
+            await freshLoadPool();
+         });
+
+         for (const [name, malloy] of CAST_CASES) {
+            it(`${name}: every caller gets live's answer`, async () => {
+               for (const [i, g] of CAST_CALLERS.entries()) {
+                  const got = await fixture.run("m.malloy", malloy, g);
+                  const diff = difference(live.get(`${name}${i}`)!, got);
+                  expect(diff, `${JSON.stringify(g)}: ${diff}`).toBeUndefined();
+               }
+            });
+         }
+      });
+   }
+}
+
+/**
+ * A given compared with a string literal (`$S = 'ADMIN'`, `$S ? 'ADMIN' |
+ * 'OWNER'`) compares strings too, though it reads no string field: under a
+ * NOCASE session on either side, `'admin' = 'ADMIN'` holds. The served copy
+ * and `storage=` rollups, gated and not, answer every caller as live does.
+ * A lock (`#(authorize) 'admin' = $ROLE`) is decided in Publisher, exactly,
+ * never by either side's collation, so a lock-only source stays served.
+ */
+const ROLE_MODEL = `##! experimental { givens access_modifiers persistence }
+given: S :: string
+given: G :: number
+given: ROLE :: string
+source: rows is duckdb.sql("""SELECT CAST(id AS BIGINT) AS id, CAST(amount AS DOUBLE) AS amount, category, CAST(active AS BOOLEAN) AS active, CAST(grp AS BIGINT) AS grp
+  FROM (VALUES (1, 10.0, 'A', true, 1), (2, 20.0, 'A', false, 1), (3, 30.0, 'B', true, 0), (4, 5.0, 'B', false, 0)) AS t(id, amount, category, active, grp)""") extend { primary_key: id }
+#(materialize) name="m_role" storage="${LAKE}"
+source: m_role is rows extend { where: $S = 'ADMIN' or active = true }
+#(access_filter) grp = $G
+#(materialize) name="m_g_role" storage="${LAKE}"
+source: m_g_role is rows extend { where: $S = 'ADMIN' or active = true }
+#(access_filter) grp = $G
+#(materialize) name="m_g_in" storage="${LAKE}"
+source: m_g_in is rows extend { where: ($S ? 'ADMIN' | 'OWNER') or active = true }
+source: r_role is rows extend {
+  where: $S = 'ADMIN' or active = true
+  #(rollup) grain=["category", "active", "grp"] storage="${LAKE}"
+  measure: total is amount.sum()
+}
+#(access_filter) grp = $G
+source: r_g_role is rows extend {
+  where: $S = 'ADMIN' or active = true
+  #(rollup) grain=["category", "active", "grp"] storage="${LAKE}"
+  measure: total is amount.sum()
+}
+#(access_filter) grp = $G
+source: r_g_in is rows extend {
+  where: ($S ? 'ADMIN' | 'OWNER') or active = true
+  #(rollup) grain=["category", "active", "grp"] storage="${LAKE}"
+  measure: total is amount.sum()
+}
+#(authorize) 'admin' = $ROLE
+#(materialize) name="m_lock" storage="${LAKE}"
+source: m_lock is rows extend {}
+`;
+
+const sel = (s: string) => `run: ${s} -> { group_by: id; order_by: id }`;
+const agg = (s: string) =>
+   `run: ${s} -> { group_by: category; aggregate: total; order_by: category }`;
+const ROLE_CASES: [string, string][] = [
+   ["m_role", sel("m_role")],
+   ["m_g_role", sel("m_g_role")],
+   ["m_g_in", sel("m_g_in")],
+   ["r_role", agg("r_role")],
+   ["r_g_role", agg("r_g_role")],
+   ["r_g_in", agg("r_g_in")],
+   ["m_lock", sel("m_lock")],
+];
+const ROLE_CALLERS: Record<string, string | number>[] = [
+   { S: "admin", G: 1, ROLE: "admin" },
+   { S: "ADMIN", G: 0, ROLE: "admin" },
+   { S: "admin", G: 0, ROLE: "ADMIN" },
+   { S: "owner", G: 1, ROLE: "admin" },
+];
+
+for (const side of ["destination", "source"] as const) {
+   for (const gatedSources of [false, true]) {
+      describe(`a given compared with a string literal compares as live does, under a NOCASE ${side} (gated sources ${gatedSources ? "on" : "off"})`, () => {
+         let restore: () => void;
+         let loader: Awaited<ReturnType<typeof loadFixture>>;
+         let fixture: LoadedFixture;
+         const live = new Map<string, Outcome>();
+
+         beforeAll(async () => {
+            restore = installSettings({
+               env: {
+                  PERSIST_STORAGE_MODE: "on",
+                  PUBLISHER_MATERIALIZE: "true",
+                  PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+                  // The operator's opt-in to a connection's setupSQL.
+                  ...(side === "source"
+                     ? { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" }
+                     : {}),
+               },
+            }).restore;
+            await freshLoadPool();
+            loader =
+               side === "source"
+                  ? await loadFixture(
+                       { "m.malloy": onNocaseWarehouse(ROLE_MODEL) },
+                       { connections: [NOCASE_WAREHOUSE] },
+                    )
+                  : await loadFixture({ "m.malloy": ROLE_MODEL });
+            for (const [name, malloy] of ROLE_CASES) {
+               for (const [i, g] of ROLE_CALLERS.entries()) {
+                  live.set(
+                     `${name}${i}`,
+                     await loader.run("m.malloy", malloy, g),
+                  );
+               }
+            }
+            fixture = await loader.bind({ includeRollups: true });
+            if (side === "destination") {
+               await loader.lake.runSQL("SET default_collation = 'nocase'");
+            }
+         }, 900_000);
+
+         afterAll(async () => {
+            if (side === "destination") {
+               await loader?.lake
+                  .runSQL("SET default_collation = ''")
+                  .catch(() => {});
+            }
+            await fixture?.dispose();
+            await loader?.dispose().catch(() => {});
+            restore?.();
+            await freshLoadPool();
+         });
+
+         for (const [name, malloy] of ROLE_CASES) {
+            it(`${name}: every caller gets live's answer`, async () => {
+               for (const [i, g] of ROLE_CALLERS.entries()) {
+                  const got = await fixture.run("m.malloy", malloy, g);
+                  const diff = difference(live.get(`${name}${i}`)!, got);
+                  expect(diff, `${JSON.stringify(g)}: ${diff}`).toBeUndefined();
+               }
+            });
+         }
+
+         if (side === "destination") {
+            it("m_lock: a lock alone is decided in Publisher, so the source stays served", async () => {
+               const got = await fixture.run(
+                  "m.malloy",
+                  sel("m_lock"),
+                  ROLE_CALLERS[0],
+               );
+               expect("answer" in got && got.answer.via).toBe("served_copy");
+            });
+         }
+      });
+   }
+}

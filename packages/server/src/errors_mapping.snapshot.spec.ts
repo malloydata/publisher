@@ -35,6 +35,8 @@ import {
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationEligibilityError,
+   TableOwnershipError,
+   BuildInstructionsInvalidError,
    MaterializationNotFoundError,
    ModelCompilationError,
    ModelNotFoundError,
@@ -374,6 +376,33 @@ const CASES: Array<[string, () => unknown]> = [
    ],
    ["FrozenConfigError", () => new FrozenConfigError()],
    ["AccessDeniedError", () => new AccessDeniedError("access refused")],
+   [
+      "AccessDeniedError row filter",
+      () => AccessDeniedError.forSource("orders", "row_filter"),
+   ],
+   [
+      "BuildInstructionsInvalidError",
+      () =>
+         new BuildInstructionsInvalidError(
+            "Instruction references unknown sourceEntityId 'e9'",
+         ),
+   ],
+   [
+      "TableOwnershipError owned elsewhere",
+      () =>
+         new TableOwnershipError(
+            "table-owned-elsewhere",
+            "another package holds analytics.orders",
+         ),
+   ],
+   [
+      "TableOwnershipError unverified",
+      () =>
+         new TableOwnershipError(
+            "table-ownership-unverified",
+            "who holds analytics.orders could not be read",
+         ),
+   ],
    [
       "AccessDeniedError authorize denial",
       () =>

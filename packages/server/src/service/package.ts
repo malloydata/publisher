@@ -4,7 +4,7 @@
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import { recordConnectionType } from "./connection_type";
-import { nearMissGateLines } from "./materialization";
+import { nearMissGateLines, withRetainedAliases } from "./materialization";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -62,6 +62,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
+import { authorSqlRefusals, sandboxedDuckDBOptions } from "./duckdb_lockdown";
 import { closeMalloyConfig, ownDuckDBConnection } from "./duckdb_hard_close";
 import { formatDuration, logger } from "../logger";
 import {
@@ -2137,6 +2138,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...deprecatedFormatWarnings(this.models),
          ...this.classificationWarningsMemoized(),
          ...this.joinBypassWarnings(),
+         ...this.gateLoadWarnings(),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -2156,7 +2158,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }),
       ];
       if (allWarnings.length > 0) {
-         metadata.warnings = allWarnings;
+         // A renamed code is repeated under the code 0.14.0 shipped, this
+         // release only.
+         metadata.warnings = withRetainedAliases(allWarnings);
       }
       return metadata;
    }
@@ -2351,6 +2355,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return messages.join("\n");
    }
 
+   /**
+    * Author SQL in this package's models that would not run read-only on a
+    * DuckDB connection, one line per refusal (duckdb_lockdown.ts).
+    */
+   public async formatAuthorSqlRefusals(): Promise<string> {
+      const lines: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         lines.push(
+            ...(await authorSqlRefusals(modelPath, model.getModelDef())),
+         );
+      }
+      return lines.join("\n");
+   }
+
    /** The async input of {@link formatCarriesCeilingLeaks}, prepared before a listing is judged. */
    public prepareCeilingQueries(): Promise<PreparedCeilingQueries> {
       return prepareCeilingQueries(this.models);
@@ -2462,6 +2480,33 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       ]
          .filter(Boolean)
          .join("\n");
+   }
+
+   /**
+    * One warning per non-fatal gate finding a model's load made: a gate an
+    * entry point cannot express (it denies every request), or one that reads
+    * no given or negates a membership test. Logged at load as well.
+    */
+   private gateLoadWarnings(): ApiPackageWarning[] {
+      // A source several models import is checked in each; it is reported
+      // once, on the first model that found it.
+      const seen = new Set<string>();
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         for (const w of model.gateLoadWarnings()) {
+            const key = `${w.code}\u0000${w.sourceName}\u0000${w.message}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            warnings.push({
+               model: modelPath,
+               subject: w.sourceName,
+               code: w.code,
+               severity: "warn",
+               message: w.message,
+            });
+         }
+      }
+      return warnings;
    }
 
    /**
@@ -3862,9 +3907,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const malloyConfig = new MalloyConfig(
          {
             connections: {
+               // Caller SQL and model text reach the sandbox, so it runs
+               // under Malloy's sandboxed policy: no network, its filesystem
+               // confined to the package directory (duckdb_lockdown.ts).
                duckdb: {
                   is: "duckdb",
                   databasePath: ":memory:",
+                  ...sandboxedDuckDBOptions(packagePath),
                },
             },
          },

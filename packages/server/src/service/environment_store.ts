@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { codesOfLines } from "./annotation_reader";
 import {
    initFailedLine,
    redactPgSecrets,
@@ -86,6 +87,12 @@ import {
 } from "./package_sources";
 type ApiEnvironment = components["schemas"]["Environment"];
 type ApiConnection = components["schemas"]["Connection"];
+/** A load failure's `codes`, when its message carries any (`[code]` lines). */
+function codesField(message: string): { codes?: string[] } {
+   const codes = codesOfLines(message);
+   return codes.length > 0 ? { codes } : {};
+}
+
 type LoadError = NonNullable<
    components["schemas"]["ServerStatus"]["loadErrors"]
 >[number];
@@ -1915,6 +1922,7 @@ export class EnvironmentStore
                environment: environmentName,
                package: packageName,
                message,
+               ...codesField(message),
             });
          }
          // Stale packages are SERVING, but from a model older than the files on
@@ -1928,6 +1936,7 @@ export class EnvironmentStore
                environment: environmentName,
                package: packageName,
                message: stale.message,
+               ...codesField(stale.message),
                stale: true,
                failedAt: stale.failedAt,
             });

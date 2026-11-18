@@ -30,6 +30,7 @@ import type { PlanLifecycle } from "./plan_lifecycle";
 import {
    deriveDatabaseServeBindings,
    keptTableAddresses,
+   ungatedTableAddresses,
    v1StoredColumnsOf,
 } from "./serve/bind";
 import {
@@ -309,6 +310,27 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
+      // A `storage=` table that holds only ungated rows (g-mixed), read the
+      // same way: off the bound bindings, or, not bound yet, by the bind's
+      // own rule.
+      const ungatedTables = ungatedTableAddresses(
+         plan.sourceEligibility?.ungated,
+         buildPlan?.sources ?? {},
+      );
+      const holdsOnlyUngatedRows = (sourceID: string): boolean => {
+         const bound = storageBindings.filter((b) =>
+            b.sourceIDs?.includes(sourceID),
+         );
+         if (bound.length > 0) {
+            return bound.every((b) => b.holdsOnlyUngatedRows === true);
+         }
+         return (
+            (plan.sourceEligibility?.ungated ?? []).includes(sourceID) &&
+            ungatedTables.has(
+               buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+            )
+         );
+      };
       // The stored types of the columns a bound `storage=` table's own gate
       // reads, for the policy's exactness rule; the router reads each
       // query's. A table not bound yet has none to read, and is judged once
@@ -379,6 +401,8 @@ export class ServeVerdicts {
                   {
                      tier,
                      ownGateKept: tier === "storage" && ownGateKept(sourceID),
+                     holdsOnlyUngatedRows:
+                        tier === "storage" && holdsOnlyUngatedRows(sourceID),
                      ...(tier === "storage"
                         ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
                         : {}),
@@ -617,40 +641,23 @@ export class ServeVerdicts {
          }
       }
       return verdicts.map((v) => {
-         // A refused declaration has no table to serve from, a rollup's
-         // included.
-         if (v.verdict === "live" && v.reason === "refused") {
-            return { ...v, cutoverPath: "live", cutoverReason: "refused" };
-         }
-         if (v.origin === "rollup") {
-            return { ...v, cutoverPath: "rollup" };
-         }
-         // A row-level gate declared on a base the re-root replaces cannot
-         // be grafted on the served copy: its queries are answered live.
-         if (gateDeclined.has(v.sourceID)) {
-            return {
-               ...v,
-               cutoverPath: "live",
-               cutoverReason: "inherited_gate",
-            };
-         }
-         if (rerooted.has(v.sourceID)) {
-            return { ...v, cutoverPath: "served_copy" };
-         }
-         // An extension of a re-rooted source, left as written: it reads
-         // that source's table by name.
-         if (throughBase.has(v.sourceID) && !problems.has(v.sourceID)) {
-            return {
-               ...v,
-               cutoverPath: "served_copy",
-               cutoverReason: "through_base",
-            };
-         }
+         const path = servePathOf(v, {
+            rerooted,
+            throughBase,
+            gateDeclined,
+            problems,
+         });
          return {
             ...v,
-            cutoverPath: "live",
-            cutoverReason:
-               problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
+            servePath: path.path,
+            ...(path.reason !== undefined
+               ? { servePathReason: path.reason }
+               : {}),
+            // Deprecated names of the same two fields, emitted for one release.
+            cutoverPath: path.path,
+            ...(path.reason !== undefined
+               ? { cutoverReason: path.reason }
+               : {}),
          };
       });
    }
@@ -829,4 +836,42 @@ function declaredColumnsOfPlan(
    return (columns ?? []).flatMap((c) =>
       c.name && c.type ? [{ name: c.name, type: c.type }] : [],
    );
+}
+
+/**
+ * On a dry run, the path that will answer queries on a source (`servePath`)
+ * and, when that is not its own table, why (`servePathReason`).
+ */
+function servePathOf(
+   v: ServeVerdict,
+   preview: {
+      rerooted: ReadonlySet<string>;
+      throughBase: ReadonlySet<string>;
+      gateDeclined: ReadonlySet<string>;
+      problems: ReadonlyMap<string, string>;
+   },
+): { path: "served_copy" | "rollup" | "live"; reason?: string } {
+   // A refused declaration has no table to serve from, a rollup's included.
+   if (v.verdict === "live" && v.reason === "refused") {
+      return { path: "live", reason: "refused" };
+   }
+   if (v.origin === "rollup") return { path: "rollup" };
+   // A row-level gate declared on a base the re-root replaces cannot be
+   // grafted on the served copy: its queries are answered live.
+   if (preview.gateDeclined.has(v.sourceID)) {
+      return { path: "live", reason: "inherited_gate" };
+   }
+   if (preview.rerooted.has(v.sourceID)) return { path: "served_copy" };
+   // An extension of a re-rooted source, left as written: it reads that
+   // source's table by name.
+   if (
+      preview.throughBase.has(v.sourceID) &&
+      !preview.problems.has(v.sourceID)
+   ) {
+      return { path: "served_copy", reason: "through_base" };
+   }
+   return {
+      path: "live",
+      reason: preview.problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
+   };
 }

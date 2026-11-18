@@ -95,6 +95,17 @@ const CONNINFO_VERIFY_FULL =
 const CONNINFO_DISABLE =
    "host=catalog.test port=5433 dbname=lakemeta user=lake_user password=test-password sslmode=disable";
 
+/**
+ * After every httpfs load: the AWS_* keys httpfs seeds blanked, and the global
+ * S3 fallback off (duckdb_lockdown.ts).
+ */
+const HTTPFS_AMBIENT_OFF = [
+   "SET GLOBAL enable_global_s3_configuration=false",
+   "SET GLOBAL s3_access_key_id=''",
+   "SET GLOBAL s3_secret_access_key=''",
+   "SET GLOBAL s3_session_token=''",
+];
+
 /** Extension policy and the explicit DuckLake stack, before every attach. */
 const EXTENSIONS = [
    "SET autoinstall_known_extensions=false;",
@@ -107,6 +118,7 @@ const EXTENSIONS = [
    "LOAD aws;",
    "INSTALL httpfs;",
    "LOAD httpfs;",
+   ...HTTPFS_AMBIENT_OFF,
 ];
 /** Before an S3 credential reaches anything: no ambient AWS_* fallback. */
 const S3_GLOBAL_OFF = "SET GLOBAL enable_global_s3_configuration=false";
@@ -133,6 +145,7 @@ function s3Secret(scope: string): string[] {
    return [
       "INSTALL httpfs;",
       "LOAD httpfs;",
+      ...HTTPFS_AMBIENT_OFF,
       "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_s3_lake_storage';",
       `CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AKIATESTKEY', SECRET 'test-secret-key', REGION 'us-east-1', SCOPE '${scope}' );`,
    ];
@@ -142,6 +155,7 @@ function gcsSecret(scope: string): string[] {
    return [
       "INSTALL httpfs;",
       "LOAD httpfs;",
+      ...HTTPFS_AMBIENT_OFF,
       "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_gcs_lake_storage';",
       `CREATE OR REPLACE SECRET secret_gcs_lake_storage ( TYPE gcs, KEY_ID 'GOOGTESTKEY', SECRET 'test-gcs-secret', SCOPE '${scope}' );`,
    ];
@@ -269,6 +283,8 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
          ...EXTENSIONS,
          ...preflight(CONNINFO_DISABLE),
          `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false);`,
+         // The recorded data path, which the lock allows (duckdb_lockdown.ts).
+         `SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL`,
       ]);
    });
 
@@ -281,6 +297,8 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
          ...EXTENSIONS,
          ...preflight(CONNINFO_DISABLE),
          `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (READ_ONLY true);`,
+         // The recorded data path, which the lock allows (duckdb_lockdown.ts).
+         `SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL`,
       ]);
    });
 

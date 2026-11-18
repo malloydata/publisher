@@ -829,19 +829,13 @@ source: flights is duckdb.table('flights_raw') extend {
       await disposeScenarios();
    });
 
-   it("answers a gated entry point live, with its gate held (CONTRACT)", async () => {
+   it("answers a gated entry point from the rollup, its gate grafted on the variant (g-mixed, question 14)", async () => {
       const malloy =
          "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }";
       const run = await fixture.run({ name: "gated", malloy });
-      expectLive(run);
+      expect(run.servedBy?.kind).toBe("rollup");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
       expect(run.served.map((r) => r.carrier)).toEqual(["AA"]);
-      fixture.setBindings(fixture.bindings);
-      const { path } = await fixture.runAsIs(malloy);
-      expect(
-         path?.considered
-            .filter((c) => c.kind === "rollup")
-            .map((c) => c.reason),
-      ).toContain("CONTRACT");
    });
 });
 

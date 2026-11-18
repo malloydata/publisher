@@ -133,15 +133,26 @@ export type MaterializationOutcome = (typeof MATERIALIZATION_OUTCOMES)[number];
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 type ManifestBindOutcome = "success" | "failure" | "timeout";
 
-/** `publisher_query_route_total{leg}`: the legs, and `live`. */
+/**
+ * `publisher_query_route_total{leg}`: the legs, and `live`. `materialized` is
+ * the served copy's leg, named as the path report names what it answers
+ * (`kind: materialized`).
+ */
 export const ROUTE_LEGS = [
    "view",
    "query",
    "rollup",
-   "served",
+   "materialized",
    "live",
 ] as const;
 type RouteLeg = (typeof ROUTE_LEGS)[number];
+
+/** The route metric's `leg` for a router variant kind (the served copy's is `materialized`). */
+export function routeLegOf(
+   kind: "view" | "query" | "served" | "rollup" | "live",
+): RouteLeg {
+   return kind === "served" ? "materialized" : kind;
+}
 /** `publisher_query_route_total{outcome}`. */
 export const ROUTE_OUTCOMES = ["used", "skipped", "fallback"] as const;
 type RouteOutcome = (typeof ROUTE_OUTCOMES)[number];
@@ -153,14 +164,20 @@ type SkipReason = components["schemas"]["SkipReason"];
 export const ROUTE_REASONS = [
    "NONE",
    "NOT_BUILT",
-   "WARNED",
+   "NOT_SERVED",
+   "OPTED_OUT",
    "MISSING_FIELD",
-   "CONTRACT",
+   "SHAPE_MISMATCH",
+   "ROW_LEVEL_GATE",
    "GRAIN_TOO_COARSE",
    "TIME_ZONE",
    "CROSS_CONNECTION",
    "COUNT_SEMANTICS",
    "STALE",
+   "READ_FAILED",
+   // Retained SkipReasons, no longer produced: listed so the enum stays covered.
+   "WARNED",
+   "CONTRACT",
    "RUN_FAILED",
 ] as const satisfies readonly ("NONE" | SkipReason)[];
 export type RouteReason = (typeof ROUTE_REASONS)[number];
@@ -221,17 +238,11 @@ export const KEY_CHECK_OUTCOMES = [
 type KeyCheckOutcome = (typeof KEY_CHECK_OUTCOMES)[number];
 
 /**
- * Which engine a table drop ran against (`publisher_materialization_drop_tables_total`):
- * the source's own warehouse (`in_warehouse`) or a DuckDB/DuckLake `storage=`
- * destination (`storage`). `delta` and `delta_storage` are kept on the union
- * for the label's history; a build's tier and method are labels of their own
- * on the build instruments ({@link BuildTier}, {@link BuildMethod}).
+ * Which tier a table drop ran against (`publisher_materialization_drop_tables_total{tier}`):
+ * the source's own database (`database`) or a DuckDB/DuckLake `storage=`
+ * destination (`storage`), as {@link BuildTier} names a build's.
  */
-type StorageBuildEngine =
-   | "storage"
-   | "in_warehouse"
-   | "delta"
-   | "delta_storage";
+type DropTier = BuildTier;
 /**
  * Why a valid declaration is not built: its build plan refusal's reason
  * (`RefusedSource.reason`).
@@ -297,7 +308,7 @@ const buildReadBytes = lazyHistogram(
 );
 const annotationFindingsCounter = lazyCounter(
    "publisher_annotation_findings_total",
-   "Coded findings on authored annotations (the #@ route, and the near-miss and malformed-route scan over every route), counted once each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish and a gate re-run count nothing). Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable', 'annotation-near-miss'), tier ('malformed' for an error-severity finding, 'unservable' for a warning).",
+   "Coded findings on authored annotations (the #@ route, and the near-miss and malformed-route scan over every route), counted once each time a package is loaded and accepted for serving (boot, add, publish, reload; a refused publish and a gate re-run count nothing). Labels: code (e.g. 'persist-unknown-key', 'persist-unparseable', 'persist-not-built'), outcome ('invalid' for an error-severity finding, which fails the load, 'not_built' for a warning: a valid annotation not built here, and also the warn-level 'annotation-near-miss' and 'persist-incremental-no-merge-key' advisories, which build).",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -381,9 +392,10 @@ const tableCollisionCounter = lazyCounter(
 );
 const dropTablesCounter = lazyCounter(
    "publisher_materialization_drop_tables_total",
-   "Physical tables dropped. Labels: outcome ('success'|'failure'), engine " +
-      "('in_warehouse'|'storage'), occasion ('delete' when a caller deleted " +
-      "the run or the table; 'reclaim' when Publisher dropped it on its own: " +
+   "Physical tables dropped. Labels: outcome ('success'|'failure'), tier " +
+      "('database'|'storage'), occasion ('delete' when a caller deleted a " +
+      "storage destination's table, since a run's delete is record-only; " +
+      "'reclaim' when Publisher dropped it on its own: " +
       "a failed run's tables, a table a readable name replaced, an archived " +
       "or deleted version's tables).",
 );
@@ -395,7 +407,7 @@ const scheduledFireCounter = lazyCounter(
 const queryRouteCounter = lazyCounter(
    "publisher_query_route_total",
    "The router's decision on each leg it considered for a query, counted once " +
-      "the query is answered. Labels: leg ('view'|'query'|'rollup'|'served'|'live'; " +
+      "the query is answered. Labels: leg ('view'|'query'|'rollup'|'materialized'|'live'; " +
       "'query' is a persisted named query), " +
       "outcome ('used'|'skipped'|'fallback': a chosen leg whose run failed and " +
       "was answered live), reason ('NONE' when used, else the path report's " +
@@ -408,7 +420,7 @@ const queryRouteDuration = lazyHistogram(
    "Wall-clock time the router spent choosing how to answer a query, for a " +
       "query with at least one serving leg that applied: the row-level veto " +
       "and each leg's compile, up to the leg chosen. Not the query's run. " +
-      "Label: leg ('view'|'query'|'rollup'|'served'|'live'), the one that " +
+      "Label: leg ('view'|'query'|'rollup'|'materialized'|'live'), the one that " +
       "answered.",
 );
 const keyCheckCounter = lazyCounter(
@@ -480,7 +492,7 @@ const staleUpstreamEntryCounter = lazyCounter(
       "different tier than the upstream is declared on now (ms2data/service#7087: " +
       "a source moved to or from storage= keeps its content address). The build " +
       "recomputes that upstream from raw instead, which reads the warehouse. " +
-      "Label: build ('database'|'storage'), the tier of the build that " +
+      "Label: tier ('database'|'storage'), the tier of the build that " +
       "recomputed.",
 );
 
@@ -574,10 +586,11 @@ export function recordBuildReadBytes(
 
 /**
  * Count the coded annotation findings of one package accepted for serving,
- * one increment per finding: `code` is the warning's code, `tier` its
- * severity (`error` is malformed, `warn` unservable). A `malformed` count can
- * only come from a package published before its refusal existed, since
- * publish refuses a malformed finding before the package is served.
+ * one increment per finding: `code` is the warning's code, `outcome` its
+ * severity in the warning suffixes' words (`error` is `invalid`, `warn`
+ * `not_built`). An `invalid` count can only come from a package published
+ * before its refusal existed, since publish refuses an invalid finding before
+ * the package is served.
  */
 export function recordAnnotationFindings(
    warnings: ReadonlyArray<{ code?: string; severity?: string }>,
@@ -586,7 +599,7 @@ export function recordAnnotationFindings(
       if (!code) continue;
       annotationFindingsCounter().add(1, {
          code,
-         tier: severity === "error" ? "malformed" : "unservable",
+         outcome: severity === "error" ? "invalid" : "not_built",
       });
    }
 }
@@ -740,10 +753,10 @@ export function recordManifestBindDegraded(): void {
 /** Record a best-effort physical-table drop, and why it was dropped. */
 export function recordDropTables(
    outcome: "success" | "failure",
-   engine: StorageBuildEngine,
+   tier: DropTier,
    occasion: DropOccasion,
 ): void {
-   dropTablesCounter().add(1, { outcome, engine, occasion });
+   dropTablesCounter().add(1, { outcome, tier, occasion });
 }
 
 /** Record one key check a run made, and what it found. */
@@ -876,8 +889,8 @@ export function recordChainedStorageBuild(
  * manifest entry is at a different tier than it is declared on now (see
  * {@link staleUpstreamEntryCounter}). Once per run per upstream.
  */
-export function recordStaleUpstreamEntry(build: "database" | "storage"): void {
-   staleUpstreamEntryCounter().add(1, { build });
+export function recordStaleUpstreamEntry(tier: "database" | "storage"): void {
+   staleUpstreamEntryCounter().add(1, { tier });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

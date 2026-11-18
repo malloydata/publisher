@@ -7,7 +7,7 @@
  * build's SQL is the same), so the bind finds it, but the source now declares
  * another type than the one the table holds. A query that reads the column is
  * answered live, equal to live, with the reason on its path report, and the
- * package warns `storage-column-type-mismatch` for each table; a query that
+ * package warns `database-column-type-mismatch` for each table; a query that
  * does not read it is still served. Never served from the table, whose values
  * Malloy would read as the type it no longer holds (before this, the query
  * failed: `Invalid string 1`).
@@ -243,9 +243,9 @@ describe("every materialization over a column retyped upstream after its build",
 
       // Upstream, out of band: the source's column changes type.
       await warehouse.runSQL("ALTER TABLE t ALTER n TYPE VARCHAR");
-      await warehouse.runSQL(
-         "ALTER TABLE t2 ALTER fl TYPE BOOLEAN; ALTER TABLE t2 ALTER d TYPE DATE",
-      );
+      // One statement per call: the connection is locked down.
+      await warehouse.runSQL("ALTER TABLE t2 ALTER fl TYPE BOOLEAN");
+      await warehouse.runSQL("ALTER TABLE t2 ALTER d TYPE DATE");
       (warehouse as unknown as { schemaCache: object }).schemaCache = {};
       pkg = await env.getPackage(parsePackageName(PKG), true);
       // Live's answers, before the tables are bound again.
@@ -331,7 +331,7 @@ describe("every materialization over a column retyped upstream after its build",
 
    it("warns for each table, naming the column and the forced rebuild that clears it", () => {
       const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "storage-column-type-mismatch",
+         (w) => w.code === "database-column-type-mismatch",
       );
       expect(warnings.map((w) => w.subject).sort()).toEqual([
          "mat",

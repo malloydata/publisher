@@ -398,7 +398,7 @@ describe("the path report reading the serve verdicts", () => {
             kind: "materialized",
             origin: "persist",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
             code: "unreachable",
          },
       ]);

@@ -585,7 +585,7 @@ async function dropDatabaseTable(
             onDropFailed: retireIfReplacedByView(entry),
          },
       );
-      recordDropTables("success", "in_warehouse", occasion);
+      recordDropTables("success", "database", occasion);
       logger.info("Dropped materialized table on delete", {
          runId: materializationId,
          physicalTableName,
@@ -605,7 +605,7 @@ async function dropDatabaseTable(
          );
          return "unquotable";
       }
-      recordDropTables("failure", "in_warehouse", occasion);
+      recordDropTables("failure", "database", occasion);
       logger.warn("Failed to drop materialized table on delete", {
          runId: materializationId,
          physicalTableName,
