@@ -1,0 +1,60 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# The whole test suite on macOS and Windows, off the pull-request path. Pull
+# requests and pushes to main run it on Linux only (build.yml); this workflow
+# keeps the other two platforms covered:
+#
+# - nightly, against main;
+# - on a pull request labelled `cross-platform`: when the label is added, and
+#   on every push to the PR while it carries the label;
+# - on `workflow_dispatch`, against whatever ref it is dispatched on.
+#
+# release.yml runs the same legs itself before it publishes, so a release never
+# depends on last night's result. Nothing here is a required check.
+#
+# A failed nightly is reported the way every scheduled run is today: GitHub
+# emails the workflow's notification recipients. Slack reporting for nightly
+# workflows is tracked separately and lands as a step of its own.
+
+name: Cross Platform (macOS, Windows)
+
+on:
+  schedule:
+    # 05:37 UTC: off the hour, when scheduled runs queue longest, and done
+    # before main-thread-regression (06:41), hammer-nightly (07:17) and the
+    # warehouse conformance run (08:23) start.
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [ opened, synchronize, reopened, labeled ]
+
+permissions:
+  contents: read
+
+# The usual rule (CONTEXT.md): a PR's runs share a group and a new one cancels
+# the one in flight; every other event gets a group of its own. One exception:
+# adding some OTHER label to a PR fires `labeled` too, and must not cancel a
+# cross-platform run in flight, so that event gets a group of its own as well.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event_name == 'pull_request'
+      && (github.event.action != 'labeled' || github.event.label.name == 'cross-platform')
+      && github.event.pull_request.number
+      || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cross_platform_test:
+    name: Cross Platform Tests
+    # On a PR: only with the label, and for a `labeled` event only when the
+    # label just added is this one.
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.action == 'labeled' && github.event.label.name == 'cross-platform')
+      || (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'cross-platform'))
+    uses: ./.github/workflows/cross-platform-tests.yml
+    with:
+      linux: false
+      macos_windows: true
