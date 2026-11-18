@@ -486,6 +486,23 @@ describe("a collated table elsewhere in the warehouse leaves an unrelated databa
 });
 
 /**
+ * A warehouse whose session compares strings case-insensitively, configured
+ * as an operator would: an environment DuckDB connection whose `setupSQL`
+ * sets the collation before the lockdown locks its configuration (the
+ * package sandbox takes no `setupSQL`, and refuses a `SET` once locked).
+ */
+const NOCASE_WAREHOUSE = {
+   name: "wh",
+   type: "duckdb",
+   duckdbConnection: { setupSQL: "SET default_collation = 'nocase'" },
+};
+
+/** A model read from {@link NOCASE_WAREHOUSE} instead of the sandbox. */
+function onNocaseWarehouse(model: string): string {
+   return model.replaceAll("duckdb.sql(", "wh.sql(");
+}
+
+/**
  * A comparison that makes a string of something else (a cast, a `pick`)
  * compares under a collation too, though no field it reads is a string: a
  * NOCASE session on either side changes what it admits. On the destination
@@ -563,14 +580,20 @@ for (const side of ["destination", "source"] as const) {
                   PERSIST_STORAGE_MODE: "on",
                   PUBLISHER_MATERIALIZE: "true",
                   PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+                  // The operator's opt-in to a connection's setupSQL.
+                  ...(side === "source"
+                     ? { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" }
+                     : {}),
                },
             }).restore;
             await freshLoadPool();
-            loader = await loadFixture({ "m.malloy": CAST_MODEL });
-            if (side === "source") {
-               const warehouse = await loader.pkg.getMalloyConnection("duckdb");
-               await warehouse.runSQL("SET default_collation = 'nocase'");
-            }
+            loader =
+               side === "source"
+                  ? await loadFixture(
+                       { "m.malloy": onNocaseWarehouse(CAST_MODEL) },
+                       { connections: [NOCASE_WAREHOUSE] },
+                    )
+                  : await loadFixture({ "m.malloy": CAST_MODEL });
             for (const [name, malloy] of CAST_CASES) {
                for (const [i, g] of CAST_CALLERS.entries()) {
                   live.set(
@@ -687,14 +710,20 @@ for (const side of ["destination", "source"] as const) {
                   PERSIST_STORAGE_MODE: "on",
                   PUBLISHER_MATERIALIZE: "true",
                   PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+                  // The operator's opt-in to a connection's setupSQL.
+                  ...(side === "source"
+                     ? { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" }
+                     : {}),
                },
             }).restore;
             await freshLoadPool();
-            loader = await loadFixture({ "m.malloy": ROLE_MODEL });
-            if (side === "source") {
-               const warehouse = await loader.pkg.getMalloyConnection("duckdb");
-               await warehouse.runSQL("SET default_collation = 'nocase'");
-            }
+            loader =
+               side === "source"
+                  ? await loadFixture(
+                       { "m.malloy": onNocaseWarehouse(ROLE_MODEL) },
+                       { connections: [NOCASE_WAREHOUSE] },
+                    )
+                  : await loadFixture({ "m.malloy": ROLE_MODEL });
             for (const [name, malloy] of ROLE_CASES) {
                for (const [i, g] of ROLE_CALLERS.entries()) {
                   live.set(
