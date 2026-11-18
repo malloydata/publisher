@@ -487,8 +487,8 @@ served copy with the gate grafted on and proven, exactly as a v1 `#@ persist` on
 with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on or off. With it off, an answer is read past the gate
 only when every table it reads is in the database tier or a `storage=` table admitted past its own source's
 gate. A `storage=` table holds every caller's rows, ungated, in the destination, readable by anyone
-with direct access to it: a maintainer-approved exception made ahead of the managed tier's security
-review, for consistency with database. A row filter the source inherits, a gate it reaches through
+with direct access to it. This is allowed ahead of the managed tier's security review, so the two
+tiers behave the same. A row filter the source inherits, a gate it reaches through
 a join, and a gate over a source whose build would substitute a given are refused on both tiers,
 either way. The switch stays off until that review. A gate holds only behind the gateway that sets
 the givens from a verified identity
