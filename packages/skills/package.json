@@ -15,10 +15,12 @@
          "default": "./dist/index.js"
       },
       "./package.json": "./package.json",
-      "./skills/*": "./skills/*"
+      "./skills/*": "./skills/*",
+      "./groups.json": "./groups.json"
    },
    "files": [
       "skills",
+      "groups.json",
       "dist"
    ],
    "keywords": [

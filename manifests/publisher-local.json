@@ -41,6 +41,26 @@
   ],
   "supporting": [],
   "groups": {
+    "core": [
+      "malloy-getting-started",
+      "malloy-modeling",
+      "malloy-model",
+      "malloy-model-as-you-go",
+      "malloy-define",
+      "malloy-discover",
+      "malloy-document",
+      "malloy-gotchas-modeling",
+      "malloy-materialization",
+      "malloy-queries",
+      "malloy-analysis",
+      "malloy-phrase-detection",
+      "malloy-charts",
+      "malloy-reports",
+      "malloy-analysis-report",
+      "malloy-publish",
+      "malloy-html-data-apps",
+      "malloy-source-unreachable"
+    ],
     "analysis": [
       "malloy-getting-started",
       "malloy-analysis",

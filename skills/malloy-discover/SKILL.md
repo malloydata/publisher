@@ -30,7 +30,7 @@ SPDX-License-Identifier: MIT
 ```
 1. Check for prior art signals                 → BI configs, metadata files, KPI docs, catalog
                                                  exports, READMEs, screenshots. Ask before using.
-2. If BI config: read adapter reference        → Follow skill:malloy-lookml-review; read anything
+2. If BI config: read adapter reference        → Follow malloy-lookml-review (fetch it with `get_skill` if not installed); read anything
                                                  else directly. Notes into modeling-notes.md
 3. get_context                           → Ground yourself: sources, views, fields
 4. Inspect source definitions                  → See ALL fields and join paths for key sources
@@ -182,7 +182,7 @@ Check for prior art signals at the start of discovery. If a signal is found and 
 
 | Signal | Source Type | Reference to Read |
 |--------|------------|-------------------|
-| `.lkml` files in project or subdirectories | lookml | `skill:malloy-lookml-review` |
+| `.lkml` files in project or subdirectories | lookml | `malloy-lookml-review` |
 | `.pbix`, `.pbip`, or a `definition/` folder of `.tmdl` files | power bi | `malloy-powerbi-review` (read it where your host has it) |
 | `.xlsx` or `.xlsm` with formulas or pivots, not a plain data file | excel | `malloy-excel-review` (read it where your host has it) |
 | `dbt_project.yml` in project or parent dirs | dbt | dbt review (future) |

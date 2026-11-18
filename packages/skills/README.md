@@ -18,6 +18,7 @@ SPDX-License-Identifier: MIT
    ```bash
    npx -y @malloy-publisher/skills@latest install           # into this project
    npx -y @malloy-publisher/skills@latest install --global  # into your home directory
+   npx -y @malloy-publisher/skills@latest install --group core  # only one group: core, analysis, modeling or eval
    npx -y @malloy-publisher/skills@latest list              # every skill, with a description
    ```
 

@@ -204,8 +204,13 @@ where the count above says they are here, and pull the same names as MCP prompts
 the endpoint above where it says they are not.
 
 Start with `malloy-getting-started`. Use `malloy-modeling` to build or change the
-model, `malloy-analysis` to answer questions, and `malloy-review` to check Malloy for
-correctness.
+model and `malloy-analysis` to answer questions.
+
+This workspace installs the core skills only: modeling, queries, analysis, reports,
+publishing and data apps. The rest (`malloy-review`, the LookML, Power BI and Excel
+migrations, access-policy review, package agents and the evaluation loop) are one
+`get_skill` call away on the endpoint above, or installed on disk with
+`npx -y @malloy-publisher/skills@latest install claude`.
 
 Read the gotchas before you write, not after you fail: `malloy-gotchas-modeling` for
 sources, dimensions, measures and joins, `malloy-queries` for views and

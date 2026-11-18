@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { TARGETS, detectTargets, main, skillUrl } from "./cli.js";
-import { listSkills } from "./index.js";
+import { listSkills, skillGroup } from "./index.js";
 import { skillsDir } from "./payload.js";
 
 let tmp: string;
@@ -317,5 +317,48 @@ describe("install", () => {
       expect(exitCode).toBe(1);
       expect(errors.join("\n")).toContain("install claude");
       expect(fs.existsSync(path.join(tmp, ".claude"))).toBe(false);
+   });
+});
+
+describe("install --group", () => {
+   function installedIn(dir: string): string[] {
+      return fs
+         .readdirSync(dir, { withFileTypes: true })
+         .filter((entry) => entry.isDirectory())
+         .map((entry) => entry.name)
+         .sort();
+   }
+
+   test("copies only that group's skills", () => {
+      const cwd = process.cwd();
+      process.chdir(tmp);
+      try {
+         run("install", "claude", "--group", "core");
+      } finally {
+         process.chdir(cwd);
+      }
+      expect(exitCode).toBeUndefined();
+      expect(installedIn(path.join(tmp, TARGETS.claude))).toEqual(
+         [...skillGroup("core")].sort(),
+      );
+   });
+
+   test("refuses a group the manifest does not define", () => {
+      run("install", "claude", "--group", "nope");
+      expect(exitCode).toBe(1);
+      expect(errors.join("\n")).toContain("Unknown skill group 'nope'");
+      expect(fs.existsSync(path.join(tmp, ".claude"))).toBe(false);
+   });
+
+   test("refuses --group with no name", () => {
+      run("install", "claude", "--group");
+      expect(exitCode).toBe(1);
+      expect(errors.join("\n")).toContain("--group needs a name");
+   });
+
+   test("refuses --group outside install", () => {
+      run("list", "--group", "core");
+      expect(exitCode).toBe(1);
+      expect(errors.join("\n")).toContain("--group only applies to install");
    });
 });

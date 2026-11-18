@@ -7,9 +7,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { scaffold, type ScaffoldOptions } from "./scaffold";
 import { renderTemplate } from "./templates";
-import { countSkills, skillsDir } from "@malloy-publisher/skills";
+import { skillGroup } from "@malloy-publisher/skills";
 
-const SKILL_COUNT = countSkills(skillsDir);
+// The scaffolder installs the core group, not every shipped skill.
+const SKILL_COUNT = skillGroup("core").length;
 
 let tmp: string;
 

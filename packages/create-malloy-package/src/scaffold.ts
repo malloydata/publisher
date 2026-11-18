@@ -27,7 +27,11 @@ import {
    validateEnvironmentName,
    validatePackageName,
 } from "./names";
-import { installSkills, isWithinDirectory } from "@malloy-publisher/skills";
+import {
+   installSkills,
+   isWithinDirectory,
+   skillGroup,
+} from "@malloy-publisher/skills";
 import { assertSkillsAvailable } from "./skills";
 import { renderTemplate, templatesDir } from "./templates";
 
@@ -949,7 +953,7 @@ function assertBriefingIsRecognisable(content: string): void {
 }
 
 /**
- * Install the skills and report every way the result differs from "all of them,
+ * Install the core skills and report every way the result differs from "all of them,
  * freshly written": a refusal, a symlink left alone, and the ones whose contents
  * were replaced. The last used to be invisible, so a run that discarded a user's
  * edit to a skill printed a "Left these existing files alone" block and nothing
@@ -957,7 +961,12 @@ function assertBriefingIsRecognisable(content: string): void {
  */
 function installWorkspaceSkills(cwd: string, result: ScaffoldResult): void {
    const relDir = path.join(".claude", "skills");
-   const skills = installSkills(path.join(cwd, relDir), cwd);
+   // The core group, not every shipped skill: a build agent holding the
+   // migration, compliance and eval skills too has more descriptions competing
+   // for what to load, and the rest are a get_skill call away.
+   const skills = installSkills(path.join(cwd, relDir), cwd, {
+      only: skillGroup("core"),
+   });
    result.skillsInstalled = skills.installed;
    if (skills.refused) {
       result.skipped.push(

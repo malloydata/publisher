@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isExcluded } from "./exclusions";
 import { locateFrontmatterClose } from "./frontmatter";
-import { manifestPath, manifestSkillNames } from "./manifest";
+import { manifestPath, manifestSkillNames, readManifest } from "./manifest";
 
 const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = path.join(packageDir, "..", "..", "skills");
@@ -116,4 +116,12 @@ if (unstampable.length > 0) {
 
 console.log(
    `Copied and stamped ${copied.length} skills with version ${version} to ${destination}`,
+);
+
+// The manifest's groups ride along so an installer can copy a named subset
+// (the scaffolder installs `core`). The manifest itself lives above the package
+// and is not packed, so this is the only copy a consumer sees.
+fs.writeFileSync(
+   path.join(packageDir, "groups.json"),
+   JSON.stringify(readManifest().groups ?? {}, null, 2) + "\n",
 );

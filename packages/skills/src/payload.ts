@@ -23,3 +23,10 @@ export const skillsDir: string = path.join(
    "..",
    "skills",
 );
+
+/** The manifest's named skill subsets, written beside skills/ at pack time. */
+export const groupsFile: string = path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   "groups.json",
+);

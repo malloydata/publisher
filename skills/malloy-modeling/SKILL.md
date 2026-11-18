@@ -115,9 +115,11 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 | User says... | Route to |
 |-------------|----------|
 | "Model my data", "create a model" | 8-step workflow (`skill:malloy-discover`) |
-| "Model from LookML" | 8-step with prior art via `skill:malloy-lookml-review` |
-| "Model from Power BI" | 8-step with prior art via `skill:malloy-powerbi-review` |
-| "Model from an Excel workbook" (formulas or pivots) | 8-step with prior art via `skill:malloy-excel-review` |
+| "Model from LookML" | 8-step with prior art via `malloy-lookml-review` |
+| "Model from Power BI" | 8-step with prior art via `malloy-powerbi-review` |
+| "Model from an Excel workbook" (formulas or pivots) | 8-step with prior art via `malloy-excel-review` |
+
+The three prior-art skills are not installed in every workspace. If one is missing, fetch it with `get_skill` (for example `get_skill('malloy-lookml-review')`).
 | "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analysis` (no specific question) |
 | "Build a dashboard", "build a notebook", "create views" on existing model | `skill:malloy-reports` for a saved report (`layout=grid` for a dashboard, `layout=linear` for a notebook), written at the package root; `skill:malloy-charts` for views in the model |
 | "Build a model but not sure what metrics" | `skill:malloy-model-as-you-go`: answer their first real question, codify what it assumed, repeat |

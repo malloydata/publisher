@@ -106,6 +106,7 @@ for (const required of [
    "dist/index.js",
    "dist/index.d.ts",
    "dist/cli.js",
+   "groups.json",
    "README.md",
 ]) {
    if (!packedPaths.has(required)) {
