@@ -98,6 +98,40 @@ describe("buildQueryPath", () => {
       });
    });
 
+   it("names a served-copy decline for a left-out stored column against that column's table only", () => {
+      // Two database `#@ persist` tables on the chain, neither read by the
+      // run; the served copy declined for a column only `daily`'s table
+      // leaves out.
+      const report = buildQueryPath(
+         input({
+            catalog: catalog([planned("daily"), planned("orders")], {
+               id_daily: "daily_built",
+               id_orders: "orders_built",
+            }),
+            considered: [
+               {
+                  kind: "served",
+                  outcome: "skipped",
+                  reason: "does_not_answer",
+                  code: "served_copy_column_left_out",
+                  callerDetail: "no cast reads column `n` as declared",
+                  tableIds: ["id_daily"],
+               },
+            ],
+         }),
+      );
+      expect(report.servedBy).toEqual({ kind: "live" });
+      expect(report.considered).toEqual([
+         {
+            tableId: "id_daily",
+            kind: "materialized",
+            outcome: "skipped",
+            reason: "MISSING_FIELD",
+            detail: "no cast reads column `n` as declared",
+         },
+      ]);
+   });
+
    it("names each table's origin: the mechanism that declared it, beside its kind", () => {
       const daily = storageOf("daily");
       const tables = [planned("daily", "materialize"), planned("orders")];
