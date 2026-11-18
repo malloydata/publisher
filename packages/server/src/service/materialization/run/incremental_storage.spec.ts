@@ -71,6 +71,12 @@ function fakeSession(answers: { columns?: string[]; nonEmpty?: boolean } = {}) {
          if (sql.includes("LIMIT 1")) {
             return { rows: answers.nonEmpty === false ? [] : [{ present: 1 }] };
          }
+         // The newest stored watermark at or below the recorded boundary,
+         // read as text: a table holding rows right up to it.
+         if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
+            const atOrBelow = /<= (?:DATE|TIMESTAMP) '([^']+)'/.exec(sql)?.[1];
+            return { rows: [{ watermark_max: atOrBelow ?? null }] };
+         }
          if (sql.includes("MAX(")) {
             return { rows: [{ watermark_max: "2024-06-10" }] };
          }

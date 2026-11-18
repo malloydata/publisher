@@ -50,7 +50,7 @@ A persist source's identity is its **`sourceEntityId`**: a content address of it
 |---|---|---|
 | `name="..."` | the target table (required) | above |
 | `storage=<destination>` | build into a storage destination and serve from it | `reference/storage.md` |
-| `refresh="incremental" watermark="col" [merge_key="a,b"]` | refresh by bounded delta instead of a full rebuild | `reference/refresh.md` |
+| `refresh="incremental" watermark="col" [merge_key="a,b"] [lookback="2 days"]` | refresh by bounded delta instead of a full rebuild; `lookback=` re-reads late rows (needs `merge_key=` and a date or timestamp watermark) | `reference/refresh.md` |
 | `freshness.window="24h" freshness.fallback="live"` | per-source freshness objective (hosted deployments) | `reference/refresh.md` |
 | `#@ queryMetadata.<key>="v"` (sibling line) | per-source cost-attribution properties | `reference/policy.md` |
 | `#@ -persist` (on a reader) | opt a reader out of the table | above |

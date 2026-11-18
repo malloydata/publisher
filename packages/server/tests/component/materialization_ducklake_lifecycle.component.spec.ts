@@ -1507,7 +1507,8 @@ source: events is warehouse.sql("""
          // be probed in Postgres for a numeric to re-seed; there is none), the
          // shape and emptiness probes on the lake table, the frontier through
          // the passthrough, the delta's column types (a describe, which runs
-         // nothing), then the delta as one script.
+         // nothing), the delta as one script, then the late-row check below
+         // its range (the watermark alone, read through the passthrough).
          expect(lake.statements.map(statementShape)).toEqual([
             `DESCRIBE "lake"."${TABLE}"`,
             `DESCRIBE "lake"."${TABLE}"`,
@@ -1516,6 +1517,7 @@ source: events is warehouse.sql("""
             'SELECT * FROM postgres_query(\'warehouse\', \'SELECT MAX("wm") AS "watermark_max" FROM (SELECT ',
             "DESCRIBE (passthrough)",
             "BEGIN;",
+            'SELECT (SELECT COUNT(*) FROM (SELECT * FROM postgres_query(\'warehouse\', \'SELECT "wm" FROM (SELECT "id", "cat", "amt", "wm" FROM (SELECT * FROM (SELECT ',
             `DESCRIBE "lake"."${TABLE}"`,
             `SELECT count(*) AS n FROM "lake"."${TABLE}"`,
          ]);

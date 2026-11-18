@@ -236,6 +236,41 @@ source: tracks is base_source extend {
       expect(errors.some((p) => p.model === "tracks.malloy")).toBe(true);
    });
 
+   it("package: reports a lookback= the load refuses, as the load words it", async () => {
+      // The incremental gate reads lookback= as it reads watermark= and
+      // merge_key=: a lookback with no merge key fails the load, so the
+      // dry-run says so before a reload finds out.
+      const persisted = `##! experimental.persistence
+${BASE_MODEL}
+source: ev is duckdb.sql("select 1 as id, TIMESTAMP '2026-01-01 00:00:00' as loaded_at")
+#@ persist name="evs" refresh="incremental" watermark="loaded_at" lookback="2 days"
+source: events is ev -> { select: id, loaded_at }
+`;
+      const { problems } = await compile("base.malloy", persisted, "package");
+      const lookback = problems.filter(
+         (p) =>
+            p.severity === "error" &&
+            p.message.includes("lookback= without merge_key="),
+      );
+      expect(lookback).toHaveLength(1);
+      expect(lookback[0]).toMatchObject({ code: "persist-invalid" });
+      // With the merge key it names, the declaration is valid (the dialect
+      // cannot refresh it incrementally, which refuses it alone: a warning).
+      const valid = await compile(
+         "base.malloy",
+         persisted.replace(
+            'lookback="2 days"',
+            'merge_key="id" lookback="2 days"',
+         ),
+         "package",
+      );
+      expect(
+         valid.problems.filter(
+            (p) => p.severity === "error" && p.message.includes("lookback"),
+         ),
+      ).toEqual([]);
+   });
+
    it("package: with no source, validates the files as saved", async () => {
       const clean = await compile("base.malloy", undefined, "package");
       expect(clean.problems.filter((p) => p.severity === "error")).toEqual([]);
