@@ -243,11 +243,12 @@ jobs:
   # skipped group fails it. `!cancelled()` rather than `always()`, so a
   # cancelled run reports this check cancelled, not red.
   #
-  # The name is conditional on purpose. A caller that passes `linux: false`
+  # The name is an expression on purpose. A caller that passes `linux: false`
   # (cross-platform-nightly.yml on a labelled PR) still lists this job, as
-  # skipped, and a skipped check counts as passing. Under the required name it
-  # would sit on the PR's commit beside build.yml's real gate, so it is named
-  # something no branch protection requires instead.
+  # skipped, and a skipped check counts as passing. Under a literal required
+  # name it would sit on the PR's commit beside build.yml's real gate. A
+  # skipped job's name is not evaluated, so it shows as the raw expression and
+  # matches nothing branch protection requires.
   cross_platform_test_linux:
     name: >-
       ${{ inputs.linux && 'Platform: (ubuntu-latest)' || 'Linux gate (not requested)' }}
