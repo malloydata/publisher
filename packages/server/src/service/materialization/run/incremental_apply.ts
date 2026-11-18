@@ -272,14 +272,26 @@ export function deltaLowerBound(params: {
 }
 
 /**
+ * The widest window the late-row check reads below a delta, for a date or
+ * timestamp watermark: the larger of the source's `lookback=` and seven days.
+ * Without it, a source quiet for months (its newest stored row months old)
+ * would have every refresh read months of history.
+ */
+export const LATE_ROWS_WINDOW_CAP_SECONDS = 7 * 86_400;
+
+/**
  * The start of the window the late-row check reads below a delta's lower
  * bound: `start - (end - start)`, a window as wide as the delta's own range,
- * so the check reads about as much as the delta does. Undefined for a string
- * watermark, which has no width.
+ * so the check reads about as much as the delta does. For a date or
+ * timestamp watermark the width is capped at the larger of `lookbackSeconds`
+ * and {@link LATE_ROWS_WINDOW_CAP_SECONDS}; a number watermark's range holds
+ * new rows only, so it is not. Undefined for a string watermark, which has
+ * no width.
  */
 export function lateRowsWindowStart(
    start: WatermarkBound,
    end: WatermarkBound,
+   lookbackSeconds = 0,
 ): WatermarkBound | undefined {
    if (start.malloyType === "number") {
       const width = Number(end.value) - Number(start.value);
@@ -288,7 +300,8 @@ export function lateRowsWindowStart(
          : undefined;
    }
    if (!isTimeWatermark(start.malloyType)) return undefined;
-   const width = boundMillis(end) - boundMillis(start);
+   const cap = Math.max(lookbackSeconds, LATE_ROWS_WINDOW_CAP_SECONDS) * 1000;
+   const width = Math.min(boundMillis(end) - boundMillis(start), cap);
    if (!(width > 0)) return undefined;
    return canonicalBoundValue(
       start.malloyType,
@@ -505,7 +518,13 @@ export async function probeStoredWatermark(params: {
    /** The column the table holds the watermark under. */
    column: string;
    atOrBelow: WatermarkBound;
-}): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
+}): Promise<{
+   bound?: WatermarkBound;
+   error?: string;
+   errorCode?: string;
+   /** The value was read but is not a UTC ISO-8601 date or timestamp. */
+   unparseable?: boolean;
+}> {
    const { dialect, atOrBelow } = params;
    const type = atOrBelow.malloyType;
    if (type !== "date" && type !== "timestamp") {
@@ -519,14 +538,23 @@ export async function probeStoredWatermark(params: {
          `FROM ${params.quotedTablePath} ` +
          `WHERE ${column} <= ${renderSqlBound(atOrBelow, dialect)}`,
    );
+   let raw: unknown;
    try {
       const result = await params.runner(sql);
-      const raw = probeRows(result.rows)[0]?.["watermark_max"];
-      if (raw === null || raw === undefined) return {};
+      raw = probeRows(result.rows)[0]?.["watermark_max"];
+   } catch (err) {
+      return { error: errMessage(err), errorCode: errorCodeOf(err) };
+   }
+   if (raw === null || raw === undefined) return {};
+   try {
       return { bound: canonicalBoundValue(type, raw) };
    } catch (err) {
-      // The message can quote the value read, so only the code may be logged.
-      return { error: errMessage(err), errorCode: errorCodeOf(err) };
+      // The message quotes the value read, so only the code may be logged.
+      return {
+         error: errMessage(err),
+         errorCode: errorCodeOf(err),
+         unparseable: true,
+      };
    }
 }
 
@@ -1146,7 +1174,25 @@ async function resolveDeltaStart(
          target.storedColumn?.(lineage.watermarkName) ?? lineage.watermarkName,
       atOrBelow: recorded,
    });
-   if (stored.error !== undefined) return { error: stored.error };
+   if (stored.error !== undefined) {
+      if (stored.unparseable) {
+         // Otherwise this source rebuilds in full on every refresh with no
+         // sign but the seed's reason code.
+         logger.warn(
+            "The newest stored watermark is not a UTC ISO-8601 date or " +
+               "timestamp, so this incremental source is rebuilt in full on " +
+               "every refresh. Check that the connection's setupSQL does not " +
+               "change the session time zone from UTC, and that the watermark " +
+               "holds no infinite value",
+            {
+               physicalTableName: lineage.physicalTableName,
+               watermark: lineage.watermarkName,
+               errorCode: stored.errorCode,
+            },
+         );
+      }
+      return { error: stored.error };
+   }
    return {
       bound: deltaLowerBound({
          recorded,
@@ -1583,28 +1629,50 @@ function wireBoundValue(bound: WatermarkBound): string {
 }
 
 /**
+ * How long the late-row check may take before the run goes on without it.
+ * The check is best-effort, so a slow read never holds up the end of a run;
+ * its statement is cancelled where the connection can cancel one.
+ */
+const LATE_ROWS_CHECK_TIMEOUT_MS = 60_000;
+
+/**
  * Run the late-row check for a delta that committed: the source's rows in a
- * window directly below its lower bound, as wide as its own range
- * ({@link lateRowsWindowStart}), that the stored table lacks. One aggregate
- * over that window of the source and of the table, so it costs about what
- * the delta's own read does.
+ * window directly below its lower bound ({@link lateRowsWindowStart}, as wide
+ * as its own range, capped) that the stored table lacks. One aggregate over
+ * that window of the source and of the table.
  *
- * Nothing for a pair table (its delta replaces whole parents, so its rows
+ * What an earlier delta found is `carried` (the bound manifest entry's
+ * `lateRows`), and it stays reported until a rebuild clears it: the window is
+ * checked only above `carried.to`, so no slice is counted twice, and what it
+ * finds adds to the carried count. A check that does not run, finds nothing,
+ * fails or times out returns the carried rows as they were.
+ *
+ * Nothing new for a pair table (its delta replaces whole parents, so its rows
  * have no per-row identity to compare), a string watermark (a window has no
- * width), a target that cannot read the source's window, or a window with no
- * missing row. Best-effort: a failure is returned, never thrown, because the
- * delta it checks has already committed.
+ * width), or a target that cannot read the source's window. Never throws:
+ * the delta it checks has already committed.
  */
 export async function countLateRows(params: {
    target: DeltaTarget;
    lineage: IncrementalLineage;
    start: WatermarkBound;
    end: WatermarkBound;
+   carried?: LateRows;
+   timeoutMs?: number;
 }): Promise<{ lateRows?: LateRows; error?: string; errorCode?: string }> {
-   const { target, lineage, start, end } = params;
-   if (lineage.pair || !target.windowRows) return {};
-   const from = lateRowsWindowStart(start, end);
-   if (!from) return {};
+   const { target, lineage, start, end, carried } = params;
+   const kept = carried ? { lateRows: carried } : {};
+   const windowRows = target.windowRows;
+   if (lineage.pair || !windowRows) return kept;
+   let from = lateRowsWindowStart(start, end, lineage.lookbackSeconds);
+   if (!from) return kept;
+   if (carried) {
+      // Above what an earlier check counted, so a row is counted once.
+      const checkedTo = { malloyType: start.malloyType, value: carried.to };
+      if (compareBounds(checkedTo, from) > 0) from = checkedTo;
+      if (compareBounds(from, start) >= 0) return kept;
+   }
+   const windowFrom = from;
    const column = (field: string) => target.storedColumn?.(field) ?? field;
    const watermark = column(lineage.watermarkName);
    const matchColumns =
@@ -1617,8 +1685,10 @@ export async function countLateRows(params: {
               ),
            ]
          : [];
-   try {
-      const windowSQL = await target.windowRows(from, start, [
+   const timeoutMs = params.timeoutMs ?? LATE_ROWS_CHECK_TIMEOUT_MS;
+   const abort = new AbortController();
+   const check = (async () => {
+      const windowSQL = await windowRows(windowFrom, start, [
          ...new Set([watermark, ...matchColumns]),
       ]);
       const result = await target.runner(
@@ -1628,20 +1698,40 @@ export async function countLateRows(params: {
             windowSQL,
             watermark,
             matchColumns,
-            from,
+            from: windowFrom,
             to: start,
          }),
+         { abortSignal: abort.signal },
       );
-      const count = Number(probeRows(result.rows)[0]?.["late_rows"]);
-      if (!Number.isFinite(count) || count <= 0) return {};
+      return Number(probeRows(result.rows)[0]?.["late_rows"]);
+   })();
+   // The side that loses the race must not surface as an unhandled rejection.
+   check.catch(() => undefined);
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+         abort.abort();
+         reject(
+            Object.assign(
+               new Error(`the late-row check took longer than ${timeoutMs} ms`),
+               { code: "late_rows_check_timeout" },
+            ),
+         );
+      }, timeoutMs);
+   });
+   try {
+      const count = await Promise.race([check, timedOut]);
+      if (!Number.isFinite(count) || count <= 0) return kept;
       return {
          lateRows: {
-            count,
-            from: wireBoundValue(from),
+            count: count + (carried?.count ?? 0),
+            from: carried?.from ?? wireBoundValue(windowFrom),
             to: wireBoundValue(start),
          },
       };
    } catch (err) {
-      return { error: errMessage(err), errorCode: errorCodeOf(err) };
+      return { ...kept, error: errMessage(err), errorCode: errorCodeOf(err) };
+   } finally {
+      clearTimeout(timer);
    }
 }

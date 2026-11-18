@@ -613,10 +613,11 @@ export function probeSelect(dialect: string, innerSelect: string): string {
  * timestamp: node-postgres hands back a zone-naive one as a Date in the
  * PROCESS's zone, which off UTC would move the bound by hours. Every
  * incremental session is pinned to UTC, so a zoned timestamp's text is UTC.
- * Snowflake spells its own format, because a cast follows the account's
- * `TIMESTAMP_OUTPUT_FORMAT`, and converts first, because a `TIMESTAMP_TZ`
- * prints in the offset it was stored with. A dialect with no incremental
- * refresh takes the standard cast.
+ * Postgres and Snowflake spell an explicit format, because a cast follows the
+ * session's `DateStyle` (Postgres) or the account's `TIMESTAMP_OUTPUT_FORMAT`
+ * (Snowflake), which a connection's setup may change; Snowflake converts
+ * first, because a `TIMESTAMP_TZ` prints in the offset it was stored with. A
+ * dialect with no incremental refresh takes the standard cast.
  */
 export function watermarkTextSql(
    dialect: string,
@@ -633,6 +634,9 @@ export function watermarkTextSql(
       case "standardsql":
          return `CAST(${expression} AS STRING)`;
       case "postgres":
+         return malloyType === "date"
+            ? `to_char(${expression}, 'YYYY-MM-DD')`
+            : `to_char(${expression}, 'YYYY-MM-DD HH24:MI:SS')`;
       case "duckdb":
       case "databricks":
       case "trino":

@@ -374,18 +374,35 @@ function judgeSource(source: IncrementalPolicySource): {
    return { invalid: out, unbuildable };
 }
 
+/** The longest `lookback=` a source may declare: 365 days. */
+export const MAX_LOOKBACK_SECONDS = 365 * 86_400;
+
 /**
  * Rule 13: `lookback=` moves a delta's start back by a duration, below the
  * newest stored watermark, and re-reads rows the table already holds. A
  * duration is time, so the watermark must be a date or timestamp, and the
  * rows read again must be matched to their stored copies by row identity.
+ * At most {@link MAX_LOOKBACK_SECONDS}: past it a bound would leave the
+ * range a date can hold, and every refresh would re-read a year anyway.
  */
+
 function lookbackRejections(
    d: IncrementalDeclaration,
    where: string,
 ): string[] {
    if (d.lookback === undefined) return [];
    const out: string[] = [];
+   if (
+      d.lookback.seconds !== undefined &&
+      d.lookback.seconds > MAX_LOOKBACK_SECONDS
+   ) {
+      out.push(
+         `${where} declares lookback=${JSON.stringify(d.lookback.text)}, ` +
+            `longer than the most it takes, 365 days. Every refresh re-reads ` +
+            `its whole lookback; to recompute that much history, rebuild the ` +
+            `table (reseed) instead.`,
+      );
+   }
    if (d.lookback.seconds === undefined) {
       out.push(
          `${where} declares lookback=${JSON.stringify(d.lookback.text)}, ` +

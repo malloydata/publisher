@@ -681,8 +681,8 @@
       "SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02'"
     ],
     "postgres": [
-      "SELECT row_to_json(__p) AS \"row\" FROM (SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= TIMESTAMP '2026-01-01 00:00:00') AS __p",
-      "SELECT row_to_json(__p) AS \"row\" FROM (SELECT CAST(MAX(\"updated_at\") AS VARCHAR) AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02') AS __p"
+      "SELECT row_to_json(__p) AS \"row\" FROM (SELECT to_char(MAX(\"updated_at\"), 'YYYY-MM-DD HH24:MI:SS') AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= TIMESTAMP '2026-01-01 00:00:00') AS __p",
+      "SELECT row_to_json(__p) AS \"row\" FROM (SELECT to_char(MAX(\"updated_at\"), 'YYYY-MM-DD') AS \"watermark_max\" FROM tgt WHERE \"updated_at\" <= DATE '2026-01-02') AS __p"
     ],
     "standardsql": [
       "SELECT CAST(MAX(`updated_at`) AS STRING) AS `watermark_max` FROM tgt WHERE `updated_at` <= TIMESTAMP '2026-01-01 00:00:00'",

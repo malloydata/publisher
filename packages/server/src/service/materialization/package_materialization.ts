@@ -1087,13 +1087,25 @@ export class PackageMaterialization {
       return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
    }
 
-   /** See package_warnings.ts, `lateRowWarnings`. */
-   lateRowWarnings(): ApiPackageWarning[] {
+   /**
+    * The `lateRows` the bound manifest entries report (database and
+    * `storage=`), by content address: what the warning names, and what an
+    * incremental delta carries until a rebuild.
+    */
+   boundLateRows(): ReadonlyMap<string, LateRows> {
       const bound = new Map(this.storageLateRows);
       for (const [id, entry] of Object.entries(this.databaseEntries ?? {})) {
          if (entry.lateRows) bound.set(id, entry.lateRows);
       }
-      return warnings.lateRowWarnings(this.plan.buildPlan, bound);
+      return bound;
+   }
+
+   /** See package_warnings.ts, `lateRowWarnings`. */
+   lateRowWarnings(): ApiPackageWarning[] {
+      return warnings.lateRowWarnings(
+         this.plan.buildPlan,
+         this.boundLateRows(),
+      );
    }
 
    repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {

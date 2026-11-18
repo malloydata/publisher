@@ -272,9 +272,9 @@ export function repeatedJoinOneKeyWarnings(
 /**
  * One warning per incremental source whose bound table a run found missing
  * rows below its delta's lower bound (`ManifestEntry.lateRows`, see
- * domain/incremental.ts): the table undercounts them, and no later delta
- * reads them. Cleared when a manifest without them is bound: a rebuild, or a
- * later delta whose check found none. The window's bounds are values from
+ * domain/types.ts): the table undercounts them, and no later delta reads
+ * them. A delta or skip carries them onto its entry, so the warning is
+ * cleared only when a rebuild's manifest is bound. The window's bounds are values from
  * the data, so the message points at the run's entry rather than quoting
  * them.
  */
@@ -292,6 +292,17 @@ export function lateRowWarnings(
       const source = bySourceEntity.get(sourceEntityId);
       if (!source) return [];
       const rows = late.count === 1 ? "1 row" : `${late.count} rows`;
+      const them = late.count === 1 ? "it" : "them";
+      const annotation =
+         source.origin === "materialize" ? "#(materialize)" : "#@ persist";
+      const fields = source.annotationFields ?? {};
+      // lookback= is valid only beside merge_key=, so the advice names both
+      // when the source has no merge key.
+      const lookback = fields.lookback
+         ? `widen its lookback= (now ${JSON.stringify(fields.lookback)})`
+         : fields.merge_key
+           ? "declare a lookback= on it"
+           : "declare a merge_key= (the row's identity) and a lookback= on it";
       return [
          {
             ...(source.modelPath ? { model: source.modelPath } : {}),
@@ -299,16 +310,16 @@ export function lateRowWarnings(
             code: INCREMENTAL_LATE_ROWS_CODE,
             severity: "warn" as const,
             message:
-               `its last incremental refresh found ${rows} in the source ` +
-               `stamped just below where its delta started reading (the ` +
-               `newest watermark its table held, less any lookback=), which ` +
-               `the table does not hold. No delta reads below that point, so ` +
-               `queries served from the table leave ${late.count === 1 ? "it" : "them"} out. ` +
-               `Rebuild the table once (a run with reseed) to recover ` +
-               `${late.count === 1 ? "it" : "them"}, and declare a lookback= on its ` +
-               `#@ persist as long as rows can arrive late, so later deltas ` +
-               `read them. The run's manifest entry names the window ` +
-               `(\`lateRows\`).`,
+               `its incremental refreshes found ${rows} in the source stamped ` +
+               `just below where a delta started reading (the newest ` +
+               `watermark its table held, less any lookback=), which the ` +
+               `table does not hold. No delta reads below that point, so ` +
+               `queries served from the table leave ${them} out, and this ` +
+               `stays until the table is rebuilt. Rebuild it once (a run ` +
+               `with reseed) to recover ${them}, and, so later deltas read ` +
+               `such rows, ${lookback} in its ${annotation} annotation, as ` +
+               `long as rows can arrive late. The run's manifest entry names ` +
+               `the window (\`lateRows\`).`,
          },
       ];
    });

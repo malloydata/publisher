@@ -123,6 +123,14 @@ export interface IncrementalRunContext {
     * is one neither can be held to.
     */
    callerLedger?: ReadonlyMap<string, RecordedBoundary>;
+   /**
+    * The `lateRows` the package's bound manifest reports, by content address:
+    * what earlier deltas' late-row checks found and no rebuild has cleared.
+    * A delta or a skip carries it onto its entry, so the warning stays until
+    * the source is rebuilt in full. Read from the BOUND manifest, so a run a
+    * host instructs carries what the host bound, with no field of its own.
+    */
+   priorLateRows?: ReadonlyMap<string, LateRows>;
 }
 
 /**
@@ -545,6 +553,7 @@ export async function applyIncrementalStep(params: {
    lateRows?: LateRows;
 }> {
    const { context, lineage, step, target } = params;
+   const carried = context.priorLateRows?.get(lineage.sourceEntityId);
    if (step.mode !== "delta") {
       reportIncrementalStep({
          step,
@@ -561,6 +570,8 @@ export async function applyIncrementalStep(params: {
          applied: true,
          coveredThrough: step.coveredThrough,
          refresh: "none",
+         // Nothing was rebuilt, so what was missing still is.
+         ...(carried ? { lateRows: carried } : {}),
       };
    }
 
@@ -622,11 +633,12 @@ export async function applyIncrementalStep(params: {
    // After the commit and the advance, and outside the apply's duration: the
    // check reads, never writes, and its failure costs only the report.
    const lateRows = target.abortSignal?.aborted
-      ? undefined
+      ? carried
       : await reportLateRows({
            target,
            lineage,
            step,
+           carried,
            sourceName: params.sourceName,
            packageName: context.packageName,
         });
@@ -650,6 +662,8 @@ async function reportLateRows(params: {
    target: DeltaTarget;
    lineage: IncrementalLineage;
    step: Extract<IncrementalStep, { mode: "delta" }>;
+   /** What earlier deltas found, carried until a rebuild. */
+   carried: LateRows | undefined;
    sourceName: string;
    packageName: string;
 }): Promise<LateRows | undefined> {
@@ -659,6 +673,7 @@ async function reportLateRows(params: {
       lineage,
       start: step.start,
       end: step.end,
+      carried: params.carried,
    });
    const at = {
       packageName: params.packageName,
@@ -671,9 +686,9 @@ async function reportLateRows(params: {
          // The code only: the error can quote a watermark value.
          errorCode: found.errorCode,
       });
-      return undefined;
+      return found.lateRows;
    }
-   if (found.lateRows) {
+   if (found.lateRows && found.lateRows !== params.carried) {
       logger.warn(
          "An incremental source's table is missing rows stamped below its " +
             "delta's lower bound",

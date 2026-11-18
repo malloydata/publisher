@@ -105,7 +105,7 @@ import type {
    ChainBuildRequest,
    ChainBuildText,
 } from "./materialization/domain/chain_build";
-import type { KeptTable } from "./materialization/domain/types";
+import type { KeptTable, LateRows } from "./materialization/domain/types";
 import {
    confinedPackagePath,
    errMessage,
@@ -1672,6 +1672,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * tables drops their bound key checks first (see
     * PackageMaterialization.forgetKeyUniqueness).
     */
+   /** The host port's `boundLateRows` (PackageMaterialization.boundLateRows). */
+   public boundLateRows(): ReadonlyMap<string, LateRows> {
+      return this.mz.boundLateRows();
+   }
+
    public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
    }

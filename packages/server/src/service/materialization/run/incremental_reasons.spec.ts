@@ -78,7 +78,7 @@ function runner(
       }
       if (sql.includes("LIMIT 1")) return { rows: [{ present: 1 }] };
       // The newest stored watermark a date delta starts from.
-      if (sql.includes("CAST(MAX(")) {
+      if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
          return { rows: [{ watermark_max: "2024-05-31" }] };
       }
       if (sql.includes("watermark_max")) {

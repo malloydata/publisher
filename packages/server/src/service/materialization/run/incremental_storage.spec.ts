@@ -73,7 +73,7 @@ function fakeSession(answers: { columns?: string[]; nonEmpty?: boolean } = {}) {
          }
          // The newest stored watermark at or below the recorded boundary,
          // read as text: a table holding rows right up to it.
-         if (sql.includes("CAST(MAX(")) {
+         if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
             const atOrBelow = /<= (?:DATE|TIMESTAMP) '([^']+)'/.exec(sql)?.[1];
             return { rows: [{ watermark_max: atOrBelow ?? null }] };
          }

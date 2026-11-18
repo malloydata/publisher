@@ -18,7 +18,7 @@ import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
 import type { BuildPlanPackage } from "./domain/plan_input";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
-import type { KeptTable } from "./domain/types";
+import type { KeptTable, LateRows } from "./domain/types";
 import type {
    BuildPlan,
    FreshnessManifest,
@@ -68,6 +68,11 @@ interface MaterializationPackage extends BuildPlanPackage {
     * rename, which its warnings name (`table-kept`).
     */
    setKeptTables?(tables: readonly KeptTable[]): void;
+   /**
+    * The `lateRows` the package's bound manifest entries report, by content
+    * address, which an incremental delta carries until a rebuild.
+    */
+   boundLateRows?(): ReadonlyMap<string, LateRows>;
 }
 
 /** The part of an environment's version registry a run consults. */

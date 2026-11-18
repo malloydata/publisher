@@ -47,11 +47,11 @@ const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
 const SCHEMA = `late_rows_${Math.random().toString(36).slice(2, 8)}`;
 const q = (name: string) => `${SCHEMA}.${name}`;
 
-function modelOf(persist: string): string {
+function modelOf(persist: string, mergeKey = 'merge_key="id"'): string {
    return `##! experimental.persistence
 source: ev is warehouse.table('${q("ev")}')
 
-#@ persist name="${q("events")}" refresh="incremental" watermark="loaded_at" merge_key="id" ${persist}
+#@ persist name="${q("events")}" refresh="incremental" watermark="loaded_at" ${mergeKey} ${persist}
 source: events is ev -> { select: id, loaded_at, amt }
 `;
 }
@@ -81,8 +81,14 @@ describe.skipIf(!POSTGRES_URL)(
          return (await connection.runSQL(text)).rows as Row[];
       }
 
-      async function build(): Promise<Materialization> {
-         const created = await service.createMaterialization(ENV, PKG, {});
+      async function build(
+         options: { reseed?: boolean } = {},
+      ): Promise<Materialization> {
+         const created = await service.createMaterialization(
+            ENV,
+            PKG,
+            options as never,
+         );
          const deadline = Date.now() + 120_000;
          for (;;) {
             const m = await repo.getMaterializationById(created.id);
@@ -152,10 +158,13 @@ describe.skipIf(!POSTGRES_URL)(
          }[];
       }
 
-      async function writeModel(persist: string): Promise<void> {
+      async function writeModel(
+         persist: string,
+         mergeKey?: string,
+      ): Promise<void> {
          fs.writeFileSync(
             path.join(envPath, PKG, "m.malloy"),
-            modelOf(persist),
+            modelOf(persist, mergeKey),
          );
          await env.getPackage(parsePackageName(PKG), true);
       }
@@ -249,7 +258,60 @@ describe.skipIf(!POSTGRES_URL)(
          // The served table undercounts, which is what the warning says.
          const { served, live } = await servedAndLive();
          expect(served.n).toBe(live.n - 1);
+
+         // Delta 3, with row 4 still missing: the window has slid up past
+         // it, but what delta 2 found is carried, so the warning stays.
+         await new Promise((resolve) => setTimeout(resolve, 1100));
+         const again = await build();
+         expect(entryOf(again).refresh).toBe("delta");
+         expect(entryOf(again).lateRows).toEqual(entryOf(delta).lateRows);
+         expect(
+            (await warnings()).filter(
+               (w) => w.code === "persist-incremental-late-rows",
+            ).length,
+         ).toBe(1);
+
+         // A rebuild recovers the row and clears both.
+         const rebuilt = await build({ reseed: true });
+         expect(entryOf(rebuilt).refresh).toBe("full");
+         expect(entryOf(rebuilt).lateRows).toBeUndefined();
+         expect(
+            (await warnings()).filter(
+               (w) => w.code === "persist-incremental-late-rows",
+            ),
+         ).toEqual([]);
       });
+
+      async function storedIds(): Promise<number[]> {
+         const rows = await sql(
+            `SELECT row_to_json(t) AS "row" FROM (SELECT id FROM ` +
+               `${q("events")} ORDER BY id) AS t`,
+         );
+         return rows.map((r) => Number(r.id));
+      }
+
+      for (const [label, mergeKey, expected] of [
+         ["without a merge key, replaces the range it re-reads", "", [1, 5]],
+         [
+            "with a merge key, keeps rows the source dropped",
+            'merge_key="id"',
+            [1, 2, 5],
+         ],
+      ] as const) {
+         it(`a delta from the newest stored row, ${label}`, async () => {
+            await writeModel("", mergeKey);
+            await build();
+            // Row 2, the newest stored, leaves the source; row 5 arrives
+            // above it. The delta reads from row 2's instant.
+            await sql(`DELETE FROM ${q("ev")} WHERE id = 2`);
+            await sql(`INSERT INTO ${q("ev")} VALUES
+              (5, LOCALTIMESTAMP(0) - INTERVAL '1 hour', 500.0)`);
+            await new Promise((resolve) => setTimeout(resolve, 1100));
+            const delta = await build();
+            expect(entryOf(delta).refresh).toBe("delta");
+            expect(await storedIds()).toEqual([...expected]);
+         });
+      }
 
       it("reads a lookback= window below the boundary, so the merge key catches the row", async () => {
          await writeModel(`lookback="1 hour"`);

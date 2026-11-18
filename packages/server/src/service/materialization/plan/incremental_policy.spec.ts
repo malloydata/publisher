@@ -29,6 +29,7 @@ import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
    incrementalUnbuildableReason,
+   MAX_LOOKBACK_SECONDS,
    type IncrementalPolicySource,
 } from "./incremental_policy";
 import type { Package } from "../../package";
@@ -526,6 +527,23 @@ describe("incrementalPolicyRejections", () => {
       expect(messages).toHaveLength(1);
       expect(messages[0]).toContain('lookback="2 months"');
       expect(messages[0]).toContain("hours, days or weeks");
+   });
+
+   it("rule 13: a lookback= longer than 365 days fails, not a silent rebuild", () => {
+      expect(
+         rejections({
+            declaration: withLookback({
+               lookback: { text: "365 days", seconds: MAX_LOOKBACK_SECONDS },
+            }),
+         }),
+      ).toEqual([]);
+      const messages = rejections({
+         declaration: withLookback({
+            lookback: { text: "53 weeks", seconds: 53 * 604_800 },
+         }),
+      });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("365 days");
    });
 
    it("rule 13: lookback= needs merge_key=", () => {

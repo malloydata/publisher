@@ -12,7 +12,8 @@
  */
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { logger } from "../../../logger";
 import { duckdbTestConnections } from "../../../test_helpers/incremental_test_harness";
 import {
    boundMinusSeconds,
@@ -21,6 +22,7 @@ import {
    countLateRows,
    deltaLowerBound,
    lateRowsSql,
+   LATE_ROWS_WINDOW_CAP_SECONDS,
    lateRowsWindowStart,
    planIncrementalStep,
    probeStoredWatermark,
@@ -32,6 +34,8 @@ import {
    warehouseDeltaTarget,
 } from "./incremental_apply";
 import { durationSeconds } from "../domain/freshness";
+import type { BuildPlan } from "../domain/types";
+import { lateRowWarnings } from "../package_warnings";
 import { watermarkTextSql } from "./warehouse_sql";
 
 const ts = (value: string): WatermarkBound => ({
@@ -128,6 +132,24 @@ describe("lateRowsWindowStart", () => {
             { malloyType: "number", value: "13" },
          ),
       ).toEqual({ malloyType: "number", value: "7" });
+   });
+
+   it("caps a time window at seven days, or the lookback when longer", () => {
+      // A source quiet for a month: its newest stored row is 30 days old.
+      expect(
+         lateRowsWindowStart(
+            ts("2026-10-19 12:00:00"),
+            ts("2026-11-18T12:00:00"),
+         ),
+      ).toEqual(ts("2026-10-12T12:00:00"));
+      expect(
+         lateRowsWindowStart(
+            ts("2026-10-19 12:00:00"),
+            ts("2026-11-18T12:00:00"),
+            10 * 86_400,
+         ),
+      ).toEqual(ts("2026-10-09T12:00:00"));
+      expect(LATE_ROWS_WINDOW_CAP_SECONDS).toBe(7 * 86_400);
    });
 
    it("has no window for a string watermark or an empty range", () => {
@@ -257,8 +279,9 @@ describe("probeStoredWatermark, on DuckDB", () => {
    });
 
    it("spells the text read for each incremental dialect", () => {
+      // An explicit format: a cast would follow the session's DateStyle.
       expect(watermarkTextSql("postgres", "timestamp", "MAX(x)")).toBe(
-         "CAST(MAX(x) AS VARCHAR)",
+         "to_char(MAX(x), 'YYYY-MM-DD HH24:MI:SS')",
       );
       expect(watermarkTextSql("standardsql", "date", "MAX(x)")).toBe(
          "CAST(MAX(x) AS STRING)",
@@ -386,6 +409,65 @@ describe("the late-row check, on DuckDB", () => {
       expect(found.error).toContain("permission denied");
    });
 
+   it("carries what an earlier delta found, and counts only above it", async () => {
+      // Delta 1 found id 6 and id 2's restatement in [08:00, 10:00); delta 3,
+      // with the start unmoved, re-checks nothing below 10:00 and still
+      // reports both, so the warning stays while they are missing.
+      const carried = {
+         count: 2,
+         from: "2026-11-18T08:00:00",
+         to: "2026-11-18T10:00:00",
+      };
+      expect(
+         await countLateRows({
+            target: target(lineage(["id", "region"])),
+            lineage: lineage(["id", "region"]),
+            start: ts("2026-11-18 10:00:00"),
+            end: ts("2026-11-18T14:00:00"),
+            carried,
+         }),
+      ).toEqual({ lateRows: carried });
+      // A later delta that starts higher checks [10:00, 11:00) only: id 7 at
+      // 10:30 is missing too, added to the two carried.
+      expect(
+         await countLateRows({
+            target: target(lineage(["id", "region"])),
+            lineage: lineage(["id", "region"]),
+            start: ts("2026-11-18 11:00:00"),
+            end: ts("2026-11-18T14:00:00"),
+            carried,
+         }),
+      ).toEqual({
+         lateRows: {
+            count: 3,
+            from: "2026-11-18T08:00:00",
+            to: "2026-11-18T11:00:00",
+         },
+      });
+   });
+
+   it("gives up after its timeout, keeping what was carried", async () => {
+      const carried = {
+         count: 1,
+         from: "2026-11-18T08:00:00",
+         to: "2026-11-18T09:00:00",
+      };
+      const slow: DeltaTarget = {
+         ...target(lineage(["id"])),
+         runner: () => new Promise(() => undefined),
+      };
+      const found = await countLateRows({
+         target: slow,
+         lineage: lineage(["id"]),
+         start: ts("2026-11-18 10:00:00"),
+         end: ts("2026-11-18T12:00:00"),
+         carried,
+         timeoutMs: 20,
+      });
+      expect(found.lateRows).toEqual(carried);
+      expect(found.error).toContain("longer than 20 ms");
+   });
+
    it("joins on the watermark's equality, which BigQuery requires of an outer join", () => {
       const sql = lateRowsSql({
          dialect: "standardsql",
@@ -437,7 +519,7 @@ describe("planIncrementalStep starts a time-watermark delta at the stored bounda
                };
             }
             if (sql.includes("LIMIT 1")) return { rows: [{ present: 1 }] };
-            if (sql.includes("CAST(MAX(")) {
+            if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
                if (stored instanceof Error) throw stored;
                return { rows: [{ watermark_max: stored }] };
             }
@@ -478,7 +560,7 @@ describe("planIncrementalStep starts a time-watermark delta at the stored bounda
          `"loaded_at" >= TIMESTAMP '2026-11-18 10:00:00'`,
       );
       // One aggregate over the stored column, capped at the boundary.
-      expect(seen.find((s) => s.includes("CAST(MAX("))).toContain(
+      expect(seen.find((s) => / <= (DATE|TIMESTAMP) '/.test(s))).toContain(
          `WHERE "loaded_at" <= TIMESTAMP '2026-11-18 12:00:00'`,
       );
    });
@@ -500,6 +582,25 @@ describe("planIncrementalStep starts a time-watermark delta at the stored bounda
          mode: "delta",
          start: ts("2026-11-18T12:00:00"),
       });
+   });
+
+   it("says why when the stored watermark does not read as UTC ISO-8601", async () => {
+      // A setupSQL that moves the session's zone, or an infinite value.
+      const warn = spyOn(logger, "warn");
+      try {
+         const { step } = await plan("infinity");
+         expect(step).toMatchObject({
+            mode: "seed",
+            reasonCode: "table_unreadable",
+         });
+         expect(
+            warn.mock.calls.some((c) =>
+               String(c[0]).includes("not a UTC ISO-8601"),
+            ),
+         ).toBe(true);
+      } finally {
+         warn.mockRestore();
+      }
    });
 
    it("rebuilds when the stored boundary cannot be read", async () => {
@@ -553,6 +654,49 @@ describe("planIncrementalStep starts a time-watermark delta at the stored bounda
          mode: "delta",
          start: { malloyType: "number", value: "5" },
       });
-      expect(seen.some((s) => s.includes("CAST(MAX("))).toBe(false);
+      expect(seen.some((s) => / <= (DATE|TIMESTAMP) '/.test(s))).toBe(false);
+   });
+});
+
+describe("the late-row warning", () => {
+   const plan = (origin: string, annotationFields: Record<string, string>) =>
+      ({
+         graphs: [],
+         sources: {
+            s: {
+               name: "events",
+               sourceID: "events@m.malloy",
+               sourceEntityId: "sid",
+               modelPath: "m.malloy",
+               origin,
+               annotationFields,
+            },
+         },
+      }) as unknown as BuildPlan;
+   const late = new Map([
+      [
+         "sid",
+         { count: 2, from: "2026-11-18T08:00:00", to: "2026-11-18T10:00:00" },
+      ],
+   ]);
+
+   it("asks for a merge key with the lookback when the source has none", () => {
+      const [w] = lateRowWarnings(
+         plan("persist", { refresh: "incremental" }),
+         late,
+      );
+      expect(w.code).toBe("persist-incremental-late-rows");
+      expect(w.message).toContain("2 rows");
+      expect(w.message).toContain("declare a merge_key=");
+      expect(w.message).toContain("#@ persist");
+   });
+
+   it("names #(materialize), and the lookback to widen when there is one", () => {
+      const [w] = lateRowWarnings(
+         plan("materialize", { merge_key: "id", lookback: "1 hour" }),
+         late,
+      );
+      expect(w.message).toContain('widen its lookback= (now "1 hour")');
+      expect(w.message).toContain("#(materialize)");
    });
 });

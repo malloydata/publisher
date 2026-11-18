@@ -77,7 +77,7 @@ describe("buildOneSource: incremental refresh", () => {
          }
          // The newest stored watermark at or below the recorded boundary: a
          // table holding rows right up to it, so a delta starts there.
-         if (sql.includes("CAST(MAX(")) {
+         if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
             const atOrBelow = /<= DATE '([^']+)'/.exec(sql)?.[1];
             return { rows: [{ watermark_max: atOrBelow ?? null }] };
          }
