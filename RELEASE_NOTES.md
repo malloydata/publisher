@@ -154,6 +154,24 @@ The rule: a host owns a version once it has bound or built it, that is, once a m
 
 Who was affected: deployments where a host binds versions to manifests and clears them, and this server's run store holds builds of those versions (a host-instructed build leaves its output there). A standalone server, or a host that never clears a binding, sees no change.
 
+## [Unreleased] — a `storage=` rollup reads past a row-level gate
+
+**Changed: a `#(rollup)` rollup in a `storage=` destination is built and read past its base's row-level gate, on the same terms as a database one.**
+- With `PUBLISHER_MATERIALIZE_GATED_SOURCES` off (G3), the gate must be the base's own.
+- With the switch on, any gate proven on the grain is accepted, inherited ones included.
+
+As in the database, the queried source is redeclared over the rollup in its own declaring file with its gates. The gate is grafted and re-proven there, so each caller gets live's rows, and a caller the gate refuses is refused as live refuses them.
+
+A `storage=` rollup answers past a gate only when every column the gate reads is a grain dimension stored exactly. A binary float, a 128-bit integer, or a `TIMESTAMP WITH TIME ZONE` does not qualify: the destination compares a zoned timestamp in its own session's zone. Nor does a column the rollup cannot be shown to hold. A query that sets its own `timezone:` and reads a time the gate compares answers live, as on the database tier.
+
+The test-only seam that stood in for this review (`allowGatedStorageRollupsForTests`) is removed. It was never a setting. The interim tightening in "a rollup reads past a lock its base inherits" is replaced by these rules.
+
+**How to tell:** a gated base's `storage=` rollup no longer reports `rollup-not-built` for its gate, and its queries report the rollup in their path report. A query over a zoned or inexact gate column reports `row_level_gate` and answers live.
+
+- **Gated aggregates at rest in the destination.** Such a rollup holds every caller's groups, ungated, in the `storage=` destination, where anyone with direct access to the destination can read all of them. The gate holds only on reads through Publisher, as it does for a `storage=` table under its own gate. Keep destinations out of reach of models, as for any gated `storage=` table.
+- **On upgrade, with no opt-in, gated packages build more tables.** A package with a `#(rollup) … storage=` rollup over a base with its own gate (or, with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on, any gate proven on its grain) starts building that rollup into its destination on its next run. A model with no such rollup behaves exactly as before. As with every gate, it holds only behind the gateway that sets the givens from a verified identity ([operating model](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+- **What still answers live.** A gate or a re-applied `where:` over a string column whose source collation is not known to be byte-exact, a gate column stored with a zone, and a composite base with its own row filter (#1880's rules, which cover these rollups too).
+
 ## [Unreleased] — a rollup reads past a lock its base inherits
 
 **Changed: a `#(rollup)` over a base gated only by `#(authorize)` locks is built and read past them, on both tiers.** A lock that reads only givens and literals (`#(authorize) 'admin' = $ROLE`, `false`, or `true` re-opening a locked base) admits or refuses the whole query, and it is decided on the live source for every query, so pre-grouped rows cannot change its outcome. Such a rollup was built only when the lock was written on the base's own statement and the rollup was in the database. It is now built and read when the base inherits the lock from a source it extends, at any depth or from another file, and in a `storage=` destination, with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on or off. A caller the lock admits gets live's rows from the rollup; a caller it refuses, or one missing the given, is refused exactly as live refuses them. A base whose gates include any row filter (`#(access_filter)`) is unchanged, and so is a `storage=` rollup whose base has a `where:` of its own that reads a given, since that `where:` is applied per caller like a row filter.

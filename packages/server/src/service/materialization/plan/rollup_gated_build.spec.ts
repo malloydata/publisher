@@ -6,9 +6,8 @@
  * base is planned and built (not refused by the database tier's `authorize`
  * check) only when a query can read it past the gate, which is
  * `rollupGateEnforcedAtRead`: database, with `materialize.gatedSources` on,
- * or off under G3 when every gate is the base's own (as here). A `storage=`
- * one waits for question 14's review either way (`rollup-not-built`,
- * reason `access_filter`). Drives `Package.create` on the worker path, as the
+ * or off under G3 when every gate is the base's own (as here), on either
+ * tier. Drives `Package.create` on the worker path, as the
  * package warnings specs do.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -97,15 +96,18 @@ for (const gated of [true, false]) {
             .filter((r) => r.reason === "access_filter")
             .map((r) => r.name);
 
-      it("plans the database rollup and does not refuse it for its gate", () => {
-         const database = planned().filter((n) =>
+      it("plans the database rollup, and refuses the storage= one for its gate on neither tier", () => {
+         // The storage= one is refused for its DuckDB connection, which a
+         // storage build cannot read through, never for its gate.
+         const rollups = planned().filter((n) =>
             n.startsWith("gated__rollup__"),
          );
-         expect(database.length).toBe(1);
-         expect(refused().some((n) => n.startsWith("gated__rollup__"))).toBe(
-            false,
-         );
-         expect(warned()).toEqual(["gated.stored_total"]);
+         expect(rollups.length).toBe(1);
+         const reasons = Object.values(pkg.getBuildPlan()?.refusedSources ?? {})
+            .filter((r) => r.name.startsWith("gated__rollup__"))
+            .map((r) => r.reason);
+         expect(reasons).toEqual(["storage_source_unsupported"]);
+         expect(warned()).toEqual([]);
       });
 
       it("reports the gated rollup's serve verdict without a gate veto (row 1)", () => {
@@ -116,14 +118,12 @@ for (const gated of [true, false]) {
          )
             .serveVerdicts()
             .filter((v) => v.sourceName.startsWith("gated__rollup__"));
-         expect(verdicts.length).toBe(1);
+         // The database rollup's, and the storage= one refused for its
+         // connection.
+         expect(verdicts.length).toBe(2);
          for (const v of verdicts) {
             expect(v.reason).not.toBe("row_level_gate");
          }
-      });
-
-      it("leaves the storage= rollup out until the managed-tier review", () => {
-         expect(warned()).toContain("gated.stored_total");
       });
 
       it("plans a rollup whose grain stores an internal gate field", () => {

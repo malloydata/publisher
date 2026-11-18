@@ -35,7 +35,6 @@ import {
 } from "../../../src/test_helpers/settings_env";
 import { renderFiles, SHAPES, type Variant } from "./conformance/shapes";
 import { AccessDeniedError } from "../../../src/errors";
-import { allowGatedStorageRollupsForTests } from "../../../src/config";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- reads internals */
 /**
@@ -2157,7 +2156,6 @@ source: through_join is duckdb.table('orders_raw') extend {
    for (const placement of ["database", "storage"] as const) {
       describe(`v1 cutover R4: gated queries on ${placement} rollups (row 1, gated sources on)`, () => {
          let restore: () => void;
-         let restoreReview: () => void;
          let fixture: R4Fixture;
          beforeAll(async () => {
             restore = installSettings({
@@ -2167,11 +2165,6 @@ source: through_join is duckdb.table('orders_raw') extend {
                   PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
                },
             }).restore;
-            // `storage=` waits for question 14's review in production; the
-            // seam stands in for it here.
-            restoreReview = allowGatedStorageRollupsForTests(
-               placement === "storage",
-            );
             fixture = await buildScenario({
                files: {
                   "m.malloy": model(
@@ -2183,7 +2176,6 @@ source: through_join is duckdb.table('orders_raw') extend {
             });
          });
          afterAll(async () => {
-            restoreReview();
             restore();
             await disposeScenarios();
          });
@@ -2584,61 +2576,6 @@ source: through_join is duckdb.table('orders_raw') extend {
                expect(
                   rowDifference(run.truth ?? [], run.served),
                ).toBeUndefined();
-            }
-         });
-      }
-   });
-
-   describe("v1 cutover: storage= rollups over gated bases without the review seam", () => {
-      let restore: () => void;
-      let fixture: R4Fixture;
-      beforeAll(async () => {
-         restore = installSettings({
-            env: {
-               PERSIST_STORAGE_MODE: "on",
-               PUBLISHER_MATERIALIZE: "true",
-               PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
-            },
-         }).restore;
-         fixture = await buildScenario({
-            files: { "m.malloy": model(` storage="${DESTINATION}"`) },
-            seedSql,
-            preaggregate: true,
-         });
-      });
-      afterAll(async () => {
-         restore();
-         await disposeScenarios();
-      });
-
-      it("builds no storage= rollup over a gated base", () => {
-         expect(
-            Object.keys(fixture.rollupTables).filter(
-               (n) =>
-                  !n.startsWith("open__rollup__") &&
-                  !n.startsWith("order_lines__rollup__"),
-            ),
-         ).toEqual([]);
-         expect(
-            fixture.bindings
-               .map((b) => b.tablePath)
-               .filter((n) => n.includes("__preagg__")),
-         ).toEqual([]);
-      });
-
-      // A lock alone reads no row field, so its rollup is built and read on
-      // either tier (gated_rollup_lock.component.spec.ts).
-      for (const c of CASES.filter((c) => c.source !== "by_lock")) {
-         it(`answers ${c.kind} live, equal to live`, async () => {
-            for (const caller of c.callers) {
-               expectLive(
-                  await fixture.run({
-                     name: `${c.source} ${caller.name}`,
-                     malloy: `run: ${c.source} -> { group_by: category; aggregate: total }`,
-                     givens: caller.givens,
-                     expectLive: true,
-                  }),
-               );
             }
          });
       }

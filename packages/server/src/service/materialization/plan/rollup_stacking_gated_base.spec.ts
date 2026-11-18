@@ -4,8 +4,7 @@
 /**
  * A `storage=` rollup is never stacked on a gated base: planned over the same
  * `#@ persist storage=` base with and without a row-level gate, with gated
- * sources and gated `storage=` rollups both switched on so the rollup is
- * planned either way, it builds from its base's stored table only when the
+ * sources switched on so the rollup is planned either way, it builds from its base's stored table only when the
  * base carries no gate (`storedBaseBuilds`). Fails when the plan's
  * `baseGated` guard is removed.
  */
@@ -15,7 +14,6 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { allowGatedStorageRollupsForTests } from "../../../config";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { createModelRuntime } from "../../model_runtime";
 import { tryCompileRollupCompanion } from "./rollup_compile";
@@ -47,7 +45,6 @@ describe("a storage= rollup over a gated base is never stacked", () => {
                },
             }).restore,
          );
-         restores.push(allowGatedStorageRollupsForTests(true));
          const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rv-"));
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
