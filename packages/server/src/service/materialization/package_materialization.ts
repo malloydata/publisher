@@ -681,13 +681,17 @@ export class PackageMaterialization {
             );
             if (asDouble.length === drift.columns.length) continue;
          }
+         const reported = drift.columns.filter(
+            (c) => !c.storedAsDouble && !c.castOnly,
+         );
+         if (reported.length === 0) continue;
          logger.warn(
             "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
             {
                code: STORED_COLUMN_TYPE_MISMATCH_CODE,
                packageName: this.owner.packageName(),
                sourceEntityId: drift.sourceEntityId,
-               columns: drift.columns.filter((c) => !c.storedAsDouble),
+               columns: reported,
             },
          );
       }

@@ -20,8 +20,16 @@ import { components } from "../../api";
 import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { CLASSIFICATION_COVERAGE } from "../classification";
 import type { Model } from "../model";
-import type { RefusalNotices, RefusedRollup } from "./plan/build_plan";
-import { preaggregateGateLines, refusalCodeOf } from "./plan/load_gate_text";
+import type {
+   BuildPlanOutcome,
+   RefusalNotices,
+   RefusedRollup,
+} from "./plan/build_plan";
+import {
+   loadGateText,
+   preaggregateGateLines,
+   refusalCodeOf,
+} from "./plan/load_gate_text";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
 import { isRollupOrigin, type MaterializePlan } from "./domain/table_plans";
@@ -85,6 +93,24 @@ const DRIFT_HANDLING_TEXT: Record<
       `live until the table is rebuilt.`,
 };
 
+/**
+ * What a drift warning says when the table is as built but its source now
+ * declares another type: the table's content address did not move, so a run
+ * reuses it, and only a forced rebuild stores the declared type.
+ */
+const UPSTREAM_DRIFT_HANDLING_TEXT: Record<
+   DatabaseDriftFinding["mismatches"][number]["handling"],
+   (declaredType: string) => string
+> = {
+   cast: (declaredType) =>
+      `It is read through a cast to \`${declaredType}\`, so it still serves ` +
+      `from the table; a forced rebuild (forceRefresh) clears this.`,
+   live: () =>
+      `No cast reads it as declared, so queries that read it are answered ` +
+      `live until the table is rebuilt with a forced refresh (forceRefresh): ` +
+      `its content address did not move, so a run reuses it.`,
+};
+
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 type Models = ReadonlyMap<string, Model>;
@@ -109,6 +135,37 @@ export function annotationFindingWarnings(
       code: finding.code,
       severity: findingSeverity(finding),
    }));
+}
+
+/**
+ * What a load of a derived plan would say of its annotations, for a compile
+ * that checks the package without loading it: the load gate's lines, which
+ * fail the load (plan/load_gate_text.ts, the same text and order the load
+ * and a run read), and the warnings a valid annotation that is not built
+ * here leaves on the package. Read off the worker's plan, as a re-derivation
+ * reads it.
+ */
+export function loadVerdictOfPlan(
+   outcome: Pick<
+      BuildPlanOutcome,
+      | "plan"
+      | "annotationFindings"
+      | "incrementalDeclarations"
+      | "materializePlans"
+      | "modelGateLines"
+   >,
+   judgement: { enforceCollisions: boolean; versionScoped: boolean },
+): { refusals: string[]; warnings: ApiPackageWarning[] } {
+   const refusals = loadGateText(outcome, judgement)
+      .split("\n")
+      .filter(Boolean);
+   return {
+      refusals,
+      // A malformed finding is one of the refusals above.
+      warnings: annotationFindingWarnings(
+         outcome.annotationFindings.filter((f) => f.tier !== "malformed"),
+      ),
+   };
 }
 
 /**
@@ -473,8 +530,11 @@ export function storedColumnTypeWarnings(
                   : `stores column \`${m.column}\` as ` +
                     `${m.storedType ?? "a type Malloy reads as no basic type"}, ` +
                     `not its declared Malloy type \`${m.declaredType}\`: `) +
-               `its table was altered outside a build. ` +
-               DRIFT_HANDLING_TEXT[m.handling](m.declaredType),
+               (m.declaredMoved
+                  ? `what its source reads changed type since the build. ` +
+                    UPSTREAM_DRIFT_HANDLING_TEXT[m.handling](m.declaredType)
+                  : `its table was altered outside a build. ` +
+                    DRIFT_HANDLING_TEXT[m.handling](m.declaredType)),
          });
       }
    }
