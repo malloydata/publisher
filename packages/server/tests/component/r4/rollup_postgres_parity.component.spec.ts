@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Rollup conformance on a Postgres origin, on both of a `#(preaggregate)`'s
+ * Rollup conformance on a Postgres origin, on both of a `#(rollup)`'s
  * tiers: database (the rollup built in Postgres, beside its base) and
  * `storage=` (built into a DuckLake destination on a Postgres catalog). The
  * shapes are conformance/rollup_postgres_shapes.ts, rendered per tier by the
@@ -76,7 +76,7 @@ setDefaultTimeout(600_000);
 const TIERS: { label: string; variant: Variant; servedFrom: string }[] = [
    {
       label: "database",
-      variant: "materialize_colocated",
+      variant: "materialize_database",
       servedFrom: "database",
    },
    {
@@ -293,11 +293,11 @@ describe.skipIf(!POSTGRES_URL)("rollup parity on a Postgres origin", () => {
             expect(manifest.failures ?? {}).toEqual({});
             expect(
                Object.values(manifest.entries).filter(
-                  (e) => e.origin === "preaggregate",
+                  (e) => e.origin === "rollup",
                ).length,
             ).toBeGreaterThan(0);
             expect(
-               warnings.filter((w) => w.code?.startsWith("preaggregate-")),
+               warnings.filter((w) => w.code?.startsWith("rollup-")),
             ).toEqual([]);
          });
 

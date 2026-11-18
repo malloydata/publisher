@@ -5,8 +5,8 @@
  * Rollup conformance shapes on a Postgres origin
  * (r4/rollup_postgres_parity.component.spec.ts). Each is a model file over
  * the seed below, its rollups marked `@PREAGG(grain, …)` and rendered by
- * {@link renderFiles} for the two tiers a `#(preaggregate)` has: database
- * (`materialize_colocated`, built in Postgres) and `storage=`
+ * {@link renderFiles} for the two tiers a `#(rollup)` has: database
+ * (`materialize_database`, built in Postgres) and `storage=`
  * (`materialize`, built into a DuckLake destination). Every query's served
  * answer is compared with live's; `expect` says whether a rollup answers it
  * or it is declined and answered live.
@@ -97,7 +97,7 @@ const joinParent = (
 const joinShape = (storage: boolean): PostgresRollupShape => ({
    name: "joins",
    about: "A grain dimension read through a join_one, and a rollup read through a join_many and a join_one from another source (join-to-rollup), with the parent's own count beside it",
-   variants: [storage ? "materialize" : "materialize_colocated"],
+   variants: [storage ? "materialize" : "materialize_database"],
    files: {
       "joins.malloy": `${HEADER}
 
@@ -362,7 +362,7 @@ source: p_orders is orders_raw extend {
    },
    {
       name: "time grains",
-      about: "Grains of a timestamp, its day and month truncations, a date and a timestamptz; a truncation the query takes of a grain; a caller's timezone: that reads no time (served) and one that does (declined)",
+      about: "Grains of a timestamp, its day and month truncations, a date and a timestamptz; a truncation the query takes of a grain; a caller's timezone: one that reads no time, truncates a stored timestamptz itself or filters a stored timestamp (served, in its own zone), and one that reads a stored day truncation (declined)",
       files: {
          "time.malloy": `${HEADER}
 
@@ -464,16 +464,14 @@ source: t_orders is orders_raw extend {
             model: "time.malloy",
             malloy:
                "run: t_orders -> { timezone: 'America/New_York'; group_by: d is created_tz.day; aggregate: n_tz; order_by: d }",
-            expect: "live",
-            reason: "TIME_ZONE",
+            expect: "rollup",
          },
          {
             name: "a caller's timezone, filtering a timestamp grain",
             model: "time.malloy",
             malloy:
                "run: t_orders -> { timezone: 'America/New_York'; where: created_at ? @2025; aggregate: n_at }",
-            expect: "live",
-            reason: "TIME_ZONE",
+            expect: "rollup",
          },
       ],
    },
