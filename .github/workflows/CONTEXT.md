@@ -66,9 +66,12 @@ Three workflows hold real warehouse credentials, and each should be treated as s
 `BQ_PRESTO_TRINO_KEY` and runs on pushes as well as on demand, and `warehouse-conformance.yml`
 (materialization conformance on BigQuery and Snowflake: nightly, on demand, and on a same-repo PR
 carrying the `warehouse-conformance` label). The last uploads an artifact from a public repository,
-so it reads its secrets from the `warehouse-conformance` environments (main only, or a reviewer's
+so it names the `warehouse-conformance` environments for its secrets (main only, or a reviewer's
 approval for a labelled PR), uploads only the spec's scrubbed report, and fails the job rather than
-upload a file holding any piece of either key or the Snowflake account.
+upload a file holding any piece of either key or the Snowflake account. The environments protect
+nothing until an admin creates both with those rules and moves the `SNOW_CI_*` secrets into them:
+until then a job naming a missing environment gets an unprotected one created on the fly, and reads
+the repository and organization secrets as before.
 
 Every workflow a pull request triggers shares one `concurrency:` rule: runs for a PR are grouped by
 its number and a new push cancels the one in flight, while every other event (push to `main`,

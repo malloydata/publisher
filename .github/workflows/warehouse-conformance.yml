@@ -100,11 +100,15 @@ jobs:
                && github.event.label.name == 'warehouse-conformance')
               || (github.event.action != 'labeled'
                   && contains(github.event.pull_request.labels.*.name, 'warehouse-conformance'))))
-    # The secrets live in a GitHub environment, not the repository or the
-    # organization: `warehouse-conformance` deploys from main only (the
-    # schedule, and a dispatch from main), and `warehouse-conformance-pr`
-    # needs a reviewer's approval before a labelled pull request's run reads
-    # them. The PR body's setup list says how to create both.
+    # The secrets are meant to live in a GitHub environment, not the
+    # repository or the organization: `warehouse-conformance` deploying from
+    # main only (the schedule, and a dispatch from main), and
+    # `warehouse-conformance-pr` needing a reviewer's approval before a
+    # labelled pull request's run reads them. These protections exist only
+    # once an admin creates both environments with those rules and moves the
+    # SNOW_CI_* secrets into them (the PR body's setup list). Until then a job
+    # naming a missing environment gets an unprotected one, created on the
+    # fly, and reads the repository and organization secrets as before.
     environment: ${{ github.event_name == 'pull_request' && 'warehouse-conformance-pr' || 'warehouse-conformance' }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
@@ -257,8 +261,11 @@ jobs:
           set -euo pipefail
           umask 077
           # The account as a connection error may spell it: in either case,
-          # and with _ and - swapped (its URL form).
-          for form in "$SNOW_CI_ACCOUNT" "${SNOW_CI_ACCOUNT//_/-}" "${SNOW_CI_ACCOUNT//-/_}"; do
+          # and with _ and - swapped (its URL form). Whitespace a stored
+          # secret carries is dropped first; an account holds none.
+          account=$(printf '%s' "$SNOW_CI_ACCOUNT" | tr -d '[:space:]')
+          for form in "$account" "${account//_/-}" "${account//-/_}"; do
+            [ -n "$form" ] || continue
             echo "::add-mask::$form"
             echo "::add-mask::${form,,}"
             echo "::add-mask::${form^^}"
@@ -368,11 +375,16 @@ jobs:
             leaked=1
           }
           # The account as configured and with _ and - swapped; matched and
-          # replaced case-insensitively, as fixed strings.
+          # replaced case-insensitively, as fixed strings. An account holds no
+          # whitespace, so a stored secret's trailing newline or space is
+          # dropped, and no empty pattern is ever written: `grep -F -f` reads
+          # an empty line as matching everything.
           accounts="$RUNNER_TEMP/account-forms"
           : > "$accounts"
-          if [ -n "$SNOW_CI_ACCOUNT" ]; then
-            printf '%s\n' "$SNOW_CI_ACCOUNT" "${SNOW_CI_ACCOUNT//_/-}" "${SNOW_CI_ACCOUNT//-/_}" | sort -u > "$accounts"
+          account=$(printf '%s' "$SNOW_CI_ACCOUNT" | tr -d '[:space:]')
+          if [ -n "$account" ]; then
+            printf '%s\n' "$account" "${account//_/-}" "${account//-/_}" \
+              | { grep -v '^$' || true; } | sort -u > "$accounts"
           fi
           kept=()
           for f in "${files[@]}"; do
