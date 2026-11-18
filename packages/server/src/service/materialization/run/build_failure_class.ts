@@ -55,7 +55,9 @@ import type { SourceFailure } from "../domain/types";
  *   its own judgment, exactly as for a Publisher that predates the field.
  *
  * Kept conservative on purpose: a signature is listed only when it is
- * unambiguous. A missing table or column (a binder error, an unrecognized
+ * unambiguous. A warehouse's own code for a statement wrong in itself is one
+ * (a Postgres or Snowflake SQLSTATE in class 22 or 42, a BigQuery
+ * `invalidQuery`; {@link isDeterministicWarehouseError}). A missing table or column (a binder error, an unrecognized
  * name) is left unclassified, because a referenced upstream reclaimed
  * mid-build reads the same as a model defect. So is a persisted upstream
  * missing from the manifest on its own: it may be materialized in another
@@ -73,6 +75,13 @@ const DETERMINISTIC_MARKERS: readonly string[] = [
    "compilation error",
    "syntax error",
    "parser error",
+   // Postgres data exceptions (SQLSTATE class 22) by their own wording, for
+   // a build that carries the message without the code (a DuckDB passthrough
+   // of a Postgres query).
+   "invalid input syntax for type",
+   "division by zero",
+   "numeric field overflow",
+   "value too long for type",
    // A grant the connection lacks; no retry acquires it.
    "permission denied",
    "access denied",
@@ -119,6 +128,92 @@ const TRANSIENT_CODES_IN_MESSAGES: readonly string[] = [
    "enetunreach",
    "ehostunreach",
 ];
+
+/**
+ * SQLSTATE classes of a statement that is wrong in itself, which fails the
+ * same way on every attempt: 22, data exception (a cast of a value that does
+ * not parse, a division by zero, an overflow), and 42, syntax error or access
+ * rule violation. Read from Postgres's `code` and from Snowflake's `sqlState`,
+ * both the standard SQLSTATE.
+ */
+const DETERMINISTIC_SQLSTATE = /^(22|42)[0-9A-Z]{3}$/;
+
+/**
+ * The SQLSTATEs in those classes left unclassified, as the rest of this file
+ * leaves them: a missing table or column (Postgres 42P01, 42703; Snowflake
+ * 42S02, 42S22), since an upstream reclaimed mid-build reads the same as a
+ * model defect, and a privilege the connection lacks (42501), which a grant
+ * can restore between attempts.
+ */
+const UNCLASSIFIED_SQLSTATES: ReadonlySet<string> = new Set([
+   "42P01",
+   "42703",
+   "42S02",
+   "42S22",
+   "42501",
+]);
+
+/**
+ * BigQuery's job error reasons for a query that is wrong in itself: a
+ * syntax, type or value error (`invalidQuery`), a cast or value the query
+ * cannot read (`invalid`). Not `notFound` (a table, as above), and none of
+ * the transient ones (`backendError`, `internalError`, `rateLimitExceeded`,
+ * `quotaExceeded`, `jobBackendError`, `jobInternalError`).
+ */
+const BIGQUERY_DETERMINISTIC_REASONS: ReadonlySet<string> = new Set([
+   "invalidQuery",
+   "invalid",
+]);
+
+/**
+ * A BigQuery message for a missing table or column, which `invalidQuery` also
+ * carries: left unclassified, as a Postgres or Snowflake one is.
+ */
+const BIGQUERY_MISSING_NAME = /unrecognized name|not found:/i;
+
+/**
+ * Whether the warehouse says the statement itself is wrong: a Postgres or
+ * Snowflake SQLSTATE in class 22 or 42 (less the missing-object and privilege
+ * codes), or a BigQuery `invalidQuery` / `invalid` job error that names no
+ * missing table or column. Read off the driver's fields on the error and its
+ * cause chain; a transient error (40001, 40P01, class 08, 53, 57, a BigQuery
+ * backend or quota reason) never matches.
+ */
+function isDeterministicWarehouseError(err: unknown): boolean {
+   for (const e of causeChain(err)) {
+      const fields = e as Error & {
+         code?: unknown;
+         sqlState?: unknown;
+         reason?: unknown;
+         errors?: unknown;
+      };
+      for (const value of [fields.code, fields.sqlState]) {
+         if (typeof value !== "string") continue;
+         if (
+            DETERMINISTIC_SQLSTATE.test(value) &&
+            !UNCLASSIFIED_SQLSTATES.has(value)
+         ) {
+            return true;
+         }
+      }
+      const reasons = [
+         fields.reason,
+         ...(Array.isArray(fields.errors)
+            ? fields.errors.map((x) => (x as { reason?: unknown })?.reason)
+            : []),
+      ];
+      if (
+         reasons.some(
+            (r) =>
+               typeof r === "string" && BIGQUERY_DETERMINISTIC_REASONS.has(r),
+         ) &&
+         !BIGQUERY_MISSING_NAME.test(e.message)
+      ) {
+         return true;
+      }
+   }
+   return false;
+}
 
 /**
  * Whether `err` is the refusal of a build whose persisted upstream no
@@ -171,6 +266,8 @@ export function classifyBuildError(err: unknown): BuildRetryable {
    for (const e of causeChain(err)) {
       if (e.name === "AbortError") return true;
    }
+   // The warehouse's own code for a statement wrong in itself.
+   if (isDeterministicWarehouseError(err)) return false;
 
    const message = errMessage(err).toLowerCase();
    if (DETERMINISTIC_MARKERS.some((m) => message.includes(m))) return false;
