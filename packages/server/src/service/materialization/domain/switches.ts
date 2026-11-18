@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The deployment switches materialization reads, as one value: read once by
- * a shell (`materializationSwitches()` in `config.ts`) and passed down, so a
- * pure rule takes them as an input rather than reading the environment.
+ * The deployment switches materialization reads, as one type, so a pure rule
+ * takes the ones it needs as an input rather than reading the environment.
+ * The rules take a part of it today (`GateSwitches`, read at a shell by
+ * `gateSwitches()` in `config.ts`; a `StorageMode`); nothing yet reads the
+ * whole value at once.
  */
 
 /**
