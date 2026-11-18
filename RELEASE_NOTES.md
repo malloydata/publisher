@@ -27,12 +27,13 @@ On 0.15.0, a query on a Postgres source answered from a `storage=` table (a `#(r
 
 ## [Unreleased] — corrections to the 0.15.0 notes
 
-The 0.15.0 notes left out two API changes and overstated two others. The behaviour shipped in 0.15.0 and is unchanged; only the record is corrected, and `api-doc.yaml` now says the same.
+The 0.15.0 notes left out two API changes, overstated two others and understated one. The behaviour shipped in 0.15.0 and is unchanged; only the record is corrected, and `api-doc.yaml` now says the same.
 
 - **`RefusedSource.reason` `rollup_name_collision` is no longer produced.** A rollup's generated name now digests its declaring source, so no two rollups share one. The value is retained in the spec for records an older server stored. Add it to the retained values you accept beside the renames in the 0.15.0 checklist.
 - **Both `sqlTemporaryTable` routes can answer 403** (`STORAGE_ACCESS_DENIED` or `PATH_ACCESS_DENIED`), like the query route and raw `sqlQuery`, when an object store refuses the database's read.
 - **A missing privilege (`42501`) is not always unclassified.** On Postgres its message says permission denied, so `SourceFailure.retryable` reads `false`, as it did in 0.14.0. A Snowflake `42501` stays unclassified.
 - **`MATERIALIZATION_REFUSED` is not answered on any route.** The eligibility gate runs inside a materialization run, after `POST …/materializations` has answered 201, so a refusal is recorded on the run: `SourceFailure.refused` and `refusalReason`, the run's `metadata.refusedSources`, or its `error`. No 0.15.0 route answers a 422 with it.
+- **A gated query source's join to an ungated source's rollup in a `storage=` destination is served from that rollup, not answered live.** The 0.15.0 section on gated entry points over ungated stored sources says it is answered live. It is served from the rollup when the query source is stored in the same destination (admitted past its own gate, or holding only ungated rows), the joined source is ungated, the gate reads only the query source's own plain columns, and those columns are stored exactly and compared as the source compares them. Otherwise it is answered live (`ROW_LEVEL_GATE`).
 
 ## [0.15.0] — (BREAKING) upgrading from 0.14: the checklist
 
