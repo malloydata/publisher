@@ -34,6 +34,7 @@ export interface LoadGatedPackage {
    formatClassificationLeaks(): string;
    formatArrayQueryJoins(): string;
    formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string;
+   formatAuthorSqlRefusals(): Promise<string>;
 }
 
 /**
@@ -113,7 +114,21 @@ export async function applyLoadGates(
    pkg: LoadGatedPackage,
    listing?: Listing,
 ): Promise<void> {
-   // The only await, ahead of the listing, so no request is served under one the gates have not judged.
+   // Author SQL on a DuckDB connection reads as one SELECT, or the package
+   // does not load (duckdb_lockdown.ts): independent of any listing.
+   const authorSql = await pkg.formatAuthorSqlRefusals();
+   if (authorSql) {
+      const packageName = pkg.getPackageName();
+      logger.error(
+         `Package ${packageName} has author SQL that is not one SELECT`,
+         {
+            packageName,
+            detail: authorSql,
+         },
+      );
+      throw new BadRequestError(authorSql);
+   }
+   // The only await ahead of the listing, so no request is served under one the gates have not judged.
    const prepared = await pkg.prepareCeilingQueries();
    pkg.underListing(listing, () => judgeLoadGates(pkg, prepared));
 }
