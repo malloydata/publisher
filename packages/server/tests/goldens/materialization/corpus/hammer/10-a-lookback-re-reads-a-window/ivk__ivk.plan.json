@@ -1,0 +1,88 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "events@<hammer>/ivk/ivk.malloy": []
+        },
+        "order": [
+          "events@<hammer>/ivk/ivk.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "events@<hammer>/ivk/ivk.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "events@<hammer>/ivk/ivk.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "events@<hammer>/ivk/ivk.malloy": "ivk.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "events@<hammer>/ivk/ivk.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "events@<hammer>/ivk/ivk.malloy": {
+        "annotationFields": {
+          "lookback": "3 hours",
+          "merge_key": "id",
+          "name": "ivk_rows",
+          "refresh": "incremental",
+          "watermark": "loaded_at"
+        },
+        "columns": [
+          {
+            "name": "id",
+            "type": "number"
+          },
+          {
+            "name": "amount",
+            "type": "number"
+          },
+          {
+            "name": "loaded_at",
+            "type": "timestamp"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "ivk.malloy",
+        "name": "events",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": "incremental",
+        "sourceEntityId": "00d5a52424c0fa84173b7772dff51f6ea77ea3ed9a9b291a0b223199379256ff",
+        "sourceID": "events@<hammer>/ivk/ivk.malloy",
+        "sql": "sha256:1a87a29530e15a60"
+      }
+    }
+  }
+}

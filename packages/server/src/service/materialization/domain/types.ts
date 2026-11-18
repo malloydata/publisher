@@ -21,6 +21,17 @@ export type MaterializationStatus =
 export type BuildPlan = components["schemas"]["BuildPlan"];
 export type BuildManifestResult = components["schemas"]["BuildManifest"];
 export type ManifestEntry = components["schemas"]["ManifestEntry"];
+
+/**
+ * What an incremental refresh's late-row check found below one delta's lower
+ * bound (run/incremental_apply.ts, `countLateRows`): rows the source holds,
+ * stamped in the window `[from, to)` directly below where the delta started
+ * reading, that the stored table lacks. No delta reads below that bound, so
+ * they stay missing until a rebuild or a `lookback=` that reaches them. The
+ * manifest entry's `lateRows`; raised as a package warning
+ * (`INCREMENTAL_LATE_ROWS_CODE`, domain/incremental.ts) while it is bound.
+ */
+export type LateRows = NonNullable<ManifestEntry["lateRows"]>;
 export type BuildInstruction = components["schemas"]["BuildInstruction"];
 export type ManifestReference = components["schemas"]["ManifestReference"];
 export type Realization = components["schemas"]["Realization"];
@@ -155,6 +166,11 @@ export interface FreshnessAwareManifestEntry {
     * on the wire; absent (unknown) on every entry a host's manifest binds.
     */
    keyUniqueness?: KeyUniqueness;
+   /**
+    * The wire entry's `lateRows`: what the run's late-row check found below
+    * an incremental delta, raised as a package warning while it is bound.
+    */
+   lateRows?: LateRows;
 }
 
 /** See {@link FreshnessAwareManifestEntry.heldRead}. */

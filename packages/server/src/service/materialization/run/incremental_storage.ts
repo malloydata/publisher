@@ -21,6 +21,7 @@ import {
    deltaSelect,
    type DeltaTarget,
    type IncrementalLineage,
+   type SqlRunner,
 } from "./incremental_apply";
 import {
    issuePassthroughRead,
@@ -123,6 +124,39 @@ interface StorageDeltaTarget {
    numericColumnsStoredAsDouble(): Promise<string[]>;
 }
 
+/**
+ * A DuckDB session as a {@link SqlRunner} that honours the run options' abort
+ * signal: an abort interrupts the statement in flight, so a statement given
+ * up on (the late-row check's timeout) frees the session for the build's
+ * next one instead of holding it. Unlike `interruptOnAbort`, later
+ * statements on the session are not refused: the abort ends one statement,
+ * not the build.
+ */
+export function sessionRunner(session: DuckDBConnection): SqlRunner {
+   return async (sql, options) => {
+      const signal = options?.abortSignal;
+      if (!signal) return session.runSQL(sql);
+      const interrupt = () => {
+         // The node-api connection is library-internal, as in dispose.
+         const connection = (
+            session as unknown as { connection?: { interrupt?: () => void } }
+         ).connection;
+         try {
+            connection?.interrupt?.();
+         } catch {
+            // Best-effort: the statement then runs to its end.
+         }
+      };
+      if (signal.aborted) throw new Error("the statement was cancelled");
+      signal.addEventListener("abort", interrupt, { once: true });
+      try {
+         return await session.runSQL(sql);
+      } finally {
+         signal.removeEventListener("abort", interrupt);
+      }
+   };
+}
+
 export function storageDeltaTarget(params: {
    /** The build-scoped session: destination attached read-write, source federated. */
    session: DuckDBConnection;
@@ -208,7 +242,7 @@ export function storageDeltaTarget(params: {
       target: {
          dialect: STORAGE_DIALECT,
          storedColumn,
-         runner: (sql) => session.runSQL(sql),
+         runner: sessionRunner(session),
          quotedTablePath,
          logicalTablePath,
 
@@ -258,6 +292,32 @@ export function storageDeltaTarget(params: {
             return exact
                ? guardDeltaDecimals(read.selectSQL, exact.stored)
                : read.selectSQL;
+         },
+
+         windowRows: async (start, end, columns) => {
+            // The late-row check's read: only the columns it compares, so the
+            // warehouse reads (and bills) those alone, through the seed's
+            // read path but not its cost, which is the delta's.
+            const projected =
+               `SELECT ${columns.map((c) => quoteIdentifier(c, sourceDialect)).join(", ")} ` +
+               `FROM (${projectToStoredColumns(
+                  persistSource,
+                  deltaSelect({
+                     dialect: sourceDialect,
+                     sourceSQL: buildSQL,
+                     watermarkName: watermarkColumn,
+                     start,
+                     end,
+                  }),
+               )}) AS __c`;
+            const read = await issuePassthroughRead(
+               session,
+               sourceType,
+               handle,
+               projected,
+               queryMetadata,
+            );
+            return read.selectSQL;
          },
 
          probeSourceFrontier: async () => {

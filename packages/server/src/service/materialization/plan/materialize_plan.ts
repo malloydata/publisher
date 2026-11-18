@@ -1940,7 +1940,7 @@ function pairLayoutOf(
  * reads its parent's table, whose rows an incremental refresh moves on its
  * own schedule, so neither side of a chain may carry one.
  */
-const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key"];
+const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "lookback"];
 
 /**
  * Give each plan that can build over its nearest materialized ancestor's build
