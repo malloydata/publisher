@@ -115,6 +115,12 @@ let closeWaitMs = CLOSE_WAIT_MS;
  */
 const LOCKED_REOPEN_WAIT_MS = 45_000;
 let lockedReopenWaitMs = LOCKED_REOPEN_WAIT_MS;
+/**
+ * Holders of {@link preloadDuckLakeOnSandboxesForTesting}: while any holds,
+ * an in-memory locked instance with no setupSQL (the package sandbox) loads
+ * `ducklake` too.
+ */
+let duckLakeOnSandboxHolds = 0;
 
 /**
  * Raised instead of opening a second instance of a file an open instance holds
@@ -242,6 +248,9 @@ export function installDuckDBInstanceSharing(): void {
    const initThenPreload = function (
       this: DuckDBConnectionInternals,
    ): Promise<void> {
+      // Read when the open starts, not once it settles: a harness that
+      // releases its hold must not race an open it began under the hold.
+      const duckLakeHeld = duckLakeOnSandboxHolds > 0;
       return init.call(this).then(async () => {
          const restricted =
             this.normalized.lockConfiguration === true ||
@@ -285,9 +294,13 @@ export function installDuckDBInstanceSharing(): void {
             // one shares it (setupSQL is in the share key). Loading it from
             // disk checks its signature on a burst of short-lived hashing
             // threads, about one per core, on every sandbox a package opens.
+            // The conformance harness's parquet run is the one exception: it
+            // attaches a DuckLake on the sandbox itself, as the stand-in for
+            // a warehouse that keeps its tables in Parquet.
             const attachesCatalog =
                this.normalized.databasePath !== ":memory:" ||
-               (this.normalized.setupSQL ?? "").trim() !== "";
+               (this.normalized.setupSQL ?? "").trim() !== "" ||
+               duckLakeHeld;
             for (const extension of [
                "json",
                "icu",
@@ -690,6 +703,24 @@ export function setDuckDBLockedReopenWaitMsForTesting(
    ms: number | undefined,
 ): void {
    lockedReopenWaitMs = ms ?? LOCKED_REOPEN_WAIT_MS;
+}
+
+/**
+ * Test seam: load `ducklake` on every package sandbox opened until the
+ * returned release runs. Nothing a real sandbox runs can attach a DuckLake
+ * catalog (its author and caller SQL is one SELECT); the conformance
+ * harness's parquet run attaches one on the sandbox by hand
+ * (test_helpers/conformance/package_runner.ts), which needs the extension
+ * loaded before the sandbox locks. The release is idempotent.
+ */
+export function preloadDuckLakeOnSandboxesForTesting(): () => void {
+   duckLakeOnSandboxHolds++;
+   let released = false;
+   return () => {
+      if (released) return;
+      released = true;
+      duckLakeOnSandboxHolds--;
+   };
 }
 
 /** Whether the instance `open` names is released within `ms`. */

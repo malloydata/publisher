@@ -64,6 +64,7 @@ import { queryTimezoneOf } from "../../service/governance/ir/compiled_model";
 import { planModelPersistedViews } from "../../service/materialization/plan/persisted_view";
 import { SourceMap } from "../../service/materialization/text/source_map";
 import { recordConnectionsAsForConformanceHarness } from "../../service/connection_type";
+import { preloadDuckLakeOnSandboxesForTesting } from "../../service/duckdb_instance_sharing";
 /** A result row, as `compactResult` carries it. */
 export type Row = Record<string, unknown>;
 
@@ -319,12 +320,23 @@ export async function loadFixture(
       // `buildAll` builds a `storage=` table from the sandbox by hand, through
       // Parquet, which no real build can, so while the fixture lives its
       // sandbox stands in for a warehouse the plan's `storage=` gate admits.
-      releaseSandbox = recordConnectionsAsForConformanceHarness({
+      const releaseTypes = recordConnectionsAsForConformanceHarness({
          duckdb: "postgres",
          ...Object.fromEntries(
             (options.connections ?? []).map((c) => [c.name, "postgres"]),
          ),
       });
+      // Under `parquet` the origin attaches its own DuckLake on the sandbox
+      // (buildAll), which a real sandbox never does: the extension has to be
+      // loaded before the sandbox locks.
+      const releaseDuckLake =
+         format === "parquet"
+            ? preloadDuckLakeOnSandboxesForTesting()
+            : () => {};
+      releaseSandbox = () => {
+         releaseDuckLake();
+         releaseTypes();
+      };
       env = await Environment.create(
          "conform",
          envPath,

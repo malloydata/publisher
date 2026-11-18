@@ -20,7 +20,10 @@ import * as os from "os";
 import * as path from "path";
 import { installSettings } from "../test_helpers/settings_env";
 import { buildEnvironmentMalloyConfig } from "./connection";
-import { instanceKeyOf } from "./duckdb_instance_sharing";
+import {
+   instanceKeyOf,
+   preloadDuckLakeOnSandboxesForTesting,
+} from "./duckdb_instance_sharing";
 import {
    allowForLockdown,
    azureAllowPrefix,
@@ -395,6 +398,42 @@ describe("package sandbox: Malloy's sandboxed policy", () => {
 
    it("does not preload ducklake: no setup of its own attaches a catalog", async () => {
       expect(await ducklakeLoaded(connection)).toBe(false);
+   });
+
+   it("preloads ducklake only while the conformance harness's seam holds", async () => {
+      // A sandbox of its own package each time: one opened earlier would be
+      // joined, already locked, and take no preload.
+      const sandbox = async (name: string): Promise<DuckDBConnection> => {
+         const dir = path.join(root, name);
+         fs.mkdirSync(dir, { recursive: true });
+         const config = (
+            Package as unknown as {
+               buildPackageMalloyConfig(
+                  packagePath: string,
+                  env: () => MalloyConfig,
+               ): MalloyConfig;
+            }
+         ).buildPackageMalloyConfig(
+            dir,
+            () => new MalloyConfig({ connections: {} }),
+         );
+         return (await config.connections.lookupConnection(
+            "duckdb",
+         )) as DuckDBConnection;
+      };
+      const release = preloadDuckLakeOnSandboxesForTesting();
+      const held = await sandbox("pkg_ducklake_held");
+      release();
+      release();
+      const after = await sandbox("pkg_ducklake_released");
+      try {
+         // Best effort, as the preload is: a host without the extension loads none.
+         expect(await ducklakeLoaded(held)).toBe(await ducklakeAvailable());
+         expect(await ducklakeLoaded(after)).toBe(false);
+      } finally {
+         await held.close();
+         await after.close();
+      }
    });
 
    it("never shares an instance with an unsandboxed connection", async () => {
