@@ -9,7 +9,9 @@
  * becomes the nearest JavaScript number, and Malloy gives a field it types
  * as a `bigint` number that value as a BigInt: 9007199254740993 answers as
  * 9007199254740992n, which a caller receives as the JSON string
- * `"9007199254740992"`. A `storage=` table is read in DuckDB, through a cast
+ * `"9007199254740992"`. From 1e21 that number's text is exponential
+ * (`1.8e+21`), and Malloy's normaliser keeps such a value a number, so a
+ * caller receives the JSON number `1.8e+21`. A `storage=` table is read in DuckDB, through a cast
  * that keeps the field's `bigint` subtype and every digit
  * (`bigIntegerReads`), so its answer has live's type but more digits than
  * live's. Rounding each value of the answer as live's JSON stage rounds it
@@ -17,16 +19,27 @@
  * never of the stored values a query aggregates, since a sum of rounded
  * values is not the rounded sum.
  *
- * {@link roundStoredAnswerAsLive} is the one entry, called by query
- * serving on every answer a leg ran; it rounds in place.
+ * Query serving calls {@link roundBigIntegersAsLive} on every answer a leg
+ * ran whose live dialect is Postgres ({@link liveRoundsBigIntegersAsPostgres});
+ * it rounds in place. Pure but for that.
  */
 
-import type {
-   QueryData,
-   QueryMaterializer,
-   QueryRecord,
-} from "@malloydata/malloy";
-import { liveKeepsBigIntegers } from "../stored_column_types";
+import type { QueryData, QueryRecord } from "@malloydata/malloy";
+import { capabilitiesOf } from "./dialect";
+
+/**
+ * Whether live rounds a source's big integers through JSON in the one way
+ * measured (Postgres, by the R4 big-integer and rollup parity specs): to the
+ * nearest double, as a BigInt below 1e21 and a number from it. A `storage=`
+ * answer on such a source is read exactly and rounded after it runs as
+ * live's is ({@link roundBigIntegersAsLive}). The other dialects whose live
+ * answer rounds (`liveKeepsBigIntegers` false: Trino, Presto, Databricks,
+ * SQL Server) are unmeasured, so their `storage=` big integers stay a plain
+ * `number` and their answers are not rounded.
+ */
+export function liveRoundsBigIntegersAsPostgres(dialect: unknown): boolean {
+   return capabilitiesOf(dialect).liveRoundsBigIntegersMeasured;
+}
 
 /** A field of a result's struct, as far as this reads it. */
 interface ResultField {
@@ -46,13 +59,20 @@ export interface ResultRows {
    };
 }
 
-/** A big integer as live's JSON stage gives it: the nearest double's integer. */
+/**
+ * A big integer as live's JSON stage and Malloy's normaliser give it: the
+ * nearest double, as a BigInt (a string, where it ran as one) of that
+ * double's integer, or as the number itself where its text is exponential
+ * (from 1e21), which the normaliser keeps a number.
+ */
 function roundedAsLive(value: unknown): unknown {
-   if (typeof value === "bigint") return BigInt(Number(value));
-   if (typeof value === "string" && /^-?\d+$/.test(value)) {
-      return String(BigInt(Number(value)));
-   }
-   return value;
+   const exact =
+      typeof value === "bigint" ||
+      (typeof value === "string" && /^-?\d+$/.test(value));
+   if (!exact) return value;
+   const nearest = Number(value);
+   if (/e/i.test(String(nearest))) return nearest;
+   return typeof value === "bigint" ? BigInt(nearest) : String(BigInt(nearest));
 }
 
 function roundValue(value: unknown, field: ResultField): unknown {
@@ -75,6 +95,20 @@ function roundValue(value: unknown, field: ResultField): unknown {
    return value;
 }
 
+/** Whether a struct holds a `bigint` number field at any depth. */
+function holdsBigInteger(field: {
+   numberType?: string;
+   fields?: readonly ResultField[];
+   elementTypeDef?: ResultField;
+}): boolean {
+   return (
+      field.numberType === "bigint" ||
+      (field.fields ?? []).some(holdsBigInteger) ||
+      (field.elementTypeDef !== undefined &&
+         holdsBigInteger(field.elementTypeDef))
+   );
+}
+
 function roundRecord(
    row: QueryRecord,
    struct: { fields?: readonly ResultField[] },
@@ -95,25 +129,6 @@ export function roundBigIntegersAsLive(result: ResultRows): void {
    const struct = structs[structs.length - 1] as
       | { fields?: readonly ResultField[] }
       | undefined;
-   if (!struct) return;
+   if (!struct || !holdsBigInteger(struct)) return;
    for (const row of rows) roundRecord(row, struct);
-}
-
-/**
- * A stored answer's big integers rounded as live rounds them, when the
- * query's live dialect does ({@link liveKeepsBigIntegers} false). A live
- * compile that cannot say its dialect leaves the answer as it ran.
- */
-export async function roundStoredAnswerAsLive(
-   result: unknown,
-   liveRunnable: QueryMaterializer,
-): Promise<void> {
-   let dialect: string;
-   try {
-      dialect = (await liveRunnable.getPreparedQuery()).dialect;
-   } catch {
-      return;
-   }
-   if (liveKeepsBigIntegers(dialect)) return;
-   roundBigIntegersAsLive(result as ResultRows);
 }

@@ -78,9 +78,13 @@ import {
    type Leg,
    runManifestOf,
    type ServedFrom,
-   roundStoredAnswerAsLive,
    servedFromOf,
 } from "./materialization/serve/leg";
+import {
+   liveRoundsBigIntegersAsPostgres,
+   type ResultRows,
+   roundBigIntegersAsLive,
+} from "./materialization/domain/live_big_integers";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import type { ApiQueryPath } from "./materialization/serve/query_path";
 import {
@@ -1761,4 +1765,24 @@ function governRequestOf(r: {
       ...(r.graft ?? { bypassAuthorize: false }),
       ceiling: r.ceiling,
    };
+}
+
+/**
+ * A stored answer's big integers rounded as live rounds them, when the
+ * query's live dialect is Postgres, the one whose rounding is measured
+ * (`liveRoundsBigIntegersAsPostgres`). A live compile that cannot say its
+ * dialect leaves the answer as it ran.
+ */
+async function roundStoredAnswerAsLive(
+   result: PreparedRun["result"],
+   liveRunnable: QueryMaterializer,
+): Promise<void> {
+   let dialect: string;
+   try {
+      dialect = (await liveRunnable.getPreparedQuery()).dialect;
+   } catch {
+      return;
+   }
+   if (!liveRoundsBigIntegersAsPostgres(dialect)) return;
+   roundBigIntegersAsLive(result as unknown as ResultRows);
 }

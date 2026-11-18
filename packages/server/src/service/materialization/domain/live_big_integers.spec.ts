@@ -3,9 +3,9 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   liveRoundsBigIntegersAsPostgres,
    type ResultRows,
    roundBigIntegersAsLive,
-   roundStoredAnswerAsLive,
 } from "./live_big_integers";
 
 /** 2^53 + 1, which live on Postgres answers as 2^53. */
@@ -95,29 +95,74 @@ describe("roundBigIntegersAsLive", () => {
    });
 });
 
-describe("roundStoredAnswerAsLive", () => {
-   const live = (dialect: string) =>
-      ({ getPreparedQuery: async () => ({ dialect }) }) as never;
-
-   it("rounds a stored answer to a query whose live dialect rounds (Postgres)", async () => {
-      const r = result([{ big: ABOVE }]);
-      await roundStoredAnswerAsLive(r, live("postgres"));
-      expect(r._queryResult.result[0].big).toBe(ROUNDED);
+describe("roundBigIntegersAsLive past 1e21", () => {
+   it("gives a value whose nearest double prints exponentially as that number, as Malloy's normaliser keeps it", () => {
+      const huge = 1800000000000000000123n;
+      const r = result([
+         { big: huge, list: [huge] },
+         { big: -huge },
+         { big: `${huge}` },
+         // Below 1e21 the double prints in full: still a BigInt.
+         { big: 99999999999999999999n },
+      ]);
+      roundBigIntegersAsLive(r);
+      const rows = r._queryResult.result;
+      expect(rows[0].big).toBe(1.8e21);
+      expect(rows[0].list).toEqual([1.8e21]);
+      expect(rows[1].big).toBe(-1.8e21);
+      expect(rows[2].big).toBe(1.8e21);
+      expect(rows[3].big).toBe(100000000000000000000n);
+      expect(JSON.stringify(rows[0].big)).toBe("1.8e+21");
    });
 
-   it("leaves it exact where live keeps every digit (DuckDB)", async () => {
-      const r = result([{ big: ABOVE }]);
-      await roundStoredAnswerAsLive(r, live("duckdb"));
-      expect(r._queryResult.result[0].big).toBe(ABOVE);
-   });
-
-   it("leaves it as it ran when the live compile cannot say its dialect", async () => {
-      const r = result([{ big: ABOVE }]);
-      await roundStoredAnswerAsLive(r, {
-         getPreparedQuery: async () => {
-            throw new Error("no compile");
+   it("leaves a result with no bigint field untouched, without reading its rows", () => {
+      let read = false;
+      const row = new Proxy(
+         { n: 1 },
+         {
+            get(target, key) {
+               read = true;
+               return Reflect.get(target, key);
+            },
+            has(target, key) {
+               read = true;
+               return Reflect.has(target, key);
+            },
          },
-      } as never);
-      expect(r._queryResult.result[0].big).toBe(ABOVE);
+      );
+      roundBigIntegersAsLive({
+         _queryResult: {
+            result: [row] as never,
+            structs: [
+               {
+                  fields: [
+                     { name: "n", type: "number", numberType: "integer" },
+                     {
+                        name: "nest",
+                        type: "array",
+                        fields: [{ name: "s", type: "string" }],
+                     },
+                  ],
+               },
+            ],
+         },
+      });
+      expect(read).toBe(false);
+   });
+});
+
+describe("liveRoundsBigIntegersAsPostgres", () => {
+   it("is Postgres alone: every other dialect whose live answer rounds is unmeasured", () => {
+      expect(liveRoundsBigIntegersAsPostgres("postgres")).toBe(true);
+      for (const dialect of [
+         "duckdb",
+         "trino",
+         "presto",
+         "databricks",
+         "sqlserver",
+         undefined,
+      ]) {
+         expect(liveRoundsBigIntegersAsPostgres(dialect)).toBe(false);
+      }
    });
 });

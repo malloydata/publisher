@@ -48,9 +48,6 @@ import type { ServedCopyServe } from "./served_copy_serve";
 import type { PersistedViewServe, ViewTable } from "./view_variants";
 import type { PersistedQueryServe } from "./query_variants";
 
-/** Query serving rounds every answer a leg ran through this (known limitation 12). */
-export { roundStoredAnswerAsLive } from "./live_big_integers";
-
 /** The query leg's serve, for the model that makes one (beside the legs it makes). */
 export { PersistedQueryServe } from "./query_variants";
 

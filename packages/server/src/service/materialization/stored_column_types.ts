@@ -33,6 +33,7 @@ import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import { exploreOf } from "../governance/ir/compiled_model";
 import { getDialect } from "@malloydata/malloy";
 import { capabilitiesOf, STORAGE_DIALECT } from "./domain/dialect";
+import { liveRoundsBigIntegersAsPostgres } from "./domain/live_big_integers";
 import { identifier } from "../malloy_text";
 import { quoteIdentifier } from "../quoting";
 import { fromSubselect } from "./subselect";
@@ -776,6 +777,17 @@ export function liveKeepsBigIntegers(dialect: unknown): boolean {
 }
 
 /**
+ * Whether a `storage=` table's big-integer columns are read through their
+ * native type: where live keeps every digit, or rounds them as Postgres does
+ * ({@link liveRoundsBigIntegersAsPostgres}), the answer then rounded.
+ */
+function storageReadsBigIntegers(dialect: unknown): boolean {
+   return (
+      liveKeepsBigIntegers(dialect) || liveRoundsBigIntegersAsPostgres(dialect)
+   );
+}
+
+/**
  * How a stored read gives one big-integer column the value live gives: read
  * through `castTo`, a native SQL type of the stored table's dialect that Malloy
  * types as a `bigint` number, so the result keeps every digit; or, with no
@@ -810,11 +822,13 @@ const HUGEINT_EXACT =
  * `bigint` subtype included (it decides that an answer past 2^53 is a JSON
  * string). A database table is read through the warehouse's own bigint
  * type, on live's own data path, which rounds where live rounds. A
- * `storage=` table is read in DuckDB, which keeps every digit, so where live
- * rounds (Postgres, {@link liveKeepsBigIntegers}) the served answer is
- * rounded as live's is, after it runs (`serve/live_big_integers.ts`): the
- * read itself stays exact, since a sum over rounded values is not live's
- * rounded sum.
+ * `storage=` table is read in DuckDB, which keeps every digit, so on
+ * Postgres, whose live answer rounds ({@link liveRoundsBigIntegersAsPostgres}),
+ * the served answer is rounded as live's is, after it runs
+ * (`domain/live_big_integers.ts`): the read itself stays exact, since a sum
+ * over rounded values is not live's rounded sum. On another dialect whose
+ * live answer rounds (unmeasured) a `storage=` table is not touched, since
+ * its plain `number` rounds the same way, though as a JSON number.
  *
  * - A `storage=` table (`database` false) is in a DuckLake destination and
  *   its schema is what DESCRIBE reported: a 64-bit or narrower integer
@@ -839,6 +853,11 @@ export function bigIntegerReads(
    fields: readonly unknown[] | undefined,
    options: BigIntegerReadOptions,
 ): BigIntegerRead[] {
+   // A `storage=` table is read in DuckDB, which keeps every digit: only for
+   // a source whose live answer does too, or whose rounding is measured.
+   if (!options.database && !storageReadsBigIntegers(options.dialect)) {
+      return [];
+   }
    // How a field is matched to its stored column depends on how the table
    // stores it. A v1 query-shaped table stores each column under its
    // query's output name: a field a trailing `extend` renames (`rename:
@@ -904,13 +923,13 @@ export function bigIntegerReadOf(
    column: { name: string; type: string },
    options: BigIntegerReadOptions,
 ): BigIntegerRead | undefined {
+   if (!options.database && !storageReadsBigIntegers(options.dialect)) {
+      return undefined;
+   }
    if (!isBigIntegerField(field)) return undefined;
    const castTo = options.database
       ? exactWarehouseCast(options.dialect, options.nativeTypeOf?.(column.name))
-      : duckdbBigIntegerCast(
-           column.type,
-           !liveKeepsBigIntegers(options.dialect),
-        );
+      : duckdbBigIntegerCast(column.type);
    return { column: column.name, ...(castTo ? { castTo } : {}) };
 }
 
@@ -1012,21 +1031,10 @@ function isBigIntegerField(field: unknown): boolean {
  * rows still inlined in the catalog keep every digit, and a reader cannot
  * tell which it has, so such a column has no exact read: left out, so only a
  * query reading it is answered live ({@link ducklakeStoresAsDouble}).
- *
- * A column stored as a float has lost digits past 2^53 as well, which is
- * what live does where it rounds (`liveRounds`, Postgres): live's own value
- * is that nearest double, so the column is read through HUGEINT too, for
- * live's `bigint` subtype. Anywhere else it has no exact read.
  */
-function duckdbBigIntegerCast(
-   storedType: string,
-   liveRounds: boolean,
-): string | undefined {
+function duckdbBigIntegerCast(storedType: string): string | undefined {
    const base = storedType.trim().toUpperCase();
    if (ducklakeStoresAsDouble(base)) return undefined;
-   if (liveRounds && /^(DOUBLE|FLOAT|FLOAT4|FLOAT8|REAL)$/.test(base)) {
-      return "HUGEINT";
-   }
    return HUGEINT_EXACT.test(base) ? "HUGEINT" : undefined;
 }
 

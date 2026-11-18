@@ -64,6 +64,12 @@ export const PG_SEED = [
    // The persisted-copy shape's own table, so its copy re-roots no other
    // shape's source: the same big integers as orders.big.
    `CREATE TABLE big_copy AS SELECT id, region, big FROM orders`,
+   // 200 values near 9e18, whose sums pass 1e21, where live's answer turns
+   // from a string to an exponential JSON number.
+   `CREATE TABLE huge AS SELECT g AS id,
+      (ARRAY['north', 'south', 'east'])[1 + g % 3] AS region,
+      9000000000000000000 + g AS big
+      FROM generate_series(1, 200) AS g`,
    // Customer 5 has no orders; order 6's customer 9 has no row.
    `CREATE TABLE customers (id bigint PRIMARY KEY, segment text, home_region text)`,
    `INSERT INTO customers VALUES
@@ -319,6 +325,19 @@ source: p_orders is orders_raw extend {
             model: "precision.malloy",
             malloy:
                "run: p_orders -> { group_by: region; aggregate: big_sum, big_hi; order_by: region }",
+            expect: "rollup",
+         },
+         {
+            name: "a bigint sum and max past 2^53, re-aggregated across the grain",
+            model: "precision.malloy",
+            malloy: "run: p_orders -> { aggregate: big_sum, big_hi }",
+            expect: "rollup",
+         },
+         {
+            name: "a bigint grain filtered by an exact literal past 2^53",
+            model: "precision.malloy",
+            malloy:
+               "run: p_orders -> { where: big = 9007199254740993; aggregate: n_by_big }",
             expect: "rollup",
          },
          {
@@ -611,6 +630,89 @@ source: c_orders is pg.table('public.big_copy') extend {
             malloy:
                "run: c_orders -> { group_by: region; aggregate: big_sum, big_hi; order_by: region }",
             expect: "served",
+         },
+         {
+            name: "a filter on an exact literal past 2^53",
+            model: "copy.malloy",
+            malloy:
+               "run: c_orders -> { where: big = 9007199254740993; select: id, big; order_by: id }",
+            expect: "served",
+         },
+         {
+            name: "big + 1",
+            model: "copy.malloy",
+            malloy:
+               "run: c_orders -> { select: id, b1 is big + 1; order_by: id }",
+            expect: "served",
+         },
+         {
+            name: "a nested query over a bigint past 2^53",
+            model: "copy.malloy",
+            malloy:
+               "run: c_orders -> { group_by: region; aggregate: big_hi; nest: rows is { select: id, big; order_by: id }; order_by: region }",
+            expect: "served",
+         },
+      ],
+   },
+   {
+      name: "sums past 1e21",
+      about: "Sums of 200 values near 9e18, past 1e21, where live answers a JSON number in exponent form: a persisted copy's total, per-region, sum() + 1 and a pipeline over the sum, and a rollup's per-region and re-aggregated total",
+      files: {
+         "huge.malloy": `${HEADER}
+
+@PERSIST()
+source: h_copy is pg.table('public.huge') extend {
+  primary_key: id
+  measure: total is big.sum()
+}
+
+source: h_roll is pg.table('public.huge') extend {
+  primary_key: id
+  @PREAGG(region)
+  measure: h_total is big.sum()
+}
+`,
+      },
+      queries: [
+         {
+            name: "a copy's total sum",
+            model: "huge.malloy",
+            malloy: "run: h_copy -> { aggregate: total }",
+            expect: "served",
+         },
+         {
+            name: "a copy's sum by region",
+            model: "huge.malloy",
+            malloy:
+               "run: h_copy -> { group_by: region; aggregate: total; order_by: region }",
+            expect: "served",
+         },
+         {
+            name: "a copy's sum() + 1",
+            model: "huge.malloy",
+            malloy:
+               "run: h_copy -> { group_by: region; aggregate: t1 is big.sum() + 1; order_by: region }",
+            expect: "served",
+         },
+         {
+            name: "a pipeline over a copy's sum",
+            model: "huge.malloy",
+            malloy:
+               "run: h_copy -> { group_by: region; aggregate: total } -> { aggregate: grand is total.sum(), top is total.max() }",
+            expect: "served",
+         },
+         {
+            name: "a rollup's sum by region",
+            model: "huge.malloy",
+            malloy:
+               "run: h_roll -> { group_by: region; aggregate: h_total; order_by: region }",
+            expect: "rollup",
+         },
+         {
+            name: "a rollup's sum re-aggregated across its grain",
+            model: "huge.malloy",
+            malloy: "run: h_roll -> { aggregate: h_total }",
+            expect: "rollup",
          },
       ],
    },
