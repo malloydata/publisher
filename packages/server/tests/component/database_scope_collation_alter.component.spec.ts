@@ -334,13 +334,7 @@ for (const tier of tiers) {
       for (const s of SCOPES) {
          it(`${s}: is served from its table as built, equal to live`, () => {
             expect(served[s].rows).toEqual(live[s] as never);
-            // A stage output read through an extension of the stored source
-            // is followed back through the stage, whose computed column has
-            // no source path a Postgres probe can read: live, until a stored
-            // stage output is read as the column it is.
-            const stepsBack =
-               s === "s_stage_out" && tier.label.startsWith("Postgres");
-            expect(served[s].kind).toBe(stepsBack ? "live" : "materialized");
+            expect(served[s].kind).toBe("materialized");
          });
 
          it(`${s}: answers live, equal to live, once its column compares case-insensitively`, async () => {

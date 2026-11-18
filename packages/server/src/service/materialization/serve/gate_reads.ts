@@ -302,10 +302,42 @@ class GateReadWalk {
       return equalityOnlyExpr(e) || this.leavesNotString(e, source);
    }
 
-   /** Whether the answer reads `source`'s own table (its `sourceID` is stored). */
+   /**
+    * Whether the answer reads `source`'s own table: its `sourceID` is
+    * stored, or it extends a stored query-shaped source and carries that
+    * source's query unchanged (`p_plain extend { where: … }`), whose stage
+    * outputs are then that table's columns as well.
+    */
    private isStored(source: unknown): boolean {
-      const id = (source as { sourceID?: unknown } | undefined)?.sourceID;
-      return typeof id === "string" && this.stored.has(id);
+      const s = source as { sourceID?: unknown; query?: unknown } | undefined;
+      if (typeof s?.sourceID === "string" && this.stored.has(s.sourceID)) {
+         return true;
+      }
+      if (s?.query === undefined) return false;
+      const query = JSON.stringify(s.query);
+      return this.storedQueries().has(query);
+   }
+
+   /** The queries of the stored query-shaped sources the model names. */
+   private storedQueriesMemo?: Set<string>;
+   private storedQueries(): Set<string> {
+      if (this.storedQueriesMemo) return this.storedQueriesMemo;
+      const out = new Set<string>();
+      const contents =
+         (this.modelDef as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {};
+      for (const c of Object.values(contents)) {
+         const d = c as { sourceID?: unknown; query?: unknown } | undefined;
+         if (
+            typeof d?.sourceID === "string" &&
+            this.stored.has(d.sourceID) &&
+            d.query !== undefined
+         ) {
+            out.add(JSON.stringify(d.query));
+         }
+      }
+      this.storedQueriesMemo = out;
+      return out;
    }
 
    private tooDeep(): boolean {
