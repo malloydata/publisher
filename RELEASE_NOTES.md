@@ -17,6 +17,15 @@ For releases that warrant narrative — redesigns, breaking changes, migration s
 
 **How to tell:** a gated query on a DuckDB database rollup reports the rollup in its path report again when another table in the warehouse is collated.
 
+## [Unreleased] — a build that fails on a warehouse's own data or syntax error reads as not retryable
+
+**Fixed: a deterministic warehouse error left `retryable` absent.** A build that fails because the statement itself is wrong now reports `SourceFailure.retryable: false`, so a control plane can hold the build instead of rebuilding it on every scheduled run. Before, it left the field absent. This covers:
+- a Postgres or Snowflake SQLSTATE in class 22 (data exception, such as `22P02` "invalid input syntax for type") or class 42 (syntax error or access rule violation);
+- a BigQuery `invalidQuery` or `invalid` job error;
+- a Postgres data exception that arrives as text only, through a DuckDB passthrough.
+
+Some errors are still left unclassified: a missing table or column (`42P01`, `42703`, `42S02`, `42S22`, or a BigQuery "Unrecognized name" or "Not found"), because an upstream reclaimed mid-build reads the same way, and a missing privilege (`42501`). Transient codes keep their reading: serialization failure and deadlock (`40001`, `40P01`), a lock not available, too many connections, a cancelled or timed-out statement, a lost connection, and BigQuery's backend and quota reasons are never `false`. No new values.
+
 ## [Unreleased] — security fix: a stored copy could compare a string column, a zoned time or a composite's gate differently from live
 
 **Fixed: a `storage=` table compared a string column byte-exact where the source compares it under its collation.** A gate, or a `where:` that the served copy or a rollup re-applies, over a string column the source compares case-insensitively (a DuckDB `NOCASE` collation, a MySQL `*_ci`, a SQL Server case-insensitive or a Postgres nondeterministic collation, a Snowflake `COLLATE`) could answer from the stored copy with rows live hides, or without rows live returns. Ordering comparisons differed under any collation that is not binary. Such a query is now answered from a `storage=` table only when the source's comparison is known to match: BigQuery; a DuckDB-dialect source with no `default_collation` and no `COLLATE` written; Postgres for `=`, `!=` and `in` under a deterministic collation (the database default included), and for any comparison under `C` or `POSIX`. Everything else answers live, including every gated or scoped `storage=` source on Snowflake, MySQL, SQL Server, Trino, Presto and Databricks whose gate or scope compares a string column.
