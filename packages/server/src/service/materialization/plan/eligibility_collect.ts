@@ -913,8 +913,16 @@ function storageVerdict(
       // A table whose build reads the current time is not served, however it
       // was built.
       assertBuildReadsNoCurrentTime(source, gate);
+      // A rollup's base gates are grafted on its variant, not read off the
+      // rollup's own source: one admitted past them is kept as a stored
+      // source past its own gate is.
+      const rollup = compiled.tables[sourceID].rollup;
       return {
-         gateKept: kept && storageKeepsOwnGate(source, compiled),
+         gateKept:
+            kept &&
+            (rollup !== undefined
+               ? "baseGated" in rollup && rollup.baseGated === true
+               : storageKeepsOwnGate(source, compiled)),
          // A persisted view's or query's table is read only by its own
          // leg, which decides a gate itself: never marked.
          ungated:

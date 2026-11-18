@@ -64,7 +64,6 @@ describe("tablesReadForGates", () => {
    const G3_ONLY = {
       materialize: true,
       gatedSources: false,
-      gatedStorageRollupsReviewed: false,
    };
    const keeps = (tables: readonly Binding[]) =>
       answerKeepsGates("served", tables, G3_ONLY, {

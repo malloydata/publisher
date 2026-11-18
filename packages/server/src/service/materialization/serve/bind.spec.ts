@@ -433,7 +433,7 @@ describe("bindStorageEntries", () => {
       expect(bound.bindings.map((b) => b.kind)).toEqual(["materialize"]);
    });
 
-   it("marks a source's own table kept past its own gate only as plan decided (G3), and never a rollup's or a view's", () => {
+   it("marks a source's or a rollup's table kept past its own gate only as plan decided (G3), and never a view's", () => {
       const eligibility = {
          eligible: ["orders@m", "gated@m"],
          refused: {},
@@ -446,13 +446,13 @@ describe("bindStorageEntries", () => {
             eligibility,
             kindOf: () => kind,
          }).bindings.map((b) => [b.sourceName, b.ownGateKept === true]);
-      for (const kind of ["persist", "materialize"] as const) {
+      for (const kind of ["persist", "materialize", "rollup"] as const) {
          expect(kept(kind)).toEqual([
             ["orders", false],
             ["gated", true],
          ]);
       }
-      for (const kind of ["rollup", "view"] as const) {
+      for (const kind of ["view"] as const) {
          expect(kept(kind)).toEqual([
             ["orders", false],
             ["gated", false],

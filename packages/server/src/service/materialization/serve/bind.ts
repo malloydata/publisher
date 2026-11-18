@@ -180,11 +180,14 @@ export function bindStorageEntries(args: {
    // sharer is served from the table because a gated sibling stores into
    // it. Nothing leaks: the SQL, and so the rows, are identical, and
    // `govern()` grafts and proves the entry point's own gate on the answer
-   // as on live. A rollup or a view is never marked (their legs pass a gate
-   // only with the switch).
+   // as on live. A `storage=` rollup plan admitted past its base's gates is
+   // marked too: its variant grafts and proves them (rollup_variants.ts). A
+   // view is never marked (its leg passes a gate only with the switch).
    const bindings = admittedBindings.map((binding) =>
       keptTables.has(binding.virtualHandle) &&
-      (binding.kind === "persist" || binding.kind === "materialize")
+      (binding.kind === "persist" ||
+         binding.kind === "materialize" ||
+         binding.kind === "rollup")
          ? { ...binding, ownGateKept: true }
          : binding,
    );

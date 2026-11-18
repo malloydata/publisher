@@ -48,7 +48,9 @@ describe("a DuckDB source's string comparison", () => {
    it("is unknown when a macro returns a collated value", async () => {
       const db = new DuckDBConnection("duckdb", ":memory:");
       try {
-         await db.runSQL("CREATE MACRO gate_ci(x) AS CAST(x AS VARCHAR) COLLATE NOCASE");
+         await db.runSQL(
+            "CREATE MACRO gate_ci(x) AS CAST(x AS VARCHAR) COLLATE NOCASE",
+         );
          expect(
             await duckdbCollation(
                db as unknown as Connection,

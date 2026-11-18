@@ -16,21 +16,18 @@
  * denied. Negatives answer live (a gate field outside the grain, a gate
  * through a join, a caller join, a caller `count()`, an extension whose own
  * gate the rollup cannot prove), and a caller `except:` or `rename:` of the
- * gate field is denied, as live is. Database and `storage=` (the latter
- * behind its review seam, as question 14 leaves it off in production).
+ * gate field is denied, as live is. Database and `storage=` alike.
  *
- * G3 for database rollups: with the gated-sources switch off, a database
+ * G3 for rollups, on either tier: with the gated-sources switch off, a
  * rollup over a base whose gates are all its own (a row filter, a lock, or
  * both, each field a grain dimension) is built and read past the gate the
  * same way, each caller getting exactly live's rows; one over an inherited
  * gate, a gate through a join or a gate field outside the grain is not
- * built, and a `storage=` one waits for its review unless its base's gates
- * are locks alone.
+ * built.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../../src/errors";
-import { allowGatedStorageRollupsForTests } from "../../../src/config";
 import { installSettings } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
@@ -327,6 +324,9 @@ for (const [placement, gatedSources] of [
    ["database", true],
    ["storage", true],
    ["database", false],
+   // `storage=` with the switch off is G3 through the bind's mark, which this
+   // harness does not run: storage_rollup_gates.component.spec.ts takes it
+   // through the real package path.
 ] as const) {
    // With the switch off (G3), only a base's own gates are kept.
    const cases = CASES.filter(
@@ -334,7 +334,6 @@ for (const [placement, gatedSources] of [
    );
    describe(`R4: gated queries on ${placement} rollups (${gatedSources ? "row 1, gated sources on" : "G3, gated sources off"})`, () => {
       let restore: () => void;
-      let restoreReview: () => void;
       let fixture: R4Fixture;
       beforeAll(async () => {
          restore = installSettings({
@@ -344,11 +343,6 @@ for (const [placement, gatedSources] of [
                PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
             },
          }).restore;
-         // `storage=` waits for question 14's review in production; the
-         // seam stands in for it here.
-         restoreReview = allowGatedStorageRollupsForTests(
-            placement === "storage",
-         );
          fixture = await buildScenario({
             files: {
                "m.malloy": model(
@@ -360,7 +354,6 @@ for (const [placement, gatedSources] of [
          });
       });
       afterAll(async () => {
-         restoreReview();
          restore();
          await disposeScenarios();
       });
@@ -743,63 +736,3 @@ for (const [placement, gatedSources] of [
       });
    });
 }
-
-describe("R4: gated queries on storage= rollups with gated sources off", () => {
-   let restore: () => void;
-   let fixture: R4Fixture;
-   beforeAll(async () => {
-      restore = installSettings({
-         env: {
-            PERSIST_STORAGE_MODE: "on",
-            PUBLISHER_MATERIALIZE: "true",
-            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
-         },
-      }).restore;
-      fixture = await buildScenario({
-         files: { "m.malloy": model(` storage="${DESTINATION}"`) },
-         seedSql,
-         preaggregate: true,
-      });
-   });
-   afterAll(async () => {
-      restore();
-      await disposeScenarios();
-   });
-
-   it("builds no storage= rollup over a gated base: it waits for its review", () => {
-      // A lock alone reads no row field, so its rollup is built on either
-      // tier (gated_rollup_lock.component.spec.ts).
-      expect(fixture.rollupRefusals.map((r) => r.sourceName)).not.toContain(
-         "by_lock",
-      );
-      expect(
-         fixture.rollupRefusals
-            .filter(
-               (r) =>
-                  !["open", "order_lines", "by_lock"].includes(r.sourceName),
-            )
-            .every(
-               // Named by the gate's kind: a row filter or a lock.
-               (r) =>
-                  r.reason === "access_filter" ||
-                  r.reason === "authorize" ||
-                  r.reason === "time_zone",
-            ),
-      ).toBe(true);
-   });
-
-   for (const c of CASES.filter((c) => c.source !== "by_lock")) {
-      it(`answers ${c.kind} live, equal to live`, async () => {
-         for (const caller of c.callers) {
-            expectLive(
-               await fixture.run({
-                  name: `${c.source} ${caller.name}`,
-                  malloy: `run: ${c.source} -> { group_by: category; aggregate: total }`,
-                  givens: caller.givens,
-                  expectLive: true,
-               }),
-            );
-         }
-      });
-   }
-});
