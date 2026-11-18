@@ -489,6 +489,12 @@ obvious from the YAML:
   but unsigned, and `gh-release` does not run. Re-run the failed jobs: `imagetools create` re-pushes
   the same list from the same platform digests and the signing steps run again. A Sigstore outage
   (Fulcio or Rekor) shows up here the same way.
+- **The verify retries "no signatures found", and only that.** Docker Hub can take a moment to
+  serve a signature it just accepted (0.15.0 and 0.16.0 both failed verify two seconds after the
+  push, and passed on a re-run), so the verify step retries that one error with backoff, 6 attempts
+  over about 2.5 minutes, logging each retry. Any other error, an identity or issuer mismatch
+  included, fails at once, and the step never re-signs: a second `cosign sign` adds a second
+  signature rather than repairing the first.
 - **The `@refs/heads/main` in the identity is what makes a branch dispatch distinguishable.**
   `release.yml` has no ref guard (see *Hardening that is not in place yet*), so a release dispatched
   from a branch is signed with that branch's ref. The in-workflow verify accepts any ref and prints

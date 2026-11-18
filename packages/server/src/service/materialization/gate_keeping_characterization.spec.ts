@@ -710,7 +710,7 @@ describe("gate keeping at the router, under an entry-point veto", () => {
    // is `gatesReadNoColumn`, in gate_policy.spec.ts).
    const authorRunnable = {
       getPreparedQuery: async () => ({
-         _query: { structRef: "s" },
+         _query: { structRef: "s", pipeline: [] },
          _modelDef: {
             name: "m",
             exports: [],
