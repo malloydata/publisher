@@ -943,10 +943,14 @@ export class ServedCopyServe {
          reason: string,
          code: ServedCopyDeclineCode,
          callerDetail?: string,
+         tableIds?: readonly string[],
       ): never => {
          const memo = (compiled.declined ??= new Map());
          if (memo.size >= DECLINED_LIMIT) memo.clear();
-         const error = new LegDecline(code, callerDetail, { message: reason });
+         const error = new LegDecline(code, callerDetail, {
+            message: reason,
+            ...(tableIds ? { tableIds } : {}),
+         });
          memo.set(queryString, error);
          throw error;
       };
@@ -971,6 +975,46 @@ export class ServedCopyServe {
             );
             if (zoned.size > 0 && readsMissingName(zoned, error, queryString)) {
                decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
+            }
+            // A stored column the re-root leaves out of its table's type (no
+            // cast reads what the table holds as the source declares it: the
+            // table altered outside a build, or the source retyped since).
+            const storedLeftOut = new Set(
+               [...(compiled.leftOutColumns?.values() ?? [])].flatMap((n) => [
+                  ...n,
+               ]),
+            );
+            if (
+               storedLeftOut.size > 0 &&
+               readsMissingName(storedLeftOut, error, queryString)
+            ) {
+               // The names the compile could not find, where it says.
+               const missing = new Set(
+                  [
+                     ...String(
+                        error instanceof Error ? error.message : error,
+                     ).matchAll(/'([^']+)' is not defined/g),
+                  ].map((m) => m[1]),
+               );
+               const read = [...storedLeftOut].filter((n) => missing.has(n));
+               const named = read.length > 0 ? read : [...storedLeftOut];
+               // The tables whose re-root leaves one of those columns out.
+               const sourceIDs = new Set(
+                  [...(compiled.leftOutColumns ?? [])]
+                     .filter(([, names]) =>
+                        names.some((n) => named.includes(n)),
+                     )
+                     .map(([sourceID]) => sourceID),
+               );
+               const tableIds = compiled.aliased
+                  .filter((b) => b.sourceIDs?.some((id) => sourceIDs.has(id)))
+                  .map((b) => b.virtualHandle);
+               decline(
+                  "the query reads a stored column the served copy leaves out of its table's type",
+                  "served_copy_column_left_out",
+                  `the stored table cannot answer with live's columns: no cast reads ${named.map((c) => `column \`${c}\``).join(", ")} as declared`,
+                  tableIds,
+               );
             }
             throw error;
          }
