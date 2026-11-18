@@ -484,3 +484,128 @@ describe("a collated table elsewhere in the warehouse leaves an unrelated databa
       });
    }
 });
+
+/**
+ * A comparison that makes a string of something else (a cast, a `pick`)
+ * compares under a collation too, though no field it reads is a string: a
+ * NOCASE session on either side changes what it admits. On the destination
+ * (its `default_collation` set after the build) and on the source (the
+ * warehouse session's), every caller of a scope or gate written that way, on
+ * the served copy and on a `storage=` rollup, gets live's answer.
+ */
+const CAST_MODEL = `##! experimental { givens access_modifiers persistence }
+given: S :: string
+given: CAT :: string
+source: rows is duckdb.sql("""SELECT CAST(id AS BIGINT) AS id, CAST(amount AS DOUBLE) AS amount, category, CAST(active AS BOOLEAN) AS active
+  FROM (VALUES (1, 10.0, 'A', true), (2, 20.0, 'A', false), (3, 30.0, 'B', true), (4, 5.0, 'B', false)) AS t(id, amount, category, active)""") extend { primary_key: id }
+#(materialize) name="m_cast_eq" storage="${LAKE}"
+source: m_cast_eq is rows extend { where: active::string = $S }
+#(materialize) name="m_cast_ne" storage="${LAKE}"
+source: m_cast_ne is rows extend { where: active::string != $S }
+#(access_filter) category = $CAT
+#(materialize) name="m_g_cast_eq" storage="${LAKE}"
+source: m_g_cast_eq is rows extend { where: active::string = $S }
+#(materialize) name="m_pick_ne" storage="${LAKE}"
+source: m_pick_ne is rows extend { where: (pick 'yes' when active else 'no') != $S }
+source: r_cast_eq is rows extend {
+  where: active::string = $S
+  #(rollup) grain=["category", "active"] storage="${LAKE}"
+  measure: total is amount.sum()
+}
+source: r_cast_ne is rows extend {
+  where: active::string != $S
+  #(rollup) grain=["category", "active"] storage="${LAKE}"
+  measure: total is amount.sum()
+}
+#(access_filter) category = $CAT
+source: r_g_cast_eq is rows extend {
+  where: active::string = $S
+  #(rollup) grain=["category", "active"] storage="${LAKE}"
+  measure: total is amount.sum()
+}
+`;
+
+const CAST_CASES: [string, string][] = [
+   ["m_cast_eq", "run: m_cast_eq -> { group_by: id; order_by: id }"],
+   ["m_cast_ne", "run: m_cast_ne -> { group_by: id; order_by: id }"],
+   ["m_g_cast_eq", "run: m_g_cast_eq -> { group_by: id; order_by: id }"],
+   ["m_pick_ne", "run: m_pick_ne -> { group_by: id; order_by: id }"],
+   [
+      "r_cast_eq",
+      "run: r_cast_eq -> { group_by: category; aggregate: total; order_by: category }",
+   ],
+   [
+      "r_cast_ne",
+      "run: r_cast_ne -> { group_by: category; aggregate: total; order_by: category }",
+   ],
+   [
+      "r_g_cast_eq",
+      "run: r_g_cast_eq -> { group_by: category; aggregate: total; order_by: category }",
+   ],
+];
+const CAST_CALLERS: Record<string, string>[] = [
+   { S: "TRUE", CAT: "A" },
+   { S: "true", CAT: "A" },
+   { S: "YES", CAT: "A" },
+];
+
+for (const side of ["destination", "source"] as const) {
+   for (const gatedSources of [false, true]) {
+      describe(`a comparison that makes a string compares as live does, under a NOCASE ${side} (gated sources ${gatedSources ? "on" : "off"})`, () => {
+         let restore: () => void;
+         let loader: Awaited<ReturnType<typeof loadFixture>>;
+         let fixture: LoadedFixture;
+         const live = new Map<string, Outcome>();
+
+         beforeAll(async () => {
+            restore = installSettings({
+               env: {
+                  PERSIST_STORAGE_MODE: "on",
+                  PUBLISHER_MATERIALIZE: "true",
+                  PUBLISHER_MATERIALIZE_GATED_SOURCES: String(gatedSources),
+               },
+            }).restore;
+            await freshLoadPool();
+            loader = await loadFixture({ "m.malloy": CAST_MODEL });
+            if (side === "source") {
+               const warehouse = await loader.pkg.getMalloyConnection("duckdb");
+               await warehouse.runSQL("SET default_collation = 'nocase'");
+            }
+            for (const [name, malloy] of CAST_CASES) {
+               for (const [i, g] of CAST_CALLERS.entries()) {
+                  live.set(
+                     `${name}${i}`,
+                     await loader.run("m.malloy", malloy, g),
+                  );
+               }
+            }
+            fixture = await loader.bind({ includeRollups: true });
+            if (side === "destination") {
+               await loader.lake.runSQL("SET default_collation = 'nocase'");
+            }
+         }, 900_000);
+
+         afterAll(async () => {
+            if (side === "destination") {
+               await loader?.lake
+                  .runSQL("SET default_collation = ''")
+                  .catch(() => {});
+            }
+            await fixture?.dispose();
+            await loader?.dispose().catch(() => {});
+            restore?.();
+            await freshLoadPool();
+         });
+
+         for (const [name, malloy] of CAST_CASES) {
+            it(`${name}: every caller gets live's answer`, async () => {
+               for (const [i, g] of CAST_CALLERS.entries()) {
+                  const got = await fixture.run("m.malloy", malloy, g);
+                  const diff = difference(live.get(`${name}${i}`)!, got);
+                  expect(diff, `${JSON.stringify(g)}: ${diff}`).toBeUndefined();
+               }
+            });
+         }
+      });
+   }
+}

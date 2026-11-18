@@ -74,8 +74,9 @@ export function storedTypeIsString(type: string): boolean {
  * Why an answer that read a `storage=` table past the entry point's gates
  * does not compare a string column as live does, or undefined when every
  * string column it compares does. `stringStored` says whether any `storage=`
- * table the answer read holds a gate column as a string; when none does, no
- * probe runs.
+ * table the answer read holds a gate column as a string; when none does and
+ * every comparison is a plain equality (no cast, `pick` or function that
+ * could make a string), no probe runs.
  */
 export async function stringGateCollationRefusal(args: {
    authorRunnable: QueryMaterializer;
@@ -85,7 +86,17 @@ export async function stringGateCollationRefusal(args: {
    givens?: Record<string, unknown>;
 }): Promise<string | undefined> {
    const { reads } = args;
-   if (!args.stringStored) return undefined;
+   // No stored gate column is a string: nothing to compare under a
+   // collation, unless an expression makes one (a cast, a `pick`, a
+   // function), which `equalityOnly` already rules out.
+   if (
+      !args.stringStored &&
+      reads !== undefined &&
+      !reads.unresolved &&
+      reads.equalityOnly
+   ) {
+      return undefined;
+   }
    if (reads === undefined || reads.unresolved) return "gate reads unread";
    const need: Collation[] = reads.equalityOnly
       ? ["binary", "deterministic"]
@@ -145,6 +156,22 @@ export async function stringGateCollationRefusal(args: {
    // over; the instance-wide check above needs none).
    if (entryName === undefined) return "no named entry point";
    if (!reads.entryPathsComplete) return "a scope from elsewhere";
+   // A comparison that is not a plain equality may compare a value an
+   // expression made a string (a cast, a `pick`): that compares under the
+   // database's default collation, which must be binary.
+   if (!reads.equalityOnly) {
+      const fallback = await probeOnce(
+         modelDef,
+         `${connectionName}\u0000default`,
+         async () =>
+            postgresDefaultCollation(
+               await runtime.connections.lookupConnection(connectionName),
+            ),
+      );
+      if (fallback !== "binary") {
+         return `a computed comparison under a ${fallback} default collation`;
+      }
+   }
    const paths = stringPaths(struct, reads.entryPaths);
    if (paths === undefined) return "an unreadable gate path";
    for (const path of paths) {
@@ -323,6 +350,17 @@ function postgresJudged(row: Record<string, unknown> | undefined): Collation {
 /** The columns {@link postgresJudged} reads, from `pg_collation c, pg_database d`. */
 const PG_COLLATION_COLUMNS =
    "c.collname AS name, c.collisdeterministic AS det, c.collcollate AS cc, c.collprovider AS prov, d.datcollate AS dbc, to_jsonb(d) ->> 'datlocprovider' AS dbp";
+
+/** The Postgres database's default collation, as {@link postgresJudged} reads it. */
+async function postgresDefaultCollation(
+   connection: Connection,
+): Promise<Collation> {
+   const [row] = await pgRows(
+      connection,
+      `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.collname = 'default' AND d.datname = current_database()`,
+   );
+   return postgresJudged(row);
+}
 
 /**
  * A Postgres column's collation, read from the source's own SQL
@@ -551,7 +589,11 @@ async function comparesNoString(args: {
    reads: GateReads | undefined;
 }): Promise<boolean> {
    const { reads } = args;
-   if (reads === undefined || reads.unresolved) return false;
+   // Only a plain equality's types are those of the fields it reads: a cast,
+   // a `pick` or a function can make a string of anything.
+   if (reads === undefined || reads.unresolved || !reads.equalityOnly) {
+      return false;
+   }
    if (reads.entryPathsComplete) {
       try {
          const prepared = await readPreparedQuery(args.authorRunnable);
