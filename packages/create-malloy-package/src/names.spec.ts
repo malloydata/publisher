@@ -169,6 +169,10 @@ describe("toMalloyIdentifier", () => {
  * scaffolder ship a package the server cannot compile.
  */
 describe("MALLOY_RESERVED drift against the installed @malloydata/malloy", () => {
+   // The two lexer sweeps parse every lexer word: 1-2 s on a macOS runner,
+   // and 6.4 s on a slow one, past bun's 5 s default.
+   const SWEEP_TIMEOUT_MS = 30_000;
+
    test("covers every Malloy standard function name", () => {
       const functionNames = Object.keys(MALLOY_STANDARD_FUNCTIONS);
       // A sweep that found nothing would pass vacuously.
@@ -180,36 +184,46 @@ describe("MALLOY_RESERVED drift against the installed @malloydata/malloy", () =>
       expect(uncovered).toEqual([]);
    });
 
-   test("covers every lexer word the parser refuses as a source name", () => {
-      const candidates = [
-         ...new Set(MalloyLexer.ruleNames.map((rule) => rule.toLowerCase())),
-      ].filter((word) => /^[a-z_][a-z0-9_]*$/.test(word));
+   test(
+      "covers every lexer word the parser refuses as a source name",
+      () => {
+         const candidates = [
+            ...new Set(MalloyLexer.ruleNames.map((rule) => rule.toLowerCase())),
+         ].filter((word) => /^[a-z_][a-z0-9_]*$/.test(word));
 
-      const rejected = candidates.filter((word) => !parsesAsSourceName(word));
-      // Guards the sweep itself: if the probe stopped detecting errors this
-      // would collapse to zero and the test would pass having checked nothing.
-      expect(rejected.length).toBeGreaterThan(50);
+         const rejected = candidates.filter(
+            (word) => !parsesAsSourceName(word),
+         );
+         // Guards the sweep itself: if the probe stopped detecting errors this
+         // would collapse to zero and the test would pass having checked nothing.
+         expect(rejected.length).toBeGreaterThan(50);
 
-      const uncovered = rejected.filter(
-         (word) => toMalloyIdentifier(word) !== `${word}_source`,
-      );
-      expect(uncovered).toEqual([]);
-   });
+         const uncovered = rejected.filter(
+            (word) => toMalloyIdentifier(word) !== `${word}_source`,
+         );
+         expect(uncovered).toEqual([]);
+      },
+      SWEEP_TIMEOUT_MS,
+   );
 
-   test("does not suffix lexer words that are legal source names", () => {
-      // False positives cost the user a confusing rename, so keep the list tight.
-      const candidates = [
-         ...new Set(MalloyLexer.ruleNames.map((rule) => rule.toLowerCase())),
-      ].filter((word) => /^[a-z_][a-z0-9_]*$/.test(word));
+   test(
+      "does not suffix lexer words that are legal source names",
+      () => {
+         // False positives cost the user a confusing rename, so keep the list tight.
+         const candidates = [
+            ...new Set(MalloyLexer.ruleNames.map((rule) => rule.toLowerCase())),
+         ].filter((word) => /^[a-z_][a-z0-9_]*$/.test(word));
 
-      const overReached = candidates.filter(
-         (word) =>
-            parsesAsSourceName(word) &&
-            !(word in MALLOY_STANDARD_FUNCTIONS) &&
-            toMalloyIdentifier(word) !== word,
-      );
-      expect(overReached).toEqual([]);
-   });
+         const overReached = candidates.filter(
+            (word) =>
+               parsesAsSourceName(word) &&
+               !(word in MALLOY_STANDARD_FUNCTIONS) &&
+               toMalloyIdentifier(word) !== word,
+         );
+         expect(overReached).toEqual([]);
+      },
+      SWEEP_TIMEOUT_MS,
+   );
 });
 
 /**
