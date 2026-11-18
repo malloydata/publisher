@@ -1,0 +1,65 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# Bun, a frozen-lockfile install, the generated API types and a full build:
+# what every test job in cross-platform-tests.yml does before its suite. One
+# copy, so the Linux shards and the macOS/Windows legs cannot drift apart.
+#
+# Runs after actions/checkout (a local action is read from the checkout). The
+# caller's job env must set BUN_VERSION, and on Windows WINDOWS_USERPROFILE and
+# WINDOWS_BUN_CACHE_DIR; cross-platform-tests.yml sets all three at the top.
+
+name: Set up the workspace
+description: Install Bun and the workspace's dependencies, generate API types, and build.
+
+inputs:
+  restore-cache:
+    description: >-
+      "true" to restore and save the Bun install cache (Linux and macOS). A run
+      that gates a publish passes "false": any `main` job can write `main`'s
+      cache entries, so a release gate reads none (see CONTEXT.md).
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      env:
+        USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
+      with:
+        bun-version: ${{ env.BUN_VERSION }}
+        no-cache: ${{ inputs.restore-cache != 'true' }}
+
+    - name: Cache Bun dependencies (Linux/macOS)
+      if: runner.os != 'Windows' && inputs.restore-cache == 'true'
+      uses: actions/cache@v5
+      with:
+        path: ~/.bun/install/cache
+        # The root lockfile only: this job installs nothing else, and the
+        # post-job save re-evaluates the key after the tests have filled the
+        # workspace, where a `**/bun.lock` walk ran past hashFiles' 120s
+        # limit on macOS and failed a green job.
+        key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+        restore-keys: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
+
+    - name: Install dependencies
+      env:
+        BUN_INSTALL_CACHE_DIR: ${{ runner.os == 'Windows' && env.WINDOWS_BUN_CACHE_DIR || '' }}
+        BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
+      run: bun install --frozen-lockfile --prefer-offline
+      shell: bash
+
+    - name: Generate API types
+      run: bun run generate-api-types
+      shell: bash
+
+    # Also bakes the DuckDB extensions the server suites load offline. On
+    # Windows it shares the D: profile with the server test steps; see the
+    # comment at the top of cross-platform-tests.yml.
+    - name: Build
+      env:
+        USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
+      run: bun run build
+      shell: bash
