@@ -82,14 +82,22 @@ import type {
    VariantSkipExplanation,
 } from "./query_router";
 
-/** The decline vocabulary's name for each leg's codes. */
-const DECLINING_LEG = {
-   view: "view",
-   // The query leg declines in the view leg's codes (`view_*`).
-   query: "view",
-   rollup: "rollup",
-   served: "served_copy",
-} as const satisfies Record<LegKind, string>;
+/**
+ * The decline vocabularies each leg's codes are in. The query leg declines
+ * in its own (`query_*`) and, through the caller-text checks it shares with
+ * the view leg, in the view leg's (`view_*`).
+ */
+const DECLINING_LEGS = {
+   view: ["view"],
+   query: ["query", "view"],
+   rollup: ["rollup"],
+   served: ["served_copy"],
+} as const satisfies Record<LegKind, readonly string[]>;
+
+/** Whether `err` is a decline of the leg `kind`, in any of its vocabularies. */
+function isLegDecline(kind: LegKind, err: unknown): err is LegDecline {
+   return DECLINING_LEGS[kind].some((leg) => isDeclineOf(err, leg));
+}
 
 /** What each leg's skip is logged as, at debug. */
 const SKIP_MESSAGE: Record<LegKind, string> = {
@@ -107,7 +115,7 @@ function logSkip(kind: LegKind, modelPath: string, err: unknown): void {
    if (!logger.isDebugEnabled()) return;
    logger.debug(SKIP_MESSAGE[kind], {
       modelPath,
-      code: isDeclineOf(err, DECLINING_LEG[kind]) ? err.code : "error",
+      code: isLegDecline(kind, err) ? err.code : "error",
       error: err instanceof Error ? err.message : String(err),
    });
 }
@@ -202,9 +210,7 @@ export function variantsOf(
             return { runnable: answer.runnable, extra: answer };
          },
          explain: (err): VariantSkipExplanation | undefined =>
-            isDeclineOf(err, DECLINING_LEG[leg.kind])
-               ? explanationOfDecline(err)
-               : undefined,
+            isLegDecline(leg.kind, err) ? explanationOfDecline(err) : undefined,
          onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
       };
    });

@@ -15,6 +15,7 @@ import {
 import type { BuildPlan, ManifestEntry } from "../domain/types";
 import { boundTablePath, buildVirtualMap } from "./bindings";
 import type { Binding } from "../domain/binding";
+import { databaseDriftFindings } from "./storage_bindings";
 
 const ID = "orders@file:///pkg/m.malloy";
 
@@ -1012,6 +1013,146 @@ describe("applyObservedColumns", () => {
                leftOut: true,
             },
          ]);
+      });
+
+      // F-40: the table is as built, but its source now declares another
+      // type (a warehouse column retyped upstream since the build).
+      it("treats a column its source now declares as another type than the table holds as moved", () => {
+         const run = (declaredType: string) =>
+            applyObservedColumns({
+               entries: {
+                  v1: {
+                     tableName: "t",
+                     connectionName: "duckdb",
+                     schema: [
+                        { name: "cat", type: "VARCHAR" },
+                        { name: "total", type: "BIGINT" },
+                     ],
+                  },
+               },
+               bindings: [],
+               observed: new Map([
+                  [
+                     "v1",
+                     {
+                        dialect: "duckdb",
+                        columns: [
+                           { name: "cat", type: "VARCHAR" },
+                           { name: "total", type: "BIGINT" },
+                        ],
+                     },
+                  ],
+               ]),
+               declared: () => ({
+                  columns: [
+                     { name: "cat", type: "string" },
+                     { name: "total", type: declaredType },
+                  ],
+                  connectionName: "duckdb",
+               }),
+            });
+         const moved = run("string");
+         expect(moved.drifted).toEqual([
+            {
+               sourceEntityId: "v1",
+               columns: [
+                  {
+                     column: "total",
+                     builtType: "BIGINT",
+                     observedType: "BIGINT",
+                     declaredMoved: true,
+                     leftOut: true,
+                  },
+               ],
+            },
+         ]);
+         // Read through the table's held types, the column marked moved, so
+         // the leg checks it against live's type.
+         expect(moved.entries.v1?.heldRead?.columns).toContainEqual({
+            name: "total",
+            type: "BIGINT",
+            moved: true,
+         });
+         // Declared as built: nothing moved, the entry read as it is.
+         const unchanged = run("number");
+         expect(unchanged.drifted).toEqual([]);
+         expect(unchanged.entries.v1?.heldRead).toBeUndefined();
+      });
+
+      it("reads a column the build writes as another type by design (a date truncation as a timestamp) through its cast, unreported", () => {
+         const out = applyObservedColumns({
+            entries: {
+               v1: {
+                  tableName: "t",
+                  connectionName: "duckdb",
+                  schema: [
+                     { name: "m", type: "TIMESTAMP" },
+                     { name: "flag", type: "INTEGER" },
+                  ],
+               },
+            },
+            bindings: [],
+            observed: new Map([
+               [
+                  "v1",
+                  {
+                     dialect: "duckdb",
+                     columns: [
+                        { name: "m", type: "TIMESTAMP" },
+                        { name: "flag", type: "INTEGER" },
+                     ],
+                  },
+               ],
+            ]),
+            declared: () => ({
+               columns: [
+                  { name: "m", type: "date" },
+                  { name: "flag", type: "boolean" },
+               ],
+               connectionName: "duckdb",
+            }),
+         });
+         // Moved, so the leg reads each through its faithful cast (a
+         // retype upstream into the same pair reads correctly), but marked
+         // cast-only, so no warning or count reports it.
+         expect(out.drifted).toEqual([
+            {
+               sourceEntityId: "v1",
+               columns: [
+                  {
+                     column: "m",
+                     builtType: "TIMESTAMP",
+                     observedType: "TIMESTAMP",
+                     declaredMoved: true,
+                     castOnly: true,
+                  },
+                  {
+                     column: "flag",
+                     builtType: "INTEGER",
+                     observedType: "INTEGER",
+                     declaredMoved: true,
+                     castOnly: true,
+                  },
+               ],
+            },
+         ]);
+         expect(
+            out.entries.v1?.heldRead?.columns.filter((c) => c.moved),
+         ).toHaveLength(2);
+         // Declared in the plan as the source declares them now: no warning.
+         const plan = {
+            sources: {
+               "v@file:///m.malloy": {
+                  name: "v",
+                  sourceEntityId: "v1",
+                  columns: [
+                     { name: "m", type: "date" },
+                     { name: "flag", type: "boolean" },
+                  ],
+               },
+            },
+         } as unknown as BuildPlan;
+         expect(databaseDriftFindings(out.drifted, plan, {})).toEqual([]);
       });
 
       // C1/H1: a move inside one Malloy type that may round a value is left
