@@ -169,3 +169,41 @@ source: imported_except is ev_measured extend { except: mark }
       expect(await fixture.servedCopyProblems()).toEqual([]);
    });
 });
+
+describe("F-08: a kept base block that reads the excluded column", () => {
+   let fixture: R4Fixture;
+   useMaterializationOn();
+   beforeAll(async () => {
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `source: ev_east is duckdb.table('ev') extend {
+  measure: amt_total is amt.sum()
+  measure: east_amt is amt.sum() { where: region = 'east' }
+}
+
+#(materialize) name="east_except"
+source: east_except is ev_east extend { except: region }
+`,
+         },
+         seedSql,
+         materialize: true,
+      });
+   });
+   afterAll(async () => {
+      await disposeScenarios();
+   });
+
+   it("answers that source live, equal to live, and names both real reasons", async () => {
+      const run = await fixture.run({
+         name: "east",
+         malloy: "run: east_except -> { group_by: sub; aggregate: amt_total }",
+      });
+      expect(run.servedBy?.kind).toBe("live");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+      const reasons = (await fixture.servedCopyProblems())
+         .filter((p) => p.sourceName === "east_except")
+         .map((p) => p.reason)
+         .sort();
+      expect(reasons).toEqual(["fields_not_carried", "reroot_not_compiled"]);
+   });
+});
