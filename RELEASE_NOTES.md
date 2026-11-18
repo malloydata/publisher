@@ -25,6 +25,15 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 On 0.15.0, a query on a Postgres source answered from a `storage=` table (a `#(rollup)`, a `#(materialize)` or `#@ persist` served copy, or a persisted view) returned a `bigint` value past 2^53 as a JSON number, where live returns the same value as a JSON string: `9007199254740992` served against `"9007199254740992"` live. The digits matched, since live on Postgres rounds such a value through JSON (known limitation 12), but a client that reads the type, or a strict generated client, saw two answers to one query. The stored column is now read with live's `bigint` type, and the answer is rounded as live's is after the query runs, so a served answer equals live's in value and in type, sums included: a sum past 1e21, which live gives as a JSON number in exponent form (`1.8e+21`), is served the same way. A `bigint` column a `storage=` table holds as a float is left out and answered live, since its digits are lost. Database-tier tables are unchanged. Only Postgres is changed: the other dialects whose live answer rounds big integers (Trino, Presto, Databricks, SQL Server) are unmeasured and keep 0.15.0's behaviour. **How to tell:** on 0.15.0, a `bigint` field past 2^53 in a served answer (`servedFrom: "storage"`) on a Postgres source is a number rather than a string.
 
+## [Unreleased] — corrections to the 0.15.0 notes
+
+The 0.15.0 notes left out two API changes and overstated two others. The behaviour shipped in 0.15.0 and is unchanged; only the record is corrected, and `api-doc.yaml` now says the same.
+
+- **`RefusedSource.reason` `rollup_name_collision` is no longer produced.** A rollup's generated name now digests its declaring source, so no two rollups share one. The value is retained in the spec for records an older server stored. Add it to the retained values you accept beside the renames in the 0.15.0 checklist.
+- **Both `sqlTemporaryTable` routes can answer 403** (`STORAGE_ACCESS_DENIED` or `PATH_ACCESS_DENIED`), like the query route and raw `sqlQuery`, when an object store refuses the database's read.
+- **A missing privilege (`42501`) is not always unclassified.** On Postgres its message says permission denied, so `SourceFailure.retryable` reads `false`, as it did in 0.14.0. A Snowflake `42501` stays unclassified.
+- **`MATERIALIZATION_REFUSED` is not answered on any route.** The eligibility gate runs inside a materialization run, after `POST …/materializations` has answered 201, so a refusal is recorded on the run: `SourceFailure.refused` and `refusalReason`, the run's `metadata.refusedSources`, or its `error`. No 0.15.0 route answers a 422 with it.
+
 ## [0.15.0] — (BREAKING) upgrading from 0.14: the checklist
 
 This release is a breaking minor. Every item below is explained in full in its own section further down; this list is what to check, in the order to check it.
