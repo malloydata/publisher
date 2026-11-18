@@ -3,14 +3,20 @@
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
-import type { Connection } from "@malloydata/malloy";
+import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { equalityOnlyExpr } from "./gate_reads";
+import {
+   equalityOnlyExpr,
+   gateReadsOfQuery,
+   storedTableCollationRefusal,
+   stringGateCollationRefusal,
+} from "./gate_reads";
 import {
    duckdbCollation,
    duckdbTableCollation,
    postgresCollation,
    postgresTableCollation,
+   unfinalizedPostgresSQL,
 } from "./gate_collation";
 
 describe("a DuckDB source's string comparison", () => {
@@ -59,6 +65,41 @@ describe("a DuckDB source's string comparison", () => {
          ).toBe("unknown");
       } finally {
          await db.runSQL("DROP MACRO IF EXISTS gate_ci").catch(() => {});
+         await db.close();
+      }
+   });
+
+   it("reads a default_collation set before the instance's configuration was locked", async () => {
+      // As the lockdown leaves an operator's connection: its setupSQL ran,
+      // then the configuration was locked. Reading the setting still works;
+      // only a SET is refused.
+      const db = new DuckDBConnection({
+         name: "duckdb",
+         databasePath: ":memory:",
+         setupSQL: "SET default_collation = 'nocase'",
+         lockConfiguration: true,
+      } as never);
+      try {
+         await expect(db.runSQL("SET default_collation = ''")).rejects.toThrow(
+            /locked/,
+         );
+         const [row] = (
+            await db.runSQL("SELECT current_setting('default_collation') AS c")
+         ).rows;
+         expect(row.c).toBe("nocase");
+         expect(
+            await duckdbCollation(
+               db as unknown as Connection,
+               "SELECT 'a' AS probe_value",
+            ),
+         ).toBe("unknown");
+         expect(
+            await duckdbTableCollation(
+               db as unknown as Connection,
+               "t_missing",
+            ),
+         ).toBe("unknown");
+      } finally {
          await db.close();
       }
    });
@@ -142,6 +183,19 @@ describe("an equality-only comparison", () => {
             kids: { left: { node: "function_call", kids: {} }, right: g },
          }),
       ).toBe(false);
+   });
+});
+
+describe("a Postgres probe's SQL", () => {
+   it("reads the stage Malloy's final stage wraps, and leaves other SQL alone", () => {
+      const stage = `WITH __stage0 AS (\n  SELECT \n     (base."c") as "probe_value"\n  FROM t as base\n  LIMIT 1\n)\n`;
+      expect(
+         unfinalizedPostgresSQL(
+            `${stage}SELECT row_to_json(finalStage) as row FROM __stage0 AS finalStage`,
+         ),
+      ).toBe(`${stage}SELECT * FROM __stage0`);
+      const plain = "SELECT c AS probe_value FROM t";
+      expect(unfinalizedPostgresSQL(plain)).toBe(plain);
    });
 });
 
@@ -236,6 +290,43 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
       }
    });
 
+   it("judges a database table with no path unknown, never binary", async () => {
+      const postgresAuthor = new SingleConnectionRuntime({ connection: pg })
+         .loadModel(`source: s is pg.sql("SELECT 'a' AS c")`)
+         .loadQuery("run: s -> { select: c }");
+      expect(
+         await storedTableCollationRefusal({
+            tables: [{ tier: "database" }],
+            answerRunnable: {
+               runtime: {
+                  connections: { lookupConnection: async () => pg },
+               },
+            } as never,
+            virtualMap: undefined,
+            authorRunnable: postgresAuthor as never,
+            reads: undefined,
+         }),
+      ).toBeDefined();
+   });
+
+   it("reads a column through a query Malloy compiled, as the probe sends it", async () => {
+      const { sql } = await new SingleConnectionRuntime({ connection: pg })
+         .loadModel(`source: s is pg.table('public.gate_coll_t')`)
+         .loadQuery("run: s -> { select: probe_value is c_bin; limit: 1 }")
+         .getPreparedResult();
+      // Malloy wraps a Postgres query's rows as one JSON column, which has
+      // no `probe_value` to read.
+      await expect(
+         postgresCollation(pg as unknown as Connection, sql),
+      ).rejects.toThrow();
+      expect(
+         await postgresCollation(
+            pg as unknown as Connection,
+            unfinalizedPostgresSQL(sql),
+         ),
+      ).toBe("binary");
+   });
+
    it("reads an empty source's column too", async () => {
       expect(
          await postgresCollation(
@@ -245,3 +336,139 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
       ).toBe("binary");
    });
 });
+
+/**
+ * A gate over a dimension computed from a string column compares that
+ * column, so its collation is probed though the gate names only the
+ * dimension: through a rename of it, a nested dimension, and a join.
+ */
+describe.skipIf(!url)(
+   "a Postgres gate over a dimension computed from a string",
+   () => {
+      const MODEL = (
+         table: string,
+      ) => `##! experimental { givens access_modifiers composite_sources }
+given: FLAG :: boolean
+source: rows is pg.table('public.${table}') extend {
+  primary_key: id
+  dimension:
+    late is region > 'M'
+    is_n is region = 'n'
+    is_n2 is is_n
+}
+#(access_filter) late = $FLAG
+source: g_late is rows extend {}
+#(access_filter) is_n = $FLAG
+source: g_is_n is rows extend {}
+#(access_filter) is_n2 = $FLAG
+source: g_nested is rows extend {}
+#(access_filter) r.is_n = $FLAG
+source: g_join is pg.table('public.${table}') extend {
+  primary_key: id
+  join_one: r is rows on id = r.id
+}
+source: comp is compose(rows, rows extend { except: id })
+source: c_late is comp extend { where: late }
+source: c_is_n is comp extend { where: is_n }
+source: c_nested is comp extend {
+  dimension: l2 is late and id > 0
+  where: l2
+}
+`;
+      const conns: PostgresConnection[] = [];
+      const connect = (db: string | undefined) => {
+         const c = new PostgresConnection(
+            "pg",
+            () => ({}),
+            async () => ({
+               connectionString:
+                  db === undefined ? url : url!.replace(/\/[^/]*$/, `/${db}`),
+            }),
+         );
+         conns.push(c);
+         return c;
+      };
+      let def: PostgresConnection;
+      let cdb: PostgresConnection;
+
+      beforeAll(async () => {
+         def = connect(undefined);
+         await def
+            .runSQL(
+               `CREATE DATABASE gate_cdef LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
+            )
+            .catch(() => {});
+         cdb = connect("gate_cdef");
+         for (const pg of [def, cdb]) {
+            await pg.runSQL(
+               `DO $$ BEGIN CREATE COLLATION IF NOT EXISTS gate_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false); EXCEPTION WHEN others THEN NULL; END $$`,
+            );
+            for (const [t, collate] of [
+               ["gate_der_ci", "gate_ci"],
+               ["gate_der_c", '"C"'],
+            ]) {
+               await pg.runSQL(`DROP TABLE IF EXISTS ${t}`);
+               await pg.runSQL(
+                  `CREATE TABLE ${t} (id int, region text COLLATE ${collate})`,
+               );
+               await pg.runSQL(
+                  `INSERT INTO ${t} VALUES (1,'a'),(2,'B'),(3,'m'),(4,'N'),(5,'z')`,
+               );
+            }
+         }
+      });
+      afterAll(async () => {
+         for (const c of conns) {
+            for (const t of ["gate_der_ci", "gate_der_c"]) {
+               await c.runSQL(`DROP TABLE IF EXISTS ${t}`).catch(() => {});
+            }
+            await c.close();
+         }
+      });
+
+      const refusal = async (
+         pg: PostgresConnection,
+         table: string,
+         source: string,
+      ) => {
+         const q = new SingleConnectionRuntime({ connection: pg })
+            .loadModel(MODEL(table))
+            .loadQuery(`run: ${source} -> { group_by: id; order_by: id }`);
+         const reads = await gateReadsOfQuery(q as never);
+         return stringGateCollationRefusal({
+            authorRunnable: q as never,
+            reads,
+            stringStored: true,
+            givens: { FLAG: true },
+         });
+      };
+
+      it("refuses an equality through a dimension over a nondeterministic column", async () => {
+         for (const s of ["g_is_n", "g_nested", "g_join"]) {
+            expect(await refusal(def, "gate_der_ci", s), s).toBeDefined();
+         }
+      });
+
+      it("refuses an ordering through a dimension over a nondeterministic column, under a C default", async () => {
+         for (const s of ["g_late", "g_nested", "g_join"]) {
+            expect(await refusal(cdb, "gate_der_ci", s), s).toBeDefined();
+         }
+      });
+
+      it("refuses a scope through a composite's dimension, under a C default", async () => {
+         // A composite's field is resolved per member when the query compiles,
+
+         // so its expression names no column a probe could read.
+
+         for (const s of ["c_late", "c_is_n", "c_nested"]) {
+            expect(await refusal(cdb, "gate_der_ci", s), s).toBeDefined();
+         }
+      });
+
+      it("still admits every one over a C column under a C default", async () => {
+         for (const s of ["g_late", "g_is_n", "g_nested", "g_join"]) {
+            expect(await refusal(cdb, "gate_der_c", s), s).toBeUndefined();
+         }
+      });
+   },
+);

@@ -604,6 +604,100 @@ export function probeSelect(dialect: string, innerSelect: string): string {
 }
 
 /**
+ * `sql` bounded to `timeoutMs` on the warehouse itself, for a read that may be
+ * given up on (the late-row check): Postgres takes a transaction-local
+ * `statement_timeout` (`set_config(…, true)`) in the same simple-protocol
+ * call, which holds for that call's implicit transaction alone, because
+ * Malloy's Postgres connection cannot cancel a statement in flight; a
+ * stricter timeout the session already has is kept. Every other dialect takes `sql` as it
+ * is: BigQuery, Snowflake and DuckDB cancel through the run options' abort
+ * signal.
+ */
+export function withStatementTimeout(
+   dialect: string,
+   sql: string,
+   timeoutMs: number,
+): string {
+   const knownDialect = registeredDialect(dialect);
+   const ms = Math.max(1, Math.round(timeoutMs));
+   switch (knownDialect) {
+      case "postgres":
+         return (
+            // The smaller of this and the session's own timeout (a
+            // connection's statementTimeoutMilliseconds, set when the session
+            // opens): a stricter one the connection chose is kept.
+            `SELECT set_config('statement_timeout', (SELECT CASE WHEN ` +
+            `setting::bigint > 0 AND setting::bigint < ${ms} THEN setting ` +
+            `ELSE '${ms}' END FROM pg_settings WHERE name = ` +
+            `'statement_timeout'), true); ${sql}`
+         );
+      case "duckdb":
+      case "standardsql":
+      case "snowflake":
+      case "databricks":
+      case "trino":
+      case "presto":
+      case "mysql":
+      case "sqlserver":
+         return sql;
+      default:
+         unregistered(knownDialect);
+         return sql;
+   }
+}
+
+/**
+ * A date or timestamp watermark expression as TEXT the bound parser reads
+ * (`canonicalBoundValue` in incremental_apply.ts): `YYYY-MM-DD` for a date,
+ * `YYYY-MM-DD HH:MM:SS[.f]` in UTC for a timestamp, with no offset or a zero
+ * one.
+ *
+ * Text, not the driver's own value, because drivers disagree about a
+ * timestamp: node-postgres hands back a zone-naive one as a Date in the
+ * PROCESS's zone, which off UTC would move the bound by hours. Every
+ * incremental session is pinned to UTC, so a zoned timestamp's text is UTC.
+ * Postgres and Snowflake spell an explicit format, because a cast follows the
+ * session's `DateStyle` (Postgres) or the account's `TIMESTAMP_OUTPUT_FORMAT`
+ * (Snowflake), which a connection's setup may change; Snowflake converts
+ * first, because a `TIMESTAMP_TZ` prints in the offset it was stored with. A
+ * dialect with no incremental refresh takes the standard cast.
+ */
+export function watermarkTextSql(
+   dialect: string,
+   malloyType: "date" | "timestamp",
+   expression: string,
+): string {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
+      case "snowflake":
+         return malloyType === "date"
+            ? `TO_CHAR(${expression}, 'YYYY-MM-DD')`
+            : `TO_CHAR(CONVERT_TIMEZONE('UTC', ${expression})::TIMESTAMP_NTZ, ` +
+                 `'YYYY-MM-DD HH24:MI:SS')`;
+      case "standardsql":
+         return `CAST(${expression} AS STRING)`;
+      case "postgres":
+         // `OF`: the session's offset, `+00` under UTC. Without it a session
+         // set to a zone with daylight saving prints the fall-back hour's two
+         // instants alike; with it, any zone but UTC is refused and the
+         // source is rebuilt rather than started an hour late.
+         return malloyType === "date"
+            ? `to_char(${expression}, 'YYYY-MM-DD')`
+            : `to_char(${expression}, 'YYYY-MM-DD HH24:MI:SSOF')`;
+      case "duckdb":
+      case "databricks":
+      case "trino":
+      case "presto":
+      case "mysql":
+      case "sqlserver":
+         return `CAST(${expression} AS VARCHAR)`;
+      default:
+         unregistered(knownDialect);
+         return `CAST(${expression} AS VARCHAR)`;
+   }
+}
+
+/**
  * The query reading the column names, in ordinal order, of the table whose
  * decoded path is `segments` (one row per column, `column_name`). Undefined
  * when the name gives no container to read the catalog in: every dialect but

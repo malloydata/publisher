@@ -139,10 +139,12 @@ describe.skipIf(process.platform === "win32")(
          const root = fs.realpathSync(
             fs.mkdtempSync(path.join(os.tmpdir(), "database-ducklake-")),
          );
-         const lakeDir = path.join(root, "lake");
+         // Inside the environment directory, the only place an env
+         // connection's setupSQL reaches (duckdb_lockdown.ts).
+         const lakeDir = path.join(root, "env", "lake");
          fs.mkdirSync(path.join(lakeDir, "data"), { recursive: true });
          const envPath = path.join(root, "env");
-         fs.mkdirSync(envPath);
+         fs.mkdirSync(envPath, { recursive: true });
          writePackageFiles(
             path.join(envPath, PKG),
             { "m.malloy": MODEL },
@@ -157,7 +159,7 @@ describe.skipIf(process.platform === "win32")(
          );
          const repo = createDuckDBRepository(db);
          const setupSQL = [
-            "INSTALL ducklake",
+            // No INSTALL: setupSQL runs confined, with ducklake preloaded.
             "LOAD ducklake",
             "SET ducklake_default_data_inlining_row_limit = 0",
             `ATTACH IF NOT EXISTS 'ducklake:${path.join(lakeDir, "origin.ducklake")}' AS origin_lake (DATA_PATH '${path.join(lakeDir, "data")}/')`,

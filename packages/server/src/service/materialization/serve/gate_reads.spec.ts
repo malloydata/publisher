@@ -104,3 +104,268 @@ describe("gateReads: the row scope", () => {
       expect(reads.columns).toEqual([["amount"]]);
    });
 });
+
+describe("gateReads: equality-only", () => {
+   const str = (path: string[]) => ({ node: "field", path });
+   const US = { node: "stringLiteral", literal: "US" };
+   const ORDERS = {
+      type: "table",
+      sourceID: "orders@m",
+      fields: [
+         { name: "region", type: "string" },
+         { name: "amount", type: "number" },
+         // `dimension: big is amount > 100`
+         {
+            name: "big",
+            type: "boolean",
+            e: {
+               node: ">",
+               kids: {
+                  left: str(["amount"]),
+                  right: { node: "numberLiteral" },
+               },
+            },
+         },
+         // `dimension: late is region > 'M'`
+         {
+            name: "late",
+            type: "boolean",
+            e: { node: ">", kids: { left: str(["region"]), right: US } },
+         },
+      ],
+   };
+   const scopedBy = (...terms: unknown[]) => ({
+      ...ORDERS,
+      filterList: terms.map((e) => ({ e })),
+   });
+   const regionIsUS = { node: "=", kids: { left: str(["region"]), right: US } };
+
+   it("holds beside an ordering that compares no string, written or read through a field", () => {
+      const ordering = {
+         node: ">",
+         kids: { left: str(["amount"]), right: { node: "numberLiteral" } },
+      };
+      expect(gateReads(scopedBy(regionIsUS, ordering), []).equalityOnly).toBe(
+         true,
+      );
+      expect(
+         gateReads(scopedBy(regionIsUS, str(["big"])), []).equalityOnly,
+      ).toBe(true);
+   });
+
+   it("does not hold for an ordering over a string, written or read through a field", () => {
+      const ordering = {
+         node: ">",
+         kids: { left: str(["region"]), right: US },
+      };
+      expect(gateReads(scopedBy(ordering), []).equalityOnly).toBe(false);
+      expect(gateReads(scopedBy(str(["late"])), []).equalityOnly).toBe(false);
+   });
+});
+
+describe("gateReads: compares no string", () => {
+   const field = (path: string[]) => ({ node: "field", path });
+   const M = { node: "stringLiteral", literal: "M" };
+   const ORDERS = {
+      type: "table",
+      sourceID: "orders@m",
+      fields: [
+         { name: "region", type: "string" },
+         { name: "amount", type: "number" },
+         // `dimension: big is amount > 100`
+         {
+            name: "big",
+            type: "boolean",
+            e: {
+               node: ">",
+               kids: {
+                  left: field(["amount"]),
+                  right: { node: "numberLiteral" },
+               },
+            },
+         },
+         // `dimension: late is region > 'M'`
+         {
+            name: "late",
+            type: "boolean",
+            e: { node: ">", kids: { left: field(["region"]), right: M } },
+         },
+         // `dimension: is_m is region = 'M'`
+         {
+            name: "is_m",
+            type: "boolean",
+            e: { node: "=", kids: { left: field(["region"]), right: M } },
+         },
+         // `dimension: late_n is pick 1 when region > 'M' else 0`
+         {
+            name: "late_n",
+            type: "number",
+            e: {
+               node: "pick",
+               kids: {
+                  pickWhen: [
+                     { node: ">", kids: { left: field(["region"]), right: M } },
+                  ],
+                  pickThen: [{ node: "numberLiteral" }],
+                  pickElse: { node: "numberLiteral" },
+               },
+            },
+         },
+      ],
+   };
+   const MODEL = {
+      givens: { "flag@m": { name: "FLAG", type: { type: "boolean" } } },
+   };
+
+   it("holds for a gate over a boolean computed from no string", () => {
+      expect(gateReads(ORDERS, ["big = $FLAG"], MODEL).comparesNoString).toBe(
+         true,
+      );
+   });
+
+   it("does not hold for a gate over a dimension computed from a string", () => {
+      for (const name of ["late", "is_m", "late_n"]) {
+         expect(
+            gateReads(ORDERS, [`${name} = $FLAG`], MODEL).comparesNoString,
+            name,
+         ).toBe(false);
+      }
+   });
+
+   it("lists the columns a computed field reads as entry paths, through a join too", () => {
+      expect(gateReads(ORDERS, ["late = $FLAG"], MODEL).entryPaths).toEqual([
+         ["late"],
+         ["region"],
+      ]);
+      const joined = {
+         type: "table",
+         sourceID: "j@m",
+         fields: [{ ...ORDERS, name: "o", join: "one" }],
+      };
+      const reads = gateReads(joined, ["o.is_m = $FLAG"], MODEL);
+      expect(reads.entryPaths).toEqual([
+         ["o", "is_m"],
+         ["o", "region"],
+      ]);
+      expect(reads.entryPathsComplete).toBe(true);
+   });
+
+   it("leaves the entry paths incomplete for a field whose expression names nothing it reads", () => {
+      // A composite's field, resolved per member at compile.
+      const composite = {
+         ...ORDERS,
+         fields: [
+            ...ORDERS.fields,
+            { name: "c_late", type: "boolean", e: { node: "compositeField" } },
+         ],
+      };
+      const reads = gateReads(composite, ["c_late = $FLAG"], MODEL);
+      expect(reads.entryPathsComplete).toBe(false);
+      expect(reads.comparesNoString).toBe(false);
+   });
+
+   it("does not hold for a where: over a dimension computed from a string", () => {
+      const scoped = { ...ORDERS, filterList: [{ e: field(["is_m"]) }] };
+      expect(gateReads(scoped, []).comparesNoString).toBe(false);
+   });
+
+   it("does not hold for a computed stage output of a query-shaped source", () => {
+      const q = {
+         type: "query_result",
+         sourceID: "q@m",
+         query: {
+            structRef: ORDERS,
+            pipeline: [
+               {
+                  type: "reduce",
+                  queryFields: [
+                     {
+                        name: "late",
+                        type: "boolean",
+                        e: {
+                           node: ">",
+                           kids: { left: field(["region"]), right: M },
+                        },
+                     },
+                  ],
+               },
+            ],
+         },
+         fields: [{ name: "late", type: "boolean" }],
+      };
+      const reads = gateReads(q, ["late = $FLAG"], MODEL);
+      expect(reads.comparesNoString).toBe(false);
+      // Its reads have no path from the entry point.
+      expect(reads.entryPathsComplete).toBe(false);
+   });
+});
+
+describe("gateReads: a stage output of a stored source is a stored column", () => {
+   const field = (path: string[]) => ({ node: "field", path });
+   const RAW = {
+      type: "table",
+      sourceID: "raw@m",
+      fields: [{ name: "category", type: "string" }],
+   };
+   // `source: gated is raw -> { group_by: category, tenant is concat(category, '-x') }`
+   const GATED = {
+      type: "query_result",
+      sourceID: "gated@m",
+      query: {
+         structRef: RAW,
+         pipeline: [
+            {
+               type: "reduce",
+               queryFields: [
+                  { type: "fieldref", path: ["category"] },
+                  {
+                     name: "tenant",
+                     type: "string",
+                     e: {
+                        node: "function_call",
+                        name: "concat",
+                        kids: {
+                           args: [
+                              field(["category"]),
+                              { node: "stringLiteral", literal: "-x" },
+                           ],
+                        },
+                     },
+                  },
+               ],
+            },
+         ],
+      },
+      fields: [
+         { name: "category", type: "string" },
+         { name: "tenant", type: "string" },
+      ],
+   };
+   const MODEL = {
+      givens: { "groups@m": { name: "GROUPS", type: { type: "string" } } },
+   };
+
+   it("compares only the stored column when the source's own table is read", () => {
+      const reads = gateReads(
+         GATED,
+         ["tenant in $GROUPS"],
+         MODEL,
+         new Set(["gated@m"]),
+      );
+      // The read compares `tenant IN (...)`: equality, over a string.
+      expect(reads.equalityOnly).toBe(true);
+      expect(reads.comparesNoString).toBe(false);
+      expect(reads.unresolved).toBe(false);
+      expect(reads.entryPaths).toEqual([["tenant"]]);
+      expect(reads.entryPathsComplete).toBe(true);
+      expect(reads.columns).toEqual([["tenant"]]);
+   });
+
+   it("follows the stage back, failing closed, when the stage is computed at read", () => {
+      // Read through another table (or none): the stage runs when read.
+      const reads = gateReads(GATED, ["tenant in $GROUPS"], MODEL, new Set());
+      expect(reads.equalityOnly).toBe(false);
+      expect(reads.entryPathsComplete).toBe(false);
+      expect(reads.columns).toEqual([["tenant", "category"]]);
+   });
+});

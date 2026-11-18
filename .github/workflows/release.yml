@@ -55,8 +55,27 @@ jobs:
     with:
       skip: ${{ inputs.skip_main_thread_check == true }}
 
+  # The whole test suite on macOS and Windows, against the commit being
+  # released, before anything is cut or published. Pull requests run the suite
+  # on Linux only (build.yml), so without this a release could ship a commit no
+  # macOS or Windows run has seen; the nightly cannot stand in for it, because
+  # main usually moves between the nightly and a dispatch. It runs alongside the
+  # main-thread gate, and `prepare` needs both, so a failure leaves no release
+  # branch behind. There is no skip input: a release that cannot pass it waits
+  # for the fix. Linux needs no repeat here, since every push to main ran it.
+  # No Actions cache is read (`restore_cache: false`): see CONTEXT.md.
+  cross-platform-tests:
+    name: Cross Platform Tests
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cross-platform-tests.yml
+    with:
+      linux: false
+      macos_windows: true
+      restore_cache: false
+
   prepare:
-    needs: main-thread-check
+    needs: [ main-thread-check, cross-platform-tests ]
     runs-on: ubuntu-latest
     permissions:
       contents: write

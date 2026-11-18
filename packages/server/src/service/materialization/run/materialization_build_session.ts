@@ -101,7 +101,9 @@ import {
    type PartitionKey,
 } from "../../connection";
 import type { WatermarkBound } from "./incremental_apply";
+import type { LateRows } from "../domain/types";
 import { storageDestinationRoot } from "../../connection_config";
+import { lockDownDuckDBSession } from "../../duckdb_lockdown";
 import {
    DEFAULT_DESTINATION_SCHEMA,
    destinationSchemaOf,
@@ -897,6 +899,8 @@ interface StorageRefreshOutcome {
    refresh: "delta" | "none";
    /** What the delta's own warehouse read cost, when its shape reported it. */
    readCost: BuildReadCost | null;
+   /** What the late-row check found below the delta (domain/types.ts). */
+   lateRows?: LateRows;
 }
 
 /**
@@ -1066,6 +1070,16 @@ export async function buildSourceIntoStorage(params: {
                        ),
                     )
                   : async () => {};
+            // Setup done (the destination attached, the source federated):
+            // confine the session to them (duckdb_lockdown.ts). The
+            // configuration is left unlocked because the build itself sets
+            // per-step options (threads around a partitioned write); no caller
+            // or author SQL runs in DuckDB here, as the build's SQL runs in the
+            // source warehouse through the passthrough.
+            await lockDownDuckDBSession(session, {
+               allow: destinationAllowlist(params),
+               lockConfiguration: false,
+            });
             try {
                return await buildOnFederatedSession(
                   params,
@@ -1280,6 +1294,12 @@ async function buildSameCatalogIntoStorage(params: {
       { purpose: "build", attachAs: alias, build: true, signal: params.signal },
       async (session) => {
          await session.runSQL(managedSearchPathSql(alias));
+         // Confined to the catalog before the build's SQL runs, unlocked for the
+         // build's own per-step options (see buildSourceIntoStorage).
+         await lockDownDuckDBSession(session, {
+            allow: destinationAllowlist(params),
+            lockConfiguration: false,
+         });
          const target = quoteManifestTablePath(
             storageTablePath(
                alias,
@@ -1883,6 +1903,23 @@ async function attachDestinationReadWrite(
    await session.runSQL(
       `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)}`,
    );
+}
+
+/**
+ * What a build session on a destination reads and writes, beyond what its
+ * attach recorded (duckdb_lockdown.ts): the plain-DuckDB destinations' root,
+ * and the DuckLake destination's configured data path.
+ */
+function destinationAllowlist(params: {
+   destinationConnection: ApiConnection;
+   environmentPath: string;
+}): string[] {
+   const dataPath =
+      params.destinationConnection.ducklakeConnection?.storage?.bucketUrl;
+   return [
+      storageDestinationRoot(params.environmentPath),
+      ...(dataPath ? [dataPath] : []),
+   ];
 }
 
 /** Throw a clean 422 unless the destination is a supported storage type. */

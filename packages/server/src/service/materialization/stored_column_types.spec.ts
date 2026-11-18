@@ -605,9 +605,7 @@ describe("bigIntegerReads (known limitation 12)", () => {
          );
          expect(plan.leftOut.map((m) => m.column)).toEqual(["h", "i"]);
          expect(plan.refusals).toEqual([]);
-         expect(plan.casts.map((c) => c.column)).toEqual(
-            dialect === "duckdb" ? ["b"] : [],
-         );
+         expect(plan.casts.map((c) => c.column)).toEqual(["b"]);
       }
    });
 
@@ -659,11 +657,28 @@ describe("bigIntegerReads (known limitation 12)", () => {
       ).toEqual([{ column: "ID", castTo: "HUGEINT" }]);
    });
 
-   it("keeps a storage= table of a source whose live answer rounds as it is: served equals live", () => {
+   it("reads a storage= table of a source whose live answer rounds as HUGEINT too, for live's bigint subtype (the answer is rounded after it runs)", () => {
       expect(liveKeepsBigIntegers("postgres")).toBe(false);
       expect(
          bigIntegerReads(schema("BIGINT"), fields, { dialect: "postgres" }),
-      ).toEqual([]);
+      ).toEqual([{ column: "id", castTo: "HUGEINT" }]);
+   });
+
+   it("leaves a float-stored big integer out wherever it is: its digits are lost", () => {
+      for (const dialect of ["postgres", "duckdb"]) {
+         expect(bigIntegerReads(schema("DOUBLE"), fields, { dialect })).toEqual(
+            [{ column: "id" }],
+         );
+      }
+   });
+
+   it("keeps a storage= table of a source whose rounding is unmeasured as it is", () => {
+      for (const dialect of ["trino", "presto", "databricks", "sqlserver"]) {
+         expect(liveKeepsBigIntegers(dialect)).toBe(false);
+         expect(bigIntegerReads(schema("BIGINT"), fields, { dialect })).toEqual(
+            [],
+         );
+      }
    });
 
    const database = (dialect: string, nativeType: string | undefined) =>

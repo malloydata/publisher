@@ -163,7 +163,7 @@ export function persistQueryKeyFindings(
 }
 
 /** `#@ persist` keys that make a build incremental: a result rebuilds whole. */
-export const INCREMENTAL_KEYS = ["watermark", "merge_key"] as const;
+export const INCREMENTAL_KEYS = ["watermark", "merge_key", "lookback"] as const;
 
 /**
  * Why a persisted query's `#@ persist` declaration is invalid, beyond its

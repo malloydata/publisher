@@ -68,6 +68,19 @@ const REPORT = process.env.CONFORMANCE_REPORT === "1";
 const SWITCHES: Switch[] = ["cutover"];
 /** The table formats every variant runs in. */
 const LAKES: LakeFormat[] = ["duckdb", "parquet"];
+/**
+ * A fixture's settings under `lake`: a `parquet` fixture's origin is an
+ * environment DuckDB connection with `setupSQL` (package_runner.ts), which
+ * runs only on the operator's opt-in, as in production.
+ */
+function settingsUnder(
+   lake: LakeFormat,
+   env: Record<string, string> = {},
+): Record<string, string> {
+   return lake === "parquet"
+      ? { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true", ...env }
+      : env;
+}
 
 /**
  * Metadata differences every stored read has on main, tolerated per case so
@@ -294,7 +307,7 @@ for (const lake of LAKES) {
                // rollup leg's, under their v2 names) and at bind, so it gets a
                // package of its own, loaded, built and bound under it, by a
                // load pool spawned with it.
-               restore = withSwitch("on", shape.env);
+               restore = withSwitch("on", settingsUnder(lake, shape.env));
                try {
                   await freshLoadPool();
                   const loader = await loadFixture(
@@ -307,13 +320,16 @@ for (const lake of LAKES) {
                   fixture = await loader.bind({ includeRollups: true });
                   for (const on of SWITCHES.filter((s) => s !== "cutover")) {
                      restore();
-                     restore = withSwitch(on, shape.env);
+                     restore = withSwitch(on, settingsUnder(lake, shape.env));
                      for (const q of shape.queries) {
                         served.set(key(q, on), await runIn(fixture, q));
                      }
                   }
                   restore();
-                  restore = withSwitch("cutover", shape.env);
+                  restore = withSwitch(
+                     "cutover",
+                     settingsUnder(lake, shape.env),
+                  );
                   await freshLoadPool();
                   const cutoverLoader = await loadFixture(
                      { ...DATA_FILES, ...renderFiles(shape, variant) },
@@ -484,7 +500,7 @@ describe("conformance: the parquet run reads Parquet", () => {
                  .filter((f) => f.endsWith(".parquet"))
             : [];
       for (const variant of ["storage", "database"] as const) {
-         const restore = withSwitch("cutover");
+         const restore = withSwitch("cutover", settingsUnder("parquet"));
          await freshLoadPool();
          const loader = await loadFixture(
             { ...DATA_FILES, ...renderFiles(SHAPES[0], variant) },
@@ -493,11 +509,13 @@ describe("conformance: the parquet run reads Parquet", () => {
          try {
             const bound = await loader.bind();
             expect(bound.buildErrors).toEqual({});
+            // The origin's lake sits in the environment directory, which its
+            // operator connection is confined to (package_runner.ts).
             const dir =
-               variant === "storage" ? "lake_data" : "origin_parquet_data";
-            expect(files(path.join(loader.root, dir)).length).toBeGreaterThan(
-               0,
-            );
+               variant === "storage"
+                  ? path.join(loader.root, "lake_data")
+                  : path.join(loader.root, "env", "origin_parquet_data");
+            expect(files(dir).length).toBeGreaterThan(0);
          } finally {
             await loader.dispose();
             restore();

@@ -18,6 +18,10 @@ import type {
    QueryMaterializer,
    SourceDef,
 } from "@malloydata/malloy";
+import {
+   ACCESS_FILTER_ROUTE,
+   canonicalAuthorizeRoute,
+} from "../../authorize_routes";
 import { collectEntryPointGates } from "../../gate_classification";
 import {
    readPreparedQuery,
@@ -26,6 +30,9 @@ import {
 import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import { malloyIdentifiers } from "../../query_text";
 
+import { fieldPathsIn } from "./gate_paths";
+import type { GateReads } from "./gate_reads_types";
+
 // The comparison rule beside the column rules, read by the router through
 // this module.
 export {
@@ -33,29 +40,6 @@ export {
    storedTypeIsString,
    stringGateCollationRefusal,
 } from "./gate_collation";
-
-/** Every field path an expression reads (`node: "field"`), at any depth. */
-export function fieldPathsIn(
-   e: unknown,
-   out: string[][] = [],
-   depth = 0,
-): string[][] {
-   if (depth > 64 || e === null || typeof e !== "object") return out;
-   if (Array.isArray(e)) {
-      for (const x of e) fieldPathsIn(x, out, depth + 1);
-      return out;
-   }
-   const n = e as { node?: unknown; path?: unknown };
-   if (
-      n.node === "field" &&
-      Array.isArray(n.path) &&
-      n.path.every((p) => typeof p === "string")
-   ) {
-      out.push(n.path as string[]);
-   }
-   for (const v of Object.values(e)) fieldPathsIn(v, out, depth + 1);
-   return out;
-}
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
 export function gateIdentifiers(exprs: readonly string[]): string[] {
@@ -107,50 +91,40 @@ function gatePaths(exprs: readonly string[]): {
    return { paths, unresolved };
 }
 
-/** What an entry point's row-level gates read. */
-export interface GateReads {
-   /**
-    * Every name the gates read, and every field those are computed from,
-    * through renames, expressions, joins and query stages. Over-collected on
-    * purpose, for the readers that decline on a match (the zone checks).
-    */
-   readonly names: ReadonlySet<string>;
-   /**
-    * Each stored column the gates read, as the names it goes by along the way
-    * from the gate to the column (a rename's, a query stage's output, the
-    * base column's), any of which a stored table may hold it under.
-    */
-   readonly columns: readonly (readonly string[])[];
-   /**
-    * A name the gates read that could not be followed to a column: a reader
-    * that judges the columns must fail closed.
-    */
-   readonly unresolved: boolean;
-   /**
-    * The rows the query reads are scoped by a `where:` (the source's own, one
-    * it extends, a composite member's, or a query-shaped source's base's or
-    * stage's): its columns are read here as a gate's are.
-    */
-   readonly scoped: boolean;
-   /** The entry point carries a gate: the gate policy judges these columns past it. */
-   readonly gated: boolean;
-   /**
-    * Every comparison the gates and scopes make, and every computed field they
-    * read through, is an equality (`=`, `!=`, `in`, `is null`) over fields,
-    * givens and literals ({@link equalityOnlyExpr}). Equality is byte-exact
-    * under a deterministic collation; anything else (an ordering, a pattern,
-    * a function) compares as the column's collation orders it, so it holds
-    * on a stored copy only where that collation is binary.
-    */
-   readonly equalityOnly: boolean;
-   /**
-    * The field paths, from the entry point, that the gates and the entry
-    * point's own `where:` terms compare; `entryPathsComplete` is false when a
-    * scope is read from elsewhere (a composite member, a join, a query-shaped
-    * source's base or stage), whose fields have no path from the entry point.
-    */
-   readonly entryPaths: readonly (readonly string[])[];
-   readonly entryPathsComplete: boolean;
+export type { GateReads } from "./gate_reads_types";
+
+/** The operators a comparison of non-string values may be built with. */
+const NON_STRING_OPERATORS = new Set([
+   "=",
+   "!=",
+   "<",
+   "<=",
+   ">",
+   ">=",
+   "in",
+   "not",
+   "and",
+   "or",
+   "()",
+   "is-null",
+   "is-not-null",
+]);
+
+/** A known type that is not a string. Unknown is not. */
+function nonStringType(t: unknown): boolean {
+   return typeof t === "string" && t !== "string";
+}
+
+/** The type of the field a path names on `source`, through joins. */
+function typeAt(source: unknown, path: readonly string[]): unknown {
+   let at: unknown = source;
+   let field: FieldLike | undefined;
+   for (const name of path) {
+      field = fieldsOf(at).get(name);
+      if (field === undefined) return undefined;
+      at = field;
+   }
+   return field?.type;
 }
 
 /** The IR nodes an equality-only comparison is built from. */
@@ -231,6 +205,7 @@ class GateReadWalk {
    unresolved = false;
    scoped = false;
    equalityOnly = true;
+   comparesNoString = true;
    readonly entryPaths: string[][] = [];
    entryPathsComplete = true;
    private steps = 0;
@@ -239,6 +214,99 @@ class GateReadWalk {
       private readonly modelDef: unknown,
       private readonly stored: ReadonlySet<string>,
    ) {}
+
+   /** A given's declared type, by its id in the model, or undefined. */
+   givenType(id: unknown): string | undefined {
+      const g = (
+         this.modelDef as {
+            givens?: Record<string, { type?: { type?: unknown } }>;
+         }
+      )?.givens?.[String(id)];
+      const t = g?.type?.type;
+      return typeof t === "string" ? t : undefined;
+   }
+
+   /** The declared types of the givens named `name`, every one. */
+   givenTypesNamed(name: string): (string | undefined)[] {
+      const givens = (
+         this.modelDef as {
+            givens?: Record<
+               string,
+               { name?: unknown; type?: { type?: unknown } }
+            >;
+         }
+      )?.givens;
+      return Object.values(givens ?? {})
+         .filter((g) => g.name === name)
+         .map((g) =>
+            typeof g.type?.type === "string" ? g.type.type : undefined,
+         );
+   }
+
+   /**
+    * Whether every leaf of `e` is a non-string value ({@link GateReads}'s
+    * `comparesNoString`), its fields typed on `source`.
+    */
+   leavesNotString(e: unknown, source: unknown, depth = 0): boolean {
+      if (depth > 64 || e === null || typeof e !== "object") return false;
+      const n = e as { node?: unknown; path?: unknown; id?: unknown };
+      switch (n.node) {
+         case "field":
+            return (
+               Array.isArray(n.path) &&
+               nonStringType(typeAt(source, n.path as string[]))
+            );
+         case "given":
+            return nonStringType(this.givenType(n.id));
+         case "numberLiteral":
+         case "true":
+         case "false":
+         case "null":
+         case "dateLiteral":
+         case "timestampLiteral":
+            return true;
+         default:
+            if (
+               typeof n.node !== "string" ||
+               !NON_STRING_OPERATORS.has(n.node)
+            ) {
+               return false;
+            }
+      }
+      for (const [k, v] of Object.entries(e)) {
+         if (k === "node" || k === "at" || k === "typeDef") continue;
+         if (v === null || typeof v !== "object") continue;
+         const kids = Array.isArray(v) ? v : [v];
+         for (const kid of kids) {
+            // `kids: { left, right }` holds the operands one level down.
+            const operands =
+               kid !== null &&
+               typeof kid === "object" &&
+               !("node" in (kid as object))
+                  ? Object.values(kid as object)
+                  : [kid];
+            for (const o of operands) {
+               if (!this.leavesNotString(o, source, depth + 1)) return false;
+            }
+         }
+      }
+      return true;
+   }
+
+   /**
+    * Whether `e` keeps {@link GateReads}'s `equalityOnly`: an equality, or a
+    * comparison whose every leaf is a non-string value, which no collation
+    * orders (`amount > 100`).
+    */
+   private equalityOrNotString(e: unknown, source: unknown): boolean {
+      return equalityOnlyExpr(e) || this.leavesNotString(e, source);
+   }
+
+   /** Whether the answer reads `source`'s own table (its `sourceID` is stored). */
+   private isStored(source: unknown): boolean {
+      const id = (source as { sourceID?: unknown } | undefined)?.sourceID;
+      return typeof id === "string" && this.stored.has(id);
+   }
 
    private tooDeep(): boolean {
       return ++this.steps > 4096;
@@ -258,12 +326,17 @@ class GateReadWalk {
       return base === null ? undefined : base;
    }
 
-   /** Follow a field path of `source` to the columns it reads. */
+   /**
+    * Follow a field path of `source` to the columns it reads. `entry`: the
+    * path, behind `joins`, is read from the entry point, so a computed
+    * field's reads are entry paths too.
+    */
    resolve(
       source: unknown,
       path: readonly string[],
       chain: readonly string[],
       joins: readonly string[] = [],
+      entry = false,
    ): void {
       if (this.tooDeep() || path.length === 0) {
          this.unresolved = true;
@@ -287,10 +360,11 @@ class GateReadWalk {
             path.slice(1),
             [...chain, path[0]],
             [...joins, path[0]],
+            entry,
          );
          return;
       }
-      this.field(source, f, chain, joins);
+      this.field(source, f, chain, joins, entry);
    }
 
    /** Follow one field: a rename, an expression, a stage output or a column. */
@@ -299,6 +373,7 @@ class GateReadWalk {
       f: FieldLike,
       chain: readonly string[],
       joins: readonly string[],
+      entry: boolean,
    ): void {
       const name = activeName(f);
       const stored = typeof f.name === "string" ? f.name : name;
@@ -306,9 +381,21 @@ class GateReadWalk {
       this.names.add(stored);
       const along = [...chain, name, stored];
       if (f.e !== undefined) {
-         if (!equalityOnlyExpr(f.e)) this.equalityOnly = false;
-         for (const p of fieldPathsIn(f.e))
-            this.resolve(source, p, along, joins);
+         if (!this.equalityOrNotString(f.e, source)) this.equalityOnly = false;
+         // A computed field's own comparison is the gate's too: a boolean
+         // over a string (`late is region > 'M'`) orders that string.
+         if (!this.leavesNotString(f.e, source)) this.comparesNoString = false;
+         const reads = fieldPathsIn(f.e);
+         // An expression that names no field it reads (a composite's field,
+         // resolved per member at compile) has no path a probe could read.
+         if (reads.length === 0) this.entryPathsComplete = false;
+         for (const p of reads) {
+            // The columns a computed field reads are what its comparison
+            // compares: a probe reads their collation by these paths.
+            if (entry) this.entryPaths.push([...joins, ...p]);
+            else this.entryPathsComplete = false;
+            this.resolve(source, p, along, joins, entry);
+         }
          return;
       }
       if (f.join !== undefined) {
@@ -316,7 +403,15 @@ class GateReadWalk {
          this.unresolved = true;
          return;
       }
-      if ((source as { query?: unknown } | undefined)?.query !== undefined) {
+      // A stage output of a source whose own table the answer reads is a
+      // column of that table: its build evaluated the stage, in the source's
+      // own warehouse as live does, so the read compares only the stored
+      // column, as for any other column. A stage computed when the table is
+      // read (a query-shaped source over a stored one) is followed back.
+      if (
+         (source as { query?: unknown } | undefined)?.query !== undefined &&
+         !this.isStored(source)
+      ) {
          this.throughStages(source, stored, along, joins);
          return;
       }
@@ -361,6 +456,12 @@ class GateReadWalk {
             next.push({ path: qf.path as string[], chain });
          } else if (qf.e !== undefined) {
             if (!equalityOnlyExpr(qf.e)) this.equalityOnly = false;
+            // A stage's expression reads the stage's input, not typed here,
+            // and has no path from the entry point.
+            if (!this.leavesNotString(qf.e, undefined)) {
+               this.comparesNoString = false;
+            }
+            this.entryPathsComplete = false;
             const read = fieldPathsIn(qf.e);
             if (read.length === 0) this.unresolved = true;
             for (const p of read) next.push({ path: p, chain });
@@ -432,7 +533,8 @@ class GateReadWalk {
       for (const f of Array.isArray(s.filterList) ? s.filterList : []) {
          this.scoped = true;
          const e = (f as { e?: unknown }).e;
-         if (!equalityOnlyExpr(e)) this.equalityOnly = false;
+         if (!this.equalityOrNotString(e, source)) this.equalityOnly = false;
+         if (!this.leavesNotString(e, source)) this.comparesNoString = false;
          for (const p of fieldPathsIn(e)) {
             if (depth === 0) this.entryPaths.push(p);
             else this.entryPathsComplete = false;
@@ -441,9 +543,7 @@ class GateReadWalk {
       }
       this.scopeMembers(source, depth, at, own);
       this.scopeJoins(source, depth, at);
-      const built =
-         typeof s.sourceID === "string" && this.stored.has(s.sourceID);
-      if (s.query !== undefined && !built) {
+      if (s.query !== undefined && !this.isStored(source)) {
          this.scopeQuery(source, s.query, depth);
       }
    }
@@ -504,6 +604,8 @@ class GateReadWalk {
                this.equalityOnly = false;
             }
             this.entryPathsComplete = false;
+            // A stage's term reads the stage's fields, not typed here.
+            this.comparesNoString = false;
             for (const p of fieldPathsIn((f as { e?: unknown }).e)) {
                if (i === 0) atBase(p);
                else if (p.length === 1) {
@@ -536,15 +638,35 @@ export function gateReads(
    exprs: readonly string[],
    modelDef?: unknown,
    stored: ReadonlySet<string> = new Set(),
+   /**
+    * The gate texts the warehouse compares (the row filters): a lock is
+    * decided in Publisher. Absent, every text is taken as one.
+    */
+   rowFilterExprs: readonly string[] = exprs,
 ): GateReads {
    const walk = new GateReadWalk(modelDef, stored);
    const read = gatePaths(exprs);
    if (read.unresolved) walk.unresolved = true;
+   // A row filter is `field = $GIVEN` or `field in $GIVEN`: its field and
+   // its given are the comparison's leaves.
+   const compared = gatePaths(rowFilterExprs);
+   if (
+      compared.unresolved ||
+      compared.paths.some((p) => !nonStringType(typeAt(struct, p))) ||
+      rowFilterExprs.some((expr) =>
+         [...expr.matchAll(/\$([A-Za-z_][A-Za-z_0-9]*)/g)].some((m) => {
+            const types = walk.givenTypesNamed(m[1]);
+            return types.length === 0 || !types.every(nonStringType);
+         }),
+      )
+   ) {
+      walk.comparesNoString = false;
+   }
    for (const p of read.paths) {
       walk.entryPaths.push(p);
-      walk.resolve(struct, p, []);
+      walk.resolve(struct, p, [], [], true);
    }
-   walk.scope(struct, 0, (p) => walk.resolve(struct, p, []), true);
+   walk.scope(struct, 0, (p) => walk.resolve(struct, p, [], [], true), true);
    return {
       names: walk.names,
       columns: walk.columns,
@@ -554,6 +676,7 @@ export function gateReads(
       equalityOnly: walk.equalityOnly,
       entryPaths: walk.entryPaths,
       entryPathsComplete: walk.entryPathsComplete,
+      comparesNoString: walk.comparesNoString && !walk.unresolved,
    };
 }
 
@@ -582,6 +705,8 @@ export function gateReadNames(
 export function entryPointGateExprs(
    struct: unknown,
    modelDef: unknown,
+   /** Only the gates on this route; absent, both. */
+   route?: string,
 ): string[] | undefined {
    if (struct === undefined || modelDef === undefined) return undefined;
    try {
@@ -593,7 +718,13 @@ export function entryPointGateExprs(
       );
       // The walk's fail-closed deny (no entry point to graft on).
       if (entries.some((e) => e.struct === undefined)) return undefined;
-      return entries.flatMap((e) => [...e.exprs]);
+      return entries
+         .filter(
+            (e) =>
+               route === undefined ||
+               canonicalAuthorizeRoute(e.route) === route,
+         )
+         .flatMap((e) => [...e.exprs]);
    } catch {
       return undefined;
    }
@@ -646,9 +777,14 @@ export async function gateReadsOfQuery(
          prepared.modelDef as never,
       );
       const exprs = entryPointGateExprs(struct, prepared.modelDef);
-      return exprs === undefined
+      const rowFilters = entryPointGateExprs(
+         struct,
+         prepared.modelDef,
+         ACCESS_FILTER_ROUTE,
+      );
+      return exprs === undefined || rowFilters === undefined
          ? undefined
-         : gateReads(struct, exprs, prepared.modelDef, stored);
+         : gateReads(struct, exprs, prepared.modelDef, stored, rowFilters);
    } catch {
       return undefined;
    }

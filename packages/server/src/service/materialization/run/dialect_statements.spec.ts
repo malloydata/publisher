@@ -5,7 +5,7 @@
  * Every statement whose text depends on the warehouse dialect, per dialect,
  * frozen in `dialect_statements.golden.json`: the ownership probe and mark,
  * the relation and view probes and the view drop, the incremental refresh's
- * probes, bounds, range replace, merge and pair delta, the database swap
+ * probes, bounds, range replace, merge and pair delta, the late-row check, the database swap
  * and drop, the native-type catalog read, the read-cost and query-tag
  * statements, and the leftover `name=` view's in-transaction drop. A statement a dialect
  * refuses is recorded as the refusal's message.
@@ -38,8 +38,10 @@ import {
    INCREMENTAL_TARGET_DML_DIALECTS,
    MERGE_CAPABLE_DIALECTS,
    pairDeltaStatements,
+   lateRowsSql,
    probeMaxWatermark,
    probePostgresVersion,
+   probeStoredWatermark,
    probeTargetColumns,
    renderSqlBound,
    type WatermarkBound,
@@ -208,6 +210,32 @@ async function statements(): Promise<Record<string, unknown>> {
          "timestamp",
       );
       return r.statements;
+   });
+   out.probeStoredWatermark = await perDialectAsync(async (d) => {
+      const r = recorder();
+      for (const atOrBelow of [START, BOUNDS.date]) {
+         await probeStoredWatermark({
+            runner: r.run,
+            dialect: d,
+            quotedTablePath: "tgt",
+            column: "updated_at",
+            atOrBelow,
+         });
+      }
+      return r.statements;
+   });
+   out.lateRowsSql = perDialect((d) => {
+      const late = (matchColumns: string[]) =>
+         lateRowsSql({
+            dialect: d,
+            quotedTablePath: "tgt",
+            windowSQL: "SELECT * FROM src",
+            watermark: "updated_at",
+            matchColumns,
+            from: START,
+            to: END,
+         });
+      return { merge: late(["id", "region"]), rangeReplace: late([]) };
    });
    {
       const r = recorder();

@@ -30,11 +30,13 @@ import {
 } from "./plan/load_gate_text";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
+import { INCREMENTAL_LATE_ROWS_CODE } from "./domain/incremental";
 import { isRollupOrigin, type MaterializePlan } from "./domain/table_plans";
 import type {
    BuildPlan,
    FreshnessManifest,
    KeptTable,
+   LateRows,
    UnreadReason,
 } from "./domain/types";
 import {
@@ -265,6 +267,65 @@ export function repeatedJoinOneKeyWarnings(
       });
    }
    return warnings;
+}
+
+/**
+ * One warning per incremental source whose bound table a run found missing
+ * rows below its delta's lower bound (`ManifestEntry.lateRows`, see
+ * domain/types.ts): the table undercounts them, and no later delta reads
+ * them. A delta or skip carries them onto its entry, so the warning is
+ * cleared only when a rebuild's manifest is bound. The window's bounds are values from
+ * the data, so the message points at the run's entry rather than quoting
+ * them.
+ */
+export function lateRowWarnings(
+   plan: BuildPlan | null,
+   bound: ReadonlyMap<string, LateRows>,
+): ApiPackageWarning[] {
+   if (bound.size === 0) return [];
+   const bySourceEntity = new Map(
+      Object.values(plan?.sources ?? {}).flatMap((source) =>
+         source.sourceEntityId ? [[source.sourceEntityId, source]] : [],
+      ),
+   );
+   return [...bound].flatMap(([sourceEntityId, late]) => {
+      const source = bySourceEntity.get(sourceEntityId);
+      if (!source) return [];
+      const rows = late.count === 1 ? "1 row" : `${late.count} rows`;
+      const them = late.count === 1 ? "it" : "them";
+      const annotation =
+         source.origin === "materialize" ? "#(materialize)" : "#@ persist";
+      const fields = source.annotationFields ?? {};
+      // lookback= is valid only beside merge_key=, so the advice names both
+      // when the source has no merge key.
+      const lookback = fields.lookback
+         ? `widen its lookback= (now ${JSON.stringify(fields.lookback)})`
+         : fields.merge_key
+           ? "declare a lookback= on it"
+           : "declare a merge_key= (the row's identity) and a lookback= on it";
+      return [
+         {
+            ...(source.modelPath ? { model: source.modelPath } : {}),
+            subject: source.name,
+            code: INCREMENTAL_LATE_ROWS_CODE,
+            severity: "warn" as const,
+            message:
+               `its incremental refreshes found ${rows} in the source stamped ` +
+               `just below where a delta started reading (the newest ` +
+               `watermark its table held, less any lookback=), which the ` +
+               `table does not hold. No delta reads below that point, so ` +
+               `queries served from the table leave ${them} out, and this ` +
+               `stays until the table is rebuilt. Rebuild it once (a run ` +
+               `with reseed) to recover ${them}, and, so later deltas read ` +
+               `such rows, ${lookback} in its ${annotation} annotation, as ` +
+               `long as rows can arrive late. The count is a lower bound (a ` +
+               `stretch of the source is checked once), and this warning ` +
+               `stays until a full rebuild, even after a wider lookback= has ` +
+               `written the rows. The run's manifest entry names the window ` +
+               `(\`lateRows\`).`,
+         },
+      ];
+   });
 }
 
 /**
