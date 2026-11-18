@@ -4139,9 +4139,12 @@ paths:
       description: |
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
         materialization record. A delete is record-only: it never drops a
-        table, and the caller owns table GC. To drop a table this run produced,
-        check that no remaining run, of any version, names a table with that
-        name in any place, then drop it through its connection.
+        table, and the caller owns table GC. To drop a database table this run
+        produced, use `drop-materialized-table` (`DELETE
+        …/connections/{connectionName}/materializedTables/{tableName}`), which
+        checks that no remaining run, of any version, names a table with that
+        name in any place; a table built before 0.16.0 carries no ownership
+        mark, so drop it first, passing this run's id, then delete the run.
         `dropTables=true` is refused with 400 and deletes nothing, as is any
         value other than `true` or `false` (the fix is to omit it);
         `dropTables=false`, which older clients send, is accepted and ignored.

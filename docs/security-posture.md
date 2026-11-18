@@ -55,6 +55,14 @@ stands in front of Publisher and does all of the following:
      including ones the model marks private or internal, with its warehouse type. No row value is
      returned, but the names and types describe your warehouse, so restrict these routes to
      operators.
+   - the materialized-table drop
+     (`DELETE …/packages/{packageName}/connections/{connectionName}/materializedTables/{tableName}`,
+     from 0.16.0). It drops a table in the warehouse, so allow it only to the operator that owns
+     the package's materialization lifecycle. Publisher relies on the gateway for who may call it,
+     and enforces ownership itself: whoever the gateway admits can drop only a database-tier table
+     the package's own runs or its ownership mark prove is the package's, and never one that a
+     committed run, a loaded package's binding or an active run still uses, or that another
+     package marked ([the drop route](materialization.md#the-drop-route)).
 5. Forwards who is asking in the caller header (`x-publisher-caller`, renamed with
    `PUBLISHER_CALLER_HEADER`) and a `traceparent`, so
    the [access record](access-record.md) names the caller.
