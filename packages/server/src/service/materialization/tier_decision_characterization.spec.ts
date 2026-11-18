@@ -16,6 +16,10 @@
  * - run: `buildTierOf` (the tier the build and its telemetry take, the same
  *   expression as source_build's and instructed_build's private checks);
  * - run: `assertInstructedDestinationWritable` (the per-source refusal).
+ * - bind: `storageWritable` of the mode, the one decision the manifest
+ *   committer and the environment's store rebinds (`environment.ts`
+ *   `rebindServeBindingsFromLocalStore`, `bindStoreEntries`) take before
+ *   binding a manifest's `storage=` entries (`storage` bound or not).
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -24,6 +28,8 @@ import {
    fakeSource,
    makeInstruction,
 } from "../../test_helpers/materialization_test_fixtures";
+import { getPersistStorageMode } from "../../config";
+import { storageWritable } from "./domain/placement";
 import { addressDestination } from "./plan/addressing";
 import { assertInstructedDestinationWritable } from "./run/materialization_instructed_run";
 import { resolveStorageDestination } from "./run/materialization_run_support";
@@ -76,29 +82,36 @@ function decisions(
       `auto-run ${resolveStorageDestination(source) ?? "-"}`,
       `build ${buildTierOf(instruction)}`,
       `guard ${guard}`,
+      `bind ${storageWritable(getPersistStorageMode()) ? "storage" : "database only"}`,
    ].join(", ");
 }
 
 /** mode | instructed destination | declared storage= -> each site's answer. */
 const TIERS: Record<string, string> = {
-   "off | - | -": "address -, auto-run -, build database, guard ok",
+   "off | - | -":
+      "address -, auto-run -, build database, guard ok, bind database only",
    "off | - | lake":
-      "address -, auto-run -, build database, guard refused: no destination",
+      "address -, auto-run -, build database, guard refused: no destination, bind database only",
    "off | lake | -":
-      "address -, auto-run -, build database, guard refused: mode off",
+      "address -, auto-run -, build database, guard refused: mode off, bind database only",
    "off | lake | lake":
-      "address -, auto-run -, build database, guard refused: mode off",
-   "write-only | - | -": "address -, auto-run -, build database, guard ok",
+      "address -, auto-run -, build database, guard refused: mode off, bind database only",
+   "write-only | - | -":
+      "address -, auto-run -, build database, guard ok, bind storage",
    "write-only | - | lake":
-      "address lake, auto-run lake, build database, guard refused: no destination",
-   "write-only | lake | -": "address -, auto-run -, build storage, guard ok",
+      "address lake, auto-run lake, build database, guard refused: no destination, bind storage",
+   "write-only | lake | -":
+      "address -, auto-run -, build storage, guard ok, bind storage",
    "write-only | lake | lake":
-      "address lake, auto-run lake, build storage, guard ok",
-   "on | - | -": "address -, auto-run -, build database, guard ok",
+      "address lake, auto-run lake, build storage, guard ok, bind storage",
+   "on | - | -":
+      "address -, auto-run -, build database, guard ok, bind storage",
    "on | - | lake":
-      "address lake, auto-run lake, build database, guard refused: no destination",
-   "on | lake | -": "address -, auto-run -, build storage, guard ok",
-   "on | lake | lake": "address lake, auto-run lake, build storage, guard ok",
+      "address lake, auto-run lake, build database, guard refused: no destination, bind storage",
+   "on | lake | -":
+      "address -, auto-run -, build storage, guard ok, bind storage",
+   "on | lake | lake":
+      "address lake, auto-run lake, build storage, guard ok, bind storage",
 };
 
 describe("the tier decision at each site", () => {
