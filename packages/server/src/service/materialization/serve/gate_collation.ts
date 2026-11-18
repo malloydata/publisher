@@ -47,7 +47,18 @@ import {
 } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
 import { capabilitiesOf } from "../domain/dialect";
-import type { GateReads } from "./gate_reads";
+
+/**
+ * What this reads of the entry point's gate reads (`GateReads` in
+ * `gate_reads.ts`, which re-exports this module's rules: declared here, so
+ * the two modules do not import each other).
+ */
+interface GateReads {
+   readonly unresolved: boolean;
+   readonly equalityOnly: boolean;
+   readonly entryPaths: readonly (readonly string[])[];
+   readonly entryPathsComplete: boolean;
+}
 
 type Collation = "binary" | "deterministic" | "unknown";
 
