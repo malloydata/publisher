@@ -382,6 +382,11 @@ function accountPattern(): RegExp | undefined {
    return new RegExp(forms.map(escape).join("|"), "gi");
 }
 
+/** Text as a Markdown table cell: backslashes first, then the pipes. */
+function tableCell(text: string): string {
+   return text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+}
+
 /** One cell of the summary: how a shape fared on one tier. */
 function cell(rows: ResultRow[]): string {
    if (rows.length === 0) return "-";
@@ -450,7 +455,7 @@ function writeReport(
       ...shapes.map((s) => {
          const of = (tier: string) =>
             results.filter((r) => r.shape === s && r.tier === tier);
-         return `| ${s.replace(/\|/g, "\\|")} | ${cell(of("database"))} | ${cell(of("storage"))} |`;
+         return `| ${tableCell(s)} | ${cell(of("database"))} | ${cell(of("storage"))} |`;
       }),
       "",
    ];

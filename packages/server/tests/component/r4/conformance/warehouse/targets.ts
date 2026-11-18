@@ -525,14 +525,16 @@ async function listScratchContainers(
    connection: Connection,
    dialect: Dialect,
 ): Promise<string[]> {
-   const like = SCRATCH_PREFIX.replace(/_/g, "\\_");
+   // A prefix test, not LIKE, so `_` in the prefix needs no escaping;
+   // SCRATCH_PREFIX is a constant of letters and underscores.
    const result = await run(
       connection,
       dialect === "bigquery"
          ? `SELECT schema_name FROM \`${bigQueryProject()}\`.\`region-${bigQueryLocation().toLowerCase()}\`.INFORMATION_SCHEMA.SCHEMATA WHERE STARTS_WITH(LOWER(schema_name), '${SCRATCH_PREFIX}')`
          : dialect === "snowflake"
-           ? `SELECT schema_name FROM ${snowflakeDatabase()}.INFORMATION_SCHEMA.SCHEMATA WHERE schema_name ILIKE '${like}%'`
-           : `SELECT schema_name FROM information_schema.schemata WHERE schema_name ILIKE '${like}%'`,
+           ? `SELECT schema_name FROM ${snowflakeDatabase()}.INFORMATION_SCHEMA.SCHEMATA WHERE STARTSWITH(LOWER(schema_name), '${SCRATCH_PREFIX}')`
+           : // Malloy's Postgres runSQL reads each row from a `row` JSON column.
+             `SELECT row_to_json(s) AS row FROM (SELECT schema_name FROM information_schema.schemata WHERE starts_with(lower(schema_name), '${SCRATCH_PREFIX}')) s`,
    );
    return rowsOf(result)
       .map((r) => String(r.schema_name ?? r.SCHEMA_NAME))
