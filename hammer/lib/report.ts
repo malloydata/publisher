@@ -8,6 +8,8 @@
 // for a job summary. Both are read by tooling that posts a nightly run's
 // result somewhere else, so the JSON shape is versioned and only grows.
 
+import { mdText } from "./upgrade_report";
+
 export type ScenarioStatus = "pass" | "fail" | "known-red" | "fixed" | "skip";
 
 export interface ReportScenario {
@@ -108,11 +110,8 @@ export function buildReport(opts: {
    };
 }
 
-/** One line of a table cell: no pipes or newlines, and bounded. */
-function cell(text: string, max = 300): string {
-   const flat = text.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
-   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
+/** One line of a table cell, markup and backslashes escaped, bounded. */
+const cell = mdText;
 
 /**
  * The job summary: a one-line verdict, the counts, then every scenario that

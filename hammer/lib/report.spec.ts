@@ -110,6 +110,16 @@ describe("renderMarkdown", () => {
       expect(md).not.toContain("`green`");
    });
 
+   it("escapes a backslash before a pipe, so the pipe cannot end the cell", () => {
+      const report = buildReport({
+         results: [result("red", [["a", false, "C:\\|x"]])],
+         knownRedTag: "known-red",
+         startedAt: at(0),
+         finishedAt: at(1),
+      });
+      expect(renderMarkdown(report, "Hammer")).toContain("| C:\\\\\\|x |");
+   });
+
    it("says so when a known-red passes", () => {
       const report = buildReport({
          results: [result("now-holds", [["a", true]], { tags: ["known-red"] })],
