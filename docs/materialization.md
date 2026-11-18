@@ -221,6 +221,26 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
     warehouse in its own types, so only a column its DuckLake catalog holds as a float, as the
     bind reads it, is judged inexact. Such a query answers live. A Postgres `storage=` build that
     cannot read the warehouse's column types fails rather than store a `numeric` as a float.
+  - A `storage=` table compares a string column byte-exact, and the source compares it under
+    its own collation. So a gate, or a `where:` the copy re-applies, that compares a string column
+    is read from a `storage=` table only when the source's comparison is known to match: on
+    BigQuery always; on a DuckDB-dialect source when the instance sets no `default_collation`
+    and no `COLLATE` appears in the query's SQL or in any table or view the instance holds; on
+    Postgres, for `=`, `!=` and `in`, when the column's collation is deterministic (the database
+    default included), and for any other comparison (an ordering, a pattern, a function's value)
+    only under `C` or `POSIX`. Anything else, every other dialect included, answers live, and so
+    does a Postgres scope read from a composite member, a join or a query-shaped source's base
+    (its column has no path to probe). The path report says `row_level_gate` past a gate, and
+    `served_copy_not_served` (or the rollup's `CONTRACT`) for a scope on an ungated source. The
+    cost: a gated or scoped `storage=` source on Snowflake, MySQL, SQL Server, Trino, Presto or
+    Databricks whose gate or scope compares a string column answers live. A gate column stored
+    as `TIMESTAMP WITH TIME ZONE` answers live too: the destination compares it in its own
+    session's zone.
+  - The stored side is read too, on every table read past a gate: a `storage=` table whose
+    definition names a `COLLATE` (a column altered after its build) or whose destination sets a
+    `default_collation` answers live, as does a database DuckDB table altered the same way or a
+    database Postgres table with a nondeterministic column. A `storage=` table the destination's
+    catalog does not list answers live.
 
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
@@ -656,7 +676,20 @@ the table was altered outside a build and whether the column is cast or answered
 in the same
 `publisher_storage_column_type_mismatch_total{stage="serve"}`, once per bind. A column that is gone
 is reported too; one moved by a widening that loses nothing is not. Rebuilding the table
-clears it. The log line has the same code and names each changed column. A table
+clears it.
+
+The same holds when the table did not move but its source did: a warehouse column retyped
+upstream after the build, so the source now declares a type the table's value does not read as
+(an integer column now declared `string`). The build's SQL, and so the table's content address,
+is unchanged, so the bind finds the table as built. Every mechanism (a persisted view or query, a
+`#(materialize)` or `#@ persist` source, a rollup) takes the column as moved: a query that reads
+it answers live with `MISSING_FIELD` and the column in its path report's detail, a query that
+does not still serves, and the warning says what its source reads changed type since the build. A
+column the table holds as a naive timestamp now declared `date`, or as an integer now declared
+`boolean`, is read through its faithful cast (`DATE`, `BOOLEAN`) and not reported: those are also
+the types a build writes by design for a `date` truncation and a `boolean` flag, and the cast
+leaves such a value as it is. Because the address did not move, a normal run
+reuses the table; only a forced refresh (`forceRefresh`) rebuilds it and clears the warning. The log line has the same code and names each changed column. A table
 whose columns cannot be read at the bind (missing, unreadable, or slower than the bound) is answered
 live, with a `database-table-unread` package warning that names the table, a fixed reason (the
 driver's own text, secrets redacted, is in the log alone) and whether a retry is pending, and read

@@ -16,6 +16,7 @@
 
 export { PackageMaterialization } from "./package_materialization";
 export { nearMissGateLines } from "./plan/load_gate_text";
+export { loadVerdictOfPlan } from "./package_warnings";
 export { MaterializationService } from "./run/materialization_service";
 export { keptTablesResolverFor, Reclaimer } from "./run/reclaimer";
 export { isUsableTableName } from "./run/manifest_loader";
