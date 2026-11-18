@@ -712,6 +712,8 @@ describe("gate keeping at the router, under an entry-point veto", () => {
          _modelDef: {
             name: "m",
             exports: [],
+            // The gate's given, a number: the gate compares no string.
+            givens: { "given/ID": { name: "ID", type: { type: "number" } } },
             contents: {
                s: {
                   type: "table",
