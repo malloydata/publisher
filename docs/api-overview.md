@@ -122,9 +122,11 @@ reasons:
   this package can take: a field of the wrong shape, an unknown `sourceEntityId`, a table named
   twice, a ledger entry that does not fit. The message names which; retrying unchanged fails the
   same way.
-- **409 with `reason: MATERIALIZATION_CONFLICT`:** another run is active, another run is writing a
-  table this one would write, or the package or version is served from a host manifest and the
-  request has no `buildInstructions`. **409 with `reason: BUILD_PLAN_UNAVAILABLE`:** the build plan
+- **409 with `reason: MATERIALIZATION_CONFLICT`:** another run is active, or another run is writing a
+  table this one would write: both clear on their own, so retry later. Or the package or version
+  is served from a host manifest and the request has no `buildInstructions`, or a run of a version
+  that is not latest touches the tables its versions share: neither clears until the request or
+  the package changes. The message says which. **409 with `reason: BUILD_PLAN_UNAVAILABLE`:** the build plan
   could not be derived; reload the package.
 
 ## Live API explorer

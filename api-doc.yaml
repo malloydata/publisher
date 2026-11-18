@@ -3990,14 +3990,17 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: >-
-            `reason: MATERIALIZATION_CONFLICT`: the package already has an
-            active materialization, or a table the run would write is being
-            written by another run (or is one the package's versions share,
-            which only an auto-run of its latest version rebuilds), or the
-            package or version is bound to a host manifest (`manifestLocation`),
-            or is a version a host has bound before, and the request has no
-            `buildInstructions` (it serves the host's tables or live, so a
-            local run would build tables it cannot serve). `reason:
+            `reason: MATERIALIZATION_CONFLICT`. Clears on its own, so retry
+            later: the package already has an active materialization, or a
+            table the run would write is being written by another run. Does
+            not clear until something changes: a table the run would write is
+            one the package's versions share, which only an auto-run of its
+            latest version rebuilds (name tables of your own in
+            `buildInstructions`); or the package or version is bound to a host
+            manifest (`manifestLocation`), or is a version a host has bound
+            before, and the request has no `buildInstructions` (it serves the
+            host's tables or live, so a local run would build tables it cannot
+            serve). `reason:
             BUILD_PLAN_UNAVAILABLE`: the package's build plan could not be
             derived, or it serves an older model than its files.
           content:
@@ -10237,9 +10240,15 @@ components:
             the message names which. Retrying unchanged fails the same way.
 
             MATERIALIZATION_CONFLICT, on a 409, means a materialization run
-            conflicts with another run or with the package's binding: a run
-            already active, a table another run is writing, or an auto-run of
-            a package or version a host manifest serves.
+            conflicts with another run or with the package's binding. Two of
+            its cases clear on their own, so retry later: a run already active
+            for the package, and a table another run is writing. Two do not
+            clear until something changes, so a retry fails the same way: an
+            auto-run of a package or version a host manifest serves (pass
+            `buildInstructions`, or clear the binding), and a run of a version
+            that is not latest touching the tables a `scope: package`
+            package's versions share (name tables of its own in
+            `buildInstructions`). The message says which.
 
             Deliberately an open string rather than an enum. Generators render
             an enum closed, so adding a second value here would break every
