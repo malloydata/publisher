@@ -37,6 +37,7 @@ import {
 } from "./incremental_build";
 import { backupSuffix, stagingSuffix } from "./materialization_run_support";
 import { transactionalSwapSql } from "./warehouse_sql";
+import { runAsInternalStatement } from "../../duckdb_lockdown";
 
 /**
  * A full rebuild of a database table in the source's own warehouse: COPY into
@@ -410,7 +411,10 @@ async function swapInTransaction({
       renameTarget: quoteRenameTarget(physicalTableName, dialect),
    });
    try {
-      await run(swap.sql);
+      // Publisher's own transaction, several statements in one call: admitted
+      // past a locked instance's one-statement rule for this exact text only
+      // (duckdb_lockdown.ts). It embeds no author SQL.
+      await runAsInternalStatement(swap.sql, () => run(swap.sql));
       return;
    } catch (failure) {
       if (swap.rollback !== undefined) {

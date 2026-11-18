@@ -52,7 +52,7 @@
 import { DuckDBConnection as DuckDBConnectionClass } from "@malloydata/db-duckdb";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { AsyncLocalStorage } from "async_hooks";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -1038,6 +1038,19 @@ async function refusedByParser(sql: string): Promise<string | undefined> {
  */
 const internalStatement = new AsyncLocalStorage<string>();
 
+/**
+ * Whether `sql` is the statement Publisher marked internal on this async
+ * chain ({@link runAsInternalStatement}): that exact text, or that text after
+ * the one `-- key="value"` line Malloy prepends for query metadata.
+ */
+function isInternalStatement(sql: string): boolean {
+   const marked = internalStatement.getStore();
+   if (marked === undefined) return false;
+   if (sql === marked) return true;
+   if (!sql.endsWith(marked)) return false;
+   return /^-- [^\r\n]*\n$/.test(sql.slice(0, sql.length - marked.length));
+}
+
 /** Run `fn`, which issues exactly `sql`, with that statement admitted by the gate. */
 export function runAsInternalStatement<T>(
    sql: string,
@@ -1054,19 +1067,6 @@ export function runAsInternalStatement<T>(
  * it, on the caller's chain, outside it.
  */
 const operatorSetup = new AsyncLocalStorage<boolean>();
-
-/**
- * Publisher's own work on a connection (a materialization run, a reclaim),
- * whose build scripts may issue several statements in one call. Like
- * {@link internalStatement}, it belongs to that work's own async chain: a
- * caller query in flight on the same instance never carries it.
- */
-const publisherWork = new AsyncLocalStorage<boolean>();
-
-/** Run `fn` as Publisher's own work, exempt from the one-statement rule. */
-export function runAsPublisherWork<T>(fn: () => Promise<T>): Promise<T> {
-   return publisherWork.run(true, fn);
-}
 
 /** Run a connection's own setup (`fn`) as operator setup. */
 export function runAsOperatorSetup<T>(fn: () => Promise<T>): Promise<T> {
@@ -1123,12 +1123,14 @@ export async function assertStatementAllowed(
    sql: string,
 ): Promise<void> {
    if (!isConfigurationFrozen(connection)) return;
-   const internal = internalStatement.getStore() === sql;
+   const internal = isInternalStatement(sql);
    const reason = refusedOnLockedInstance(sql) ?? (await refusedByParser(sql));
    if (reason && !internal) throw new DuckDBStatementRefusedError(reason);
-   // One statement per call for anything not Publisher's own: SQL a caller
-   // or an author shaped cannot end the statement it is in and start another.
-   if (!internal && !operatorSetup.getStore() && !publisherWork.getStore()) {
+   // One statement per call for anything not Publisher's own (its setup, or a
+   // script it marked by exact text): SQL a caller or an author shaped, a
+   // build's CTAS of the author's query included, cannot end the statement
+   // it is in and start another.
+   if (!internal && !operatorSetup.getStore()) {
       const count = await countStatements(sql);
       if (count !== 1) {
          throw new DuckDBStatementRefusedError(
@@ -1154,8 +1156,8 @@ export async function authorSqlRefusals(
    modelDef: unknown,
 ): Promise<string[]> {
    const checks = new Map<string, string>();
-   /** Raw SQL expressions, as `SELECT <expr>`, by how many placeholders each holds. */
-   const expressions = new Map<string, number>();
+   /** Raw SQL expressions, by their fragments and how many arguments each places. */
+   const expressions: { fragments: string[]; argCount: number }[] = [];
    const seen = new Set<object>();
    const walk = (node: unknown, dialect: string | undefined, depth: number) => {
       if (depth > 400 || node === null || typeof node !== "object") return;
@@ -1183,18 +1185,10 @@ export async function authorSqlRefusals(
             // fails, since its value could end the statement at run time.
             const args = (record.kids as { args?: unknown[] } | undefined)
                ?.args;
-            const argCount = Array.isArray(args) ? args.length : 0;
-            let text = "";
-            const fragments = record.src as unknown[];
-            for (
-               let index = 0;
-               index < Math.max(fragments.length, argCount);
-               index++
-            ) {
-               if (index < fragments.length) text += String(fragments[index]);
-               if (index < argCount) text += ` __arg_${index}__ `;
-            }
-            expressions.set(`SELECT ${text}`, argCount);
+            expressions.push({
+               fragments: (record.src as unknown[]).map(String),
+               argCount: Array.isArray(args) ? args.length : 0,
+            });
          }
       }
       for (const [key, child] of Object.entries(record)) {
@@ -1212,28 +1206,51 @@ export async function authorSqlRefusals(
             `SELECT), and this one does not: ${shown}`,
       );
    };
-   for (const [sql, argCount] of expressions) {
-      if (!(await isOneSelectWithPlaceholders(sql, argCount))) {
-         refuse("a raw SQL expression", sql);
+   for (const { fragments, argCount } of expressions) {
+      const shown = fragments.join(" ? ");
+      if (!(await expressionReadsArgumentsAsValues(fragments, argCount))) {
+         refuse("a raw SQL expression", `SELECT ${shown}`);
       }
    }
    for (const [sql, what] of checks) {
-      if (!(await isOneSelectWithPlaceholders(sql, 0))) refuse(what, sql);
+      if (!(await isOneSelect(sql))) refuse(what, sql);
    }
    return refusals;
 }
 
+/** Whether DuckDB's parser reads `sql` as exactly one SELECT. */
+async function isOneSelect(sql: string): Promise<boolean> {
+   const parsed = await serializeSQL(sql);
+   return !parsed.error && parsed.statements?.length === 1;
+}
+
 /**
- * Whether DuckDB's parser reads `sql` as exactly one SELECT, and reads each
- * placeholder `__arg_0__` … `__arg_<argCount-1>__` back as a column reference.
+ * Whether a raw SQL expression reads each of its arguments as a value. Each
+ * argument stands as a column reference named with a fresh random nonce (so
+ * no fragment can spell one), placed where Malloy places it (between, or
+ * after, the fragments), with no space added around it. DuckDB's parser must
+ * read the whole as exactly one SELECT, with every placeholder exactly once
+ * as a column reference: an argument a fragment leaves inside a string, a
+ * dollar quote or a comment, or after a `-` that a negative value would turn
+ * into a comment, fails, since its value could end the statement at run time.
  */
-async function isOneSelectWithPlaceholders(
-   sql: string,
+async function expressionReadsArgumentsAsValues(
+   fragments: string[],
    argCount: number,
 ): Promise<boolean> {
-   const parsed = await serializeSQL(sql);
+   const nonce = randomBytes(8).toString("hex");
+   if (fragments.some((fragment) => fragment.includes(nonce))) return false;
+   const placeholder = (index: number) => `__arg_${nonce}_${index}__`;
+   let text = "";
+   for (let index = 0; index < Math.max(fragments.length, argCount); index++) {
+      const fragment = index < fragments.length ? fragments[index] : "";
+      if (index < argCount && /-$/.test(fragment)) return false;
+      text += fragment;
+      if (index < argCount) text += placeholder(index);
+   }
+   const parsed = await serializeSQL(`SELECT ${text}`);
    if (parsed.error || parsed.statements?.length !== 1) return false;
-   const found = new Set<string>();
+   const counts = new Map<string, number>();
    const walk = (node: unknown): void => {
       if (node === null || typeof node !== "object") return;
       if (Array.isArray(node)) {
@@ -1245,18 +1262,21 @@ async function isOneSelectWithPlaceholders(
          record.class === "COLUMN_REF" &&
          Array.isArray(record.column_names) &&
          record.column_names.length === 1 &&
-         typeof record.column_names[0] === "string" &&
-         /^__arg_\d+__$/.test(record.column_names[0])
+         typeof record.column_names[0] === "string"
       ) {
-         found.add(record.column_names[0]);
+         const name = record.column_names[0];
+         counts.set(name, (counts.get(name) ?? 0) + 1);
       }
       Object.values(record).forEach(walk);
    };
    walk(parsed.statements);
    for (let index = 0; index < argCount; index++) {
-      if (!found.has(`__arg_${index}__`)) return false;
+      if (counts.get(placeholder(index)) !== 1) return false;
    }
-   return true;
+   // The nonce anywhere else in the parse (an alias, a string) is a fragment
+   // shaping around the placeholder: refused.
+   const mentions = JSON.stringify(parsed.statements).split(nonce).length - 1;
+   return mentions === argCount;
 }
 
 let statementGateInstalled = false;
