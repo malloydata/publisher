@@ -31,7 +31,8 @@ Proves, against a real DuckLake destination:
 - the self-instructed build writes `nvt_daily`, a table;
 - a forced self-instructed build writes `nvt_daily` again, with the new rows;
 - the orchestrated build writes the generation the host named, and leaves
-  `nvt_daily` a table, with no view anywhere in the destination.
+  `nvt_daily` a table, untouched, with no view anywhere in the destination;
+- a self-instructed run after the host's build is refused.
 
 ## Publisher
 
@@ -98,6 +99,15 @@ Expect:
 | 2026-01-01 | 1100             |
 | 2026-01-02 | 200              |
 
+## Mutate orders_pg.nvt_orders
+
+A later order the host's build reads and `nvt_daily` must not: a build that
+overwrote it would hold 1307.
+
+| order_id:int | order_date:date | amount:num |
+| ------------ | --------------- | ---------- |
+| 4            | 2026-01-02      | 7          |
+
 ## Build (orchestrated, pkg=nvt)
 
 The host names the generation; no view is made at `name=`.
@@ -118,7 +128,7 @@ Expect:
 ## Operator lake
 
 No view anywhere in the destination, and `nvt_daily` still holds the rows the
-forced self-instructed build wrote.
+forced self-instructed build wrote, without the order the host's build read.
 
 ```sql
 SELECT 'view:' || view_name AS item FROM duckdb_views() WHERE database_name = 'lake' AND NOT internal
@@ -132,3 +142,10 @@ Expect:
 | item      |
 | --------- |
 | rows:1300 |
+
+## Build refused
+
+Once the host has built the version, a self-instructed run of it would build
+tables the version never serves, so it is refused.
+
+cites: MATERIALIZATION_CONFLICT
