@@ -45,6 +45,8 @@ jobs:
         materialize: ["true", "false"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -76,6 +78,14 @@ jobs:
           args=(--workers 4)
           if [ -n "$SCENARIOS" ]; then args+=(--scenarios "$SCENARIOS"); fi
           bun hammer/run.ts "${args[@]}" 2>&1 | tee "$HAMMER_LOG_DIR/hammer.log"
+      # Every failed scenario and check, from the hammer-report.json the run
+      # writes into HAMMER_LOG_DIR (uploaded below with the logs).
+      - name: Job summary
+        if: always()
+        env:
+          REPORT: ${{ runner.temp }}/hammer-logs/hammer-report.json
+          HEADING: hammer (PUBLISHER_MATERIALIZE=${{ matrix.materialize }})
+        run: bun hammer/summary.ts "$REPORT" "$HEADING" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
