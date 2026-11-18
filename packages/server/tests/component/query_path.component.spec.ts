@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // The path report (materialization v2, D1) over a real compiled package with
-// a real bound colocated manifest: which table answered, which could not and
+// a real bound database manifest: which table answered, which could not and
 // why, and the nearby tables the query could not use. The `storage=` tier is
 // covered over the R4 harness in r4/path_report.component.spec.ts.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -99,7 +99,7 @@ async function buildAndBind(
          ...extra,
       };
    }
-   pkg.materialization().bind({ colocated: bound as never });
+   pkg.materialization().bind({ database: bound as never });
 }
 
 async function pathOf(
@@ -163,10 +163,12 @@ describe("the access record's copy of the path report", () => {
          pkg,
          "run: daily -> { group_by: region; aggregate: t is total.sum() }",
       );
-      // The served copy answers a v1 colocated table (the v1 cutover).
+      // The served copy answers a v1 database table (the v1 cutover).
       expect(audit.path).toEqual({
          servedBy: {
             kind: "materialized",
+            origin: "persist",
+            tier: "database",
             tableId: entityIdOf(pkg, "daily"),
             via: "served_copy",
          },
@@ -194,7 +196,7 @@ source: orders is duckdb.sql("SELECT 1 AS id, 'east' AS region") extend {
    });
 });
 
-describe("the path report over colocated #@ persist", () => {
+describe("the path report over database #@ persist", () => {
    it("reports an unbuilt table as NOT_BUILT and answers live", async () => {
       const pkg = await loadPackage();
       const report = await pathOf(
@@ -206,6 +208,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "NOT_BUILT",
          },
@@ -229,6 +232,7 @@ describe("the path report over colocated #@ persist", () => {
       );
       expect(report.servedBy).toEqual({
          kind: "materialized",
+         origin: "persist",
          tier: "database",
          tableId: entityIdOf(pkg, "daily"),
          dataAsOf: "2026-11-01T00:00:00.000Z",
@@ -238,6 +242,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "used",
          },
       ]);
@@ -252,6 +257,7 @@ describe("the path report over colocated #@ persist", () => {
       );
       expect(report.servedBy).toMatchObject({
          kind: "materialized",
+         origin: "persist",
          tableId: entityIdOf(pkg, "daily"),
       });
       // Persistence is inherited, and an extension that adds only a dimension
@@ -261,6 +267,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "used",
          },
       ]);
@@ -285,6 +292,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "STALE",
          },
@@ -304,6 +312,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "by_region"),
             kind: "materialized",
+            origin: "persist",
             sourceName: "by_region",
             relationship: "below",
             built: true,
@@ -311,6 +320,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             sourceName: "daily",
             relationship: "below",
             built: false,
@@ -346,6 +356,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             sourceName: "daily",
             relationship: "sibling",
             built: false,
@@ -385,8 +396,9 @@ describe("the path report reading the serve verdicts", () => {
          {
             tableId: entityIdOf(pkg, "by_region"),
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
             code: "unreachable",
          },
       ]);
@@ -411,7 +423,7 @@ describe("the path report reading the serve verdicts", () => {
    });
 });
 
-describe("the path report over a colocated rollup", () => {
+describe("the path report over a database rollup", () => {
    async function builtRollup(): Promise<{ pkg: Package; rollupId: string }> {
       const pkg = await loadPackage(ROLLUP_MODEL);
       const [rollupId] = [...pkg.materialization().getPreaggregateEntityIds()];
@@ -426,7 +438,7 @@ describe("the path report over a colocated rollup", () => {
          `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
       );
       pkg.materialization().bind({
-         colocated: {
+         database: {
             [rollupId]: { tableName: "built_rollup", connectionName: "duckdb" },
          } as never,
       });
@@ -441,11 +453,17 @@ describe("the path report over a colocated rollup", () => {
       );
       expect(report.servedBy).toEqual({
          kind: "rollup",
+         origin: "rollup",
          tableId: rollupId,
          tier: "database",
       });
       expect(report.considered).toEqual([
-         { tableId: rollupId, kind: "rollup", outcome: "used" },
+         {
+            tableId: rollupId,
+            kind: "rollup",
+            origin: "rollup",
+            outcome: "used",
+         },
       ]);
    });
 
@@ -460,6 +478,7 @@ describe("the path report over a colocated rollup", () => {
          {
             tableId: rollupId,
             kind: "rollup",
+            origin: "rollup",
             outcome: "skipped",
             reason: "COUNT_SEMANTICS",
             // The rollup leg's reason: the count reads the rollup's rows.
@@ -480,6 +499,7 @@ describe("the path report over a colocated rollup", () => {
          {
             tableId: rollupId,
             kind: "rollup",
+            origin: "rollup",
             outcome: "skipped",
             reason: "GRAIN_TOO_COARSE",
             detail: expect.stringContaining("`amount`"),
@@ -492,7 +512,7 @@ describe("the path report over a colocated rollup", () => {
 // `reloadAllModels`, which leaves the whole unfiltered manifest on each
 // model's Runtime. Malloy reads a run handed no `buildManifest` as "use the
 // Runtime's", so a run that passes none substitutes a table its freshness
-// window should have dropped. `bindColocatedServeManifest` stores nothing on
+// window should have dropped. `bindDatabaseServeManifest` stores nothing on
 // the Runtime, which is why the STALE test above cannot see this.
 describe("a table past its freshness window, bound by a host's reload", () => {
    let restore: () => void = () => {};
@@ -592,6 +612,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          expect(res.path?.considered).toContainEqual({
             tableId: staleId,
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "STALE",
          });
@@ -652,6 +673,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          ] as never);
          expect(res.path?.servedBy).toMatchObject({
             kind: "materialized",
+            origin: "persist",
             tableId: dailyId,
          });
       }, 60_000);
@@ -694,6 +716,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          );
          expect(rolled.path?.servedBy).toMatchObject({
             kind: "rollup",
+            origin: "rollup",
             tableId: rollupId,
          });
          expect(rolled.result.sql).toContain("built_rollup");
@@ -729,6 +752,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          const called = await run(pkg, "run: orders -> by_region");
          expect(called.path?.servedBy).toMatchObject({
             kind: "view",
+            origin: "view",
             tableId: viewId,
          });
          expect(called.result.sql).toContain("built_view");

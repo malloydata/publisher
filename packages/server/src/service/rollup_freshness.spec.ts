@@ -3,7 +3,7 @@
 
 /**
  * Freshness declarations: a rollup's `freshness.window=` and
- * `freshness.fallback=` on `#(preaggregate)` and on `#@ preaggregate`, read
+ * `freshness.fallback=` on `#(rollup)` and on `#@ preaggregate`, read
  * as `#@ persist` reads them, over what its base declares, then the model file
  * and the package; and one grammar on every mechanism, where a malformed
  * group fails the load with the route's own codes.
@@ -61,7 +61,7 @@ async function load(
 function rollupFreshness(pkg: Package): Record<string, unknown> {
    const out: Record<string, unknown> = {};
    for (const s of Object.values(pkg.getBuildPlan()?.sources ?? {})) {
-      if (s.origin === "preaggregate" && s.preaggregate) {
+      if (s.origin === "rollup" && s.preaggregate) {
          out[s.preaggregate.baseSourceName] = s.freshness;
       }
    }
@@ -76,7 +76,7 @@ describe("a rollup's resolved freshness", () => {
       const pkg = await load(`${HEAD}
 #@ persist freshness.window="1h" freshness.fallback="stale_ok"
 source: persisted is ${ROWS} -> { select: * } extend {
-  #(preaggregate) grain=["category"] freshness.window="15m"
+  #(rollup) grain=["category"] freshness.window="15m"
   measure: total is amount.sum()
 }
 source: plain is ${ROWS} extend {
@@ -114,9 +114,9 @@ source: plain is ${ROWS} extend {
    it("merges the measures of one rollup, where windows compare as durations", async () => {
       const pkg = await load(`${HEAD}
 source: plain is ${ROWS} extend {
-  #(preaggregate) grain=["category"] freshness.window="24h"
+  #(rollup) grain=["category"] freshness.window="24h"
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"] freshness.window="1d" freshness.fallback="live"
+  #(rollup) grain=["category"] freshness.window="1d" freshness.fallback="live"
   measure: n is count()
 }
 `);
@@ -133,29 +133,29 @@ source: plain is ${ROWS} extend {
 describe("a malformed rollup freshness fails the load", () => {
    const cases: [string, string, string][] = [
       [
-         "an unknown key in the group on #(preaggregate)",
-         `#(preaggregate) grain=["category"] freshness.windw="1h"`,
-         "preaggregate-unknown-key",
+         "an unknown key in the group on #(rollup)",
+         `#(rollup) grain=["category"] freshness.windw="1h"`,
+         "rollup-unknown-key",
       ],
       [
          "an unknown key in the group on #@ preaggregate",
          `#@ preaggregate grain="category" freshness.fallbak="live"`,
-         "preaggregate-unknown-key",
+         "rollup-unknown-key",
       ],
       [
-         "a window that is not a duration on #(preaggregate)",
-         `#(preaggregate) grain=["category"] freshness.window="a day"`,
-         "preaggregate-invalid",
+         "a window that is not a duration on #(rollup)",
+         `#(rollup) grain=["category"] freshness.window="a day"`,
+         "rollup-invalid",
       ],
       [
          "a fallback outside live, stale_ok, fail on #@ preaggregate",
          `#@ preaggregate grain="category" freshness.fallback="serve_stale"`,
-         "preaggregate-invalid",
+         "rollup-invalid",
       ],
       [
          "a group written as a value",
-         `#(preaggregate) grain=["category"] freshness="1h"`,
-         "preaggregate-invalid",
+         `#(rollup) grain=["category"] freshness="1h"`,
+         "rollup-invalid",
       ],
    ];
    for (const [what, line, code] of cases) {
@@ -175,17 +175,17 @@ source: plain is ${ROWS} extend {
       await expect(
          load(`${HEAD}
 source: plain is ${ROWS} extend {
-  #(preaggregate) grain=["category"] freshness.window="1h"
+  #(rollup) grain=["category"] freshness.window="1h"
   measure: total is amount.sum()
   #@ preaggregate grain="category" freshness.window="2h"
   measure: n is count()
 }
 `),
-      ).rejects.toThrow("[preaggregate-invalid]");
+      ).rejects.toThrow("[rollup-invalid]");
    });
 
    for (const spelling of [
-      '#(preaggregate) grain=["category"]',
+      '#(rollup) grain=["category"]',
       '#@ preaggregate grain="category"',
    ]) {
       it(`two measures of one rollup with different windows (${spelling.split(" ")[0]} ${spelling.split(" ")[1]})`, async () => {
@@ -198,7 +198,7 @@ source: plain is ${ROWS} extend {
   measure: n is count()
 }
 `),
-         ).rejects.toThrow("[preaggregate-invalid]");
+         ).rejects.toThrow("[rollup-invalid]");
       });
    }
 });

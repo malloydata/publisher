@@ -163,6 +163,114 @@ describe("classifyBuildError", () => {
       expect(classifyBuildError(aborted)).toBe(true);
    });
 
+   describe("a warehouse's own code for a statement wrong in itself", () => {
+      // As each driver raises it, behind Publisher's own wrapper.
+      const wrapped = (message: string, fields: Record<string, unknown>) =>
+         new Error("build failed", {
+            cause: Object.assign(new Error(message), fields),
+         });
+      const pg = (code: string, message = "driver error") =>
+         wrapped(message, { code });
+      const snowflake = (sqlState: string, message = "driver error") =>
+         wrapped(message, { code: "100038", sqlState });
+      const bigquery = (reason: string, message = "driver error") =>
+         wrapped(message, { code: 400, errors: [{ reason, message }] });
+
+      it("Postgres: a data exception (class 22) is deterministic", () => {
+         expect(
+            classifyBuildError(
+               pg("22P02", 'invalid input syntax for type integer: "x"'),
+            ),
+         ).toBe(false);
+         expect(classifyBuildError(pg("22012"))).toBe(false);
+         expect(classifyBuildError(pg("22003"))).toBe(false);
+      });
+
+      it("Postgres: a syntax error or access rule violation (class 42) is deterministic", () => {
+         expect(classifyBuildError(pg("42601"))).toBe(false);
+         expect(classifyBuildError(pg("42883"))).toBe(false);
+         expect(classifyBuildError(pg("42804"))).toBe(false);
+      });
+
+      it("Postgres: a data exception carried as text alone (a DuckDB passthrough) is deterministic", () => {
+         expect(
+            classifyBuildError(
+               new Error(
+                  'Failed to execute query: ERROR:  invalid input syntax for type integer: "x"',
+               ),
+            ),
+         ).toBe(false);
+         expect(classifyBuildError(new Error("ERROR:  division by zero"))).toBe(
+            false,
+         );
+      });
+
+      it("Snowflake: a data exception or compilation error SQLSTATE is deterministic", () => {
+         expect(classifyBuildError(snowflake("22018"))).toBe(false);
+         expect(classifyBuildError(snowflake("42000"))).toBe(false);
+         expect(classifyBuildError(snowflake("42601"))).toBe(false);
+      });
+
+      it("BigQuery: an invalidQuery or invalid job error is deterministic", () => {
+         expect(
+            classifyBuildError(bigquery("invalidQuery", "Bad int64 value: x")),
+         ).toBe(false);
+         expect(
+            classifyBuildError(
+               bigquery("invalid", "Could not cast literal to type DATE"),
+            ),
+         ).toBe(false);
+      });
+
+      it("leaves a missing table or column, and a missing privilege, unclassified, as before", () => {
+         expect(classifyBuildError(pg("42P01"))).toBeUndefined();
+         expect(classifyBuildError(pg("42703"))).toBeUndefined();
+         expect(classifyBuildError(snowflake("42S02"))).toBeUndefined();
+         expect(classifyBuildError(snowflake("42S22"))).toBeUndefined();
+         expect(classifyBuildError(pg("42501"))).toBeUndefined();
+         expect(
+            classifyBuildError(
+               bigquery("invalidQuery", "Unrecognized name: amount at [1:8]"),
+            ),
+         ).toBeUndefined();
+         expect(
+            classifyBuildError(
+               bigquery("notFound", "Not found: Table p:d.t was not found"),
+            ),
+         ).toBeUndefined();
+      });
+
+      it("never reads a transient code as deterministic", () => {
+         // Serialization failure and deadlock: retried by design.
+         expect(classifyBuildError(pg("40001"))).not.toBe(false);
+         expect(classifyBuildError(pg("40P01"))).not.toBe(false);
+         // A lock not available, too many connections, a statement cancelled
+         // or timed out, a shutdown, a lost connection.
+         for (const code of ["55P03", "53300", "57014", "57P01", "08006"]) {
+            expect(classifyBuildError(pg(code))).not.toBe(false);
+         }
+         // Its own words still read as transient.
+         expect(
+            classifyBuildError(
+               Object.assign(
+                  new Error("canceling statement due to statement timeout"),
+                  { code: "57014" },
+               ),
+            ),
+         ).toBe(true);
+         expect(classifyBuildError(snowflake("40001"))).not.toBe(false);
+         for (const reason of [
+            "backendError",
+            "internalError",
+            "rateLimitExceeded",
+            "quotaExceeded",
+            "jobInternalError",
+         ]) {
+            expect(classifyBuildError(bigquery(reason))).not.toBe(false);
+         }
+      });
+   });
+
    it("leaves an unrecognized or ambiguous error unclassified", () => {
       expect(classifyBuildError(new Error("something odd"))).toBeUndefined();
       // A missing table may be a referenced upstream reclaimed mid-build.
@@ -225,7 +333,7 @@ describe("classifySourceFailure", () => {
       ).toBeUndefined();
    });
 
-   it("inherits through Malloy's strict miss on a colocated build", () => {
+   it("inherits through Malloy's strict miss on a database build", () => {
       expect(
          classifySourceFailure(strictMiss("orders"), [deterministic]).retryable,
       ).toBe(false);

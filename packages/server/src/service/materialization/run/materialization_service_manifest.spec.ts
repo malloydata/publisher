@@ -85,7 +85,7 @@ function loader(
 ) {
    const calls: {
       packageName: string;
-      colocated: Record<string, unknown>;
+      database: Record<string, unknown>;
       storage: Record<string, unknown>;
    }[] = [];
    return {
@@ -93,7 +93,7 @@ function loader(
       env: {
          loadRunManifest: async (params: {
             packageName: string;
-            colocated: Record<string, unknown>;
+            database: Record<string, unknown>;
             storage: Record<string, unknown>;
             commit: (o: typeof outcome) => Promise<void>;
          }) => {
@@ -120,7 +120,7 @@ describe("autoLoadManifest", () => {
       // connectionName is carried alongside tableName so the bind step
       // (Package.quoteBoundTableNames) can quote the path for its dialect.
       expect(calls[0].packageName).toBe("pkg");
-      expect(calls[0].colocated).toEqual({
+      expect(calls[0].database).toEqual({
          b1: { tableName: "orders_v1", connectionName: "duckdb" },
       });
    });
@@ -144,7 +144,7 @@ describe("autoLoadManifest", () => {
             error: "Permission denied while writing to dataset analytics",
          },
       });
-      expect(Object.keys(calls[0].colocated)).toEqual(["ok"]);
+      expect(Object.keys(calls[0].database)).toEqual(["ok"]);
       expect(Object.keys(calls[0].storage)).toEqual(["ok"]);
    });
 

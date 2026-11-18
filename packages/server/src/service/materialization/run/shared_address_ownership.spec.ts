@@ -41,7 +41,7 @@ import { serviceOverEnvironment } from "../../../test_helpers/materialization_se
  * serving its own table instead. (A host that instructs one table for the
  * shared build is the build loop's case, below.)
  *
- * The colocated tier and a `scope: package` version, on a real DuckDB
+ * The database tier and a `scope: package` version, on a real DuckDB
  * warehouse; the `storage=` tier is
  * tests/component/materialization_shared_address_ownership.component.spec.ts.
  */
@@ -138,6 +138,17 @@ async function build(
 async function sql(text: string): Promise<Record<string, unknown>[]> {
    const connection = await env.getMalloyConnection("warehouse");
    return (await connection.runSQL(text)).rows as Record<string, unknown>[];
+}
+
+/** Where DuckDB's catalog says `table` is, as a mark names it. */
+async function locationOf(table: string): Promise<string> {
+   return String(
+      (
+         await sql(
+            `SELECT database_name || '.' || schema_name || '.' || table_name AS loc FROM duckdb_tables() WHERE table_name = '${table}'`,
+         )
+      )[0]?.loc,
+   );
 }
 
 /** The planted table, as a reader of the warehouse sees it. */
@@ -246,7 +257,7 @@ async function expectServedFromOwnTable(
    expect((await answer(source, versionId)).who).toBe(`${source}_stored`);
 }
 
-describe("the colocated tier: a refused name= refuses its own source, and a twin builds its own table", () => {
+describe("the database tier: a refused name= refuses its own source, and a twin builds its own table", () => {
    beforeEach(async () => {
       writePackageFiles(
          path.join(envPath, PKG),
@@ -290,8 +301,28 @@ describe("the colocated tier: a refused name= refuses its own source, and a twin
       expect(outcome(m).built).toEqual(["named", "solo", "twin"]);
       expect(await planted()).toEqual({
          rows: ["live"],
-         comment: ownedTableComment(`${ENV}/${PKG}`),
+         comment: ownedTableComment(
+            `${ENV}/${PKG}`,
+            await locationOf("named_t"),
+         ),
       });
+      // The tables Publisher named carry the package's mark too.
+      for (const entry of Object.values(
+         (m.manifest as { entries: Record<string, ManifestEntry> }).entries,
+      )) {
+         const comment = (
+            await sql(
+               `SELECT comment FROM duckdb_tables() WHERE table_name = '${entry.physicalTableName}'`,
+            )
+         )[0]?.comment;
+         expect([entry.sourceName, comment]).toEqual([
+            entry.sourceName,
+            ownedTableComment(
+               `${ENV}/${PKG}`,
+               await locationOf(entry.physicalTableName),
+            ),
+         ]);
+      }
       await sql("UPDATE named_t SET who = 'stored'");
       expect((await answer("named")).who).toBe("stored");
       await expectServedFromOwnTable(m, "twin");
@@ -367,7 +398,11 @@ describe('a "scope: package" version: a refused name= refuses its own source, an
 describe("the build loop: one ownership decision per shared table", () => {
    const ADDRESS = "bsharedownership";
 
-   function harness(order: string[], holder: string | null) {
+   function harness(
+      order: string[],
+      holder: string | null,
+      options: { hostInstructed?: boolean; twinOnly?: boolean } = {},
+   ) {
       const probes: string[] = [];
       const statements: string[] = [];
       const connection = {
@@ -376,6 +411,21 @@ describe("the build loop: one ownership decision per shared table", () => {
          runSQL: async (text: string) => {
             if (/duckdb_tables|information_schema/i.test(text)) {
                probes.push(text);
+               // Once a source has built, the table is there: the mark's
+               // probe reads where the catalog says it is.
+               if (built.length > 0) {
+                  return {
+                     rows: [
+                        {
+                           kind: "BASE TABLE",
+                           comment: holder,
+                           location_database: "memory",
+                           location_schema: "main",
+                           location_name: "named_t",
+                        },
+                     ],
+                  };
+               }
                return {
                   rows:
                      holder === null
@@ -394,7 +444,7 @@ describe("the build loop: one ownership decision per shared table", () => {
       });
       const twin = fakeSource({ name: "twin", sourceEntityId: ADDRESS });
       const compiled = compiledWith(
-         { named, twin },
+         options.twinOnly ? { twin } : { named, twin },
          [order],
          new Map([["duckdb", connection]]),
       );
@@ -446,6 +496,7 @@ describe("the build loop: one ownership decision per shared table", () => {
             signal: new AbortController().signal,
             strict: false,
             owner: { environmentId: ENV_ID, packageName: PKG },
+            ...(options.hostInstructed ? { hostInstructed: true } : {}),
          });
       return { run, built, probes, statements, retired };
    }
@@ -474,13 +525,46 @@ describe("the build loop: one ownership decision per shared table", () => {
       });
    }
 
+   // Every database table a build writes is marked, not only an author's
+   // name=, so a caller's drop can prove it is this package's once its run's
+   // record is gone. The mark is written after the build, naming where the
+   // catalog says the table is (one probe).
+   for (const hostInstructed of [false, true]) {
+      it(`marks a table no author named as this package's${hostInstructed ? ", on a host-instructed run" : ""}`, async () => {
+         const h = harness(["twin"], null, { hostInstructed, twinOnly: true });
+         const result = await h.run();
+         expect(h.built).toEqual(["twin"]);
+         expect(result.failures).toEqual({});
+         expect(h.probes).toHaveLength(1);
+         expect(h.statements).toEqual([
+            `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`, "memory.main.named_t")}'`,
+         ]);
+      });
+   }
+
+   it("a mark that cannot be written leaves the build as it was", async () => {
+      const h = harness(["twin"], null, { twinOnly: true });
+      const failing = h.statements;
+      // The warehouse refuses the COMMENT: the table is still built and
+      // committed, and the run's records say it is the package's.
+      const original = failing.push.bind(failing);
+      failing.push = (...items: string[]) => {
+         original(...items);
+         throw new Error("permission denied to comment");
+      };
+      const result = await h.run();
+      expect(h.built).toEqual(["twin"]);
+      expect(result.failures).toEqual({});
+      expect(Object.values(result.entries)).toHaveLength(1);
+   });
+
    it("marks the shared table as this package's when the source with no name= builds it", async () => {
       const h = harness(["twin", "named"], null);
       const result = await h.run();
       expect(h.built).toEqual(["twin"]);
       expect(result.failures).toEqual({});
       expect(h.statements).toEqual([
-         `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`)}'`,
+         `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`, "memory.main.named_t")}'`,
       ]);
    });
 });

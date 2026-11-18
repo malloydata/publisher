@@ -42,7 +42,7 @@ describe("MaterializationController.createMaterialization validation", () => {
    it("never forwards a client-supplied trigger (SCHEDULER cannot be forged)", async () => {
       // trigger is service-level-only: the controller must strip it so an API
       // caller cannot mint a run that reads as scheduler-driven. The service
-      // then defaults it to ON_DEMAND.
+      // then defaults it to on_demand.
       const parsed = await parse({ forceRefresh: true, trigger: "SCHEDULER" });
       expect(parsed).toEqual({ forceRefresh: true });
       expect("trigger" in (parsed as object)).toBe(false);
@@ -202,7 +202,7 @@ describe("MaterializationController.createMaterialization validation", () => {
 
    it("preserves the storage `destination` on a build instruction", async () => {
       // Regression: `destination` is the orchestrated `storage=` axis. Dropping it
-      // here silently downgrades an orchestrated build to a colocated
+      // here silently downgrades an orchestrated build to a database
       // build, so it never materializes into the storage destination.
       const parsed = await parse({
          buildInstructions: {

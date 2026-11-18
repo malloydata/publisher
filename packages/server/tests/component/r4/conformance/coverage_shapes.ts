@@ -6,7 +6,7 @@
  * through named views and extensions, rollups over typed and zoned bases,
  * persisted sources over a zoned base, a rolling window under `#@ persist`, joins declared on or read by a
  * persisted source, persisted views over persisted and materialized sources,
- * and `#(materialize)` over colocated and `storage=` sources joined in one
+ * and `#(materialize)` over database and `storage=` sources joined in one
  * model. Each is served like every other shape (conformance.component.spec.ts):
  * every answer equal to live, at the tier it names.
  */
@@ -18,7 +18,7 @@ const HEADER = "##! experimental { persistence }";
 export const COVERAGE_SHAPES: Shape[] = [
    {
       name: "rollup read through named views and extensions",
-      about: "A rollup (v1 #@ preaggregate; v2 #(preaggregate)) answering a named view, a view refined from it, and an extension of its base that adds a dimension over the grain. Join-to-rollup is r4/rollup_coverage, whose build checks the parent key the leg needs",
+      about: "A rollup (v1 #@ preaggregate; v2 #(rollup)) answering a named view, a view refined from it, and an extension of its base that adds a dimension over the grain. Join-to-rollup is r4/rollup_coverage, whose build checks the parent key the leg needs",
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -63,8 +63,8 @@ source: orders_ext is orders extend {
    },
    {
       name: "rollup over a base with typed columns",
-      about: "A colocated rollup over a base whose grain is a DECIMAL or a TIMESTAMPTZ, whose measures sum a BIGINT past 2^53 and a DECIMAL, and which carries STRUCT and MAP columns outside the grain. In a storage= destination the BIGINT sum comes back rounded and the TIMESTAMPTZ grain as a timestamp: known gaps, in r4/rollup_coverage. An array column is the next shape: v1 refuses it as a fan-out join",
-      variants: ["colocated"],
+      about: "A database rollup over a base whose grain is a DECIMAL or a TIMESTAMPTZ, whose measures sum a BIGINT past 2^53 and a DECIMAL, and which carries STRUCT and MAP columns outside the grain. In a storage= destination every one of these reads back exact too (r4/rollup_coverage). On the Parquet run the database rollup's BIGINT sum is held as a DOUBLE, which the bind's column read guards: answered live, with every digit (F-13). An array column is the next shape: v1 refuses it as a fan-out join",
+      variants: ["database"],
       files: {
          "m.malloy": `${HEADER}
 
@@ -94,12 +94,17 @@ source: typed is duckdb.sql("""
             name: "a BIGINT sum past 2^53",
             malloy:
                "run: typed -> { group_by: g; aggregate: big_sum; order_by: g }",
-            expect: "rollup",
+            // F-13: DuckLake keeps the sum's HUGEINT column in Parquet as a
+            // DOUBLE, so the bind's column read guards it and the query is
+            // answered live, with every digit (#1846).
+            expect: { database: "rollup", "database@parquet": "live" },
          },
          {
             name: "a DECIMAL sum",
             malloy:
                "run: typed -> { group_by: g; aggregate: dec_sum; order_by: g }",
+            // Its table is the BIGINT sum's (one grain, one rollup), but only a
+            // query reading the column with no exact read declines (#1869).
             expect: "rollup",
          },
          {
@@ -118,8 +123,8 @@ source: typed is duckdb.sql("""
    },
    {
       name: "rollup over a base with an array column",
-      about: "A #(preaggregate) rollup over a base carrying an array column outside its grain (v1 #@ preaggregate refuses that base as a fan-out join and fails the load: r4/coverage_refusals)",
-      variants: ["materialize", "materialize_colocated"],
+      about: "A #(rollup) rollup over a base carrying an array column outside its grain (v1 #@ preaggregate refuses that base as a fan-out join and fails the load: r4/coverage_refusals)",
+      variants: ["materialize", "materialize_database"],
       files: {
          "m.malloy": `${HEADER}
 
@@ -143,7 +148,7 @@ source: listed is duckdb.sql("""
    },
    {
       name: "rollup over a zoned base",
-      about: "A rollup declared on a source that sets its own timezone:, as v1 #@ preaggregate and as v2 #(preaggregate): both are refused (preaggregate-not-built, reason time_zone), so every query answers live",
+      about: "A rollup declared on a source that sets its own timezone:, as v1 #@ preaggregate and as v2 #(rollup): both are refused (rollup-not-built, reason time_zone), so every query answers live",
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -200,12 +205,7 @@ source: bestellungen is orders_raw extend {
    {
       name: "array queries under persist",
       about: "##! experimental.array_queries: a persisted query that stores an array query's result, and a persisted source that stores the array a caller's array query reads",
-      variants: [
-         "colocated",
-         "storage",
-         "materialize",
-         "materialize_colocated",
-      ],
+      variants: ["database", "storage", "materialize", "materialize_database"],
       files: {
          "m.malloy": `##! experimental { persistence array_queries }
 
@@ -278,7 +278,7 @@ source: classified is orders_raw -> {
    {
       name: "persist with a rolling window",
       about: "#@ persist on a query whose body filters on now (refused, current_time: built, it would bake the window in as of the build, so it answers live), and on one whose extend block does (built, the window applied at read). The window is wide, so the goldens hold still; r4/persist_rolling_window_coverage cuts the rows at a pinned clock",
-      variants: ["storage", "colocated"],
+      variants: ["storage", "database"],
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
@@ -368,7 +368,7 @@ source: reader is orders_raw extend {
             name: "through a join: a truncation of the inherited-zone column",
             malloy:
                "run: reader -> { group_by: zd is z.created_at.day; aggregate: n is count() }",
-            // Colocated, the join is on one connection and the truncation is
+            // Database, the join is on one connection and the truncation is
             // computed in the reader's zone over the stored instant; stored,
             // the joined table is on another connection.
             expect: { storage: "live", materialize: "live" },
@@ -461,14 +461,14 @@ source: pv_base is orders_raw -> {
       ],
    },
    {
-      name: "materialize: colocated and storage= in one model",
-      about: "A colocated #(materialize) dimension source and a storage= #(materialize) fact source in one model, each alone and joined (fixed annotations, not rendered per variant)",
+      name: "materialize: database and storage= in one model",
+      about: "A database #(materialize) dimension source and a storage= #(materialize) fact source in one model, each alone and joined (fixed annotations, not rendered per variant)",
       variants: ["materialize"],
       files: {
          "m.malloy": `${HEADER}
 import "raw.malloy"
 
-#(materialize) name="mz_dim_colocated"
+#(materialize) name="mz_dim_database"
 source: mz_dim is customers_raw extend {
   measure: customers is count()
 }
@@ -488,17 +488,17 @@ source: mz_joined is mz_fact extend {
       },
       queries: [
          {
-            name: "the colocated source alone",
+            name: "the database source alone",
             malloy:
                "run: mz_dim -> { group_by: segment; aggregate: customers }",
-            expect: "colocated",
+            expect: "database",
          },
          {
             name: "the storage= source alone",
             malloy: "run: mz_fact -> { group_by: region; aggregate: total }",
          },
          {
-            name: "the storage= source joined to the colocated one",
+            name: "the storage= source joined to the database one",
             model: "joined.malloy",
             malloy:
                "run: mz_joined -> { group_by: c.segment; aggregate: total }",

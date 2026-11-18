@@ -68,7 +68,7 @@ function driftOf(column: string): string | undefined {
 
 const ROUTES = {
    v2: (grain: string) =>
-      `#(preaggregate) grain=["${grain}"] storage="${DESTINATION}"`,
+      `#(rollup) grain=["${grain}"] storage="${DESTINATION}"`,
    v1: (grain: string) =>
       `#@ preaggregate grain="${grain}" storage="${DESTINATION}"`,
 };

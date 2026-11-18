@@ -50,7 +50,7 @@ const ENV = "e1";
 const ENV_ID = "env-1";
 const PKG = "pkg";
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
-const MISMATCH = "storage-column-type-mismatch";
+const MISMATCH = "database-column-type-mismatch";
 const METRIC = "publisher_storage_column_type_mismatch_total";
 
 const OUTPUT = `{
@@ -94,7 +94,7 @@ interface Fixture {
 
 async function fixture(root: string, warehouse: unknown): Promise<Fixture> {
    const envPath = path.join(root, "env");
-   fs.mkdirSync(envPath);
+   fs.mkdirSync(envPath, { recursive: true });
    writePackageFiles(
       path.join(envPath, PKG),
       { "m.malloy": MODEL },
@@ -193,10 +193,13 @@ const tiers: {
            {
               label: "DuckLake",
               warehouse: async (root: string) => {
-                 const lake = path.join(root, "lake");
+                 // Inside the environment directory, the only place an env
+                 // connection's setupSQL reaches (duckdb_lockdown.ts).
+                 const lake = path.join(root, "env", "lake");
                  fs.mkdirSync(path.join(lake, "data"), { recursive: true });
                  const setupSQL = [
-                    "INSTALL ducklake",
+                    // No INSTALL: setupSQL runs confined (duckdb_lockdown.ts),
+                    // with `ducklake` loaded beforehand.
                     "LOAD ducklake",
                     `ATTACH IF NOT EXISTS 'ducklake:${path.join(lake, "origin.ducklake")}' AS origin_lake (DATA_PATH '${path.join(lake, "data")}/')`,
                     "USE origin_lake",
@@ -328,7 +331,7 @@ for (const tier of tiers) {
             await warehouse.runSQL(tier.alter(physicalTableName, "d_month"));
          }
          await f.pkg.reloadAllModels(
-            f.pkg.materialization().boundColocatedEntries() ?? {},
+            f.pkg.materialization().boundDatabaseEntries() ?? {},
          );
          const warned = mismatches(f);
          expect(warned.map((w) => w.subject).sort()).toEqual(["mat", "v1"]);

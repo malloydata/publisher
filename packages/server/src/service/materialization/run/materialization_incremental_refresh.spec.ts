@@ -5,7 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { BuildInstruction, LedgerEntry } from "../domain/types";
-import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
+import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { indexCallerLedger } from "./incremental_build";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
@@ -74,6 +74,12 @@ describe("buildOneSource: incremental refresh", () => {
          }
          if (sql.includes("LIMIT 1")) {
             return { rows: nonEmpty ? [{ present: 1 }] : [] };
+         }
+         // The newest stored watermark at or below the recorded boundary: a
+         // table holding rows right up to it, so a delta starts there.
+         if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
+            const atOrBelow = /<= DATE '([^']+)'/.exec(sql)?.[1];
+            return { rows: [{ watermark_max: atOrBelow ?? null }] };
          }
          if (sql.includes("watermark_max")) {
             return { rows: [{ watermark_max: "2024-06-20" }] };
@@ -407,7 +413,7 @@ describe("buildOneSource: incremental refresh", () => {
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          // Postgres: the swap is one implicit transaction in one call.
          'DROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";',
-         // Then the built table's column types (colocated_native_types.ts).
+         // Then the built table's column types (database_native_types.ts).
          "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"orders_v1\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum",
       ]);
       expect(upsert.called).toBe(false);

@@ -21,6 +21,17 @@ export type MaterializationStatus =
 export type BuildPlan = components["schemas"]["BuildPlan"];
 export type BuildManifestResult = components["schemas"]["BuildManifest"];
 export type ManifestEntry = components["schemas"]["ManifestEntry"];
+
+/**
+ * What an incremental refresh's late-row check found below one delta's lower
+ * bound (run/incremental_apply.ts, `countLateRows`): rows the source holds,
+ * stamped in the window `[from, to)` directly below where the delta started
+ * reading, that the stored table lacks. No delta reads below that bound, so
+ * they stay missing until a rebuild or a `lookback=` that reaches them. The
+ * manifest entry's `lateRows`; raised as a package warning
+ * (`INCREMENTAL_LATE_ROWS_CODE`, domain/incremental.ts) while it is bound.
+ */
+export type LateRows = NonNullable<ManifestEntry["lateRows"]>;
 export type BuildInstruction = components["schemas"]["BuildInstruction"];
 export type ManifestReference = components["schemas"]["ManifestReference"];
 export type Realization = components["schemas"]["Realization"];
@@ -136,25 +147,30 @@ export interface FreshnessAwareManifestEntry {
    freshnessWindowSeconds?: number;
    freshnessFallback?: "live" | "stale_ok" | "fail";
    /**
-    * The colocated table's columns as its build captured them (the wire
+    * The database table's columns as its build captured them (the wire
     * entry's `schema`), in DuckDB's spelling; absent for a table whose
-    * build captured none. The served copy binds a v1 colocated
-    * table with it (colocated_bindings.ts).
+    * build captured none. The served copy binds a v1 database
+    * table with it (database_bindings.ts).
     */
    schema?: { name: string; type: string }[];
    /**
-    * The colocated table's columns with their types as the warehouse's own
+    * The database table's columns with their types as the warehouse's own
     * catalog names them (the wire entry's `nativeSchema`), which the served
     * copy casts a big-integer column to exactly (known limitation 12).
     */
    nativeSchema?: { name: string; type: string }[];
    /**
-    * A `#(preaggregate)` rollup's key check (known limitation 29), as the
+    * A `#(rollup)` rollup's key check (known limitation 29), as the
     * auto-run that wrote or carried this table recorded it: whether the rows
     * it grouped held its one grain dimension once per value. Internal, never
     * on the wire; absent (unknown) on every entry a host's manifest binds.
     */
    keyUniqueness?: KeyUniqueness;
+   /**
+    * The wire entry's `lateRows`: what the run's late-row check found below
+    * an incremental delta, raised as a package warning while it is bound.
+    */
+   lateRows?: LateRows;
 }
 
 /** See {@link FreshnessAwareManifestEntry.heldRead}. */
@@ -189,7 +205,7 @@ export interface KeyUniqueness {
 }
 
 /**
- * One bound colocated table's columns as the bind read them from its
+ * One bound database table's columns as the bind read them from its
  * warehouse (DuckDB's spelling, as {@link FreshnessAwareManifestEntry.schema}),
  * or why they could not be read, in which case the table answers live.
  */
@@ -254,7 +270,7 @@ export type KeptTableReason =
 /**
  * A table an auto-run replaced and Publisher keeps, listed on the run record
  * (`metadata.keptTables`) and raised as a package warning
- * (`table-kept-after-rename`) until the table is dropped or the name is
+ * (`table-kept`) until the table is dropped or the name is
  * reused: one at an author's exact `name=` (`author_name`), which Publisher
  * never drops; one in a storage destination that is no longer configured
  * (`destination_missing`), which it cannot reach; or one at the name the

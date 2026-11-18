@@ -6,7 +6,7 @@
  * planned table with its kind fixed at plan, and, as plain data the build and
  * the serving legs both read, a `#(materialize)` source's plan (its stored
  * columns, read-time terms, pair layout and the bases its served copy keeps),
- * a persisted view's and a persisted named query's, a `#(preaggregate)`
+ * a persisted view's and a persisted named query's, a `#(rollup)`
  * rollup's and a table's classified gate, with the one reader of the
  * `sourceID` that keys each of them.
  *
@@ -339,7 +339,7 @@ export interface MaterializePlan {
    /**
     * The build source's compiled output, each column in DuckDB's type
     * spelling (`storedColumnsOfOutput`), read off the compiled companion.
-    * A colocated table's schema is not captured at build, so its serve
+    * A database table's schema is not captured at build, so its serve
     * binding declares these. Absent before the companion compiles.
     */
    storedColumns?: StoredColumn[];
@@ -426,7 +426,7 @@ export interface MaterializeParent {
     * For a `storage=` pair, set with the build copy: the text the extension's
     * build compiles in its destination over the parent's stored table
     * ({@link extensionOverStoredModel}). Absent until the build copy is
-    * written; absent for a colocated pair, whose build reads the parent's
+    * written; absent for a database pair, whose build reads the parent's
     * build source in its own warehouse.
     */
    overStored?: StoredChain;
@@ -507,13 +507,13 @@ export interface RollupMeasure {
 }
 
 /**
- * One `#(preaggregate)` rollup: one base, one grain, one placement, one table.
+ * One `#(rollup)` rollup: one base, one grain, one placement, one table.
  * A {@link RollupPlan} for the build plan's plumbing (its wire `preaggregate`
  * entry, eligibility and run instructions), with what the variant needs.
  */
 export interface RollupVariantPlan extends RollupPlan {
    /**
-    * Marks a rollup the rollup leg plans and serves: a `#(preaggregate)`
+    * Marks a rollup the rollup leg plans and serves: a `#(rollup)`
     * one, or a v1 `#@ preaggregate` line read as one.
     */
    variant: true;
@@ -536,9 +536,15 @@ export interface RollupVariantPlan extends RollupPlan {
    /**
     * Every gate of the base is its own (none inherited from a source it
     * extends, none through a join or a derivation): what the gate policy
-    * keeps under G3 for a colocated rollup with the gated-sources switch off.
+    * keeps under G3 for a database rollup with the gated-sources switch off.
     */
    baseGateOwn?: true;
+   /**
+    * Every gate of the base, own or inherited, is an `#(authorize)` lock whose
+    * text reads only givens and literals: it admits or refuses the whole
+    * query, so the gate policy keeps it on either tier (`lockOnly`).
+    */
+   baseGateLocksOnly?: true;
    /**
     * Grain dimensions the base declares `internal`, stored, and redeclared
     * `internal` on the variant, so no query selects one (a gate or a
@@ -546,11 +552,19 @@ export interface RollupVariantPlan extends RollupPlan {
     */
    internalGrain: string[];
    /**
-    * Grain dimensions the base itself declares `private`: stored, read by the
+    * Grain dimensions `private` on the base, its own or declared by a source
+    * it extends in its file ({@link liftedAncestors}): stored, read by the
     * build through its build copy's lift, and redeclared `private` on the
     * variant. Absent: none.
     */
    privateGrain?: string[];
+   /**
+    * For a private grain dimension a source the base extends declares: the
+    * statements of the sources it extends, down to that one, all in the
+    * base's file, whose access modifiers its build copy lifts as well, so
+    * the build can read it. Absent: none.
+    */
+   liftedAncestors?: TermUse[];
    /**
     * The base's own given-reading `where:` terms, each over grain dimensions
     * only: left out of the build (replaced by `true` in its build copy), so
@@ -563,7 +577,7 @@ export interface RollupVariantPlan extends RollupPlan {
    /**
     * The uniqueness check of the grain's one dimension (known limitation 29):
     * set when the grain is one dimension of the base and the companion
-    * compiled the check, for a colocated and a `storage=` rollup alike. A run builds it only
+    * compiled the check, for a database and a `storage=` rollup alike. A run builds it only
     * when a join_one in the package is keyed on that dimension (see
     * {@link joinOneKeysOf}); the join-to-rollup branch (A7) reads its outcome.
     */
@@ -642,6 +656,58 @@ export interface PersistSourceGateOutcome {
  */
 type TableKind = "persist" | "materialize" | "pair" | "rollup" | "view";
 
+/**
+ * The mechanism that declared a stored table, in its annotation's words: the
+ * `origin` the wire reports on a plan entry, a refusal record, a storage
+ * binding and the path report. `persist` is `#@ persist` on a source,
+ * `materialize` is `#(materialize)`, `view` and `query` are `#@ persist` on
+ * a view or a named query, and `rollup` is a rollup (`#(rollup)`, or v1's
+ * `#@ preaggregate`).
+ */
+export type TableOrigin =
+   | "persist"
+   | "materialize"
+   | "view"
+   | "query"
+   | "rollup";
+
+/**
+ * Whether an `origin` names a rollup: `rollup`, or `preaggregate`, the word
+ * releases before this one wrote, which a host may still echo back on a
+ * manifest entry it stored.
+ */
+export function isRollupOrigin(origin: string | null | undefined): boolean {
+   return origin === "rollup" || origin === "preaggregate";
+}
+
+/** An `origin` as read off a plan or an entry: `preaggregate` read as `rollup`, absent as `persist`. */
+export function originOf(
+   origin: TableOrigin | "preaggregate" | null | undefined,
+): TableOrigin {
+   if (origin === "preaggregate") return "rollup";
+   return origin ?? "persist";
+}
+
+/** A table's origin, from its kind and its sourceID (a view's or a query's). */
+export function originOfTable(
+   kind: TableKind | "query",
+   sourceID: string,
+): TableOrigin {
+   switch (kind) {
+      case "rollup":
+         return "rollup";
+      case "materialize":
+      case "pair":
+         return "materialize";
+      case "query":
+         return "query";
+      case "view":
+         return isPersistedQuerySourceID(sourceID) ? "query" : "view";
+      default:
+         return "persist";
+   }
+}
+
 /** What every planned table carries, whatever its kind. */
 interface TablePlanFacts {
    /** The planned source, as Malloy's persistence planner planned it. */
@@ -696,7 +762,7 @@ export type TablePlan = TablePlanFacts &
            materialize?: undefined;
            /**
             * The rollup as compiled over its base's stored table: set for a
-            * colocated rollup over a colocated `#@ persist` or
+            * database rollup over a database `#@ persist` or
             * `#(materialize)` base, and compiled on the first call
             * (rollup_compile.ts). A run builds from it only when its build
             * manifest holds the base's table (instructed_build.ts).

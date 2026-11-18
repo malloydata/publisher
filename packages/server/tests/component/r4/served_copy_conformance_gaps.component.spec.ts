@@ -195,9 +195,9 @@ for (const c of CASES) {
  */
 for (const variant of [
    "storage",
-   "colocated",
+   "database",
    "materialize",
-   "materialize_colocated",
+   "materialize_database",
 ] as const) {
    describe(`a sum through a stored nest under a NULL parent key, against the truth [${variant}]`, () => {
       const shape = SHAPES.find((s) => s.name === "query-shaped: a nest");

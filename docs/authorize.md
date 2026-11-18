@@ -284,30 +284,30 @@ is owner } ` compiles — there is once again a field named `org_id` for the gat
 > source you intend to expose. See
 > [row-level-access.md](row-level-access.md#an-inherited-gate-filters-a-derivations-output-not-its-input).
 
-### Row-level gates and colocated persistence
+### Row-level gates and database persistence
 
 A row-level gate proven attributed to its entry point (see
 [materialization.md](materialization.md#authorize-gated-sources-and-materialization)) is the ONE
-`#(access_filter)` shape eligible for a colocated `#@ persist`. Persisting the source changes only where
+`#(access_filter)` shape eligible for a database `#@ persist`. Persisting the source changes only where
 its rows are read FROM; the gate itself keeps running live, on every query, exactly as described
 above — a materialized entry point is not served frozen with respect to who may see what. What can go
 stale between rebuilds is the row DATA the gate filters on: a row whose access decision changed (say,
 it changed owner) keeps serving to its former owner until the source rebuilds. See
-[materialization.md](materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source)
+[materialization.md](materialization.md#the-freshness-contract-for-a-gated-database-persist-source)
 for the full contract and how to bound that staleness. The same bar admits the source on every tier,
-with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off: a `#@ persist` or a `#(materialize)`, colocated or
+with `PUBLISHER_MATERIALIZE_GATED_SOURCES` off: a `#@ persist` or a `#(materialize)`, database or
 `storage=`, whose own gate is a row filter, an `#(authorize)` lock (its own or one it inherits from a
 source it derives from or extends), or both. Its table holds every caller's rows, and the gate is grafted and proven
-on each read through Publisher, exactly as on live. A colocated table stays in the author's warehouse;
+on each read through Publisher, exactly as on live. A database table stays in the author's warehouse;
 a `storage=` table puts those rows, ungated, at rest in the destination, readable by anyone with
-direct access to it, a maintainer-approved exception made ahead of the managed tier's security
-review, for consistency between the tiers. A row filter the source inherits, a gate reached only
+direct access to it. This is allowed ahead of the managed tier's security review, so the two
+tiers behave the same. A row filter the source inherits, a gate reached only
 through a join, and a gate over a source whose build would substitute a given stay refused on every
 tier. A v1 `#@ preaggregate` rollup over a gated source is never read past a gate, and a `storage=`
 rollup over one waits for that review.
 
-**Colocated `#(preaggregate)` rollups.** With `PUBLISHER_MATERIALIZE` (on by default) and
-`PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a materialization v2 `#(preaggregate)` rollup over a gated
+**Database `#(rollup)` rollups.** With `PUBLISHER_MATERIALIZE` (on by default) and
+`PUBLISHER_MATERIALIZE_GATED_SOURCES` on, a materialization v2 `#(rollup)` rollup over a gated
 source is built in the source's own warehouse and read past the gate, the same way: the queried source
 is redeclared over the rollup with its own gates and keeps its identity, so this section's rules hold
 on it unchanged — the gate is grafted onto it per request, proven bound to the source's own field, and
@@ -315,9 +315,9 @@ a gate that cannot be grafted denies. It is built only when every field the gate
 rollup's grain dimensions (so filtering the rollup's groups admits exactly the rows live admits), and
 read only when the gates on the rollup equal the live entry point's; otherwise the rollup is not built,
 or the query is answered live. One table holds every caller's groups, filtered per caller at read, so the
-staleness contract above applies to it as to any colocated table. A rollup in a `storage=` destination
-over a gated source stays off until the managed tier's security review, and a v1 `#@ preaggregate`
-rollup is never read past a gate. See [preaggregation.md](preaggregation.md#preaggregate-materialization-v2-behind-publisher_materialize).
+staleness contract above applies to it as to any database table. A rollup in a `storage=` destination
+is built and read on the same terms, when every column the gate reads is stored exactly and compared
+as its source compares it; a v1 `#@ preaggregate` rollup is never read past a gate. See [preaggregation.md](preaggregation.md#rollup-materialization-v2-behind-publisher_materialize).
 
 Declare the gate the same way as on any other source — directly above the `source:` line, whether or
 not that line is also tagged `#@ persist`:

@@ -57,6 +57,9 @@ describe("the served copy's check order", () => {
          );
       expect(declined).toBeInstanceOf(LegDecline);
       expect((declined as LegDecline).code).toBe("served_copy_not_served");
+      // Not served: the table answers nothing, and `code` says why.
+      expect((declined as LegDecline).reason).toBe("NOT_SERVED");
+      expect((declined as LegDecline).candidateCode).toBe("served_copy");
    });
 
    it("declines the same query as an opt-out when its gate can be grafted", async () => {
@@ -76,5 +79,8 @@ describe("the served copy's check order", () => {
             (err: unknown) => err,
          );
       expect((declined as LegDecline).code).toBe("served_copy_opt_out");
+      // The reader opted out: its own reason, with no verdict code.
+      expect((declined as LegDecline).reason).toBe("OPTED_OUT");
+      expect((declined as LegDecline).candidateCode).toBeUndefined();
    });
 });

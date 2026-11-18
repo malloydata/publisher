@@ -18,6 +18,10 @@ import type {
    QueryMaterializer,
    SourceDef,
 } from "@malloydata/malloy";
+import {
+   ACCESS_FILTER_ROUTE,
+   canonicalAuthorizeRoute,
+} from "../../authorize_routes";
 import { collectEntryPointGates } from "../../gate_classification";
 import {
    readPreparedQuery,
@@ -26,28 +30,16 @@ import {
 import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import { malloyIdentifiers } from "../../query_text";
 
-/** Every field path an expression reads (`node: "field"`), at any depth. */
-export function fieldPathsIn(
-   e: unknown,
-   out: string[][] = [],
-   depth = 0,
-): string[][] {
-   if (depth > 64 || e === null || typeof e !== "object") return out;
-   if (Array.isArray(e)) {
-      for (const x of e) fieldPathsIn(x, out, depth + 1);
-      return out;
-   }
-   const n = e as { node?: unknown; path?: unknown };
-   if (
-      n.node === "field" &&
-      Array.isArray(n.path) &&
-      n.path.every((p) => typeof p === "string")
-   ) {
-      out.push(n.path as string[]);
-   }
-   for (const v of Object.values(e)) fieldPathsIn(v, out, depth + 1);
-   return out;
-}
+import { fieldPathsIn } from "./gate_paths";
+import type { GateReads } from "./gate_reads_types";
+
+// The comparison rule beside the column rules, read by the router through
+// this module.
+export {
+   storedTableCollationRefusal,
+   storedTypeIsString,
+   stringGateCollationRefusal,
+} from "./gate_collation";
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
 export function gateIdentifiers(exprs: readonly string[]): string[] {
@@ -99,33 +91,73 @@ function gatePaths(exprs: readonly string[]): {
    return { paths, unresolved };
 }
 
-/** What an entry point's row-level gates read. */
-export interface GateReads {
-   /**
-    * Every name the gates read, and every field those are computed from,
-    * through renames, expressions, joins and query stages. Over-collected on
-    * purpose, for the readers that decline on a match (the zone checks).
-    */
-   readonly names: ReadonlySet<string>;
-   /**
-    * Each stored column the gates read, as the names it goes by along the way
-    * from the gate to the column (a rename's, a query stage's output, the
-    * base column's), any of which a stored table may hold it under.
-    */
-   readonly columns: readonly (readonly string[])[];
-   /**
-    * A name the gates read that could not be followed to a column: a reader
-    * that judges the columns must fail closed.
-    */
-   readonly unresolved: boolean;
-   /**
-    * The rows the query reads are scoped by a `where:` (the source's own, one
-    * it extends, a composite member's, or a query-shaped source's base's or
-    * stage's): its columns are read here as a gate's are.
-    */
-   readonly scoped: boolean;
-   /** The entry point carries a gate: the gate policy judges these columns past it. */
-   readonly gated: boolean;
+export type { GateReads } from "./gate_reads_types";
+
+/** The operators a comparison of non-string values may be built with. */
+const NON_STRING_OPERATORS = new Set([
+   "=",
+   "!=",
+   "<",
+   "<=",
+   ">",
+   ">=",
+   "in",
+   "not",
+   "and",
+   "or",
+   "()",
+   "is-null",
+   "is-not-null",
+]);
+
+/** A known type that is not a string. Unknown is not. */
+function nonStringType(t: unknown): boolean {
+   return typeof t === "string" && t !== "string";
+}
+
+/** The type of the field a path names on `source`, through joins. */
+function typeAt(source: unknown, path: readonly string[]): unknown {
+   let at: unknown = source;
+   let field: FieldLike | undefined;
+   for (const name of path) {
+      field = fieldsOf(at).get(name);
+      if (field === undefined) return undefined;
+      at = field;
+   }
+   return field?.type;
+}
+
+/** The IR nodes an equality-only comparison is built from. */
+const EQUALITY_NODES = new Set([
+   "=",
+   "!=",
+   "in",
+   "not",
+   "and",
+   "or",
+   "()",
+   "field",
+   "given",
+   "stringLiteral",
+   "numberLiteral",
+   "true",
+   "false",
+   "null",
+   "is-null",
+   "is-not-null",
+]);
+
+/**
+ * Whether an expression compares only by equality: every IR node it holds is
+ * one of {@link EQUALITY_NODES}. Any other node, known or not, reads false.
+ */
+export function equalityOnlyExpr(e: unknown, depth = 0): boolean {
+   if (depth > 64) return false;
+   if (e === null || typeof e !== "object") return true;
+   if (Array.isArray(e)) return e.every((x) => equalityOnlyExpr(x, depth + 1));
+   const n = (e as { node?: unknown }).node;
+   if (typeof n === "string" && !EQUALITY_NODES.has(n)) return false;
+   return Object.values(e).every((v) => equalityOnlyExpr(v, depth + 1));
 }
 
 interface FieldLike {
@@ -151,240 +183,534 @@ function fieldsOf(struct: unknown): Map<string, FieldLike> {
    return out;
 }
 
-/**
- * {@link GateReads} for the gates (`exprs`) on `struct`. A name is followed
- * through a rename to the field it renames, through a computed field to every
- * field its expression reads, through a join to the joined source's field,
- * and, on a query-shaped source, back through each stage of its query to the
- * fields of the source the query runs on, until it reaches a column.
- * `modelDef` resolves a stage's source when it is named rather than inline.
- */
-export function gateReads(
-   struct: unknown,
-   exprs: readonly string[],
-   modelDef?: unknown,
-): GateReads {
-   const names = new Set<string>();
-   const columns: string[][] = [];
-   let unresolved = false;
-   let steps = 0;
-   const tooDeep = () => ++steps > 4096;
+/** A query-shaped source's query, as the walk reads it. */
+interface QueryLike {
+   structRef?: unknown;
+   pipeline?: unknown;
+}
 
-   const resolve = (
+/** One stage's output field still to follow back, and the names it went by. */
+interface Wanted {
+   path: string[];
+   chain: string[];
+}
+
+/**
+ * The walk behind {@link gateReads}: each name a gate or a row scope reads,
+ * followed to the columns it reaches, recording what could not be followed.
+ */
+class GateReadWalk {
+   readonly names = new Set<string>();
+   readonly columns: string[][] = [];
+   unresolved = false;
+   scoped = false;
+   equalityOnly = true;
+   comparesNoString = true;
+   readonly entryPaths: string[][] = [];
+   entryPathsComplete = true;
+   private steps = 0;
+
+   constructor(
+      private readonly modelDef: unknown,
+      private readonly stored: ReadonlySet<string>,
+   ) {}
+
+   /** A given's declared type, by its id in the model, or undefined. */
+   givenType(id: unknown): string | undefined {
+      const g = (
+         this.modelDef as {
+            givens?: Record<string, { type?: { type?: unknown } }>;
+         }
+      )?.givens?.[String(id)];
+      const t = g?.type?.type;
+      return typeof t === "string" ? t : undefined;
+   }
+
+   /** The declared types of the givens named `name`, every one. */
+   givenTypesNamed(name: string): (string | undefined)[] {
+      const givens = (
+         this.modelDef as {
+            givens?: Record<
+               string,
+               { name?: unknown; type?: { type?: unknown } }
+            >;
+         }
+      )?.givens;
+      return Object.values(givens ?? {})
+         .filter((g) => g.name === name)
+         .map((g) =>
+            typeof g.type?.type === "string" ? g.type.type : undefined,
+         );
+   }
+
+   /**
+    * Whether every leaf of `e` is a non-string value ({@link GateReads}'s
+    * `comparesNoString`), its fields typed on `source`.
+    */
+   leavesNotString(e: unknown, source: unknown, depth = 0): boolean {
+      if (depth > 64 || e === null || typeof e !== "object") return false;
+      const n = e as { node?: unknown; path?: unknown; id?: unknown };
+      switch (n.node) {
+         case "field":
+            return (
+               Array.isArray(n.path) &&
+               nonStringType(typeAt(source, n.path as string[]))
+            );
+         case "given":
+            return nonStringType(this.givenType(n.id));
+         case "numberLiteral":
+         case "true":
+         case "false":
+         case "null":
+         case "dateLiteral":
+         case "timestampLiteral":
+            return true;
+         default:
+            if (
+               typeof n.node !== "string" ||
+               !NON_STRING_OPERATORS.has(n.node)
+            ) {
+               return false;
+            }
+      }
+      for (const [k, v] of Object.entries(e)) {
+         if (k === "node" || k === "at" || k === "typeDef") continue;
+         if (v === null || typeof v !== "object") continue;
+         const kids = Array.isArray(v) ? v : [v];
+         for (const kid of kids) {
+            // `kids: { left, right }` holds the operands one level down.
+            const operands =
+               kid !== null &&
+               typeof kid === "object" &&
+               !("node" in (kid as object))
+                  ? Object.values(kid as object)
+                  : [kid];
+            for (const o of operands) {
+               if (!this.leavesNotString(o, source, depth + 1)) return false;
+            }
+         }
+      }
+      return true;
+   }
+
+   /**
+    * Whether `e` keeps {@link GateReads}'s `equalityOnly`: an equality, or a
+    * comparison whose every leaf is a non-string value, which no collation
+    * orders (`amount > 100`).
+    */
+   private equalityOrNotString(e: unknown, source: unknown): boolean {
+      return equalityOnlyExpr(e) || this.leavesNotString(e, source);
+   }
+
+   /**
+    * Whether the answer reads `source`'s own table: its `sourceID` is
+    * stored, or it extends a stored query-shaped source and carries that
+    * source's query unchanged (`p_plain extend { where: … }`), whose stage
+    * outputs are then that table's columns as well.
+    */
+   private isStored(source: unknown): boolean {
+      const s = source as { sourceID?: unknown; query?: unknown } | undefined;
+      if (typeof s?.sourceID === "string" && this.stored.has(s.sourceID)) {
+         return true;
+      }
+      if (s?.query === undefined) return false;
+      const query = JSON.stringify(s.query);
+      return this.storedQueries().has(query);
+   }
+
+   /** The queries of the stored query-shaped sources the model names. */
+   private storedQueriesMemo?: Set<string>;
+   private storedQueries(): Set<string> {
+      if (this.storedQueriesMemo) return this.storedQueriesMemo;
+      const out = new Set<string>();
+      const contents =
+         (this.modelDef as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {};
+      for (const c of Object.values(contents)) {
+         const d = c as { sourceID?: unknown; query?: unknown } | undefined;
+         if (
+            typeof d?.sourceID === "string" &&
+            this.stored.has(d.sourceID) &&
+            d.query !== undefined
+         ) {
+            out.add(JSON.stringify(d.query));
+         }
+      }
+      this.storedQueriesMemo = out;
+      return out;
+   }
+
+   private tooDeep(): boolean {
+      return ++this.steps > 4096;
+   }
+
+   /** The source a query-shaped source's query runs on, or undefined. */
+   private baseOf(query: QueryLike): unknown {
+      const ref = query.structRef;
+      const base =
+         typeof ref === "string"
+            ? (
+                 this.modelDef as
+                    | { contents?: Record<string, unknown> }
+                    | undefined
+              )?.contents?.[ref]
+            : ref;
+      return base === null ? undefined : base;
+   }
+
+   /**
+    * Follow a field path of `source` to the columns it reads. `entry`: the
+    * path, behind `joins`, is read from the entry point, so a computed
+    * field's reads are entry paths too.
+    */
+   resolve(
       source: unknown,
       path: readonly string[],
       chain: readonly string[],
       joins: readonly string[] = [],
-   ): void => {
-      if (tooDeep() || path.length === 0) {
-         unresolved = true;
+      entry = false,
+   ): void {
+      if (this.tooDeep() || path.length === 0) {
+         this.unresolved = true;
          return;
       }
       const f = fieldsOf(source).get(path[0]);
-      names.add(path[0]);
+      this.names.add(path[0]);
       if (f === undefined) {
-         unresolved = true;
+         this.unresolved = true;
          return;
       }
       if (path.length > 1) {
          if (f.join === undefined) {
-            unresolved = true;
+            this.unresolved = true;
             return;
          }
          // A stored table holds a joined source's fields under the join's
          // name: an inlined join's record, or flattened as `<join>__<field>`.
-         resolve(f, path.slice(1), [...chain, path[0]], [...joins, path[0]]);
+         this.resolve(
+            f,
+            path.slice(1),
+            [...chain, path[0]],
+            [...joins, path[0]],
+            entry,
+         );
          return;
       }
-      field(source, f, chain, joins);
-   };
+      this.field(source, f, chain, joins, entry);
+   }
 
-   const field = (
+   /** Follow one field: a rename, an expression, a stage output or a column. */
+   private field(
       source: unknown,
       f: FieldLike,
       chain: readonly string[],
-      joins: readonly string[] = [],
-   ): void => {
+      joins: readonly string[],
+      entry: boolean,
+   ): void {
       const name = activeName(f);
       const stored = typeof f.name === "string" ? f.name : name;
-      names.add(name);
-      names.add(stored);
+      this.names.add(name);
+      this.names.add(stored);
       const along = [...chain, name, stored];
       if (f.e !== undefined) {
-         for (const p of fieldPathsIn(f.e)) resolve(source, p, along, joins);
+         if (!this.equalityOrNotString(f.e, source)) this.equalityOnly = false;
+         // A computed field's own comparison is the gate's too: a boolean
+         // over a string (`late is region > 'M'`) orders that string.
+         if (!this.leavesNotString(f.e, source)) this.comparesNoString = false;
+         const reads = fieldPathsIn(f.e);
+         // An expression that names no field it reads (a composite's field,
+         // resolved per member at compile) has no path a probe could read:
+         // which member a query resolves to depends on the whole query.
+         if (reads.length === 0) this.entryPathsComplete = false;
+         for (const p of reads) {
+            // The columns a computed field reads are what its comparison
+            // compares: a probe reads their collation by these paths.
+            if (entry) this.entryPaths.push([...joins, ...p]);
+            else this.entryPathsComplete = false;
+            this.resolve(source, p, along, joins, entry);
+         }
          return;
       }
       if (f.join !== undefined) {
          // A gate comparing a join itself reads no column it can name.
-         unresolved = true;
+         this.unresolved = true;
          return;
       }
-      const query = (source as { query?: { pipeline?: unknown[] } } | undefined)
-         ?.query;
-      if (query !== undefined) {
-         throughStages(source, stored, along, joins);
+      // A stage output of a source whose own table the answer reads is a
+      // column of that table: its build evaluated the stage, in the source's
+      // own warehouse as live does, so the read compares only the stored
+      // column, as for any other column. A stage computed when the table is
+      // read (a query-shaped source over a stored one) is followed back.
+      if (
+         (source as { query?: unknown } | undefined)?.query !== undefined &&
+         !this.isStored(source)
+      ) {
+         this.throughStages(source, stored, along, joins);
          return;
       }
       const flattened =
          joins.length === 0 ? [] : along.map((n) => [...joins, n].join("__"));
-      columns.push([...new Set([...along, ...flattened])]);
-   };
+      this.columns.push([...new Set([...along, ...flattened])]);
+   }
+
+   /** The fields one stage outputs, by the name each goes by. */
+   private stageFields(stage: {
+      queryFields?: unknown[];
+   }): Map<string, FieldLike> {
+      const byName = new Map<string, FieldLike>();
+      for (const qf of (stage.queryFields ?? []) as FieldLike[]) {
+         if (qf.type === "fieldref" && Array.isArray(qf.path)) {
+            const p = qf.path as string[];
+            byName.set(p[p.length - 1], qf);
+         } else if (qf.name !== undefined) {
+            byName.set(activeName(qf), qf);
+         }
+      }
+      return byName;
+   }
+
+   /** One stage's step back: what each wanted output reads in its input. */
+   private stepBack(
+      byName: Map<string, FieldLike>,
+      wanted: Wanted[],
+   ): Wanted[] {
+      const next: Wanted[] = [];
+      for (const w of wanted) {
+         if (w.path.length !== 1 || this.tooDeep()) {
+            this.unresolved = true;
+            continue;
+         }
+         const qf = byName.get(w.path[0]);
+         this.names.add(w.path[0]);
+         const chain = [...w.chain, w.path[0]];
+         if (qf === undefined) {
+            this.unresolved = true;
+         } else if (qf.type === "fieldref" && Array.isArray(qf.path)) {
+            next.push({ path: qf.path as string[], chain });
+         } else if (qf.e !== undefined) {
+            if (!equalityOnlyExpr(qf.e)) this.equalityOnly = false;
+            // A stage's expression reads the stage's input, not typed here,
+            // and has no path from the entry point.
+            if (!this.leavesNotString(qf.e, undefined)) {
+               this.comparesNoString = false;
+            }
+            this.entryPathsComplete = false;
+            const read = fieldPathsIn(qf.e);
+            if (read.length === 0) this.unresolved = true;
+            for (const p of read) next.push({ path: p, chain });
+         } else {
+            this.unresolved = true;
+         }
+      }
+      return next;
+   }
 
    /** Follow an output field of a query-shaped source back to its base. */
-   const throughStages = (
+   private throughStages(
       source: unknown,
       output: string,
       chain: readonly string[],
       joins: readonly string[],
       /** The stage whose output `output` names; the last one by default. */
       fromStage?: number,
-   ): void => {
-      const query = (
-         source as {
-            query?: {
-               pipeline?: { queryFields?: unknown[] }[];
-               structRef?: unknown;
-            };
-         }
-      ).query!;
-      const stages = Array.isArray(query.pipeline) ? query.pipeline : [];
+   ): void {
+      const query = (source as { query: QueryLike }).query;
+      const stages = (Array.isArray(query.pipeline) ? query.pipeline : []) as {
+         queryFields?: unknown[];
+      }[];
       if (stages.length === 0) {
-         unresolved = true;
+         this.unresolved = true;
          return;
       }
-      let wanted: { path: string[]; chain: string[] }[] = [
-         { path: [output], chain: [...chain] },
-      ];
+      let wanted: Wanted[] = [{ path: [output], chain: [...chain] }];
       for (let i = fromStage ?? stages.length - 1; i >= 0; i--) {
-         const byName = new Map<string, FieldLike>();
-         for (const qf of (stages[i].queryFields ?? []) as FieldLike[]) {
-            if (qf.type === "fieldref" && Array.isArray(qf.path)) {
-               const p = qf.path as string[];
-               byName.set(p[p.length - 1], qf);
-            } else if (qf.name !== undefined) {
-               byName.set(activeName(qf), qf);
-            }
-         }
-         const next: { path: string[]; chain: string[] }[] = [];
-         for (const w of wanted) {
-            if (w.path.length !== 1 || tooDeep()) {
-               unresolved = true;
-               continue;
-            }
-            const qf = byName.get(w.path[0]);
-            names.add(w.path[0]);
-            if (qf === undefined) {
-               unresolved = true;
-            } else if (qf.type === "fieldref" && Array.isArray(qf.path)) {
-               const p = qf.path as string[];
-               next.push({ path: p, chain: [...w.chain, w.path[0]] });
-            } else if (qf.e !== undefined) {
-               const read = fieldPathsIn(qf.e);
-               if (read.length === 0) unresolved = true;
-               for (const p of read) {
-                  next.push({ path: p, chain: [...w.chain, w.path[0]] });
-               }
-            } else {
-               unresolved = true;
-            }
-         }
+         wanted = this.stepBack(this.stageFields(stages[i]), wanted);
          // An earlier stage's output is one name; only the first stage reads
          // the source, through a join path or a name.
-         if (i > 0 && next.some((n) => n.path.length !== 1)) unresolved = true;
-         wanted = next;
+         if (i > 0 && wanted.some((n) => n.path.length !== 1)) {
+            this.unresolved = true;
+         }
       }
-      const ref = query.structRef;
-      const base =
-         typeof ref === "string"
-            ? (modelDef as { contents?: Record<string, unknown> } | undefined)
-                 ?.contents?.[ref]
-            : ref;
-      if (base === undefined || base === null) {
-         unresolved = true;
+      const base = this.baseOf(query);
+      if (base === undefined) {
+         this.unresolved = true;
          return;
       }
-      for (const w of wanted) resolve(base, w.path, w.chain, joins);
-   };
+      for (const w of wanted) this.resolve(base, w.path, w.chain, joins);
+   }
 
-   const read = gatePaths(exprs);
-   if (read.unresolved) unresolved = true;
-   for (const p of read.paths) resolve(struct, p, []);
-   // Every `where:` that scopes the rows the query reads: the source's own
-   // (its `filterList` already holds the terms of each source it extends),
-   // each member's of a composite, and, for a query-shaped source, its base's
-   // and each stage's own, a later stage's read back through the earlier
-   // ones. Every term, not only one that reads a given: a scope written as a
-   // literal (`acct = 9007199254740993`) merges neighbours just the same.
-   let scoped = false;
    /**
-    * The `where:` terms of `source`, each field path read by `at`, which
-    * resolves it from the source the walk started at (through the joins
-    * that reached `source`).
+    * The `where:` terms that scope the rows read from `source`, each field
+    * path read by `at` (which resolves it from where the walk started,
+    * through the joins that reached `source`). At a source whose table the
+    * answer reads, its own query (the base it runs on, and each stage's
+    * `where:`) is not walked: the build applied it before the table was
+    * written. Everything applied when the table is read is still judged: the
+    * source's own `where:` (a term that reads a given is never in the build,
+    * and a `#@ persist` source's never is), its joins' own `where:`, and its
+    * composite members'. A source that extends it judges what it inherits.
     */
-   const scope = (
+   scope(
       source: unknown,
       depth: number,
       at: (path: readonly string[]) => void,
       /** `at` resolves from `source` itself, through no join. */
       own: boolean,
-   ): void => {
+   ): void {
       if (depth > 32 || source === null || typeof source !== "object") return;
       const s = source as {
+         sourceID?: unknown;
          filterList?: unknown;
-         type?: unknown;
-         sources?: unknown;
-         fields?: unknown;
-         query?: { structRef?: unknown; pipeline?: unknown };
+         query?: QueryLike;
       };
       for (const f of Array.isArray(s.filterList) ? s.filterList : []) {
-         scoped = true;
-         for (const p of fieldPathsIn((f as { e?: unknown }).e)) at(p);
-      }
-      if (s.type === "composite" && Array.isArray(s.sources)) {
-         // A member's terms read the member's own fields; reached through a
-         // join, they are read through that join's path.
-         for (const m of s.sources) {
-            scope(m, depth + 1, own ? (p) => resolve(m, p, []) : at, own);
+         this.scoped = true;
+         const e = (f as { e?: unknown }).e;
+         if (!this.equalityOrNotString(e, source)) this.equalityOnly = false;
+         if (!this.leavesNotString(e, source)) this.comparesNoString = false;
+         for (const p of fieldPathsIn(e)) {
+            if (depth === 0) this.entryPaths.push(p);
+            else this.entryPathsComplete = false;
+            at(p);
          }
       }
-      // A joined source's own `where:` filters the rows the join reaches.
-      for (const f of (Array.isArray(s.fields)
-         ? s.fields
-         : []) as FieldLike[]) {
+      this.scopeMembers(source, depth, at, own);
+      this.scopeJoins(source, depth, at);
+      if (s.query !== undefined && !this.isStored(source)) {
+         this.scopeQuery(source, s.query, depth);
+      }
+   }
+
+   /** A composite's members: each one's terms, on its own fields. */
+   private scopeMembers(
+      source: unknown,
+      depth: number,
+      at: (path: readonly string[]) => void,
+      own: boolean,
+   ): void {
+      const s = source as { type?: unknown; sources?: unknown };
+      if (s.type !== "composite" || !Array.isArray(s.sources)) return;
+      // A member's terms read the member's own fields; reached through a
+      // join, they are read through that join's path.
+      for (const m of s.sources) {
+         this.scope(
+            m,
+            depth + 1,
+            own ? (p) => this.resolve(m, p, []) : at,
+            own,
+         );
+      }
+   }
+
+   /** Each joined source's own `where:`, which filters the rows the join reaches. */
+   private scopeJoins(
+      source: unknown,
+      depth: number,
+      at: (path: readonly string[]) => void,
+   ): void {
+      const fields = (source as { fields?: unknown }).fields;
+      for (const f of (Array.isArray(fields) ? fields : []) as FieldLike[]) {
          if (f.join === undefined) continue;
          const name = activeName(f);
-         scope(f, depth + 1, (p) => at([name, ...p]), false);
+         this.scope(f, depth + 1, (p) => at([name, ...p]), false);
       }
-      const query = s.query;
-      if (query === undefined) return;
-      const ref = query.structRef;
-      const base =
-         typeof ref === "string"
-            ? (modelDef as { contents?: Record<string, unknown> } | undefined)
-                 ?.contents?.[ref]
-            : ref;
+   }
+
+   /**
+    * A query-shaped source's base's terms and each stage's own, a later
+    * stage's read back through the earlier ones.
+    */
+   private scopeQuery(source: unknown, query: QueryLike, depth: number): void {
+      const base = this.baseOf(query);
       const atBase = (p: readonly string[]) => {
-         if (base === undefined || base === null) unresolved = true;
-         else resolve(base, p, []);
+         if (base === undefined) this.unresolved = true;
+         else this.resolve(base, p, []);
       };
-      if (base === undefined || base === null) unresolved = true;
-      else scope(base, depth + 1, atBase, true);
+      if (base === undefined) this.unresolved = true;
+      else this.scope(base, depth + 1, atBase, true);
       const stages = Array.isArray(query.pipeline) ? query.pipeline : [];
       stages.forEach((stage, i) => {
          const where = (stage as { filterList?: unknown }).filterList;
          for (const f of Array.isArray(where) ? where : []) {
-            scoped = true;
+            this.scoped = true;
+            if (!equalityOnlyExpr((f as { e?: unknown }).e)) {
+               this.equalityOnly = false;
+            }
+            this.entryPathsComplete = false;
+            // A stage's term reads the stage's fields, not typed here.
+            this.comparesNoString = false;
             for (const p of fieldPathsIn((f as { e?: unknown }).e)) {
                if (i === 0) atBase(p);
                else if (p.length === 1) {
-                  throughStages(source, p[0], [], [], i - 1);
-               } else unresolved = true;
+                  this.throughStages(source, p[0], [], [], i - 1);
+               } else this.unresolved = true;
             }
          }
       });
+   }
+}
+
+/**
+ * {@link GateReads} for the gates (`exprs`) on `struct`, and every `where:`
+ * that scopes the rows it reads. A name is followed through a rename to the
+ * field it renames, through a computed field to every field its expression
+ * reads, through a join to the joined source's field, and, on a query-shaped
+ * source, back through each stage of its query to the fields of the source
+ * the query runs on, until it reaches a column. `modelDef` resolves a
+ * stage's source when it is named rather than inline. `stored` names (by
+ * `sourceID`) the sources whose tables the answer reads: the query one runs
+ * was applied by its build and is not a scope of the read; what is applied
+ * when its table is read still is.
+ *
+ * The scope is every term that scopes the rows, not only one that reads a
+ * given: a scope written as a literal (`acct = 9007199254740993`) merges
+ * neighbours just the same.
+ */
+export function gateReads(
+   struct: unknown,
+   exprs: readonly string[],
+   modelDef?: unknown,
+   stored: ReadonlySet<string> = new Set(),
+   /**
+    * The gate texts the warehouse compares (the row filters): a lock is
+    * decided in Publisher. Absent, every text is taken as one.
+    */
+   rowFilterExprs: readonly string[] = exprs,
+): GateReads {
+   const walk = new GateReadWalk(modelDef, stored);
+   const read = gatePaths(exprs);
+   if (read.unresolved) walk.unresolved = true;
+   // A row filter is `field = $GIVEN` or `field in $GIVEN`: its field and
+   // its given are the comparison's leaves.
+   const compared = gatePaths(rowFilterExprs);
+   if (
+      compared.unresolved ||
+      compared.paths.some((p) => !nonStringType(typeAt(struct, p))) ||
+      rowFilterExprs.some((expr) =>
+         [...expr.matchAll(/\$([A-Za-z_][A-Za-z_0-9]*)/g)].some((m) => {
+            const types = walk.givenTypesNamed(m[1]);
+            return types.length === 0 || !types.every(nonStringType);
+         }),
+      )
+   ) {
+      walk.comparesNoString = false;
+   }
+   for (const p of read.paths) {
+      walk.entryPaths.push(p);
+      walk.resolve(struct, p, [], [], true);
+   }
+   walk.scope(struct, 0, (p) => walk.resolve(struct, p, [], [], true), true);
+   return {
+      names: walk.names,
+      columns: walk.columns,
+      unresolved: walk.unresolved,
+      scoped: walk.scoped,
+      gated: exprs.length > 0,
+      equalityOnly: walk.equalityOnly,
+      entryPaths: walk.entryPaths,
+      entryPathsComplete: walk.entryPathsComplete,
+      comparesNoString: walk.comparesNoString && !walk.unresolved,
    };
-   scope(struct, 0, (p) => resolve(struct, p, []), true);
-   return { names, columns, unresolved, scoped, gated: exprs.length > 0 };
 }
 
 /**
@@ -412,6 +738,8 @@ export function gateReadNames(
 export function entryPointGateExprs(
    struct: unknown,
    modelDef: unknown,
+   /** Only the gates on this route; absent, both. */
+   route?: string,
 ): string[] | undefined {
    if (struct === undefined || modelDef === undefined) return undefined;
    try {
@@ -423,7 +751,13 @@ export function entryPointGateExprs(
       );
       // The walk's fail-closed deny (no entry point to graft on).
       if (entries.some((e) => e.struct === undefined)) return undefined;
-      return entries.flatMap((e) => [...e.exprs]);
+      return entries
+         .filter(
+            (e) =>
+               route === undefined ||
+               canonicalAuthorizeRoute(e.route) === route,
+         )
+         .flatMap((e) => [...e.exprs]);
    } catch {
       return undefined;
    }
@@ -465,6 +799,8 @@ export function gateColumnTypesOf(
  */
 export async function gateReadsOfQuery(
    runnable: QueryMaterializer,
+   /** The sources whose tables the answer reads, by `sourceID`. */
+   stored: ReadonlySet<string> = new Set(),
 ): Promise<GateReads | undefined> {
    try {
       const prepared = await readPreparedQuery(runnable);
@@ -474,9 +810,14 @@ export async function gateReadsOfQuery(
          prepared.modelDef as never,
       );
       const exprs = entryPointGateExprs(struct, prepared.modelDef);
-      return exprs === undefined
+      const rowFilters = entryPointGateExprs(
+         struct,
+         prepared.modelDef,
+         ACCESS_FILTER_ROUTE,
+      );
+      return exprs === undefined || rowFilters === undefined
          ? undefined
-         : gateReads(struct, exprs, prepared.modelDef);
+         : gateReads(struct, exprs, prepared.modelDef, stored, rowFilters);
    } catch {
       return undefined;
    }

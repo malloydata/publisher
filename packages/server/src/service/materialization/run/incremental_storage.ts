@@ -21,6 +21,7 @@ import {
    deltaSelect,
    type DeltaTarget,
    type IncrementalLineage,
+   type SqlRunner,
 } from "./incremental_apply";
 import {
    issuePassthroughRead,
@@ -123,6 +124,86 @@ interface StorageDeltaTarget {
    numericColumnsStoredAsDouble(): Promise<string[]>;
 }
 
+/**
+ * A DuckDB session as a {@link SqlRunner} that honours the run options' abort
+ * signal: an abort interrupts the statement in flight, so a statement given
+ * up on (the late-row check's timeout) frees the session for the build's
+ * next one instead of holding it. Unlike `interruptOnAbort`, later
+ * statements on the session are not refused: the abort ends one statement,
+ * not the build.
+ */
+export function sessionRunner(session: DuckDBConnection): SqlRunner {
+   return async (sql, options) => {
+      const signal = options?.abortSignal;
+      if (!signal) return session.runSQL(sql);
+      const interrupt = () => {
+         // The node-api connection is library-internal, as in dispose.
+         const connection = (
+            session as unknown as { connection?: { interrupt?: () => void } }
+         ).connection;
+         try {
+            connection?.interrupt?.();
+         } catch {
+            // Best-effort: the statement then runs to its end.
+         }
+      };
+      if (signal.aborted) throw new Error("the statement was cancelled");
+      signal.addEventListener("abort", interrupt, { once: true });
+      try {
+         return await session.runSQL(sql);
+      } finally {
+         signal.removeEventListener("abort", interrupt);
+      }
+   };
+}
+
+/**
+ * The late-row check's read of a stored source's window
+ * (DeltaTarget.windowRows): only the columns it compares, so the warehouse
+ * reads (and bills) those alone, through the seed's read path but not its
+ * cost, which is the delta's. None on BigQuery: there the window is read by a
+ * billed job issuePassthroughRead starts on the session, outside the check's
+ * abort, so a check that timed out would leave the job running and the
+ * session's next statement waiting behind it. A stored BigQuery source is not
+ * checked.
+ */
+function storageWindowRows(params: {
+   session: DuckDBConnection;
+   sourceType: FederatedSourceType;
+   handle: string;
+   persistSource: PersistSource;
+   buildSQL: string;
+   watermarkColumn: string;
+   queryMetadata?: QueryMetadata;
+}): Pick<DeltaTarget, "windowRows"> {
+   if (params.sourceType === "bigquery") return {};
+   const sourceDialect = params.persistSource.dialectName;
+   return {
+      windowRows: async (start, end, columns) => {
+         const projected =
+            `SELECT ${columns.map((c) => quoteIdentifier(c, sourceDialect)).join(", ")} ` +
+            `FROM (${projectToStoredColumns(
+               params.persistSource,
+               deltaSelect({
+                  dialect: sourceDialect,
+                  sourceSQL: params.buildSQL,
+                  watermarkName: params.watermarkColumn,
+                  start,
+                  end,
+               }),
+            )}) AS __c`;
+         const read = await issuePassthroughRead(
+            params.session,
+            params.sourceType,
+            params.handle,
+            projected,
+            params.queryMetadata,
+         );
+         return read.selectSQL;
+      },
+   };
+}
+
 export function storageDeltaTarget(params: {
    /** The build-scoped session: destination attached read-write, source federated. */
    session: DuckDBConnection;
@@ -208,7 +289,7 @@ export function storageDeltaTarget(params: {
       target: {
          dialect: STORAGE_DIALECT,
          storedColumn,
-         runner: (sql) => session.runSQL(sql),
+         runner: sessionRunner(session),
          quotedTablePath,
          logicalTablePath,
 
@@ -259,6 +340,16 @@ export function storageDeltaTarget(params: {
                ? guardDeltaDecimals(read.selectSQL, exact.stored)
                : read.selectSQL;
          },
+
+         ...storageWindowRows({
+            session,
+            sourceType,
+            handle,
+            persistSource,
+            buildSQL,
+            watermarkColumn,
+            queryMetadata,
+         }),
 
          probeSourceFrontier: async () => {
             // Source-dialect through the passthrough, so the warehouse aggregates

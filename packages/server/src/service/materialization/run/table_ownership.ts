@@ -36,13 +36,25 @@
  * (withOwnedNameLock), from the check until the mark is written, so two
  * packages that find the name free at once never both build it.
  *
- * The mark is a comment on the table, `malloy-publisher:table owner=<env>/<pkg>`
- * (URI-encoded), the warehouse half of ownership: it is what decides between
+ * The mark is a comment on the table, `malloy-publisher:table
+ * owner=<env>/<pkg> table=<location>` (each value URI-encoded; `location`
+ * is where the table is, fully qualified, as the warehouse's catalog reports
+ * it when the mark is written, each part URI-encoded and joined with `.`,
+ * see relationLocationOf; a mark before 0.16.0,
+ * or one whose location could not be read, has no `table`), the warehouse
+ * half of ownership: it is what decides between
  * two packages whose records both name the table (a collision from before the
  * mark existed: the first to build again claims it, and the other is
- * refused). The run records are the Publisher half. Written after every build,
- * best-effort: a table whose mark could not be written is still this
- * package's by its records once the run commits.
+ * refused). The run records are the Publisher half. Written after every
+ * database-tier build, whoever named the table (an author's `name=`,
+ * Publisher, or a host's instruction), best-effort: a table whose mark could
+ * not be written is still this package's by its records once the run
+ * commits. The mark is what lets a caller's drop
+ * (Reclaimer.dropConnectionTable) prove a table is this package's after its
+ * run's record is gone; that drop accepts a mark only on the table it names
+ * (markedFor), since a comment travels with a renamed, moved or copied table.
+ * A build and a reclaim read the owner alone, for marks of every release:
+ * they act only on a name this package's own records or `name=` hold.
  *
  * A drop (deleting a run's tables, reclaiming a version's) skips a table
  * marked as another package's (see ownedElsewhere): a table this package
@@ -51,14 +63,15 @@
  *
  * The SQL of the ownership probe and mark is in warehouse_sql.ts.
  *
- * Host-orchestrated builds are not checked: the host chooses their names.
+ * Host-orchestrated builds are not checked (the host chooses their names),
+ * only marked.
  * Within one server only: two servers whose environments and packages have
  * the same names write the same mark.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PersistSource } from "@malloydata/malloy";
-import { BadRequestError } from "../../../errors";
+import { TableOwnershipError } from "../../../errors";
 import { logger } from "../../../logger";
 import { externalEnv } from "../../../settings/external";
 import type { Materialization } from "../../../storage/DatabaseInterface";
@@ -72,6 +85,7 @@ import {
    OWNED_TABLE_MARK,
    parseNameViewComment,
    parseOwnedTableComment,
+   parseOwnedTableMark,
 } from "./table_mark_sql";
 import { ownedTableProbeSql, tableCommentSql } from "./warehouse_sql";
 import { KeyedLock } from "./keyed_lock";
@@ -96,14 +110,7 @@ export const TABLE_OWNERSHIP_UNVERIFIED = "table-ownership-unverified";
  * something that is not this package's, or by something it cannot read.
  * `code` is one of the two codes above (an open string).
  */
-export class TableOwnershipError extends BadRequestError {
-   constructor(
-      readonly code: string,
-      message: string,
-   ) {
-      super(message);
-   }
-}
+export { TableOwnershipError };
 
 /**
  * One server's builds at the author's `name=`, serialized by name: two
@@ -189,9 +196,58 @@ function encodeMarkValue(value: string): string {
    return encodeURIComponent(value).replace(/'/g, "%27");
 }
 
-/** The ownership mark for a table `owner` (`<environment>/<package>`) wrote. */
-export function ownedTableComment(owner: string): string {
-   return `${OWNED_TABLE_MARK} owner=${encodeMarkValue(owner)}`;
+/**
+ * The ownership mark for a table `owner` (`<environment>/<package>`) wrote,
+ * naming where the table is (`table`: its `location` as the ownership probe
+ * reads it from the warehouse's catalog, fully qualified). Without `table`
+ * it is the mark releases before 0.16.0 wrote, or one written where the
+ * location could not be read, which a caller's drop does not accept as proof
+ * (see {@link markedFor}).
+ */
+export function ownedTableComment(owner: string, table?: string): string {
+   const mark = `${OWNED_TABLE_MARK} owner=${encodeMarkValue(owner)}`;
+   return table === undefined
+      ? mark
+      : `${mark} table=${encodeMarkValue(table)}`;
+}
+
+/**
+ * Where the one table among the probe's `rows` is, as the warehouse's catalog
+ * spells it ({@link relationLocationOf}), or undefined when the rows
+ * hold no table, more than one, or none with a location.
+ */
+export function tableLocationOf(
+   rows: Record<string, unknown>[],
+): string | undefined {
+   const tables = rows.filter(
+      (row) => String(field(row, "kind") ?? "").toUpperCase() !== "VIEW",
+   );
+   if (tables.length !== 1) return undefined;
+   return relationLocationOf(tables[0]);
+}
+
+/**
+ * Where a probe row's relation is, as a mark records it: its catalog
+ * location's parts (`location_database`, absent on MySQL, then
+ * `location_schema` and `location_name`), each URI-encoded with its dots
+ * too, joined with `.`, so a database or schema name holding a dot cannot
+ * spell the same location as another. Undefined when the row has no schema
+ * or name: that location cannot be read, and proves nothing.
+ */
+export function relationLocationOf(
+   row: Record<string, unknown>,
+): string | undefined {
+   const part = (key: string) => {
+      const value = field(row, key);
+      return typeof value === "string" && value !== "" ? value : undefined;
+   };
+   const schema = part("location_schema");
+   const name = part("location_name");
+   if (schema === undefined || name === undefined) return undefined;
+   const database = part("location_database");
+   return [...(database === undefined ? [] : [database]), schema, name]
+      .map((p) => encodeURIComponent(p).replace(/\./g, "%2E"))
+      .join(".");
 }
 
 /** The dialects whose tables' holders can be read (and marked). */
@@ -204,12 +260,17 @@ export function ownedTableMarkSql(
    segments: string[],
    owner: string,
    dialect: string,
+   location?: string,
 ): string {
-   return tableCommentSql(segments, ownedTableComment(owner), dialect);
+   return tableCommentSql(
+      segments,
+      ownedTableComment(owner, location),
+      dialect,
+   );
 }
 
 /** What holds a table's name, as `owner` sees it. */
-type TableHolder =
+export type TableHolder =
    | { state: "free" }
    /**
     * A table marked as `owner`'s, or (`view`) `owner`'s own `name=` view an
@@ -260,6 +321,34 @@ export function tableHolderOf(
    }
    if (unmarked) return { state: "unmarked" };
    return table ? { state: "ours" } : { state: "ours", view: true };
+}
+
+/**
+ * {@link tableHolderOf} for a caller's drop, which accepts a mark as proof
+ * only on the very table it names: `ours` becomes `unmarked` (proof must
+ * come from a run record) unless every table row's mark names that row's
+ * own location ({@link relationLocationOf}), the place the warehouse's catalog reports
+ * for it (wherever a search path or default schema resolved the name). A
+ * renamed, moved or copied table carries the mark of the table it came from,
+ * which names another place; a mark an earlier release wrote names none, and
+ * a row with no location (the probe could not read one) proves nothing. A
+ * build and a reclaim read the owner alone, as before.
+ */
+export function markedFor(
+   rows: Record<string, unknown>[],
+   owner: string,
+): TableHolder {
+   const holder = tableHolderOf(rows, owner);
+   if (holder.state !== "ours" || holder.view) return holder;
+   for (const row of rows) {
+      if (String(field(row, "kind") ?? "").toUpperCase() === "VIEW") continue;
+      const location = relationLocationOf(row);
+      const marked = parseOwnedTableMark(field(row, "comment"))?.table;
+      if (location === undefined || marked !== location) {
+         return { state: "unmarked" };
+      }
+   }
+   return holder;
 }
 
 /** A column of a result row, whatever case the driver reports it in. */
@@ -392,12 +481,19 @@ export async function markOwnedTable(
    owner: string,
 ): Promise<void> {
    try {
+      const segments = site.segments(physicalTableName);
+      // Where the table actually is, read from the warehouse's catalog, so
+      // the mark names it however the name resolved. Unread (an unsupported
+      // dialect, a failed probe): the mark names no place, and proves
+      // nothing to a caller's drop.
+      let location: string | undefined;
+      if (tableOwnershipDialectSupported(site.dialect)) {
+         location = await site
+            .run(ownedTableProbeSql(segments, site.dialect))
+            .then(tableLocationOf, () => undefined);
+      }
       await site.run(
-         ownedTableMarkSql(
-            site.segments(physicalTableName),
-            owner,
-            site.dialect,
-         ),
+         ownedTableMarkSql(segments, owner, site.dialect, location),
       );
    } catch (err) {
       logger.warn(

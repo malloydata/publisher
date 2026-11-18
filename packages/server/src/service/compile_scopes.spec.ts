@@ -149,6 +149,74 @@ source: tracks is base_source extend {
       expect(problems.filter((p) => p.severity === "error")).toEqual([]);
    });
 
+   // -- the load's materialization verdict (F-30) --------------------------
+
+   // A rollup of an `avg` measure: the load refuses it, so neither whole-file
+   // scope may pass it.
+   const AVG_ROLLUP = TRACKS_MODEL.replace(
+      "  measure: total is n.sum()",
+      '  measure: total is n.sum()\n  #(rollup) grain=["id"]\n  measure: average is n.avg()',
+   );
+
+   it("file: reports the refusal the load gives an unmergeable rollup", async () => {
+      const { problems } = await compile("tracks.malloy", AVG_ROLLUP, "file");
+      const refused = problems.filter((p) => p.code === "rollup-not-mergeable");
+      expect(refused).toHaveLength(1);
+      expect(refused[0]).toMatchObject({
+         severity: "error",
+         model: "tracks.malloy",
+      });
+      expect(refused[0]?.message).toContain("its partials cannot be merged");
+   });
+
+   it("package: reports the refusal the load gives an unmergeable rollup", async () => {
+      const { problems } = await compile(
+         "tracks.malloy",
+         AVG_ROLLUP,
+         "package",
+      );
+      const refused = problems.filter((p) => p.code === "rollup-not-mergeable");
+      expect(refused).toHaveLength(1);
+      expect(refused[0]).toMatchObject({
+         severity: "error",
+         model: "tracks.malloy",
+      });
+      // Saved, the reload refuses it with the same line.
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "tracks.malloy"),
+         AVG_ROLLUP,
+      );
+      await expect(
+         env.getPackage(parsePackageName("pkg"), true),
+      ).rejects.toThrow(refused[0]?.message as string);
+   });
+
+   it("file: says the load's checks did not run when another file does not compile", async () => {
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "broken.malloy"),
+         "source: broken is nope.table('x')",
+      );
+      const summed = AVG_ROLLUP.replace("n.avg()", "n.max()");
+      const { problems } = await compile("tracks.malloy", summed, "file");
+      expect(problems.filter((p) => p.severity === "error")).toEqual([]);
+      expect(
+         problems.filter(
+            (p) =>
+               p.severity === "warn" &&
+               p.message.includes("did not run") &&
+               p.message.includes(
+                  "another file of the package does not compile",
+               ),
+         ),
+      ).toHaveLength(1);
+   });
+
+   it("file: a mergeable rollup compiles clean", async () => {
+      const summed = AVG_ROLLUP.replace("n.avg()", "n.max()");
+      const { problems } = await compile("tracks.malloy", summed, "file");
+      expect(problems.filter((p) => p.severity === "error")).toEqual([]);
+   });
+
    // -- scope "package": the dry-run --------------------------------------
 
    it("package: catches cross-file breakage that file scope cannot see", async () => {
@@ -166,6 +234,41 @@ source: tracks is base_source extend {
       const errors = problems.filter((p) => p.severity === "error");
       expect(errors.length).toBeGreaterThan(0);
       expect(errors.some((p) => p.model === "tracks.malloy")).toBe(true);
+   });
+
+   it("package: reports a lookback= the load refuses, as the load words it", async () => {
+      // The incremental gate reads lookback= as it reads watermark= and
+      // merge_key=: a lookback with no merge key fails the load, so the
+      // dry-run says so before a reload finds out.
+      const persisted = `##! experimental.persistence
+${BASE_MODEL}
+source: ev is duckdb.sql("select 1 as id, TIMESTAMP '2026-01-01 00:00:00' as loaded_at")
+#@ persist name="evs" refresh="incremental" watermark="loaded_at" lookback="2 days"
+source: events is ev -> { select: id, loaded_at }
+`;
+      const { problems } = await compile("base.malloy", persisted, "package");
+      const lookback = problems.filter(
+         (p) =>
+            p.severity === "error" &&
+            p.message.includes("lookback= without merge_key="),
+      );
+      expect(lookback).toHaveLength(1);
+      expect(lookback[0]).toMatchObject({ code: "persist-invalid" });
+      // With the merge key it names, the declaration is valid (the dialect
+      // cannot refresh it incrementally, which refuses it alone: a warning).
+      const valid = await compile(
+         "base.malloy",
+         persisted.replace(
+            'lookback="2 days"',
+            'merge_key="id" lookback="2 days"',
+         ),
+         "package",
+      );
+      expect(
+         valid.problems.filter(
+            (p) => p.severity === "error" && p.message.includes("lookback"),
+         ),
+      ).toEqual([]);
    });
 
    it("package: with no source, validates the files as saved", async () => {

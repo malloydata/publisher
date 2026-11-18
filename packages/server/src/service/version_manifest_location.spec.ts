@@ -641,9 +641,41 @@ describe("a local run of a host-bound package or version", () => {
          .catch((error: unknown) => error);
       expect(refused).toBeInstanceOf(MaterializationConflictError);
       expect(internalErrorToHttpError(refused as Error).status).toBe(409);
+      expect(internalErrorToHttpError(refused as Error).json.reason).toBe(
+         "MATERIALIZATION_CONFLICT",
+      );
       expect((refused as Error).message).toContain(
          "a local run would build tables it cannot serve",
       );
+      expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
+   });
+
+   it("refuses instructions that name one table twice with a 400, BUILD_INSTRUCTIONS_INVALID", async () => {
+      const id = await publishLive("1.0.0");
+      const pkg = await loadedVersion("1.0.0");
+      const source = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
+         (s) => s.sourceEntityId === id,
+      )!;
+      const instruction = {
+         sourceID: source.sourceID,
+         sourceEntityId: id,
+         physicalTableName: "summary_twice",
+         realization: "COPY",
+      };
+      const refused = await materializationService()
+         .createMaterialization(ENV, PKG, {
+            versionId: VersionRef.parse("1.0.0"),
+            buildInstructions: [instruction, instruction] as never,
+         })
+         .then(
+            () => new Error("not refused"),
+            (error: unknown) => error as Error,
+         );
+      expect(refused.message).toContain("more than once");
+      expect(internalErrorToHttpError(refused).json).toMatchObject({
+         code: 400,
+         reason: "BUILD_INSTRUCTIONS_INVALID",
+      });
       expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
    });
 
@@ -660,6 +692,9 @@ describe("a local run of a host-bound package or version", () => {
          .catch((error: unknown) => error);
       expect(refused).toBeInstanceOf(MaterializationConflictError);
       expect(internalErrorToHttpError(refused as Error).status).toBe(409);
+      expect(internalErrorToHttpError(refused as Error).json.reason).toBe(
+         "MATERIALIZATION_CONFLICT",
+      );
       expect((refused as Error).message).toContain("Package solo is bound");
    });
 
@@ -789,7 +824,7 @@ describe("a local run of a host-bound package or version", () => {
       const outcome = await env.loadRunManifest({
          packageName: PKG,
          versionId: "1.0.0",
-         colocated: {},
+         database: {},
          storage: {},
          commit: async () => undefined,
       });
@@ -808,6 +843,9 @@ describe("a local run of a host-bound package or version", () => {
          .catch((error: unknown) => error);
       expect(refused).toBeInstanceOf(MaterializationConflictError);
       expect(internalErrorToHttpError(refused as Error).status).toBe(409);
+      expect(internalErrorToHttpError(refused as Error).json.reason).toBe(
+         "MATERIALIZATION_CONFLICT",
+      );
       expect((refused as Error).message).toContain(
          "has been bound or built by a host",
       );

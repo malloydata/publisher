@@ -4,7 +4,7 @@
 /**
  * The package-case runner: a synthetic package (or a real package snapshot)
  * goes through the real production path (Environment, Package.create, the
- * package's own build plan, its colocated manifest bind and its `storage=`
+ * package's own build plan, its database manifest bind and its `storage=`
  * bind), and every query runs live first, then served with the materialize
  * switch off and on ({@link runPackageCase}). Three reporters read what it
  * produces, each comparing through `answer_difference.ts`:
@@ -23,7 +23,7 @@
  * another file, two models declaring one name, and the serve verdicts.
  */
 
-import { capturedNativeSchema } from "../../service/materialization/run/colocated_native_types";
+import { capturedNativeSchema } from "../../service/materialization/run/database_native_types";
 import {
    pairLeafKeyChecksOf,
    runRollupKeyCheck,
@@ -77,6 +77,56 @@ function withoutReferenceIds(value: unknown): unknown {
 
 /** The storage destination every `storage=` source in the fixture names. */
 export const LAKE = "lake";
+
+/**
+ * Where the fixture's tables are written:
+ *
+ * - `duckdb` (the default): plain DuckDB tables, the destination a plain
+ *   `duckdb` file and the origin warehouse;
+ * - `parquet`: a DuckLake catalog with row inlining off, as a real build
+ *   session writes one (`ducklake_default_data_inlining_row_limit=0`,
+ *   materialization_build_session.ts), so every stored row is read back from
+ *   Parquet: the `storage=` destination, and the origin's own database for a
+ *   database table. Parquet does not keep every type a DuckDB table keeps
+ *   (F-13: a `HUGEINT` is written as a `DOUBLE`), which only this mode can
+ *   show. The origin is then an operator's environment DuckDB connection
+ *   ({@link PARQUET_ORIGIN}) whose `setupSQL` attaches and USEs the DuckLake,
+ *   as production configures one; the package sandbox takes no `setupSQL`,
+ *   and once locked can load no extension to attach one with.
+ */
+export type LakeFormat = "duckdb" | "parquet";
+
+/**
+ * The origin warehouse of a `parquet` fixture: an environment DuckDB
+ * connection, confined to the environment directory, whose `setupSQL`
+ * attaches a DuckLake there and USEs it, so a database table is written to,
+ * and served from, Parquet. The fixture's models read it in place of the
+ * sandbox ({@link onParquetOrigin}).
+ */
+const PARQUET_ORIGIN = "wh";
+
+/**
+ * A fixture model read from {@link PARQUET_ORIGIN} instead of the sandbox: its
+ * `duckdb.sql(` / `duckdb.table(` sources, and its package-relative data paths
+ * spelled from the environment directory, where the origin's relative reads
+ * resolve.
+ */
+function onParquetOrigin(model: string): string {
+   return model
+      .replaceAll("duckdb.sql(", `${PARQUET_ORIGIN}.sql(`)
+      .replaceAll("duckdb.table(", `${PARQUET_ORIGIN}.table(`)
+      .replaceAll("'data/", "'pkg/data/");
+}
+
+/** The SQL that points a session at a DuckLake catalog under `dir`, every row in Parquet. */
+function parquetLakeSQL(dir: string, alias: string): string {
+   const q = (p: string) => p.replace(/'/g, "''");
+   return [
+      "SET ducklake_default_data_inlining_row_limit = 0",
+      `ATTACH IF NOT EXISTS 'ducklake:${q(path.join(dir, `${alias}.ducklake`))}' AS ${alias} (DATA_PATH '${q(path.join(dir, `${alias}_data`))}/')`,
+      `USE ${alias}`,
+   ].join(";\n");
+}
 
 /** A served field as the wire carries it: name, kind, type (timeframe included) and annotations. */
 export interface WireField {
@@ -183,7 +233,7 @@ export interface LoadedFixture {
    /** Each planned source's serve verdict after the bind, `name:verdict[:reason]`. */
    verdicts: string[];
    /** The plan's sources that were built, by name and tier. */
-   built: { name: string; tier: "storage" | "colocated" }[];
+   built: { name: string; tier: "storage" | "database" }[];
    /** The table each built content address was written to, by sourceEntityId. */
    tables: Record<string, string>;
    /** Problems building a planned source, by name. */
@@ -193,10 +243,10 @@ export interface LoadedFixture {
    /**
     * Bind the built tables again under the settings installed now, and settle
     * every model's served copy: the bindings a switch read at bind (the v1
-    * cutover's colocated tables) follow it. With `observe`, the database
-    * tables are bound as a server binds them, read as their warehouse holds
-    * them now (`readDatabaseColumns`), so a table altered after its build is
-    * bound with its drift.
+    * cutover's database tables) follow it. The database tables are always
+    * bound as a server binds them, read as their warehouse holds them now
+    * (`readDatabaseColumns`), so a table altered after its build is bound
+    * with its drift; `observe` is accepted and changes nothing.
     */
    rebind(options?: { observe?: boolean }): Promise<void>;
    run(
@@ -210,7 +260,7 @@ export interface LoadedFixture {
 /** How {@link loadFixture}'s `bind` builds the plan. */
 export interface BindOptions {
    /**
-    * Build the `#(preaggregate)` and `#@ preaggregate` rollups too (default
+    * Build the `#(rollup)` and `#@ preaggregate` rollups too (default
     * false: most callers serve no rollup, so they build none).
     */
    includeRollups?: boolean;
@@ -234,6 +284,17 @@ export async function loadFixture(
     * packages), or a directory to copy (a real package snapshot).
     */
    files: Record<string, string> | { packageDir: string },
+   /** Where the tables are written (default `duckdb`). */
+   options: {
+      lake?: LakeFormat;
+      /**
+       * Environment connections beside the package sandbox, as an operator
+       * configures them (a DuckDB one may carry `setupSQL`, which runs before
+       * its configuration is locked). Each is a warehouse to the plan, as the
+       * sandbox is.
+       */
+      connections?: { name: string; type: string; [k: string]: unknown }[];
+   } = {},
 ): Promise<{
    run: LoadedFixture["run"];
    bind(options?: BindOptions): Promise<LoadedFixture>;
@@ -248,18 +309,58 @@ export async function loadFixture(
    const root = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-conform-"));
    const envPath = path.join(root, "env");
    fs.mkdirSync(envPath, { recursive: true });
+   const format = options.lake ?? "duckdb";
    if ("packageDir" in files && typeof files.packageDir === "string") {
+      if (format === "parquet") {
+         throw new Error(
+            "a parquet fixture rewrites its models onto its origin warehouse, which a copied package directory cannot take",
+         );
+      }
       fs.cpSync(files.packageDir, path.join(envPath, "pkg"), {
          recursive: true,
       });
    } else {
       writePackageFiles(
          path.join(envPath, "pkg"),
-         files as Record<string, string>,
+         format === "parquet"
+            ? Object.fromEntries(
+                 Object.entries(files as Record<string, string>).map(
+                    ([file, text]) => [
+                       file,
+                       file.endsWith(".malloy") ? onParquetOrigin(text) : text,
+                    ],
+                 ),
+              )
+            : (files as Record<string, string>),
          { manifest: { name: "pkg", description: "conformance fixture" } },
       );
    }
-   const lake = new DuckDBConnection(LAKE, path.join(root, `${LAKE}.duckdb`));
+   // Inside the environment directory, the only place an environment
+   // connection's setupSQL reaches (duckdb_lockdown.ts).
+   const connections = [
+      ...(options.connections ?? []),
+      ...(format === "parquet"
+         ? [
+              {
+                 name: PARQUET_ORIGIN,
+                 type: "duckdb",
+                 duckdbConnection: {
+                    setupSQL: parquetLakeSQL(envPath, "origin_parquet"),
+                 },
+              },
+           ]
+         : []),
+   ];
+   const lake =
+      format === "parquet"
+         ? // The catalog is attached under the destination's name, which a
+           // served read qualifies its table with.
+           new DuckDBConnection({
+              name: LAKE,
+              databasePath: ":memory:",
+              setupSQL: parquetLakeSQL(root, LAKE),
+           })
+         : new DuckDBConnection(LAKE, path.join(root, `${LAKE}.duckdb`));
    let env: Environment | undefined;
    let releaseSandbox = (): void => {};
    const dispose = async () => {
@@ -275,8 +376,9 @@ export async function loadFixture(
       // sandbox stands in for a warehouse the plan's `storage=` gate admits.
       releaseSandbox = recordConnectionsAsForConformanceHarness({
          duckdb: "postgres",
+         ...Object.fromEntries(connections.map((c) => [c.name, "postgres"])),
       });
-      env = await Environment.create("conform", envPath, []);
+      env = await Environment.create("conform", envPath, connections as never);
       await env.addPackage("pkg");
       pkg = await env.getPackage(parsePackageName("pkg"), false);
    } catch (error) {
@@ -346,7 +448,7 @@ export async function loadFixture(
       root,
       lake,
       async bind(options: BindOptions = {}) {
-         const { built, buildErrors, colocated, stored } = await buildAll(
+         const { built, buildErrors, database, stored } = await buildAll(
             pkg,
             lake,
             options,
@@ -360,7 +462,7 @@ export async function loadFixture(
          };
          await settle();
          const tables: Record<string, string> = {};
-         for (const [id, e] of Object.entries(colocated)) {
+         for (const [id, e] of Object.entries(database)) {
             tables[id] = String(e.tableName);
          }
          for (const [id, e] of Object.entries(stored)) {
@@ -372,18 +474,15 @@ export async function loadFixture(
             tables,
             buildErrors,
             stored,
-            async rebind(options: { observe?: boolean } = {}) {
+            async rebind(_options: { observe?: boolean } = {}) {
                // Empty first, so the package derives every binding afresh.
-               pkg.materialization().bind({ colocated: {} });
-               pkg.materialization().bind({
-                  colocated: colocated as never,
-                  ...(options.observe
-                     ? {
-                          observed: await pkg
-                             .materialization()
-                             .readDatabaseColumns(colocated as never),
-                       }
-                     : {}),
+               const mz = pkg.materialization();
+               mz.bind({ database: {} });
+               // With the column read the server binds with (package.ts),
+               // so a stored column's guard runs as it does there.
+               mz.bind({
+                  database: database as never,
+                  observed: await mz.readDatabaseColumns(database as never),
                });
                pkg.materialization().bind({ storage: stored as never });
                await settle();
@@ -396,7 +495,7 @@ export async function loadFixture(
             verdicts: pkg
                .materialization()
                .serveVerdicts()
-               .filter((v) => v.origin !== "preaggregate")
+               .filter((v) => v.origin !== "rollup")
                .map(
                   (v) =>
                      `${v.sourceName}:${v.verdict}${v.reason ? `:${v.reason}` : ""}`,
@@ -520,9 +619,11 @@ export async function runPackageCase<Q extends CaseQuery, S>(
 
 /**
  * Build every planned table as a build would, one per content address:
- * colocated in the origin warehouse (`duckdb`), `storage=` into the lake. A
- * `storage=` table is computed on the origin and copied through Parquet, since
- * the origin reads the package's files by relative path and the lake cannot.
+ * in the origin warehouse (the source's connection: the sandbox, or under
+ * `parquet` {@link PARQUET_ORIGIN}, already USEing its DuckLake), `storage=`
+ * into the lake. A `storage=` table is computed on the origin and copied
+ * through Parquet, since the origin reads the package's files by relative
+ * path and the lake cannot.
  */
 async function buildAll(
    pkg: Package,
@@ -531,7 +632,7 @@ async function buildAll(
 ): Promise<{
    built: LoadedFixture["built"];
    buildErrors: Record<string, string>;
-   colocated: Record<string, Record<string, unknown>>;
+   database: Record<string, Record<string, unknown>>;
    stored: Record<string, Record<string, unknown>>;
 }> {
    // Each source is built on its own connection, a DuckDB one: the
@@ -540,19 +641,24 @@ async function buildAll(
       (await pkg.getMalloyConnection(
          connectionName ?? "duckdb",
       )) as DuckDBConnection;
-   const colocated: Record<string, Record<string, unknown>> = {};
+   const database: Record<string, Record<string, unknown>> = {};
    const stored: Record<string, Record<string, unknown>> = {};
    const built: LoadedFixture["built"] = [];
    const buildErrors: Record<string, string> = {};
    const seen = new Set<string>();
-   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "conform-build-"));
+   // Inside the package: the origin writes the Parquet, and is confined to
+   // the package directory (the sandbox) or the environment directory that
+   // holds it (an environment connection), duckdb_lockdown.ts.
+   const scratch = fs.mkdtempSync(
+      path.join(pkg.getPackagePath(), ".conform-build-"),
+   );
    // The declaring source first, so a table is recorded under it rather than
    // an extension that inherits its annotation.
-   // Rollups only when asked (`#@ preaggregate`, `#(preaggregate)`), each
+   // Rollups only when asked (`#@ preaggregate`, `#(rollup)`), each
    // recorded with its origin, as a build records it.
    const entries = Object.entries(pkg.getBuildPlan()?.sources ?? {})
       .map(([sourceID, e]) => ({ ...e, sourceID }))
-      .filter((e) => options.includeRollups || e.origin !== "preaggregate")
+      .filter((e) => options.includeRollups || e.origin !== "rollup")
       .sort(
          (a, b) =>
             Number(b.annotationFields?.name === b.name) -
@@ -612,7 +718,7 @@ async function buildAll(
             : !!entry.annotationFields?.name?.trim();
          const base = (entry.annotationFields?.name || entry.name).trim();
          const table =
-            declared || entry.origin === "preaggregate"
+            declared || entry.origin === "rollup"
                ? base
                : readableTableName({
                     identity: {
@@ -681,24 +787,25 @@ async function buildAll(
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
-               await warehouse.runSQL(
+               const origin = await warehouseFor(entry.connectionName);
+               await origin.runSQL(
                   `CREATE OR REPLACE TABLE ${quoted} AS ${entry.sql}`,
                );
-               // The warehouse's own column types, captured as a colocated
-               // build captures them (colocated_native_types.ts).
+               // The warehouse's own column types, captured as a database
+               // build captures them (database_native_types.ts).
                const nativeSchema = await capturedNativeSchema({
                   run: (sql) => warehouse.runSQL(sql, { rowLimit: 10_000 }),
                   physicalTableName: table,
                   dialect: warehouse.dialectName,
                   sourceName: entry.name,
                });
-               colocated[entry.sourceEntityId] = {
+               database[entry.sourceEntityId] = {
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",
                   ...(nativeSchema ? { nativeSchema } : {}),
                   ...(await leafKeys(entry.sourceID, warehouse)),
                };
-               built.push({ name: entry.name, tier: "colocated" });
+               built.push({ name: entry.name, tier: "database" });
             }
          } catch (error) {
             buildErrors[entry.name] =
@@ -708,9 +815,16 @@ async function buildAll(
    } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
    }
-   pkg.materialization().bind({ colocated: colocated as never });
+   // With the column read the server binds with (package.ts), so a stored
+   // column the database holds as another type (F-13: a HUGEINT DuckLake
+   // keeps as a DOUBLE) is guarded here as it is there.
+   const mz = pkg.materialization();
+   mz.bind({
+      database: database as never,
+      observed: await mz.readDatabaseColumns(database as never),
+   });
    pkg.materialization().bind({ storage: stored as never });
-   return { built, buildErrors, colocated, stored };
+   return { built, buildErrors, database, stored };
 }
 
 /**

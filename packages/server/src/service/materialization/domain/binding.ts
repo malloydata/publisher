@@ -6,9 +6,9 @@
  *
  * A {@link Binding} is one stored table as serving reads it, under one source
  * name: its kind and tier, carried from the plan, never inferred from a name.
- * A {@link Snapshot} is every binding a package serves, with the colocated
+ * A {@link Snapshot} is every binding a package serves, with the database
  * manifest entries Malloy's own build-manifest substitution reads (the
- * colocated rollup and view legs). It is immutable and replaced by one
+ * database rollup and view legs). It is immutable and replaced by one
  * reference swap; a cache keyed by a snapshot's `bindings` array is
  * invalidated exactly when the bindings change.
  *
@@ -25,6 +25,7 @@
  * Pure: the caller passes the instant.
  */
 
+import { isRollupOrigin } from "./table_plans";
 import { freshnessOf, type Freshness } from "./freshness";
 import { storageTablePath } from "./storage_table_path";
 import type {
@@ -43,13 +44,13 @@ export type BindingKind =
    | "query";
 
 /** Where a stored table lives: the source's own warehouse, or a storage destination. */
-type BindingTier = "colocated" | "storage";
+type BindingTier = "database" | "storage";
 
 /**
  * One stored table as serving reads it, under one source name.
  *
  * A `storage` table is read through `virtual()`, by its destination's alias
- * and {@link virtualHandle}; a `colocated` one (a `#(materialize)` or v1
+ * and {@link virtualHandle}; a `database` one (a `#(materialize)` or v1
  * `#@ persist` table in the source's own warehouse) is named in the served
  * copy's text on the connection {@link destinationName} names.
  */
@@ -82,10 +83,20 @@ export interface Binding {
     * A `storage=` table plan admitted past a stored source's own row-level
     * gate under G3 (`SourceEligibility.gateKept`), marked under every name
     * it is bound by: the router lets a served answer reading it past an
-    * entry-point gate, as it does a colocated table's. Set by the bind;
+    * entry-point gate, as it does a database table's. Set by the bind;
     * absent reads as not kept (fail closed).
     */
    ownGateKept?: boolean;
+   /**
+    * A `storage=` table every source stored in it holds only ungated rows
+    * (`SourceEligibility.ungated`: no gate beneath any of them, joins and
+    * derivations included), marked under every name it is bound by: the
+    * router lets an answer reading it past a gated entry point's gate, as it
+    * does a database table's, and `govern()` grafts and proves that gate on
+    * the answer (g-mixed). Set by the bind; absent reads as not proven (fail
+    * closed).
+    */
+   holdsOnlyUngatedRows?: boolean;
    /**
     * A database table's columns whose type the bind found moved since its
     * build, each with the type the warehouse holds it as now (its native
@@ -97,7 +108,7 @@ export interface Binding {
     */
    retypedColumns?: { name: string; type: string }[];
    /**
-    * The storage destination the table lives in; for a colocated table, the
+    * The storage destination the table lives in; for a database table, the
     * source's own connection.
     */
    destinationName: string;
@@ -105,13 +116,13 @@ export interface Binding {
    virtualHandle: string;
    /**
     * The table's path: unquoted for a storage table (quoted for DuckDB when
-    * read); canonical for its connection's dialect for a colocated one.
+    * read); canonical for its connection's dialect for a database one.
     */
    tablePath: string;
    /** The stored columns as the build captured them. */
    schema: { name: string; type: string }[];
    /**
-    * A colocated table's columns with the warehouse's own types
+    * A database table's columns with the warehouse's own types
     * (`ManifestEntry.nativeSchema`): a big-integer column is cast to exactly
     * its type. Absent for a storage table, whose schema is native.
     */
@@ -122,13 +133,13 @@ export interface Binding {
    freshnessFallback?: "live" | "stale_ok" | "fail";
 }
 
-/** Whether a binding is a colocated table. */
-export function isColocated(b: Pick<Binding, "tier">): boolean {
-   return b.tier === "colocated";
+/** Whether a binding is a database table. */
+export function isDatabase(b: Pick<Binding, "tier">): boolean {
+   return b.tier === "database";
 }
 
 /**
- * Every table a package serves, fixed. `entries` are the colocated run
+ * Every table a package serves, fixed. `entries` are the database run
  * manifest entries, freshness facts and key checks included, that Malloy's
  * compiler manifest substitutes; `bindings` are the tables the served copy and the
  * `storage=` legs read.
@@ -160,15 +171,21 @@ export function heldReadBinding(
    const nativeSchema = held.columns.flatMap((c) =>
       c.nativeType !== undefined ? [{ name: c.name, type: c.nativeType }] : [],
    );
+   // What the gate policy judges a gate over a moved column by: the type it
+   // holds now, as the bind records for any other drifted database table.
+   const retypedColumns = held.columns.flatMap((c) =>
+      c.moved ? [{ name: c.name, type: c.nativeType ?? c.type }] : [],
+   );
    return {
       kind,
-      tier: "colocated",
+      tier: "database",
       sourceName: sourceEntityId,
       destinationName: held.connectionName,
       virtualHandle: sourceEntityId,
       tablePath: entry.tableName,
       schema: held.columns.map(({ name, type }) => ({ name, type })),
       ...(nativeSchema.length > 0 ? { nativeSchema } : {}),
+      ...(retypedColumns.length > 0 ? { retypedColumns } : {}),
    };
 }
 
@@ -212,11 +229,11 @@ export interface Pinned {
    /** The bindings a query may read at {@link asOf}: fresh, or stale and allowed. */
    readonly fresh: readonly Binding[];
    /**
-    * The colocated entries a query may read at {@link asOf}, as Malloy's
+    * The database entries a query may read at {@link asOf}, as Malloy's
     * build manifest: never undefined, empty when nothing is bound.
     */
    readonly compilerManifest: BuildManifest;
-   /** Whether any colocated entry is bound at all, fresh or not. */
+   /** Whether any database entry is bound at all, fresh or not. */
    readonly hasEntries: boolean;
    /** Whether `binding` may be read at {@link asOf}. */
    serves(binding: Binding): boolean;
@@ -226,7 +243,7 @@ export interface Pinned {
 
 /**
  * The `storage=` table a rollup, persisted view or persisted query is read
- * from, or undefined when its tier is colocated. The binding decides the tier,
+ * from, or undefined when it is in the source's own database. The binding decides the tier,
  * not the annotation: a host may instruct a source with no `storage=` into a
  * storage destination (a database origin whose destination the control plane
  * chose), and the run's manifest then binds it as a storage table, which is
@@ -407,16 +424,15 @@ export function deriveServeBindings(
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
       const primaryKeys = primaryKeysOf(entry as never);
-      const rollupKey =
-         entry.origin === "preaggregate"
-            ? rollupKeyOf(entry as never)
-            : undefined;
+      const rollupKey = isRollupOrigin(entry.origin)
+         ? rollupKeyOf(entry as never)
+         : undefined;
       for (const sourceName of names) {
          // Set whenever there is a plan to read, even empty: an empty list
          // names no source, so the binding serves nothing (planSourceIds).
          const sourceIDs = sourceIDsFor?.(sourceName, entry.sourceEntityId);
          bindings.push({
-            kind: entry.origin === "preaggregate" ? "rollup" : "persist",
+            kind: isRollupOrigin(entry.origin) ? "rollup" : "persist",
             tier: "storage",
             sourceName,
             ...(sourceIDs !== undefined ? { sourceIDs } : {}),

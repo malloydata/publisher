@@ -20,6 +20,7 @@ import {
    recordDeprecatedUsage,
    type DeprecatedFeature,
 } from "../../deprecated_usage_metrics";
+import { DEPRECATED_PREAGGREGATE_ANNOTATION_CODE } from "../annotation_reader";
 import type { Model } from "../model";
 import { isMalloynbPath } from "./malloynb";
 
@@ -32,7 +33,8 @@ const DEPRECATED_MALLOYNB_NOTEBOOK = "deprecated-malloynb-notebook";
 /** `PackageWarning.code` of a source's deprecated `#(filter)` annotations warning. */
 const DEPRECATED_FILTER_ANNOTATION = "deprecated-filter-annotation";
 /** `PackageWarning.code` of a measure's deprecated `#@ preaggregate` warning. */
-const DEPRECATED_PREAGGREGATE_ANNOTATION = "deprecated-preaggregate-annotation";
+const DEPRECATED_PREAGGREGATE_ANNOTATION =
+   DEPRECATED_PREAGGREGATE_ANNOTATION_CODE;
 
 /** One deprecated format's warnings over a package's models. */
 type DeprecatedLint = (
@@ -75,7 +77,7 @@ const filterAnnotations: DeprecatedLint = (models) =>
 /**
  * One per measure a file declares `#@ preaggregate` on (however many grains),
  * naming the source (`subject`) and the measure. Its v2 spelling is
- * `#(preaggregate) grain=[…]`, which materialization v2's phase 4 builds.
+ * `#(rollup) grain=[…]`, which materialization v2's phase 4 builds.
  */
 const preaggregateAnnotations: DeprecatedLint = (models) =>
    Array.from(models).flatMap(([modelPath, model]) =>
@@ -88,7 +90,7 @@ const preaggregateAnnotations: DeprecatedLint = (models) =>
             severity: "warn" as const,
             message:
                `Measure ${measure} on source ${source} uses #@ preaggregate, ` +
-               `which is deprecated: its v2 spelling is #(preaggregate) ` +
+               `which is deprecated: its v2 spelling is #(rollup) ` +
                `grain=[…] (see ${MATERIALIZATION_MIGRATION_DOCS_URL}). ` +
                `Until you switch, #@ preaggregate still builds and serves ` +
                `its rollups.`,
@@ -106,7 +108,7 @@ const DEPRECATED_LINTS: readonly {
 }[] = [
    { feature: "malloynb", lint: malloynbNotebooks },
    { feature: "filter_annotation", lint: filterAnnotations },
-   // `#(preaggregate)` is read, built and served with the switch on, so the
+   // `#(rollup)` is read, built and served with the switch on, so the
    // warning points at a spelling that works there.
    {
       feature: "preaggregate_annotation",

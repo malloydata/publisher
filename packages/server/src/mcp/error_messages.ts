@@ -169,11 +169,12 @@ export function getMalloyErrorDetails(
       // What Publisher's own errors say they are, read as data; then what a
       // Malloy message says, read as text (malloy_error_text.ts).
       if (error instanceof AccessDeniedError && error.source !== undefined) {
-         // `#(authorize)` denial: the error names only the source (gate logic
-         // is never leaked), and the advice is about access, not syntax.
+         // A gate's denial (`reason: ACCESS_DENIED`): the error names only the
+         // source (gate logic is never leaked, nor which gate refused), and the
+         // advice is about access, not syntax.
          refined = true;
          suggestions = [
-            `Suggestion: Access to source '${error.source}' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error.`,
+            `Suggestion: Access to source '${error.source}' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error.`,
          ];
       } else if (error instanceof InvalidQueryRequestError) {
          refined = true;

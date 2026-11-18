@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { codesOfLines } from "./annotation_reader";
 import {
    initFailedLine,
    redactPgSecrets,
@@ -86,6 +87,12 @@ import {
 } from "./package_sources";
 type ApiEnvironment = components["schemas"]["Environment"];
 type ApiConnection = components["schemas"]["Connection"];
+/** A load failure's `codes`, when its message carries any (`[code]` lines). */
+function codesField(message: string): { codes?: string[] } {
+   const codes = codesOfLines(message);
+   return codes.length > 0 ? { codes } : {};
+}
+
 type LoadError = NonNullable<
    components["schemas"]["ServerStatus"]["loadErrors"]
 >[number];
@@ -1037,7 +1044,7 @@ export class EnvironmentStore
       // Re-establish serve routing when a package loads, from its latest
       // successful materialization — so serving survives a restart, not only
       // a fresh build. The full entry map is returned; the environment splits
-      // it by tier (colocated + storage=) in rebindServeBindingsFromLocalStore.
+      // it by tier (database + storage=) in rebindServeBindingsFromLocalStore.
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(
@@ -1915,6 +1922,7 @@ export class EnvironmentStore
                environment: environmentName,
                package: packageName,
                message,
+               ...codesField(message),
             });
          }
          // Stale packages are SERVING, but from a model older than the files on
@@ -1928,6 +1936,7 @@ export class EnvironmentStore
                environment: environmentName,
                package: packageName,
                message: stale.message,
+               ...codesField(stale.message),
                stale: true,
                failedAt: stale.failedAt,
             });

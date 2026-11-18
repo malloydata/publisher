@@ -92,9 +92,9 @@ query: q_${k} is raw -> { group_by: ${GROUPING[k]}; aggregate: total; order_by: 
 ).join("\n")}
 
 source: rolled is raw extend {
-  #(preaggregate) grain=["cat", "flag", "d", "ts", "note"]
+  #(rollup) grain=["cat", "flag", "d", "ts", "note"]
   measure: rtotal is n.max()
-  #(preaggregate) grain=["cat", "flag", "d", "ts", "note"]
+  #(rollup) grain=["cat", "flag", "d", "ts", "note"]
   measure: rtop is amt.max()
 }
 `;
@@ -405,7 +405,7 @@ for (const tier of tiers) {
          }
          // The bind every run, manifest and restart takes.
          await f.pkg.reloadAllModels(
-            f.pkg.materialization().boundColocatedEntries() ?? {},
+            f.pkg.materialization().boundDatabaseEntries() ?? {},
          );
       }, 300_000);
       afterAll(async () => {
@@ -451,7 +451,7 @@ for (const tier of tiers) {
 
       it("warns per column: cast or answered live, by the same rule", () => {
          const warnings = (f.pkg.getPackageMetadata().warnings ?? []).filter(
-            (w) => w.code === "storage-column-type-mismatch",
+            (w) => w.code === "database-column-type-mismatch",
          );
          const cast = warnings.filter((w) =>
             (w.message ?? "").includes("read through a cast"),

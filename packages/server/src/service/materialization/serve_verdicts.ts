@@ -10,6 +10,7 @@
  * Effects: logs a verdict that cannot be computed, and reports none.
  */
 
+import { isRollupOrigin, originOf } from "./domain/table_plans";
 import { isSourceDef, type SourceDef } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../../config";
 import { logger } from "../../logger";
@@ -27,8 +28,9 @@ import { storageTablePath } from "./domain/storage_table_path";
 import type { FreshnessManifest } from "./domain/types";
 import type { PlanLifecycle } from "./plan_lifecycle";
 import {
-   deriveColocatedServeBindings,
+   deriveDatabaseServeBindings,
    keptTableAddresses,
+   ungatedTableAddresses,
    v1StoredColumnsOf,
 } from "./serve/bind";
 import {
@@ -84,7 +86,7 @@ interface ServeVerdictsHost {
       | undefined;
    snapshot(): Snapshot;
    storageBindings(): readonly Binding[];
-   colocatedEntries(): FreshnessManifest | undefined;
+   databaseEntries(): FreshnessManifest | undefined;
    deploymentFacts(): DeploymentFacts | undefined;
    destinationSchema(destinationName: string): string | undefined;
    declarationOf(sourceID: string): unknown;
@@ -167,13 +169,13 @@ export class ServeVerdicts {
 
    /**
     * The package's materialized tables as the path report reads them: every
-    * planned source by `sourceID`, and the colocated tables bound now.
+    * planned source by `sourceID`, and the database tables bound now.
     * Memoized on the plan, the bound entries and the live verdicts.
     */
    tableCatalog(): MaterializedTableCatalog {
       const { plan } = this.host;
       const liveVerdicts = this.liveVerdictsByTable();
-      const bound = this.host.colocatedEntries();
+      const bound = this.host.databaseEntries();
       const cached = this.tableCatalogCache;
       if (
          cached &&
@@ -194,10 +196,9 @@ export class ServeVerdicts {
             name: source.name,
             sourceEntityId: source.sourceEntityId,
             ...(compilerKey ? { compilerKey } : {}),
-            origin:
-               source.origin === "preaggregate" ? "preaggregate" : "persist",
+            origin: originOf(source.origin),
             ...(source.modelPath ? { modelPath: source.modelPath } : {}),
-            ...(source.origin === "preaggregate"
+            ...(isRollupOrigin(source.origin)
                ? { columns: declaredColumnsOfPlan(source.columns) }
                : {}),
          });
@@ -309,6 +310,27 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
+      // A `storage=` table that holds only ungated rows (g-mixed), read the
+      // same way: off the bound bindings, or, not bound yet, by the bind's
+      // own rule.
+      const ungatedTables = ungatedTableAddresses(
+         plan.sourceEligibility?.ungated,
+         buildPlan?.sources ?? {},
+      );
+      const holdsOnlyUngatedRows = (sourceID: string): boolean => {
+         const bound = storageBindings.filter((b) =>
+            b.sourceIDs?.includes(sourceID),
+         );
+         if (bound.length > 0) {
+            return bound.every((b) => b.holdsOnlyUngatedRows === true);
+         }
+         return (
+            (plan.sourceEligibility?.ungated ?? []).includes(sourceID) &&
+            ungatedTables.has(
+               buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
+            )
+         );
+      };
       // The stored types of the columns a bound `storage=` table's own gate
       // reads, for the policy's exactness rule; the router reads each
       // query's. A table not bound yet has none to read, and is judged once
@@ -328,7 +350,8 @@ export class ServeVerdicts {
             const reads =
                exprs === undefined
                   ? undefined
-                  : gateReads(def, exprs, modelDef);
+                  : // Its own `where:` terms were applied by the build.
+                    gateReads(def, exprs, modelDef, new Set([sourceID]));
             const types = gateColumnTypesOf(
                reads,
                bound.map((b) => b.schema),
@@ -366,7 +389,7 @@ export class ServeVerdicts {
          // rollup's leg past a gate, with its variant proven at plan; the
          // served copy over a table it keeps the gate on.
          keepsGate: (sourceID, tier) => {
-            if (buildPlan?.sources?.[sourceID]?.origin === "preaggregate") {
+            if (isRollupOrigin(buildPlan?.sources?.[sourceID]?.origin)) {
                return (
                   legMayPassGate("rollup", switches, SERVING_GATE_CONTEXT) &&
                   plan.rollupsKeepingGates.has(sourceID)
@@ -378,6 +401,8 @@ export class ServeVerdicts {
                   {
                      tier,
                      ownGateKept: tier === "storage" && ownGateKept(sourceID),
+                     holdsOnlyUngatedRows:
+                        tier === "storage" && holdsOnlyUngatedRows(sourceID),
                      ...(tier === "storage"
                         ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
                         : {}),
@@ -389,7 +414,7 @@ export class ServeVerdicts {
          },
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
-         boundEntityIds: new Set(Object.keys(host.colocatedEntries() ?? {})),
+         boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
          freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
          boundStorageNames: new Set(storageBindings.map((b) => b.sourceName)),
          servedStorageNames,
@@ -444,10 +469,10 @@ export class ServeVerdicts {
       const models = host.models();
       const key = [
          plan.buildPlan,
-         host.colocatedEntries(),
+         host.databaseEntries(),
          host.storageBindings(),
          plan.sourceEligibility,
-         plan.colocatedSourceEligibility,
+         plan.databaseSourceEligibility,
          getPersistStorageMode(),
          models,
          // Read live, not replaced wholesale, so they key the memo by what
@@ -525,14 +550,14 @@ export class ServeVerdicts {
    /**
     * Why the bind refuses a planned source, as the bind decides it, or
     * undefined when it keeps it. Storage requires a positive eligibility, as
-    * the bind does. Colocated rollups need not appear in the colocated
+    * the bind does. Database rollups need not appear in the database
     * record, so only an authored source missing from it, or one it names as
     * refused, counts.
     */
    private refusedAtBind(
       sourceID: string,
       source: { name: string; sourceEntityId: string; origin?: string },
-      tier: "colocated" | "storage",
+      tier: "database" | "storage",
    ): string | undefined {
       const { plan } = this.host;
       const never = "the source was never examined for eligibility";
@@ -543,12 +568,12 @@ export class ServeVerdicts {
          }
          return eligibility.refused[sourceID] ?? never;
       }
-      const eligibility = plan.colocatedSourceEligibility;
+      const eligibility = plan.databaseSourceEligibility;
       if (!eligibility) return undefined;
       const refused = eligibility.refused[source.sourceEntityId];
       if (refused !== undefined) return refused;
       if (
-         source.origin !== "preaggregate" &&
+         !isRollupOrigin(source.origin) &&
          !eligibility.eligibleEntityIds.has(source.sourceEntityId)
       ) {
          return never;
@@ -568,7 +593,7 @@ export class ServeVerdicts {
       const host = this.host;
       const plan = host.plan;
       const sources = plan.servingPlan()?.sources ?? {};
-      const eligible = plan.colocatedSourceEligibility?.eligibleEntityIds;
+      const eligible = plan.databaseSourceEligibility?.eligibleEntityIds;
       const viewBuilds = host.persistedViewBuildIDs();
       const entries: FreshnessManifest = {};
       for (const source of Object.values(sources)) {
@@ -590,7 +615,7 @@ export class ServeVerdicts {
             const schema = v1Schema(sourceID);
             return schema?.length ? { ...b, schema } : b;
          }),
-         ...deriveColocatedServeBindings({
+         ...deriveDatabaseServeBindings({
             entries,
             planSources: sources,
             materializePlans: plan.materializePlans,
@@ -616,40 +641,23 @@ export class ServeVerdicts {
          }
       }
       return verdicts.map((v) => {
-         // A refused declaration has no table to serve from, a rollup's
-         // included.
-         if (v.verdict === "live" && v.reason === "refused") {
-            return { ...v, cutoverPath: "live", cutoverReason: "refused" };
-         }
-         if (v.origin === "preaggregate") {
-            return { ...v, cutoverPath: "rollup" };
-         }
-         // A row-level gate declared on a base the re-root replaces cannot
-         // be grafted on the served copy: its queries are answered live.
-         if (gateDeclined.has(v.sourceID)) {
-            return {
-               ...v,
-               cutoverPath: "live",
-               cutoverReason: "inherited_gate",
-            };
-         }
-         if (rerooted.has(v.sourceID)) {
-            return { ...v, cutoverPath: "served_copy" };
-         }
-         // An extension of a re-rooted source, left as written: it reads
-         // that source's table by name.
-         if (throughBase.has(v.sourceID) && !problems.has(v.sourceID)) {
-            return {
-               ...v,
-               cutoverPath: "served_copy",
-               cutoverReason: "through_base",
-            };
-         }
+         const path = servePathOf(v, {
+            rerooted,
+            throughBase,
+            gateDeclined,
+            problems,
+         });
          return {
             ...v,
-            cutoverPath: "live",
-            cutoverReason:
-               problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
+            servePath: path.path,
+            ...(path.reason !== undefined
+               ? { servePathReason: path.reason }
+               : {}),
+            // Deprecated names of the same two fields, emitted for one release.
+            cutoverPath: path.path,
+            ...(path.reason !== undefined
+               ? { cutoverReason: path.reason }
+               : {}),
          };
       });
    }
@@ -668,7 +676,7 @@ export class ServeVerdicts {
          plan.buildPlan?.sources ?? {},
       )) {
          const destinationName = source.annotationFields?.storage?.trim();
-         if (!destinationName || source.origin === "preaggregate") continue;
+         if (!destinationName || isRollupOrigin(source.origin)) continue;
          const schema = (source.columns ?? []).flatMap((column) => {
             const type = PREVIEW_STORED_TYPES[String(column.type ?? "")];
             return column.name && type ? [{ name: column.name, type }] : [];
@@ -828,4 +836,42 @@ function declaredColumnsOfPlan(
    return (columns ?? []).flatMap((c) =>
       c.name && c.type ? [{ name: c.name, type: c.type }] : [],
    );
+}
+
+/**
+ * On a dry run, the path that will answer queries on a source (`servePath`)
+ * and, when that is not its own table, why (`servePathReason`).
+ */
+function servePathOf(
+   v: ServeVerdict,
+   preview: {
+      rerooted: ReadonlySet<string>;
+      throughBase: ReadonlySet<string>;
+      gateDeclined: ReadonlySet<string>;
+      problems: ReadonlyMap<string, string>;
+   },
+): { path: "served_copy" | "rollup" | "live"; reason?: string } {
+   // A refused declaration has no table to serve from, a rollup's included.
+   if (v.verdict === "live" && v.reason === "refused") {
+      return { path: "live", reason: "refused" };
+   }
+   if (v.origin === "rollup") return { path: "rollup" };
+   // A row-level gate declared on a base the re-root replaces cannot be
+   // grafted on the served copy: its queries are answered live.
+   if (preview.gateDeclined.has(v.sourceID)) {
+      return { path: "live", reason: "inherited_gate" };
+   }
+   if (preview.rerooted.has(v.sourceID)) return { path: "served_copy" };
+   // An extension of a re-rooted source, left as written: it reads that
+   // source's table by name.
+   if (
+      preview.throughBase.has(v.sourceID) &&
+      !preview.problems.has(v.sourceID)
+   ) {
+      return { path: "served_copy", reason: "through_base" };
+   }
+   return {
+      path: "live",
+      reason: preview.problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
+   };
 }

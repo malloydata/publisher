@@ -2033,10 +2033,12 @@ describe("raw SQL on a managed database", () => {
       expect(manifestTemporaryTable.called).toBe(false);
    });
 
-   it("leaves a connection that is not managed as it was: a script runs", async () => {
+   // A DuckDB-backed connection, managed or not, is held to one SELECT too
+   // (duckdb_lockdown.ts); any other connection runs a script as before.
+   it("leaves a connection that is neither managed nor DuckDB-backed as it was: a script runs", async () => {
       const { controller, runSQL } = controllerOn({
          name: "lake",
-         type: "ducklake",
+         type: "postgres",
       });
       await controller.getConnectionQueryData(
          "env",
@@ -2088,5 +2090,260 @@ describe("raw SQL on a managed database", () => {
       );
       await expect(refused).rejects.toThrow("config unreadable");
       expect(runSQL.called).toBe(false);
+   });
+});
+
+describe("ConnectionController: raw SQL on a locked-down DuckDB connection is one SELECT", () => {
+   afterEach(() => sinon.restore());
+
+   /** A controller whose environment answers `type` for every connection name. */
+   function lockedController(type: string) {
+      const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
+      const { controller } = buildController(runSQL);
+      const fakeEnv = {
+         assertCanAdmitQuery: sinon.stub().returns(undefined),
+         getApiConnection: () => ({ name: "lake", type }),
+      };
+      (
+         controller as unknown as {
+            environmentStore: { getEnvironment: sinon.SinonStub };
+         }
+      ).environmentStore = {
+         getEnvironment: sinon.stub().resolves(fakeEnv),
+      } as never;
+      return { controller, runSQL };
+   }
+
+   const query = (
+      controller: ConnectionController,
+      connection: string,
+      sql: string,
+   ) =>
+      controller.getConnectionQueryData(
+         "env",
+         connection,
+         sql,
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+
+   for (const [label, type, name] of [
+      ["the package sandbox", "duckdb", "duckdb"],
+      ["an environment duckdb connection", "duckdb", "lake"],
+      ["a ducklake connection", "ducklake", "lake"],
+      ["a motherduck connection", "motherduck", "lake"],
+   ] as const) {
+      it(`refuses anything but one SELECT on ${label}, before it runs`, async () => {
+         const { controller, runSQL } = lockedController(type);
+         for (const sql of [
+            "COPY (SELECT 1) TO 'x.csv'",
+            "CREATE TABLE t AS SELECT 1",
+            "SELECT 1; SELECT 2",
+            "INSERT INTO t VALUES (1)",
+            "SELECT 1 FROM",
+         ]) {
+            await expect(query(controller, name, sql)).rejects.toThrow(
+               "locked-down DuckDB connection: raw SQL on it runs only as a single SELECT",
+            );
+            await expect(
+               controller.getConnectionSqlSource("env", name, sql),
+            ).rejects.toThrow("runs only as a single SELECT");
+         }
+         expect(runSQL.called).toBe(false);
+      });
+
+      it(`runs one SELECT, CTEs included, on ${label}`, async () => {
+         const { controller, runSQL } = lockedController(type);
+         await query(
+            controller,
+            name,
+            "WITH x AS (SELECT 1 AS a) SELECT a FROM x",
+         );
+         await query(controller, name, "FROM (SELECT 1 AS a)");
+         expect(runSQL.callCount).toBe(2);
+      });
+   }
+
+   it("leaves a non-DuckDB connection's raw SQL alone", async () => {
+      const { controller, runSQL } = lockedController("postgres");
+      await query(controller, "lake", "SELECT 1; SELECT 2");
+      expect(runSQL.calledOnce).toBe(true);
+   });
+});
+
+describe("ConnectionController.getConnectionQueryData statement usage", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   /** A managed DuckLake connection (a catalog an orchestrator provisions). */
+   const managedConnection = () => ({
+      name: "sales",
+      type: "ducklake",
+      managed: true,
+      ducklakeConnection: { catalog: { metadataSchema: "db_1a2b" } },
+   });
+
+   function controllerOver(
+      connection: Connection,
+      apiConnection: () => object,
+   ): ConnectionController {
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+            getApiConnection: apiConnection,
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(connection);
+      return controller;
+   }
+
+   /** The usage records logged while `run` ran. */
+   async function usageRecords(
+      run: () => Promise<unknown>,
+   ): Promise<{ records: Record<string, unknown>[]; outcome: unknown }> {
+      const info = sinon.stub(logger, "info");
+      const outcome = await run().catch((e: unknown) => e);
+      const records = info
+         .getCalls()
+         .map((c) => c.args as unknown as [unknown, Record<string, unknown>])
+         .filter(([message]) => message === "statement_usage")
+         .map(([, record]) => record);
+      return { records, outcome };
+   }
+
+   const query = (controller: ConnectionController, sql: string) => () =>
+      controller.getConnectionQueryData(
+         "acme___prod",
+         "sales",
+         sql,
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+
+   const buffered = (runSQL: sinon.SinonStub) =>
+      ({ runSQL }) as unknown as Connection;
+
+   it("records one sql statement, with its rows and catalog, on a managed connection", async () => {
+      const runSQL = sinon
+         .stub()
+         .resolves({ rows: [{ a: 1 }, { a: 2 }], totalRows: 2 });
+      const controller = controllerOver(buffered(runSQL), managedConnection);
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(outcome).not.toBeInstanceOf(Error);
+      expect(runSQL.calledOnce).toBe(true);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+         event: "statement_usage",
+         environment: "acme___prod",
+         connection: "sales",
+         catalog: "db_1a2b",
+         surface: "sql",
+         rows: 2,
+         status: "ok",
+      });
+   });
+
+   it("records a streamed statement the same way", async () => {
+      const streaming = {
+         canStream(): true {
+            return true;
+         },
+         async *runSQLStream(): AsyncIterableIterator<QueryRecord> {
+            yield { a: 1 };
+            yield { a: 2 };
+            yield { a: 3 };
+         },
+      } as unknown as Connection;
+      const controller = controllerOver(streaming, managedConnection);
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(outcome).not.toBeInstanceOf(Error);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+         surface: "sql",
+         rows: 3,
+         status: "ok",
+      });
+   });
+
+   it("records nothing on a connection that is not managed", async () => {
+      const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
+      const controller = controllerOver(buffered(runSQL), unmanagedConnection);
+
+      const { records } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(runSQL.calledOnce).toBe(true);
+      expect(records).toEqual([]);
+   });
+
+   // Metering is keyed on `managed`, not on running as a single SELECT: a
+   // customer's own DuckLake connection runs raw SQL the same way and is not
+   // metered. A change that keys it on the connection type would record this.
+   it("records nothing on a customer's own DuckLake connection, not marked managed", async () => {
+      const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
+      const ownDuckLake = () => ({
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: { catalog: { metadataSchema: "their_catalog" } },
+      });
+      const controller = controllerOver(buffered(runSQL), ownDuckLake);
+
+      const { records } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(runSQL.calledOnce).toBe(true);
+      expect(records).toEqual([]);
+   });
+
+   it("records nothing for a statement refused before it runs", async () => {
+      const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
+      const controller = controllerOver(buffered(runSQL), managedConnection);
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "CREATE TABLE t AS SELECT 1"),
+      );
+
+      expect(outcome).toBeInstanceOf(BadRequestError);
+      expect(runSQL.called).toBe(false);
+      expect(records).toEqual([]);
+   });
+
+   it("records a statement that fails, once, as an error", async () => {
+      const runSQL = sinon.stub().rejects(new Error("catalog unreachable"));
+      const controller = controllerOver(buffered(runSQL), managedConnection);
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(outcome).toBeInstanceOf(Error);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ surface: "sql", status: "error" });
+      expect(records[0].rows).toBeUndefined();
    });
 });

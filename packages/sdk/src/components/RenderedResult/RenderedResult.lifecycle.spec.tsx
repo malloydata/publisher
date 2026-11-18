@@ -84,7 +84,7 @@ class FakeViz {
    }
 }
 
-mock.module("@malloydata/render", () => ({
+const fakeRenderModule = {
    MalloyRenderer: class {
       constructor(options: (typeof rendererOptions)[number]) {
          rendererOptions.push(options);
@@ -95,6 +95,20 @@ mock.module("@malloydata/render", () => ({
          return viz;
       }
    },
+};
+
+mock.module("@malloydata/render", () => fakeRenderModule);
+// The fake goes in at the loader too, not only at the package. `loadRenderer`
+// caches the import's promise for the whole process, and an earlier spec file
+// that mounts a `ResultPanel` with a result warms it, starting the real 3.4 MB
+// import. When that import is still in flight as this file mocks the package,
+// it resolves to the REAL renderer anyway, the cache keeps it, and every test
+// here waits on an `onReady` the real renderer never calls on this fake
+// payload: each times out, in the file orders where that warm-up lands just
+// before this file.
+mock.module("./loadRenderer", () => ({
+   loadMalloyRenderer: async () => fakeRenderModule,
+   warmMalloyRenderer: () => {},
 }));
 
 const RenderedResult = (await import("./RenderedResult")).default;

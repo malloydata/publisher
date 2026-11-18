@@ -80,6 +80,11 @@ import {
    type ServedFrom,
    servedFromOf,
 } from "./materialization/serve/leg";
+import {
+   liveRoundsBigIntegersAsPostgres,
+   type ResultRows,
+   roundBigIntegersAsLive,
+} from "./materialization/domain/live_big_integers";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import type { ApiQueryPath } from "./materialization/serve/query_path";
 import {
@@ -699,7 +704,7 @@ export class ModelServing {
                : {}),
          },
          // The served copy is the author's text, gates included, as are a
-         // persisted view's and a `#(preaggregate)` rollup's variants: a
+         // persisted view's and a `#(rollup)` rollup's variants: a
          // row-level gate is grafted and proven on its own compile, so the
          // routed answer keeps it (R3), and an answer let past an entry-point
          // gate is re-proven there. Any other routed shape carries no
@@ -760,7 +765,7 @@ export class ModelServing {
       // No post-hoc gate check is possible on a serve-shape or v1
       // `#@ preaggregate` runnable (it carries no annotations): their
       // correctness rests entirely on `queryEntryPointHasRowLevelGate`. The
-      // served copy, a persisted view and a `#(preaggregate)` rollup are the
+      // served copy, a persisted view and a `#(rollup)` rollup are the
       // exceptions (R3): each keeps the author's gates on the run target's
       // own `sourceID`, and `govern()` above grafted and proved them on its
       // own compile.
@@ -819,7 +824,7 @@ export class ModelServing {
    /**
     * Run the governed runnable with what the answer names: a run on a
     * virtual map (the served copy, a `storage=` view or rollup) takes no
-    * manifest; a colocated rollup reads the full pinned one, a colocated
+    * manifest; a database rollup reads the full pinned one, a database
     * persisted view the one without rollups, and the live compile an empty
     * one. Prepare runs INSIDE the run's try/catch, so a given-binding throw
     * at prepare gets the same error mapping as run instead of escaping as a
@@ -939,6 +944,9 @@ export class ModelServing {
          // NOT a storage hit: servedFromOf reads `live_fallback`.
          answer = answeredWith(answer, retried.read);
          executionTime = performance.now() - ctx.startTime;
+      }
+      if (answer.leg !== "live" && !answer.runFailed) {
+         await roundStoredAnswerAsLive(run.result, prepared.liveRunnable);
       }
       return { run, answer, executionTime, maxRows, maxBytes };
    }
@@ -1673,7 +1681,7 @@ export class ModelServing {
    }
 }
 
-/** The pinned build manifest, or undefined when nothing colocated is bound. */
+/** The pinned build manifest, or undefined when nothing database is bound. */
 function pinnedManifest(pinned: Pinned): BuildManifest | undefined {
    return pinned.hasEntries ? pinned.compilerManifest : undefined;
 }
@@ -1715,6 +1723,7 @@ function statementUsage(
 ):
    | {
         metered: (connectionName: string) => boolean;
+        catalog?: (connectionName: string) => string | undefined;
         environment: string;
         package: string;
      }
@@ -1722,6 +1731,7 @@ function statementUsage(
    if (!input?.meteredConnection || !input.environment) return undefined;
    return {
       metered: input.meteredConnection,
+      catalog: input.meteredCatalog,
       environment: input.environment,
       package: packageName,
    };
@@ -1757,4 +1767,24 @@ function governRequestOf(r: {
       ...(r.graft ?? { bypassAuthorize: false }),
       ceiling: r.ceiling,
    };
+}
+
+/**
+ * A stored answer's big integers rounded as live rounds them, when the
+ * query's live dialect is Postgres, the one whose rounding is measured
+ * (`liveRoundsBigIntegersAsPostgres`). A live compile that cannot say its
+ * dialect leaves the answer as it ran.
+ */
+async function roundStoredAnswerAsLive(
+   result: PreparedRun["result"],
+   liveRunnable: QueryMaterializer,
+): Promise<void> {
+   let dialect: string;
+   try {
+      dialect = (await liveRunnable.getPreparedQuery()).dialect;
+   } catch {
+      return;
+   }
+   if (!liveRoundsBigIntegersAsPostgres(dialect)) return;
+   roundBigIntegersAsLive(result as unknown as ResultRows);
 }

@@ -41,7 +41,7 @@ import {
 import { errMessage } from "../../../utils";
 import type { ApiConnection } from "../../model";
 import type { QueryMetadata } from "../../query_metadata";
-import { withStatementUsage } from "../../statement_usage";
+import { usageCatalog, withStatementUsage } from "../../statement_usage";
 import {
    bindingServesModelSource,
    deriveServeBindings,
@@ -78,6 +78,7 @@ import { runRollupKeyCheck } from "./inline_uniqueness";
 import { storedKeyCheckSql } from "../text/key_check_text";
 import {
    ledgerFields,
+   lateRowsFields,
    refreshFields,
    reportIncrementalStep,
    resetLedger,
@@ -288,6 +289,7 @@ async function recomputeIntoStorage(
                  connection: destinationName,
                  surface: "build",
                  package: params.packageName ?? params.incremental?.packageName,
+                 catalog: usageCatalog(destinationConnection),
               },
               build,
            )
@@ -814,7 +816,7 @@ export class StorageBuildStrategy
          buildDurationMs: result.refresh
             ? (result.refresh.durationMs ?? null)
             : durationMs,
-         // Incremental coverage and what this run did, as for a colocated
+         // Incremental coverage and what this run did, as for a database
          // table. Absent for a non-incremental source.
          ...ledgerFields(
             incrementalRefresh?.lineage,
@@ -824,6 +826,7 @@ export class StorageBuildStrategy
             result.refresh?.refresh ??
                (incrementalRefresh ? "full" : undefined),
          ),
+         ...lateRowsFields(result.refresh?.lateRows),
          // How stored upstreams were read: a chained attempt answers for
          // itself; otherwise the manifest's answer for the passthrough SQL.
          ...(dependsOnStorageUpstream
@@ -840,7 +843,7 @@ export class StorageBuildStrategy
                 params.rollup
                 ? {}
                 : baseReuse),
-         // SCANNED, not billed, matching the colocated path's runStats
+         // SCANNED, not billed, matching the database path's runStats
          // (totalBytesProcessed), so the field sums consistently across sources.
          // Null when the read reported nothing: a build with an empty metadata
          // bag, since the label is what makes BigQuery's read report.
@@ -954,6 +957,7 @@ export class StorageBuildStrategy
                connection: destinationName,
                surface: "build",
                package: params.packageName ?? params.incremental?.packageName,
+               catalog: usageCatalog(destinationConnection),
             },
             () =>
                extension
@@ -1053,6 +1057,7 @@ export class StorageBuildStrategy
                connection: destinationName,
                surface: "build",
                package: params.packageName ?? params.incremental?.packageName,
+               catalog: usageCatalog(destinationConnection),
             },
             () =>
                buildDownstreamIntoStorage({

@@ -116,6 +116,32 @@ source: wl_qs is ub extend { where: acct = $ACCT } -> { select: id, region, amou
 #(authorize) 'analyst' = $ROLE
 source: wl_literal is ub extend { where: acct = 9007199254740993 }
 
+// Stored sources scoped when their own table is read: a trailing where:
+// that reads a given (never in the build), under a lock too, and a join
+// whose joined source carries its own where:, reading a given or a literal.
+// The build applies only a stored source's query: a given in it is refused.
+#(materialize) name="st_given" storage="${LAKE}"
+source: st_given is accounts -> { where: id > -31; select: * } extend { where: acct = $ACCT }
+#(authorize) 'analyst' = $ROLE
+#(materialize) name="st_lock" storage="${LAKE}"
+source: st_lock is accounts -> { where: id > -33; select: * } extend { where: acct = $ACCT }
+#(materialize) name="st_stage" storage="${LAKE}"
+source: st_stage is accounts -> { where: id > -34 and acct = $ACCT; select: * }
+#(materialize) name="st_join_lit" storage="${LAKE}"
+source: st_join_lit is accounts -> { where: id > -35; select: id, region, amount } extend { join_one: u is ub extend { where: acct = 9007199254740992 } on id = u.id }
+#(materialize) name="st_join_given" storage="${LAKE}"
+source: st_join_given is accounts -> { where: id > -36; select: id, region, amount } extend { join_one: u is ub extend { where: acct = $ACCT } on id = u.id }
+// One stored query under two names, one of them gated: the open one, which
+// nothing scopes, is still served.
+#(materialize) name="sh_open" storage="${LAKE}"
+source: sh_open is accounts -> { where: id > -37; select: * }
+#(access_filter) acct = $ACCT
+#(materialize) name="sh_gated" storage="${LAKE}"
+source: sh_gated is accounts -> { where: id > -37; select: * }
+// A stored base extended with a renamed scope, and a composite of named members.
+source: ext_ren is ub extend { rename: a2 is acct; where: a2 = $ACCT }
+source: comp_named is compose(w_plain, ub)
+
 // Database tables whose exact gate column is altered to DOUBLE in the
 // warehouse after the build, and rebound: the bind observes the drift.
 #(access_filter) acct = $ACCT
@@ -130,13 +156,29 @@ source: acct_db_mz_bigint is accounts_bigint -> { where: id > -7; select: * }
 #(access_filter) acct = $ACCT
 #@ persist name="acct_db_v1_bigint"
 source: acct_db_v1_bigint is accounts_bigint -> { where: id > -8; select: id, acct, region, amount }
-// The control: an ungated database table altered the same way, still served.
+// An ungated database table altered the same way: the served copy declines
+// any database table whose columns moved, gated or not.
 #(materialize) name="acct_db_open"
 source: acct_db_open is accounts -> { where: id > -10; select: * }
 `;
 
 /** The tables whose gate column is altered to DOUBLE after the build. */
-const INEXACT = ["acct_mz", "acct_v1", "ub"];
+const INEXACT = ["acct_mz", "acct_v1", "ub", "st_given", "st_lock"];
+
+/**
+ * One stored query under two names, its column altered to DOUBLE the same
+ * way: the open one, which nothing gates or scopes, is still served.
+ */
+const SHARED = ["sh_open", "sh_gated"];
+
+/**
+ * Stored sources scoped when their own table is read, by a column stored
+ * inexactly (their own, or a joined stored base's: `ub`'s): never served.
+ */
+const SCOPED_AT_READ = ["st_given", "st_lock", "st_join_lit", "st_join_given"];
+
+/** A stored source whose query reads a given: refused at build, answered live. */
+const REFUSED = "st_stage";
 
 /** Database tables whose gate column is altered in the warehouse after the build. */
 const DB_ALTERED = [
@@ -147,15 +189,11 @@ const DB_ALTERED = [
 ];
 
 /**
- * An altered database table whose gate column the served copy still reads (a
- * DECIMAL): the gate policy's exactness rule is what sends it live, so the
- * path report names the served copy skipped for its gate (`CONTRACT`), not
- * the copy's own decline (`WARNED`) that a BIGINT one, left out of the copy
- * as a float, gets with or without that rule. (The `#@ persist` table's path
- * report names no served-copy skip; that it answers live is what this spec
- * holds it to.)
+ * Every database table altered after its build, gated or not: the served copy
+ * declines a database table whose columns moved (`WARNED`), so each answers
+ * live. The gate policy's own rule over a moved column is held by unit specs.
  */
-const DB_ALTERED_DECIMAL = ["acct_db_mz"];
+const DB_DRIFTED = [...DB_ALTERED, "acct_db_open"];
 
 /** Entry points that read an inexact table's gate column under another shape. */
 const OVER_INEXACT = [
@@ -173,6 +211,8 @@ const OVER_INEXACT = [
    "wl_dim2",
    "wl_qs",
    "wl_literal",
+   "ext_ren",
+   "comp_named",
 ];
 
 const QUERIES: { source: string; malloy: string }[] = [
@@ -191,6 +231,14 @@ const QUERIES: { source: string; malloy: string }[] = [
    ...[...DB_ALTERED, "acct_db_open", "w_plain_exact"].map((source) => ({
       source,
       malloy: `run: ${source} -> { select: id, region; order_by: id }`,
+   })),
+   ...["st_given", "st_lock", REFUSED, "sh_open", "sh_gated"].map((source) => ({
+      source,
+      malloy: `run: ${source} -> { group_by: region; aggregate: c is count(); order_by: region }`,
+   })),
+   ...["st_join_lit", "st_join_given"].map((source) => ({
+      source,
+      malloy: `run: ${source} -> { group_by: region, ur is u.region; aggregate: c is count(); order_by: region, ur }`,
    })),
    ...[...OVER_INEXACT, "via_join", "wd_join"].map((source) => ({
       source,
@@ -263,7 +311,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
       // DOUBLE, bound with that type.
       for (const entry of Object.values(fixture.stored)) {
          const name = String(entry.sourceName);
-         if (!INEXACT.includes(name)) continue;
+         if (![...INEXACT, ...SHARED].includes(name)) continue;
          const table = `"${String(entry.physicalTableName).replace(/"/g, '""')}"`;
          await loader.lake.runSQL(
             `ALTER TABLE ${table} ALTER COLUMN acct TYPE DOUBLE`,
@@ -276,7 +324,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
       const warehouse = (await loader.pkg.getMalloyConnection(
          "duckdb",
       )) as unknown as { runSQL(sql: string): Promise<unknown> };
-      for (const name of [...DB_ALTERED, "acct_db_open"]) {
+      for (const name of DB_DRIFTED) {
          await warehouse.runSQL(
             `ALTER TABLE "${name}" ALTER COLUMN acct TYPE DOUBLE`,
          );
@@ -297,7 +345,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
       expect(fixture.buildErrors).toEqual({});
       for (const entry of Object.values(fixture.stored)) {
          const name = String(entry.sourceName);
-         if (!INEXACT.includes(name)) continue;
+         if (![...INEXACT, ...SHARED].includes(name)) continue;
          const described = await loader.lake.runSQL(
             `DESCRIBE "${String(entry.physicalTableName)}"`,
          );
@@ -307,13 +355,15 @@ describe("L2: a gate over a column stored inexactly is never read from the table
          expect(acct?.column_type).toBe("DOUBLE");
       }
       const built = fixture.built.map((b) => `${b.name}:${b.tier}`);
+      // A stored source whose query reads a given is never built.
+      expect(built.filter((b) => b.startsWith(`${REFUSED}:`))).toEqual([]);
       const warehouse = (await loader.pkg.getMalloyConnection(
          "duckdb",
       )) as unknown as {
          runSQL(sql: string): Promise<{ rows: Record<string, unknown>[] }>;
       };
       for (const name of DB_ALTERED) {
-         expect(built).toContain(`${name}:colocated`);
+         expect(built).toContain(`${name}:database`);
          const described = await warehouse.runSQL(`DESCRIBE "${name}"`);
          const acct = described.rows.find((r) => r.column_name === "acct");
          expect(acct?.column_type).toBe("DOUBLE");
@@ -369,21 +419,22 @@ describe("L2: a gate over a column stored inexactly is never read from the table
             const goesLive =
                INEXACT.includes(q.source) ||
                OVER_INEXACT.includes(q.source) ||
-               DB_ALTERED.includes(q.source);
+               DB_DRIFTED.includes(q.source) ||
+               SCOPED_AT_READ.includes(q.source) ||
+               q.source === REFUSED ||
+               q.source === "sh_gated";
             it(`${q.malloy}: is answered from ${goesLive ? "live" : "the table"}`, () => {
                const got = served.get(key(q.malloy, "the ...992 caller"))![0];
                expect("answer" in got).toBe(true);
                if (!("answer" in got)) return;
                if (goesLive) {
                   expect(got.answer.servedBy).toBe("live");
-                  if (DB_ALTERED_DECIMAL.includes(q.source)) {
-                     expect(got.answer.servedSkip?.reason).toBe("CONTRACT");
+                  if (q.source === "acct_db_open") {
+                     expect(got.answer.servedSkip?.reason).toBe("NOT_SERVED");
                   }
                } else {
                   expect(got.answer.via).toBe("served_copy");
-                  expect(got.answer.servedFrom).toBe(
-                     q.source === "acct_db_open" ? "database" : "storage",
-                  );
+                  expect(got.answer.servedFrom).toBe("storage");
                }
             });
          }

@@ -409,7 +409,7 @@ export class MaterializationScheduler {
             packageName,
             {
                forceRefresh: true,
-               trigger: "SCHEDULER",
+               trigger: "scheduler",
                ...(versionId !== undefined
                   ? { versionId: VersionRef.parse(versionId) }
                   : {}),

@@ -6,9 +6,10 @@
  * source, a `#(materialize)` source, a rollup, a persisted view and a
  * persisted named query each bound over a table that stores a column as
  * another type than its build declares report the
- * `storage-column-type-mismatch` package warning and tick
+ * `storage-column-type-mismatch` package warning (a database table's drift:
+ * `database-column-type-mismatch`) and tick
  * `publisher_storage_column_type_mismatch_total{stage="serve"}`. So does a
- * colocated table whose column type the bind found moved outside a build.
+ * database table whose column type the bind found moved outside a build.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -42,7 +43,7 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"] storage="lake"
+  #(rollup) grain=["cat"] storage="lake"
   measure: amount is amt.sum()
 }
 
@@ -127,9 +128,7 @@ function bindMistyped(pkg: Package): Record<string, string> {
          sourceName: source.name,
          physicalTableName: `t_${source.sourceEntityId.slice(0, 12)}`,
          storageDestinationName: destination,
-         ...(source.origin === "preaggregate"
-            ? { origin: "preaggregate" }
-            : {}),
+         ...(source.origin === "rollup" ? { origin: "rollup" } : {}),
          schema,
       };
    }
@@ -179,7 +178,7 @@ describe("a stored column whose type drifted", () => {
    });
 });
 
-const COLOCATED_MODEL = `##! experimental.persistence
+const DATABASE_MODEL = `##! experimental.persistence
 source: raw is duckdb.sql("""
   SELECT * FROM (VALUES (1, 'a', 1.0), (2, 'a', 2.0), (3, 'b', 4.0)) AS t(id, cat, amt)
 """) extend { primary_key: id }
@@ -193,24 +192,24 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"]
+  #(rollup) grain=["cat"]
   measure: amount is amt.sum()
 }
 `;
 
-describe("a colocated table whose column type moved outside a build", () => {
+describe("a database table whose column type moved outside a build", () => {
    it("warns and counts as a storage= table does, once per table", async () => {
       const envPath = path.join(rootDir, "env");
       writePackageFiles(
          path.join(envPath, "pkg"),
-         { "model.malloy": COLOCATED_MODEL },
+         { "model.malloy": DATABASE_MODEL },
          { manifest: { name: "pkg", description: "fixture" } },
       );
       const env = await Environment.create("testEnv", envPath, [] as never);
       await env.addPackage("pkg");
       const pkg = await env.getPackage(parsePackageName("pkg"), false);
 
-      // Each planned colocated table as its build captured it, and as the
+      // Each planned database table as its build captured it, and as the
       // bind reads it now: its first number column altered to VARCHAR.
       const entries: Record<string, Record<string, unknown>> = {};
       const observed = new Map<
@@ -245,13 +244,19 @@ describe("a colocated table whose column type moved outside a build", () => {
       // A rollup's plan source is its own; the warning names its base.
       expect(Object.keys(moved)).toHaveLength(3);
       pkg.materialization().bind({
-         colocated: entries as never,
-         colocatedAsGiven: true,
+         database: entries as never,
+         databaseAsGiven: true,
          observed,
       });
 
-      const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "storage-column-type-mismatch",
+      const all = pkg.getPackageMetadata().warnings ?? [];
+      // The database tier's drift has its own code; the storage tier's code
+      // names no database table.
+      expect(
+         all.filter((w) => w.code === "storage-column-type-mismatch"),
+      ).toEqual([]);
+      const warnings = all.filter(
+         (w) => w.code === "database-column-type-mismatch",
       );
       const bySubject = new Map(warnings.map((w) => [w.subject, w.message]));
       expect([...bySubject.keys()].sort()).toEqual([
@@ -282,12 +287,12 @@ describe("a colocated table whose column type moved outside a build", () => {
    });
 });
 
-describe("a colocated table read again after a transient failure", () => {
+describe("a database table read again after a transient failure", () => {
    it("counts a drifted table once, not again on the retry", async () => {
       const envPath = path.join(rootDir, "env");
       writePackageFiles(
          path.join(envPath, "pkg"),
-         { "model.malloy": COLOCATED_MODEL },
+         { "model.malloy": DATABASE_MODEL },
          { manifest: { name: "pkg", description: "fixture" } },
       );
       const env = await Environment.create("testEnv", envPath, [] as never);
@@ -338,8 +343,8 @@ describe("a colocated table read again after a transient failure", () => {
             ]),
          );
       mz.bind({
-         colocated: entries as never,
-         colocatedAsGiven: true,
+         database: entries as never,
+         databaseAsGiven: true,
          observed,
       });
       expect(mz.hasUnreadDatabaseTables()).toBe(true);
