@@ -1257,12 +1257,12 @@ source: gated is orders_raw -> {
             // The extension's own gate over the `scoped` table. A v1
             // extension inherits `#@ persist` and stores into that table under
             // its own gate, so plan admits the table past it on either tier
-            // (G3). A `#(materialize)` extension inherits nothing, and an
-            // ungated source's `storage=` table is not a G3 table: live.
+            // (G3). A `#(materialize)` extension inherits nothing, and its
+            // base's table holds only ungated rows, so it is a G3 table on
+            // every tier too (g-mixed, question 14): served.
             name: "an access-filtered extension",
             malloy: "run: gated_ext -> { group_by: status; aggregate: total }",
             givens: { REGION: "south", REGIONS: ["south", "west"] },
-            expect: { materialize: "live" },
          },
          {
             // Its own gate: read past it from the table on every tier (G3).
@@ -1281,7 +1281,6 @@ source: gated is orders_raw -> {
             name: "an access-filtered extension, another caller",
             malloy: "run: gated_ext -> { group_by: status; aggregate: total }",
             givens: { REGION: "west", REGIONS: ["west"] },
-            expect: { materialize: "live" },
          },
       ],
    },
