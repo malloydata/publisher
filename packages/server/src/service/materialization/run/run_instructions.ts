@@ -30,7 +30,7 @@ import {
 import { isPersistedQuerySourceID } from "../domain/table_plans";
 import { getPersistStorageMode } from "../../../config";
 import {
-   BadRequestError,
+   BuildInstructionsInvalidError,
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
@@ -1091,7 +1091,7 @@ export function validateInstructions(
    runReseed = false,
 ): void {
    if (!plan) {
-      throw new BadRequestError(
+      throw new BuildInstructionsInvalidError(
          "Package has no persist sources; buildInstructions cannot be applied",
       );
    }
@@ -1102,13 +1102,13 @@ export function validateInstructions(
 
    for (const instruction of instructions) {
       if (!plannedSourceEntityIds.has(instruction.sourceEntityId)) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Instruction references unknown sourceEntityId '${instruction.sourceEntityId}'`,
          );
       }
       // COPY-only for now; SNAPSHOT lands once clone semantics are defined.
       if (instruction.realization === "SNAPSHOT") {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             "realization=SNAPSHOT is not supported (COPY only)",
          );
       }
@@ -1171,7 +1171,7 @@ export function validateInstructions(
             ? `in storage destination '${entry.storageDestinationName}'`
             : `on connection '${entry.connectionName}'`);
       if (seen.has(key)) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry for table ${table} appears more than once`,
          );
       }
@@ -1192,20 +1192,20 @@ export function validateInstructions(
          if (entry.storageDestinationName === undefined && storedHere) {
             continue;
          }
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry names table ${table}, which this run's ` +
                `instructions do not build`,
          );
       }
       if (target.reseed) continue;
       if (target.refresh !== "incremental") {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry names table ${table}, whose source does not ` +
                `declare refresh="incremental"`,
          );
       }
       if (entry.sourceEntityId !== target.sourceEntityId) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry for table ${table} was measured under a ` +
                `different definition of its source (its sourceEntityId does ` +
                `not match the plan's) — expected after a publish or ` +

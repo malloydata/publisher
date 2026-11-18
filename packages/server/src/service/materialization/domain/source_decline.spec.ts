@@ -24,7 +24,6 @@ describe("the decline reasons", () => {
          "cross_connection_unbuilt",
          "column_types",
          "no_declaration",
-         "range_not_found",
          "definition_not_parsed",
          "pair_join_not_found",
          "pair_not_compiled",

@@ -5,10 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { logger } from "../../../logger";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import type { BuildPlan, ManifestEntry } from "../domain/types";
-import {
-   keptTableWarnings,
-   TABLE_KEPT_AFTER_RENAME_CODE,
-} from "../package_warnings";
+import { keptTableWarnings, TABLE_KEPT_CODE } from "../package_warnings";
 import {
    KEPT_TABLES_KEY,
    keptTablesResolverFor,
@@ -925,7 +922,7 @@ describe("the kept list a loading package reads", () => {
    });
 });
 
-describe("the table-kept-after-rename warning", () => {
+describe("the table-kept warning", () => {
    it("names the table, where it is and why, with the source as its subject", () => {
       const plan = {
          sources: {
@@ -956,7 +953,8 @@ describe("the table-kept-after-rename warning", () => {
          {
             model: "models/sales.malloy",
             subject: "summary",
-            code: TABLE_KEPT_AFTER_RENAME_CODE,
+            code: TABLE_KEPT_CODE,
+            reason: "author_name",
             severity: "warn",
             message: expect.stringContaining(
                "table `named_t` on connection `warehouse` is no longer read",
@@ -964,7 +962,8 @@ describe("the table-kept-after-rename warning", () => {
          },
          {
             subject: "orders",
-            code: TABLE_KEPT_AFTER_RENAME_CODE,
+            code: TABLE_KEPT_CODE,
+            reason: "destination_missing",
             severity: "warn",
             message: expect.stringContaining(
                "in storage destination `old_lake`",
@@ -989,7 +988,7 @@ describe("the table-kept-after-rename warning", () => {
       ]);
       expect(warning).toMatchObject({
          subject: "summary",
-         code: TABLE_KEPT_AFTER_RENAME_CODE,
+         code: TABLE_KEPT_CODE,
          severity: "warn",
       });
       expect(warning.message).toContain(

@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import { Annotations } from "@malloydata/malloy";
 import {
+   codedLine,
+   codesOfLines,
    findingSeverity,
    indexNotePayload,
    isIndexNote,
@@ -565,5 +567,26 @@ describe("tagPayloadKeys", () => {
       expect(tagPayloadKeys("n=(1 sharing=x)")).toEqual(["n", "sharing"]);
       expect(tagPayloadKeys("'sharing'=x")).toEqual(["sharing"]);
       expect(tagPayloadKeys("@env.X= n=")).toEqual(["n"]);
+   });
+});
+
+describe("codesOfLines", () => {
+   it("reads each coded line's code, in order, each once", () => {
+      const message = [
+         codedLine("orders: storage= names nothing", "persist-invalid"),
+         "a line with no code",
+         codedLine("daily: unknown key merge_keys=", "persist-unknown-key"),
+         codedLine("again", "persist-invalid"),
+      ].join("\n");
+      expect(codesOfLines(message)).toEqual([
+         "persist-invalid",
+         "persist-unknown-key",
+      ]);
+   });
+
+   it("reads nothing from a message with no coded line", () => {
+      expect(codesOfLines("the model does not compile [see the log]")).toEqual(
+         [],
+      );
    });
 });

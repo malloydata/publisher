@@ -841,7 +841,7 @@ source: flights is duckdb.table('flights_raw') extend {
          path?.considered
             .filter((c) => c.kind === "rollup")
             .map((c) => c.reason),
-      ).toContain("CONTRACT");
+      ).toContain("ROW_LEVEL_GATE");
    });
 });
 

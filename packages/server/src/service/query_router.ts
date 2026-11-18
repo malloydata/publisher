@@ -36,6 +36,7 @@ import {
 import {
    recordQueryRoute,
    recordQueryRouteDuration,
+   routeLegOf,
    type RouteReason,
 } from "../materialization_metrics";
 
@@ -187,7 +188,7 @@ export async function routeQuery<Extra>(
    if (variants.some((v) => v.applicable)) {
       recordQueryRouteDuration(
          performance.now() - startedAt,
-         decision.served === "variant" ? decision.kind : "live",
+         routeLegOf(decision.served === "variant" ? decision.kind : "live"),
       );
    }
    if (recordMetrics) recordVariantRouting(decision.considered);
@@ -198,7 +199,7 @@ export async function routeQuery<Extra>(
  * One count per candidate the router considered, once the query is answered
  * (`publisher_query_route_total`). With `runFailed`, the variant it chose
  * failed at run time and the query was answered live, so that variant counts
- * as `fallback` with reason `RUN_FAILED`, not `used`. A candidate that did
+ * as `fallback` with reason `READ_FAILED`, not `used`. A candidate that did
  * not apply is not counted. When live answered a query the router counted a
  * candidate for, `live` counts as `used`.
  */
@@ -208,10 +209,11 @@ export function recordVariantRouting(
 ): void {
    for (const c of considered) {
       if (c.outcome === "used") {
-         if (runFailed) recordQueryRoute(c.kind, "fallback", "RUN_FAILED");
-         else recordQueryRoute(c.kind, "used", "NONE");
+         if (runFailed) {
+            recordQueryRoute(routeLegOf(c.kind), "fallback", "READ_FAILED");
+         } else recordQueryRoute(routeLegOf(c.kind), "used", "NONE");
       } else if (c.reason !== "not_applicable") {
-         recordQueryRoute(c.kind, "skipped", routeReasonOf(c));
+         recordQueryRoute(routeLegOf(c.kind), "skipped", routeReasonOf(c));
       }
    }
    const counted = considered.some((c) => c.reason !== "not_applicable");
@@ -225,11 +227,11 @@ export function recordVariantRouting(
 
 /**
  * The public reason for a skipped candidate: a gate it cannot keep is
- * `CONTRACT`; a decline is its code's `SkipReason`, and anything unexplained
+ * `ROW_LEVEL_GATE`; a decline is its code's `SkipReason`, and anything unexplained
  * is `MISSING_FIELD`, as the path report reads it.
  */
 function routeReasonOf(c: ConsideredVariant): RouteReason {
-   if (c.reason === "row_level_gate") return "CONTRACT";
+   if (c.reason === "row_level_gate") return "ROW_LEVEL_GATE";
    return declineOfCode(c.code)?.reason ?? "MISSING_FIELD";
 }
 

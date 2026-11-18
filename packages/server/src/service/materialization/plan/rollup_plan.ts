@@ -114,7 +114,7 @@ import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import {
    ROLLUP_INVALID_CODE,
    DEPRECATED_PREAGGREGATE_ANNOTATION_CODE,
-   PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+   ROLLUP_NAMESPACE_DEPRECATED_CODE,
    ROLLUP_NOT_BUILT_CODE,
    ROLLUP_ROUTE_KEYS,
    routeOfNote,
@@ -819,7 +819,7 @@ function rollupDeclarationsOf(
             deprecationWarned.add(key);
             refused.push({
                tier: "deprecated",
-               code: PREAGGREGATE_NAMESPACE_DEPRECATED_CODE,
+               code: ROLLUP_NAMESPACE_DEPRECATED_CODE,
                message: `Measure "${decl.measure}" of source "${sourceName}" places its rollup with namespace="${decl.namespace}": ${namespaceRewrite(decl.namespace)}.`,
                sourceName,
                measure: decl.measure,
@@ -1421,7 +1421,7 @@ function rollupMeasureOf(
       if (joinProblem) break;
    }
    if (joinProblem) {
-      return unservable("join_level", decl, joinProblem);
+      return unservable("join_not_in_grain", decl, joinProblem);
    }
    const columns =
       d.leaves.length === 1
@@ -1430,7 +1430,7 @@ function rollupMeasureOf(
    const clash = columns.find((c) => byName.has(c));
    if (clash) {
       return unservable(
-         "name_clash",
+         "partial_name_collision",
          decl,
          `the source already has a field named \`${clash}\`, the column its partial is stored as`,
       );

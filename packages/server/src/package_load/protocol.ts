@@ -198,12 +198,14 @@ export interface SerializedModel {
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
    /**
-    * Non-fatal `#(authorize)` load-time findings, logged by the main thread:
-    * a gate inherited (judged by shared note object, not by text) at an entry
-    * point where it cannot be expressed. The model still serves; that entry
-    * point denies every request (`Model.resolveGateShape`).
+    * Non-fatal gate findings at load (`GateLoadWarning`), logged by the main
+    * thread and carried on the package's warnings: a gate inherited (judged
+    * by shared note object, not by text) at an entry point where it cannot be
+    * expressed, so that entry point denies every request
+    * (`Model.resolveGateShape`), or a source-line gate that reads no given or
+    * negates a membership test. The model still serves.
     */
-   authorizeWarnings?: string[];
+   gateWarnings?: { sourceName: string; code: string; message: string }[];
    /**
     * Prepared `Malloy.Result`s for the model's render-tag targets, for the
     * main thread's tag validation (the renderer cannot load in the worker,

@@ -9,7 +9,7 @@
  * as a `name=` does under `scope: "version"`; the hash, and so uniqueness,
  * stays Publisher's. On `#(rollup)` and `#@ preaggregate` alike.
  * `namespace=`, the older spelling of the container, is read for one more
- * release with a `deprecated-preaggregate-namespace` warning, in the same
+ * release with a `deprecated-rollup-namespace` warning, in the same
  * container under the readable prefix. A
  * rollup with no placement of its own inherits its base's database `name=`
  * container, from `#@ persist` or `#(materialize)`, so the two spellings land
@@ -133,17 +133,17 @@ describe("a rollup's name= places its table", () => {
          expect(d?.table).toMatch(readable("analytics", "orders_by_category"));
          expect(
             findingsOf(spaced.compiled).filter(
-               ([c]) => c === "deprecated-preaggregate-namespace",
+               ([c]) => c === "deprecated-rollup-namespace",
             ),
-         ).toEqual([["deprecated-preaggregate-namespace", "orders.total"]]);
+         ).toEqual([["deprecated-rollup-namespace", "orders.total"]]);
          const warning = (spaced.compiled.annotationFindings ?? []).find(
-            (f) => f.code === "deprecated-preaggregate-namespace",
+            (f) => f.code === "deprecated-rollup-namespace",
          );
          expect(warning?.tier).toBe("deprecated");
          expect(warning?.message).toContain('name="analytics.<table>"');
          expect(
             findingsOf(named.compiled).filter(
-               ([c]) => c === "deprecated-preaggregate-namespace",
+               ([c]) => c === "deprecated-rollup-namespace",
             ),
          ).toEqual([]);
       }

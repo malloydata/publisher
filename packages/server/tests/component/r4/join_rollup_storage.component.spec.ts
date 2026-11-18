@@ -559,7 +559,7 @@ source: open_flights is duckdb.table('flights_raw') extend {
       expectNotFromRollup(run);
       expect(run.served.map((r) => r.carrier)).toEqual(["AA"]);
       expect(await rollupReasons(fixture, malloy, { CARRIER: "AA" })).toContain(
-         "CONTRACT",
+         "ROW_LEVEL_GATE",
       );
    });
 
