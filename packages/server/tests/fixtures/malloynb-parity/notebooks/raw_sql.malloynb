@@ -1,0 +1,7 @@
+>>>malloy
+import "../models/orders.malloy"
+source: raw is duckdb.sql("select 1 as one")
+>>>malloy
+run: raw -> { aggregate: c is count() }
+>>>malloy
+run: orders -> { aggregate: order_count }
