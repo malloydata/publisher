@@ -131,8 +131,9 @@ timeout-minutes: 30
 The organization variable `CREDIBLE_RUNNERS` is the kill switch: set it to `false` and every such job
 goes back to GitHub's runners with no PR. On them: `build.yml`'s jobs, every Linux job of
 `cross-platform-tests.yml` (seven test jobs and the gate per PR), `app-playwright.yml`, the Trivy jobs in `security-scan.yml` and
-`image-scan.yml` (amd64 build only), and `python-sdk.yml` when `build.yml` calls it (not when
-`release.yml` does). `docker_smoke_test` reads a registry layer cache there and writes it only from
+`image-scan.yml` (amd64 build only), `python-sdk.yml` when `build.yml` calls it (not when
+`release.yml` does), `release-sync.yml`, `skills-npm.yml`'s tarball check (not its publish job), and
+`hammer-nightly.yml`. `docker_smoke_test` reads a registry layer cache there and writes it only from
 `main`, through the `layer-cache-writer` identity bound to `main`'s OIDC subject.
 
 **Keep off them:** any job that uses a repository or organization secret, holds `id-token: write`
@@ -143,6 +144,17 @@ Actions cache (setup-bun's `no-cache: true`): any `main` job, here or on GitHub'
 (a reclaimed job fails "The operation was canceled." and a rerun covers it);
 `credible-ubuntu-24.04-ondemand` is the label for a job that must not be interrupted. Package
 installs go through pull-through caches whose credentials last an hour from job start.
+
+**Every `bun install` runs through `scripts/ci-install-with-retry.sh`**, in the composite action and
+in each workflow that installs on its own. The npm mirror intermittently answers a tarball GET with
+401 or 403 well inside that hour (one was seen 35 seconds after the job-started hook set it up), and
+with about seven installing jobs per PR, one such answer failed a PR or `main` often. The script
+re-runs the same command, unchanged, up to three attempts (15 s, then 45 s apart), against the same
+registry: it adds no fallback registry and touches no runner configuration, so a retried install
+resolves exactly what the first would have, which is why the publishing jobs use it too. A retry that
+rescues a job leaves a `Package install retried` warning annotation on the run, so a mirror that is
+getting worse stays visible instead of being absorbed; report a run of those to the runners' owners.
+A new install step should use the script too.
 
 ## Publishing
 

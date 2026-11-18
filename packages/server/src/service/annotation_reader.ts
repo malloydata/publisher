@@ -248,6 +248,7 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "refresh",
    "watermark",
    "merge_key",
+   "lookback",
    "freshness",
    "queryMetadata",
 ]);
@@ -298,6 +299,7 @@ export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
    "refresh",
    "watermark",
    "merge_key",
+   "lookback",
    "freshness",
    "queryMetadata",
    "inline",

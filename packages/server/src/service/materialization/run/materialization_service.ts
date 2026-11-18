@@ -1039,6 +1039,11 @@ export class MaterializationService {
                ledger: opts.ledger,
             },
          );
+         // What earlier deltas found missing, from the manifest bound now;
+         // a delta or skip carries it until a rebuild.
+         if (incremental) {
+            incremental.priorLateRows = pkg.boundLateRows?.();
+         }
 
          const derived = await this.deriveRunInstructions(
             run,

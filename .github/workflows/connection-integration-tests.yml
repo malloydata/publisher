@@ -170,7 +170,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Install dependencies
-        run: bun install
+        run: scripts/ci-install-with-retry.sh bun install
 
       - name: Setup BigQuery credentials
         env:
@@ -277,14 +277,15 @@ jobs:
       # leftover views, the rebind and stale-chain races, and the Postgres
       # tiers of the database served-copy specs (a database table altered
       # after its build among them, and a stored time truncation, which is not
-      # drift), and rollup conformance on a Postgres origin, built in Postgres
-      # and in a DuckLake destination.
+      # drift), rollup conformance on a Postgres origin, built in Postgres
+      # and in a DuckLake destination, and an incremental delta reading rows
+      # that land late.
       - name: Run Postgres-gated materialization tests
         env:
           PUBLISHER_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/malloy_test
         run: |
           cd packages/server
-          bun test --timeout 200000 --max-workers=1 ./src/service/materialization/run/v1_cutover_postgres.spec.ts ./src/service/materialization/run/leftover_name_views_postgres.spec.ts ./tests/component/materialization_key_check_rebind.component.spec.ts ./tests/component/materialization_stale_chain.component.spec.ts ./tests/integration/materialization/cross_package_tables.integration.spec.ts ./tests/integration/materialization/storage_postgres_native_types.integration.spec.ts ./tests/integration/materialization/storage_postgres_decimal_precision.integration.spec.ts ./tests/integration/materialization/storage_sandbox_source.integration.spec.ts ./tests/integration/materialization/storage_ducklake_postgres_bigint.integration.spec.ts ./src/service/materialization/run/database_served_copy.spec.ts ./tests/component/r4/database_storage_parity.component.spec.ts ./tests/component/r4/served_big_integers.component.spec.ts ./tests/component/r4/served_copy_database.component.spec.ts ./tests/component/r4/served_copy_pair_counts.component.spec.ts ./tests/component/r4/materialize_storage_type_drift.component.spec.ts ./tests/component/database_table_alter_at_bind.component.spec.ts ./tests/component/database_truncation_types.component.spec.ts ./tests/component/materialization_rollup_over_incremental_base.component.spec.ts ./tests/component/database_table_drift_substituted.component.spec.ts ./tests/component/database_table_drift_value_loss.component.spec.ts ./tests/component/r4/rollup_postgres_parity.component.spec.ts
+          bun test --timeout 200000 --max-workers=1 ./src/service/materialization/run/v1_cutover_postgres.spec.ts ./src/service/materialization/run/leftover_name_views_postgres.spec.ts ./tests/component/materialization_key_check_rebind.component.spec.ts ./tests/component/materialization_stale_chain.component.spec.ts ./tests/integration/materialization/cross_package_tables.integration.spec.ts ./tests/integration/materialization/storage_postgres_native_types.integration.spec.ts ./tests/integration/materialization/storage_postgres_decimal_precision.integration.spec.ts ./tests/integration/materialization/storage_sandbox_source.integration.spec.ts ./tests/integration/materialization/storage_ducklake_postgres_bigint.integration.spec.ts ./src/service/materialization/run/database_served_copy.spec.ts ./tests/component/r4/database_storage_parity.component.spec.ts ./tests/component/r4/served_big_integers.component.spec.ts ./tests/component/r4/served_copy_database.component.spec.ts ./tests/component/r4/served_copy_pair_counts.component.spec.ts ./tests/component/r4/materialize_storage_type_drift.component.spec.ts ./tests/component/database_table_alter_at_bind.component.spec.ts ./tests/component/database_truncation_types.component.spec.ts ./tests/component/materialization_rollup_over_incremental_base.component.spec.ts ./tests/component/database_table_drift_substituted.component.spec.ts ./tests/component/database_table_drift_value_loss.component.spec.ts ./tests/component/r4/rollup_postgres_parity.component.spec.ts ./tests/component/materialization_incremental_late_rows.component.spec.ts
 
       # The storage= build's warehouse read reaches BigQuery job records the unit
       # suite cannot: bigquery_execute's returned job id, the child job a
