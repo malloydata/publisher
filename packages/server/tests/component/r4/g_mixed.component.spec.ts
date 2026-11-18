@@ -233,12 +233,14 @@ const CASES: Case[] = [
          `run: ${p}_regional -> { group_by: region, status; aggregate: n } -> { group_by: region; aggregate: k is n.sum(), groups is count() }`,
       "region",
    ),
+   // A caller's own join: answered live, equal to live (the served copy
+   // keeps a caller join into a stored source off the table).
    ...both(
       "a caller join back to the ungated base",
       (p) =>
          `run: ${p}_regional extend { join_many: b is ${p}_orders on b.customer_id = customer_id } -> { group_by: region; aggregate: n, bn is b.count(), bt is b.total }`,
       "region",
-   ),
+   ).map((c): Case => ({ ...c, live: true })),
    ...both(
       "all() and exclude()",
       (p) =>
