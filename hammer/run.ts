@@ -19,6 +19,7 @@ import {
    mkdtempSync,
    readdirSync,
    rmSync,
+   writeFileSync,
 } from "fs";
 import os from "os";
 import path from "path";
@@ -45,6 +46,7 @@ import {
 import { PortAllocator, PortInUseError } from "./lib/ports";
 import { Rest } from "./lib/rest";
 import { log, setQuiet } from "./lib/util";
+import { buildReport } from "./lib/report";
 import {
    Assert,
    ATTENTION_TAG,
@@ -466,6 +468,7 @@ async function main(): Promise<void> {
       process.exit(broken.length ? 1 : 0);
    }
 
+   const startedAt = new Date();
    const repoRoot = path.resolve(import.meta.dir, "..");
    const workdir = mkdtempSync(path.join(os.tmpdir(), "publisher-hammer-"));
    const PRIMARY = "default";
@@ -1014,6 +1017,24 @@ async function main(): Promise<void> {
          (declaredOrder.get(b.scenario.id) ?? 0),
    );
    const failed = summarize(results, args.attentionOlderThan) || !!hardError;
+   // HAMMER_LOG_DIR (CI sets it): the run's result as JSON beside the logs,
+   // which `bun hammer/summary.ts` renders for the job summary.
+   const reportDir = process.env.HAMMER_LOG_DIR;
+   if (reportDir) {
+      const report = buildReport({
+         results,
+         knownRedTag: KNOWN_RED_TAG,
+         startedAt,
+         finishedAt: new Date(),
+         harnessError: hardError?.message,
+         materialize: process.env.PUBLISHER_MATERIALIZE,
+      });
+      mkdirSync(reportDir, { recursive: true });
+      writeFileSync(
+         path.join(reportDir, "hammer-report.json"),
+         `${JSON.stringify(report, null, 2)}\n`,
+      );
+   }
    process.exit(failed ? 1 : 0);
 }
 

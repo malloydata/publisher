@@ -95,6 +95,14 @@ a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
 `workflow_dispatch`. It is not a pull-request check and nothing depends on it. Two legs, one with
 `PUBLISHER_MATERIALIZE=true` and one with `false`, each upload their logs as an artifact.
 
+`nightly.yml` holds the nightly checks of issue #1897 other than the hammer, one job each, on a
+schedule (06:41 UTC) and `workflow_dispatch`. Its `upgrade` job runs `hammer/upgrade/run.ts`: the
+latest released server builds a fixture package's materializations, then `main`'s build must serve
+them unchanged from the same server root and data. Neither it nor `hammer-nightly.yml` holds a
+secret or is a pull-request check. Each job writes its job summary from a JSON report
+(`hammer-report.json`, `upgrade-report.json`) that is uploaded with the logs (the hammer's on every
+run, the upgrade's when it fails); post a nightly result from that report, never from raw logs.
+
 `main-thread-regression.yml` is the main-thread regression check
 (`packages/server/tests/perf/main-thread/README.md`): a storm-lite A/B of two server builds on
 one runner, added after Publisher 0.13.1 pinned the worker's main thread
