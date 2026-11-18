@@ -46,6 +46,12 @@ import { PortAllocator } from "../lib/ports";
 import { reapStaleContainers, startPostgres } from "../lib/postgres";
 import { Rest } from "../lib/rest";
 import { buildServerIfNeeded, startServer } from "../lib/server";
+import {
+   isReleaseVersion,
+   type ProbeRecord,
+   type UpgradeCheck,
+   type UpgradeReport,
+} from "../lib/upgrade_report";
 import { log, runOrThrow } from "../lib/util";
 
 const PACKAGE = "upgrade";
@@ -53,9 +59,10 @@ const MODEL = "upgrade.malloy";
 const ENV = "upgrade";
 
 /**
- * Wire values a release changed on purpose, mapped to today's spelling before
- * any comparison, so a rename is not read as a regression. Each entry names the
- * release that made the change.
+ * Wire values a release changed on purpose. A RELEASED server's values are
+ * mapped to today's spelling before they are compared, so a rename is not read
+ * as a regression; this checkout's values are not mapped, so a return to an
+ * old spelling on main fails. Each entry names the release that made it.
  */
 const KNOWN_DIFFERENCES = {
    /** `servedFrom` (0.15.0 renamed the colocated tier to database, #1859). */
@@ -157,42 +164,7 @@ const PROBES: Probe[] = [
    },
 ];
 
-export interface Check {
-   phase: string;
-   name: string;
-   ok: boolean;
-   detail?: string;
-}
-
-export interface ProbeRecord {
-   rows: Record<string, unknown>[];
-   servedFrom: string | null;
-   pathTier?: string;
-   /** Set when the query failed. */
-   error?: string;
-}
-
-export interface UpgradeReport {
-   version: 1;
-   ok: boolean;
-   fromVersion: string;
-   toVersion: string;
-   startedAt: string;
-   durationMs: number;
-   harnessError?: string;
-   checks: Check[];
-   probes: Record<
-      string,
-      {
-         route: string;
-         before?: ProbeRecord;
-         after?: ProbeRecord;
-         afterRebuild?: ProbeRecord;
-      }
-   >;
-   /** Informational: what this test saw but does not assert (see the header). */
-   notes: string[];
-}
+type Check = UpgradeCheck;
 
 interface Args {
    from?: string;
@@ -214,8 +186,16 @@ function parseArgs(argv: string[]): Args {
    return a;
 }
 
-const normalizeTier = (t: string | null | undefined): string | null =>
+/**
+ * A RELEASED server's tier in today's spelling. Only the released server's
+ * values go through this: this checkout's are asserted exactly, so a return
+ * to an old spelling on main fails.
+ */
+const releasedTier = (t: string | null | undefined): string | null =>
    t ? (KNOWN_DIFFERENCES.servedFrom[t] ?? t) : null;
+
+/** Every request this test makes gives up after this long. */
+const FETCH_TIMEOUT_MS = 60_000;
 
 /** Rows compared as JSON, so a number and its string spelling differ. */
 const same = (a: unknown, b: unknown): boolean =>
@@ -231,6 +211,7 @@ async function queryProbe(rest: Rest, malloy: string): Promise<ProbeRecord> {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ query: malloy, compactJson: true }),
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
          },
       );
       const json = (await raw.json()) as {
@@ -259,7 +240,11 @@ async function attempt<T>(
 }
 
 async function statusErrors(rest: Rest): Promise<unknown[]> {
-   const s = (await (await fetch(`${rest.baseUrl}/api/v0/status`)).json()) as {
+   const s = (await (
+      await fetch(`${rest.baseUrl}/api/v0/status`, {
+         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      })
+   ).json()) as {
       loadErrors?: unknown[];
    };
    return s.loadErrors ?? [];
@@ -267,6 +252,12 @@ async function statusErrors(rest: Rest): Promise<unknown[]> {
 
 async function main(): Promise<void> {
    const args = parseArgs(process.argv.slice(2));
+   if (args.from !== undefined && !isReleaseVersion(args.from)) {
+      console.error(
+         `--from must be a release version (x.y.z or x.y.z-pre), got ${JSON.stringify(args.from)}`,
+      );
+      process.exit(2);
+   }
    const started = new Date();
    const repoRoot = path.resolve(import.meta.dir, "..", "..");
    const logDir = process.env.HAMMER_LOG_DIR;
@@ -305,13 +296,16 @@ async function main(): Promise<void> {
       // run through npx's shared cache, so the version is exact and the
       // process is the server itself (npx would sit between it and SIGTERM).
       if (!fromVersion) {
-         const r = await runOrThrow([
-            "npm",
-            "view",
-            "@malloy-publisher/server@latest",
-            "version",
-         ]);
-         fromVersion = r.stdout.trim();
+         const r = await runOrThrow(
+            ["npm", "view", "@malloy-publisher/server@latest", "version"],
+            { timeoutMs: 60_000 },
+         );
+         const latest = r.stdout.trim();
+         if (!isReleaseVersion(latest))
+            throw new Error(
+               `npm view returned ${JSON.stringify(latest)}, not a release version`,
+            );
+         fromVersion = latest;
       }
       log.step(`installing @malloy-publisher/server@${fromVersion}`);
       const releasedDir = path.join(workdir, "released");
@@ -326,7 +320,7 @@ async function main(): Promise<void> {
             "--loglevel=error",
             `@malloy-publisher/server@${fromVersion}`,
          ],
-         { cwd: releasedDir },
+         { cwd: releasedDir, timeoutMs: 10 * 60_000 },
       );
       const releasedEntry = path.join(
          releasedDir,
@@ -415,6 +409,7 @@ async function main(): Promise<void> {
       // (KNOWN_DIFFERENCES); asked of its --help, not of its version number.
       const help = await runOrThrow(["node", releasedEntry, "--help"], {
          cwd: workdir,
+         timeoutMs: 60_000,
       });
       const legacyFlags = !/--root\b/.test(help.stdout + help.stderr);
       if (legacyFlags)
@@ -455,15 +450,27 @@ async function main(): Promise<void> {
       // recorded.
       const before = await boot("released", true, true);
       const phase1 = `before (${fromVersion})`;
+      const errsBefore = await statusErrors(before.rest);
       check(
          phase1,
          "starts with no load errors",
-         same(await statusErrors(before.rest), []),
-         JSON.stringify(await statusErrors(before.rest)),
+         same(errsBefore, []),
+         JSON.stringify(errsBefore),
       );
-      const firstBuild = await before.rest.build(PACKAGE);
-      check(phase1, "builds the package", true);
+      const built = await attempt(() => before.rest.build(PACKAGE));
+      check(
+         phase1,
+         "builds the package",
+         built.ok,
+         built.ok ? undefined : built.error,
+      );
+      // Nothing after this means anything without the first build.
+      if (!built.ok) throw new Error("the released server's build failed");
+      const firstBuild = built.value;
       await pg.sql("up_source", MUTATION);
+      // Probes whose stored answer differed from live before the upgrade:
+      // only for these can equal rows afterwards show the table still binds.
+      const stale = new Set<string>();
       for (const p of PROBES) {
          const rec = await queryProbe(before.rest, p.query);
          const live = await queryProbe(before.rest, p.live);
@@ -472,12 +479,15 @@ async function main(): Promise<void> {
          // after the upgrade rests on: the data changed after the build, so
          // only a stored table can still give the old answer, and were the two
          // equal, equal rows after the upgrade would prove nothing.
-         check(
-            phase1,
-            `${p.id}: answered from its stored table (not live)`,
-            !same(rec.rows, live.rows),
-            `stored and live both ${JSON.stringify(rec.rows)}`,
-         );
+         if (
+            check(
+               phase1,
+               `${p.id}: answered from its stored table (not live)`,
+               !same(rec.rows, live.rows),
+               `stored and live both ${JSON.stringify(rec.rows)}`,
+            )
+         )
+            stale.add(p.id);
          // `servedFrom` is checked when the release reports it; some older
          // releases report no tier for a database table.
          if (rec.servedFrom === null)
@@ -486,7 +496,7 @@ async function main(): Promise<void> {
             check(
                phase1,
                `${p.id}: servedFrom names ${p.tier}`,
-               normalizeTier(rec.servedFrom) === p.tier,
+               releasedTier(rec.servedFrom) === p.tier,
                `servedFrom ${rec.servedFrom}`,
             );
       }
@@ -519,22 +529,28 @@ async function main(): Promise<void> {
          check(
             phase2,
             `${p.id}: still served from ${p.tier}`,
-            normalizeTier(rec.servedFrom) === p.tier,
+            rec.servedFrom === p.tier,
             rec.error
                ? `query failed: ${rec.error}`
                : `servedFrom ${rec.servedFrom}`,
          );
-         check(
-            phase2,
-            `${p.id}: same answer as before the upgrade`,
-            same(rec.rows, before.rows),
-            `before ${JSON.stringify(before.rows)}, after ${JSON.stringify(rec.rows)}`,
-         );
+         // Without the precondition (failed above) equal rows prove nothing.
+         if (stale.has(p.id))
+            check(
+               phase2,
+               `${p.id}: same answer as before the upgrade`,
+               same(rec.rows, before.rows),
+               `before ${JSON.stringify(before.rows)}, after ${JSON.stringify(rec.rows)}`,
+            );
+         else
+            notes.push(
+               `${p.id}: answer not compared after the upgrade, since before it the stored and live answers were the same`,
+            );
          if (before.pathTier && rec.pathTier)
             check(
                phase2,
                `${p.id}: path report names the same tier`,
-               normalizeTier(rec.pathTier) === normalizeTier(before.pathTier),
+               rec.pathTier === releasedTier(before.pathTier),
                `before ${before.pathTier}, after ${rec.pathTier}`,
             );
       }
@@ -581,16 +597,19 @@ async function main(): Promise<void> {
       );
       // Whether that build carried each old table forward or wrote a new one
       // is the content address's business (see the header): reported only.
+      // Told apart only where the stored answer was stale before: the old
+      // table still gives the old rows, a new one the changed data.
       for (const p of PROBES) {
+         if (!stale.has(p.id)) continue;
          const rec = await queryProbe(after.rest, p.query).catch(() => null);
          if (!rec) continue;
-         notes.push(
-            `${p.id}: the ordinary build ${
-               same(rec.rows, probes[p.id].before!.rows)
-                  ? "answers as before it (the table carried forward)"
-                  : "answers differently (a new table)"
-            }`,
-         );
+         const live = await queryProbe(after.rest, p.live).catch(() => null);
+         const verdict = same(rec.rows, probes[p.id].before!.rows)
+            ? "kept serving the old table (carried forward)"
+            : live && same(rec.rows, live.rows)
+              ? "serves a new table with the changed data"
+              : "serves neither the old answer nor the live one";
+         notes.push(`${p.id}: after the ordinary build, ${verdict}`);
       }
       const forced = await attempt(() =>
          after.rest.build(PACKAGE, { forceRefresh: true }),
@@ -608,7 +627,7 @@ async function main(): Promise<void> {
          check(
             "rebuild",
             `${p.id}: served from ${p.tier}`,
-            normalizeTier(rec.servedFrom) === p.tier,
+            rec.servedFrom === p.tier,
             `servedFrom ${rec.servedFrom}`,
          );
          check(
@@ -627,12 +646,20 @@ async function main(): Promise<void> {
          mkdirSync(logDir, { recursive: true });
          for (const f of ["released.log", "current.log"]) {
             const src = path.join(workdir, f);
+            // A log that cannot be copied must not cost the report.
             if (existsSync(src))
-               await cp(src, path.join(logDir, `upgrade-${f}`));
+               await cp(src, path.join(logDir, `upgrade-${f}`)).catch(
+                  (e: Error) => log.err(`could not keep ${f}: ${e.message}`),
+               );
          }
       }
       if (args.keep) log.info(`--keep: left ${workdir}`);
-      else rmSync(workdir, { recursive: true, force: true });
+      else
+         try {
+            rmSync(workdir, { recursive: true, force: true });
+         } catch (e) {
+            log.err(`could not remove ${workdir}: ${(e as Error).message}`);
+         }
    }
 
    const report: UpgradeReport = {

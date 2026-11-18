@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 // Render the upgrade test's report (upgrade-report.json, which run.ts writes
-// into HAMMER_LOG_DIR) as Markdown on stdout, for a CI job summary.
+// into HAMMER_LOG_DIR) as Markdown on stdout, for a CI job summary. The
+// rendering is hammer/lib/upgrade_report.ts, where it is unit-tested.
 //
 //   bun hammer/upgrade/summary.ts <report.json>
 //
@@ -11,67 +12,26 @@
 // one, and exits 0: the job's own result already says it failed.
 
 import { existsSync, readFileSync } from "fs";
-import type { UpgradeReport } from "./run";
+import {
+   mdText,
+   renderUpgradeMarkdown,
+   type UpgradeReport,
+} from "../lib/upgrade_report";
 
-const cell = (text: string, max = 300): string => {
-   const flat = text.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
-   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-};
-
-export function renderUpgradeMarkdown(r: UpgradeReport): string {
-   const failed = r.checks.filter((c) => !c.ok);
-   const lines = [
-      `### Upgrade ${r.fromVersion} → main (${r.toVersion}): ${r.ok ? "passed" : "FAILED"}`,
-      "",
-      `${r.checks.length - failed.length}/${r.checks.length} checks passed; ` +
-         `${(r.durationMs / 60_000).toFixed(1)} min. Released server: ` +
-         `\`@malloy-publisher/server@${r.fromVersion}\`.`,
-   ];
-   if (r.harnessError)
-      lines.push("", `**Harness error:** ${cell(r.harnessError, 1000)}`);
-   if (failed.length) {
-      lines.push("", "| Phase | Check | Detail |", "| --- | --- | --- |");
-      for (const c of failed)
-         lines.push(
-            `| ${cell(c.phase, 80)} | ${cell(c.name, 120)} | ${cell(c.detail ?? "")} |`,
-         );
-   }
-   lines.push(
-      "",
-      "| Probe | Route | Before | After | After rebuild |",
-      "| --- | --- | --- | --- | --- |",
-   );
-   for (const [id, p] of Object.entries(r.probes)) {
-      const tier = (x?: { servedFrom: string | null; error?: string }) =>
-         !x ? "–" : x.error ? "error" : (x.servedFrom ?? "not reported");
-      lines.push(
-         `| \`${id}\` | ${cell(p.route, 80)} | ${tier(p.before)} | ${tier(p.after)} | ${tier(p.afterRebuild)} |`,
-      );
-   }
-   if (r.notes.length) {
-      lines.push("", "<details><summary>Notes</summary>", "");
-      for (const n of r.notes) lines.push(`- ${n}`);
-      lines.push("", "</details>");
-   }
-   return `${lines.join("\n")}\n`;
+const [file] = process.argv.slice(2);
+if (!file) {
+   console.error("Usage: bun hammer/upgrade/summary.ts <report.json>");
+   process.exit(2);
 }
-
-if (import.meta.main) {
-   const [file] = process.argv.slice(2);
-   if (!file) {
-      console.error("Usage: bun hammer/upgrade/summary.ts <report.json>");
-      process.exit(2);
-   }
-   let report: UpgradeReport | undefined;
-   try {
-      if (existsSync(file))
-         report = JSON.parse(readFileSync(file, "utf8")) as UpgradeReport;
-   } catch {
-      report = undefined;
-   }
-   process.stdout.write(
-      report
-         ? renderUpgradeMarkdown(report)
-         : `### Upgrade: no report\n\nThe run ended before it wrote ${file} (a crash, a kill or the job timeout). See the log artifact.\n`,
-   );
+let report: UpgradeReport | undefined;
+try {
+   if (existsSync(file))
+      report = JSON.parse(readFileSync(file, "utf8")) as UpgradeReport;
+} catch {
+   report = undefined;
 }
+process.stdout.write(
+   report
+      ? renderUpgradeMarkdown(report)
+      : `### Upgrade: no report\n\nThe run ended before it wrote ${mdText(file)} (a crash, a kill or the job timeout). See the log artifact.\n`,
+);

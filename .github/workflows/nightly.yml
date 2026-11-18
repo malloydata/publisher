@@ -72,7 +72,14 @@ jobs:
           set -o pipefail
           mkdir -p "$HAMMER_LOG_DIR"
           args=()
-          if [ -n "$FROM" ]; then args+=(--from "$FROM"); fi
+          if [ -n "$FROM" ]; then
+            # The same rule run.ts applies: a release version, nothing else.
+            if ! [[ "$FROM" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::from must be a release version (x.y.z or x.y.z-pre)"
+              exit 1
+            fi
+            args+=(--from "$FROM")
+          fi
           bun hammer/upgrade/run.ts "${args[@]}" 2>&1 | tee "$HAMMER_LOG_DIR/upgrade.log"
       - name: Job summary
         if: always()
