@@ -882,6 +882,13 @@ paths:
         than serializing the response. Set PUBLISHER_MAX_QUERY_ROWS=0 to
         disable the cap. A caller-supplied rowLimit smaller than the cap is
         preserved; larger values are clamped down to cap+1.
+
+        On a DuckDB-backed connection (`duckdb`, including a package's
+        `duckdb` sandbox, `ducklake` and `motherduck`), `sqlStatement` runs
+        only as a single SELECT. Any other statement, more than one
+        statement, or SQL that does not parse answers 400 before anything
+        runs. `sqlSource` and `sqlTemporaryTable` apply the same rule to the
+        caller's SQL.
       parameters:
         - name: environmentName
           in: path
@@ -1293,7 +1300,8 @@ paths:
         resolved in the context of the named package, and returns the results.
 
         Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap as the
-        environment-level sqlQuery endpoint.
+        environment-level sqlQuery endpoint, and to the same single-SELECT
+        rule on a DuckDB-backed connection: any other statement answers 400.
       parameters:
         - name: environmentName
           in: path
@@ -8776,7 +8784,7 @@ components:
             indistinguishable from a storage hit at the call site, and treating it
             as one would report a healthy hit rate for a broken store. On
             `publisher_query_route_total` the same event is the answering leg's
-            `outcome="fallback", reason="RUN_FAILED"`.
+            `outcome="fallback", reason="READ_FAILED"`.
 
             Null means no materialized table answered: the query was served
             live. `path`, the path report, says why each table that could have
@@ -10224,9 +10232,15 @@ components:
             answers the same: only the server's metrics and log tell those
             apart. A 403 with any other reason is not a gate's.
 
-            MATERIALIZATION_REFUSED, on a 422, means a valid materialization
-            declaration this server will not build. The body's `refusalReason`
-            is the refusal's `RefusedSource.reason`.
+            MATERIALIZATION_REFUSED means a valid materialization declaration
+            this server will not build, and the body's `refusalReason` is the
+            refusal's `RefusedSource.reason`. Reserved: no route answers with
+            it today. The eligibility gate runs inside a materialization run,
+            after `POST …/materializations` has answered 201, so a refusal is
+            recorded on the run instead: as a `SourceFailure` with `refused`
+            and `refusalReason` on a run with `buildInstructions`, otherwise
+            in the run's `metadata.refusedSources`, or its `error` when
+            nothing else was left to build.
 
             TABLE_OWNED_ELSEWHERE and TABLE_OWNERSHIP_UNVERIFIED, on a 400,
             mean a build was refused before it wrote because its `name=` is
@@ -12108,7 +12122,8 @@ components:
             and bounds fail the same way on every attempt. It is reported for an
             eligibility refusal (always, beside `refused`), a Malloy or SQL
             compile defect (a syntax or parser error), a rejected credential or
-            missing grant (permission or access denied), and a source refused under
+            missing grant (a message that says permission or access denied), a
+            warehouse's own data or syntax error, and a source refused under
             `strictUpstreams` because a persisted upstream it reads failed
             deterministically earlier in the same run. That last source
             inherits its upstream's classification (`true` when any such
@@ -12116,6 +12131,20 @@ components:
             upstream's own failure. Also `false` for a source a strict build
             refused under `warehouseReach: refuse`, whose only build would
             recompute its stored upstreams from the warehouse.
+
+
+            A warehouse's own data or syntax error is one the warehouse names
+            as such: a Postgres or Snowflake SQLSTATE in class 22 (data
+            exception) or 42 (syntax error or access rule violation), or a
+            BigQuery `invalidQuery` or `invalid` job error, and a Postgres data
+            exception that reaches Publisher as text only (through a DuckDB
+            passthrough). Five SQLSTATEs in class 42 are left to the other rules:
+            a missing table or column (`42P01`, `42703`, `42S02`, `42S22`, and
+            a BigQuery `Unrecognized name` or `Not found`), which stays absent,
+            and `42501` (insufficient privilege). A Postgres `42501` still
+            reports `false`, because its message says permission denied; a
+            Snowflake `42501` stays absent. Transient codes (`40001`, `40P01`,
+            and BigQuery's backend and quota reasons) are never `false`.
 
 
             `true` is a transient failure, not a property of the inputs: the
@@ -12331,6 +12360,13 @@ components:
             Not a location: it does not name the table the rows came from.
             Absent for a source that reads no persisted upstream, which has one
             way to build and no choice to report.
+
+            A database rollup reports what its build actually read: `reused`
+            only when it built from its base's materialized table, and absent
+            when it built from the warehouse, even over a persisted base. Before
+            0.15.0 every rollup over a persisted base reported `reused`. A
+            `storage=` rollup reports `reused` only when it stacked on a stored
+            table.
         upstreamRecomputeReason:
           type: string
           description: >-
