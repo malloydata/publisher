@@ -10410,8 +10410,12 @@ components:
             against the replacement. It also reports the render-tag findings
             (code "render-tag") and the dashboard, given and drill findings
             (code "dashboard-lint") a reload would put on the package's
-            warnings, at their own severity and with no position. The
-            package's other warnings (storage, persist, materialization,
+            warnings, at their own severity and with no position, and the
+            load's verdict on the materialization annotations: each line a
+            load fails with as an error with its code, each annotation the
+            load leaves unbuilt as a warning ("file" reports the same verdict
+            when the file names a materialization route or the package plans
+            a table). The package's other warnings (storage, bound tables,
             explores, surface and discovery warnings, among others) are not
             reported. Package diagnostics can name
             files hidden from discovery. No rows or SQL are returned, and

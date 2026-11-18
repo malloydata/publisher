@@ -27,6 +27,11 @@ export interface VariantSkipExplanation {
     * summary.
     */
    members?: Readonly<Record<string, Omit<VariantSkipExplanation, "members">>>;
+   /**
+    * The tables the decline is about, by content address, when it is about
+    * some of the tables the leg read rather than all of them.
+    */
+   tableIds?: readonly string[];
 }
 
 type SkipReason = components["schemas"]["SkipReason"];
@@ -55,6 +60,9 @@ type SkipReason = components["schemas"]["SkipReason"];
  *   only live's join computes. `served_copy_joined_annotations`: the query
  *   returns a field of such a join that the author annotated, whose notes
  *   its record cannot carry, so the table lacks the field as live returns it.
+ * - `served_copy_column_left_out`: the query reads a stored column the
+ *   re-root leaves out of its table's type, since no cast reads what the
+ *   table holds as the source declares it.
  * - `served_copy_pair_shape`: the query aggregates a pair table (an inlined
  *   join_many, served flat) in a way that table does not reproduce exactly.
  * - `served_copy_pair_parent_only`: exact or not, a query that reads nothing
@@ -88,6 +96,7 @@ const DECLINES = {
    served_copy_opt_out: { reason: "OPTED_OUT" },
    served_copy_count_semantics: { reason: "COUNT_SEMANTICS" },
    served_copy_joined_annotations: { reason: "MISSING_FIELD" },
+   served_copy_column_left_out: { reason: "MISSING_FIELD" },
    served_copy_pair_shape: { reason: "COUNT_SEMANTICS" },
    served_copy_pair_parent_only: { reason: "COUNT_SEMANTICS" },
 } as const satisfies Record<string, { reason: SkipReason; code?: string }>;
@@ -118,6 +127,8 @@ export class LegDecline extends Error {
     * synthesized source name, with that rollup's own decline.
     */
    readonly members?: ReadonlyMap<string, LegDecline>;
+   /** See {@link VariantSkipExplanation.tableIds}. */
+   readonly tableIds?: readonly string[];
 
    constructor(
       readonly code: LegDeclineCode,
@@ -128,13 +139,18 @@ export class LegDecline extends Error {
          /** For logs only, when it says more than the caller's detail. */
          message?: string;
          members?: ReadonlyMap<string, LegDecline>;
+         tableIds?: readonly string[];
       } = {},
    ) {
       super(options.message ?? callerDetail ?? code);
       if (options.members && options.members.size > 0) {
          this.members = options.members;
       }
-      const decline: { reason: SkipReason; code?: string } = DECLINES[code];
+      if (options.tableIds && options.tableIds.length > 0) {
+         this.tableIds = options.tableIds;
+      }
+      const decline: { reason: SkipReason; code?: string } =
+         DECLINES[code];
       this.reason = decline.reason;
       this.candidateCode = decline.code;
       this.shapeCheck = options.shapeCheck ?? false;
@@ -151,13 +167,12 @@ export class LegDecline extends Error {
    }
 }
 
-/** Whether `error` is a decline of `leg`, or of any of `leg` when it lists several. */
+/** Whether `error` is a decline of `leg`. */
 export function isDeclineOf(
    error: unknown,
-   leg: DecliningLeg | readonly DecliningLeg[],
+   leg: DecliningLeg,
 ): error is LegDecline {
-   if (!(error instanceof LegDecline)) return false;
-   return typeof leg === "string" ? error.leg === leg : leg.includes(error.leg);
+   return error instanceof LegDecline && error.leg === leg;
 }
 
 /** The public reason and candidate code of a decline the router recorded by code. */
@@ -195,6 +210,7 @@ export function explanationOfDecline(
    });
    return {
       ...one(decline),
+      ...(decline.tableIds ? { tableIds: decline.tableIds } : {}),
       ...(decline.members
          ? {
               members: Object.fromEntries(

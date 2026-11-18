@@ -47,7 +47,7 @@ const RELOAD_DESCRIPTION = `Reload a package in a watched environment so edits t
 
 Receipt: a reload succeeds whether or not it saw your edit. sourceContentSha hashes the model, skill and agent files (and the manifest's agents), so if you edited one of those and it is unchanged, the edit never reached the server. Data, other publisher.json keys and retrieval settings are not hashed.
 
-${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface, discovery, deprecated .malloynb or #(filter), among others) appears only here.
+${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would, and what the load refuses or leaves unbuilt among the materialization annotations; every other package warning (storage, bound tables, explores, surface, discovery, deprecated .malloynb or #(filter), among others) appears only here.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names get_context returns.
