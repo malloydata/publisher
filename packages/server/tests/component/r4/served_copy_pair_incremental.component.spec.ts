@@ -475,16 +475,28 @@ describe("R4: an incremental pair table refreshed in place equals a full rebuild
       await expectServedEqualsLive(R2);
    });
 
-   it("leaves the table as it is when nothing moved", async () => {
-      const before = await rows(
-         `SELECT * FROM ${table("flights")} ORDER BY ALL`,
-      );
+   it("leaves the table as it is when nothing moved, the flag still once per parent", async () => {
+      const unflagged = (t: string) =>
+         rows(`SELECT * EXCLUDE (__parent_row) FROM ${t} ORDER BY ALL`);
+      const before = await unflagged(table("flights"));
       expect((await refresh("flights", "2026-11-12 06:00:00")).refresh).toBe(
          "delta",
       );
-      expect(
-         await rows(`SELECT * FROM ${table("flights")} ORDER BY ALL`),
-      ).toEqual(before);
+      // The delta starts at the newest stored watermark, inclusive, so it
+      // re-reads every parent stamped in that second (flight 1, whose late
+      // child set it at 04:00) and replaces it whole. Every row comes back
+      // as it was. The flag is the build's `row_number()` with no order, so
+      // which of a re-read parent's rows carries it is unspecified, as in a
+      // full build; what holds is one flagged row per parent.
+      expect(await unflagged(table("flights"))).toEqual(before);
+      const flags = await rows(
+         `SELECT id FROM ${table("flights")} GROUP BY id
+           HAVING count(*) FILTER (WHERE __parent_row) <> 1`,
+      );
+      expect(flags).toEqual([]);
+      // And parent-level measures, which read the flagged row, still equal
+      // live, beside every other served answer.
+      await expectServedEqualsLive("2026-11-12 06:00:00");
    });
 
    it("mutation: without the delete by parent key, the check rolls the delta back and the table is rebuilt in full", async () => {
