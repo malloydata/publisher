@@ -197,7 +197,7 @@ Three cases let a stored table answer a caller with rows live would not return t
 
 **Fixed: a composite source could be answered from a member live would not use.** A composite (`compose(a, b)`) answers a query from one of its members, and that member's own filters are part of the answer. Over `#(materialize)` sources, the stored copy of the model could resolve some queries to a different member than live, dropping a filter, including one that scopes rows to the caller's tenant. A served answer is now kept only when every composite it reaches resolves to the member live resolves it to; otherwise it is answered live.
 
-**Who was affected:** composite sources over `#(materialize)` sources, with materialization on. **How to tell:** such a query that the stored copy cannot prove equal now reports `served_copy_not_served` in its path report and is answered live.
+**Who was affected:** composite sources over `#(materialize)` sources, with materialization on. **How to tell:** such a query that the stored copy cannot prove equal is now skipped in its path report as `NOT_SERVED` with code `served_copy`, and is answered live.
 
 ## [Unreleased] — an unhandled rejection from a connection driver is logged, not fatal
 

@@ -260,8 +260,10 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       persist_col: "planned | database | awaiting_build",
       persist_sto: "planned | storage | awaiting_build",
       // P3/P4: a `storage=` rollup over its base's own gate, proven on its grain.
-      roll__rollup__category_region__b1b70c25: "planned | storage | awaiting_build",
-      roll__rollup__category_region__7617040b: "planned | database | awaiting_build",
+      roll__rollup__category_region__b1b70c25:
+         "planned | storage | awaiting_build",
+      roll__rollup__category_region__7617040b:
+         "planned | database | awaiting_build",
       roll_v1__rollup__region__b3ca2623: "planned | database | awaiting_build",
       views__by_region_col__view: "planned | database | awaiting_build",
       views__by_region_sto__view:
@@ -275,9 +277,11 @@ const PLAN_AND_VERDICT: Record<string, Record<string, Row>> = {
       persist_col: "planned | database | awaiting_build",
       persist_sto: "planned | storage | awaiting_build",
       // G3 for a database rollup: the base's own gate, proven on its grain.
-      roll__rollup__category_region__7617040b: "planned | database | awaiting_build",
+      roll__rollup__category_region__7617040b:
+         "planned | database | awaiting_build",
       // P3/P4: a `storage=` rollup over its base's own gate, proven on its grain.
-      roll__rollup__category_region__b1b70c25: "planned | storage | awaiting_build",
+      roll__rollup__category_region__b1b70c25:
+         "planned | storage | awaiting_build",
       roll_v1__rollup__region__b3ca2623: "planned | database | awaiting_build",
       views__by_region_col__view:
          "refused access_filter | database | live refused",
