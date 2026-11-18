@@ -4218,10 +4218,13 @@ paths:
             mark this route accepts, and the run `materializationId` names
             (terminal, of this package) does not record it on this
             connection; or who holds the name could not be read. A mark is
-            accepted only when it names this package and this very table: a
+            accepted only when it names this package and the very place the
+            warehouse's catalog says the name resolves to now (its fully
+            qualified location, recorded when the mark was written): a
             comment travels with a renamed, moved or cloned table, so such a
-            copy is treated as unmarked, as is a mark written before 0.16.0
-            (it names no table). Drop such a table passing the id of the run
+            copy, or another schema's table a search path finds first, is
+            treated as unmarked, as is a mark written before 0.16.0 (it names
+            no place). Drop such a table passing the id of the run
             that records it, before deleting that run's record.
           * 404 `TABLE_NOT_FOUND`: no table holds the name and no run record
             of this package names it on this connection, so nothing proves it

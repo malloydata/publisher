@@ -79,9 +79,9 @@ export const OWNED_TABLE_MARK = "malloy-publisher:table";
 
 /**
  * What a table's ownership mark says: the package that built it (`owner`,
- * `<environment>/<package>`) and, from 0.16.0, the table it was written on
- * (`table`, see {@link markedTableIdentity}). A mark an earlier release
- * wrote has no `table`.
+ * `<environment>/<package>`) and, from 0.16.0, where the table is (`table`,
+ * the fully qualified location the warehouse's catalog reports for it). A
+ * mark an earlier release wrote has no `table`.
  */
 interface OwnedTableMark {
    owner: string;
@@ -128,23 +128,6 @@ export function parseOwnedTableMark(
  */
 export function parseOwnedTableComment(comment: unknown): string | undefined {
    return parseOwnedTableMark(comment)?.owner;
-}
-
-/**
- * The table a mark names, as `segments` (the unquoted parts of its path at
- * its site) name it: the parts joined with dots, each lower-cased when
- * `caseInsensitive` (the dialect resolves a table name without regard to
- * case), as written otherwise. A mark that travels with
- * its table (a rename, a move to another schema, a copy that keeps comments)
- * then names another table than the one it is on.
- */
-export function markedTableIdentity(
-   segments: string[],
-   caseInsensitive: boolean,
-): string {
-   return segments
-      .map((part) => (caseInsensitive ? part.toLowerCase() : part))
-      .join(".");
 }
 
 /** The unquoted segments of a dotted table path. */

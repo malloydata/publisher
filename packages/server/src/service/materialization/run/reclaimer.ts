@@ -79,7 +79,6 @@ import {
    ownedElsewhere,
    markedFor,
    tableExistsAt,
-   tableIdentityAt,
    type TableHolder,
    withOwnedNameLock,
 } from "./table_ownership";
@@ -797,9 +796,9 @@ function sqlStateOf(err: unknown): string | undefined {
  * A caller's drop the warehouse refused for a reason the caller can act on,
  * answered with the reason it fits; undefined for any other failure (a 5xx).
  * Objects that depend on the table (Postgres 2BP01, DuckDB's "depend on it"):
- * `TABLE_IN_USE`. A connection not allowed to drop it (42501), or an object
- * that is not a table (42809): `TABLE_OWNED_ELSEWHERE`, since the connection
- * Publisher builds with does not hold it as a table of its own.
+ * `TABLE_IN_USE`. A connection not allowed to drop it (SQLSTATE 42501), or
+ * an object that is not a table (42809): `TABLE_OWNED_ELSEWHERE`, since the
+ * connection Publisher builds with does not hold it as a table of its own.
  */
 function dropRefusalOf(
    err: unknown,
@@ -814,14 +813,13 @@ function dropRefusalOf(
       );
    }
    const state = sqlStateOf(err);
-   if (
-      state === "42501" ||
-      /permission denied|must be (?:the )?owner/i.test(errMessage(err))
-   ) {
+   // By SQLSTATE alone: a message that says "permission denied" may be a
+   // file the database could not write (DuckDB, DuckLake), a server error.
+   if (state === "42501") {
       return new MaterializedTableDropRefusedError(
          "TABLE_OWNED_ELSEWHERE",
          `Table ${where} is not dropped (TABLE_OWNED_ELSEWHERE): the ` +
-            `connection is not allowed to drop it, so it is not a table this ` +
+            `connection may not drop it, so it is not a table this ` +
             `package's builds own.`,
       );
    }
@@ -1283,12 +1281,12 @@ export class Reclaimer {
       let holder: TableHolder;
       try {
          const segments = site.segments(physicalTableName);
-         // A mark is proof only on the table it names: a renamed, moved or
-         // copied table carries its source's mark (markedFor).
+         // A mark is proof only on the place it names, which the probe
+         // reads from the catalog wherever the name resolved: a renamed,
+         // moved or copied table carries its source's mark (markedFor).
          holder = markedFor(
             await site.run(ownedTableProbeSql(segments, site.dialect)),
             owner,
-            tableIdentityAt(segments, site.dialect),
          );
       } catch (err) {
          logger.warn("Could not read who holds a table a caller would drop", {
@@ -1336,14 +1334,10 @@ export class Reclaimer {
          );
       }
       const leftoversOf = evidence.recorded?.sourceEntityId;
+      const tier = { connection, runOptions };
       try {
-         await DATABASE.drop(
-            { connection, runOptions },
-            {
-               physicalTableName,
-               ...(leftoversOf ? { leftoversOf } : {}),
-            },
-         );
+         // The table alone: what the answer reports on.
+         await DATABASE.drop(tier, { physicalTableName });
       } catch (err) {
          recordDropTables("failure", "database", "caller");
          logger.warn(
@@ -1371,6 +1365,31 @@ export class Reclaimer {
          ...(materializationId ? { runId: materializationId } : {}),
          mark: holder.state,
       });
+      // Then the staging and backup copies a crashed build can leave,
+      // best-effort: the table is gone whatever comes of them, and a copy
+      // that cannot be dropped is logged and counted as a failed drop.
+      if (leftoversOf) {
+         for (const copy of [
+            `${physicalTableName}${stagingSuffix(leftoversOf)}`,
+            `${physicalTableName}${backupSuffix(leftoversOf)}`,
+         ]) {
+            await DATABASE.drop(tier, { physicalTableName: copy }).catch(
+               (err: unknown) => {
+                  recordDropTables("failure", "database", "caller");
+                  logger.warn(
+                     "Dropped a table at a caller's request, but not a build's leftover copy of it",
+                     {
+                        environmentName,
+                        packageName,
+                        connectionName,
+                        physicalTableName: copy,
+                        error: redacted(err),
+                     },
+                  );
+               },
+            );
+         }
+      }
       await this.forgetBoundaries(environmentId, [
          {
             sourceEntityId: leftoversOf ?? "",

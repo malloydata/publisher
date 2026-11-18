@@ -140,6 +140,17 @@ async function sql(text: string): Promise<Record<string, unknown>[]> {
    return (await connection.runSQL(text)).rows as Record<string, unknown>[];
 }
 
+/** Where DuckDB's catalog says `table` is, as a mark names it. */
+async function locationOf(table: string): Promise<string> {
+   return String(
+      (
+         await sql(
+            `SELECT database_name || '.' || schema_name || '.' || table_name AS loc FROM duckdb_tables() WHERE table_name = '${table}'`,
+         )
+      )[0]?.loc,
+   );
+}
+
 /** The planted table, as a reader of the warehouse sees it. */
 async function planted(): Promise<{ rows: unknown[]; comment: unknown }> {
    const rows = (await sql("SELECT who FROM named_t ORDER BY 1")).map(
@@ -290,7 +301,10 @@ describe("the database tier: a refused name= refuses its own source, and a twin 
       expect(outcome(m).built).toEqual(["named", "solo", "twin"]);
       expect(await planted()).toEqual({
          rows: ["live"],
-         comment: ownedTableComment(`${ENV}/${PKG}`, "named_t"),
+         comment: ownedTableComment(
+            `${ENV}/${PKG}`,
+            await locationOf("named_t"),
+         ),
       });
       // The tables Publisher named carry the package's mark too.
       for (const entry of Object.values(
@@ -305,7 +319,7 @@ describe("the database tier: a refused name= refuses its own source, and a twin 
             entry.sourceName,
             ownedTableComment(
                `${ENV}/${PKG}`,
-               entry.physicalTableName.toLowerCase(),
+               await locationOf(entry.physicalTableName),
             ),
          ]);
       }
@@ -397,6 +411,19 @@ describe("the build loop: one ownership decision per shared table", () => {
          runSQL: async (text: string) => {
             if (/duckdb_tables|information_schema/i.test(text)) {
                probes.push(text);
+               // Once a source has built, the table is there: the mark's
+               // probe reads where the catalog says it is.
+               if (built.length > 0) {
+                  return {
+                     rows: [
+                        {
+                           kind: "BASE TABLE",
+                           comment: holder,
+                           location: "memory.main.named_t",
+                        },
+                     ],
+                  };
+               }
                return {
                   rows:
                      holder === null
@@ -498,16 +525,17 @@ describe("the build loop: one ownership decision per shared table", () => {
 
    // Every database table a build writes is marked, not only an author's
    // name=, so a caller's drop can prove it is this package's once its run's
-   // record is gone. The mark is written after the build and probes nothing.
+   // record is gone. The mark is written after the build, naming where the
+   // catalog says the table is (one probe).
    for (const hostInstructed of [false, true]) {
       it(`marks a table no author named as this package's${hostInstructed ? ", on a host-instructed run" : ""}`, async () => {
          const h = harness(["twin"], null, { hostInstructed, twinOnly: true });
          const result = await h.run();
          expect(h.built).toEqual(["twin"]);
          expect(result.failures).toEqual({});
-         expect(h.probes).toEqual([]);
+         expect(h.probes).toHaveLength(1);
          expect(h.statements).toEqual([
-            `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`, "named_t")}'`,
+            `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`, "memory.main.named_t")}'`,
          ]);
       });
    }
@@ -534,7 +562,7 @@ describe("the build loop: one ownership decision per shared table", () => {
       expect(h.built).toEqual(["twin"]);
       expect(result.failures).toEqual({});
       expect(h.statements).toEqual([
-         `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`, "named_t")}'`,
+         `COMMENT ON TABLE "named_t" IS '${ownedTableComment(`${ENV}/${PKG}`, "memory.main.named_t")}'`,
       ]);
    });
 });

@@ -61,8 +61,8 @@ import {
 const ENV = "e1";
 const ENV_ID = "env-1";
 const PKG = "pa";
-/** This package's mark on `table` (lower-case names: DuckDB and Postgres agree). */
-const OWN = (table: string) => ownedTableComment(`${ENV}/${PKG}`, table);
+/** This package's mark, naming the place `location`. */
+const OWN = (location: string) => ownedTableComment(`${ENV}/${PKG}`, location);
 const OTHER = ownedTableComment(`${ENV}/pb`, "theirs_t");
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
 
@@ -249,6 +249,20 @@ for (const warehouse of WAREHOUSES) {
          >[];
       };
       const look = (table: string) => warehouse.look(sql, table);
+      /** Where the warehouse's catalog says `table` (in the default schema) is. */
+      const locate = async (table: string): Promise<string> => {
+         const rows =
+            warehouse.label === "Postgres"
+               ? await sql(
+                    `SELECT row_to_json(t) AS "row" FROM (SELECT current_database() || '.' || n.nspname || '.' || c.relname AS loc FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass('"${table}"')) t`,
+                 )
+               : await sql(
+                    `SELECT database_name || '.' || schema_name || '.' || table_name AS loc FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = current_schema() AND table_name = '${table}'`,
+                 );
+         const row = rows[0] as { row?: { loc: string }; loc?: string };
+         return String(row?.row?.loc ?? row?.loc);
+      };
+      const own = async (table: string) => OWN(await locate(table));
 
       async function settle(id: string): Promise<Materialization> {
          const deadline = Date.now() + 60_000;
@@ -399,7 +413,7 @@ for (const warehouse of WAREHOUSES) {
          // Publisher named it (no name=), and it carries the mark.
          expect(await look(table)).toEqual({
             exists: true,
-            comment: OWN(table),
+            comment: await own(table),
          });
 
          // Named by a committed run and bound: never dropped.
@@ -428,7 +442,7 @@ for (const warehouse of WAREHOUSES) {
          const m = await buildInstructed("cp_gen1");
          expect(await look("cp_gen1")).toEqual({
             exists: true,
-            comment: OWN("cp_gen1"),
+            comment: await own("cp_gen1"),
          });
          await expectReason(drop("cp_gen1"), "TABLE_IN_USE");
          await service.deleteMaterialization(ENV, PKG, m.id);
@@ -465,7 +479,7 @@ for (const warehouse of WAREHOUSES) {
          const table = tableOf(m, "summary");
          await service.deleteMaterialization(ENV, PKG, m.id);
          const mark = (await look(table)).comment;
-         expect(mark).toBe(OWN(table));
+         expect(mark).toBe(await own(table));
 
          // Copied, its comment with it (a clone, a copy that keeps comments).
          await sql(`CREATE TABLE prod_copy AS SELECT * FROM ${table}`);
@@ -489,6 +503,43 @@ for (const warehouse of WAREHOUSES) {
                "TABLE_OWNERSHIP_UNVERIFIED",
             );
          }
+      });
+
+      it("Postgres: a copy, or the table itself moved, into a schema earlier on the search path is refused for the bare name", async () => {
+         if (warehouse.label !== "Postgres") return;
+         const m = await build();
+         const summary = tableOf(m, "summary");
+         const byK = tableOf(m, "by_k");
+         await service.deleteMaterialization(ENV, PKG, m.id);
+         // The default search_path is "$user", public, and the user is
+         // `postgres`: a `postgres` schema now resolves bare names first.
+         await sql("CREATE SCHEMA postgres");
+
+         // A user's copy of by_k there, carrying by_k's mark.
+         const mark = String((await look(byK)).comment);
+         await sql(
+            `CREATE TABLE postgres.${byK} AS SELECT 'users copy' AS who`,
+         );
+         await sql(`COMMENT ON TABLE postgres.${byK} IS '${mark}'`);
+         await expectReason(drop(byK), "TABLE_OWNERSHIP_UNVERIFIED");
+         // Both are still there.
+         const where = async (table: string) =>
+            (
+               await sql(
+                  `SELECT row_to_json(t) AS "row" FROM (SELECT n.nspname AS ns FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = '${table}' ORDER BY 1) t`,
+               )
+            ).map(
+               (r) =>
+                  (r as { row?: { ns: string }; ns?: string }).row?.ns ??
+                  (r as { ns?: string }).ns,
+            );
+         expect(await where(byK)).toEqual(["postgres", "public"]);
+
+         // summary itself moved there: its mark names public, so the bare
+         // name, which now resolves to postgres, is not proven.
+         await sql(`ALTER TABLE public.${summary} SET SCHEMA postgres`);
+         await expectReason(drop(summary), "TABLE_OWNERSHIP_UNVERIFIED");
+         expect(await where(summary)).toEqual(["postgres"]);
       });
 
       it("a table other objects depend on is refused TABLE_IN_USE, and another holder is not named", async () => {
@@ -525,7 +576,7 @@ for (const warehouse of WAREHOUSES) {
             ).entries,
          )[0];
          const copy = `cp_a${backupSuffix(entry.sourceEntityId)}`;
-         await warehouse.plant(sql, copy, OWN(copy));
+         await warehouse.plant(sql, copy, OWN(`x.y.${copy}`));
          const schema = warehouse.label === "Postgres" ? "public" : "main";
          for (const name of [copy, `${schema}.${copy}`, copy.toUpperCase()]) {
             const err = await refused(drop(name));

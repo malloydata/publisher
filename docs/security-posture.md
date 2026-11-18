@@ -61,8 +61,9 @@ stands in front of Publisher and does all of the following:
      the package's materialization lifecycle. Publisher relies on the gateway for who may call it,
      and enforces ownership itself: whoever the gateway admits can drop only a database-tier table
      that a run record of the package names on that connection, or whose ownership mark names the
-     package and that very table (a mark copied onto another table by a rename, a move to another
-     schema or a clone proves nothing, and a mark from before 0.16.0 is not accepted). It never
+     package and the very place the warehouse's catalog says the requested name resolves to now
+     (a mark copied onto another table by a rename, a move to another schema, a clone, or a copy
+     a search path finds first proves nothing, and a mark from before 0.16.0 is not accepted). It never
      drops one that a committed run of the package, a loaded package's binding or an active run
      still uses, or that another package marked
      ([the drop route](materialization.md#the-drop-route)). Two limits remain. The in-use check

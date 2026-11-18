@@ -237,7 +237,8 @@ describe.skipIf(!url)("tables of packages that share a schema", () => {
          marks.filter((r) => /__summary__p[0-9a-f]{8}$/.test(String(r.name))),
       ).toHaveLength(4);
       expect(marks.find((r) => r.name === "named_t")?.comment).toBe(
-         "malloy-publisher:table owner=e1%2Fpa table=named_t",
+         // The mark names where the catalog says the table is.
+         `malloy-publisher:table owner=e1%2Fpa table=${warehouse}.public.named_t`,
       );
    });
 

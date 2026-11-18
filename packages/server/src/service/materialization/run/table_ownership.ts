@@ -37,9 +37,10 @@
  * packages that find the name free at once never both build it.
  *
  * The mark is a comment on the table, `malloy-publisher:table
- * owner=<env>/<pkg> table=<the table>` (each value URI-encoded; `table` is the
- * table's path at its site, lower-cased where the dialect ignores case, see
- * markedTableIdentity; a mark before 0.16.0 has no `table`), the warehouse
+ * owner=<env>/<pkg> table=<location>` (each value URI-encoded; `location`
+ * is where the table is, fully qualified, as the warehouse's catalog reports
+ * it when the mark is written, see relationProbeSql; a mark before 0.16.0,
+ * or one whose location could not be read, has no `table`), the warehouse
  * half of ownership: it is what decides between
  * two packages whose records both name the table (a collision from before the
  * mark existed: the first to build again claims it, and the other is
@@ -80,7 +81,6 @@ import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
 import { capabilitiesOf } from "../domain/dialect";
 import { hasReservedTableSuffix } from "../domain/table_name";
 import {
-   markedTableIdentity,
    OWNED_TABLE_MARK,
    parseNameViewComment,
    parseOwnedTableComment,
@@ -197,9 +197,11 @@ function encodeMarkValue(value: string): string {
 
 /**
  * The ownership mark for a table `owner` (`<environment>/<package>`) wrote,
- * naming the table it is on (`table`, a {@link markedTableIdentity}). Without
- * `table` it is the mark releases before 0.16.0 wrote, which a caller's drop
- * does not accept as proof (see {@link markedFor}).
+ * naming where the table is (`table`: its `location` as the ownership probe
+ * reads it from the warehouse's catalog, fully qualified). Without `table`
+ * it is the mark releases before 0.16.0 wrote, or one written where the
+ * location could not be read, which a caller's drop does not accept as proof
+ * (see {@link markedFor}).
  */
 export function ownedTableComment(owner: string, table?: string): string {
    const mark = `${OWNED_TABLE_MARK} owner=${encodeMarkValue(owner)}`;
@@ -209,15 +211,21 @@ export function ownedTableComment(owner: string, table?: string): string {
 }
 
 /**
- * The {@link markedTableIdentity} of `segments` at a site of `dialect`,
- * lower-cased where the dialect resolves a table name without regard to
- * case, quoted or not (its `foldsTableNameCase` capability).
+ * Where the one table among the probe's `rows` is, as the warehouse's catalog
+ * spells it (`location`, see relationProbeSql), or undefined when the rows
+ * hold no table, more than one, or none with a location.
  */
-export function tableIdentityAt(segments: string[], dialect: string): string {
-   return markedTableIdentity(
-      segments,
-      capabilitiesOf(dialect).foldsTableNameCase,
+export function tableLocationOf(
+   rows: Record<string, unknown>[],
+): string | undefined {
+   const tables = rows.filter(
+      (row) => String(field(row, "kind") ?? "").toUpperCase() !== "VIEW",
    );
+   if (tables.length !== 1) return undefined;
+   const location = field(tables[0], "location");
+   return typeof location === "string" && location !== ""
+      ? location
+      : undefined;
 }
 
 /** The dialects whose tables' holders can be read (and marked). */
@@ -230,10 +238,11 @@ export function ownedTableMarkSql(
    segments: string[],
    owner: string,
    dialect: string,
+   location?: string,
 ): string {
    return tableCommentSql(
       segments,
-      ownedTableComment(owner, tableIdentityAt(segments, dialect)),
+      ownedTableComment(owner, location),
       dialect,
    );
 }
@@ -294,22 +303,30 @@ export function tableHolderOf(
 
 /**
  * {@link tableHolderOf} for a caller's drop, which accepts a mark as proof
- * only when it names the very table it is on: `ours` becomes `unmarked`
- * (proof must come from a run record) when any table row's mark is one an
- * earlier release wrote (no `table=`) or names another table than
- * `identity` (the table was renamed, moved to another schema, or copied
- * with its comment). A build and a reclaim read the owner alone, as before.
+ * only on the very table it names: `ours` becomes `unmarked` (proof must
+ * come from a run record) unless every table row's mark names that row's
+ * own `location`, the fully qualified place the warehouse's catalog reports
+ * for it (wherever a search path or default schema resolved the name). A
+ * renamed, moved or copied table carries the mark of the table it came from,
+ * which names another place; a mark an earlier release wrote names none, and
+ * a row with no location (the probe could not read one) proves nothing. A
+ * build and a reclaim read the owner alone, as before.
  */
 export function markedFor(
    rows: Record<string, unknown>[],
    owner: string,
-   identity: string,
 ): TableHolder {
    const holder = tableHolderOf(rows, owner);
    if (holder.state !== "ours" || holder.view) return holder;
    for (const row of rows) {
       if (String(field(row, "kind") ?? "").toUpperCase() === "VIEW") continue;
-      if (parseOwnedTableMark(field(row, "comment"))?.table !== identity) {
+      const location = field(row, "location");
+      const marked = parseOwnedTableMark(field(row, "comment"))?.table;
+      if (
+         typeof location !== "string" ||
+         location === "" ||
+         marked !== location
+      ) {
          return { state: "unmarked" };
       }
    }
@@ -446,12 +463,19 @@ export async function markOwnedTable(
    owner: string,
 ): Promise<void> {
    try {
+      const segments = site.segments(physicalTableName);
+      // Where the table actually is, read from the warehouse's catalog, so
+      // the mark names it however the name resolved. Unread (an unsupported
+      // dialect, a failed probe): the mark names no place, and proves
+      // nothing to a caller's drop.
+      let location: string | undefined;
+      if (tableOwnershipDialectSupported(site.dialect)) {
+         location = await site
+            .run(ownedTableProbeSql(segments, site.dialect))
+            .then(tableLocationOf, () => undefined);
+      }
       await site.run(
-         ownedTableMarkSql(
-            site.segments(physicalTableName),
-            owner,
-            site.dialect,
-         ),
+         ownedTableMarkSql(segments, owner, site.dialect, location),
       );
    } catch (err) {
       logger.warn(

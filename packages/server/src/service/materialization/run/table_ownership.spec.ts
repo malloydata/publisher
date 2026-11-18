@@ -37,7 +37,7 @@ import {
    parseOwnedTableComment,
    probeTableHolder,
    tableHolderOf,
-   tableIdentityAt,
+   tableLocationOf,
    TableOwnershipError,
    TABLE_OWNED_ELSEWHERE,
    TABLE_OWNERSHIP_UNVERIFIED,
@@ -139,26 +139,37 @@ describe("the ownership mark", () => {
       // The form before 0.16.0: an owner, no table.
       expect(parseOwnedTableMark(ownedTableComment(A))).toEqual({ owner: A });
       expect(parseOwnedTableComment(ownedTableComment(A))).toBe(A);
-      // The table is compared as the dialect resolves it.
-      expect(tableIdentityAt(["S", "Orders"], "duckdb")).toBe("s.orders");
-      expect(tableIdentityAt(["S", "Orders"], "postgres")).toBe("S.Orders");
+      // Where a probe found the one table, else nothing.
+      const at = (location: unknown, kind = "BASE TABLE") => ({
+         kind,
+         comment: null,
+         location,
+      });
+      expect(tableLocationOf([at("db.s.t")])).toBe("db.s.t");
+      expect(tableLocationOf([at("db.s.v", "VIEW"), at("db.s.t")])).toBe(
+         "db.s.t",
+      );
+      expect(tableLocationOf([])).toBeUndefined();
+      expect(tableLocationOf([at("db.a.t"), at("db.b.t")])).toBeUndefined();
+      expect(tableLocationOf([at(null)])).toBeUndefined();
    });
 
-   it("a caller's drop accepts a mark only on the table it names", () => {
-      const row = (comment: string) => [{ kind: "BASE TABLE", comment }];
-      expect(markedFor(row(ownedTableComment(A, "s.t")), A, "s.t")).toEqual({
+   it("a caller's drop accepts a mark only on the place it names", () => {
+      const row = (comment: string, location: string | null = "db.s.t") => [
+         { kind: "BASE TABLE", comment, location },
+      ];
+      expect(markedFor(row(ownedTableComment(A, "db.s.t")), A)).toEqual({
          state: "ours",
       });
-      for (const comment of [
-         ownedTableComment(A, "s.other"),
-         ownedTableComment(A, "other.t"),
-         ownedTableComment(A),
+      for (const rows of [
+         row(ownedTableComment(A, "db.s.other")),
+         row(ownedTableComment(A, "db.other.t")),
+         row(ownedTableComment(A)),
+         row(ownedTableComment(A, "db.s.t"), null),
       ]) {
-         expect(markedFor(row(comment), A, "s.t")).toEqual({
-            state: "unmarked",
-         });
+         expect(markedFor(rows, A)).toEqual({ state: "unmarked" });
       }
-      expect(markedFor(row(ownedTableComment(B, "s.t")), A, "s.t").state).toBe(
+      expect(markedFor(row(ownedTableComment(B, "db.s.t")), A).state).toBe(
          "taken",
       );
       // The build's reading is unchanged: the owner alone.
@@ -169,7 +180,10 @@ describe("the ownership mark", () => {
 
    it("is written in each dialect's own table comment", () => {
       expect(ownedTableMarkSql(["s", "t"], A, "postgres")).toBe(
-         `COMMENT ON TABLE "s"."t" IS 'malloy-publisher:table owner=env1%2Fpkg_a table=s.t'`,
+         `COMMENT ON TABLE "s"."t" IS 'malloy-publisher:table owner=env1%2Fpkg_a'`,
+      );
+      expect(ownedTableMarkSql(["s", "t"], A, "postgres", "db.s.t")).toBe(
+         `COMMENT ON TABLE "s"."t" IS 'malloy-publisher:table owner=env1%2Fpkg_a table=db.s.t'`,
       );
       expect(ownedTableMarkSql(["d", "t"], A, "standardsql")).toContain(
          "SET OPTIONS(description = ",
@@ -390,7 +404,10 @@ describe("on a DuckDB connection", () => {
       await check(A);
       await run("CREATE TABLE named_t AS SELECT 1 AS x");
       await markOwnedTable(databaseTableSite(connection), "named_t", A);
-      expect(await comment("named_t")).toBe(ownedTableComment(A, "named_t"));
+      // The mark names where the catalog says the table is.
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(A, "wh.main.named_t"),
+      );
       expect(
          await probeTableHolder(databaseTableSite(connection), "named_t", A),
       ).toEqual({ state: "ours" });

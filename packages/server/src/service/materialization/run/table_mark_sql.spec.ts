@@ -190,7 +190,8 @@ describe("probing what holds a name, per dialect", () => {
 
    it("Snowflake: exact case, in the named database's INFORMATION_SCHEMA", () => {
       expect(relationProbeSql(["DB", "S", "v"], "snowflake")).toBe(
-         `SELECT TABLE_TYPE AS "kind", COMMENT AS "comment" FROM "DB".INFORMATION_SCHEMA.TABLES ` +
+         `SELECT TABLE_TYPE AS "kind", COMMENT AS "comment", ` +
+            `TABLE_CATALOG || '.' || TABLE_SCHEMA || '.' || TABLE_NAME AS "location" FROM "DB".INFORMATION_SCHEMA.TABLES ` +
             `WHERE TABLE_SCHEMA = 'S' AND TABLE_NAME = 'v'`,
       );
       expect(relationProbeSql(["v"], "snowflake")).toContain(
@@ -200,7 +201,8 @@ describe("probing what holds a name, per dialect", () => {
 
    it("Databricks and Trino: lower-cased names", () => {
       expect(relationProbeSql(["c", "S", "V"], "databricks")).toBe(
-         "SELECT table_type AS kind, comment FROM `c`.information_schema.tables " +
+         "SELECT table_type AS kind, comment, " +
+            "concat(table_catalog, '.', table_schema, '.', table_name) AS location FROM `c`.information_schema.tables " +
             "WHERE table_schema = lower('S') AND table_name = lower('V')",
       );
       expect(relationProbeSql(["V"], "databricks")).toContain(
