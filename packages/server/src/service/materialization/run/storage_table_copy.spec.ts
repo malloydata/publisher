@@ -3,12 +3,13 @@
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { components } from "../../../api";
 import { BadRequestError } from "../../../errors";
 import * as connection from "../../connection";
+import { allowForLockdown } from "../../duckdb_lockdown";
 import { createIsolatedBuildSession } from "./materialization_build_session";
 import { copyStorageTable } from "./storage_table_load";
 
@@ -79,9 +80,13 @@ describe("copyStorageTable on file catalogs", () => {
    let dir: string;
    const spies: { mockRestore(): void }[] = [];
 
-   /** Attach `alias` to the file catalog named for the connection's catalog. */
+   /**
+    * Attach `alias` to the file catalog named for the connection's catalog,
+    * recording its data path for the session's lock as the real attach does
+    * (unless `record` is false).
+    */
    const attachFile =
-      (readOnly: boolean) =>
+      (readOnly: boolean, record = true) =>
       async (
          session: DuckDBConnection,
          alias: string,
@@ -94,6 +99,11 @@ describe("copyStorageTable on file catalogs", () => {
             `ATTACH 'ducklake:${join(dir, `${name}.ducklake`)}' AS "${alias}" ` +
                `(DATA_PATH '${join(dir, name)}/'${readOnly ? ", READ_ONLY" : ""})`,
          );
+         if (record) {
+            // A locked session creates no directory above the allowed path.
+            mkdirSync(join(dir, name, "main"), { recursive: true });
+            allowForLockdown(session, join(dir, name));
+         }
       };
 
    // Each test has its own catalogs, and every session that attached one is
@@ -118,6 +128,9 @@ describe("copyStorageTable on file catalogs", () => {
             "src",
             lakeConnection("src").ducklakeConnection!,
          );
+         // As Parquet files, as a build writes them, not rows inlined in the
+         // catalog.
+         await seed.runSQL("SET ducklake_default_data_inlining_row_limit = 0");
          await seed.runSQL(
             "CREATE OR REPLACE TABLE src.main.events AS SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'a')) AS v(id, kind)",
          );
@@ -169,5 +182,18 @@ describe("copyStorageTable on file catalogs", () => {
             mode: "replace",
          }),
       ).rejects.toThrow("cannot be copied onto itself");
+   });
+
+   it("reads and writes only the catalogs' data paths: its session is locked before the copy runs", async () => {
+      // A source attach that records no data path: once the session is
+      // locked, the source's files are outside everything it may read.
+      spies.push(
+         spyOn(connection, "attachDuckLakeReadOnly").mockImplementation(
+            attachFile(true, false),
+         ),
+      );
+      await expect(copyStorageTable(base)).rejects.toThrow(
+         /Permission Error: .*disabled by configuration/,
+      );
    });
 });

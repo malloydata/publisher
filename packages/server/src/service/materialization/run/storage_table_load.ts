@@ -327,7 +327,16 @@ export async function copyStorageTable(params: {
             source.connection.ducklakeConnection!,
          );
       }
-      const from = [sourceAlias, source.schemaName, source.tableName]
+      // Confined to the two catalogs' data paths (configured, or recorded by
+      // the attaches) before it reads or writes (duckdb_lockdown.ts).
+      await lockDownDuckDBSession(session, {
+         allow: [destinationConnection, source.connection].flatMap((conn) => {
+            const dataPath = conn.ducklakeConnection?.storage?.bucketUrl;
+            return dataPath ? [dataPath] : [];
+         }),
+         lockConfiguration: false,
+      });
+      const from =[sourceAlias, source.schemaName, source.tableName]
          .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
          .join(".");
       // The copy keeps the source's layout: DuckLake applies a partition spec
