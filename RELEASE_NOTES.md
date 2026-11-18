@@ -72,6 +72,8 @@ This release is a breaking minor. Every item below is explained in full in its o
 - A run in which every source failed or was refused records a manifest of `failures` and no `entries`; key success on `status`, not on a manifest being present.
 - A package whose every declaration is refused has a build plan with empty `sources` and populated `refusedSources`, not `null`, and a run with empty `buildInstructions` for it starts and builds nothing instead of answering 400.
 - A BigQuery table with no dataset-qualified `name=` is refused at plan (`needs_qualified_name`) even when the host would supply a dataset of its own; the check reads the author's `name=` only.
+- `SourceFailure.retryable` is now `false` (where it was absent) for a warehouse's own data or syntax error: SQLSTATE class 22 or 42 on Postgres and Snowflake, BigQuery `invalidQuery` or `invalid`. A retry fails the same way until the model or data changes; hold such builds rather than rescheduling them. Missing tables, columns and privileges stay unclassified.
+- A gated entry point over an ungated `storage=` table is now served from it, so its serve verdict reads `serves` where it read `NOT_SERVED` `row_level_gate`.
 - A version the host has bound or built serves live once its manifest is cleared, through reloads and restarts, and refuses a local run without `buildInstructions` with 409.
 
 ## [Unreleased] — (BREAKING) one vocabulary: `database` replaces `colocated`, `#(rollup)` replaces `#(preaggregate)`, and every reason has one name
@@ -320,6 +322,16 @@ A model with no such rollup behaves exactly as before.
 
 **How to tell:** a gated base's rollup no longer reports `rollup-not-built` for its gate, and its queries report the rollup in their path report. A query over a zoned or inexact gate column reports `row_level_gate` and answers live.
 
+## [Unreleased] — a gated entry point over an ungated stored source serves from the table on every tier
+
+**Changed: a gated query over an ungated `storage=` table is served from the table.** With `PUBLISHER_MATERIALIZE_GATED_SOURCES` off (the default), a query whose entry point carries an `#(access_filter)` or `#(authorize)` gate over an ungated stored source (`#(access_filter) region = $REGION` on `source: regional is orders extend {}`, with `orders` stored) was served from a database table but answered live from a `storage=` one. A `storage=` table now serves it too, as a database table does, when the plan proves that every source stored at its address holds only ungated rows: no gate beneath any of them, joins and derivations included, and a gate the walk cannot read counts as one. The gate is grafted and proven on the answer exactly as on live, so each caller gets live's rows or live's denial. A lock-only entry point (an `#(authorize)` with no row filter) is covered as well as a row filter. A table a gated source shares, a persisted view's or query's table, and an answer that also reads a `storage=` table proven neither way stay live.
+
+**Also: a gated query source reads an ungated joined source's database rollup.** A join-to-rollup query (`run: flights -> { aggregate: segments.seg_miles }`) whose querying source carries a gate is answered from the joined source's rollup in the source's own database when the joined source is ungated and every field the gate reads is one of the querying source's own plain columns (not a computed dimension, not through a join). A lock that reads no field (`#(authorize) $ROLE = 'admin'`) qualifies too. The querying source is redeclared in its own file with its gates, and the gate is grafted and proven there. Any other gate, and any such query whose rollup is in a `storage=` destination, is answered live (`ROW_LEVEL_GATE`), as before.
+
+**The security fix's rules hold on these tables:** a gate over a column stored as a binary float or a 128-bit integer is never read past, a time value a query stage stored is not read past the gate under another zone, a collation not known to match answers live, and a composite is served only from the member live resolves to.
+
+**How to tell:** such a query reports the stored table or rollup in its path report, and the serve verdict for a `storage=` table reached only through gated entry points reads `serves` rather than `NOT_SERVED` `row_level_gate`. No new setting, metric or code.
+
 ## [Unreleased] — rollups placed by `name=`, unplaceable BigQuery tables refused at plan, and rollups that serve more shapes
 
 **Contract change: one placement key.** A rollup, `#(rollup)` or `#@ preaggregate`, now takes `name=`: everything before its last dot is the schema or dataset its table is created in, and its leaf takes the place of the readable name's prefix: `name="analytics.orders_rollup"` builds `analytics.orders_rollup__p<hash>`, where the readable name is `<pkg>__<file>__<base>_by_<grain>__p<hash>`. The hash, the address and so uniqueness stay Publisher's, and a `name=` with no dot sets only the prefix. The leaf is lowercased; a leaf the name would otherwise rewrite (a space, punctuation, a leading digit, `__`), an empty leaf, a leaf ending in `__p<8 hex>`, measures at one grain naming different leaves, or `name=` beside `storage=` or `namespace=`, fails the publish and the load (`rollup-invalid`). Changing the leaf renames the table, rebuilt once, and the old table is dropped once that run commits and is served.
@@ -387,6 +399,16 @@ A stored table's columns can stop matching the model: a column altered in the wa
 - **A control plane's manifest still decides under a control plane.** A run with `buildInstructions` stamps nothing, and a manifest bound from `manifestLocation` is read as written.
 - **A rollup can declare freshness**, with the same keys on `#(rollup)` and `#@ preaggregate`. Undeclared, a rollup takes its base's own declaration, then the model file's and the package's, so it goes stale with its base. A control plane reading the build plan sees a rollup's `freshness` field carry its base's own window and fallback now.
 - Malformed values now fail the load (see the load-failure section).
+
+## [Unreleased] — a build that fails on a warehouse's own data or syntax error reads as not retryable
+
+**Changed meaning: `SourceFailure.retryable` is now `false` for a deterministic warehouse error.** A build that fails because the statement itself is wrong left `retryable` absent; it now reports `false`, so a control plane can hold the build instead of rebuilding it on every scheduled run. This covers:
+
+- a Postgres or Snowflake SQLSTATE in class 22 (data exception, such as `22P02` "invalid input syntax for type") or class 42 (syntax error or access rule violation);
+- a BigQuery `invalidQuery` or `invalid` job error;
+- a Postgres data exception that arrives as text only, through a DuckDB passthrough.
+
+Some errors are still left unclassified: a missing table or column (`42P01`, `42703`, `42S02`, `42S22`, or a BigQuery "Unrecognized name" or "Not found"), because an upstream reclaimed mid-build reads the same way, and a missing privilege (`42501`). Transient codes keep their reading: serialization failure and deadlock (`40001`, `40P01`), a lock not available, too many connections, a cancelled or timed-out statement, a lost connection, and BigQuery's backend and quota reasons are never `false`. No new values.
 
 ## [Unreleased] — runs: a failed run records its manifest, tables a host stores in a destination serve, and late errors no longer overwrite a finished run
 

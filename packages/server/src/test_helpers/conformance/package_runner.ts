@@ -260,7 +260,16 @@ export async function loadFixture(
     */
    files: Record<string, string> | { packageDir: string },
    /** Where the tables are written (default `duckdb`). */
-   options: { lake?: LakeFormat } = {},
+   options: {
+      lake?: LakeFormat;
+      /**
+       * Environment connections beside the package sandbox, as an operator
+       * configures them (a DuckDB one may carry `setupSQL`, which runs before
+       * its configuration is locked). Each is a warehouse to the plan, as the
+       * sandbox is.
+       */
+      connections?: { name: string; type: string; [k: string]: unknown }[];
+   } = {},
 ): Promise<{
    run: LoadedFixture["run"];
    bind(options?: BindOptions): Promise<LoadedFixture>;
@@ -312,8 +321,15 @@ export async function loadFixture(
       // sandbox stands in for a warehouse the plan's `storage=` gate admits.
       releaseSandbox = recordConnectionsAsForConformanceHarness({
          duckdb: "postgres",
+         ...Object.fromEntries(
+            (options.connections ?? []).map((c) => [c.name, "postgres"]),
+         ),
       });
-      env = await Environment.create("conform", envPath, []);
+      env = await Environment.create(
+         "conform",
+         envPath,
+         (options.connections ?? []) as never,
+      );
       await env.addPackage("pkg");
       pkg = await env.getPackage(parsePackageName("pkg"), false);
    } catch (error) {

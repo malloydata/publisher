@@ -101,6 +101,8 @@ export function bindStorageEntries(args: {
            refused: Record<string, string>;
            /** The eligible sourceIDs admitted past their own gate (G3). */
            gateKept?: readonly string[];
+           /** The eligible sourceIDs whose tables hold only ungated rows. */
+           ungated?: readonly string[];
         }
       | undefined;
    /** Each binding's kind, from the plan (see {@link kindFromPlan}). */
@@ -189,7 +191,54 @@ export function bindStorageEntries(args: {
          ? { ...binding, ownGateKept: true }
          : binding,
    );
-   return { bindings, otherDefinition, declined };
+   // A table that holds only ungated rows is read past a gated entry point's
+   // gate as a database table is (g-mixed): every source stored at its
+   // address, by the plan, not only those bound, is proven ungated. Only a
+   // table the served copy reads past a gate is marked: a rollup's, a
+   // persisted view's or a persisted query's leg decides a gate on its own.
+   const ungatedTables = ungatedTableAddresses(
+      eligibility?.ungated,
+      plan?.sources ?? {},
+   );
+   const marked = bindings.map((binding) =>
+      ungatedTables.has(binding.virtualHandle) &&
+      (binding.kind === "persist" || binding.kind === "materialize") &&
+      (binding.sourceIDs ?? []).length > 0 &&
+      (binding.sourceIDs ?? []).every((id) =>
+         eligibility?.ungated?.includes(id),
+      )
+         ? { ...binding, holdsOnlyUngatedRows: true }
+         : binding,
+   );
+   return { bindings: marked, otherDefinition, declined };
+}
+
+/**
+ * The tables (content addresses) that hold only ungated rows: those at which
+ * every source the plan stores is in `ungated` (the plan's
+ * `SourceEligibility.ungated`). One source on the address that is gated,
+ * refused, or whose gates could not be read keeps the address out (fail
+ * closed). The one rule both the bind (which marks each binding of such a
+ * table `holdsOnlyUngatedRows`) and the serve verdict (for a table not bound
+ * yet) read.
+ */
+export function ungatedTableAddresses(
+   ungated: readonly string[] | undefined,
+   sources: Readonly<Record<string, { sourceEntityId?: string }>>,
+): Set<string> {
+   const proven = new Set(ungated ?? []);
+   const byAddress = new Map<string, boolean>();
+   for (const [id, source] of Object.entries(sources)) {
+      const address = source.sourceEntityId;
+      if (!address) continue;
+      byAddress.set(
+         address,
+         (byAddress.get(address) ?? true) && proven.has(id),
+      );
+   }
+   return new Set(
+      [...byAddress].filter(([, all]) => all).map(([address]) => address),
+   );
 }
 
 /**
