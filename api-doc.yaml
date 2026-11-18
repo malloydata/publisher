@@ -4139,9 +4139,12 @@ paths:
       description: |
         Deletes a terminal (MANIFEST_FILE_READY, FAILED, or CANCELLED)
         materialization record. A delete is record-only: it never drops a
-        table, and the caller owns table GC. To drop a table this run produced,
-        check that no remaining run, of any version, names a table with that
-        name in any place, then drop it through its connection.
+        table, and the caller owns table GC. To drop a database table this run
+        produced, use `drop-materialized-table` (`DELETE
+        …/connections/{connectionName}/materializedTables/{tableName}`), which
+        checks that no remaining run, of any version, names a table with that
+        name in any place; a table built before 0.16.0 carries no ownership
+        mark, so drop it first, passing this run's id, then delete the run.
         `dropTables=true` is refused with 400 and deletes nothing, as is any
         value other than `true` or `false` (the fix is to omit it);
         `dropTables=false`, which older clients send, is accepted and ignored.
@@ -4159,6 +4162,126 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: Materialization cannot be deleted while it is active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          $ref: "#/components/responses/Gone"
+
+  /environments/{environmentName}/packages/{packageName}/connections/{connectionName}/materializedTables/{tableName}:
+    delete:
+      tags:
+        - materializations
+      operationId: drop-materialized-table
+      summary: Drop a materialized table from a package's connection
+      description: |
+        Drops one database-tier table a materialization of this package built
+        on one of the package's connections, with the staging and backup
+        copies a crashed build can leave beside it when a run record names
+        the table. This is the drop a caller makes after (or before) deleting
+        a run's record, which never drops a table. A `storage=` table lives in
+        a storage destination, which this route does not reach; the admin
+        API's catalog routes drop those.
+
+        Publisher does not authenticate the caller: the gateway in front of
+        it decides who may call this route, and should allow only the
+        operator that owns the package's materialization lifecycle. The
+        route itself refuses any table it cannot prove is this package's and
+        unused, under the package's run lock and the table name's lock, so no
+        run starts, commits or claims the name between the checks and the
+        drop:
+
+          * 400: the name cannot be quoted in the connection's dialect, or
+            it is the staging or backup copy a build makes of a table a run
+            of the package records, which is dropped only with that table.
+          * 404, with no `reason`: the package does not reach a connection by
+            that name (or the environment, package or `materializationId`
+            does not exist).
+          * 409 `MATERIALIZATION_CONFLICT`: a run of the package is active.
+            Retry once it settles.
+          * 409 `TABLE_IN_USE`: a committed run of the package, of any
+            version, other than the one `materializationId` names, names a
+            table with this name in any place; the run `materializationId`
+            names is the one a version or the package serves; or a loaded
+            copy of any package in the environment is bound to a table with
+            this name; or the warehouse refused the drop because other
+            objects depend on the table (Postgres 2BP01). Delete or replace
+            that run, or those objects, first.
+          * 409 `TABLE_OWNED_ELSEWHERE`: the table carries another package's
+            ownership mark, or the name is held by a view Publisher did not
+            create or another package's view; or the warehouse refused the
+            drop because the connection may not drop it (42501) or the name
+            holds something other than a table (42809). The answer does not
+            name the holder.
+          * 409 `TABLE_OWNERSHIP_UNVERIFIED`: the table carries no ownership
+            mark this route accepts, and the run `materializationId` names
+            (terminal, of this package) does not record it on this
+            connection; or who holds the name could not be read. A mark is
+            accepted only when it names this package and the very place the
+            warehouse's catalog says the name resolves to now (its fully
+            qualified location, recorded when the mark was written): a
+            comment travels with a renamed, moved or cloned table, so such a
+            copy, or another schema's table a search path finds first, is
+            treated as unmarked, as is a mark written before 0.16.0 (it names
+            no place). Drop such a table passing the id of the run
+            that records it, before deleting that run's record.
+          * 404 `TABLE_NOT_FOUND`: no table holds the name and no run record
+            of this package names it on this connection, so nothing proves it
+            was ever this package's.
+
+        A table that is already gone answers 204 when a run record of this
+        package still names it on this connection (pass its
+        `materializationId`, or retry before deleting the record), so a
+        retried drop succeeds; otherwise 404 `TABLE_NOT_FOUND`.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/packageName"
+        - name: connectionName
+          in: path
+          description: Name of the connection the table was built on, as the package reaches it
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: tableName
+          in: path
+          description: |
+            The table's full name as the run's manifest records it
+            (`physicalTableName`: `table`, `schema.table` or
+            `catalog.schema.table`), URL-encoded. It is quoted for the
+            connection's dialect as the build quoted it; a name the dialect
+            cannot quote answers 400.
+          required: true
+          schema:
+            type: string
+        - name: materializationId
+          in: query
+          required: false
+          description: |
+            The id of the run that built the table, as evidence that it is
+            this package's when it carries no ownership mark. That run is not
+            counted as using the table, unless it is the one a version or
+            the package serves. Must be a terminal run of this package
+            (404 otherwise; 409 `MATERIALIZATION_CONFLICT` while it is
+            active).
+          schema:
+            type: string
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "204":
+          description: |
+            The table was dropped, or is already gone and a run record of
+            this package names it on this connection.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            The table was not dropped: a run is active
+            (`MATERIALIZATION_CONFLICT`), the table is in use (`TABLE_IN_USE`),
+            it is another's (`TABLE_OWNED_ELSEWHERE`), or it cannot be proven
+            this package's (`TABLE_OWNERSHIP_UNVERIFIED`).
           content:
             application/json:
               schema:
@@ -10251,7 +10374,15 @@ components:
             TABLE_OWNED_ELSEWHERE and TABLE_OWNERSHIP_UNVERIFIED, on a 400,
             mean a build was refused before it wrote because its `name=` is
             held by a table this package does not own, or because who holds
-            it could not be read.
+            it could not be read. On a 409 from dropping a materialized table
+            (`drop-materialized-table`), they mean the drop was refused for
+            the same reasons: the table is another's, or nothing proves it is
+            this package's.
+
+            TABLE_IN_USE, on a 409 from dropping a materialized table, means a
+            committed run of the package, or a loaded package's binding, still
+            names a table with that name, so dropping it could break what is
+            served. Delete or replace that run first.
 
             BUILD_INSTRUCTIONS_INVALID, on a 400 from creating a
             materialization, means its body or build instructions are not a
@@ -10312,7 +10443,7 @@ components:
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
             STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
             MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
-            TABLE_OWNERSHIP_UNVERIFIED, BUILD_INSTRUCTIONS_INVALID,
+            TABLE_OWNERSHIP_UNVERIFIED, TABLE_IN_USE, BUILD_INSTRUCTIONS_INVALID,
             MATERIALIZATION_CONFLICT, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
             VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
             PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,

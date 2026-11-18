@@ -1681,6 +1681,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
    }
 
+   /** The host port's `boundTableNames`: every database table bound now. */
+   public boundTableNames(): string[] {
+      const names = new Set<string>();
+      for (const entries of [
+         this.mz.getBuildManifestEntries(),
+         this.mz.boundDatabaseEntries(),
+      ]) {
+         for (const entry of Object.values(entries ?? {})) {
+            if (entry.tableName) names.add(entry.tableName);
+         }
+      }
+      return [...names];
+   }
+
    /**
     * The host port's `setKeptTables`: the tables the newest auto-run lists as
     * kept after a rename (see PackageMaterialization.setKeptTables).
