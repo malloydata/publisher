@@ -9,10 +9,16 @@ next reader of that doc is told a number that will be stale by next month.
 
 This looks at the lines an edit ADDS, and reports:
 
-  value   a number in an added line that equals a number in some case's key,
-          to five significant digits. Thousands separators are ignored, so a
-          key of 464861.37 is found as 464,861. Shorter numbers are not
-          checked: a year, a count of 12 or a 50% rate appear in honest docs.
+  value   a figure in an added line that states a number some case accepts:
+          a number in its key (or a column sum of a rows key), a figure in
+          its rubric's accepting clause or its mustState, or a value inside a
+          range the rubric accepts ("accept $487,500-$490,500"). A figure
+          matches at the precision it is written, so for a key of 488970.54
+          "$489,000", "489K" and "$0.49M" all match. What counts as a figure,
+          and what matches, is `verify_goldens.quoted_figures` and
+          `figure_matches`, the rubric-figure check's own definition: years,
+          small counts and short rates are not figures, because they appear
+          in honest docs.
   query   a case's golden query, or its verifying query, pasted whole.
 
 Every case of the set is checked, not only the cluster's: an edit for one
@@ -26,39 +32,47 @@ the acceptance check until it is made.
 """
 from __future__ import annotations
 
-import math
+import pathlib
 import re
+import sys
 from typing import Any
 
-NUMBER = re.compile(r"(?<![\w.])-?\d[\d,]*(?:\.\d+)?(?![\w])")
-MIN_DIGITS = 5
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                       / "eval-answer" / "scripts"))
+from verify_goldens import (  # noqa: E402
+    Figure, _walk_strings, accepting_clause, figure_matches, key_figures,
+    quoted_figures)
+
 MIN_QUERY = 60
+# Two figures joined like this in an accepting clause are a range it accepts.
+_RANGE_JOIN = re.compile(r"\s*(?:-|\u2013|\u2014|to)\s*\$?\s*")
 
 
-def significant_digits(text: str) -> int:
-    digits = re.sub(r"[^0-9]", "", text).lstrip("0")
-    return len(digits)
+def accepted_text(golden: dict[str, Any] | None) -> str:
+    """The prose of a golden that states accepted answers: the rubric's
+    accepting clause and the mustState, each cut at its first rejecting
+    marker so a trap figure is not read as an answer."""
+    g = golden or {}
+    return "\n".join(accepting_clause(t) for t in (g.get("rubric"), g.get("mustState"))
+                     if isinstance(t, str) and t)
 
 
-def numbers_in(value: Any) -> list[float]:
-    """Every number in a key worth looking for: five significant digits or more."""
-    out: list[float] = []
-    if isinstance(value, bool) or value is None:
-        return out
-    if isinstance(value, (int, float)):
-        if math.isfinite(value) and significant_digits(repr(value)) >= MIN_DIGITS:
-            out.append(float(value))
-    elif isinstance(value, str):
-        for m in NUMBER.finditer(value):
-            if significant_digits(m.group()) >= MIN_DIGITS:
-                out.append(float(m.group().replace(",", "")))
-    elif isinstance(value, dict):
-        for v in value.values():
-            out += numbers_in(v)
-    elif isinstance(value, (list, tuple)):
-        for v in value:
-            out += numbers_in(v)
-    return out
+def targets(key: Any, text: str = "") -> tuple[list[float], list[tuple[float, float]]]:
+    """(values, ranges) one case accepts as its answer."""
+    values = key_figures(key)
+    values += [f.value for s in _walk_strings(key) if isinstance(s, str)
+               for f in quoted_figures(s)]
+    figs = quoted_figures(text)
+    values += [f.value for f in figs]
+    ranges = [(min(a.value, b.value), max(a.value, b.value))
+              for a, b in zip(figs, figs[1:])
+              if _RANGE_JOIN.fullmatch(text[a.end:b.start])]
+    return values, ranges
+
+
+def leaks(f: Figure, values: list[float], ranges: list[tuple[float, float]]) -> bool:
+    return (figure_matches(f, values)
+            or any(lo - f.tol <= f.value <= hi + f.tol for lo, hi in ranges))
 
 
 def added_lines(diff: str) -> list[str]:
@@ -72,31 +86,23 @@ def squash(text: str) -> str:
     return " ".join(text.replace(";", " ").split())
 
 
-def same(a: float, b: float) -> bool:
-    """Equal to five significant digits: 464861.37 and 464861, not 464900."""
-    if a == b:
-        return True
-    scale = max(abs(a), abs(b))
-    return scale > 0 and abs(a - b) / scale < 0.5 * 10 ** -(MIN_DIGITS - 1)
-
-
-def check(diff: str, keys: dict[str, Any], queries: dict[str, list[str]] | None = None
-          ) -> list[dict[str, Any]]:
+def check(diff: str, keys: dict[str, Any], queries: dict[str, list[str]] | None = None,
+          accepted: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """The leaks in `diff`. `keys` is qid -> the case's key (a value or rows);
-    `queries` is qid -> its golden and verifying queries."""
+    `queries` is qid -> its golden and verifying queries; `accepted` is qid ->
+    `accepted_text(golden)`, the answers its rubric and mustState accept."""
     added = added_lines(diff or "")
     if not added:
         return []
     found: list[dict[str, Any]] = []
-    wanted = {q: numbers_in(k) for q, k in keys.items()}
+    accepted = accepted or {}
+    wanted = {q: targets(keys.get(q), accepted.get(q, ""))
+              for q in {*keys, *accepted}}
     for line in added:
-        for m in NUMBER.finditer(line):
-            if significant_digits(m.group()) < MIN_DIGITS:
-                continue
-            n = float(m.group().replace(",", ""))
-            for qid, nums in wanted.items():
-                if any(same(n, k) for k in nums):
-                    hit = {"qid": qid, "kind": "value", "found": m.group(),
+        for f in quoted_figures(line):
+            for qid, (values, ranges) in wanted.items():
+                if leaks(f, values, ranges):
+                    hit = {"qid": qid, "kind": "value", "found": f.text,
                            "line": line.strip()[:200]}
                     if hit not in found:
                         found.append(hit)
