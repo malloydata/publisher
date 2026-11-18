@@ -317,7 +317,7 @@ async function assertRowScopeExact(
    const decline = (why: string) =>
       leg === "served"
          ? new LegDecline("served_copy_not_served", why)
-         : new LegDecline("rollup_contract", why, { shapeCheck: true });
+         : new LegDecline("rollup_row_level_gate", why, { shapeCheck: true });
    // The exactness rule is the served copy's; the rollup leg judges its own
    // stored columns (`storedRollupReads`), so it is asked only the
    // comparison rules below.
