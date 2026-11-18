@@ -1055,6 +1055,7 @@ export class StorageBuildStrategy
                connection: destinationName,
                surface: "build",
                package: params.packageName ?? params.incremental?.packageName,
+               catalog: usageCatalog(destinationConnection),
             },
             () =>
                buildDownstreamIntoStorage({

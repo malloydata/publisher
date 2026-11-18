@@ -2217,6 +2217,26 @@ describe("ConnectionController.getConnectionQueryData statement usage", () => {
       expect(records).toEqual([]);
    });
 
+   // Metering is keyed on `managed`, not on running as a single SELECT: a
+   // customer's own DuckLake connection runs raw SQL the same way and is not
+   // metered. A change that keys it on the connection type would record this.
+   it("records nothing on a customer's own DuckLake connection, not marked managed", async () => {
+      const runSQL = sinon.stub().resolves({ rows: [{ a: 1 }], totalRows: 1 });
+      const ownDuckLake = () => ({
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: { catalog: { metadataSchema: "their_catalog" } },
+      });
+      const controller = controllerOver(buffered(runSQL), ownDuckLake);
+
+      const { records } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(runSQL.calledOnce).toBe(true);
+      expect(records).toEqual([]);
+   });
+
    it("records nothing for a statement refused before it runs", async () => {
       const runSQL = sinon.stub().resolves({ rows: [], totalRows: 0 });
       const controller = controllerOver(buffered(runSQL), managedConnection);
