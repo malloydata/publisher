@@ -254,8 +254,17 @@ describe("ServedCopyServe.ensureCompiled", () => {
       expect(kept()).toEqual(["lane 0"]);
    });
 
-   // Not pinned: a compile that REJECTS. `ensureCompiled` tracks its in-flight
-   // promise with `void promise.finally(...)`, whose derived promise rejects
-   // unhandled, so a rejected compile raises an unhandled rejection beside
-   // the caller's own. Reported for a decision, not pinned.
+   it("drops a failed compile from the in-flight set, so the next request compiles again", async () => {
+      const { calls, compiled } = servedCopy();
+      const pin = pinned([binding("a")]);
+      const first = compiled(pin);
+      await ticks();
+      calls[0].fail(new Error("compile failed"));
+      expect(await first.catch((e: Error) => e.message)).toBe("compile failed");
+      const second = compiled(pin);
+      await ticks();
+      expect(calls).toHaveLength(2);
+      calls[1].finish("two");
+      expect(await second).toBe("two");
+   });
 });

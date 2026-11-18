@@ -54,6 +54,7 @@ given: ROLE :: string
 source: base is ${COLUMNS} extend { dimension: late is region > 'M' }
 source: open is base
 source: scoped is base extend { where: amount > 1 }
+source: scoped_str is base extend { where: region > 'M' }
 #(access_filter) id = $N
 source: num_gate is base
 #(access_filter) region = $S
@@ -76,6 +77,7 @@ source: composite_gate is compose(base, base)
 const SHAPES = {
    "no gate": "open",
    "no gate, a where: on a float column": "scoped",
+   "no gate, a where: ordering a string": "scoped_str",
    "row filter, number": "num_gate",
    "row filter, string equality": "str_eq_gate",
    "row filter, string ordering": "str_order_gate",
@@ -367,6 +369,44 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
             "skipped does_not_answer (served_copy_not_served)",
          "served, storage, holding only ungated rows":
             "skipped does_not_answer (served_copy_not_served)",
+         "rollup, database": "used",
+         "rollup, storage": "used",
+         "rollup, storage, kept past its own gate": "used",
+         "rollup, storage, holding only ungated rows": "used",
+         "view, database": "used",
+         "view, storage": "used",
+         "view, storage, kept past its own gate": "used",
+         "view, storage, holding only ungated rows": "used",
+         "query, database": "used",
+         "query, storage": "used",
+         "query, storage, kept past its own gate": "used",
+         "query, storage, holding only ungated rows": "used",
+      },
+   },
+   "no gate, a where: ordering a string": {
+      "gated sources off (G3)": {
+         "served, database": "used",
+         "served, storage": "used",
+         "served, storage, kept past its own gate": "used",
+         "served, storage, holding only ungated rows": "used",
+         "rollup, database": "used",
+         "rollup, storage": "used",
+         "rollup, storage, kept past its own gate": "used",
+         "rollup, storage, holding only ungated rows": "used",
+         "view, database": "used",
+         "view, storage": "used",
+         "view, storage, kept past its own gate": "used",
+         "view, storage, holding only ungated rows": "used",
+         "query, database": "used",
+         "query, storage": "used",
+         "query, storage, kept past its own gate": "used",
+         "query, storage, holding only ungated rows": "used",
+      },
+      "gated sources on": {
+         "served, database": "used",
+         "served, storage": "used",
+         "served, storage, kept past its own gate": "used",
+         "served, storage, holding only ungated rows": "used",
          "rollup, database": "used",
          "rollup, storage": "used",
          "rollup, storage, kept past its own gate": "used",
@@ -741,23 +781,32 @@ const COLLATION: Record<string, Record<string, string>> = {
       "stored table nocase, storage, kept past its own gate":
          "skipped row_level_gate",
    },
-   // CURRENT, review finding: a gate on a boolean computed by ordering a
-   // string reads as comparing no string (`comparesNoString`), so neither
-   // collation probe runs and every row is kept, where the string gates
-   // above are declined.
+   // A gate on a boolean computed by ordering a string is judged as the
+   // string gates above are: both collation probes run.
    "row filter, boolean over a string": {
       "author instance nocase, database": "used, past the gate",
       "author instance nocase, storage, kept past its own gate":
-         "used, past the gate",
-      "stored table nocase, database": "used, past the gate",
+         "skipped row_level_gate",
+      "stored table nocase, database": "skipped row_level_gate",
       "stored table nocase, storage, kept past its own gate":
-         "used, past the gate",
+         "skipped row_level_gate",
    },
    "no gate, a where: on a float column": {
       "author instance nocase, database": "used",
       "author instance nocase, storage, kept past its own gate":
          "skipped does_not_answer (served_copy_not_served)",
       "stored table nocase, database": "used",
+      "stored table nocase, storage, kept past its own gate":
+         "skipped does_not_answer (served_copy_not_served)",
+   },
+   // An ungated scope on a database table is judged by the stored side's
+   // collation too, whatever its columns' types.
+   "no gate, a where: ordering a string": {
+      "author instance nocase, database": "used",
+      "author instance nocase, storage, kept past its own gate":
+         "skipped does_not_answer (served_copy_not_served)",
+      "stored table nocase, database":
+         "skipped does_not_answer (served_copy_not_served)",
       "stored table nocase, storage, kept past its own gate":
          "skipped does_not_answer (served_copy_not_served)",
    },
@@ -770,6 +819,7 @@ describe("read admission under a collation that is not binary (served leg, G3)",
       "row filter, string ordering",
       "row filter, boolean over a string",
       "no gate, a where: on a float column",
+      "no gate, a where: ordering a string",
    ];
    for (const shape of shapes) {
       it(shape, async () => {

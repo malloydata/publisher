@@ -9,8 +9,8 @@
  * `EQUALITY_NODES`, read through `gateReads` and `equalityOnlyExpr`). The
  * live Postgres cases stay in gate_collation.spec.ts as integration tests.
  *
- * Every row is today's answer. The rows marked CURRENT are ones a review
- * proved wrong or questionable; they are pinned so a fix shows as a diff.
+ * Every row is today's answer. The rows marked CURRENT are questionable
+ * ones, pinned so a change shows as a diff.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -422,13 +422,12 @@ describe("gateReads' probe allow-lists (NON_STRING_OPERATORS, comparesNoString)"
          field("big"),
          { equalityOnly: true, comparesNoString: true },
       ],
-      // CURRENT, review finding: a boolean dimension computed over a string
-      // reads as comparing no string, so the probe is skipped, though the
-      // walk below the field orders the string (equalityOnly turns false).
+      // A boolean dimension computed over a string compares that string:
+      // the walk below the field turns both flags off, so the probe runs.
       [
          "a boolean over a string, read through a field",
          field("late"),
-         { equalityOnly: false, comparesNoString: true },
+         { equalityOnly: false, comparesNoString: false },
       ],
       [
          "a computed rename of a string",
@@ -522,9 +521,8 @@ describe("gateReads' probe allow-lists (NON_STRING_OPERATORS, comparesNoString)"
       ["amount = $S", { equalityOnly: true, comparesNoString: false }],
       ["u.id = $N", { equalityOnly: true, comparesNoString: true }],
       ["u.name = $S", { equalityOnly: true, comparesNoString: false }],
-      // CURRENT, review finding: the gate compares a boolean computed by
-      // ordering a string; the probe is skipped.
-      ["late = $FLAG", { equalityOnly: false, comparesNoString: true }],
+      // A gate on a boolean computed by ordering a string: the probe runs.
+      ["late = $FLAG", { equalityOnly: false, comparesNoString: false }],
       ["big = $FLAG", { equalityOnly: true, comparesNoString: true }],
       ["r = $S", { equalityOnly: true, comparesNoString: false }],
       // A quoted name is not followed: unresolved, which turns the skip off.
