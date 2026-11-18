@@ -27,6 +27,11 @@ export interface VariantSkipExplanation {
     * summary.
     */
    members?: Readonly<Record<string, Omit<VariantSkipExplanation, "members">>>;
+   /**
+    * The tables the decline is about, by content address, when it is about
+    * some of the tables the leg read rather than all of them.
+    */
+   tableIds?: readonly string[];
 }
 
 type SkipReason = components["schemas"]["SkipReason"];
@@ -121,6 +126,8 @@ export class LegDecline extends Error {
     * synthesized source name, with that rollup's own decline.
     */
    readonly members?: ReadonlyMap<string, LegDecline>;
+   /** See {@link VariantSkipExplanation.tableIds}. */
+   readonly tableIds?: readonly string[];
 
    constructor(
       readonly code: LegDeclineCode,
@@ -131,11 +138,15 @@ export class LegDecline extends Error {
          /** For logs only, when it says more than the caller's detail. */
          message?: string;
          members?: ReadonlyMap<string, LegDecline>;
+         tableIds?: readonly string[];
       } = {},
    ) {
       super(options.message ?? callerDetail ?? code);
       if (options.members && options.members.size > 0) {
          this.members = options.members;
+      }
+      if (options.tableIds && options.tableIds.length > 0) {
+         this.tableIds = options.tableIds;
       }
       const decline: { reason: SkipReason; warnedCode?: string } =
          DECLINES[code];
@@ -198,6 +209,7 @@ export function explanationOfDecline(
    });
    return {
       ...one(decline),
+      ...(decline.tableIds ? { tableIds: decline.tableIds } : {}),
       ...(decline.members
          ? {
               members: Object.fromEntries(

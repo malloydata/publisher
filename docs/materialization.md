@@ -656,7 +656,18 @@ the table was altered outside a build and whether the column is cast or answered
 in the same
 `publisher_storage_column_type_mismatch_total{stage="serve"}`, once per bind. A column that is gone
 is reported too; one moved by a widening that loses nothing is not. Rebuilding the table
-clears it. The log line has the same code and names each changed column. A table
+clears it.
+
+The same holds when the table did not move but its source did: a warehouse column retyped
+upstream after the build, so the source now declares a type the table's value does not read as
+(an integer column now declared `string`). The build's SQL, and so the table's content address,
+is unchanged, so the bind finds the table as built. Every mechanism (a persisted view or query, a
+`#(materialize)` or `#@ persist` source, a rollup) takes the column as moved: a query that reads
+it answers live with `MISSING_FIELD` and the column in its path report's detail, a query that
+does not still serves, and the warning says what its source reads changed type since the build. A
+type the build writes by design for the declaration (a `date` truncation stored as a timestamp, a
+`boolean` over an integer flag) is not a move. Because the address did not move, a normal run
+reuses the table; only a forced refresh (`forceRefresh`) rebuilds it and clears the warning. The log line has the same code and names each changed column. A table
 whose columns cannot be read at the bind (missing, unreadable, or slower than the bound) is answered
 live, with a `database-table-unread` package warning that names the table, a fixed reason (the
 driver's own text, secrets redacted, is in the log alone) and whether a retry is pending, and read

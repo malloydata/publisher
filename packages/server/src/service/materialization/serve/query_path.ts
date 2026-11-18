@@ -353,7 +353,9 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
             answered = true;
          } else if (
             storageDecision?.code === "served_copy_column_left_out" &&
-            storageDecision.outcome !== "used"
+            storageDecision.outcome !== "used" &&
+            t.tableId !== undefined &&
+            storageDecision.tableIds?.includes(t.tableId)
          ) {
             // The served copy read this table and declined the query for a
             // stored column its type leaves out: that is why it was not read.

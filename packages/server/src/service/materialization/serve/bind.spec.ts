@@ -1078,6 +1078,43 @@ describe("applyObservedColumns", () => {
          expect(unchanged.entries.v1?.heldRead).toBeUndefined();
       });
 
+      it("does not move a column the build writes as another type by design (a date truncation as a timestamp)", () => {
+         const out = applyObservedColumns({
+            entries: {
+               v1: {
+                  tableName: "t",
+                  connectionName: "duckdb",
+                  schema: [
+                     { name: "m", type: "TIMESTAMP" },
+                     { name: "flag", type: "INTEGER" },
+                  ],
+               },
+            },
+            bindings: [],
+            observed: new Map([
+               [
+                  "v1",
+                  {
+                     dialect: "duckdb",
+                     columns: [
+                        { name: "m", type: "TIMESTAMP" },
+                        { name: "flag", type: "INTEGER" },
+                     ],
+                  },
+               ],
+            ]),
+            declared: () => ({
+               columns: [
+                  { name: "m", type: "date" },
+                  { name: "flag", type: "boolean" },
+               ],
+               connectionName: "duckdb",
+            }),
+         });
+         expect(out.drifted).toEqual([]);
+         expect(out.entries.v1?.heldRead).toBeUndefined();
+      });
+
       // C1/H1: a move inside one Malloy type that may round a value is left
       // out; only a widening that loses nothing is read as it is.
       for (const [built, now, kept] of [

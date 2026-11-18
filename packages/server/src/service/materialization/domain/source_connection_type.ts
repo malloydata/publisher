@@ -50,8 +50,8 @@ export function unreadableSourceConnectionMessage(
          `Source '${source.name}' cannot be materialized into a storage ` +
          `destination on this server: its connection ` +
          `'${source.connectionName}' is a 'publisher' connection, a proxy to ` +
-         `the host the package is published to, which holds no warehouse ` +
-         `credentials here. A 'storage=' build runs on that host, not on ` +
+         `the host the package is published to; this server holds no ` +
+         `warehouse credentials for it. A 'storage=' build runs on that host, not on ` +
          `this server. The source is answered live here.`
       );
    }

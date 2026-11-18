@@ -44,6 +44,7 @@ import {
    driftedColumnRead,
    storedColumnsOfOutput,
    storedMalloyType,
+   storedTypeServesAs,
 } from "../stored_column_types";
 import type {
    BuildPlan,
@@ -777,8 +778,10 @@ function declaredMoves(
          (c) => c.name === built.name,
       )?.type;
       if (declared === undefined || declared === "") return [];
-      const builtAs = storedMalloyType(built.type) ?? built.type;
-      if (builtAs === declared) return [];
+      // What the build wrote for the source as it declares the column now:
+      // no upstream change moved it (the manifest records no build-time
+      // declaration to compare with).
+      if (builtForDeclaration(built.type, declared)) return [];
       const now = columnNamed(read.columns, built.name);
       if (now?.type === undefined) return [];
       const report = {
@@ -796,6 +799,25 @@ function declaredMoves(
       );
       return how.read === "as_is" ? [] : [report];
    });
+}
+
+/**
+ * Whether a build of a column the source declares as `declared` writes
+ * `storedType`: the type that serves it ({@link storedTypeServesAs}), or one
+ * a warehouse answers in its place by design, which the read plan reads back
+ * as declared: a `date` truncation (or `date + interval`) as a timestamp
+ * without a zone, and a `boolean` over an integer flag as an integer.
+ */
+function builtForDeclaration(storedType: string, declared: string): boolean {
+   if (storedTypeServesAs(storedType, declared) !== false) return true;
+   const family = typeFamily(storedType);
+   if (declared === "date") {
+      return family === "timestamp" && !isZoned(storedType);
+   }
+   if (declared === "boolean") {
+      return family === "number" && /INT/i.test(storedType);
+   }
+   return false;
 }
 
 /** What a substituted table's moved columns must read as. */

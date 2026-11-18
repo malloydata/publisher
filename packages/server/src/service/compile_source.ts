@@ -734,22 +734,31 @@ async function compileFile(ctx: CompileContext): Promise<CompileSourceResult> {
    try {
       outcome = await loadPackageInWorker(ctx);
    } catch (error) {
-      if (error instanceof ServiceUnavailableError) {
-         return {
-            ...result,
-            problems: [
-               ...result.problems,
-               ...ctx.tagProblems([materializationCheckSkipped(error.message)]),
-            ],
-         };
-      }
-      // The file compiled on its own; another file's problem is the package
-      // scope's to report.
-      return result;
+      // The file compiled on its own, but the checks did not run (a worker
+      // outage, or another file the package cannot load): say so rather
+      // than answer clean. The package scope reports another file's problem.
+      return {
+         ...result,
+         problems: [
+            ...result.problems,
+            ...ctx.tagProblems([
+               materializationCheckSkipped(
+                  error instanceof ServiceUnavailableError
+                     ? error.message
+                     : "the package did not compile with this file in it",
+               ),
+            ]),
+         ],
+      };
    }
    const { collect, problems } = problemCollector(ctx.tagProblems);
    collect(result.problems);
-   collect(loadVerdictProblems(ctx, outcome, { withNearMiss: false }));
+   collect(
+      loadVerdictProblems(ctx, outcome, {
+         withNearMiss: false,
+         compileErrorsReported: false,
+      }),
+   );
    return { ...result, problems };
 }
 
@@ -789,15 +798,30 @@ function materializationCheckSkipped(reason: string): LogMessage {
 function loadVerdictProblems(
    ctx: CompileContext,
    outcome: Awaited<ReturnType<typeof loadPackageInWorker>>,
-   { withNearMiss }: { withNearMiss: boolean },
+   {
+      withNearMiss,
+      compileErrorsReported,
+   }: {
+      withNearMiss: boolean;
+      /** Whether the result carries every model's compile errors (package scope). */
+      compileErrorsReported: boolean;
+   },
 ): LogMessage[] {
    const workerPlan = outcome.buildPlan;
    if (!workerPlan) {
-      // A model that did not compile is reported on its own; otherwise the
-      // worker left the plan for the main thread, which a compile skips.
-      return outcome.models.some((m) => m.compilationError)
+      // The worker left the plan for the main thread, which a compile skips,
+      // or a model did not compile: at package scope that model's errors are
+      // reported; at file scope another file's are not, so the skip is said.
+      if (!outcome.models.some((m) => m.compilationError)) {
+         return [materializationCheckSkipped("the compile ran out of time")];
+      }
+      return compileErrorsReported
          ? []
-         : [materializationCheckSkipped("the compile ran out of time")];
+         : [
+              materializationCheckSkipped(
+                 "another file of the package does not compile",
+              ),
+           ];
    }
    if (!workerPlan.ok) return [materializationCheckSkipped(workerPlan.error)];
    const plan = workerPlan.outcome;
@@ -1313,6 +1337,7 @@ async function compilePackageDryRun(
    // annotations (an unmergeable rollup, a table name that never builds).
    for (const problem of loadVerdictProblems(ctx, outcome, {
       withNearMiss: true,
+      compileErrorsReported: true,
    })) {
       collect([problem], (problem as { model?: string }).model);
    }

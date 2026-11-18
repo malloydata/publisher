@@ -191,6 +191,26 @@ source: tracks is base_source extend {
       ).rejects.toThrow(refused[0]?.message as string);
    });
 
+   it("file: says the load's checks did not run when another file does not compile", async () => {
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "broken.malloy"),
+         "source: broken is nope.table('x')",
+      );
+      const summed = AVG_ROLLUP.replace("n.avg()", "n.max()");
+      const { problems } = await compile("tracks.malloy", summed, "file");
+      expect(problems.filter((p) => p.severity === "error")).toEqual([]);
+      expect(
+         problems.filter(
+            (p) =>
+               p.severity === "warn" &&
+               p.message.includes("did not run") &&
+               p.message.includes(
+                  "another file of the package does not compile",
+               ),
+         ),
+      ).toHaveLength(1);
+   });
+
    it("file: a mergeable rollup compiles clean", async () => {
       const summed = AVG_ROLLUP.replace("n.avg()", "n.max()");
       const { problems } = await compile("tracks.malloy", summed, "file");

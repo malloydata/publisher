@@ -136,6 +136,8 @@ export interface ConsideredVariant {
     * source name ({@link VariantSkipExplanation.members}).
     */
    members?: VariantSkipExplanation["members"];
+   /** The tables a `does_not_answer` skip is about ({@link VariantSkipExplanation.tableIds}). */
+   tableIds?: VariantSkipExplanation["tableIds"];
 }
 
 /**
@@ -299,7 +301,9 @@ async function decideRoute<Extra>(
 function explanationOf(
    variant: Variant<unknown>,
    error: unknown,
-): Partial<Pick<ConsideredVariant, "code" | "callerDetail" | "members">> {
+): Partial<
+   Pick<ConsideredVariant, "code" | "callerDetail" | "members" | "tableIds">
+> {
    try {
       const explained = variant.explain?.(error);
       if (!explained) return {};
@@ -309,6 +313,7 @@ function explanationOf(
             ? { callerDetail: explained.callerDetail }
             : {}),
          ...(explained.members ? { members: explained.members } : {}),
+         ...(explained.tableIds ? { tableIds: explained.tableIds } : {}),
       };
    } catch {
       return {};

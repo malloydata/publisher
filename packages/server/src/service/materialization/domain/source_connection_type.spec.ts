@@ -20,6 +20,9 @@ describe("unreadableSourceConnectionMessage", () => {
       const message = unreadableSourceConnectionMessage(source, "publisher");
       expect(message).toContain("'wh' is a 'publisher' connection");
       expect(message).toContain(
+         "this server holds no warehouse credentials for it",
+      );
+      expect(message).toContain(
          "A 'storage=' build runs on that host, not on this server.",
       );
       expect(message).toContain("answered live here");
