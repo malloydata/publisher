@@ -48,17 +48,7 @@ import {
 import { identifier } from "../../malloy_text";
 import { capabilitiesOf } from "../domain/dialect";
 
-/**
- * What this reads of the entry point's gate reads (`GateReads` in
- * `gate_reads.ts`, which re-exports this module's rules: declared here, so
- * the two modules do not import each other).
- */
-interface GateReads {
-   readonly unresolved: boolean;
-   readonly equalityOnly: boolean;
-   readonly entryPaths: readonly (readonly string[])[];
-   readonly entryPathsComplete: boolean;
-}
+import type { GateReads } from "./gate_reads_types";
 
 type Collation = "binary" | "deterministic" | "unknown";
 
@@ -376,7 +366,7 @@ interface StoredTable {
  * `equalityOnly` admits a deterministic collation; otherwise only binary.
  */
 export async function storedTableCollationRefusal(args: {
-   tables: readonly StoredTable[];
+   tables: readonly (StoredTable & { gateColumnTypes?: readonly string[] })[];
    answerRunnable: QueryMaterializer;
    virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
    /** The author's compile: a database table shares its source's dialect. */
@@ -384,6 +374,7 @@ export async function storedTableCollationRefusal(args: {
    reads: GateReads | undefined;
 }): Promise<string | undefined> {
    if (args.tables.length === 0) return undefined;
+   if (await comparesNoString(args)) return undefined;
    const sourceDialect = await entryDialectOf(args.authorRunnable);
    const equalityOnly = args.reads?.equalityOnly === true;
    const runtime = (
@@ -517,7 +508,9 @@ async function storedSide(
    const connection =
       await runtime.connections.lookupConnection(connectionName);
    if (t.tablePath === undefined) {
-      return read === "instance" ? duckdbCollation(connection, "") : "binary";
+      // No path to read the table's own columns by: the instance-wide check
+      // for DuckDB, and unknown elsewhere.
+      return read === "instance" ? duckdbCollation(connection, "") : "unknown";
    }
    return read === "instance"
       ? duckdbTableCollation(connection, t.tablePath)
@@ -540,4 +533,39 @@ async function entryConnectionOf(
    } catch {
       return undefined;
    }
+}
+
+/**
+ * Whether the entry point's gates and scopes compare no string column, so no
+ * stored table's collation can change what they admit: every compared path
+ * from the entry point is followed and none is a string (a lock alone
+ * compares none), or every table read is a `storage=` one whose gate columns
+ * are all listed and none is stored as a string. Any doubt reads false.
+ */
+async function comparesNoString(args: {
+   tables: readonly (StoredTable & { gateColumnTypes?: readonly string[] })[];
+   authorRunnable: QueryMaterializer;
+   reads: GateReads | undefined;
+}): Promise<boolean> {
+   const { reads } = args;
+   if (reads === undefined || reads.unresolved) return false;
+   if (reads.entryPathsComplete) {
+      try {
+         const prepared = await readPreparedQuery(args.authorRunnable);
+         const struct = resolveStructRefSource(
+            prepared.structRef as never,
+            prepared.modelDef as never,
+         );
+         const paths = stringPaths(struct, reads.entryPaths);
+         if (paths !== undefined && paths.length === 0) return true;
+      } catch {
+         // Fall through to the stored types.
+      }
+   }
+   return args.tables.every(
+      (t) =>
+         t.tier === "storage" &&
+         t.gateColumnTypes !== undefined &&
+         !t.gateColumnTypes.some(storedTypeIsString),
+   );
 }

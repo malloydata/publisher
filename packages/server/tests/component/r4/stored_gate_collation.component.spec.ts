@@ -416,3 +416,71 @@ for (const gatedSources of [false, true]) {
       });
    });
 }
+
+/**
+ * A collated table elsewhere in a DuckDB warehouse leaves an unrelated
+ * database rollup served: the stored-side check reads the rollup's own table,
+ * and a lock alone compares no string column at all. Before, one `COLLATE`
+ * anywhere in the instance sent every gated database rollup on it live.
+ */
+const UNRELATED_MODEL = `##! experimental { givens access_modifiers }
+given: REGION :: string
+given: ROLE :: string
+source: orders_raw is ${BIN} extend { primary_key: id }
+#(authorize) 'admin' = $ROLE
+source: lock_plain is orders_raw extend {
+  #(rollup) grain=["category"]
+  measure: total is amount.sum()
+}
+#(access_filter) region = $REGION
+source: filt_plain is orders_raw extend {
+  #(rollup) grain=["category", "region"]
+  measure: total is amount.sum()
+}
+source: orders_ci is ${CI} extend { primary_key: id }
+source: open_ci is orders_ci extend {
+  #(rollup) grain=["category", "region"]
+  measure: total is amount.sum()
+}
+`;
+
+describe("a collated table elsewhere in the warehouse leaves an unrelated database rollup served", () => {
+   let restore: () => void;
+   let loader: Awaited<ReturnType<typeof loadFixture>>;
+   let fixture: LoadedFixture;
+   const givens = { REGION: "east", ROLE: "admin" };
+   const query = (s: string) =>
+      `run: ${s} -> { group_by: category; aggregate: total; order_by: category }`;
+   const live = new Map<string, Outcome>();
+
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PERSIST_STORAGE_MODE: "on",
+            PUBLISHER_MATERIALIZE: "true",
+            PUBLISHER_MATERIALIZE_GATED_SOURCES: "false",
+         },
+      }).restore;
+      await freshLoadPool();
+      loader = await loadFixture({ "m.malloy": UNRELATED_MODEL });
+      for (const s of ["lock_plain", "filt_plain"]) {
+         live.set(s, await loader.run("m.malloy", query(s), givens));
+      }
+      fixture = await loader.bind({ includeRollups: true });
+   }, 900_000);
+
+   afterAll(async () => {
+      await fixture?.dispose();
+      await loader?.dispose().catch(() => {});
+      restore?.();
+      await freshLoadPool();
+   });
+
+   for (const s of ["lock_plain", "filt_plain"]) {
+      it(`${s}: is answered from its rollup, equal to live`, async () => {
+         const got = await fixture.run("m.malloy", query(s), givens);
+         expect(difference(live.get(s)!, got)).toBeUndefined();
+         expect("answer" in got && got.answer.servedBy).toBe("rollup");
+      });
+   }
+});

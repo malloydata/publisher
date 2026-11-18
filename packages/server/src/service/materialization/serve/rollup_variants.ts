@@ -254,6 +254,12 @@ interface RollupAnswer {
    /** For a `storage=` rollup: its binding. */
    binding?: Binding;
    /**
+    * For a database rollup: the table the build manifest substitutes, as
+    * the compiled SQL names it, so a check of the stored table's own
+    * definition (its collation) reads that table.
+    */
+   databaseTablePath?: string;
+   /**
     * Every stored table the answer reads, when that is more than the
     * rollup's: a join branch answered in a storage destination reads the query
     * source's table there too, whose binding decides whether a failed run
@@ -1052,7 +1058,11 @@ export class RollupVariantServe {
             "the rollup has no fresh table",
          );
       }
-      return { runnable, rollupSourceName: plan.rollupSourceName };
+      return {
+         runnable,
+         rollupSourceName: plan.rollupSourceName,
+         databaseTablePath: databaseTable,
+      };
    }
 
    /**
@@ -1397,6 +1407,9 @@ export class RollupVariantServe {
          rollupSourceName: plan.rollupSourceName,
          ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
          ...(table.binding ? { binding: table.binding } : {}),
+         ...(!table.virtualMap && databaseTable
+            ? { databaseTablePath: databaseTable }
+            : {}),
          ...(variant.modelDef && variant.cacheScope
             ? {
                  graftScope: {
