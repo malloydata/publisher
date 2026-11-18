@@ -172,7 +172,7 @@ describe("a version bound to a manifest on this server's disk", () => {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-               sqlStatement: `CREATE OR REPLACE TABLE ${BOUND_TABLE} AS SELECT 'c' || i AS category, 1 AS total_orders, 1.0 AS total_revenue FROM range(${BOUND_ROWS}) t(i)`,
+               sqlStatement: `CREATE OR REPLACE TABLE ${BOUND_TABLE} AS SELECT 'c' || i AS category, 1::BIGINT AS total_orders, 1::BIGINT AS total_revenue FROM range(${BOUND_ROWS}) t(i)`,
             }),
          },
       );

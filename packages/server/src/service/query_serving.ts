@@ -124,11 +124,20 @@ export function variantsOf(
    args: { modelPath: string },
 ): Variant<LegAnswer>[] {
    const switches = gateSwitches();
-   // What the entry point's gates read, from the author's compile: read once
-   // per query, and only when an answer past a gate read a `storage=` table.
-   let reads: Promise<GateReads | undefined> | undefined;
-   const gateReadsOnce = () =>
-      (reads ??= gateReadsOfQuery(facts.authorRunnable));
+   // What the entry point's gates and row scope read, from the author's
+   // compile: read once per set of stored sources an answer read (a `where:`
+   // inside one was applied by its build), and only when needed.
+   const reads = new Map<string, Promise<GateReads | undefined>>();
+   const gateReadsFor: GateReadsFor = (tables) => {
+      const stored = storedSourceIDs(tables);
+      const key = [...stored].sort().join("\n");
+      let r = reads.get(key);
+      if (r === undefined) {
+         r = gateReadsOfQuery(facts.authorRunnable, stored);
+         reads.set(key, r);
+      }
+      return r;
+   };
    return legs.map((leg) => {
       // A leg with no row in the gate policy (the query leg) is never tried
       // past an entry-point gate: the policy fails closed.
@@ -147,7 +156,7 @@ export function variantsOf(
                gateLeg,
                await withGateColumnTypes(
                   answer.gateTablesRead ?? answer.tablesRead ?? [],
-                  gateReadsOnce,
+                  gateReadsFor,
                ),
                switches,
                SERVING_GATE_CONTEXT,
@@ -155,7 +164,7 @@ export function variantsOf(
          attempt: async () => {
             const answer = await leg.attempt(facts, pinned);
             if (leg.kind === "served") {
-               await assertRowScopeExact(answer, gateReadsOnce);
+               await assertRowScopeExact(answer, gateReadsFor);
             }
             if (leg.kind === "served") {
                logger.debug("Serving query from the served copy (virtual)", {
@@ -174,6 +183,23 @@ export function variantsOf(
    });
 }
 
+/** What the gates and row scope read, given the tables an answer read. */
+type GateReadsFor = (
+   tables: readonly TableRead[],
+) => Promise<GateReads | undefined>;
+
+/** The sources (by `sourceID`) whose stored tables `tables` are. */
+function storedSourceIDs(tables: readonly TableRead[]): Set<string> {
+   const ids = new Set<string>();
+   for (const t of tables) {
+      for (const id of (t as Partial<Pick<Binding, "sourceIDs">>).sourceIDs ??
+         []) {
+         ids.add(id);
+      }
+   }
+   return ids;
+}
+
 /**
  * Each `storage=` table an answer read, with the stored types of the columns
  * the entry point's gates read (`gateColumnTypes`), for the gate policy's
@@ -183,7 +209,7 @@ export function variantsOf(
  */
 async function withGateColumnTypes(
    tables: readonly TableRead[],
-   gateReadsOnce: () => Promise<GateReads | undefined>,
+   gateReadsFor: GateReadsFor,
 ): Promise<readonly TableRead[]> {
    const retyped = (t: TableRead) =>
       (t as Partial<Pick<Binding, "retypedColumns">>).retypedColumns ?? [];
@@ -191,7 +217,7 @@ async function withGateColumnTypes(
    if (storage.length === 0 && !tables.some((t) => retyped(t).length > 0)) {
       return tables;
    }
-   const reads = await gateReadsOnce();
+   const reads = await gateReadsFor(tables);
    // Judged together: a gate column held by none of the storage tables the
    // answer read leaves every one of them unproven.
    const types = gateColumnTypesOf(
@@ -232,12 +258,12 @@ async function withGateColumnTypes(
  */
 async function assertRowScopeExact(
    answer: LegAnswer,
-   gateReadsOnce: () => Promise<GateReads | undefined>,
+   gateReadsFor: GateReadsFor,
 ): Promise<void> {
    const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
-   const judged = await withGateColumnTypes(tables, gateReadsOnce);
+   const judged = await withGateColumnTypes(tables, gateReadsFor);
    if (judged === tables) return;
-   const reads = await gateReadsOnce();
+   const reads = await gateReadsFor(tables);
    // A gated entry point's scope is judged by the gate policy, past the gate
    // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
    if (reads !== undefined && (!reads.scoped || reads.gated)) return;
