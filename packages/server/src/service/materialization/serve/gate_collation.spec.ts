@@ -11,6 +11,7 @@ import {
    duckdbTableCollation,
    postgresCollation,
    postgresTableCollation,
+   unfinalizedPostgresSQL,
 } from "./gate_collation";
 
 describe("a DuckDB source's string comparison", () => {
@@ -180,6 +181,19 @@ describe("an equality-only comparison", () => {
    });
 });
 
+describe("a Postgres probe's SQL", () => {
+   it("reads the stage Malloy's final stage wraps, and leaves other SQL alone", () => {
+      const stage = `WITH __stage0 AS (\n  SELECT \n     (base."c") as "probe_value"\n  FROM t as base\n  LIMIT 1\n)\n`;
+      expect(
+         unfinalizedPostgresSQL(
+            `${stage}SELECT row_to_json(finalStage) as row FROM __stage0 AS finalStage`,
+         ),
+      ).toBe(`${stage}SELECT * FROM __stage0`);
+      const plain = "SELECT c AS probe_value FROM t";
+      expect(unfinalizedPostgresSQL(plain)).toBe(plain);
+   });
+});
+
 const url = process.env.PUBLISHER_TEST_POSTGRES_URL;
 
 describe.skipIf(!url)("a Postgres column's collation", () => {
@@ -288,6 +302,24 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
             reads: undefined,
          }),
       ).toBeDefined();
+   });
+
+   it("reads a column through a query Malloy compiled, as the probe sends it", async () => {
+      const { sql } = await new SingleConnectionRuntime({ connection: pg })
+         .loadModel(`source: s is pg.table('public.gate_coll_t')`)
+         .loadQuery("run: s -> { select: probe_value is c_bin; limit: 1 }")
+         .getPreparedResult();
+      // Malloy wraps a Postgres query's rows as one JSON column, which has
+      // no `probe_value` to read.
+      await expect(
+         postgresCollation(pg as unknown as Connection, sql),
+      ).rejects.toThrow();
+      expect(
+         await postgresCollation(
+            pg as unknown as Connection,
+            unfinalizedPostgresSQL(sql),
+         ),
+      ).toBe("binary");
    });
 
    it("reads an empty source's column too", async () => {

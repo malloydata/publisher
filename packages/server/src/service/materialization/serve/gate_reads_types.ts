@@ -37,7 +37,9 @@ export interface GateReads {
    /**
     * Every comparison the gates and scopes make, and every computed field they
     * read through, is an equality (`=`, `!=`, `in`, `is null`) over fields,
-    * givens and literals ({@link equalityOnlyExpr}). Equality is byte-exact
+    * givens and literals ({@link equalityOnlyExpr}), or compares only values
+    * that are not strings (`amount > 100`, read as `comparesNoString` reads
+    * a leaf), which no collation orders. Equality is byte-exact
     * under a deterministic collation; anything else (an ordering, a pattern,
     * a function) compares as the column's collation orders it, so it holds
     * on a stored copy only where that collation is binary.

@@ -1454,8 +1454,12 @@ function v1RollupRefusals(
          );
          return [];
       }
-      return [
-         {
+      const sourceID = violation.sourceID;
+      // One per table its declarations would have built, so each names its
+      // own tier, as a `#(rollup)` refusal does.
+      const tables = violation.tables?.length ? violation.tables : [undefined];
+      return tables.map(
+         (table): PackageAnnotationFinding => ({
             route: "@",
             tier: "unservable",
             code: ROLLUP_NOT_BUILT_CODE,
@@ -1463,13 +1467,14 @@ function v1RollupRefusals(
             subject: violation.fieldName ?? violation.sourceName,
             model: modelPath,
             refused: measureRefusalKey(
-               violation.sourceID,
+               sourceID,
                violation.sourceName,
                violation.fieldName,
                reason,
+               table,
             ),
-         },
-      ];
+         }),
+      );
    });
 }
 

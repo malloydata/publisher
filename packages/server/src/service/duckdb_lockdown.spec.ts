@@ -819,6 +819,33 @@ describe("a networked instance with a DuckLake catalog: setup, then lock", () =>
    });
 });
 
+describe("two lookups locking one instance at once", () => {
+   it("both settle, the second finding the instance the first locked", async () => {
+      const connection = new DuckDBConnection({
+         name: "concurrent_lock",
+         databasePath: ":memory:",
+         ...networkedDuckDBOptions("ducklake", "spec-concurrent"),
+      });
+      try {
+         // Two queries' connection lookups reach a fresh instance together.
+         await Promise.all([
+            lockDownDuckDBSession(connection),
+            lockDownDuckDBSession(connection),
+            lockDownDuckDBSession(connection),
+         ]);
+         expect(
+            rowsOf(
+               await connection.runSQL(
+                  "SELECT current_setting('lock_configuration') AS v",
+               ),
+            ),
+         ).toEqual([{ v: true }]);
+      } finally {
+         await connection.close();
+      }
+   });
+});
+
 describe("a MotherDuck connection whose lock fails", () => {
    /** A session that answers like an unlocked instance and fails on `failOn`. */
    const stubSession = (failOn: RegExp) =>
