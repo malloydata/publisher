@@ -187,3 +187,31 @@ export function judge(
    }
    return { answeredBy, tolerated };
 }
+
+/**
+ * For a case a warehouse expects live by design: why it does not hold, or
+ * undefined when it does. The build must have succeeded (a broken `storage=`
+ * build also answers live, and must not pass as the decline), and the served
+ * answer must carry the decline named: its reason, and its detail when one
+ * is named.
+ */
+export function expectedSkipFailure(
+   served: Outcome | undefined,
+   skip: { reason: string; detail?: string },
+   buildStatus: string | undefined,
+): string | undefined {
+   if (buildStatus !== "MANIFEST_FILE_READY") {
+      return `expected a built stored copy that declines, but the build is ${buildStatus ?? "absent"}`;
+   }
+   if (!served || "error" in served) return "not run";
+   const got = served.answer.servedSkip ?? served.answer.viewSkip;
+   if (
+      got?.reason !== skip.reason ||
+      (skip.detail !== undefined && got?.detail !== skip.detail)
+   ) {
+      return `expected the stored copy declined with ${skip.reason}${
+         skip.detail ? ` (${skip.detail})` : ""
+      }, got ${got ? `${got.reason ?? "-"}${got.detail ? ` (${got.detail})` : ""}` : "no skip"}`;
+   }
+   return undefined;
+}

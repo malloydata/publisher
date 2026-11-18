@@ -44,7 +44,11 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Environment } from "../../../src/service/environment";
-import { type Verdict, judge } from "./conformance/warehouse/compare";
+import {
+   expectedSkipFailure,
+   judge,
+   type Verdict,
+} from "./conformance/warehouse/compare";
 import { createFixtureTables } from "./conformance/warehouse/fixture_data";
 import {
    createScratch,
@@ -232,19 +236,29 @@ for (const target of targets) {
                   });
                   cases.push({ shape: shape.name, variant, tag, run });
                   shape.queries.forEach((q, i) => {
-                     const { want, because } = expectedTier(
+                     const { want, because, skip } = expectedTier(
                         shape,
                         q,
                         variant,
                         dialect,
                      );
-                     const verdict = run!.loadError
+                     const verdict: Verdict = run!.loadError
                         ? {
                              failure: `load: ${run!.loadError}`,
                              answeredBy: "-",
                              tolerated: [],
                           }
                         : judge(run!.live[i], run!.served[i], want, variant);
+                     // A warehouse's own expected-live case: live's answer
+                     // alone proves nothing, so the copy must have been built
+                     // and declined for the reason named.
+                     if (skip && !verdict.failure) {
+                        verdict.failure = expectedSkipFailure(
+                           run!.served[i],
+                           skip,
+                           run!.build?.status,
+                        );
+                     }
                      verdicts[i] = verdict;
                      const gap = warehouseGapFor(shape, q, variant, dialect);
                      results.push({
@@ -321,12 +335,14 @@ for (const target of targets) {
 }
 
 /**
- * Key material, wherever an error message or a warning might have carried
- * it: a PEM block, and a key JSON's `private_key` field.
+ * Key material and the Snowflake account, wherever an error message or a
+ * warning might have carried them: the account in any case form, a PEM
+ * block, and a key JSON's `private_key` field.
  */
 function scrubSecrets(text: string): string {
+   const account = accountPattern();
    return (
-      text
+      (account ? text.replace(account, "[redacted account]") : text)
          .replace(/^.*::add-mask::.*$/gm, "[redacted mask command]")
          // A key body without its PEM lines: no hash or id this suite
          // writes runs this long.
@@ -345,6 +361,25 @@ function scrubSecrets(text: string): string {
             "$1[redacted]",
          )
    );
+}
+
+/**
+ * The Snowflake account as a connection error may spell it, in any case: as
+ * configured, and with `_` and `-` swapped (its URL form). Undefined when no
+ * account is set.
+ */
+function accountPattern(): RegExp | undefined {
+   const account = process.env.SNOWFLAKE_ACCOUNT?.trim();
+   if (!account) return undefined;
+   const escape = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   const forms = [
+      ...new Set([
+         account,
+         account.replace(/_/g, "-"),
+         account.replace(/-/g, "_"),
+      ]),
+   ].sort((x, y) => y.length - x.length);
+   return new RegExp(forms.map(escape).join("|"), "gi");
 }
 
 /** One cell of the summary: how a shape fared on one tier. */

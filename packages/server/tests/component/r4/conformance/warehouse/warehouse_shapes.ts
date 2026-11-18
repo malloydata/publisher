@@ -396,10 +396,21 @@ export function renderWarehouseFiles(
 }
 
 /**
+ * The skip the served answer must carry when a stored copy was built and then
+ * declined: its `considered` entry's reason, and its detail when it has one.
+ */
+export interface ExpectedSkip {
+   reason: string;
+   detail?: string;
+}
+
+/**
  * A case a warehouse answers at another tier than the DuckDB fixture does,
  * by design: `expect` replaces the shared shape's for the dialects and
- * variants in `on`. Not a gap: the answer is still compared with live, and
- * a case that starts to be served fails until this is updated.
+ * variants in `on`. Not a gap: the answer is still compared with live, the
+ * case's build must have succeeded, and the served answer must carry `skip`,
+ * so a broken build or another decline cannot pass as this one. A case that
+ * starts to be served fails until this is updated.
  */
 interface WarehouseExpect {
    shape: string;
@@ -407,23 +418,54 @@ interface WarehouseExpect {
    queries?: string[];
    on: `${Dialect}:${Variant}`[];
    expect: Expect;
+   skip: ExpectedSkip;
    because: string;
 }
 
 /**
- * The stored-comparison rules (#1880, #1884): a `storage=` copy compares
- * strings byte-exact, so a gate or a `where:` scope over a string column is
- * kept only where the source's collation is read as binary. Snowflake's is
- * not read (a column can carry its own COLLATE), so it fails closed.
+ * The stored-comparison rules (#1880, #1884; serve/gate_collation.ts): a
+ * `storage=` copy compares strings byte-exact, so a gate or a `where:` scope
+ * over a string column is kept only where the source's collation is read as
+ * binary. Snowflake's is not read (`stringCollation` absent: "a dialect whose
+ * collation is not read"), so it fails closed. That reason stays inside the
+ * serving path; the answer carries the decline it causes, below.
  */
 const SNOWFLAKE_STRING_SCOPE =
-   "#1880/#1884: Snowflake's collation is not read, so a storage= copy past a gate or where: scope over a string column fails closed and answers live";
+   "#1880/#1884: Snowflake's collation is not read (gate_collation.ts, 'a dialect whose collation is not read'), so a storage= copy past a gate or where: scope over a string column fails closed and answers live";
+
+/** A row scope the comparison rules decline (query_serving.ts, assertRowScopeExact). */
+const SCOPE_DECLINED: ExpectedSkip = {
+   reason: "NOT_SERVED",
+   detail:
+      "the query's source scopes its rows by a column a stored table does not compare as its source does",
+};
+
+/** An entry-point gate whose stored table the comparison rules do not keep (keepsContractsFor). */
+const GATE_DECLINED: ExpectedSkip = { reason: "ROW_LEVEL_GATE" };
 
 const WAREHOUSE_EXPECT: WarehouseExpect[] = [
    {
       shape: "givens and access filters",
+      queries: [
+         "a per-caller where:, one caller",
+         "a per-caller where:, another caller",
+      ],
       on: ["snowflake:storage", "snowflake:materialize"],
       expect: "live",
+      skip: SCOPE_DECLINED,
+      because: SNOWFLAKE_STRING_SCOPE,
+   },
+   {
+      shape: "givens and access filters",
+      queries: [
+         "an access-filtered extension",
+         "an access-filtered persisted source",
+         "an access-filtered persisted source, another caller",
+         "an access-filtered extension, another caller",
+      ],
+      on: ["snowflake:storage", "snowflake:materialize"],
+      expect: "live",
+      skip: GATE_DECLINED,
       because: SNOWFLAKE_STRING_SCOPE,
    },
    {
@@ -436,12 +478,14 @@ const WAREHOUSE_EXPECT: WarehouseExpect[] = [
       ],
       on: ["snowflake:storage", "snowflake:materialize"],
       expect: "live",
+      skip: SCOPE_DECLINED,
       because: SNOWFLAKE_STRING_SCOPE,
    },
    {
       shape: "materialize: a refined source",
       on: ["snowflake:materialize"],
       expect: "live",
+      skip: SCOPE_DECLINED,
       because: SNOWFLAKE_STRING_SCOPE,
    },
    {
@@ -449,16 +493,24 @@ const WAREHOUSE_EXPECT: WarehouseExpect[] = [
       queries: ["a query-shaped source over an extension"],
       on: ["postgres:storage", "postgres:materialize"],
       expect: "live",
+      skip: SCOPE_DECLINED,
       because:
          "#1880/#1884: the Postgres collation probe does not reach a where: read through a query stage's base, so the storage= copy fails closed and answers live",
    },
    {
+      // A KNOWN OVER-CONSERVATIVE CASE, not a design choice: the scope
+      // compares a timestamp with `now - 3650 days` and no string at all, but
+      // `now - N days` is not on the comparison rules' allow-list
+      // (GateReads.comparesNoString), so off a binary-collation warehouse the
+      // copy fails closed. The answer is right (live's); when the rules learn
+      // to read that term, this case is served again and this entry goes.
       shape: "persist with a rolling window",
       queries: ["a window in the extend block"],
       on: ["snowflake:storage", "postgres:storage"],
       expect: "live",
+      skip: SCOPE_DECLINED,
       because:
-         "#1880/#1884: the scope's `now - 3650 days` term is not one the rules read as comparing no string, so off a binary-collation warehouse the storage= copy fails closed and answers live",
+         "#1880/#1884, over-conservative: the scope's `now - 3650 days` term compares no string but is not on the rules' allow-list, so off a binary-collation warehouse the storage= copy fails closed and answers live",
    },
 ];
 
@@ -471,14 +523,14 @@ export function expectedTier(
    query: ConformanceQuery,
    variant: Variant,
    dialect: Dialect,
-): { want: Expect; because?: string } {
+): { want: Expect; because?: string; skip?: ExpectedSkip } {
    const own = WAREHOUSE_EXPECT.find(
       (e) =>
          e.shape === shape.name &&
          (!e.queries || e.queries.includes(query.name)) &&
          e.on.includes(`${dialect}:${variant}`),
    );
-   if (own) return { want: own.expect, because: own.because };
+   if (own) return { want: own.expect, because: own.because, skip: own.skip };
    return {
       want:
          typeof query.expect === "string"

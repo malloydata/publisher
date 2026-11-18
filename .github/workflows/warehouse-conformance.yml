@@ -9,27 +9,33 @@
 # packages/server/tests/component/r4/warehouse_conformance.component.spec.ts
 # is the suite; its header says what it covers and how to read a failure.
 #
-# Credentials are the org CI secrets the repo already uses:
-#  - BigQuery: BQ_PRESTO_TRINO_KEY, a service-account key, set up as
-#    connection-integration-tests.yml does. It creates a dataset per run in the
+# Credentials:
+#  - BigQuery: BQ_PRESTO_TRINO_KEY, a service-account key this repo already
+#    uses, set up as connection-integration-tests.yml does. It creates a dataset per run in the
 #    key's own project, so it needs bigquery.datasets.create there (and
 #    bigquery.readsessions.create for the storage= tier's Storage Read API
 #    passthrough); the run's first step says which is missing.
 #    If it may not, the repository variable WAREHOUSE_CONFORMANCE_BQ_DATASET
 #    can name a dataset it can create tables in, and the run uses run-prefixed
 #    tables there.
-#  - Snowflake: SNOW_CI_ACCOUNT and SNOW_CI_KEY, Malloy CI's key-pair user
-#    MALLOY_CI with role MALLOY_CI_ROLE, on the shared warehouse MALLOY_CI_WH.
+#  - Snowflake: SNOW_CI_ACCOUNT and SNOW_CI_KEY, new to this repo and shared
+#    with malloydata/malloy's CI: its key-pair user MALLOY_CI with role
+#    MALLOY_CI_ROLE, on the shared warehouse MALLOY_CI_WH.
 #    It creates a schema per run in MALLOYTEST; it never writes into
 #    malloytest, the schema Malloy's CI reads, so a role without CREATE SCHEMA
 #    fails setup with that grant named.
 #
-# The Snowflake key reaches only the step that prepares it: decoded,
-# re-wrapped and masked there, and handed to the test as a file. The account
-# reaches only the test and cleanup steps. The test's output goes to the job
-# log alone; the artifact is the spec's JSON report and summary, scrubbed,
-# and checked for key-shaped text and for any piece of either key before it
-# is posted or uploaded.
+# The Snowflake key secret is set on one step only, which decodes, re-wraps
+# and masks it and writes it to a file under RUNNER_TEMP (mode 600). That
+# file then stays on disk until the cleanup step: the test and the checks
+# read it, and so could any later step's code, which on a pull request is the
+# pull request's own. Containment here is masking and the artifact checks,
+# not isolation from the code under test. The driver is fetched before the
+# key file exists. The account is set on the masking, test, cleanup and check
+# steps. The test's output goes to the job log alone; the artifact is the
+# spec's JSON report and summary, scrubbed, and checked for a PEM header, for
+# any piece of either key, and for the account in any case before it is
+# posted or uploaded.
 #
 # Cost: a few hundred rows in all. Every native BigQuery job carries
 # maximumBytesBilled (1 GiB); the warehouse is shared with Malloy's CI, so the
@@ -67,7 +73,7 @@ on:
       - ".github/workflows/warehouse-conformance.yml"
 
 env:
-  BUN_VERSION: 1.3.13
+  BUN_VERSION: 1.4.4
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
@@ -94,6 +100,12 @@ jobs:
                && github.event.label.name == 'warehouse-conformance')
               || (github.event.action != 'labeled'
                   && contains(github.event.pull_request.labels.*.name, 'warehouse-conformance'))))
+    # The secrets live in a GitHub environment, not the repository or the
+    # organization: `warehouse-conformance` deploys from main only (the
+    # schedule, and a dispatch from main), and `warehouse-conformance-pr`
+    # needs a reviewer's approval before a labelled pull request's run reads
+    # them. The PR body's setup list says how to create both.
+    environment: ${{ github.event_name == 'pull_request' && 'warehouse-conformance-pr' || 'warehouse-conformance' }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     strategy:
@@ -144,6 +156,8 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+          # This job holds secrets: restore no cache another branch could write.
+          no-cache: true
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -154,14 +168,16 @@ jobs:
         env:
           BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
         run: |
+          set -euo pipefail
+          umask 077
           if [ -z "$BQ_PRESTO_TRINO_KEY" ]; then
             echo "BQ_PRESTO_TRINO_KEY is not available to this run"
             exit 0
           fi
-          if echo "$BQ_PRESTO_TRINO_KEY" | grep -qE '^\s*eyJ'; then
-            echo "$BQ_PRESTO_TRINO_KEY" | base64 --decode > "$RUNNER_TEMP/bq-credentials.json"
+          if [[ "$BQ_PRESTO_TRINO_KEY" =~ ^[[:space:]]*eyJ ]]; then
+            printf '%s\n' "$BQ_PRESTO_TRINO_KEY" | base64 --decode > "$RUNNER_TEMP/bq-credentials.json"
           else
-            echo "$BQ_PRESTO_TRINO_KEY" > "$RUNNER_TEMP/bq-credentials.json"
+            printf '%s\n' "$BQ_PRESTO_TRINO_KEY" > "$RUNNER_TEMP/bq-credentials.json"
           fi
           jq . "$RUNNER_TEMP/bq-credentials.json" > /dev/null
           # A base64 secret is masked as stored, not decoded: mask the key's
@@ -189,61 +205,12 @@ jobs:
           fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      # The key is decoded, re-wrapped and converted here, in a step of its
-      # own, and every line of every form it takes is masked before any later
-      # step runs: a mask command printed by the test process would land in
-      # whatever keeps that output. The test reads the key from a file.
-      - name: Prepare Snowflake key
-        if: steps.snowflake.outputs.ready == 'true'
-        env:
-          SNOW_CI_KEY: ${{ secrets.SNOW_CI_KEY }}
-        run: |
-          set -euo pipefail
-          umask 077
-          dir="$RUNNER_TEMP/snowflake"
-          mkdir -p "$dir"
-          raw="$dir/raw"
-          printf '%s\n' "$SNOW_CI_KEY" > "$raw"
-          mask_lines() {
-            while IFS= read -r line; do
-              line="${line//[[:space:]]/}"
-              case "$line" in ""|-----*) ;; *) echo "::add-mask::$line" ;; esac
-            done < "$1"
-          }
-          mask_lines "$raw"
-          # A PEM as stored, a PEM base64-encoded whole, or a bare PKCS#8 body.
-          if grep -q -- '-----BEGIN' "$raw"; then
-            pem="$raw"
-          elif base64 -d < "$raw" > "$dir/decoded" 2>/dev/null && grep -q -- '-----BEGIN' "$dir/decoded"; then
-            pem="$dir/decoded"
-          else
-            pem=""
-          fi
-          if [ -n "$pem" ]; then
-            mask_lines "$pem"
-            kind=$(grep -o -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$pem" | head -1 | sed -E 's/-----BEGIN (.*)-----/\1/')
-            sed -E -e 's/-----(BEGIN|END) [A-Z ]*PRIVATE KEY-----//g' "$pem" | tr -d ' \t\r\n' > "$dir/body"
-          else
-            kind="PRIVATE KEY"
-            tr -d ' \t\r\n' < "$raw" > "$dir/body"
-          fi
-          { echo "-----BEGIN $kind-----"; fold -w 64 "$dir/body"; echo; echo "-----END $kind-----"; } \
-            | sed '/^$/d' > "$dir/key.pem"
-          # PKCS#1 is converted to the PKCS#8 the driver takes, here rather
-          # than in the server, so the converted form is masked too.
-          if [ "$kind" = "RSA PRIVATE KEY" ]; then
-            openssl pkcs8 -topk8 -nocrypt -in "$dir/key.pem" -out "$dir/key8.pem"
-            mv "$dir/key8.pem" "$dir/key.pem"
-          fi
-          mask_lines "$dir/key.pem"
-          rm -f "$raw" "$dir/decoded" "$dir/body"
-          echo "SNOWFLAKE_PRIVATE_KEY_PATH=$dir/key.pem" >> "$GITHUB_ENV"
-
       # The storage= tier reads Snowflake through DuckDB's snowflake extension,
       # which needs the ADBC driver beside it; INSTALL does not bring it, and
       # without it every snowflake_query() fails. Installed as the Dockerfile
       # installs it (its adbc-driver stage and the copy beside each extension):
-      # the same release, digests and shim.
+      # the same release, digests and shim. Before the key is written, so no
+      # key file is on disk while it fetches.
       - name: Install the ADBC Snowflake driver
         if: steps.snowflake.outputs.ready == 'true'
         env:
@@ -277,6 +244,75 @@ jobs:
           echo "snowflake extensions: $ext, shims: $shims, drivers: $real"
           test "$ext" -gt 0 && test "$shims" -eq "$ext" && test "$real" -eq "$ext"
 
+      # The key is decoded, re-wrapped and converted here, in a step of its
+      # own, and every line of every form it takes is masked before any later
+      # step runs: a mask command printed by the test process would land in
+      # whatever keeps that output. The test reads the key from a file.
+      - name: Prepare Snowflake key
+        if: steps.snowflake.outputs.ready == 'true'
+        env:
+          SNOW_CI_KEY: ${{ secrets.SNOW_CI_KEY }}
+          SNOW_CI_ACCOUNT: ${{ secrets.SNOW_CI_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          umask 077
+          # The account as a connection error may spell it: in either case,
+          # and with _ and - swapped (its URL form).
+          for form in "$SNOW_CI_ACCOUNT" "${SNOW_CI_ACCOUNT//_/-}" "${SNOW_CI_ACCOUNT//-/_}"; do
+            echo "::add-mask::$form"
+            echo "::add-mask::${form,,}"
+            echo "::add-mask::${form^^}"
+          done
+          dir="$RUNNER_TEMP/snowflake"
+          mkdir -p "$dir"
+          raw="$dir/raw"
+          printf '%s\n' "$SNOW_CI_KEY" > "$raw"
+          # Every piece of key text in a file, however it is laid out: one
+          # PEM line per line, a whole PEM on one line, or lines joined by a
+          # literal \n. Markers become breaks, so the body around them is
+          # masked; a piece longer than a PEM line is masked whole and in
+          # 64-character lines too.
+          mask_lines() {
+            sed -e 's/\\n/\n/g' -e 's/-----[A-Z ]*-----/\n/g' "$1" | tr -s ' \t\r' '\n' \
+              | while IFS= read -r piece; do
+                  [ "${#piece}" -ge 8 ] || continue
+                  echo "::add-mask::$piece"
+                  if [ "${#piece}" -gt 64 ]; then
+                    printf '%s\n' "$piece" | fold -w 64 | while IFS= read -r line; do
+                      if [ "${#line}" -ge 8 ]; then echo "::add-mask::$line"; fi
+                    done
+                  fi
+                done
+          }
+          mask_lines "$raw"
+          # A PEM as stored, a PEM base64-encoded whole, or a bare PKCS#8 body.
+          if grep -q -- '-----BEGIN' "$raw"; then
+            pem="$raw"
+          elif base64 -d < "$raw" > "$dir/decoded" 2>/dev/null && grep -q -- '-----BEGIN' "$dir/decoded"; then
+            pem="$dir/decoded"
+          else
+            pem=""
+          fi
+          if [ -n "$pem" ]; then
+            mask_lines "$pem"
+            kind=$(grep -o -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$pem" | head -1 | sed -E 's/-----BEGIN (.*)-----/\1/')
+            sed -E -e 's/\\n//g' -e 's/-----(BEGIN|END) [A-Z ]*PRIVATE KEY-----//g' "$pem" | tr -d ' \t\r\n' > "$dir/body"
+          else
+            kind="PRIVATE KEY"
+            tr -d ' \t\r\n' < "$raw" > "$dir/body"
+          fi
+          { echo "-----BEGIN $kind-----"; fold -w 64 "$dir/body"; echo; echo "-----END $kind-----"; } \
+            | sed '/^$/d' > "$dir/key.pem"
+          # PKCS#1 is converted to the PKCS#8 the driver takes, here rather
+          # than in the server, so the converted form is masked too.
+          if [ "$kind" = "RSA PRIVATE KEY" ]; then
+            openssl pkcs8 -topk8 -nocrypt -in "$dir/key.pem" -out "$dir/key8.pem"
+            mv "$dir/key8.pem" "$dir/key.pem"
+          fi
+          mask_lines "$dir/key.pem"
+          rm -f "$raw" "$dir/decoded" "$dir/body"
+          echo "SNOWFLAKE_PRIVATE_KEY_PATH=$dir/key.pem" >> "$GITHUB_ENV"
+
       - name: Skip without credentials
         if: steps.bigquery.outputs.ready != 'true' && steps.snowflake.outputs.ready != 'true'
         run: |
@@ -307,39 +343,72 @@ jobs:
           cd packages/server
           bun ./tests/component/r4/conformance/warehouse/sweep.ts --run-id "$WAREHOUSE_CONFORMANCE_RUN_ID"
 
-      # Only the spec's report and summary are kept, both scrubbed by the spec;
-      # scrubbed again here (mask commands, PEM markers, long base64 runs, key
-      # fields), then checked for those and for any piece of the keys
-      # themselves: a file that still holds any of it fails the job and is
-      # neither posted nor uploaded.
+      # Only the spec's report and summary are kept, both scrubbed by the spec.
+      # Fail closed first on what the spec's scrub should have removed: a PEM
+      # header line. Then scrub again here (mask commands, PEM markers, long
+      # base64 runs, key field names, the account in any case and form), and
+      # check for any piece of either key and for the account: a file that
+      # still holds one fails the job and is neither posted nor uploaded.
       - name: Scrub and check the results
         id: scrub
         if: always() && steps.run.outcome != 'skipped'
+        env:
+          SNOW_CI_ACCOUNT: ${{ matrix.dialect == 'snowflake' && secrets.SNOW_CI_ACCOUNT || '' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
+          umask 077
           mkdir -p "$WAREHOUSE_CONFORMANCE_OUT"
           find "$WAREHOUSE_CONFORMANCE_OUT" -type f ! -name '*.json' ! -name '*.md' -delete
           files=("$WAREHOUSE_CONFORMANCE_OUT"/*.json "$WAREHOUSE_CONFORMANCE_OUT"/*.md)
+          leaked=0
+          refuse() {
+            echo "::error::$(basename "$1") still holds $2; it is not uploaded"
+            rm -f "$1"
+            leaked=1
+          }
+          # The account as configured and with _ and - swapped; matched and
+          # replaced case-insensitively, as fixed strings.
+          accounts="$RUNNER_TEMP/account-forms"
+          : > "$accounts"
+          if [ -n "$SNOW_CI_ACCOUNT" ]; then
+            printf '%s\n' "$SNOW_CI_ACCOUNT" "${SNOW_CI_ACCOUNT//_/-}" "${SNOW_CI_ACCOUNT//-/_}" | sort -u > "$accounts"
+          fi
+          kept=()
           for f in "${files[@]}"; do
+            if grep -q -E -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$f"; then
+              refuse "$f" "a PEM header"
+              continue
+            fi
             sed -i -E \
               -e '/::add-mask::/d' \
               -e 's/-----(BEGIN|END) [A-Z ]*PRIVATE KEY-----/[redacted pem marker]/g' \
               -e 's#[A-Za-z0-9+/]{40,}={0,2}#[redacted base64]#g' \
               -e 's/private_key(_id)?/[key field]/Ig' \
               "$f"
+            if [ -s "$accounts" ]; then
+              ACCOUNTS="$accounts" perl -i -pe '
+                BEGIN { open my $h, "<", $ENV{ACCOUNTS} or die; chomp(@a = <$h>);
+                        @a = sort { length $b <=> length $a } grep { length } @a; }
+                for my $x (@a) { s/\Q$x\E/[redacted account]/gi }' "$f"
+            fi
+            kept+=("$f")
           done
           # The keys themselves, whatever encoding hid their shape: every
-          # 16-character window of each run of letters and digits in a key's
-          # body (a run stops at +, / and =, which an encoding may rewrite).
-          # Read from the key files, which the next step removes; nothing
-          # here prints a fragment.
+          # 16-character window of a key's body, and every 12-character window
+          # of each run of letters and digits in it (a run stops at +, / and =,
+          # which an encoding may rewrite). Read from the key files, which the
+          # next step removes; nothing here prints a fragment.
           frags="$RUNNER_TEMP/key-fragments"
-          umask 077
           : > "$frags"
           windows() {
-            { grep -v -- '-----' || true; } | tr -d ' \t\r\n' | tr '+/=' '\n' \
-              | awk '{ for (i = 1; i + 15 <= length($0); i++) print substr($0, i, 16) }' >> "$frags"
+            { grep -v -- '-----' || true; } | sed -e 's/\\n//g' | tr -d ' \t\r\n' \
+              | awk '{
+                  for (i = 1; i + 15 <= length($0); i++) print substr($0, i, 16)
+                  n = split($0, runs, /[+\/=]/)
+                  for (r = 1; r <= n; r++)
+                    for (i = 1; i + 11 <= length(runs[r]); i++) print substr(runs[r], i, 12)
+                }' >> "$frags"
           }
           if [ -f "$RUNNER_TEMP/snowflake/key.pem" ]; then
             windows < "$RUNNER_TEMP/snowflake/key.pem"
@@ -347,23 +416,21 @@ jobs:
           if [ -f "$RUNNER_TEMP/bq-credentials.json" ]; then
             jq -r '.private_key // empty' "$RUNNER_TEMP/bq-credentials.json" | windows
           fi
-          leaked=0
-          for f in "${files[@]}"; do
-            if grep -q -E -e '::add-mask::|PRIVATE KEY|private_key' -e '^[[:space:]]*[A-Za-z0-9+/]{64}[[:space:]]*$' "$f" \
-              || { [ -s "$frags" ] && grep -q -F -f "$frags" "$f"; }; then
-              echo "::error::$(basename "$f") still holds key-shaped text; it is not uploaded"
-              rm -f "$f"
-              leaked=1
+          for f in "${kept[@]}"; do
+            if [ -s "$frags" ] && grep -q -F -f "$frags" "$f"; then
+              refuse "$f" "a piece of a key"
+            elif [ -s "$accounts" ] && grep -q -i -F -f "$accounts" "$f"; then
+              refuse "$f" "the Snowflake account"
             fi
           done
-          rm -f "$frags"
+          rm -f "$frags" "$accounts"
           if [ "$leaked" -ne 0 ]; then exit 1; fi
           echo "clean=true" >> "$GITHUB_OUTPUT"
 
       # After the check above, which reads them.
       - name: Remove the key files
         if: always()
-        run: rm -rf "$RUNNER_TEMP/snowflake" "$RUNNER_TEMP/bq-credentials.json" "$RUNNER_TEMP/key-fragments"
+        run: rm -rf "$RUNNER_TEMP/snowflake" "$RUNNER_TEMP/bq-credentials.json" "$RUNNER_TEMP/key-fragments" "$RUNNER_TEMP/account-forms"
 
       # Only a summary the check above passed is posted.
       - name: Job summary
