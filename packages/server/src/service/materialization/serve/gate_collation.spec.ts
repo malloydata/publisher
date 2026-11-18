@@ -63,6 +63,41 @@ describe("a DuckDB source's string comparison", () => {
       }
    });
 
+   it("reads a default_collation set before the instance's configuration was locked", async () => {
+      // As the lockdown leaves an operator's connection: its setupSQL ran,
+      // then the configuration was locked. Reading the setting still works;
+      // only a SET is refused.
+      const db = new DuckDBConnection({
+         name: "duckdb",
+         databasePath: ":memory:",
+         setupSQL: "SET default_collation = 'nocase'",
+         lockConfiguration: true,
+      } as never);
+      try {
+         await expect(db.runSQL("SET default_collation = ''")).rejects.toThrow(
+            /locked/,
+         );
+         const [row] = (
+            await db.runSQL("SELECT current_setting('default_collation') AS c")
+         ).rows;
+         expect(row.c).toBe("nocase");
+         expect(
+            await duckdbCollation(
+               db as unknown as Connection,
+               "SELECT 'a' AS probe_value",
+            ),
+         ).toBe("unknown");
+         expect(
+            await duckdbTableCollation(
+               db as unknown as Connection,
+               "t_missing",
+            ),
+         ).toBe("unknown");
+      } finally {
+         await db.close();
+      }
+   });
+
    it("is unknown under an instance default_collation", async () => {
       const db = new DuckDBConnection("duckdb", ":memory:");
       try {
