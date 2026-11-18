@@ -1001,7 +1001,9 @@ export class ServedCopyServe {
                // The tables whose re-root leaves one of those columns out.
                const sourceIDs = new Set(
                   [...(compiled.leftOutColumns ?? [])]
-                     .filter(([, names]) => names.some((n) => named.includes(n)))
+                     .filter(([, names]) =>
+                        names.some((n) => named.includes(n)),
+                     )
                      .map(([sourceID]) => sourceID),
                );
                const tableIds = compiled.aliased
