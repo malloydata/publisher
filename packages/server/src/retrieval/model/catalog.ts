@@ -20,7 +20,7 @@
  * themselves; here it is one source with three model paths.
  */
 
-import type { ModelDef } from "@malloydata/malloy";
+import { isSourceDef, type ModelDef } from "@malloydata/malloy";
 import { createHash } from "crypto";
 import { isOnRoute, marksAgentHidden } from "../../service/annotation_reader";
 import type { Relationship } from "@malloydata/malloy-interfaces";
@@ -153,9 +153,10 @@ export interface CatalogSource {
    partitionKey?: PartitionKey;
    /**
     * A hash of what decides the rows a read of this source sees: its compiled
-    * definition (joins inlined) and the model's givens, with source locations
-    * and every note except a gate (`#(access_filter)`, `#(authorize)`) left
-    * out. A doc edit leaves it unchanged; a change to a table, a `where:`, a
+    * definition (joins inlined) and the model's givens, with source locations,
+    * the names Malloy draws for query sources, the inferred types of table
+    * columns, and every note except a gate (`#(access_filter)`,
+    * `#(authorize)`) left out. A doc edit leaves it unchanged; a change to a table, a `where:`, a
     * join, a dimension or a gate changes it. The value index reuses a stored
     * read only while it matches. Undefined when the model has no compiled
     * definition for the source.
@@ -1716,6 +1717,26 @@ function isOtherNote(x: unknown): boolean {
    );
 }
 
+/**
+ * A field the table supplies, not the model: it has no expression and is no
+ * joined source. Only its name is hashed, because its type is inferred from
+ * the warehouse and can differ between two compiles: a Snowflake VARIANT or
+ * OBJECT column's keys and element type come from sampled rows.
+ */
+function isTableColumn(x: unknown): x is { name: string } {
+   if (!x || typeof x !== "object" || Array.isArray(x)) return false;
+   const f = x as { name?: unknown; type?: unknown; e?: unknown };
+   return (
+      typeof f.name === "string" &&
+      typeof f.type === "string" &&
+      f.e === undefined &&
+      !isSourceDef(x as never)
+   );
+}
+
+/** The name Malloy gives a query source, with a fresh UUID on every compile. */
+const QUERY_SOURCE_NAME = /QuerySource-[0-9a-f-]{36}/g;
+
 /** See {@link CatalogSource.readDefinition}. */
 export function readDefinitionOf(
    modelDef: ModelDef | undefined,
@@ -1727,8 +1748,13 @@ export function readDefinitionOf(
       [compiled, modelDef?.givens ?? null],
       (key, value: unknown) => {
          if (key === "location" || key === "at") return undefined;
-         if (Array.isArray(value)) return value.filter((v) => !isOtherNote(v));
-         return value;
+         if (typeof value === "string")
+            return value.replace(QUERY_SOURCE_NAME, "QuerySource");
+         if (!Array.isArray(value)) return value;
+         const kept = value.filter((v) => !isOtherNote(v));
+         return key === "fields"
+            ? kept.map((f) => (isTableColumn(f) ? { name: f.name } : f))
+            : kept;
       },
    );
    return createHash("sha256").update(text, "utf8").digest("hex");

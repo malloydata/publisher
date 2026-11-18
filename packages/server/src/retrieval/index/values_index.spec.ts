@@ -351,6 +351,56 @@ source: s is duckdb.sql("select 'a' as tenant, 'x' as city") extend {
   dimension: town is city
 }`;
 
+   it("is the same for two compiles of a source that joins a query", async () => {
+      const text = `${base("One row per city.")}
+source: t is s extend {
+  join_one: q is s -> { group_by: tenant } on tenant = q.tenant
+}`;
+      const hash = async () => {
+         const { pkg } = await compileModelFiles({ "m.malloy": text });
+         const model = (
+            pkg as { getModel: (p: string) => { getModelDef: () => never } }
+         ).getModel("m.malloy");
+         return readDefinitionOf(model.getModelDef(), "t");
+      };
+      const first = await hash();
+      expect(first).toBeDefined();
+      expect(await hash()).toBe(first);
+   });
+
+   it("ignores a table column's inferred type, but not a dimension's expression", async () => {
+      const { pkg } = await compileModelFiles({
+         "m.malloy": base("One row per city."),
+      });
+      const def = (
+         pkg as {
+            getModel: (p: string) => {
+               getModelDef: () => Record<string, never>;
+            };
+         }
+      )
+         .getModel("m.malloy")
+         .getModelDef();
+      const plain = readDefinitionOf(def as never, "s");
+      const source = (
+         def as unknown as { contents: Record<string, { fields: unknown[] }> }
+      ).contents.s;
+      const fields = source.fields as Array<Record<string, unknown>>;
+      const column = fields.find((f) => f.name === "city")!;
+      const town = fields.find((f) => f.name === "town")!;
+      const [type, e] = [column.type, town.e];
+      try {
+         // A Snowflake VARIANT column can come back typed differently.
+         column.type = "sql native";
+         expect(readDefinitionOf(def as never, "s")).toBe(plain);
+         town.e = { node: "stringLiteral", literal: "y" };
+         expect(readDefinitionOf(def as never, "s")).not.toBe(plain);
+      } finally {
+         column.type = type;
+         town.e = e;
+      }
+   });
+
    it("ignores docs and moved lines, and changes with the rows or the gate", async () => {
       const plain = await hashOf(base("One row per city."));
       expect(plain).toBeDefined();
