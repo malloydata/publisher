@@ -577,6 +577,7 @@ source: s_join is pg.table('public.dsc_base') extend {
          source: string,
          tablePath: string,
          destinationName?: string,
+         kind?: string,
       ) => {
          const author = new SingleConnectionRuntime({ connection: pg })
             .loadModel(MODEL)
@@ -587,6 +588,7 @@ source: s_join is pg.table('public.dsc_base') extend {
                   tier: "database",
                   tablePath,
                   ...(destinationName ? { destinationName } : {}),
+                  ...(kind ? { kind } : {}),
                },
             ],
             answerRunnable: {
@@ -622,8 +624,30 @@ source: s_join is pg.table('public.dsc_base') extend {
          expect(await refusal("s", "dsc_st", "other")).toBeDefined();
       });
 
-      it("judges a table that does not hold a column the scope reads by the absolute rule", async () => {
+      it("refuses a table that does not hold a column the scope reads", async () => {
          expect(await refusal("s_join", "dsc_none")).toBeDefined();
+         expect(await refusal("s", "dsc_none")).toBeDefined();
+      });
+
+      it("passes over a rollup's base's own where: column, which its build applied", async () => {
+         // `s`'s own `where: region > 'M'`: a rollup of `s` is built with it
+         // applied, so its table holds no `region`.
+         expect(
+            await refusal("s", "dsc_none", undefined, "rollup"),
+         ).toBeUndefined();
+      });
+
+      it("judges an inline extend that adds no where: or gate as the source it extends", async () => {
+         expect(
+            await refusal("s extend { dimension: z is 1 }", "dsc_st"),
+         ).toBeUndefined();
+         expect(
+            await refusal("s extend { dimension: z is 1 }", "dsc_alt"),
+         ).toBeDefined();
+         // A `where:` of its own: no named source reads its rows.
+         expect(
+            await refusal("s extend { where: id > 0 }", "dsc_st"),
+         ).toBeDefined();
       });
    },
 );

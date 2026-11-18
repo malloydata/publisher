@@ -109,7 +109,7 @@ interface Fixture {
    cleanup: () => Promise<void>;
 }
 
-async function fixture(warehouse: unknown): Promise<Fixture> {
+async function fixture(warehouse: unknown, model = MODEL): Promise<Fixture> {
    const root = fs.realpathSync(
       fs.mkdtempSync(path.join(os.tmpdir(), "database-alter-")),
    );
@@ -117,7 +117,7 @@ async function fixture(warehouse: unknown): Promise<Fixture> {
    fs.mkdirSync(envPath);
    writePackageFiles(
       path.join(envPath, PKG),
-      { "m.malloy": MODEL },
+      { "m.malloy": model },
       { manifest: { name: PKG, description: "fixture" } },
    );
    const db = new DuckDBConnection(":memory:");
@@ -177,6 +177,7 @@ async function build(f: Fixture): Promise<Materialization> {
 async function ask(
    f: Fixture,
    query: string,
+   givens?: Record<string, string>,
 ): Promise<{
    rows: Record<string, unknown>[];
    kind?: string;
@@ -186,7 +187,7 @@ async function ask(
       .getModel("m.malloy")!
       .runQuery(
          unrecordedAudit(),
-         { query } as never,
+         { query, ...(givens ? { givens } : {}) } as never,
          QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
       );
    return {
@@ -334,7 +335,11 @@ for (const tier of tiers) {
       for (const s of SCOPES) {
          it(`${s}: is served from its table as built, equal to live`, () => {
             expect(served[s].rows).toEqual(live[s] as never);
-            expect(served[s].kind).toBe("materialized");
+            // A composite's field names no one column (its member depends on
+            // the whole query): a Postgres probe cannot read it, so live.
+            const composite =
+               s === "s_comp" && tier.label.startsWith("Postgres");
+            expect(served[s].kind).toBe(composite ? "live" : "materialized");
          });
 
          it(`${s}: answers live, equal to live, once its column compares case-insensitively`, async () => {
@@ -354,3 +359,148 @@ for (const tier of tiers) {
       }
    });
 }
+
+/** A Postgres database for one fixture, with `setup` run in it first. */
+async function postgresWarehouse(
+   setup: string[],
+): Promise<{ config: unknown; drop: () => Promise<void> }> {
+   const db = `dbs_more_${process.pid}_${Date.now()}`;
+   const admin = new PostgresConnection({
+      name: "admin",
+      connectionString: POSTGRES_URL,
+   });
+   await admin.runSQL(
+      `CREATE DATABASE ${db} LOCALE 'en_US.utf8' ENCODING 'UTF8' TEMPLATE template0`,
+   );
+   const parsed = new URL(POSTGRES_URL!);
+   const inDb = new PostgresConnection({
+      name: "setup",
+      connectionString: POSTGRES_URL!.replace(/\/[^/]*$/, `/${db}`),
+   });
+   for (const sql of setup) await inDb.runSQL(sql);
+   await inDb.close();
+   return {
+      config: {
+         name: "warehouse",
+         type: "postgres",
+         postgresConnection: {
+            host: parsed.hostname,
+            port: Number(parsed.port || 5432),
+            userName: decodeURIComponent(parsed.username),
+            password: decodeURIComponent(parsed.password),
+            databaseName: db,
+         },
+      },
+      drop: async () => {
+         await admin
+            .runSQL(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`)
+            .catch(() => undefined);
+         await admin.close();
+      },
+   };
+}
+
+const CI = `CREATE COLLATION dbs_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)`;
+const ROWS = `(1, 'electronics'), (2, 'books'), (3, 'books'), (4, 'Books'), (5, 'toys')`;
+
+/**
+ * A gated `#(materialize)` table on an en_US default answers a caller's
+ * inline `extend` that adds no `where:` and no gate from its table, as the
+ * named source does: it reads that source's rows under its gates.
+ *
+ * A composite's scope reads whichever member the whole query resolves to,
+ * which a probe of one field cannot tell: a composite over a case-insensitive
+ * member and a byte-exact one answers live, also once the second member's
+ * stored column is altered to the first's collation (where the identities
+ * would match and the stored member would admit `Books`).
+ */
+describe.skipIf(!POSTGRES_URL)(
+   "an inline extend and a composite over Postgres database tables",
+   () => {
+      const MORE = `##! experimental { persistence composite_sources givens access_modifiers }
+given: G :: string
+source: raw is warehouse.sql("""SELECT * FROM (VALUES ${ROWS}) AS t(id, category)""")
+source: raw_ci is warehouse.sql("""
+  SELECT id, category COLLATE dbs_ci AS category FROM (VALUES ${ROWS}) AS t(id, category)
+""")
+#(access_filter) category = $G
+#(materialize) name="dbs_tg"
+source: t_g is raw extend { primary_key: id }
+#(materialize) name="dbs_cma"
+source: cm_a is raw_ci extend { primary_key: id }
+#(materialize) name="dbs_cmb"
+source: cm_b is raw extend {
+  primary_key: id
+  dimension: bonus is 1
+}
+source: comp_x is compose(cm_a, cm_b) extend { where: category = 'books' }
+`;
+      const GATED: [string, string][] = [
+         ["named", "run: t_g -> { select: id; order_by: id }"],
+         [
+            "inline extend",
+            "run: t_g extend { dimension: z is 1 } -> { select: id, z; order_by: id }",
+         ],
+      ];
+      const CALLERS = [{ G: "books" }, { G: "Books" }];
+      // Member B answers it: only B has `bonus`.
+      const COMPOSITE =
+         "run: comp_x -> { select: id, category, bonus; order_by: id }";
+      let restore: () => void;
+      let f: Fixture;
+      let drop: (() => Promise<void>) | undefined;
+      const live = new Map<string, unknown>();
+      beforeAll(async () => {
+         restore = installSettings({
+            env: {
+               PUBLISHER_MATERIALIZE: "true",
+               PERSIST_STORAGE_MODE: "off",
+            },
+         }).restore;
+         await freshLoadPool();
+         const w = await postgresWarehouse([CI]);
+         drop = w.drop;
+         f = await fixture(w.config, MORE);
+         for (const [name, q] of GATED) {
+            for (const [i, g] of CALLERS.entries()) {
+               live.set(`${name}${i}`, (await ask(f, q, g)).rows);
+            }
+         }
+         live.set("composite", (await ask(f, COMPOSITE)).rows);
+         const run = await build(f);
+         expect(run.status).toBe("MANIFEST_FILE_READY");
+      }, 300_000);
+      afterAll(async () => {
+         await f?.cleanup();
+         await drop?.();
+         restore();
+         await freshLoadPool();
+      });
+
+      for (const [name, q] of GATED) {
+         it(`a gated table's ${name} query is served from its table, equal to live`, async () => {
+            for (const [i, g] of CALLERS.entries()) {
+               const got = await ask(f, q, g);
+               expect(got.rows).toEqual(live.get(`${name}${i}`) as never);
+               expect(got.kind).toBe("materialized");
+            }
+         });
+      }
+
+      it("answers a composite's scope live, before and after its member is altered to the other's collation", async () => {
+         const before = await ask(f, COMPOSITE);
+         expect(before.rows).toEqual(live.get("composite") as never);
+         expect(before.kind).toBe("live");
+         const warehouse = await f.env.getMalloyConnection("warehouse");
+         await warehouse.runSQL(
+            `ALTER TABLE dbs_cmb ALTER COLUMN category TYPE text COLLATE dbs_ci`,
+         );
+         await f.pkg.reloadAllModels(
+            f.pkg.materialization().boundDatabaseEntries() ?? {},
+         );
+         const after = await ask(f, COMPOSITE);
+         expect(after.rows).toEqual(live.get("composite") as never);
+         expect(after.kind).toBe("live");
+      });
+   },
+);

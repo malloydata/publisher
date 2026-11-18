@@ -315,7 +315,9 @@ describe("gateReads: compares no string", () => {
       expect(reads.comparesNoString).toBe(false);
    });
 
-   it("reads a composite's string field as the column each member holds", () => {
+   it("leaves the entry paths incomplete for a composite's string field too", () => {
+      // Which member a query resolves to depends on the whole query, so
+      // the field's own path names no one column.
       const composite = {
          ...ORDERS,
          fields: [
@@ -327,9 +329,8 @@ describe("gateReads: compares no string", () => {
          { ...composite, filterList: [{ e: field(["c_reg"]) }] },
          [],
       );
-      expect(reads.entryPathsComplete).toBe(true);
+      expect(reads.entryPathsComplete).toBe(false);
       expect(reads.comparesNoString).toBe(false);
-      expect(reads.columns).toContainEqual(["c_reg"]);
    });
 
    it("does not hold for a where: over a dimension computed from a string", () => {

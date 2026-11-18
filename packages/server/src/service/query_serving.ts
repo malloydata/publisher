@@ -310,6 +310,9 @@ async function assertRowScopeExact(
    const tables = answer.gateTablesRead ?? answer.tablesRead ?? [];
    const judged = await withGateColumnTypes(tables, gateReadsFor);
    const reads = await gateReadsFor(tables);
+   // Unreadable reads name no scope to judge: database tables none of whose
+   // columns moved are served as before; anything else fails closed below.
+   if (reads === undefined && judged === tables) return;
    // A gated entry point's scope is judged by the gate policy, past the gate
    // (`keepsContractsFor`), with its gate's columns: here, only an ungated one.
    if (reads !== undefined && (!reads.scoped || reads.gated)) return;

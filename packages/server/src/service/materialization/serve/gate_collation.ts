@@ -46,6 +46,7 @@ import {
    EMPTY_BUILD_MANIFEST,
    type ModelDef,
    type ModelMaterializer,
+   type SourceDef,
    type QueryMaterializer,
 } from "@malloydata/malloy";
 import { malloyIdentifiers } from "../../query_text";
@@ -54,6 +55,7 @@ import {
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
+import { collectEntryPointGates } from "../../gate_classification";
 import { capabilitiesOf } from "../domain/dialect";
 
 import type { GateReads } from "./gate_reads_types";
@@ -495,31 +497,26 @@ export async function storedTableCollationRefusal(args: {
    // under its source's own collation (a stored `C` column under a
    // case-insensitive source compares otherwise, though it is binary).
    const perColumn = capabilitiesOf(sourceDialect).stringCollation === "column";
-   // The absolute rule's verdict on each database table in such a dialect,
-   // held for when its columns cannot be matched to the source's.
-   let absolute: string | undefined;
    let sameCollationNeeded = false;
    for (const t of args.tables) {
+      if (perColumn && t.tier === "database") {
+         sameCollationNeeded = true;
+         continue;
+      }
       let collation: Collation;
       try {
          collation = await storedSide(t, args, runtime, sourceDialect);
       } catch {
          collation = "unknown";
       }
-      const why = need.includes(collation)
-         ? undefined
-         : `a stored table compares strings under a ${collation} collation`;
-      if (perColumn && t.tier === "database") {
-         sameCollationNeeded = true;
-         absolute ??= why;
-         continue;
+      if (!need.includes(collation)) {
+         return `a stored table compares strings under a ${collation} collation`;
       }
-      if (why !== undefined) return why;
    }
    if (!sameCollationNeeded) return undefined;
-   let verdict: string | undefined | typeof UNMATCHED;
+   let why: string | undefined;
    try {
-      verdict = await databaseCollationRefusal({
+      why = await databaseCollationRefusal({
          tables: args.tables.filter((t) => t.tier === "database"),
          authorRunnable: args.authorRunnable,
          storedRuntime: runtime,
@@ -527,28 +524,24 @@ export async function storedTableCollationRefusal(args: {
          ...(args.givens ? { givens: args.givens } : {}),
       });
    } catch {
-      verdict = "a collation that could not be read";
+      why = "a collation that could not be read";
    }
-   // A scope column no stored table holds is compared where the build
-   // applied it (a rollup over a source's own `where:`), not on the table:
-   // the absolute rule judges the tables, as it did before.
-   if (verdict === UNMATCHED) return absolute;
-   return verdict === undefined
+   return why === undefined
       ? undefined
-      : `a stored table does not keep its source's collation: ${verdict}`;
+      : `a stored table does not keep its source's collation: ${why}`;
 }
-
-/** {@link databaseCollationRefusal}'s answer when a read column is not stored. */
-const UNMATCHED = Symbol("unmatched");
 
 /**
  * The resolved identity of a Postgres collation, from `pg_collation c` and
  * `pg_database d`: the database default by the database's own provider and
- * locale, any other by its provider, determinism and locale. Never by name,
- * since `default` and a same-named collation mean other things in other
- * databases.
+ * locale, any other by its provider, determinism and locale, each with the
+ * library version it was recorded under (two clusters on different ICU or
+ * libc versions do not match). Never by name, since `default` and a
+ * same-named collation mean other things in other databases. An explicit
+ * column collation equal to the database default reads as another identity:
+ * that over-blocks, never under-blocks.
  */
-const PG_COLLATION_IDENTITY = `CASE WHEN c.collname = 'default' AND c.collnamespace = 'pg_catalog'::regnamespace THEN concat_ws('|', 'db', coalesce(to_jsonb(d) ->> 'datlocprovider', ''), d.datcollate, d.datctype, coalesce(to_jsonb(d) ->> 'daticulocale', ''), coalesce(to_jsonb(d) ->> 'datlocale', ''), coalesce(to_jsonb(d) ->> 'daticurules', '')) ELSE concat_ws('|', 'coll', c.collprovider, c.collisdeterministic::text, coalesce(c.collcollate, ''), coalesce(c.collctype, ''), coalesce(to_jsonb(c) ->> 'colliculocale', ''), coalesce(to_jsonb(c) ->> 'colllocale', ''), coalesce(to_jsonb(c) ->> 'collicurules', '')) END`;
+const PG_COLLATION_IDENTITY = `CASE WHEN c.collname = 'default' AND c.collnamespace = 'pg_catalog'::regnamespace THEN concat_ws('|', 'db', coalesce(to_jsonb(d) ->> 'datlocprovider', ''), d.datcollate, d.datctype, coalesce(to_jsonb(d) ->> 'daticulocale', ''), coalesce(to_jsonb(d) ->> 'datlocale', ''), coalesce(to_jsonb(d) ->> 'daticurules', ''), coalesce(to_jsonb(d) ->> 'datcollversion', '')) ELSE concat_ws('|', 'coll', c.collprovider, c.collisdeterministic::text, coalesce(c.collcollate, ''), coalesce(c.collctype, ''), coalesce(to_jsonb(c) ->> 'colliculocale', ''), coalesce(to_jsonb(c) ->> 'colllocale', ''), coalesce(to_jsonb(c) ->> 'collicurules', ''), coalesce(to_jsonb(c) ->> 'collversion', '')) END`;
 
 /** The identity of the collation `sql`'s `probe_value` compares under. */
 async function postgresCollationIdentity(
@@ -595,6 +588,77 @@ async function postgresColumnIdentities(
 }
 
 /**
+ * The model source a compiled query's entry point is judged as: its own name,
+ * or, for an inline `extend` (`run: t extend { dimension: z is 1 } -> …`),
+ * the name of the source it extends when the extension adds no `where:` and
+ * no gate of its own; else undefined.
+ */
+function namedEntryOf(
+   structRef: unknown,
+   struct: unknown,
+   modelDef: ModelDef,
+): string | undefined {
+   if (typeof structRef === "string") return structRef;
+   type Shape = {
+      as?: unknown;
+      extends?: unknown;
+      sourceID?: unknown;
+      type?: unknown;
+      name?: unknown;
+      connection?: unknown;
+      filterList?: unknown;
+      fields?: unknown;
+   };
+   const s = struct as Shape | undefined;
+   if (typeof s?.as !== "string") return undefined;
+   const base = (modelDef as unknown as { contents?: Record<string, Shape> })
+      .contents?.[s.as];
+   if (base === undefined) return undefined;
+   // The same source: where Malloy records what it extends, that; and the
+   // same root (type, table or SQL, connection), with every one of the
+   // source's fields kept as it is (an extension only adds fields).
+   if (s.extends !== undefined && s.extends !== base.sourceID) return undefined;
+   if (
+      s.type !== base.type ||
+      s.name !== base.name ||
+      s.connection !== base.connection
+   ) {
+      return undefined;
+   }
+   const fields = new Set(
+      ((s.fields ?? []) as unknown[]).map((f) => JSON.stringify(f)),
+   );
+   if (
+      !((base.fields ?? []) as unknown[]).every((f) =>
+         fields.has(JSON.stringify(f)),
+      )
+   ) {
+      return undefined;
+   }
+   const same = (a: unknown, b: unknown) =>
+      JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
+   if (!same(base.filterList, s.filterList)) return undefined;
+   try {
+      const gates = (x: unknown) => {
+         const entries = collectEntryPointGates(
+            x as SourceDef,
+            modelDef,
+            new Set(),
+            true,
+         );
+         // The walk's fail-closed deny reads as unequal.
+         if (entries.some((e) => e.struct === undefined)) return undefined;
+         return entries.map((e) => [e.route, [...e.exprs]]);
+      };
+      const own = gates(struct);
+      if (own === undefined || !same(gates(base), own)) return undefined;
+   } catch {
+      return undefined;
+   }
+   return s.as;
+}
+
+/**
  * Why database tables in a per-column dialect do not compare the scope's
  * strings as live does, or undefined when they do: every string the gates
  * and scopes compare (each entry path, probed through the author's compile)
@@ -603,8 +667,13 @@ async function postgresColumnIdentities(
  * same resolved collation, and the stored tables' connection has the
  * source's default (a literal or a given compares under it). The same
  * collation compares alike under every operator, a pattern or a function
- * included. Anything unread refuses; a read column no stored table holds
- * answers {@link UNMATCHED}, for the absolute rule to judge.
+ * included. Anything unread or unmatched refuses, but one case: a column
+ * of a rollup's base's own `where:`, which the rollup's build applied, so it
+ * is no column of the rollup's table and is not compared when it is read.
+ *
+ * The entry point is the query's named source, or the named source a
+ * query's inline `extend` extends when that adds no `where:` and no gate
+ * (it reads that source's rows under that source's gates and scopes).
  */
 async function databaseCollationRefusal(args: {
    tables: readonly StoredTable[];
@@ -612,19 +681,19 @@ async function databaseCollationRefusal(args: {
    storedRuntime: ProbeRuntime;
    reads: GateReads | undefined;
    givens?: Record<string, unknown>;
-}): Promise<string | undefined | typeof UNMATCHED> {
+}): Promise<string | undefined> {
    const { reads } = args;
    if (reads === undefined || reads.unresolved) return "gate reads unread";
    if (!reads.entryPathsComplete) return "a scope from elsewhere";
    const prepared = await readPreparedQuery(args.authorRunnable);
    const modelDef = prepared.modelDef as ModelDef | undefined;
    if (!modelDef) return "no author compile";
-   if (typeof prepared.structRef !== "string") return "no named entry point";
-   const entryName = prepared.structRef;
    const struct = resolveStructRefSource(
       prepared.structRef as never,
       modelDef as never,
-   ) as { connection?: unknown } | undefined;
+   ) as { connection?: unknown; filterList?: unknown } | undefined;
+   const entryName = namedEntryOf(prepared.structRef, struct, modelDef);
+   if (entryName === undefined) return "no named entry point";
    const connectionName =
       typeof struct?.connection === "string" ? struct.connection : undefined;
    const runtime = (
@@ -671,10 +740,19 @@ async function databaseCollationRefusal(args: {
          held.set(col, id);
       }
    }
+   // The names the entry point's own `where:` reads, and whether a rollup's
+   // table was read: a rollup is built with its base's own `where:` applied.
+   const ownWhere = new Set(fieldPathsIn(struct?.filterList).flat());
+   const rollupRead = args.tables.some(
+      (t) => (t as { kind?: unknown }).kind === "rollup",
+   );
    let storedStrings = 0;
    for (const names of reads.columns) {
       const found = names.filter((n) => held.has(n));
-      if (found.length === 0) return UNMATCHED;
+      if (found.length === 0) {
+         if (rollupRead && names.some((n) => ownWhere.has(n))) continue;
+         return "a scope column no stored table holds";
+      }
       for (const n of found) {
          const id = held.get(n);
          if (id === null || id === undefined) continue;
