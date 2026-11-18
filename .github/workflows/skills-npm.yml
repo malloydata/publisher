@@ -89,7 +89,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: scripts/ci-install-with-retry.sh bun install --frozen-lockfile
 
       # A skills/ dir that failed to copy packs as nothing at all, with exit 0
       # and no warning, so this is the only thing standing between a bad refactor
@@ -295,7 +295,7 @@ jobs:
           no-cache: true
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: scripts/ci-install-with-retry.sh bun install --frozen-lockfile
 
       # Trusted publishing (OIDC); there is no NPM_TOKEN fallback in this repo.
       #
