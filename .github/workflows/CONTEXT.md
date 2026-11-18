@@ -24,7 +24,7 @@ integration and scaffolder e2e suites. Its callers pick one of two shapes with i
 
 - **`linux: true`** (`build.yml`, every PR and every push to `main`): the whole suite on Linux, split
   into parallel jobs: `Linux: server component (1/3..3/3)`, `Linux: server unit (1/2, 2/2)`,
-  `Linux: server integration`, and `Linux: SDK, Console, skills, examples, scripts, CLI, scaffolder`.
+  `Linux: server integration`, and `Linux: SDK, Console, skills, examples, scripts, CLI, scaffolder`. On the PR that introduced the split each ran 6-9 minutes, about 2 of them setup, and a PR waited about 12 minutes in all, against about 29 for the single Linux leg before.
   A gate job, `Platform: (ubuntu-latest)`, needs all of them and fails unless every one passed. It
   is the **only** required check for the suite (`Cross Platform Tests / Platform: (ubuntu-latest)`,
   the name the single Linux leg had before the split), so regrouping or resharding never touches
