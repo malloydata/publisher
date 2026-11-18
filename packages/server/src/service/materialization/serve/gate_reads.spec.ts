@@ -250,6 +250,20 @@ describe("gateReads: compares no string", () => {
       expect(reads.entryPathsComplete).toBe(true);
    });
 
+   it("leaves the entry paths incomplete for a field whose expression names nothing it reads", () => {
+      // A composite's field, resolved per member at compile.
+      const composite = {
+         ...ORDERS,
+         fields: [
+            ...ORDERS.fields,
+            { name: "c_late", type: "boolean", e: { node: "compositeField" } },
+         ],
+      };
+      const reads = gateReads(composite, ["c_late = $FLAG"], MODEL);
+      expect(reads.entryPathsComplete).toBe(false);
+      expect(reads.comparesNoString).toBe(false);
+   });
+
    it("does not hold for a where: over a dimension computed from a string", () => {
       const scoped = { ...ORDERS, filterList: [{ e: field(["is_m"]) }] };
       expect(gateReads(scoped, []).comparesNoString).toBe(false);

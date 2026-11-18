@@ -251,7 +251,10 @@ function stringPaths(
             const prefix = path.slice(0, -1);
             const listed = new Set(paths.map((p) => p.join(".")));
             const reads = fieldPathsIn(field.e);
-            if (!reads.every((p) => listed.has([...prefix, ...p].join(".")))) {
+            if (
+               reads.length === 0 ||
+               !reads.every((p) => listed.has([...prefix, ...p].join(".")))
+            ) {
                return undefined;
             }
          }

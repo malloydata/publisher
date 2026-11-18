@@ -347,7 +347,7 @@ describe.skipIf(!url)(
    () => {
       const MODEL = (
          table: string,
-      ) => `##! experimental { givens access_modifiers }
+      ) => `##! experimental { givens access_modifiers composite_sources }
 given: FLAG :: boolean
 source: rows is pg.table('public.${table}') extend {
   primary_key: id
@@ -366,6 +366,13 @@ source: g_nested is rows extend {}
 source: g_join is pg.table('public.${table}') extend {
   primary_key: id
   join_one: r is rows on id = r.id
+}
+source: comp is compose(rows, rows extend { except: id })
+source: c_late is comp extend { where: late }
+source: c_is_n is comp extend { where: is_n }
+source: c_nested is comp extend {
+  dimension: l2 is late and id > 0
+  where: l2
 }
 `;
       const conns: PostgresConnection[] = [];
@@ -444,6 +451,16 @@ source: g_join is pg.table('public.${table}') extend {
 
       it("refuses an ordering through a dimension over a nondeterministic column, under a C default", async () => {
          for (const s of ["g_late", "g_nested", "g_join"]) {
+            expect(await refusal(cdb, "gate_der_ci", s), s).toBeDefined();
+         }
+      });
+
+      it("refuses a scope through a composite's dimension, under a C default", async () => {
+         // A composite's field is resolved per member when the query compiles,
+
+         // so its expression names no column a probe could read.
+
+         for (const s of ["c_late", "c_is_n", "c_nested"]) {
             expect(await refusal(cdb, "gate_der_ci", s), s).toBeDefined();
          }
       });

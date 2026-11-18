@@ -401,7 +401,11 @@ class GateReadWalk {
          // A computed field's own comparison is the gate's too: a boolean
          // over a string (`late is region > 'M'`) orders that string.
          if (!this.leavesNotString(f.e, source)) this.comparesNoString = false;
-         for (const p of fieldPathsIn(f.e)) {
+         const reads = fieldPathsIn(f.e);
+         // An expression that names no field it reads (a composite's field,
+         // resolved per member at compile) has no path a probe could read.
+         if (reads.length === 0) this.entryPathsComplete = false;
+         for (const p of reads) {
             // The columns a computed field reads are what its comparison
             // compares: a probe reads their collation by these paths.
             if (entry) this.entryPaths.push([...joins, ...p]);
