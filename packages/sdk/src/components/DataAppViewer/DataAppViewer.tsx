@@ -217,9 +217,15 @@ export default function DataAppViewer({ resourceUri }: DataAppViewerProps) {
                title={title}
                // allow-same-origin so the iframe can use cookies for the
                // Publisher API. allow-scripts so the dashboard's JS runs.
-               // allow-forms so dropdown/filter forms work. Intentionally
-               // NOT allowing top-navigation or popups.
-               sandbox="allow-scripts allow-same-origin allow-forms"
+               // allow-forms so dropdown/filter forms work. Beyond those: saving
+               // a file, a link in a new tab, and through `allow` the clipboard
+               // and full screen. Intentionally NOT allowing top navigation or
+               // modal dialogs, which from another origin is what keeps the
+               // Console in charge of its own tab, and NOT letting an opened tab
+               // escape the sandbox: in Firefox such a tab can redirect its
+               // opener's top window.
+               sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups"
+               allow="clipboard-write; fullscreen"
                style={{
                   display: "block",
                   width: "100%",
