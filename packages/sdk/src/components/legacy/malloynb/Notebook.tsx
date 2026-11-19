@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { parseResourceUri } from "../../../utils/formatting";
-import type { CellReportProps } from "./CellRunnerView";
+import type { CellReportProps } from "../../Report/malloynb/CellRunnerView";
 import { DashboardView } from "../../Dashboard/DashboardView";
 import { MalloynbCells, useNotebookQuery } from "./MalloynbCells";
 
@@ -15,9 +15,8 @@ type NotebookProps = CellReportProps;
  * through the deprecated cell route.
  *
  * @deprecated Render `Report` with the file's path instead: it reads
- * `GET …/reports/{path}` and renders either layout. Kept, over the same
- * renderers, for hosts that still mount it and for the `.malloynb` format,
- * which only these routes run.
+ * `GET …/reports/{path}` and renders either layout, and a `.malloynb` too.
+ * Kept, over the same renderers, for hosts that still mount it.
  */
 // Requires PackageProvider
 export default function Notebook(props: NotebookProps) {

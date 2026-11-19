@@ -10,7 +10,7 @@ import {
    CellRunnerView,
    type CellReportProps,
    type CellRunner,
-} from "./CellRunnerView";
+} from "../../Report/malloynb/CellRunnerView";
 import { useServer } from "../../ServerProvider";
 
 /** The deprecated notebook read, one cache entry per URI however many components ask. */
@@ -38,9 +38,9 @@ export function useNotebookQuery(resourceUri: string) {
 
 /**
  * A notebook's cells read and run through the deprecated notebooks routes,
- * `GET …/notebooks/{path}` and `GET …/notebooks/{path}/cells/{i}`: the only
- * routes that run a `.malloynb`, and what the `Notebook` wrapper has always
- * read a cell-format report through.
+ * `GET …/notebooks/{path}` and `GET …/notebooks/{path}/cells/{i}`: what the
+ * `Notebook` wrapper has always read a cell-format report through. `Report`
+ * runs a `.malloynb` through the query endpoint instead.
  */
 export function MalloynbCells(props: CellReportProps) {
    const { apiClients } = useServer();

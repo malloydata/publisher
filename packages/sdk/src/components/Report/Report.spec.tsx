@@ -6,9 +6,9 @@
  * grid as a dashboard of carded tiles, a linear report as bare tiles top to
  * bottom, and a report written as `run:` cells cell by cell, through the
  * governed query endpoint. It runs nothing through the deprecated notebooks
- * routes: a `.malloynb` is the deprecated `Notebook`'s to render.
+ * routes: a `.malloynb`'s code cells run through the query endpoint too.
  */
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
    cacheKeys,
@@ -352,30 +352,169 @@ describe("rendering by layout", () => {
    // DEPRECATED FEATURE COVERAGE — delete together with
    // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
    describe("deprecated: .malloynb notebooks", () => {
-      it("says a .malloynb is Notebook's to render, and runs nothing", async () => {
-         manifest = {
-            path: "legacy.malloynb",
-            name: "legacy",
-            layout: "linear",
-            editable: false,
-            notebook: {
-               format: "malloynb",
-               notebookCells: [
-                  { type: "markdown", text: "Legacy prose" },
-                  { type: "code", text: "run: orders -> by_month" },
-               ],
-            },
-         } as ReportManifest;
-         render(<Report resourceUri={URI} path="legacy.malloynb" />, {
+      const LEGACY = {
+         path: "notebooks/legacy.malloynb",
+         name: "legacy",
+         layout: "linear",
+         editable: false,
+         notebook: {
+            format: "malloynb",
+            notebookCells: [
+               { type: "markdown", text: "Legacy prose" },
+               {
+                  type: "code",
+                  text: 'import "../orders.malloy"\nsource: big is orders extend { where: amount > 100 }',
+               },
+               {
+                  type: "code",
+                  text: '##! experimental.givens\nimport "../orders.malloy"\n# bar_chart\nrun: orders -> by_month',
+               },
+               {
+                  type: "code",
+                  text: "run: big -> { aggregate: n is count() }",
+               },
+            ],
+            sources: [
+               { name: "orders", givens: [{ name: "REGION", type: "string" }] },
+            ],
+         },
+      } as ReportManifest;
+
+      /** The query requests the cells sent, in the order they were sent. */
+      const cellRequests = () =>
+         executeQueryModel.mock.calls.map(
+            ([environmentName, packageName, modelPath, request]) => ({
+               environmentName,
+               packageName,
+               modelPath,
+               request,
+            }),
+         );
+
+      beforeEach(() => {
+         manifest = LEGACY;
+      });
+
+      it("draws its markdown and its code cells, each code cell with its result", async () => {
+         executeQueryModel.mockImplementation(
+            () => Promise.resolve({ data: { result: "{}" } }) as Promise<never>,
+         );
+         try {
+            render(
+               <Report resourceUri={URI} path="notebooks/legacy.malloynb" />,
+               { wrapper: serverWrapper },
+            );
+
+            expect(await screen.findByText("Legacy prose")).toBeTruthy();
+            // One result tile, with its code behind a button, per cell that runs.
+            await waitFor(() =>
+               expect(
+                  screen.getAllByRole("button", { name: "Malloy code" }),
+               ).toHaveLength(2),
+            );
+            expect(screen.queryByText(/render it with Notebook/)).toBeNull();
+            expect(executeNotebookCell).not.toHaveBeenCalled();
+            expect(getNotebook).not.toHaveBeenCalled();
+         } finally {
+            executeQueryModel.mockImplementation(() => pending());
+         }
+      });
+
+      it("runs each code cell's run: through the query endpoint, against the notebook's path, with the givens and the version", async () => {
+         render(
+            <Report
+               resourceUri={`${URI}?versionId=v2`}
+               path="notebooks/legacy.malloynb"
+               givens={{ REGION: "West" }}
+            />,
+            { wrapper: serverWrapper },
+         );
+
+         await waitFor(() =>
+            expect(executeQueryModel).toHaveBeenCalledTimes(2),
+         );
+         const sent = cellRequests();
+         // The declaration-only cell is not sent; the others send their run:,
+         // render tag included, without their imports and flags.
+         expect(
+            sent.map((call) => (call.request as { query: string }).query),
+         ).toEqual([
+            "# bar_chart\nrun: orders -> by_month",
+            "run: big -> { aggregate: n is count() }",
+         ]);
+         for (const call of sent) {
+            expect(call).toEqual({
+               environmentName: "env",
+               packageName: "pkg",
+               modelPath: "notebooks/legacy.malloynb",
+               request: {
+                  query: expect.any(String),
+                  versionId: "v2",
+                  givens: { REGION: "West" },
+               },
+            });
+         }
+      });
+
+      it("sends no givens when none is set", async () => {
+         render(<Report resourceUri={URI} path="notebooks/legacy.malloynb" />, {
             wrapper: serverWrapper,
          });
 
-         expect(
-            await screen.findByText(/render it with Notebook/),
-         ).toBeTruthy();
-         expect(screen.queryByText("Legacy prose")).toBeNull();
-         expect(executeNotebookCell).not.toHaveBeenCalled();
-         expect(executeQueryModel).not.toHaveBeenCalled();
+         await waitFor(() =>
+            expect(executeQueryModel).toHaveBeenCalledTimes(2),
+         );
+         for (const { request } of cellRequests()) {
+            expect(request).toEqual({
+               query: expect.any(String),
+               versionId: undefined,
+            });
+         }
+      });
+
+      it("shows a cell's failure in that cell, and still runs the others", async () => {
+         const quiet = spyOn(console, "error").mockImplementation(() => {});
+         executeQueryModel.mockImplementation(((
+            _environmentName: string,
+            _packageName: string,
+            _modelPath: string,
+            request: unknown,
+         ) =>
+            (request as { query: string }).query.startsWith("run: big")
+               ? Promise.reject(
+                    Object.assign(
+                       new Error("Request failed with status code 404"),
+                       {
+                          response: {
+                             data: {
+                                message: "Query target is not queryable.",
+                             },
+                          },
+                       },
+                    ),
+                 )
+               : Promise.resolve({ data: { result: "{}" } })) as never);
+         try {
+            render(
+               <Report resourceUri={URI} path="notebooks/legacy.malloynb" />,
+               { wrapper: serverWrapper },
+            );
+
+            expect(
+               await screen.findByText("Query target is not queryable."),
+            ).toBeTruthy();
+            expect(
+               screen.getAllByText("This cell could not be run."),
+            ).toHaveLength(1);
+            await waitFor(() =>
+               expect(
+                  screen.getAllByRole("button", { name: "Malloy code" }),
+               ).toHaveLength(1),
+            );
+         } finally {
+            executeQueryModel.mockImplementation(() => pending());
+            quiet.mockRestore();
+         }
       });
    });
 });

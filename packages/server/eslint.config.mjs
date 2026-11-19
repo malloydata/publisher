@@ -155,7 +155,7 @@ const EXPLORER_CALLERS = [
    "packages/sdk/src/components/Model/ExplorerPage.tsx",
    "packages/sdk/src/components/Model/ModelExplorer.tsx",
    "packages/sdk/src/components/Model/ModelExplorerDialog.tsx",
-   "packages/sdk/src/components/legacy/malloynb/NotebookCell.tsx",
+   "packages/sdk/src/components/Report/malloynb/NotebookCell.tsx",
    "packages/sdk/src/**/*.spec.{ts,tsx}",
 ];
 // Files that load only the Explorer's stylesheet: that one import is allowed,
@@ -163,7 +163,7 @@ const EXPLORER_CALLERS = [
 const EXPLORER_STYLESHEET_FILES = [
    "packages/app/src/App.tsx",
    "packages/sdk/src/components/Model/ExplorerPage.tsx",
-   "packages/sdk/src/components/legacy/malloynb/CellRunnerView.tsx",
+   "packages/sdk/src/components/Report/malloynb/CellRunnerView.tsx",
 ];
 // The bare package goes in `paths`: a negated pattern cannot re-include
 // `styles.css` once a pattern matching its parent has excluded it.
@@ -188,7 +188,7 @@ const UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET = {
 const LEGACY_MALLOYNB_IMPORT = {
    group: ["**/legacy/malloynb", "**/legacy/malloynb/**"],
    message:
-      "legacy/malloynb is the deprecated .malloynb renderer: only legacy/ may import it. A .malloy report is tiles, drawn by DashboardView.",
+      "legacy/malloynb is the deprecated Notebook, which reads a .malloynb through the deprecated notebooks routes: only legacy/ may import it. Report renders a .malloynb, and a .malloy report is tiles, drawn by DashboardView.",
 };
 
 // ---------------------------------------------------------------------------
@@ -647,9 +647,10 @@ export default [
       },
    },
    {
-      // `.malloynb` is deprecated and fenced off: its renderer lives in
-      // `legacy/malloynb/` and nothing outside `legacy/` may import it, so the
-      // format is deleted by deleting that folder and the legacy exports.
+      // The deprecated `Notebook`, which reads a `.malloynb` through the
+      // deprecated notebooks routes, is fenced off: it lives in
+      // `legacy/malloynb/` and nothing outside `legacy/` may import it, so it
+      // is deleted by deleting that folder and the legacy exports.
       // Restates the unescaped-Malloy imports: a later block's rule replaces an
       // earlier one's for the files both match, rather than adding to it.
       files: ["packages/sdk/src/**/*.{ts,tsx}"],

@@ -2,18 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * @deprecated `.malloynb` only. The cell runner behind the deprecated
- * `Notebook`: it runs a `.malloynb` notebook's code cells through the
- * deprecated `…/notebooks/*` routes and draws them on the shared report page.
- * Nothing outside `legacy/malloynb/` imports it (eslint enforces this), and it
- * is deleted with the `.malloynb` format. A `.malloy` report is always tiles,
- * drawn by `DashboardView`.
+ * @deprecated `.malloynb` only, and deleted with the format. Draws a
+ * `.malloynb` notebook's cells on the shared report page and runs each code
+ * cell through the runner its caller passes: `Report` runs them through the
+ * governed query endpoint, the deprecated `Notebook` through the deprecated
+ * cell route. A `.malloy` report is always tiles, drawn by `DashboardView`.
  */
 
 import "@malloydata/malloy-explorer/styles.css";
 import { Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { NotebookCell as RawCell, RawNotebook } from "../../../client";
+import type { NotebookCell as RawCell, ReportCells } from "../../../client";
 import type { GivenValue } from "../../../hooks/givenValue";
 import { useDocumentControls } from "../../../hooks/useDocumentControls";
 import { useModelGivens } from "../../../hooks/useModelGivens";
@@ -145,7 +144,7 @@ export function CellRunnerView({
    error,
    runCell,
 }: CellReportProps & {
-   notebook: RawNotebook | undefined;
+   notebook: ReportCells | undefined;
    /** Why the cells could not be read; the view says so in place of them. */
    error?: ApiError | null;
    runCell: CellRunner;
@@ -176,7 +175,7 @@ export function CellRunnerView({
    // the same hook a grid uses, so both layouts get URL-addressable
    // parameters, Apply batching and `to=self` drill from one implementation.
    const declaredGivens = useModelGivens(notebook);
-   // A file-level `## autorun=false` arrives as `RawNotebook.autorun`, the same
+   // A file-level `## autorun=false` arrives as `ReportCells.autorun`, the same
    // field with the same default a grid's `## artifact { autorun=false }`
    // produces. Batching matters more here than on a grid: one control change
    // re-runs every cell in the document.
@@ -416,7 +415,7 @@ export function CellRunnerView({
    // a new object only when the content actually differs, so identity is
    // exactly the "has this document changed" signal.
    const notebookGenRef = useRef(0);
-   const seenNotebookRef = useRef<RawNotebook | undefined>(undefined);
+   const seenNotebookRef = useRef<ReportCells | undefined>(undefined);
    if (seenNotebookRef.current !== notebook) {
       seenNotebookRef.current = notebook;
       notebookGenRef.current += 1;

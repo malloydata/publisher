@@ -14,6 +14,8 @@ import type { TileChrome } from "../Dashboard/TileCard";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
+import { malloynbCellQuery } from "./malloynb/cellKind";
+import { MalloynbReport } from "./malloynb/MalloynbReport";
 import { reportQueryOptions } from "./reportQuery";
 import {
    failureCategory,
@@ -28,9 +30,9 @@ export interface ReportProps {
    resourceUri: string;
    /**
     * The report's package path, including `.malloy`, exactly as
-    * `GET …/reports` lists it: `sales/q3.malloy`. Its identity. A `.malloynb`
-    * the listing also has is rendered by the deprecated `Notebook`, which runs
-    * its cells through the only routes that can.
+    * `GET …/reports` lists it: `sales/q3.malloy`. Its identity. A legacy
+    * `.malloynb` the listing also has is rendered cell by cell, each code cell
+    * run through the same query endpoint as a tile.
     */
    path: string;
    /**
@@ -101,7 +103,8 @@ export interface ReportProps {
 /**
  * A report of either layout, from `GET …/reports/{path}`: a grid drawn as a
  * dashboard, or a linear report top to bottom (a legacy `.malloynb` among
- * them, read-only), each tile run through the governed query endpoint.
+ * them, read-only, cell by cell), each tile or cell run through the governed
+ * query endpoint.
  *
  * Host-agnostic: it takes props rather than reading a router, and hands
  * navigation and URL state back to whoever mounted it.
@@ -174,21 +177,21 @@ export function Report({
             surface: "view",
             category: failureCategory(error),
          });
-      } else if (manifest?.notebook?.format === "malloynb") {
-         // Report does not run one; the host renders it with `Notebook`.
-         reported.current = reportKey;
-         events.emit({
-            type: "report.load_failed",
-            surface: "view",
-            category: "unsupported",
-         });
       } else if (isSuccess && manifest) {
          reported.current = reportKey;
          events.emit({
             type: "report.opened",
             surface: "view",
             from: "package",
-            tiles: manifest.tiles?.length ?? 0,
+            // A `.malloynb` has cells instead of tiles: count the ones it runs.
+            tiles:
+               manifest.tiles?.length ??
+               manifest.notebook?.notebookCells?.filter(
+                  (cell) =>
+                     cell.type === "code" &&
+                     malloynbCellQuery(cell) !== undefined,
+               ).length ??
+               0,
             durationMs: now() - started.current.at,
          });
       }
@@ -224,33 +227,41 @@ export function Report({
       return <Loading text={LOADING_COPY.opening("report")} />;
    }
 
-   if (manifest.notebook?.format === "malloynb") {
-      return (
-         <Alert severity="info">
-            {path} is a .malloynb notebook, which Report does not run: render it
-            with Notebook.
-         </Alert>
+   // Either layout: the same view, arranged as the manifest's layout says. A
+   // legacy `.malloynb` is cells, each code cell run as its own query, under
+   // no header: its own markdown is its title, as it always was.
+   const body =
+      manifest.notebook?.format === "malloynb" ? (
+         <MalloynbReport
+            environmentName={environmentName}
+            packageName={packageName}
+            versionId={versionId}
+            path={path}
+            notebook={manifest.notebook}
+            givens={givens}
+            onGivensChange={onGivensChange}
+            onNavigate={onLinkNavigate}
+            onDrillNavigate={drillNavigate}
+            maxResultSize={maxResultSize}
+         />
+      ) : (
+         <DashboardView
+            manifest={manifest}
+            environmentName={environmentName}
+            packageName={packageName}
+            versionId={versionId}
+            documentName={path}
+            givens={givens}
+            onGivensChange={onGivensChange}
+            onNavigate={drillNavigate}
+            {...(onLinkNavigate ? { onLinkNavigate } : {})}
+            height={height}
+            maxResultSize={maxResultSize}
+            chrome={chrome}
+            {...(actions !== undefined ? { actions } : {})}
+            {...(rowsActions !== undefined ? { rowsActions } : {})}
+         />
       );
-   }
-   // Either layout: the same view, arranged as the manifest's layout says.
-   const body = (
-      <DashboardView
-         manifest={manifest}
-         environmentName={environmentName}
-         packageName={packageName}
-         versionId={versionId}
-         documentName={path}
-         givens={givens}
-         onGivensChange={onGivensChange}
-         onNavigate={drillNavigate}
-         {...(onLinkNavigate ? { onLinkNavigate } : {})}
-         height={height}
-         maxResultSize={maxResultSize}
-         chrome={chrome}
-         {...(actions !== undefined ? { actions } : {})}
-         {...(rowsActions !== undefined ? { rowsActions } : {})}
-      />
-   );
    return (
       <ReportEventsContext.Provider value={events}>
          {body}
