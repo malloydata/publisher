@@ -950,6 +950,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
           * bound until that bind.
           */
          database?: Promise<FreshnessManifest | undefined>;
+         /**
+          * An explicit refresh (a reload, a publish): every table and SQL
+          * schema the package reads is fetched again rather than read from
+          * the schema caches, which keep it after.
+          */
+         refreshSchemas?: boolean;
       } = {},
    ): Promise<Package> {
       return withSpan(
@@ -972,6 +978,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   options.dryRun === true,
                   options.versionId,
                   options.database,
+                  options.refreshSchemas === true,
                ),
             ),
       );
@@ -986,6 +993,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       dryRun: boolean,
       versionId?: string,
       database?: Promise<FreshnessManifest | undefined>,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -1019,6 +1027,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             dryRun,
             versionId,
             database,
+            refreshSchemas,
          );
       } catch (error) {
          // No caller ever holds a package whose load failed, so its own
@@ -1419,6 +1428,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       dryRun: boolean,
       versionId?: string,
       database?: Promise<FreshnessManifest | undefined>,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
@@ -1433,6 +1443,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             computeBuildPlan: true,
             withEntities: true,
             ...(versionId !== undefined ? { publishedVersion: true } : {}),
+            ...(refreshSchemas ? { refreshSchemas: true } : {}),
          }),
       );
       const [outcome, databases, databaseEntries] = await Promise.all([
@@ -2146,6 +2157,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.mz.persistRefusalWarnings(),
+         ...this.mz.asOfBuildWarnings(),
          // One verdict pass: unreachable, and the deployment facts (P13).
          ...this.mz.verdictWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.

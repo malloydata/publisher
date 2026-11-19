@@ -13,18 +13,22 @@
       {
         "name": "orders__two_stage__view",
         "tier": "storage"
+      },
+      {
+        "name": "orders__recent__view",
+        "tier": "storage"
       }
     ],
     "verdicts": [
       "orders__by_region__view:serves",
       "orders__by_status__view:serves",
       "orders__two_stage__view:serves",
-      "orders__recent__view:live:refused"
+      "orders__recent__view:serves"
     ],
     "warnings": [
       {
-        "code": "persist-view-not-built",
-        "message": "#@ persist on view \"recent\" of source \"orders\" is not built, so the view is served live: its result reads the current time, so it differs per read.",
+        "code": "persist-reads-current-time",
+        "message": "#@ persist on view \"recent\" of source \"orders\" stores a relation that reads the current time (`where: created_at > now - 30 days`), so its answers are as of its last build rather than of each query, and it is rebuilt on every run. To answer as of each query instead, move the window into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), read a given there, or persist a finer source that keeps the time column and filter it at query time.",
         "subject": "orders -> recent"
       }
     ]
@@ -768,7 +772,14 @@
       "equalToLive": true,
       "malloy": "run: orders -> recent",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "view",
+            "origin": "view",
+            "outcome": "used",
+            "tableId": "00eaeafe019005432a365f1f947144998fe8a0f11656a6fd56c848514a06b7c1"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [
@@ -783,13 +794,16 @@
           "sourceName": "orders"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "view",
+          "origin": "view",
+          "tableId": "00eaeafe019005432a365f1f947144998fe8a0f11656a6fd56c848514a06b7c1",
+          "tier": "storage"
         },
         "warnings": []
       },
       "query": "a rolling-window view",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "view",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {

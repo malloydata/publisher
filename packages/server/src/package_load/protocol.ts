@@ -70,8 +70,12 @@ import type { ModelEntitiesPlan } from "../service/entities/plan";
  *
  * 6: the build plan is sent as its `PackagePlan` (its tables, builds and
  * addresses as data), and the pre-aggregation companion fields are gone.
+ *
+ * 7: a refreshing load (`LoadPackageRequest.refreshTimestamp`), the schema
+ * keys it refetched (`LoadPackageResult.refreshedSchemaKeys`), and
+ * {@link ForgetSchemasMessage}.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 6;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 7;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -157,6 +161,13 @@ export interface LoadPackageRequest {
     * entities: a load that serves it, and the package-scope compile.
     */
    withEntities?: boolean;
+   /**
+    * Set by an explicit refresh (a reload, a publish): every table and SQL
+    * schema the load reads is fetched again, once, with this stamp as its
+    * `refreshTimestamp`, replacing the worker's cached entry and the main
+    * thread connection's. Absent, the load reads cached schemas.
+    */
+   refreshTimestamp?: number;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -268,6 +279,11 @@ export interface LoadPackageResult {
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */
    replacementMatchedExisting?: boolean;
+   /**
+    * A refreshing load's refetched schema-cache keys, which the pool tells
+    * the other workers to forget (see {@link ForgetSchemasMessage}).
+    */
+   refreshedSchemaKeys?: string[];
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**
@@ -529,6 +545,15 @@ export interface ShutdownRequest {
    type: "shutdown";
 }
 
+/**
+ * Drop these schema-cache entries: another worker refetched them for a
+ * refreshing load, so this worker's copies may be stale.
+ */
+export interface ForgetSchemasMessage {
+   type: "forget-schemas";
+   keys: string[];
+}
+
 export interface ReadyMessage {
    type: "ready";
 }
@@ -545,7 +570,8 @@ export type MainToWorkerMessage =
    | SchemaForSqlResponse
    | ReadUrlResponse
    | RpcErrorResponse
-   | ShutdownRequest;
+   | ShutdownRequest
+   | ForgetSchemasMessage;
 
 export type WorkerToMainMessage =
    | LoadPackageResult

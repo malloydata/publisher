@@ -35,7 +35,12 @@ export type RunPlan = Pick<PackagePlan, "builds" | "connectionDigests"> &
    Partial<
       Pick<
          PackagePlan,
-         "connectionTypes" | "versionScoped" | "tableFolds" | "addresses"
+         | "connectionTypes"
+         | "versionScoped"
+         | "tableFolds"
+         | "addresses"
+         | "asOfBuild"
+         | "accessReads"
       >
    > & {
       /** sourceID -> the table planned for it, with its compiled source. */
@@ -76,6 +81,8 @@ export async function compileRunPlan(
          versionScoped: packagePlan.versionScoped,
          tableFolds: packagePlan.tableFolds,
          addresses: packagePlan.addresses,
+         asOfBuild: packagePlan.asOfBuild,
+         accessReads: packagePlan.accessReads,
          tables: compiled.tables,
          connections: compiled.connections,
          ...(compiled.keyCheckCompilers
