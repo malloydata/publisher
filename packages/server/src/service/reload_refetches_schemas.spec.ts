@@ -131,6 +131,20 @@ describe("an explicit refresh refetches table schemas", () => {
       expect(served(await current())).toEqual(all(["b"]));
    });
 
+   it("a reload after the table is dropped fails, and the watch-mode reload after it does too", async () => {
+      await env.addPackage("pkg");
+      await warehouse.runSQL("DROP TABLE t");
+
+      await expect(
+         controller().getPackage("testEnv", "pkg", true),
+      ).rejects.toThrow();
+      // The failed refetch left no cached columns behind, so a watch-mode
+      // reload does not compile against the dropped table's old ones.
+      await expect(env.getPackage(pkgName, true)).rejects.toThrow();
+      // The last good model still serves, as after any failed reload.
+      expect(served(await current())).toEqual(all(["a"]));
+   });
+
    it("MCP reload_package sees a changed column", async () => {
       await env.addPackage("pkg");
       await warehouse.runSQL("ALTER TABLE t ADD COLUMN b INTEGER");

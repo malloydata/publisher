@@ -116,6 +116,42 @@ export class SchemaCache<T> {
    }
 }
 
+/**
+ * The keys a worker is told to forget (see ForgetSchemasMessage), held while
+ * a job runs and applied when none does, so no load compiles one model
+ * against a table's old columns and the next against its new ones.
+ */
+export class DeferredForgets {
+   private readonly pending = new Set<string>();
+   private readonly running = new Set<string>();
+
+   constructor(private readonly cache: { forget(key: string): void }) {}
+
+   /** Forget `keys` now when no job runs, else once the last one ends. */
+   forget(keys: Iterable<string>): void {
+      for (const key of keys) {
+         if (this.running.size === 0) this.cache.forget(key);
+         else this.pending.add(key);
+      }
+   }
+
+   jobStarted(jobId: string): void {
+      this.running.add(jobId);
+   }
+
+   jobEnded(jobId: string): void {
+      this.running.delete(jobId);
+      if (this.running.size > 0) return;
+      for (const key of this.pending) this.cache.forget(key);
+      this.pending.clear();
+   }
+
+   /** Keys held until the running jobs end. */
+   get held(): number {
+      return this.pending.size;
+   }
+}
+
 /** What a fetch produced for one key: its value, or why there is none. */
 export interface InFlightAnswer<T> {
    value?: T;

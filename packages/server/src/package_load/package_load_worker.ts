@@ -97,7 +97,11 @@ import { acceptBundledExperimentalDialects } from "../service/experimental_diale
 import { logger } from "../logger";
 import { installProcessSafetyHandlers } from "../process_safety";
 import type { SynthesizedRuntimeFactory } from "../service/materialization";
-import { type InFlightAnswer, SchemaCache } from "./schema_cache";
+import {
+   DeferredForgets,
+   type InFlightAnswer,
+   SchemaCache,
+} from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
 import { governsAccess } from "../service/governance/ir/array_query";
@@ -224,6 +228,9 @@ type CachedSchema = TableSourceDef | SQLSourceDef;
 const schemaCache = new SchemaCache<CachedSchema>(
    (workerData as { schemaCacheBytes?: number } | null)?.schemaCacheBytes ?? 0,
 );
+
+/** What other workers refetched, forgotten here between jobs. */
+const deferredForgets = new DeferredForgets(schemaCache);
 
 /**
  * A refreshing load's refresh (see LoadPackageRequest.refreshTimestamp): its
@@ -1673,17 +1680,17 @@ port.on("message", (message: MainToWorkerMessage) => {
          port.postMessage(errMsg);
          return;
       }
-      inFlightJobs.add(message.requestId);
+      jobStarted(message.requestId);
       void runJob(message);
       return;
    }
    if (message.type === "compile-served-copy") {
-      inFlightJobs.add(message.requestId);
+      jobStarted(message.requestId);
       void runServedCopyJob(message);
       return;
    }
    if (message.type === "forget-schemas") {
-      for (const key of message.keys) schemaCache.forget(key);
+      deferredForgets.forget(message.keys);
       return;
    }
    dispatchMainResponse(message);
@@ -1749,8 +1756,7 @@ async function runServedCopyJob(job: CompileServedCopyRequest): Promise<void> {
       };
       port.postMessage(result);
    } finally {
-      inFlightJobs.delete(job.requestId);
-      maybeExit();
+      jobEnded(job.requestId);
    }
 }
 
@@ -1770,9 +1776,19 @@ async function runJob(job: LoadPackageRequest): Promise<void> {
       };
       port.postMessage(errMsg);
    } finally {
-      inFlightJobs.delete(job.requestId);
-      maybeExit();
+      jobEnded(job.requestId);
    }
+}
+
+function jobStarted(jobId: string): void {
+   inFlightJobs.add(jobId);
+   deferredForgets.jobStarted(jobId);
+}
+
+function jobEnded(jobId: string): void {
+   inFlightJobs.delete(jobId);
+   deferredForgets.jobEnded(jobId);
+   maybeExit();
 }
 
 function maybeExit(): void {

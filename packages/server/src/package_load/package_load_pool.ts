@@ -75,6 +75,8 @@ import {
    checkLoadPackageResult,
 } from "./protocol_decode";
 import { connectionTypeOf } from "../service/connection_type";
+import { SchemaRefetches } from "./schema_refetch";
+import { sqlKey } from "@malloydata/malloy";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
@@ -134,6 +136,8 @@ interface JobContext {
    resolve: (result: LoadPackageResult | CompileServedCopyResult) => void;
    reject: (err: Error) => void;
    timeout: ReturnType<typeof setTimeout>;
+   /** A refreshing load's start, on `performance.now()` (see SchemaRefetches). */
+   refreshStartedAt?: number;
 }
 
 /**
@@ -343,6 +347,8 @@ export class PackageLoadPool {
    private readonly jobTimeoutMs: number;
    /** How long a job may run before it is terminated (see JOB_LIMIT_FACTOR). */
    private readonly jobLimitMs: number;
+   /** Refreshing loads' refetches, shared while they overlap. */
+   private readonly refetches: SchemaRefetches;
 
    constructor(
       maxWorkers: number,
@@ -369,6 +375,7 @@ export class PackageLoadPool {
       this.jobTimeoutMs =
          options.jobTimeoutMs ?? settings.get("packageLoad.jobTimeoutMs");
       this.jobLimitMs = JOB_LIMIT_FACTOR * this.jobTimeoutMs;
+      this.refetches = new SchemaRefetches(this.jobLimitMs);
       this.mainThreadWorkBudgetMs =
          options.mainThreadWorkBudgetMs ??
          MAIN_THREAD_WORK_BUDGET_SHARE * this.jobTimeoutMs;
@@ -562,6 +569,9 @@ export class PackageLoadPool {
             qj.reject(err);
          },
          timeout,
+         ...(qj.request.refreshSchemas
+            ? { refreshStartedAt: performance.now() }
+            : {}),
       });
 
       const message: LoadPackageRequest = {
@@ -940,10 +950,17 @@ export class PackageLoadPool {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
          );
-         const result = await conn.fetchSchemaForTables(
-            msg.tables,
-            buildFetchOptions(msg.options),
-         );
+         const options = buildFetchOptions(msg.options);
+         const result =
+            options.refreshTimestamp !== undefined &&
+            ctx.refreshStartedAt !== undefined
+               ? await this.refetchTables(
+                    conn,
+                    msg.tables,
+                    options,
+                    ctx.refreshStartedAt,
+                 )
+               : await conn.fetchSchemaForTables(msg.tables, options);
          reply({
             type: "schema-for-tables-response",
             requestId: msg.requestId,
@@ -959,6 +976,43 @@ export class PackageLoadPool {
             error: serializeError(error),
          });
       }
+   }
+
+   /**
+    * A refreshing load's table fetch: each table refetched once across the
+    * refreshing loads that overlap (see SchemaRefetches). Keyed by table
+    * path, as the connection caches it.
+    */
+   private async refetchTables(
+      conn: InfoConnection,
+      tables: Record<string, string>,
+      options: FetchSchemaOptions,
+      loadStartedAt: number,
+   ): Promise<{
+      schemas: Record<string, unknown>;
+      errors: Record<string, string>;
+   }> {
+      const answers = await this.refetches.fetch(
+         conn,
+         Object.values(tables),
+         loadStartedAt,
+         (paths, refetch) => {
+            const wanted = new Set(paths);
+            return conn.fetchSchemaForTables(
+               Object.fromEntries(
+                  Object.entries(tables).filter(([, p]) => wanted.has(p)),
+               ),
+               refetch ? options : {},
+            );
+         },
+      );
+      const schemas: Record<string, unknown> = {};
+      const errors: Record<string, string> = {};
+      for (const answer of answers) {
+         Object.assign(schemas, answer.schemas);
+         Object.assign(errors, answer.errors);
+      }
+      return { schemas, errors };
    }
 
    private async handleSchemaForSql(
@@ -984,12 +1038,27 @@ export class PackageLoadPool {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
          );
-         const result = await conn.fetchSchemaForSQLStruct(
-            msg.sentence as Parameters<
-               InfoConnection["fetchSchemaForSQLStruct"]
-            >[0],
-            buildFetchOptions(msg.options),
-         );
+         const sentence = msg.sentence as Parameters<
+            InfoConnection["fetchSchemaForSQLStruct"]
+         >[0];
+         const options = buildFetchOptions(msg.options);
+         const refreshStartedAt = ctx.refreshStartedAt;
+         const result =
+            options.refreshTimestamp !== undefined &&
+            refreshStartedAt !== undefined
+               ? (
+                    await this.refetches.fetch(
+                       conn,
+                       [sqlKey(sentence.connection, sentence.selectStr)],
+                       refreshStartedAt,
+                       (_keys, refetch) =>
+                          conn.fetchSchemaForSQLStruct(
+                             sentence,
+                             refetch ? options : {},
+                          ),
+                    )
+                 )[0]
+               : await conn.fetchSchemaForSQLStruct(sentence, options);
          if (result.error !== undefined) {
             reply({
                type: "schema-for-sql-response",
@@ -1055,10 +1124,11 @@ export class PackageLoadPool {
 let lastRefreshTimestamp = 0;
 
 /**
- * A refreshing load's stamp: later than any schema the main thread's
- * connections cached before it, since a connection refetches an entry only
- * when the stamp is greater than the entry's own, and greater than every
- * stamp before it.
+ * A refreshing load's stamp, strictly increasing: a connection refetches an
+ * entry only when the stamp is greater than the entry's own. It is not what
+ * forces the refetch, since SchemaRefetches drops the entry first; it decides
+ * only for a connection with no cache to drop from, where an entry stored
+ * under a clock later stepped back could still be judged current.
  */
 function nextRefreshTimestamp(): number {
    lastRefreshTimestamp = Math.max(Date.now() + 1, lastRefreshTimestamp + 1);
