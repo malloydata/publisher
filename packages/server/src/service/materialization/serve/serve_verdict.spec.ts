@@ -42,6 +42,7 @@ function facts(
       keepsGate: () => false,
       boundEntityIds: new Set(),
       boundStorageNames: new Set(),
+      boundStorageIds: new Set(),
       servedStorageNames: new Set(),
       // The bind keeps every source, none is a #(materialize) source or a
       // persisted result, and every deployment fact is unknown.
@@ -145,6 +146,7 @@ describe("computeServeVerdicts", () => {
       const verdicts = computeServeVerdicts(
          facts(sources, {
             boundStorageNames: names,
+            boundStorageIds: new Set(sources.map(([id]) => id)),
             servedStorageNames: names,
             keepsGate: (_id, tier) => {
                asked.push(tier);
@@ -172,11 +174,37 @@ describe("computeServeVerdicts", () => {
       });
    });
 
+   it("takes the tier by sourceID: of two sources sharing a name, only the one a storage binding stores is judged on storage", () => {
+      const [placedID, placed] = plan("orders");
+      const twinID = "orders@file:///pkg/other.malloy";
+      const twin = { ...placed, sourceID: twinID, modelPath: "other.malloy" };
+      const verdicts = computeServeVerdicts(
+         facts(
+            [
+               [placedID, placed],
+               [twinID, { ...twin, sourceEntityId: "entity-twin" }],
+            ],
+            {
+               // The name is bound, as the binding is filed under it; only
+               // one sourceID is stored.
+               boundStorageNames: new Set(["orders"]),
+               servedStorageNames: new Set(["orders"]),
+               boundStorageIds: new Set([placedID]),
+            },
+         ),
+      );
+      expect(verdicts.map((v) => [v.sourceID, v.tier, v.verdict])).toEqual([
+         [placedID, "storage", "serves"],
+         [twinID, "database", "awaiting_build"],
+      ]);
+   });
+
    it("names no storage= to drop for a host's storage binding while the storage mode is off", () => {
       const [verdict] = computeServeVerdicts(
          facts([plan("orders")], {
             storageMode: "off",
             boundStorageNames: new Set(["orders"]),
+            boundStorageIds: new Set([plan("orders")[0]]),
          }),
       );
       expect(verdict).toMatchObject({

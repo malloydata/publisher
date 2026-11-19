@@ -426,6 +426,9 @@ export class ServeVerdicts {
          boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
          freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
          boundStorageNames: new Set(storageBindings.map((b) => b.sourceName)),
+         boundStorageIds: new Set(
+            storageBindings.flatMap((b) => b.sourceIDs ?? []),
+         ),
          servedStorageNames,
          freshStorageNames: new Set(
             pinned.fresh

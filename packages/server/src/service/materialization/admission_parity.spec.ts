@@ -187,6 +187,7 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
                refusedAtBind: () => undefined,
                boundEntityIds: new Set(),
                boundStorageNames: new Set(["orders"]),
+               boundStorageIds: new Set([sourceID]),
                servedStorageNames: new Set(["orders"]),
                materialize: () => undefined,
                persistedViewOf: () => undefined,

@@ -191,6 +191,12 @@ export interface ServeVerdictFacts {
    freshEntityIds?: ReadonlySet<string>;
    /** Storage: the source names the package holds a serve binding for. */
    boundStorageNames: ReadonlySet<string>;
+   /**
+    * The sourceIDs a storage binding stores (its `sourceIDs`), whatever the
+    * annotation says: the tier a query reads the source's table in
+    * (`storageLookupOf`).
+    */
+   boundStorageIds: ReadonlySet<string>;
    /** Storage: the source names some model kept a binding for. */
    servedStorageNames: ReadonlySet<string>;
    /** Storage: the bound source names still fresh. Absent: every bound one is. */
@@ -262,15 +268,17 @@ function originOf(
 
 /**
  * The tier a plan source's table lives in, as a query reads it
- * (`storageLookupOf`): a storage binding decides it, since a host may place a
- * source with no `storage=` in a storage destination; with none, the
- * `storage=` annotation does.
+ * (`storageLookupOf`): a storage binding storing its sourceID decides it,
+ * since a host may place a source with no `storage=` in a storage
+ * destination; with none, the `storage=` annotation does.
  */
 function planTier(
+   sourceID: string,
    source: PersistSourcePlan,
-   storageBound: boolean,
+   facts: Pick<ServeVerdictFacts, "boundStorageIds">,
 ): "database" | "storage" {
-   return storageBound || source.annotationFields?.storage?.trim()
+   return facts.boundStorageIds.has(sourceID) ||
+      source.annotationFields?.storage?.trim()
       ? "storage"
       : "database";
 }
@@ -449,9 +457,10 @@ function verdictSubjectOf(
    const origin = originOf(sourceID, isRollupOrigin(source.origin), {
       materialize: facts.materialize,
    });
-   // Read once, for the tier and the storage branch: one name-keyed lookup.
+   // Read once, for the deployment facts and the storage branch: one
+   // name-keyed lookup. The tier is the sourceID's.
    const storageBound = facts.boundStorageNames.has(source.name);
-   const tier = planTier(source, storageBound);
+   const tier = planTier(sourceID, source, facts);
    const base: Omit<ServeVerdict, "verdict" | "message"> = {
       sourceName: source.name,
       sourceID,
