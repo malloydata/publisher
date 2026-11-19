@@ -24,6 +24,9 @@ import { type Binding, pin, type Snapshot } from "./domain/binding";
 import { storageTablePath } from "./domain/storage_table_path";
 import type { FreshnessManifest } from "./domain/types";
 import type { PlanLifecycle } from "./plan_lifecycle";
+import type { Tier } from "./domain/vocabulary";
+
+type BuildPlan = PlanLifecycle["buildPlan"];
 import {
    deriveDatabaseServeBindings,
    keptTableAddresses,
@@ -341,86 +344,20 @@ export class ServeVerdicts {
             )
          );
       };
-      // The stored types of the columns a bound `storage=` table's own gate
-      // reads, for the policy's exactness rule; the router reads each
-      // query's. A table not bound yet has none to read, and is judged once
-      // it is bound.
-      //
-      // A rollup's gates are its base's, read off the base's def in the
-      // rollup's model (the file that declares the base), with whether they
-      // read no column at all (locks only), as the router marks a read.
-      const storageGateRead = (
-         sourceID: string,
-      ): Pick<TableRead, "gateColumnTypes" | "gatesReadNoColumn"> => {
-         const bound = storageBindings.filter((b) =>
-            b.sourceIDs?.includes(sourceID),
-         );
-         if (bound.length === 0) return { gateColumnTypes: [] };
-         const planned = buildPlan?.sources?.[sourceID];
-         const base = planned?.preaggregate?.baseSourceName;
-         const defs: { def: unknown; modelDef: unknown }[] = [];
-         if (isRollupOrigin(planned?.origin)) {
-            const modelDef = planned?.modelPath
-               ? models.get(planned.modelPath)?.getModelDef()
-               : undefined;
-            const contents = (
-               modelDef as { contents?: Record<string, unknown> } | undefined
-            )?.contents;
-            const def = base !== undefined ? contents?.[base] : undefined;
-            if (def !== undefined) defs.push({ def, modelDef });
-         } else {
-            for (const model of models.values()) {
-               const modelDef = model.getModelDef();
-               const def = modelDef
-                  ? SourceMap.of(modelDef).node(sourceID)?.def
-                  : undefined;
-               if (def !== undefined) {
-                  defs.push({ def, modelDef });
-                  break;
-               }
-            }
-         }
-         const [found] = defs;
-         if (found === undefined) return { gateColumnTypes: undefined };
-         const exprs = entryPointGateExprs(found.def, found.modelDef);
-         const reads =
-            exprs === undefined
-               ? undefined
-               : // Its own `where:` terms were applied by the build.
-                 gateReads(
-                    found.def,
-                    exprs,
-                    found.modelDef,
-                    new Set([sourceID]),
-                 );
-         const types = gateColumnTypesOf(
-            reads,
-            bound.map((b) => b.schema),
-         );
-         const readsNoColumn =
-            reads !== undefined &&
-            !reads.unresolved &&
-            reads.columns.length === 0 &&
-            reads.names.size === 0;
-         return {
-            gateColumnTypes: types.some((t) => t === undefined)
-               ? undefined
-               : types.flatMap((t) => t ?? []),
-            ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
-         };
-      };
       // The table a source's answer reads past a gate, as the router
       // judges it, on the verdict's tier.
-      const tableRead = (
-         sourceID: string,
-         tier: "database" | "storage",
-      ): TableRead =>
+      const tableRead = (sourceID: string, tier: Tier): TableRead =>
          tier === "storage"
             ? {
                  tier,
                  ownGateKept: ownGateKept(sourceID),
                  holdsOnlyUngatedRows: holdsOnlyUngatedRows(sourceID),
-                 ...storageGateRead(sourceID),
+                 ...storageGateRead(
+                    sourceID,
+                    storageBindings,
+                    buildPlan,
+                    models,
+                 ),
               }
             : { tier };
       const switches = gateSwitches();
@@ -930,6 +867,79 @@ function servePathOf(
       path: "live",
       reason: preview.problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
    };
+}
+
+/**
+ * The stored types of the columns a bound `storage=` table's own gate
+ * reads, for the policy's exactness rule; the router reads each query's. A
+ * table not bound yet has none to read, and is judged once it is bound.
+ *
+ * A rollup's gates are its base's, read off the base's def in the rollup's
+ * model (the file that declares the base), with whether they read no column
+ * at all (locks only), as the router marks a read.
+ */
+function storageGateRead(
+   sourceID: string,
+   storageBindings: readonly Binding[],
+   buildPlan: BuildPlan | undefined,
+   models: Map<string, Model>,
+): Pick<TableRead, "gateColumnTypes" | "gatesReadNoColumn"> {
+   const bound = storageBindings.filter((b) => b.sourceIDs?.includes(sourceID));
+   if (bound.length === 0) return { gateColumnTypes: [] };
+   const found = gatedDefOf(sourceID, buildPlan, models);
+   if (found === undefined) return { gateColumnTypes: undefined };
+   const exprs = entryPointGateExprs(found.def, found.modelDef);
+   const reads =
+      exprs === undefined
+         ? undefined
+         : // Its own `where:` terms were applied by the build.
+           gateReads(found.def, exprs, found.modelDef, new Set([sourceID]));
+   const types = gateColumnTypesOf(
+      reads,
+      bound.map((b) => b.schema),
+   );
+   const readsNoColumn =
+      reads !== undefined &&
+      !reads.unresolved &&
+      reads.columns.length === 0 &&
+      reads.names.size === 0;
+   return {
+      gateColumnTypes: types.some((t) => t === undefined)
+         ? undefined
+         : types.flatMap((t) => t ?? []),
+      ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
+   };
+}
+
+/**
+ * The def whose entry-point gates a stored source's table is read past: a
+ * rollup's base, in the rollup's model; any other source's own.
+ */
+function gatedDefOf(
+   sourceID: string,
+   buildPlan: BuildPlan | undefined,
+   models: Map<string, Model>,
+): { def: unknown; modelDef: unknown } | undefined {
+   const planned = buildPlan?.sources?.[sourceID];
+   if (isRollupOrigin(planned?.origin)) {
+      const base = planned?.preaggregate?.baseSourceName;
+      const modelDef = planned?.modelPath
+         ? models.get(planned.modelPath)?.getModelDef()
+         : undefined;
+      const contents = (
+         modelDef as { contents?: Record<string, unknown> } | undefined
+      )?.contents;
+      const def = base !== undefined ? contents?.[base] : undefined;
+      return def === undefined ? undefined : { def, modelDef };
+   }
+   for (const model of models.values()) {
+      const modelDef = model.getModelDef();
+      const def = modelDef
+         ? SourceMap.of(modelDef).node(sourceID)?.def
+         : undefined;
+      if (def !== undefined) return { def, modelDef };
+   }
+   return undefined;
 }
 
 /**

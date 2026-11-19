@@ -235,7 +235,7 @@ export const RATCHET_TIER_DECISIONS = {
    "service/materialization/run/source_build.ts": { count: 1, step: "2q" },
    "service/materialization/serve/leg.ts": { count: 4, step: "2q" },
    "service/materialization/serve/query_path.ts": { count: 3, step: "2q" },
-   "service/materialization/serve/serve_verdict.ts": { count: 2, step: "2q" },
+   "service/materialization/serve/serve_verdict.ts": { count: 1, step: "2q" },
    "service/model.ts": { count: 1, step: "2q" },
 };
 /** Table-name comparisons outside domain/physical_table.ts, per file. */
@@ -304,7 +304,7 @@ export const RATCHET_VOCABULARY_UNIONS = {
    "service/materialization/serve/gate_collation.ts": { count: 1, step: "2q" },
    "service/materialization/serve/leg.ts": { count: 1, step: "2q" },
    "service/materialization/serve/query_path.ts": { count: 3, step: "2q" },
-   "service/materialization/serve/serve_verdict.ts": { count: 5, step: "2q" },
+   "service/materialization/serve/serve_verdict.ts": { count: 4, step: "2q" },
    "service/materialization/serve/view_variants.ts": { count: 2, step: "2q" },
    "service/materialization/serve_verdicts.ts": { count: 1, step: "2q" },
 };

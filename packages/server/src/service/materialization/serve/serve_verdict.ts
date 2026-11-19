@@ -18,6 +18,8 @@
  */
 
 import type { components } from "../../../api";
+import { readTier } from "../domain/placement";
+import type { Tier } from "../domain/vocabulary";
 import {
    isPersistedQuerySourceID,
    isPersistedResultSourceID,
@@ -271,15 +273,7 @@ function originOf(
    return "persist";
 }
 
-/**
- * The tier a plan source's table lives in, as a query reads it: a storage
- * binding storing its sourceID decides it (`storageLookupOf`), since a host
- * may place a source with no `storage=` in a storage destination; with none,
- * the `storage=` annotation does. The served copy (every source but a rollup,
- * persisted view or persisted query) reads a fresh table over a stale one, so
- * a source whose storage tables are all stale while its database table is
- * fresh is read from the database.
- */
+/** The tier a query reads a plan source's table in ({@link readTier}). */
 function planTier(
    sourceID: string,
    source: PersistSourcePlan,
@@ -291,19 +285,16 @@ function planTier(
       | "boundEntityIds"
       | "freshEntityIds"
    >,
-): "database" | "storage" {
-   if (facts.boundStorageIds.has(sourceID)) {
-      const storageStale =
-         facts.freshStorageIds !== undefined &&
-         !facts.freshStorageIds.has(sourceID);
-      const databaseFresh =
+): Tier {
+   return readTier({
+      storageBound: facts.boundStorageIds.has(sourceID),
+      storageFresh: facts.freshStorageIds?.has(sourceID) ?? true,
+      databaseFresh:
          facts.boundEntityIds.has(source.sourceEntityId) &&
-         (facts.freshEntityIds?.has(source.sourceEntityId) ?? true);
-      return servedCopy && storageStale && databaseFresh
-         ? "database"
-         : "storage";
-   }
-   return source.annotationFields?.storage?.trim() ? "storage" : "database";
+         (facts.freshEntityIds?.has(source.sourceEntityId) ?? true),
+      servedCopy,
+      declaredStorage: !!source.annotationFields?.storage?.trim(),
+   });
 }
 
 /**
