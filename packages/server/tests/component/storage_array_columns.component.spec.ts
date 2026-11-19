@@ -608,13 +608,16 @@ describe.skipIf(process.platform === "win32")(
             [
                "h_uuid",
                expect.stringContaining(
-                  "a hidden column (declared `sql native`, stored as UUID)",
+                  ": a hidden column has no declaration that reads it back as live answers it.",
                ),
             ],
          ]);
          const text = JSON.stringify([warnings, answer.path]);
          expect(text).not.toContain("`u`");
          expect(text).not.toContain("column `u");
+         // Nor its types, which would say what it holds.
+         expect(text).not.toContain("sql native");
+         expect(text).not.toContain("UUID");
       });
 
       it("raises no served-copy-not-served warning for a list: none answers live whole", () => {

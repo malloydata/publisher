@@ -2764,6 +2764,9 @@ function isList(field: unknown): boolean {
    return (field as { type?: unknown } | undefined)?.type === "array";
 }
 
+/** How a caller's detail names a column the author's source hides. */
+const HIDDEN_COLUMN = "a hidden column";
+
 /**
  * Why a stored column is left out, or cannot be carried, in a caller's
  * words: the column (as {@link RerootSubject.columnRef} names it) with its
@@ -2774,9 +2777,16 @@ function leftOutPhrase(
    field: unknown,
    storedType: string | undefined,
 ): string {
+   const missing = storedType === undefined;
+   // A hidden column's types would tell a caller what it holds: none given.
+   if (ref === HIDDEN_COLUMN) {
+      return missing
+         ? `${ref} is not in the stored table`
+         : `${ref} has no declaration that reads it back as live answers it`;
+   }
    const live = liveTypeText(field);
    const declared = live === undefined ? "" : `declared \`${live}\``;
-   if (storedType === undefined) {
+   if (missing) {
       return `${ref}${declared ? ` (${declared})` : ""} is not in the stored table`;
    }
    return (
@@ -2843,8 +2853,7 @@ function columnRefOf(
          )
          .map(([name]) => name),
    ]);
-   return (name) =>
-      hidden.has(name) ? "a hidden column" : `column \`${name}\``;
+   return (name) => (hidden.has(name) ? HIDDEN_COLUMN : `column \`${name}\``);
 }
 
 /** Why each of `columns` is left out, by name, for a decline's detail. */
@@ -3140,7 +3149,7 @@ function undeclaredJoinedColumns(
                (field as { accessModifier?: unknown } | undefined)
                   ?.accessModifier !== undefined;
             return leftOutPhrase(
-               hidden ? "a hidden column" : `column \`${j.join}.${c.name}\``,
+               hidden ? HIDDEN_COLUMN : `column \`${j.join}.${c.name}\``,
                field,
                c.type,
             );
