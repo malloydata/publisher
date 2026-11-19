@@ -61,6 +61,44 @@ describe("assertSingleSelect", () => {
          "__ducklake_metadata_lake",
       ],
       ["SELECT 1 -- duckdb_secrets()", "duckdb_secrets"],
+      ["SELECT * FROM pragma_database_list", "pragma_database_list"],
+      ['SELECT * FROM "Pragma_Database_List"()', "pragma_database_list"],
+      ["SELECT * FROM pragma_show('t')", "pragma_show"],
+      ["SELECT current_setting('allowed_paths') AS p", "current_setting"],
+      ["SELECT * FROM duckdb_variables()", "duckdb_variables"],
+      ["SELECT getvariable('v') AS v", "getvariable"],
+      ["SELECT * FROM ducklake_settings('lake')", "ducklake_settings"],
+      ["SELECT * FROM ducklake_options('lake')", "ducklake_options"],
+      ["SELECT * FROM ducklake_snapshots('lake')", "ducklake_snapshots"],
+      ["SELECT * FROM ducklake_list_files('lake', 't')", "ducklake_list_files"],
+      [
+         "SELECT * FROM \"ducklake_some_future_fn\" ('lake')",
+         "ducklake_some_future_fn",
+      ],
+      [
+         "SELECT * FROM ducklake_some_future_fn /* c */ ('lake')",
+         "ducklake_some_future_fn",
+      ],
+      [
+         "SELECT * FROM ducklake_set_commit_message('lake', 'a', 'b')",
+         "ducklake_set_commit_message",
+      ],
+      [
+         "SELECT * FROM ducklake_expire_snapshots('lake', dry_run => true)",
+         "ducklake_expire_snapshots",
+      ],
+      [
+         "SELECT * FROM ducklake_cleanup_old_files('lake', dry_run => true)",
+         "ducklake_cleanup_old_files",
+      ],
+      [
+         "SELECT * FROM ducklake_delete_orphaned_files('lake', dry_run => true)",
+         "ducklake_delete_orphaned_files",
+      ],
+      [
+         "SELECT * FROM ducklake_set_option('lake', 'k', 'v')",
+         "ducklake_set_option",
+      ],
    ])(
       "refuses introspection %p with a 400 naming the database and the name",
       async (sql, name) => {
@@ -70,4 +108,15 @@ describe("assertSingleSelect", () => {
          await expect(refused).rejects.toThrow(`may not name '${name}'`);
       },
    );
+
+   it("lets a catalog or table whose name starts like DuckLake's functions through", async () => {
+      await assertSingleSelect(
+         "sales",
+         "SELECT * FROM ducklake_prod.main.orders",
+      );
+      await assertSingleSelect(
+         "sales",
+         "SELECT ducklake_id FROM lake.main.orders",
+      );
+   });
 });

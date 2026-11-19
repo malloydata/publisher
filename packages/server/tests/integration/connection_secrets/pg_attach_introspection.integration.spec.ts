@@ -175,6 +175,10 @@ describe.skipIf(!PG_URL)(
                   "SELECT * FROM duckdb_secrets()",
                   "SELECT * FROM postgres_query('app', 'SELECT 1')",
                   "SELECT * FROM __ducklake_metadata_lake.main.ducklake_metadata",
+                  "SELECT * FROM pragma_database_list",
+                  "SELECT current_setting('allowed_paths') AS p",
+                  "SELECT * FROM ducklake_settings('lake')",
+                  "SELECT * FROM ducklake_set_option('lake', 'k', 'v')",
                ]) {
                   const answer = await post(`/connections/${conn}/${route}`, {
                      sqlStatement,
