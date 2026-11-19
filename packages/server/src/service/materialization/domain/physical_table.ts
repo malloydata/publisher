@@ -56,14 +56,21 @@ export function instructedTable(
 }
 
 /**
- * The table a manifest entry (or any record of a built table) names: in its
- * storage destination when it has one, else on its connection.
+ * A built table as a run records it: its name as written, on its connection,
+ * and in its `storage=` destination when it has one. A manifest entry, a
+ * write target, a kept table and a ledger row each record one.
  */
-export function entryTable(entry: {
+export interface TableRecord {
    connectionName?: string | null;
    storageDestinationName?: string | null;
    physicalTableName: string;
-}): PhysicalTable {
+}
+
+/**
+ * The table a {@link TableRecord} names: in its storage destination when it
+ * has one, else on its connection.
+ */
+export function entryTable(entry: TableRecord): PhysicalTable {
    return {
       place: entry.storageDestinationName
          ? { kind: "destination", name: entry.storageDestinationName }
@@ -93,11 +100,7 @@ export function tableKey(t: PhysicalTable, foldsCase: boolean): string {
  * table). Exact: the store matches a row exactly, a host echoes back the
  * names it was given, and the reclaim decides each recorded table on its own.
  */
-export function recordedTableKey(row: {
-   connectionName?: string | null;
-   storageDestinationName?: string | null;
-   physicalTableName: string;
-}): string {
+export function recordedTableKey(row: TableRecord): string {
    return JSON.stringify([
       row.connectionName ?? "",
       row.storageDestinationName ?? "",

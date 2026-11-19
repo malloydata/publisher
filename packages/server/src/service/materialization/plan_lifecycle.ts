@@ -15,6 +15,7 @@
 import type { PackageAnnotationFinding } from "../annotation_reader";
 import { components } from "../../api";
 import { getPersistCollisionEnforce } from "../../config";
+import { errorCodeOf } from "../../error_code";
 import { BuildPlanRefreshingError } from "../../errors";
 import { logger } from "../../logger";
 import {
@@ -330,7 +331,7 @@ export class PlanLifecycle {
             `Failed to compute build plan for package ${this.owner.packageName()}`,
             {
                packageName: this.owner.packageName(),
-               error: errMessage(err),
+               code: errorCodeOf(err),
             },
          );
          return undefined;

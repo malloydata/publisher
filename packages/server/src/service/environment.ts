@@ -565,12 +565,10 @@ export class Environment {
    private readonly storeBindingReads = new WeakMap<Package, string>();
    // The loaded versions already settled once they became findable.
    private readonly settledVersions = new WeakSet<Package>();
-   // The loaded versions a host owns: bound to a host manifest that bound,
-   // or built by a host's instructed run (their registry row's `hostOwned`).
-   // See isHostOwned.
-   private readonly hostOwnedVersions = new WeakSet<Package>();
-   // The same, by `package@version`, for every version marked in this
-   // process: a copy whose load read its row before the mark still counts.
+   // The versions a host owns (see isHostOwned), by `package@version`, for
+   // every version marked in this process: a copy whose load read its row
+   // before the mark still counts. A loaded copy's own mark is on its
+   // materialization (PackageMaterialization.isHostOwned).
    private readonly hostOwnedVersionKeys = new Set<string>();
    // Called when a version is archived, to reclaim the tables it alone owns.
    // Set by EnvironmentStore (see setVersionArchivedHook).
@@ -2974,7 +2972,7 @@ export class Environment {
             ensurePackageRecord: hooks.ensurePackageRecord,
             removePackageRecord: hooks.removePackageRecord,
             boundManifestOf: (loaded) => loaded.getManifestLocation() ?? null,
-            hostMarked: (loaded) => this.hostOwnedVersions.has(loaded),
+            hostMarked: (loaded) => loaded.materialization().isHostOwned(),
             isVersionBuilding: (packageName, versionId) =>
                this.versionBuilds.has(`${packageName}@${versionId}`),
             onVersionArchived: (packageName, versionId) =>
@@ -3070,7 +3068,7 @@ export class Environment {
          });
          // Marked by its row; one whose manifest binds below is marked by
          // that bind (markHostOwned).
-         if (version.hostOwned) this.hostOwnedVersions.add(loaded);
+         if (version.hostOwned) loaded.materialization().markHostOwned();
          await this.bindManifestIfConfigured(loaded, manifest);
          await this.rebindServeBindingsFromLocalStore(loaded);
          return loaded;
@@ -3351,8 +3349,9 @@ export class Environment {
     */
    private async markHostOwned(pkg: Package): Promise<void> {
       const versionId = pkg.getVersionId();
-      if (versionId === undefined || this.hostOwnedVersions.has(pkg)) return;
-      this.hostOwnedVersions.add(pkg);
+      const mz = pkg.materialization();
+      if (versionId === undefined || mz.isHostOwned()) return;
+      mz.markHostOwned();
       this.hostOwnedVersionKeys.add(`${pkg.getPackageName()}@${versionId}`);
       await this.versionService
          ?.markHostOwned(pkg.getPackageName(), versionId)
@@ -3435,7 +3434,7 @@ export class Environment {
       const versionId = pkg.getVersionId();
       return (
          Boolean(pkg.getManifestLocation()) ||
-         this.hostOwnedVersions.has(pkg) ||
+         pkg.materialization().isHostOwned() ||
          (versionId !== undefined &&
             this.hostOwnedVersionKeys.has(
                `${pkg.getPackageName()}@${versionId}`,

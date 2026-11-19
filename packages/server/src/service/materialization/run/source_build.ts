@@ -12,7 +12,7 @@
  * miss by the author's source. Counts each chained storage build.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { instructionTier } from "../domain/placement";
 import { plannedModelDefOf } from "../../governance/ir/compiled_model";
 import type {

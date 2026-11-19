@@ -86,8 +86,9 @@ import {
  *     them. Fails closed. The one exception is `gateEnforcedAtRead` (see
  *     {@link gateEnforcedAtRead}): a source's own row-level gate, kept by the
  *     served copy, which re-roots the author's text, gates included, and has
- *     them grafted and re-proven on every query (R3, and G3 for a `storage=`
- *     table as for a database one). Every other check here still applies.
+ *     them grafted and re-proven on every query (and own-gate keeping for a
+ *     `storage=` table as for a database one). Every other check here still
+ *     applies.
  *
  *     Join reach is PARTIAL: the deep walk finds a gate on a plainly-joined
  *     source and under `annotations.inherits`, but NOT through an ANNOTATED
@@ -331,7 +332,7 @@ export function assertDatabasePersistNotAuthorizeGated(
    options: {
       /**
        * From {@link gateEnforcedAtRead}, for a `#(rollup)` rollup whose
-       * base gate is grafted and proven on its variant at read (R3): skip
+       * base gate is grafted and proven on its variant at read: skip
        * only the gate refusal.
        */
       gateEnforcedAtRead?: boolean;
@@ -438,9 +439,9 @@ export function assertDatabasePersistNotAuthorizeGated(
          message: inheritedRowFilterRefusal(sourceName, "database"),
       });
    }
-   // G3, the gate policy's: the entry point's own gate compiles to a row
-   // filter and nothing else is reachable beneath it, so database serving
-   // grafts exactly what a live query would.
+   // Own-gate keeping, the gate policy's: the entry point's own gate compiles
+   // to a row filter and nothing else is reachable beneath it, so database
+   // serving grafts exactly what a live query would.
    if (
       origin === "persist" &&
       tableKeepsGates(
@@ -818,7 +819,7 @@ function walkForAuthorizeNotes(
 
 /**
  * Whether a gated source may be built because its gate is enforced when the
- * table is read (R3, contracts at read; G3). True only
+ * table is read (contracts at read; own-gate keeping). True only
  * when all hold:
  *
  * - the source is a `#(materialize)` source (a `materialize` table) with
@@ -832,7 +833,7 @@ function walkForAuthorizeNotes(
  * - its gate is the entry point's own and classifies `row_level` against the
  *   author's model (the table's `gate`), an attributed row filter or lock
  *   with no row filter inherited from a source it extends: the bar the
- *   database tier sets. Under G3 this holds on both tiers with
+ *   database tier sets. Under own-gate keeping this holds on both tiers with
  *   `materialize.gatedSources` off, by maintainer decision ahead of the
  *   question-14 review; the managed tier then holds the gated source's
  *   columns, every caller's rows.
@@ -852,7 +853,7 @@ export function gateEnforcedAtRead(
 ): boolean {
    const table = plan?.tables?.[sourceID];
    // A rollup asks its own question: its base gates are grafted and proven on
-   // its variant (R3 for rollups), for a `#(rollup)` rollup and a v1
+   // its variant (for rollups), for a `#(rollup)` rollup and a v1
    // `#@ preaggregate` line read as one alike.
    if (table?.rollup !== undefined) {
       return rollupGateEnforcedAtRead(table.rollup);
@@ -881,7 +882,8 @@ export function gateEnforcedAtRead(
       {
          kind: "materialize",
          // Database only when neither the caller nor the plan says storage:
-         // G3 admits a database table alone, so a doubt reads as storage.
+         // Own-gate keeping admits a database table alone, so a doubt reads as
+         // storage.
          tier:
             !storage && materialized.persist?.storage === undefined
                ? "database"
@@ -895,9 +897,9 @@ export function gateEnforcedAtRead(
 
 /**
  * Whether a source's `storage=` table is read past its own row-level gate
- * under G3: it is gated, and {@link gateEnforcedAtRead} admits it as stored.
- * Its bindings carry `ownGateKept`, so a served answer reading it may pass
- * that gate as one reading a database table may.
+ * under own-gate keeping: it is gated, and {@link gateEnforcedAtRead} admits it
+ * as stored. Its bindings carry `ownGateKept`, so a served answer reading it
+ * may pass that gate as one reading a database table may.
  */
 export function storageKeepsOwnGate(
    source: PersistSource,
@@ -916,7 +918,7 @@ export function storageKeepsOwnGate(
  * ({@link referencesAuthorize}'s walk, the one that refuses a gated build).
  * A walk that fails reads as gated (fail closed). A gated entry point over
  * such a table is served from it on every tier: its gate is grafted and
- * proven on the answer, as on a database table (g-mixed).
+ * proven on the answer, as on a database table (the ungated-rows rule).
  */
 export function holdsOnlyUngatedRows(source: PersistSource): boolean {
    return !referencesAuthorize(source);
@@ -1064,11 +1066,11 @@ export function assertTierEligible(
    );
    // A database `#(materialize)` table is read only through the served copy
    // (never Malloy's compiler manifest), which keeps the entry point's own
-   // row-level gate under G3 as v1 database does: the gate policy admits it
-   // with `materialize.enabled`, and the gated-sources switch is not needed.
-   // Every other gate is refused above (a joined, inherited or not row-level
-   // one), so this refuses a gated one only when the policy does not keep it,
-   // and a table is never built that cannot be served.
+   // row-level gate under own-gate keeping as v1 database does: the gate policy
+   // admits it with `materialize.enabled`, and the gated-sources switch is not
+   // needed. Every other gate is refused above (a joined, inherited or not
+   // row-level one), so this refuses a gated one only when the policy does not
+   // keep it, and a table is never built that cannot be served.
    if (
       table?.materialize &&
       referencesAuthorize(source) &&

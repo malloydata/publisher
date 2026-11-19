@@ -20,7 +20,7 @@ import {
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { BilledReadNotCapturedError } from "./build_attribution";
 import {
    buildKindOf,

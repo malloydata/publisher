@@ -12,7 +12,7 @@
 import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";
@@ -197,7 +197,7 @@ export class DatabaseTier
       const durationMs = Math.round(performance.now() - startTime);
       // A database `#@ persist` table is bound on the served copy with the
       // columns its build wrote, captured here as a `storage=` build captures
-      // them (the v1 cutover's G1).
+      // them (the v1 cutover's).
       const schema = await capturedDatabaseSchema({
          connection,
          physicalTableName,
@@ -207,7 +207,7 @@ export class DatabaseTier
 
       // Each column's type as the warehouse names it, so the served copy
       // reads a big-integer column through a cast to exactly that type and
-      // never narrows one (known limitation 12). Captured on every build: a
+      // never narrows one. Captured on every build: a
       // `#(materialize)` table records no other schema.
       const nativeSchema = await capturedNativeSchema({
          run: (sql, options) =>

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The serve verdict (D2): for each source the package materializes, whether
+ * The serve verdict: for each source the package materializes, whether
  * queries will be answered from its table, and when not, why and what to
  * change: as package state at publish, as the same answer before anything is
  * published (a preview), and as a reason in place of a silent live fallback.
@@ -33,7 +33,7 @@ export const MATERIALIZATION_UNREACHABLE_CODE = "materialization-unreachable";
 
 /**
  * The `code` of the package warning for a `storage=` source whose destination
- * the environment does not configure (P13): every build into it fails, so the
+ * the environment does not configure: every build into it fails, so the
  * source serves live.
  */
 const MATERIALIZATION_DESTINATION_MISSING_CODE =
@@ -41,7 +41,7 @@ const MATERIALIZATION_DESTINATION_MISSING_CODE =
 
 /**
  * The `code` of the package warning for a database source whose connection
- * cannot hold a table (P13): a database build writes into that connection, so
+ * cannot hold a table: a database build writes into that connection, so
  * the source serves live.
  */
 const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
@@ -75,9 +75,9 @@ type ServeVerdictReason =
    | "stale"
    /** Its storage table is bound, but every model's source of that name is another source. */
    | "shadowed"
-   /** `storage=` names a destination the environment does not configure (P13). */
+   /** `storage=` names a destination the environment does not configure. */
    | "destination_missing"
-   /** Database, on a connection whose type creates no tables (P13). */
+   /** Database, on a connection whose type creates no tables. */
    | "connection_cannot_hold_table"
    /**
     * A `#(materialize)` source, which only the served copy reads, and the
@@ -204,7 +204,7 @@ export interface ServeVerdictFacts {
     */
    materialize(sourceID: string): "serves" | "off" | "not_served" | undefined;
    /**
-    * A persisted view's generated build source (`#@ persist` on a view, P14),
+    * A persisted view's generated build source (`#@ persist` on a view),
     * by its plan sourceID: the source and view it stores. A query reaches it
     * by calling the view on that source, so reach and gates are the source's.
     * A persisted named query's build source carries `queryName`, and its run
@@ -312,7 +312,7 @@ function verdictFor(
    const s = verdictSubjectOf(sourceID, source, facts);
    const { origin, tier, rollupBase, view, subject, live } = s;
 
-   // Deployment facts (P13), ahead of the storage mode: under `write-only` the
+   // Deployment facts, ahead of the storage mode: under `write-only` the
    // build runs and fails on them, so they are the reason worth naming. Under
    // `off` the annotation is ignored, so a destination is never read. A table
    // already bound is never called unbuildable: what serves is reported as it
@@ -481,7 +481,7 @@ function verdictSubjectOf(
 }
 
 /**
- * A deployment fact (P13) that sends the source live: a `storage=`
+ * A deployment fact that sends the source live: a `storage=`
  * destination the environment does not configure, or a database connection
  * that cannot hold a table. Undefined when neither does.
  */

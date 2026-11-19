@@ -31,7 +31,7 @@
  * and joins are not stored: the served copy keeps them as written, re-bound
  * over the stored columns.
  *
- * Hidden fields (P3). A query cannot select a `private`
+ * Hidden fields. A query cannot select a `private`
  * or `internal` field, so the source's own and its inherited `internal`
  * fields are built from a copy of its file with its own access modifiers
  * lifted ({@link buildCopyText}), and stored under their own names, each
@@ -63,13 +63,13 @@
  * joined source), and the joined source's own exposed dimensions as
  * `j__<field>` columns, which the served copy answers `j.<field>` from with no
  * join at read (served_copy.ts, `InlinedJoin`).
- * An inlined join is checked unique before a build (P8): the plan carries a
+ * An inlined join is checked unique before a build: the plan carries a
  * generated group-by over the joined source on the join's key, and a build
  * whose check finds a key matched twice fails, naming the join. An auto-run
  * skips it only when the joined table provably has not changed since it
  * passed (run/inline_uniqueness.ts).
  *
- * `inline=["j"]` on a join_many (P5) stores a pair table: one row per
+ * `inline=["j"]` on a join_many stores a pair table: one row per
  * row of live's LEFT JOIN through the join, as `select:` through it reads them,
  * so a parent with no child keeps one row with null child columns. The build
  * is a `group_by:` of the source's own stored columns and the joined source's
@@ -91,8 +91,7 @@
  * checks ({@link pairKeyChecks}): a level above the leaf on every build, the
  * leaf by a check that never fails the build and is recorded beside the
  * table. Without a passing record, and for an aggregate written in the query
- * rather than in a measure, the served copy declines (`pair_flat_query.ts`,
- * known limitation 40).
+ * rather than in a measure, the served copy declines (`pair_flat_query.ts`).
  *
  * What reads through the join_many on the source itself is not stored (a
  * dimension through it has one value per pair, not per parent): the served
@@ -123,7 +122,7 @@
  *   `#@ persist` lines removed, so a source that also carries its own
  *   `#@ persist` is refused rather than stored twice.
  *
- * Caller-dependent dimensions (P9). A dimension whose value depends on what
+ * Caller-dependent dimensions. A dimension whose value depends on what
  * the caller sets is left out of the build and computed at read by the served
  * copy, which keeps its definition (only stored dimensions' definitions are
  * dropped), over its inputs, which are stored: one that reads a given, the
@@ -169,7 +168,7 @@
  * term refuses the source. A dimension whose value depends on the current time
  * is not stored: the served copy keeps its definition and computes it at read.
  *
- * Given-reading `where:` terms (P2). A `where:` that reads a given is left
+ * Given-reading `where:` terms. A `where:` that reads a given is left
  * out of the build and re-applied at read, so the table holds every caller's
  * rows and each read filters to its own. The build cannot simply select from
  * the source, which applies every `where:` it has, so the generator writes a
@@ -190,7 +189,7 @@
  * once where the compiler says it is; and a source whose build reads a
  * `#@ persist` source (the copy would plan that source a second time).
  *
- * Extension tables (P10). A materialized source whose nearest materialized
+ * Extension tables. A materialized source whose nearest materialized
  * ancestor is planned in the same file, reached through `extend` and renames
  * only, builds over that ancestor's build source, so Malloy's planner orders
  * the two builds and the extension's table is computed from its parent's
@@ -303,7 +302,7 @@ export const PAIR_LANE_COLUMN = "__pair_lane";
  */
 export const PAIR_WATERMARK = "__pair_watermark";
 
-/** The given-reading terms (P2) among a plan's read-time terms. */
+/** The given-reading terms among a plan's read-time terms. */
 export function givenReadTerms(
    plan: Pick<MaterializePlan, "readTimeTerms">,
 ): GivenReadTerm[] {
@@ -565,7 +564,7 @@ function pairWatermarkCalculation(
 
 /**
  * The key checks of a pair table, run before each build like an inlined
- * join_one's (P8): the source's primary key, and the key of each level between
+ * join_one's: the source's primary key, and the key of each level between
  * it and the leaf (a path of join_manys), must be unique and never null. A
  * level's row flag marks one row per distinct key down to that level, so two
  * rows of one key (or two null keys) share one flagged row, where live
@@ -641,7 +640,7 @@ export function pairKeyChecks(
 }
 
 /**
- * One inlined join's uniqueness check (P8): the joined source's keys that
+ * One inlined join's uniqueness check: the joined source's keys that
  * occur more than once. A build runs it first and fails on any row. A pair
  * table's key check ({@link pairKeyChecks}) also returns a null key.
  */
@@ -690,7 +689,7 @@ export function importAlias(plan: MaterializePlan): string {
  * The author's source a generated name stands for, among `plans`, or
  * undefined for a name no generated file declares: a build source is its
  * author's source; the alias an extension table's build reads its base by
- * (P10) is on its parent's table, since its build copy re-roots the parent on
+ * is on its parent's table, since its build copy re-roots the parent on
  * the parent's build source, so it is the parent.
  */
 export function generatedNameOwner(
@@ -723,7 +722,7 @@ export function generatedNamesOf(plan: MaterializePlan): string[] {
    ];
 }
 
-/** Ends a level file's name: one depth of a chain's generated sources (P10). */
+/** Ends a level file's name: one depth of a chain's generated sources. */
 const MATERIALIZE_LEVEL_SUFFIX = ".materialize-level.malloy";
 
 /** The level file of `level`'s generated sources, beside the author's model. */
@@ -732,7 +731,7 @@ export function levelFileName(modelFileName: string, level: number): string {
 }
 
 /**
- * Each plan's depth in its chain of extension tables (P10), by sourceID: 0
+ * Each plan's depth in its chain of extension tables, by sourceID: 0
  * for one built over the raw chain, its parent's plus one otherwise. A plan
  * whose parent is not among `plans` is depth 0 (see {@link settledChains}).
  */
@@ -788,15 +787,15 @@ export function withoutParent(plan: MaterializePlan): MaterializePlan {
  * from the file that declares it, by its declared name, when
  * `importPathForFile` resolves that file (it may be imported into the author's
  * model under another name). The experimental flag lives here, so the
- * author's file needs none (D3).
+ * author's file needs none.
  *
  * A plan with a build copy, `buildCopyPaths` by sourceID (given-reading terms
- * taken out, P2; built over its parent's build source, P10; or its own access
- * modifiers lifted, P3), is imported from that copy; one with given-reading
+ * taken out; built over its parent's build source; or its own access
+ * modifiers lifted), is imported from that copy; one with given-reading
  * terms also imports the givens they read,
  * which the re-written `where:` needs in scope: each from the file that
  * declares it (`from`), or the author's model. A model with no such plan
- * generates exactly the text it did before P2.
+ * generates the author's text unchanged.
  */
 export function generateBuildFile(
    plans: MaterializePlan[],
@@ -860,7 +859,7 @@ interface GeneratedBuildFiles {
    /** The companion: compiled, and its build targets are every generated source. */
    entry: string;
    /**
-    * Level files by file name (P10), each holding one depth of a chain's
+    * Level files by file name, each holding one depth of a chain's
     * generated sources; the companion imports them. Empty with no chain, when
     * the companion is exactly {@link generateBuildFile}'s.
     */
@@ -868,7 +867,7 @@ interface GeneratedBuildFiles {
 }
 
 /**
- * {@link generateBuildFile}, with the extension tables of P10. A build copy
+ * {@link generateBuildFile}, with its extension tables. A build copy
  * that re-roots a parent imports the parent's build source, and the
  * companion imports the extension's base from that copy, so the parent's
  * build source cannot sit in the companion (the import would cycle): each
