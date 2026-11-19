@@ -13,8 +13,12 @@
  * stored `category` column is altered to compare case-insensitively (which
  * changes no type), a filter `category = 'books'` would admit `Books` from
  * the table while live admits only `books`: each such answer is then live.
- * A filter that compares no string (`id > 2`) is still served. Postgres
- * under a `C` and an `en_US` default; DuckDB by its tables' definitions.
+ * A filter that compares no string (`id > 2`) is still served. A filter
+ * whose string comparison is made in a stage (an output of a query-shaped
+ * source the answer recomputes, a dimension or a join over one, a count
+ * grouped by a string, or the query's own earlier stage) is read through
+ * that stage, and answers live once the column is altered. Postgres under a
+ * `C` and an `en_US` default; DuckDB by its tables' definitions.
  */
 
 import { PostgresConnection } from "@malloydata/db-postgres";
@@ -70,60 +74,166 @@ source: r_src is raw extend {
 
 #@ persist name="qf_query"
 query: q_cat is raw -> { group_by: category; aggregate: n is count() }
+
+source: v is m_tab -> { select: id, category, sb is category = 'books' } extend {
+  dimension: vis2 is sb or id > 1000
+  measure: nv is count() { where: vis2 }
+}
+
+source: v3 is v extend { dimension: vis3 is vis2 and id > 0 }
+
+source: jv is warehouse.sql("""
+  SELECT * FROM (VALUES (1), (2), (3), (4), (5), (6)) AS t(oid)
+""") extend {
+  join_one: vv is v on oid = vv.id
+  dimension: jvis is vv.sb or oid > 1000
+  dimension: jvis2 is vv.vis2
+}
+
+source: vg is m_tab -> { group_by: category; aggregate: n is count() } extend {
+  dimension: many is n > 2
+}
 `;
 
-/** Each query, and whether its filter compares a string (else it is served after the alter too). */
-const CASES: { name: string; query: string; leg: string; strings: boolean }[] =
-   [
-      {
-         name: "a query's where:",
-         query: "run: m_tab -> { where: category = 'books'; select: id; order_by: id }",
-         leg: "materialized",
-         strings: true,
-      },
-      {
-         name: "a query's having:",
-         query: "run: m_tab -> { group_by: id; aggregate: mx is max(category); having: mx = 'books'; order_by: id }",
-         leg: "materialized",
-         strings: true,
-      },
-      {
-         name: "a filtered measure",
-         query: "run: m_tab -> { group_by: id; aggregate: nb; order_by: id }",
-         leg: "materialized",
-         strings: true,
-      },
-      {
-         name: "a view's filter",
-         query: "run: m_tab -> v_books",
-         leg: "materialized",
-         strings: true,
-      },
-      {
-         name: "a rollup's where:",
-         query: "run: r_src -> { where: category = 'books'; group_by: category; aggregate: rc; order_by: category }",
-         leg: "rollup",
-         strings: true,
-      },
-      {
-         name: "a persisted view's later stage",
-         query: "run: m_tab -> by_cat -> { where: category = 'books'; select: category, c; order_by: category }",
-         leg: "view",
-         strings: true,
-      },
-      {
-         name: "a persisted query's later stage",
-         query: "run: q_cat -> { where: category = 'books'; select: category, n; order_by: category }",
-         leg: "query",
-         strings: true,
-      },
-      {
-         name: "a numeric where: (the control)",
-         query: "run: m_tab -> { where: id > 2; select: id, category; order_by: id }",
-         leg: "materialized",
-         strings: false,
-      },
-   ];
+/**
+ * Each query, and whether its filter compares a string (else it is served
+ * after the alter too). `throughStage`: the string comparison is made in a
+ * stage (a query-shaped source's, or the query's own earlier one), so it
+ * names no stored column a Postgres probe can read: there it answers live
+ * as built too. DuckDB judges by the table's definition and needs no path.
+ */
+const CASES: {
+   name: string;
+   query: string;
+   leg: string;
+   strings: boolean;
+   throughStage?: boolean;
+}[] = [
+   {
+      name: "a query's where:",
+      query: "run: m_tab -> { where: category = 'books'; select: id; order_by: id }",
+      leg: "materialized",
+      strings: true,
+   },
+   {
+      name: "a query's having:",
+      query: "run: m_tab -> { group_by: id; aggregate: mx is max(category); having: mx = 'books'; order_by: id }",
+      leg: "materialized",
+      strings: true,
+   },
+   {
+      name: "a filtered measure",
+      query: "run: m_tab -> { group_by: id; aggregate: nb; order_by: id }",
+      leg: "materialized",
+      strings: true,
+   },
+   {
+      name: "a view's filter",
+      query: "run: m_tab -> v_books",
+      leg: "materialized",
+      strings: true,
+   },
+   {
+      name: "a rollup's where:",
+      query: "run: r_src -> { where: category = 'books'; group_by: category; aggregate: rc; order_by: category }",
+      leg: "rollup",
+      strings: true,
+   },
+   {
+      name: "a persisted view's later stage",
+      query: "run: m_tab -> by_cat -> { where: category = 'books'; select: category, c; order_by: category }",
+      leg: "view",
+      strings: true,
+   },
+   {
+      name: "a persisted query's later stage",
+      query: "run: q_cat -> { where: category = 'books'; select: category, n; order_by: category }",
+      leg: "query",
+      strings: true,
+   },
+   {
+      name: "a query-shaped source's output computed from a string",
+      query: "run: v -> { where: sb; select: id; order_by: id }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "a dimension over that output",
+      query: "run: v -> { where: vis2; select: id; order_by: id }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "a filtered measure over that output",
+      query: "run: v -> { aggregate: nv }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "a dimension over a dimension over that output",
+      query: "run: v3 -> { where: vis3; select: id; order_by: id }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "a dimension over that output through a join",
+      query: "run: jv -> { where: jvis; select: oid; order_by: oid }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "a joined dimension over that output",
+      query: "run: jv -> { where: jvis2; select: oid; order_by: oid }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "that output through a join",
+      query: "run: jv -> { where: vv.sb; select: oid; order_by: oid }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "a dimension over a count grouped by a string",
+      query: "run: vg -> { where: many; select: category, n; order_by: category }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "a count grouped by a string",
+      query: "run: vg -> { where: n > 2; select: category, n; order_by: category }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "a later stage's filter on an output computed from a string",
+      query: "run: m_tab -> { select: id, sb is category = 'books' } -> { where: sb; select: id; order_by: id }",
+      leg: "materialized",
+      strings: true,
+      throughStage: true,
+   },
+   {
+      name: "a query-shaped source's numeric output (a control)",
+      query: "run: v -> { where: id > 2; select: id; order_by: id }",
+      leg: "materialized",
+      strings: false,
+   },
+   {
+      name: "a numeric where: (the control)",
+      query: "run: m_tab -> { where: id > 2; select: id, category; order_by: id }",
+      leg: "materialized",
+      strings: false,
+   },
+];
 
 interface Fixture {
    root: string;
@@ -367,9 +477,13 @@ for (const tier of tiers) {
       });
 
       for (const c of CASES) {
-         it(`${c.name}: is served from its table as built, equal to live`, () => {
+         it(`${c.name}: answers as built from its table (live through a stage on Postgres), equal to live`, () => {
             expect(served[c.name].rows).toEqual(live[c.name] as never);
-            expect(served[c.name].kind).toBe(c.leg);
+            expect(served[c.name].kind).toBe(
+               c.throughStage && tier.label.startsWith("Postgres")
+                  ? "live"
+                  : c.leg,
+            );
          });
 
          it(
