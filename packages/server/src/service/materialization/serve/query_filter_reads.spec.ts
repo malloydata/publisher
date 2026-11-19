@@ -39,6 +39,35 @@ source: opps is duckdb.sql("SELECT 2 AS opp_id, 0 AS restricted, 100 AS amount")
   measure: visible_amount is amount.sum() { where: visible }
   measure: hidden is count() { where: not visible }
 }
+
+source: v is t -> { select: id, category, amt, sb is category = 'books', big2 is amt > 1 } extend {
+  dimension: vis2 is sb or amt > 1000
+  dimension: ok2 is big2 or amt > 1000
+  measure: nv is count() { where: vis2 }
+}
+
+source: v3 is v extend { dimension: vis3 is vis2 and id > 0 }
+
+source: vstar is t -> { select: * }
+
+source: jv is duckdb.sql("SELECT 1 AS oid") extend {
+  join_one: vv is v on oid = vv.id
+  dimension: jvis is vv.sb or oid > 1000
+  dimension: jvis2 is vv.vis2
+  dimension: jok is vv.big2 or oid > 1000
+}
+
+source: vg is t -> { group_by: category; aggregate: n is count() } extend {
+  dimension: many is n > 2
+}
+
+source: vgn is t -> { group_by: amt; aggregate: n is count(), s is amt.sum() } extend {
+  dimension: many is n > 2
+}
+
+source: vgb is t -> { group_by: amt; aggregate: nb } extend {
+  dimension: many is nb > 2
+}
 `;
 
 let conn: DuckDBConnection;
@@ -229,6 +258,47 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
          "run: opps -> { where: visible_tagged; select: opp_id }",
       );
       expect(tagged.entryPaths).toContainEqual(["g", "tag"]);
+   });
+
+   it("reads a query-shaped source's output through the stage that computes it", async () => {
+      // Each compares a string in a stage, and reads as one however it is named.
+      for (const q of [
+         "run: v -> { where: sb; select: id }",
+         "run: v -> { where: vis2; select: id }",
+         "run: v -> { aggregate: nv }",
+         "run: v3 -> { where: vis3; select: id }",
+         "run: jv -> { where: jvis; select: oid }",
+         "run: jv -> { where: jvis2; select: oid }",
+         "run: jv -> { where: vv.sb; select: oid }",
+         "run: vg -> { where: many; select: category, n }",
+         "run: vg -> { where: n > 2; select: category, n }",
+         "run: vgb -> { where: many; select: amt }",
+         "run: t -> { select: id, sb is category = 'books' } -> { where: sb; select: id }",
+         "run: t -> { group_by: category; aggregate: c } -> { where: c > 1; select: c }",
+         "run: t -> { group_by: id; nest: n is { select: sb is category = 'books' } -> { where: sb; select: sb } }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.scoped, q).toBe(true);
+      }
+   });
+
+   it("still reads a query-shaped source's output that compares no string as comparing none", async () => {
+      for (const q of [
+         "run: v -> { where: big2; select: id }",
+         "run: v -> { where: ok2; select: id }",
+         "run: v -> { where: amt > 1; select: id }",
+         "run: vstar -> { where: amt > 1; select: id }",
+         "run: jv -> { where: jok; select: oid }",
+         "run: vgn -> { where: many and s > 1; select: amt }",
+         "run: t -> { select: id, b is amt > 1 } -> { where: b; select: id }",
+         "run: t -> { group_by: id; aggregate: c } -> { where: c > 1; select: c }",
+         "run: t -> { group_by: id; nest: n is { select: b is amt > 1 } -> { where: b; select: b } }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(true);
+         expect(r.scoped, q).toBe(false);
+      }
    });
 
    it("reads no filter at all as comparing no string", async () => {
