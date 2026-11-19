@@ -1226,10 +1226,11 @@ describe("service/model", () => {
          // missing" — it is a runnable whose compile THROWS, which the
          // pre-check (correctly) treats as "cannot tell whether this entry
          // point is row-level gated" and refuses to route. `{_query: {}}` is
-         // the no-run-target shape: `structRef` is undefined, so the walk
+         // the no-run-target shape (a query with no filter): `structRef` is undefined, so the walk
          // resolves no struct, finds no gate, and routing proceeds — which is
          // what these tests are actually about.
-         const preparedQueryStub = () => sinon.stub().resolves({ _query: {} });
+         const preparedQueryStub = () =>
+            sinon.stub().resolves({ _query: { pipeline: [] } });
          const storageRunnable = {
             // The served copy's compile carries its own model, which the
             // access checks read in place of the author's.
