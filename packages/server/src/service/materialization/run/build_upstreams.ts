@@ -132,7 +132,8 @@ export const NO_PLAN_FACTS: ChainedPlanFacts = {
  * the compiler's renders; the ledger stays keyed by address.
  *
  * Sources folded apart share one compiler key. `reached`, the persisted
- * sources the rendered source reads (by sourceID), decides which of them may
+ * sources the rendered source can read (by sourceID, through every upstream
+ * the render may inline: {@link persistedReach}), decides which of them may
  * fill it: a key a reached source maps to holds only a reached source's own
  * entry, or none, never a same-SQL sibling's, whose table may be in another
  * tier or of another age. Absent, the first source with an entry fills it.
@@ -147,24 +148,27 @@ export function manifestForCompiler(
 ): Manifest["buildManifest"] {
    const entries = { ...full.entries };
    let changed = false;
-   // A reached source's key holds that source's own table, or nothing: a
-   // sibling's entry under it (filed below, or a sibling whose address IS the
-   // key) is never read in its place.
+   // A reached source's key holds a reached source's own table, or nothing:
+   // a sibling's entry under it (filed below, or a sibling whose address IS
+   // the key) is never read in its place. Every reached source with an entry
+   // fills its key first; only a key none of them filled is cleared.
    const claimed = new Set<string>();
    if (reached !== undefined) {
-      const ownAddresses = new Set(
-         [...reached].map((id) => planFacts.addressBySourceId[id]),
-      );
+      const filled = new Set<string>();
       for (const sourceID of reached) {
          const key = planFacts.compilerKeyBySourceId[sourceID];
          const address = planFacts.addressBySourceId[sourceID];
          if (key === undefined || address === undefined) continue;
          claimed.add(key);
-         if (key === address) continue;
-         if (address in full.entries) {
+         if (!(address in full.entries)) continue;
+         filled.add(key);
+         if (key !== address) {
             entries[key] = full.entries[address];
             changed = true;
-         } else if (key in entries && !ownAddresses.has(key)) {
+         }
+      }
+      for (const key of claimed) {
+         if (!filled.has(key) && key in entries) {
             delete entries[key];
             changed = true;
          }

@@ -56,6 +56,21 @@ source: db_c is twin_a -> { group_by: k; aggregate: grand is total.sum() }
 `;
 const OVER_TWIN = `##! experimental.persistence\n${COL_A}${TWIN_A}${TWIN_B}`;
 const DB_OVER_TWIN = `##! experimental.persistence\n${COL_A}${TWIN_A}${DB_C}`;
+/** A second `name=` twin of col_a, and a source reading both through a join. */
+const TWIN2 = `#@ persist name="fa2"
+source: twin2 is duckdb.sql("select k, sum(v) as total from ev_src group by 1")
+`;
+const joinBoth = (base: string, joined: string) =>
+   `##! experimental.persistence\n${COL_A}${TWIN2}` +
+   `source: j is ${base} extend { join_one: t is ${joined} on k = t.k }
+#@ persist name="fboth"
+source: both is j -> { group_by: k; aggregate: grand is total.sum(), g2 is t.total.sum() }
+`;
+/** A storage source two levels over the twin. */
+const C3 = `#@ persist name="tc" storage="lake"
+source: c3 is twin_b -> { group_by: k; aggregate: g3 is grand.sum() }
+`;
+const TWO_OVER_TWIN = `##! experimental.persistence\n${COL_A}${TWIN_A}${TWIN_B}${C3}`;
 const WITHOUT_TWIN = `##! experimental.persistence\n${COL_A}${COL_B}`;
 
 async function scenario(model: string) {
@@ -281,6 +296,94 @@ describe("a database build over an upstream whose address folds in its name=", (
       },
       { timeout: 60000 },
    );
+
+   // Both twins are read (one through a join) and only one is built: the
+   // key they share holds the built one's table, whichever is reached first.
+   for (const [base, joined] of [
+      ["col_a", "twin2"],
+      ["twin2", "col_a"],
+   ]) {
+      for (const [built, table] of [
+         ["col_a", "fa"],
+         ["twin2", "fa2"],
+      ]) {
+         for (const strict of [true, false]) {
+            it(
+               `builds over the one twin built when ${base} joins ${joined} and only ${built} is built (strict: ${strict})`,
+               async () => {
+                  const s = await scenario(joinBoth(base, joined));
+                  expect(s.compilerKey("col_a")).toBe(s.compilerKey("twin2"));
+                  expect(s.address("col_a")).not.toBe(s.address("twin2"));
+                  const result = await s.run(
+                     { strict, hostInstructed: false },
+                     { only: [built, "both"], seedEntries: {} },
+                  );
+                  expect(result.failures).toEqual({});
+                  expect(result.entries[s.address("both")].upstreamReuse).toBe(
+                     "reused",
+                  );
+                  expect(s.read("both", table)).toBe(true);
+                  expect(s.read("both", "ev_src")).toBe(false);
+               },
+               { timeout: 60000 },
+            );
+         }
+      }
+   }
+
+   // c3 over twin_b over twin_a: with twin_b's table absent the render
+   // inlines twin_b, and the twin key it then looks up is twin_a's, never
+   // col_a's older table.
+   for (const strict of [true, false]) {
+      for (const twinBSupplied of [true, false]) {
+         if (strict && !twinBSupplied) continue;
+         it(
+            `builds a storage source two levels over the twin from the twin's rows (strict: ${strict}, twin_b supplied: ${twinBSupplied})`,
+            async () => {
+               const s = await scenario(TWO_OVER_TWIN);
+               const mode = { strict, hostInstructed: true };
+               const first = await s.run(mode);
+               expect(first.failures).toEqual({});
+               await s.duckdb.runSQL("INSERT INTO ev_src VALUES ('a', 10)");
+               const without = (
+                  entries: Record<string, ManifestEntry>,
+                  ...names: string[]
+               ) =>
+                  Object.fromEntries(
+                     Object.entries(entries).filter(
+                        ([address]) =>
+                           !names.some((n) => address === s.address(n)),
+                     ),
+                  );
+               const second = await s.run(mode, {
+                  only: ["twin_a", "twin_b"],
+                  seedEntries: without(first.entries, "twin_a", "twin_b"),
+               });
+               expect(second.failures).toEqual({});
+               const third = await s.run(mode, {
+                  only: ["c3"],
+                  seedEntries: twinBSupplied
+                     ? without(second.entries, "c3")
+                     : without(second.entries, "c3", "twin_b"),
+               });
+               expect(third.failures).toEqual({});
+               expect(s.read("c3", "fa")).toBe(false);
+               expect(s.stacks.c3).toBe(true);
+               expect(
+                  (
+                     await s.duckdb.runSQL(
+                        "SELECT k, g3::INTEGER AS g3 FROM tc ORDER BY k",
+                     )
+                  ).rows,
+               ).toEqual([
+                  { k: "a", g3: 13 },
+                  { k: "b", g3: 3 },
+               ]);
+            },
+            { timeout: 60000 },
+         );
+      }
+   }
 
    for (const mode of MODES) {
       it(

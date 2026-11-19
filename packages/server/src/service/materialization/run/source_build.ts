@@ -66,9 +66,10 @@ import { compiledTextReader } from "../../../utils";
 
 /**
  * The persisted sources `persistSource` reads, from the author's model
- * (`reachPersisted`), with the lift context the walk used: which stored
- * tables a build stacks on or reports, and which may fill a compiler key
- * ({@link manifestForCompiler}).
+ * (`reachPersisted`), with the lift context the walk used: `reached`, the
+ * stored tables a build stacks on or reports, and `reachedIds`, those and
+ * every persisted source below them, which alone may fill a compiler key
+ * they map to ({@link manifestForCompiler}).
  */
 export function persistedReach(
    persistSource: PersistSource,
@@ -87,14 +88,20 @@ export function persistedReach(
    // Which stored tables this source reads, and whether the substituted
    // manifest holds each, decided once for both tiers. It drives stacking on
    // parents, strict refusal, and the entry's `upstreamReuse`.
-   const reached = reachPersisted(lift, persistSource.name, (_name, sourceID) =>
-      planFacts.persistSourceIds.has(sourceID),
-   );
-   return {
-      lift,
-      reached,
-      reachedIds: new Set(reached.persisted.map((r) => r.sourceID)),
-   };
+   const isPersisted = (_name: string, sourceID: string) =>
+      planFacts.persistSourceIds.has(sourceID);
+   const reached = reachPersisted(lift, persistSource.name, isPersisted);
+   // An upstream the render inlines (its table absent) is compiled through to
+   // what it reads, so the compiler can look up any persisted source below
+   // it: those keys belong to this source's reach too.
+   const reachedIds = new Set<string>();
+   const pending = [...reached.persisted];
+   for (let next = pending.pop(); next; next = pending.pop()) {
+      if (reachedIds.has(next.sourceID)) continue;
+      reachedIds.add(next.sourceID);
+      pending.push(...reachPersisted(lift, next.name, isPersisted).persisted);
+   }
+   return { lift, reached, reachedIds };
 }
 
 /**
