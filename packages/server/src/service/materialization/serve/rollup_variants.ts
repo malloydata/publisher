@@ -94,6 +94,7 @@
  * `#@ preaggregate` one is read either way.
  */
 
+import { VariantCompileCache } from "./variant_compile_cache";
 import { requireUnique, verdictOf, type KeyVerdict } from "../domain/key_check";
 import {
    givenWhereCodes,
@@ -391,15 +392,13 @@ export class RollupVariantServe {
    private packagePath?: string;
    private packageConfig?: ModelConnectionInput;
    /** Bumped when the context or the destinations change: a graft cache scope. */
-   private generation = 0;
-   private compiled = new Map<string, Promise<CompiledVariant>>();
+   /** The compiled variants, by key: a graft cache scope per generation. */
+   private readonly compiled = new VariantCompileCache<CompiledVariant>();
    /**
     * Compiled variants whose failure was warned about: each is cached for its
     * binding, so every later attempt would repeat the same warning.
     */
    private warnedFailures = new WeakSet<CompiledVariant>();
-   /** The snapshot bindings {@link compiled} was compiled over. */
-   private compiledFor: readonly Binding[] | undefined;
    private planMemo?: {
       modelDef: unknown;
       /**
@@ -422,15 +421,7 @@ export class RollupVariantServe {
    }
 
    invalidate(): void {
-      this.generation++;
-      this.compiled.clear();
-   }
-
-   /** Start a new compile cache when the snapshot's bindings changed. */
-   private compiledOver(pinned: Pinned): void {
-      if (this.compiledFor === pinned.snapshot.bindings) return;
-      if (this.compiledFor !== undefined) this.invalidate();
-      this.compiledFor = pinned.snapshot.bindings;
+      this.compiled.invalidate();
    }
 
    /** Every rollup a source this model can see declares, by base `sourceID`. */
@@ -502,7 +493,7 @@ export class RollupVariantServe {
       /** The query's pinned tables: its rollup tables and build manifest. */
       pinned: Pinned;
    }): Promise<RollupAnswer> {
-      this.compiledOver(args.pinned);
+      this.compiled.over(args.pinned);
       const modelDef = this.host.modelDef();
       const prepared = await readPreparedQuery(args.authorRunnable);
       // The run target must be a source this model names, by name: an inline
@@ -1779,26 +1770,22 @@ export class RollupVariantServe {
          // its name and the plan.
          ...(use.kind === "base" ? use.views : []),
       ].join("\u0000");
-      let compiled = this.compiled.get(key);
-      if (!compiled) {
-         // One graft cache scope per compiled variant: two variants naming
-         // the same source (other views, another rollup, a reload) never
-         // share a grafted materializer.
-         const cacheScope = `rollup\u0000${this.generation}\u0000${key}`;
-         const unreadDetail = this.unreadDetailOf(plan, table);
-         compiled = this.compile(plan, use, table).then(
-            (v) => ({
+      // One graft cache scope per compiled variant: two variants naming the
+      // same source (other views, another rollup, a reload) never share a
+      // grafted materializer.
+      const cacheScope = `rollup\u0000${this.compiled.generation}\u0000${key}`;
+      return this.compiled.get(
+         key,
+         () => {
+            const unreadDetail = this.unreadDetailOf(plan, table);
+            return this.compile(plan, use, table).then((v) => ({
                ...v,
                cacheScope,
                ...(unreadDetail ? { unreadDetail } : {}),
-            }),
-            (error) => ({
-               error: error instanceof Error ? error.message : String(error),
-            }),
-         );
-         this.compiled.set(key, compiled);
-      }
-      return compiled;
+            }));
+         },
+         (error) => ({ error }),
+      );
    }
 
    /**
