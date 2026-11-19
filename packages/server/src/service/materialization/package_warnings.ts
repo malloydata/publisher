@@ -19,10 +19,10 @@ import { PACKAGE_MANIFEST_NAME } from "../../constants";
 import { CLASSIFICATION_COVERAGE } from "../classification";
 import type { Model } from "../model";
 import type {
-   BuildPlanOutcome,
+   PackagePlan,
    RefusalNotices,
    RefusedRollup,
-} from "./plan/build_plan";
+} from "./domain/package_plan";
 import {
    loadGateText,
    preaggregateGateLines,
@@ -195,7 +195,7 @@ export function annotationFindingWarnings(
  */
 export function loadVerdictOfPlan(
    outcome: Pick<
-      BuildPlanOutcome,
+      PackagePlan<PackageAnnotationFinding>,
       | "plan"
       | "annotationFindings"
       | "incrementalDeclarations"

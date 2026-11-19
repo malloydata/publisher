@@ -19,21 +19,22 @@ import { logger } from "../../logger";
 import {
    recordBuildPlanComputeDuration,
    recordBuildPlanComputeFailed,
-   recordConnectionDigestSkipped,
-   recordEligibilityRefused,
-   type EligibilityRefusalReason,
 } from "../../materialization_metrics";
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import { errMessage } from "../../utils";
 import type { Model } from "../model";
+import type { BuildPlanPackage } from "./plan/build_plan";
+import type {
+   DatabaseSourceEligibility,
+   RefusalNotices,
+   RefusedRollup,
+   SourceEligibility,
+} from "./domain/package_plan";
 import {
-   type BuildPlanPackage,
-   type DatabaseSourceEligibility,
-   type RefusalNotices,
-   type RefusedRollup,
-   type SourceEligibility,
-} from "./plan/build_plan";
-import { computePackageBuildPlan } from "./plan/build_plan_compile";
+   computeLoadPlan,
+   recordEligibilityRefusals,
+   reportDigestSkipped,
+} from "./plan/build_plan_compile";
 import {
    incrementalPolicySourcesOf,
    loadGateText,
@@ -81,7 +82,7 @@ export class PlanLifecycle {
    /** The base and grain of each refused rollup, by its sourceID. */
    refusedRollups: Record<string, RefusedRollup> = {};
    refusalNotices: RefusalNotices = {};
-   /** See BuildPlanOutcome.compilerKeys. */
+   /** See PackagePlan.compilerKeys. */
    compilerKeys: Record<string, string> = {};
    annotationFindings: PackageAnnotationFinding[] = [];
    /**
@@ -160,28 +161,22 @@ export class PlanLifecycle {
    ): Promise<number | undefined> {
       const start = performance.now();
       try {
-         // Before a failed plan throws, matching the main-thread derivation,
-         // which counts these as it goes.
-         for (const [reason, count] of Object.entries(
-            workerPlan?.eligibilityRefused ?? {},
-         )) {
-            for (let i = 0; i < (count ?? 0); i++) {
-               recordEligibilityRefused(reason as EligibilityRefusalReason);
-            }
-         }
-         for (const connectionName of workerPlan?.digestSkipped ?? []) {
-            recordConnectionDigestSkipped();
-            logger.warn(
-               "Skipping connection digest; connection did not resolve",
-               { connectionName },
-            );
-         }
-         if (workerPlan && !workerPlan.ok) {
-            throw new Error(workerPlan.error);
-         }
-         const outcome = workerPlan
-            ? workerPlan.outcome
-            : await computePackageBuildPlan(this.owner.buildPlanPackage);
+         // A derivation's refusals and skipped digests are reported once,
+         // here, whichever thread derived it, a failed one's included.
+         const derived = workerPlan
+            ? workerPlan
+            : {
+                 ok: true as const,
+                 ...(await computeLoadPlan(this.owner.buildPlanPackage)),
+              };
+         recordEligibilityRefusals(
+            derived.ok
+               ? derived.packagePlan.eligibilityRefused
+               : derived.eligibilityRefused,
+         );
+         reportDigestSkipped(derived.digestSkipped);
+         if (!derived.ok) throw new Error(derived.error);
+         const outcome = derived.packagePlan;
          this.buildPlan = outcome.plan;
          this.materializePlans = outcome.materializePlans;
          this.rollupsKeepingGates = new Set(outcome.rollupsKeepingGates);
@@ -323,21 +318,10 @@ export class PlanLifecycle {
             // package serves an older model than its files: that plan is not
             // this package's, so the re-derivation fails and no run builds it.
             const invalid = workerPlan?.ok
-               ? loadGateText(
-                    {
-                       plan: workerPlan.outcome.plan,
-                       annotationFindings:
-                          workerPlan.outcome.annotationFindings,
-                       incrementalDeclarations:
-                          workerPlan.outcome.incrementalDeclarations,
-                       materializePlans: workerPlan.outcome.materializePlans,
-                       modelGateLines: workerPlan.outcome.modelGateLines,
-                    },
-                    {
-                       enforceCollisions: getPersistCollisionEnforce(),
-                       versionScoped: this.versionOwnsTables(),
-                    },
-                 )
+               ? loadGateText(workerPlan.packagePlan, {
+                    enforceCollisions: getPersistCollisionEnforce(),
+                    versionScoped: this.versionOwnsTables(),
+                 })
                : "";
             const stale = isStale?.() ?? false;
             if (invalid || stale) {

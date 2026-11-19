@@ -230,8 +230,6 @@ export interface LoadPackageJob {
    collectProblems?: boolean;
    /** See {@link LoadPackageRequest.computeBuildPlan}. */
    computeBuildPlan?: boolean;
-   /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
-   withPreaggregateCompanions?: boolean;
    /** See {@link LoadPackageRequest.publishedVersion}. */
    publishedVersion?: boolean;
    /** See {@link LoadPackageRequest.withEntities}. */
@@ -569,7 +567,6 @@ export class PackageLoadPool {
          overlay: qj.request.overlay,
          collectProblems: qj.request.collectProblems,
          computeBuildPlan: qj.request.computeBuildPlan,
-         withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
          ...(qj.request.publishedVersion ? { publishedVersion: true } : {}),
          withEntities: qj.request.withEntities,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,

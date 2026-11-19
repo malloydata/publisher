@@ -290,8 +290,7 @@ describe("re-deriving after a connection edit", () => {
          ok: true,
          durationMs: 0,
          digestSkipped: [],
-         eligibilityRefused: {},
-         outcome: {
+         packagePlan: {
             annotationFindings: [
                {
                   route: "@",

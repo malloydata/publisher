@@ -23,7 +23,7 @@ import {
    PackageMaterialization,
    type PackageMaterializationOwner,
 } from "./package_materialization";
-import { deriveBuildPlanOutcome } from "./plan/build_plan";
+import { derivePackagePlan } from "./plan/build_plan";
 import { compilePackageBuildPlan } from "./plan/build_plan_compile";
 
 type BuildPlan = components["schemas"]["BuildPlan"];
@@ -107,7 +107,7 @@ describe("rollup-not-built", () => {
             "dialectName",
             { get: () => "sqlserver" },
          );
-         const outcome = deriveBuildPlanOutcome(compiled, null);
+         const outcome = derivePackagePlan(compiled, null);
          expect(
             outcome.plan?.refusedSources?.[rollupID as string],
          ).toMatchObject({

@@ -42,8 +42,9 @@ import {
 import {
    compilePackageBuildPlan,
    computePackageBuildPlan,
+   recordEligibilityRefusals,
 } from "./plan/build_plan_compile";
-import { deriveBuildPlanOutcome } from "./plan/build_plan";
+import { derivePackagePlan } from "./plan/build_plan";
 import {
    createTableWithDeclaredTypes,
    issuePassthroughRead,
@@ -83,8 +84,8 @@ afterAll(() => packages.cleanup());
 
 /**
  * How many times `publisher_materialization_eligibility_refused_total` counts
- * ONE refused source while a package's build plan is derived: once, at the
- * plan's one verdict for its table.
+ * ONE refused source for a package's build plan: once, at the plan's one
+ * verdict for its table, recorded where the plan is adopted.
  */
 const ELIGIBILITY_REFUSALS_PER_REFUSED_SOURCE = 1;
 
@@ -114,6 +115,13 @@ describe("publisher_materialization_eligibility_refused_total", () => {
       expect(
          Object.keys(outcome.sourceEligibility?.refused ?? {}),
       ).toHaveLength(1);
+      // Deriving counts; it records nothing until the plan is adopted.
+      expect(
+         await harness.collectCounter(
+            "publisher_materialization_eligibility_refused_total",
+         ),
+      ).toBe(0);
+      recordEligibilityRefusals(outcome.eligibilityRefused);
       expect(
          await harness.collectAttributes(
             "publisher_materialization_eligibility_refused_total",
@@ -131,6 +139,7 @@ describe("publisher_materialization_eligibility_refused_total", () => {
       // database to every other gate.
       const pkg = await packages.create(BLANK_STORAGE_SOURCE);
       const outcome = await computePackageBuildPlan(pkg);
+      recordEligibilityRefusals(outcome.eligibilityRefused);
       const refused = Object.values(outcome.plan?.refusedSources ?? {});
       expect(refused.map((r) => r.reason)).toEqual(["empty_storage"]);
       expect(
@@ -151,10 +160,11 @@ describe("publisher_materialization_eligibility_refused_total", () => {
       // (only whether it may be served from a stored table) is not a refusal.
       const pkg = await packages.create(ONE_PERSIST_SOURCE);
       const compiled = await compilePackageBuildPlan(pkg);
-      const outcome = deriveBuildPlanOutcome(
+      const outcome = derivePackagePlan(
          { ...compiled, connectionTypes: { duckdb: "duckdb" } },
          null,
       );
+      recordEligibilityRefusals(outcome.eligibilityRefused);
       expect(outcome.plan?.refusedSources ?? {}).toEqual({});
       expect(Object.values(outcome.sourceEligibility.refused)).toEqual([
          expect.stringContaining("cannot be passed through"),
@@ -499,10 +509,9 @@ describe("a package load's build-plan instruments", () => {
       const outcome = await computePackageBuildPlan(pkg);
       await pm.applyLoadBuildPlan({
          ok: true,
-         outcome,
+         packagePlan: outcome,
          durationMs: 42,
          digestSkipped: [],
-         eligibilityRefused: {},
       });
       expect(
          (

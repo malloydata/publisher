@@ -12,6 +12,7 @@
  * injection vector). Pure.
  */
 
+import type { PersistNameProblem } from "../domain/package_plan";
 import { BadRequestError } from "../../../errors";
 import { codedLine, PERSIST_INVALID_CODE } from "../../annotation_reader";
 import type { Annotations } from "@malloydata/malloy";
@@ -81,11 +82,6 @@ export function tableNameProblem(name: string): string | undefined {
 }
 
 /** One `#@ persist name=` mistake: its load-failure line, and an unsafe value. */
-export interface PersistNameProblem {
-   line: string;
-   /** The quoted value that is not a {@link SAFE_NAME_PATH}, when it is one. */
-   unsafeValue?: string;
-}
 
 /**
  * The `#@ persist name=<value>` annotations of one model whose name is

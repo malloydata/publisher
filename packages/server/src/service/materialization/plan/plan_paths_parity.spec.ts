@@ -15,7 +15,10 @@ import { getPackageLoadPool } from "../../../package_load/package_load_pool";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { usePackageLoadPool } from "../../../test_helpers/temp_package";
 import { computePackageBuildPlan } from "./build_plan_compile";
-import type { BuildPlanOutcome } from "./build_plan";
+import type { PackageAnnotationFinding } from "../../annotation_reader";
+import type { PackagePlan } from "../domain/package_plan";
+
+type BuildPlanOutcome = PackagePlan<PackageAnnotationFinding>;
 
 const RAW = `##! experimental { persistence composite_sources }
 source: raw is duckdb.sql("""SELECT 1 AS id, DATE '2024-01-01' AS d, 'A' AS c""")
@@ -180,9 +183,9 @@ describe("the load worker and compilePackageBuildPlan plan alike", () => {
          const { main, worker } = await bothPaths(packages, model);
          expect(worker?.ok).toBe(true);
          if (!worker?.ok) return;
-         expect(judged(worker.outcome)).toEqual(judged(main));
+         expect(judged(worker.packagePlan)).toEqual(judged(main));
          // Every side table, not only the judgement.
-         expect(whole(worker.outcome)).toEqual(whole(main));
+         expect(whole(worker.packagePlan)).toEqual(whole(main));
       });
    }
 
@@ -190,7 +193,7 @@ describe("the load worker and compilePackageBuildPlan plan alike", () => {
       const { worker } = await bothPaths(packages, SHAPES[4][1]);
       expect(worker?.ok).toBe(true);
       if (!worker?.ok) return;
-      expect(structuredClone(worker.outcome)).toEqual(worker.outcome);
+      expect(structuredClone(worker.packagePlan)).toEqual(worker.packagePlan);
    });
 
    it("a published version of a scope: version package", async () => {
@@ -204,7 +207,7 @@ describe("the load worker and compilePackageBuildPlan plan alike", () => {
       );
       expect(worker?.ok).toBe(true);
       if (!worker?.ok) return;
-      expect(judged(worker.outcome)).toEqual(judged(main));
+      expect(judged(worker.packagePlan)).toEqual(judged(main));
       expect(
          main.annotationFindings.filter(
             (f) => f.code === "materialization-table-collision",
@@ -234,7 +237,7 @@ source: d is raw extend {
       );
       expect(worker?.ok).toBe(true);
       if (!worker?.ok) return;
-      expect(judged(worker.outcome)).toEqual(judged(main));
+      expect(judged(worker.packagePlan)).toEqual(judged(main));
       // Each fails the load under its route's code; a name= lowercasing
       // alone changes (`Plain_T`) is planned.
       expect(
@@ -281,7 +284,7 @@ source: q is raw -> { group_by: c }
       );
       expect(worker?.ok).toBe(true);
       if (!worker?.ok) return;
-      expect(judged(worker.outcome)).toEqual(judged(main));
+      expect(judged(worker.packagePlan)).toEqual(judged(main));
       const malformed = main.annotationFindings
          .filter((f) => f.tier === "malformed")
          .map((f) => [f.code, f.subject]);

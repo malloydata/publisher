@@ -24,7 +24,7 @@ Nothing downstream derives a kind: the build, its telemetry, eligibility and
 the wire projection read it off the table. A declaration that is not planned
 is a refusal (a package warning, and `refusedSources` on the wire) or an
 omission (`omittedSources`, `omittedFiles`). `deriveBuildPlan` projects the
-tables into the wire `BuildPlan`; `deriveBuildPlanOutcome` into what a
+tables into the wire `BuildPlan`; `derivePackagePlan` into what a
 package load keeps, which crosses the load worker as plain data.
 
 ## The build path

@@ -116,8 +116,9 @@ import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
 import type {
    DatabaseSourceEligibility,
+   PersistNameProblem,
    SourceEligibility,
-} from "./materialization/plan/build_plan";
+} from "./materialization/domain/package_plan";
 import {
    PackageMaterialization,
    type PackageMaterializationView,
@@ -209,10 +210,7 @@ import {
    type ApiSecureGivenSummary,
    summarizeSecureGivens,
 } from "./secure_givens";
-import {
-   persistNameProblems,
-   type PersistNameProblem,
-} from "./materialization/plan/persist_annotation_validation";
+import { persistNameProblems } from "./materialization/plan/persist_annotation_validation";
 import {
    applyLoadGates,
    assertOutcomeStagesAvailable,
@@ -1437,7 +1435,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             malloyConfig,
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
-            withPreaggregateCompanions: true,
             withEntities: true,
             ...(versionId !== undefined ? { publishedVersion: true } : {}),
          }),
@@ -1471,7 +1468,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   malloyConfig.connections.lookupConnection(connectionName),
                databaseEntries,
                Package.planConnectionsOf(
-                  outcome.buildPlan?.ok ? outcome.buildPlan.outcome.plan : null,
+                  outcome.buildPlan?.ok
+                     ? outcome.buildPlan.packagePlan.plan
+                     : null,
                ),
             ),
          };
@@ -2935,7 +2934,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             malloyConfig: this.malloyConfig,
             defaultConnectionName: "duckdb",
             buildManifest,
-            withPreaggregateCompanions: true,
          }),
       );
 
