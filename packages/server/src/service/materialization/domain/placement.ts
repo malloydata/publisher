@@ -68,9 +68,7 @@ export function servedCopyReadsTier(tier: Tier, others: readonly Tier[]) {
  * one place the serve verdict reads that rule from, so a leg that starts
  * falling back changes its verdict with it.
  */
-export function readsDatabaseWhenStorageUnread(leg: {
-   servedCopy: boolean;
-}): boolean {
+function readsDatabaseWhenStorageUnread(leg: { servedCopy: boolean }): boolean {
    return leg.servedCopy;
 }
 
@@ -85,7 +83,8 @@ export function readsDatabaseWhenStorageUnread(leg: {
  * `on`, the served copy (every source but a rollup, persisted view or
  * persisted query, which read their storage binding through their own leg)
  * reads the storage table while it is fresh ({@link servedCopyReadsTier}),
- * else a fresh database table beside it.
+ * else a fresh database table beside it; and that database table too where
+ * its compile dropped the storage one (`servedCopyOnDatabase`).
  */
 export function readTier(facts: {
    storageBound: boolean;
@@ -95,6 +94,11 @@ export function readTier(facts: {
    databaseBound: boolean;
    databaseFresh: boolean;
    servedCopy: boolean;
+   /**
+    * The compiled served copy re-rooted the source on its database table
+    * alone: it dropped the storage table, and fell back.
+    */
+   servedCopyOnDatabase?: boolean;
    declaredStorage: boolean;
 }): Tier {
    if (!facts.storageBound) {
@@ -106,7 +110,10 @@ export function readTier(facts: {
          : "storage";
    }
    if (!facts.servedCopy) return "storage";
-   return !facts.storageFresh && facts.databaseFresh ? "database" : "storage";
+   return (!facts.storageFresh || facts.servedCopyOnDatabase) &&
+      facts.databaseFresh
+      ? "database"
+      : "storage";
 }
 
 /**

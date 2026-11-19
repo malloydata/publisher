@@ -518,6 +518,26 @@ export class ServedCopyServe {
    }
 
    /**
+    * The author `sourceID`s the compiled copy re-rooted on a database table
+    * and on no storage table; undefined before the first compile.
+    */
+   rerootedOnDatabaseOnly(): ReadonlySet<string> | undefined {
+      const compiled = this.lanes.kept(0);
+      if (!compiled) return undefined;
+      const onStorage = new Set(
+         compiled.rerooted
+            .filter((b) => !isDatabase(b))
+            .flatMap((b) => b.sourceIDs ?? []),
+      );
+      return new Set(
+         compiled.rerooted
+            .filter(isDatabase)
+            .flatMap((b) => b.sourceIDs ?? [])
+            .filter((id) => !onStorage.has(id)),
+      );
+   }
+
+   /**
     * The author `sourceID`s the compiled copy leaves as written because they
     * extend a source it re-rooted, and so answer from that source's table by
     * name (an extension with no table of its own); empty before the first
@@ -1689,6 +1709,13 @@ export class ServedCopyServe {
       lift: ReturnType<typeof authorModelLiftContext>,
       problems: ServedCopyProblem[],
       lane: number,
+      /**
+       * Storage bindings of sources bound in both tiers to pass over for
+       * their database twin: a compile already dropped them.
+       */
+      passedOver: ReadonlySet<Binding> = new Set(),
+      /** Filled with each source bound in both tiers: its storage binding's database twin. */
+      twins?: Map<Binding, Binding>,
    ): {
       candidates: { binding: Binding; reroot: AuthorReroot }[];
       throughBase: NonNullable<Compiled["throughBase"]>[number][];
@@ -1718,18 +1745,27 @@ export class ServedCopyServe {
          }
       }
       // A source bound in both tiers is re-rooted on one table: two re-roots
-      // of one declaration splice it twice, and both are refused.
-      const tiersOf = new Map<string, Tier[]>();
+      // of one declaration splice it twice, and both are refused. The storage
+      // table, unless a compile already dropped it (`passedOver`): then its
+      // database twin.
       const keyOf = (c: (typeof candidates)[number]) =>
          rerootKey(c.reroot.url, c.reroot.sourceName);
+      const byKey = new Map<string, (typeof candidates)[number][]>();
       for (const c of candidates) {
-         const tiers = tiersOf.get(keyOf(c)) ?? [];
-         tiers.push(c.binding.tier);
-         tiersOf.set(keyOf(c), tiers);
+         byKey.set(keyOf(c), [...(byKey.get(keyOf(c)) ?? []), c]);
       }
-      candidates = candidates.filter((c) =>
-         servedCopyReadsTier(c.binding.tier, tiersOf.get(keyOf(c)) ?? []),
-      );
+      for (const same of byKey.values()) {
+         const storage = same.find((c) => c.binding.tier === "storage");
+         const database = same.find((c) => c.binding.tier === "database");
+         if (storage && database) twins?.set(storage.binding, database.binding);
+      }
+      candidates = candidates.filter((c) => {
+         if (passedOver.has(c.binding)) return false;
+         const tiers: Tier[] = (byKey.get(keyOf(c)) ?? [])
+            .filter((o) => !passedOver.has(o.binding))
+            .map((o) => o.binding.tier);
+         return servedCopyReadsTier(c.binding.tier, tiers);
+      });
       // An extension of a re-rooted source reads it by name already, and
       // re-rooting the extension too would replace the base it inherits its
       // parent's fields from. Leave it as written, unless it is an extension
@@ -1798,6 +1834,12 @@ export class ServedCopyServe {
       return { candidates, throughBase, withoutKept };
    }
 
+   /**
+    * The copy over `bindings`: compiled once, and again for each source
+    * bound in both tiers whose storage table the passes dropped (a field it
+    * does not carry, a refusal, the ladder), re-rooted then on its database
+    * table, as if the storage one were not bound.
+    */
    private async compile(
       key: string,
       generation: number,
@@ -1805,6 +1847,36 @@ export class ServedCopyServe {
       lane = 0,
       /** The pin's time, which a remembered failure is held against. */
       asOf = 0,
+   ): Promise<Compiled> {
+      const passedOver = new Set<Binding>();
+      for (;;) {
+         const twins = new Map<Binding, Binding>();
+         const compiled = await this.compileOver(
+            key,
+            generation,
+            bindings,
+            lane,
+            asOf,
+            passedOver,
+            twins,
+         );
+         const rerooted = new Set(compiled.rerooted);
+         const dropped = [...twins.keys()].filter(
+            (b) => !passedOver.has(b) && !rerooted.has(b),
+         );
+         if (dropped.length === 0) return compiled;
+         for (const b of dropped) passedOver.add(b);
+      }
+   }
+
+   private async compileOver(
+      key: string,
+      generation: number,
+      bindings: Binding[],
+      lane: number,
+      asOf: number,
+      passedOver: ReadonlySet<Binding>,
+      twins: Map<Binding, Binding>,
    ): Promise<Compiled> {
       const over = bindings;
       const problems: ServedCopyProblem[] = [];
@@ -1837,6 +1909,8 @@ export class ServedCopyServe {
          lift,
          problems,
          lane,
+         passedOver,
+         twins,
       );
       const { throughBase, withoutKept } = prepared;
       const state: CopyPassState = {

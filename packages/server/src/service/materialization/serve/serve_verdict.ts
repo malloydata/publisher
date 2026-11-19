@@ -218,6 +218,13 @@ export interface ServeVerdictFacts {
     */
    materialize(sourceID: string): "serves" | "off" | "not_served" | undefined;
    /**
+    * Whether the compiled served copy re-rooted this source on its database
+    * table and on no storage table (it dropped the storage table: a field
+    * it does not carry, a refusal); undefined while it is off or has yet to
+    * compile. Absent: never.
+    */
+   servedCopyOnDatabaseOnly?(sourceID: string): boolean | undefined;
+   /**
     * A persisted view's generated build source (`#@ persist` on a view),
     * by its plan sourceID: the source and view it stores. A query reaches it
     * by calling the view on that source, so reach and gates are the source's.
@@ -282,6 +289,7 @@ function planTier(
    facts: Pick<
       ServeVerdictFacts,
       | "storageMode"
+      | "servedCopyOnDatabaseOnly"
       | "boundStorageIds"
       | "freshStorageIds"
       | "boundEntityIds"
@@ -298,6 +306,8 @@ function planTier(
          databaseBound &&
          (facts.freshEntityIds?.has(source.sourceEntityId) ?? true),
       servedCopy,
+      servedCopyOnDatabase:
+         servedCopy && facts.servedCopyOnDatabaseOnly?.(sourceID) === true,
       declaredStorage: !!source.annotationFields?.storage?.trim(),
    });
 }

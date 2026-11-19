@@ -28,12 +28,6 @@ import {
    switches,
    switchesLabel,
 } from "./domain/gate_policy_frozen_rows";
-import {
-   readsDatabaseWhenStorageUnread,
-   servedCopyReadsTier,
-   storageServes,
-} from "./domain/placement";
-import type { StorageMode } from "./domain/switches";
 import { LEGS, type Tier } from "./domain/vocabulary";
 import { computeServeVerdicts } from "./serve/serve_verdict";
 import { verdictKeepsGate } from "./serve_verdicts";
@@ -268,9 +262,9 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
    });
 
    // A database-origin source bound in both tiers, both tables fresh: the
-   // served copy re-roots it on the one table `servedCopyReadsTier` picks of
-   // those it may read under the mode, so the verdict names that tier and
-   // keeps a gate exactly where admitRead admits the read of that table.
+   // served copy re-roots it on one table (written out below, not derived
+   // from the rule the code uses), so the verdict names that tier and keeps
+   // a gate exactly where admitRead admits the read of that table.
    it("judges a source bound fresh in both tiers on the tier the served copy reads, as admitRead does", () => {
       const sourceID = "orders@file:///pkg/m.malloy";
       const plan = {
@@ -292,13 +286,13 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
       const outcomes = new Set<string>();
       for (const mode of ["on", "write-only", "off"] as const) {
          // The tiers whose binding the served copy may read under `mode`.
-         const readable: Tier[] = storageServes(mode as StorageMode)
-            ? ["database", "storage"]
-            : readsDatabaseWhenStorageUnread({ servedCopy: true })
-              ? ["database"]
-              : [];
-         const read = readable.find((t) => servedCopyReadsTier(t, readable));
-         if (!read) throw new Error(`no tier read under ${mode}`);
+         // The table the served copy reads, written out: the storage table
+         // while the mode reads it, else the database table.
+         const read: Tier = {
+            on: "storage",
+            "write-only": "database",
+            off: "database",
+         }[mode] as Tier;
          for (const sw of switches()) {
             const label = switchesLabel(sw);
             for (const gated of [false, true]) {
@@ -361,9 +355,8 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
 
    // The same source shape read by a leg whose storage binding decides its
    // tier (a rollup): under `on` it reads the storage table; where the mode
-   // reads none, it follows the database table exactly when the leg falls
-   // back to it (readsDatabaseWhenStorageUnread), and is live
-   // (`storage_mode`) on the storage tier otherwise.
+   // reads none, it answers live (`storage_mode`) today. The r4 spec
+   // both_tiers_bound holds the same literals against real queries.
    it("judges a rollup bound fresh in both tiers on the tier its leg reads, under every mode", () => {
       const sourceID = "orders__rollup__region@file:///pkg/m.malloy";
       const plan = {
@@ -387,15 +380,18 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
       };
       const wrong: string[] = [];
       for (const mode of ["on", "write-only", "off"] as const) {
-         const served = storageServes(mode as StorageMode);
-         const fallsBack = readsDatabaseWhenStorageUnread({
-            servedCopy: false,
-         });
-         const expected = served
-            ? { tier: "storage", verdict: "serves" }
-            : fallsBack
-              ? { tier: "database", verdict: "serves" }
-              : { tier: "storage", verdict: "live", reason: "storage_mode" };
+         // Written out: the rollup leg reads its storage table under `on`,
+         // and answers live under the other modes (until it falls back to a
+         // database table there, when this and the verdict change together).
+         const expected = {
+            on: { tier: "storage", verdict: "serves" },
+            "write-only": {
+               tier: "storage",
+               verdict: "live",
+               reason: "storage_mode",
+            },
+            off: { tier: "storage", verdict: "live", reason: "storage_mode" },
+         }[mode];
          const [verdict] = computeServeVerdicts({
             plan: plan as never,
             storageMode: mode,

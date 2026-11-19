@@ -3,7 +3,6 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-   readsDatabaseWhenStorageUnread,
    readTier,
    servedCopyReadsTier,
    storageServes,
@@ -69,27 +68,42 @@ describe("the tier a query reads a source bound in both tiers in", () => {
       });
    });
 
-   it("follows a database table where the mode reads no storage table, exactly for a leg that falls back to it", () => {
-      for (const servedCopy of [true, false]) {
-         for (const storageServed of [true, false]) {
-            const tier = readTier({
-               storageBound: true,
-               storageFresh: true,
-               storageServed,
-               databaseBound: true,
-               databaseFresh: true,
-               servedCopy,
-               declaredStorage: false,
-            });
-            expect(tier).toBe(
-               !storageServed && readsDatabaseWhenStorageUnread({ servedCopy })
-                  ? "database"
-                  : "storage",
-            );
-         }
-      }
-      // Today only the served copy falls back.
-      expect(readsDatabaseWhenStorageUnread({ servedCopy: true })).toBe(true);
-      expect(readsDatabaseWhenStorageUnread({ servedCopy: false })).toBe(false);
+   it("follows a database table where the mode reads no storage table, for the served copy alone", () => {
+      const read = (servedCopy: boolean, storageServed: boolean) =>
+         readTier({
+            storageBound: true,
+            storageFresh: true,
+            storageServed,
+            databaseBound: true,
+            databaseFresh: true,
+            servedCopy,
+            declaredStorage: false,
+         });
+      expect({
+         "served copy, on": read(true, true),
+         "served copy, not on": read(true, false),
+         "other leg, on": read(false, true),
+         "other leg, not on": read(false, false),
+      }).toEqual({
+         "served copy, on": "storage",
+         "served copy, not on": "database",
+         "other leg, on": "storage",
+         "other leg, not on": "storage",
+      });
+   });
+
+   it("follows the database table where the served copy dropped the storage one", () => {
+      const base = {
+         storageBound: true,
+         storageFresh: true,
+         storageServed: true,
+         databaseBound: true,
+         servedCopy: true,
+         servedCopyOnDatabase: true,
+         declaredStorage: false,
+      };
+      expect(readTier({ ...base, databaseFresh: true })).toBe("database");
+      // A database table gone stale since that compile is not read.
+      expect(readTier({ ...base, databaseFresh: false })).toBe("storage");
    });
 });

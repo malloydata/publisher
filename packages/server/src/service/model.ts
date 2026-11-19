@@ -2807,6 +2807,16 @@ export class Model {
       return this.servedCopy.rerootedSourceIDs() ?? "pending";
    }
 
+   /**
+    * The sources this model's served copy re-rooted on a database table and
+    * on no storage table, by author `sourceID`: undefined when the served
+    * copy is off for this model or has yet to compile.
+    */
+   public servedCopyDatabaseOnlyIDs(): ReadonlySet<string> | undefined {
+      if (!this.servedCopyEnabled()) return undefined;
+      return this.servedCopy.rerootedOnDatabaseOnly();
+   }
+
    /** Why this model's served copy leaves sources unserved (empty when off). */
    public servedCopyProblems(): readonly ServedCopyProblem[] {
       if (!this.servedCopyEnabled()) return [];
