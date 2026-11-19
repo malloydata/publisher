@@ -16,19 +16,20 @@
  * (a wrapper) falls back on the timestamp, with those two limits.
  *
  * Refreshing loads that overlap share refetches: a key another load began
- * refetching after this load started is answered by that refetch, once it
- * settles, rather than fetched again.
+ * refetching after this load was requested takes that refetch's answer,
+ * rather than being fetched again or read back from the connection's cache
+ * (which an older, unrefreshed fetch may have overwritten meanwhile).
  */
-export class SchemaRefetches {
+export class SchemaRefetches<A> {
    private readonly byConnection = new WeakMap<
       object,
-      Map<string, { startedAt: number; done: Promise<unknown> }>
+      Map<string, { startedAt: number; answer: Promise<A | undefined> }>
    >();
 
    /**
-    * `maxAgeMs`: how long a refetch is remembered, at least as long as a
-    * load can run. `now` is a monotonic clock in ms, the one load start
-    * times are read on.
+    * `maxAgeMs`: how long a refetch and its answer are kept, at least as long
+    * as a load can wait and run. `now` is a monotonic clock in ms, the one
+    * load request times are read on.
     */
    constructor(
       private readonly maxAgeMs: number,
@@ -36,55 +37,57 @@ export class SchemaRefetches {
    ) {}
 
    /**
-    * Fetch `keys` (`conn`'s schema-cache keys) for a refreshing load begun
-    * at `loadStartedAt`: `fetch(keys, true)` refetches the keys no later
-    * refetch covers, after their entries are dropped, and `fetch(keys,
-    * false)` reads the rest once the refetches covering them settle.
+    * Answer `keys` (`conn`'s schema-cache keys) for a refreshing load
+    * requested at `requestedAt`: a key a refetch begun since then covers
+    * takes that refetch's answer; the rest have their entries dropped and are
+    * refetched together by `refetch`, whose map answers each key (a key it
+    * leaves out answers `undefined`).
     */
-   async fetch<R>(
+   async fetch(
       conn: object,
       keys: string[],
-      loadStartedAt: number,
-      fetch: (keys: string[], refetch: boolean) => Promise<R>,
-   ): Promise<R[]> {
+      requestedAt: number,
+      refetch: (keys: string[]) => Promise<Map<string, A>>,
+   ): Promise<Map<string, A | undefined>> {
       const now = this.now();
       let recent = this.byConnection.get(conn);
       if (!recent) {
          recent = new Map();
          this.byConnection.set(conn, recent);
       }
-      for (const [key, refetch] of recent) {
-         if (now - refetch.startedAt > this.maxAgeMs) recent.delete(key);
+      for (const [key, earlier] of recent) {
+         if (now - earlier.startedAt > this.maxAgeMs) recent.delete(key);
       }
-      const covered: string[] = [];
-      const waits: Promise<unknown>[] = [];
-      const refetch: string[] = [];
+      const answers = new Map<string, Promise<A | undefined>>();
+      const toRefetch: string[] = [];
       for (const key of new Set(keys)) {
          const earlier = recent.get(key);
-         if (earlier && earlier.startedAt >= loadStartedAt) {
-            covered.push(key);
-            waits.push(earlier.done);
+         if (earlier && earlier.startedAt >= requestedAt) {
+            answers.set(key, earlier.answer);
          } else {
-            refetch.push(key);
+            toRefetch.push(key);
             dropCachedSchema(conn, key);
          }
       }
-      const answers: Promise<R>[] = [];
-      if (refetch.length > 0) {
-         const refetching = fetch(refetch, true);
-         const done = refetching.catch(() => undefined);
-         for (const key of refetch) recent.set(key, { startedAt: now, done });
-         answers.push(refetching);
+      if (toRefetch.length > 0) {
+         const refetching = refetch(toRefetch);
+         for (const key of toRefetch) {
+            const answer = refetching.then((byKey) => byKey.get(key));
+            // A failed refetch is answered to its own load below; a load
+            // sharing it gets the same failure.
+            answer.catch(() => undefined);
+            answers.set(key, answer);
+            recent.set(key, { startedAt: now, answer });
+         }
       }
-      if (covered.length > 0) {
-         answers.push(
-            Promise.allSettled(waits).then(() => fetch(covered, false)),
-         );
-      }
-      return Promise.all(answers);
+      const settled = await Promise.all(
+         [...answers].map(
+            async ([key, answer]) => [key, await answer] as const,
+         ),
+      );
+      return new Map(settled);
    }
 }
-
 /** Drop `key` from a Malloy connection's schema cache, if it has one. */
 function dropCachedSchema(conn: object, key: string): void {
    const cache = (conn as { schemaCache?: unknown }).schemaCache;

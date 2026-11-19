@@ -1589,6 +1589,47 @@ source: from_sql is warehouse.sql("select * from ${token}")
    );
 
    it(
+      "refetches a table once for refreshing loads queued behind one worker",
+      async () => {
+         const token = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+         const tables = [0, 1, 2, 3, 4].map((i) => `${token}_${i}`);
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "shared.malloy"),
+            tables
+               .map((t, i) => `source: s${i} is warehouse.table('${t}')`)
+               .join("\n") + "\n",
+         );
+         const { malloyConfig, duckdb } = await warehouseConfig();
+         try {
+            for (const t of tables) {
+               await duckdb.runSQL(`create table ${t} as select 1 as a`);
+            }
+            // Cached before the storm, as a served package's tables are.
+            await Package.create(token, "pkg", tempDir, malloyConfig);
+            const reads = spyOn(duckdb, "fetchTableSchema");
+            // Three packages reloaded at once; the pool's one worker runs
+            // them in turn, and each was requested before the first began.
+            const reloaded = await Promise.all(
+               ["a", "b", "c"].map((name) =>
+                  Package.create(token, name, tempDir, malloyConfig, false, {
+                     refreshSchemas: true,
+                  }),
+               ),
+            );
+            expect(reloaded).toHaveLength(3);
+            expect(reads.mock.calls.map((call) => call[1]).sort()).toEqual(
+               [...tables].sort(),
+            );
+            reads.mockRestore();
+         } finally {
+            await duckdb.close();
+         }
+      },
+      { timeout: 60000 },
+   );
+
+   it(
       "has every other worker drop what a refreshing load refetched",
       async () => {
          const token = `t${Date.now()}${Math.floor(Math.random() * 1e6)}`;

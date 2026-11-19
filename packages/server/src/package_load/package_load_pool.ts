@@ -136,8 +136,11 @@ interface JobContext {
    resolve: (result: LoadPackageResult | CompileServedCopyResult) => void;
    reject: (err: Error) => void;
    timeout: ReturnType<typeof setTimeout>;
-   /** A refreshing load's start, on `performance.now()` (see SchemaRefetches). */
-   refreshStartedAt?: number;
+   /**
+    * When a refreshing load was requested, on `performance.now()`: a refetch
+    * begun since answers it (see SchemaRefetches).
+    */
+   refreshRequestedAt?: number;
 }
 
 /**
@@ -175,6 +178,8 @@ type QueuedJob =
    | {
         kind: "load";
         request: LoadPackageJob;
+        /** See JobContext.refreshRequestedAt. */
+        refreshRequestedAt?: number;
         /** When it was queued, for {@link nextQueuedJobIndex}'s aging. */
         enqueuedAt?: number;
         resolve: (result: LoadPackageOutcome) => void;
@@ -348,7 +353,14 @@ export class PackageLoadPool {
    /** How long a job may run before it is terminated (see JOB_LIMIT_FACTOR). */
    private readonly jobLimitMs: number;
    /** Refreshing loads' refetches, shared while they overlap. */
-   private readonly refetches: SchemaRefetches;
+   private readonly tableRefetches: SchemaRefetches<{
+      schema?: TableSourceDef;
+      error?: string;
+   }>;
+   private readonly sqlRefetches: SchemaRefetches<{
+      structDef?: SQLSourceDef;
+      error?: string;
+   }>;
 
    constructor(
       maxWorkers: number,
@@ -375,7 +387,10 @@ export class PackageLoadPool {
       this.jobTimeoutMs =
          options.jobTimeoutMs ?? settings.get("packageLoad.jobTimeoutMs");
       this.jobLimitMs = JOB_LIMIT_FACTOR * this.jobTimeoutMs;
-      this.refetches = new SchemaRefetches(this.jobLimitMs);
+      // A refreshing load can wait in the queue before its job runs.
+      const refetchWindowMs = this.jobLimitMs + this.jobTimeoutMs;
+      this.tableRefetches = new SchemaRefetches(refetchWindowMs);
+      this.sqlRefetches = new SchemaRefetches(refetchWindowMs);
       this.mainThreadWorkBudgetMs =
          options.mainThreadWorkBudgetMs ??
          MAIN_THREAD_WORK_BUDGET_SHARE * this.jobTimeoutMs;
@@ -406,6 +421,11 @@ export class PackageLoadPool {
             resolve,
             reject,
             enqueuedAt: Date.now(),
+            // When it is asked for, not when a worker takes it, so loads
+            // queued behind one worker share each other's refetches.
+            ...(request.refreshSchemas
+               ? { refreshRequestedAt: performance.now() }
+               : {}),
          });
          this.tryDispatch();
       });
@@ -569,8 +589,8 @@ export class PackageLoadPool {
             qj.reject(err);
          },
          timeout,
-         ...(qj.request.refreshSchemas
-            ? { refreshStartedAt: performance.now() }
+         ...(qj.refreshRequestedAt !== undefined
+            ? { refreshRequestedAt: qj.refreshRequestedAt }
             : {}),
       });
 
@@ -953,12 +973,12 @@ export class PackageLoadPool {
          const options = buildFetchOptions(msg.options);
          const result =
             options.refreshTimestamp !== undefined &&
-            ctx.refreshStartedAt !== undefined
+            ctx.refreshRequestedAt !== undefined
                ? await this.refetchTables(
                     conn,
                     msg.tables,
                     options,
-                    ctx.refreshStartedAt,
+                    ctx.refreshRequestedAt,
                  )
                : await conn.fetchSchemaForTables(msg.tables, options);
          reply({
@@ -987,30 +1007,44 @@ export class PackageLoadPool {
       conn: InfoConnection,
       tables: Record<string, string>,
       options: FetchSchemaOptions,
-      loadStartedAt: number,
+      requestedAt: number,
    ): Promise<{
       schemas: Record<string, unknown>;
       errors: Record<string, string>;
    }> {
-      const answers = await this.refetches.fetch(
+      const answers = await this.tableRefetches.fetch(
          conn,
          Object.values(tables),
-         loadStartedAt,
-         (paths, refetch) => {
+         requestedAt,
+         async (paths) => {
             const wanted = new Set(paths);
-            return conn.fetchSchemaForTables(
-               Object.fromEntries(
-                  Object.entries(tables).filter(([, p]) => wanted.has(p)),
-               ),
-               refetch ? options : {},
+            const asked = Object.entries(tables).filter(([, p]) =>
+               wanted.has(p),
             );
+            const read = await conn.fetchSchemaForTables(
+               Object.fromEntries(asked),
+               options,
+            );
+            const byPath = new Map<
+               string,
+               { schema?: TableSourceDef; error?: string }
+            >();
+            for (const [key, p] of asked) {
+               if (byPath.has(p)) continue;
+               byPath.set(p, {
+                  schema: read.schemas[key] as TableSourceDef | undefined,
+                  error: read.errors[key],
+               });
+            }
+            return byPath;
          },
       );
       const schemas: Record<string, unknown> = {};
       const errors: Record<string, string> = {};
-      for (const answer of answers) {
-         Object.assign(schemas, answer.schemas);
-         Object.assign(errors, answer.errors);
+      for (const [key, p] of Object.entries(tables)) {
+         const answer = answers.get(p);
+         if (answer?.schema) schemas[key] = answer.schema;
+         else errors[key] = answer?.error ?? "No schema returned for the table";
       }
       return { schemas, errors };
    }
@@ -1042,23 +1076,37 @@ export class PackageLoadPool {
             InfoConnection["fetchSchemaForSQLStruct"]
          >[0];
          const options = buildFetchOptions(msg.options);
-         const refreshStartedAt = ctx.refreshStartedAt;
-         const result =
+         const requestedAt = ctx.refreshRequestedAt;
+         let result: { structDef?: unknown; error?: string };
+         if (
             options.refreshTimestamp !== undefined &&
-            refreshStartedAt !== undefined
-               ? (
-                    await this.refetches.fetch(
-                       conn,
-                       [sqlKey(sentence.connection, sentence.selectStr)],
-                       refreshStartedAt,
-                       (_keys, refetch) =>
-                          conn.fetchSchemaForSQLStruct(
-                             sentence,
-                             refetch ? options : {},
-                          ),
-                    )
-                 )[0]
-               : await conn.fetchSchemaForSQLStruct(sentence, options);
+            requestedAt !== undefined
+         ) {
+            const key = sqlKey(sentence.connection, sentence.selectStr);
+            const answers = await this.sqlRefetches.fetch(
+               conn,
+               [key],
+               requestedAt,
+               async () =>
+                  new Map([
+                     [
+                        key,
+                        (await conn.fetchSchemaForSQLStruct(
+                           sentence,
+                           options,
+                        )) as {
+                           structDef?: SQLSourceDef;
+                           error?: string;
+                        },
+                     ],
+                  ]),
+            );
+            result = answers.get(key) ?? {
+               error: "No schema returned for the SQL",
+            };
+         } else {
+            result = await conn.fetchSchemaForSQLStruct(sentence, options);
+         }
          if (result.error !== undefined) {
             reply({
                type: "schema-for-sql-response",
