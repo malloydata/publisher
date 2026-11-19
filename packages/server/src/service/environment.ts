@@ -1012,7 +1012,12 @@ export class Environment {
             this.destinations,
             destinationRoot,
             false,
-            { origin: "storage-destination" },
+            {
+               origin: "storage-destination",
+               // A destination reopened without its catalog: serve shapes
+               // compiled against the closed connection recompile.
+               onDuckLakeReopened: () => this.invalidateCompiledLegs(),
+            },
          );
       } catch (error) {
          logger.error(

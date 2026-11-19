@@ -10,6 +10,10 @@ on:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
       - "packages/server/src/service/ducklake_init_race.spec.ts"
+      - "packages/server/src/service/ducklake_attach_race_postgres.spec.ts"
+      - "packages/server/src/service/duckdb_lockdown.ts"
+      - "packages/server/src/service/duckdb_instance_sharing.ts"
+      - "packages/server/src/service/ducklake_catalog_unavailable.ts"
       - "packages/server/src/service/proxy.ts"
       # The harnesses and fixtures every spec below is built on.
       - "packages/server/src/test_helpers/**"
@@ -50,6 +54,10 @@ on:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
       - "packages/server/src/service/ducklake_init_race.spec.ts"
+      - "packages/server/src/service/ducklake_attach_race_postgres.spec.ts"
+      - "packages/server/src/service/duckdb_lockdown.ts"
+      - "packages/server/src/service/duckdb_instance_sharing.ts"
+      - "packages/server/src/service/ducklake_catalog_unavailable.ts"
       - "packages/server/src/service/proxy.ts"
       # The harnesses and fixtures every spec below is built on.
       - "packages/server/src/test_helpers/**"
@@ -248,6 +256,17 @@ jobs:
         run: |
           cd packages/server
           bun test --timeout 120000 ./src/service/ducklake_init_race.spec.ts
+
+      # Overlapping first lookups of one DuckLake storage destination with an
+      # S3 secret, on this job's Postgres: the catalog stays attached, and a
+      # locked instance that lost it reopens. Skipped everywhere this variable
+      # is not set.
+      - name: Run DuckLake destination attach race test
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: "postgresql://postgres:postgres@localhost:5432/malloy_test"
+        run: |
+          cd packages/server
+          bun test --timeout 120000 ./src/service/ducklake_attach_race_postgres.spec.ts
 
       # The admin API's catalogs against a real catalog database: creates,
       # loads, ownership through the owner role, error reasons, snapshot

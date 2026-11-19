@@ -281,6 +281,19 @@ export function ownDuckDBConnection(
 }
 
 /**
+ * Forget that `owner` owns `connection`: it was closed and hard-closed on its
+ * own (a DuckLake connection reopened without its catalog), so the owner's
+ * release has nothing left to do for it.
+ */
+export function disownDuckDBConnection(
+   owner: object,
+   connection: Connection,
+): void {
+   if (!(connection instanceof DuckDBConnection)) return;
+   ownedBy.get(owner)?.delete(connection);
+}
+
+/**
  * Disconnect a CLOSED connection's native handle once no call on it is in
  * flight: now, or when the last one settles. Never throws; anything it cannot
  * prove safe is left to the refcount close.
