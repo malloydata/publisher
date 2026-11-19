@@ -20,6 +20,7 @@
  * the instructed build and the run lifecycle.
  */
 
+import { instructionTier } from "../domain/placement";
 import { AsyncLocalStorage } from "async_hooks";
 import { getPersistStorageMode } from "../../../config";
 import { causeChain } from "../../../driver_errors";
@@ -116,9 +117,7 @@ export function buildKindsByAddress(
 export function buildTierOf(
    instruction: Pick<BuildInstruction, "destination">,
 ): BuildTier {
-   return instruction.destination && getPersistStorageMode() !== "off"
-      ? "storage"
-      : "database";
+   return instructionTier(instruction, getPersistStorageMode());
 }
 
 /**

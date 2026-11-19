@@ -503,8 +503,16 @@ export async function preloadExcel(
 }
 
 /** A directory or URL prefix as an allowlist entry: one trailing slash. */
+/**
+ * Whether `path` carries a URL scheme (`s3://`, `gs://`, `az://`, ...): an
+ * object store's prefix rather than a local path.
+ */
+export function hasUrlScheme(path: string): boolean {
+   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(path);
+}
+
 function asAllowEntry(prefix: string): string {
-   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(prefix)) {
+   if (hasUrlScheme(prefix)) {
       return prefix.endsWith("/") ? prefix : `${prefix}/`;
    }
    return canonicalDirectory(prefix);

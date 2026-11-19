@@ -113,6 +113,7 @@ import {
 } from "./compile_source";
 import { type OverlayFile } from "./request_overlay";
 import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
+import { storageWritable } from "./materialization/domain/placement";
 
 export {
    COMPILE_SCOPES,
@@ -2313,7 +2314,7 @@ export class Environment {
             });
          }
          if (
-            getPersistStorageMode() !== "off" &&
+            storageWritable(getPersistStorageMode()) &&
             Object.keys(storageEntries).length > 0
          ) {
             pkg.materialization().bind({ storage: storageEntries });
@@ -3278,7 +3279,7 @@ export class Environment {
          await pkg.reloadAllModels(tableNameManifest);
          reloaded = true;
       }
-      if (getPersistStorageMode() !== "off") {
+      if (storageWritable(getPersistStorageMode())) {
          pkg.materialization().bind({ storage: storageEntries });
       }
       if (pkg.getVersionId() !== undefined) {

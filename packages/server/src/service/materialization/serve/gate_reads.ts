@@ -94,7 +94,13 @@ function gatePaths(exprs: readonly string[]): {
 
 export type { GateReads } from "./gate_reads_types";
 
-/** The operators a comparison of non-string values may be built with. */
+/**
+ * The operators a comparison of non-string values may be built with. Time
+ * arithmetic is among them: `delta` (`now - 3650 days`, its `base` and its
+ * count both operands), `trunc` (`created_at.month`) and `extract`
+ * (`day(now)`) each make a time or a number of their operands alone, so they
+ * compare a string only when an operand is one, which the walk still reads.
+ */
 const NON_STRING_OPERATORS = new Set([
    "=",
    "!=",
@@ -109,6 +115,9 @@ const NON_STRING_OPERATORS = new Set([
    "()",
    "is-null",
    "is-not-null",
+   "delta",
+   "trunc",
+   "extract",
 ]);
 
 /** A known type that is not a string. Unknown is not. */
@@ -313,6 +322,8 @@ class GateReadWalk {
          case "null":
          case "dateLiteral":
          case "timestampLiteral":
+         case "timestamptzLiteral":
+         case "now":
             return true;
          default:
             if (

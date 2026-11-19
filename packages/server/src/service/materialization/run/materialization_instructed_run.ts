@@ -15,6 +15,7 @@
  * The checks throw before any table is touched.
  */
 
+import { instructsUnwritableDestination } from "../domain/placement";
 import type { Manifest, PersistSource } from "@malloydata/malloy";
 import {
    BadRequestError,
@@ -485,7 +486,7 @@ export function assertInstructedDestinationWritable(
    instruction: BuildInstruction,
    compiled: CompiledBuildPlan,
 ): void {
-   if (instruction.destination && getPersistStorageMode() === "off") {
+   if (instructsUnwritableDestination(instruction, getPersistStorageMode())) {
       throw new BadRequestError(
          `Source '${persistSource.name}' was instructed to build into ` +
             `storage destination '${instruction.destination}', but ` +

@@ -116,6 +116,13 @@ export interface Capabilities {
     */
    liveRoundsBigIntegersMeasured: boolean;
    /**
+    * Its live answer writes a float4 as the shortest text that reads back as
+    * it (Postgres's `float4out`, through its JSON stage), so a `storage=`
+    * answer's float4 values, which a DuckDB read widens to a double, are
+    * written the same way after it runs (`live_float4.ts`).
+    */
+   liveWritesFloat4Shortest: boolean;
+   /**
     * Its `CAST` takes an integer type by its catalog name. Not MySQL, whose
     * `CAST` names no integer type (`CAST(x AS bigint)` is a syntax error).
     */
@@ -190,6 +197,7 @@ const NONE: Capabilities = Object.freeze({
    nestedColumns: false,
    driverKeepsBigIntegers: false,
    liveRoundsBigIntegersMeasured: false,
+   liveWritesFloat4Shortest: false,
    castsToIntegerType: false,
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
@@ -232,6 +240,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       tableOwnership: true,
       castsToIntegerType: true,
       liveRoundsBigIntegersMeasured: true,
+      liveWritesFloat4Shortest: true,
    }),
    standardsql: Object.freeze({
       ...NONE,

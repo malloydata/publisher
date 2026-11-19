@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { leafKey } from "../materialization/domain/physical_table";
 import { createHash } from "crypto";
 import type {
    Materialization,
@@ -199,8 +200,7 @@ export function newestServingEntries(
  * or a version serve live: the safe direction.
  */
 export function tableIdentity(physicalTableName: string): string {
-   const segments = physicalTableName.split(".");
-   return segments[segments.length - 1].replace(/["`[\]]/g, "").toLowerCase();
+   return leafKey(physicalTableName);
 }
 
 /**
