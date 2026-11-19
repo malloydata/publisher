@@ -180,6 +180,55 @@ source: daily is orders -> {
       expect(JSON.stringify(path)).not.toContain("no_such_table");
    });
 
+   // A worker can lose a destination's catalog (a DuckLake catalog missing
+   // from its locked instance). The stored table is an optimisation and the
+   // fault is the worker's, so the query answers live whatever the binding's
+   // fallback says, rather than a 400 the caller cannot fix.
+   it("answers live, as READ_FAILED, when the destination's catalog is missing, whatever the fallback", async () => {
+      for (const freshnessFallback of [undefined, "fail" as const]) {
+         fixture.setBindings(
+            fixture.bindings.map((b) => {
+               const { freshnessFallback: _, ...rest } = b;
+               return {
+                  ...rest,
+                  tablePath: "lost_catalog.main.daily",
+                  ...(freshnessFallback ? { freshnessFallback } : {}),
+               };
+            }),
+         );
+         const { rows, path, servedFrom } = await fixture.runAsIs(
+            "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+         );
+         expect(servedFrom).toBe("live_fallback");
+         expect(rows.length).toBe(2);
+         expect(path?.servedBy).toEqual({ kind: "live" });
+         expect(path?.considered).toEqual([
+            {
+               tableId: daily,
+               kind: "materialized",
+               origin: "persist",
+               outcome: "skipped",
+               reason: "READ_FAILED",
+            },
+         ]);
+         expect(JSON.stringify(path)).not.toContain("lost_catalog");
+      }
+   });
+
+   it("still fails a missing table, not catalog, whose fallback does not allow live", async () => {
+      fixture.setBindings(
+         fixture.bindings.map((b) => {
+            const { freshnessFallback: _, ...rest } = b;
+            return { ...rest, tablePath: "lake.no_such_table" };
+         }),
+      );
+      await expect(
+         fixture.runAsIs(
+            "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+         ),
+      ).rejects.toThrow();
+   });
+
    it("reports nothing considered for a source with no table", async () => {
       fixture.setBindings(fixture.bindings);
       const { path } = await fixture.runAsIs(

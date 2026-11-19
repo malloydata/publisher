@@ -105,14 +105,21 @@ import {
    duckDBInstanceOf,
    isConfigurationFrozen,
    installDuckDBStatementLockdown,
+   isInstanceLocked,
    isLockedByOptions,
    lockDownDuckDBSession,
    relativeReadEntries,
    runAsInternalStatement,
+   runExclusiveOnDuckDBInstance,
 } from "./duckdb_lockdown";
+import {
+   DUCKLAKE_CATALOG_UNAVAILABLE,
+   DuckLakeCatalogUnavailableError,
+} from "./ducklake_catalog_unavailable";
 import { installDuckDBStatementGate } from "./duckdb_statement_gate";
 import {
    hardCloseOwnedDuckDBConnections,
+   hardCloseWhenIdle,
    installDuckDBHardClose,
    ownDuckDBConnection,
 } from "./duckdb_hard_close";
@@ -1169,6 +1176,26 @@ async function isAliasAttached(
 }
 
 /**
+ * Whether `alias` is attached on `connection`'s instance; undefined when the
+ * check itself failed, which says nothing about the catalog.
+ */
+async function aliasAttachedOnInstance(
+   connection: DuckDBConnection,
+   alias: string,
+): Promise<boolean | undefined> {
+   try {
+      const rows = runSQLRows(
+         await connection.runSQL(
+            `SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('${escapeSQL(alias)}')`,
+         ),
+      );
+      return rows.length > 0;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
  * Run a DuckLake ATTACH, trying again, up to `attempts` tries in all, when it
  * lost a race to create the catalog. Postgres reports the duplicate only once
  * the other create has committed, so the catalog exists by then and the next
@@ -1428,9 +1455,23 @@ async function attachDuckLakeWithMode(
          // The lock allows exactly what the secret is scoped to.
          allowForLockdown(connection, scope);
       } catch (error) {
-         await connection
-            .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)
-            .catch(() => {});
+         // Once the instance is locked the catalog is the locker's, attached
+         // and scoped, and nothing could ATTACH it again: detaching it would
+         // leave every later lookup on the instance without it.
+         if (isInstanceLocked(connection)) {
+            logger.error(
+               "DuckLake storage secret failed after its instance was locked; the catalog is left attached",
+               {
+                  code: DUCKLAKE_CATALOG_UNAVAILABLE,
+                  connection: dbName,
+                  error: redactPgSecrets(errMessage(error)),
+               },
+            );
+         } else {
+            await connection
+               .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)
+               .catch(() => {});
+         }
          throw error;
       }
    }
@@ -3375,6 +3416,10 @@ let environmentConfigGenerations = 0;
  *   prior attach state. Only the DuckLake branch reads it.
  * @param options.origin "storage-destination" for the operator's own storage
  *   destinations, which the S3 credential-chain policy treats differently.
+ * @param options.onDuckLakeReopened Called when a DuckLake connection was
+ *   found without its catalog on its locked instance and closed so the next
+ *   lookup reopens it: anything memoized against the closed connection (a
+ *   compiled serve shape) must be dropped.
  */
 export function buildEnvironmentMalloyConfig(
    connections: ApiConnection[] = [],
@@ -3383,7 +3428,12 @@ export function buildEnvironmentMalloyConfig(
    {
       origin = "connection",
       openProxy: openTunnel = openProxy,
-   }: { origin?: ConnectionOrigin; openProxy?: typeof openProxy } = {},
+      onDuckLakeReopened,
+   }: {
+      origin?: ConnectionOrigin;
+      openProxy?: typeof openProxy;
+      onDuckLakeReopened?: (name: string) => void;
+   } = {},
 ): EnvironmentMalloyConfig {
    const assembled = assembleEnvironmentConnections(
       connections,
@@ -3408,6 +3458,8 @@ export function buildEnvironmentMalloyConfig(
    >();
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
+   // One DuckLake ATTACH per connection object, shared by concurrent lookups.
+   const duckLakeAttaches = new WeakMap<Connection, Promise<void>>();
    const closePromises = new WeakMap<Connection, Promise<void>>();
    // An evicted tunnel has left the caches, so release finds its cleanup here.
    const evictions = new Set<Promise<void>>();
@@ -3469,6 +3521,124 @@ export function buildEnvironmentMalloyConfig(
       await attachPromise;
    }
 
+   /**
+    * Attach a DuckLake connection's catalog, once per connection object:
+    * concurrent first lookups share one attach. Two attaches of one catalog
+    * racing the lock lost it: the first lookup locked the instance between
+    * the second's ATTACH and its storage secret, the refused secret's cleanup
+    * detached the catalog, and the locked instance could never attach it
+    * again. The attach also runs exclusive of any lockdown of its instance
+    * (runExclusiveOnDuckDBInstance), so a lock never lands inside it.
+    */
+   function attachDuckLakeOnce(
+      connection: DuckLakeConnection,
+      name: string,
+      metadata: EnvironmentConnectionMetadata,
+   ): Promise<void> {
+      let attach = duckLakeAttaches.get(connection);
+      if (!attach) {
+         attach = (async () => {
+            // A locked instance holds this exact catalog setup (its key
+            // digests the DuckLake config, duckdb_lockdown.ts), and no ATTACH
+            // could run on it: an edit opens a fresh instance.
+            if (isConfigurationFrozen(connection)) return;
+            // Also opens the instance, so the exclusive step below is keyed
+            // on it rather than on this connection alone.
+            const attached = await isDatabaseAttached(connection, name);
+            if (attached && !isUpdateConnectionRequest) return;
+            await runExclusiveOnDuckDBInstance(connection, async () => {
+               if (isConfigurationFrozen(connection)) return;
+               if (
+                  !isUpdateConnectionRequest &&
+                  (await isDatabaseAttached(connection, name))
+               ) {
+                  return;
+               }
+               await attachDuckLake(
+                  connection,
+                  name,
+                  metadata.apiConnection.ducklakeConnection!,
+                  {
+                     origin,
+                     managed: metadata.apiConnection.managed === true,
+                  },
+               );
+               if (metadata.apiConnection.managed === true) {
+                  await setManagedSearchPath(connection, name);
+               }
+            });
+         })();
+         // Evicted on failure, so a transient one is retried by the next lookup.
+         attach.catch(() => {
+            if (duckLakeAttaches.get(connection) === attach) {
+               duckLakeAttaches.delete(connection);
+            }
+         });
+         duckLakeAttaches.set(connection, attach);
+      }
+      return attach;
+   }
+
+   /**
+    * A lookup of a DuckLake connection on a locked instance: check the catalog
+    * is still there, and join the instance's setup on first use.
+    *
+    * A locked instance cannot ATTACH, so a catalog missing from it is never
+    * coming back on that instance. The connection is closed and dropped from
+    * the cache, so the next lookup opens a fresh instance and attaches, and
+    * this lookup fails with {@link DuckLakeCatalogUnavailableError}, which a
+    * routed query answers live.
+    */
+   async function verifyLockedDuckLake(
+      connection: DuckLakeConnection,
+      name: string,
+      metadata: EnvironmentConnectionMetadata,
+   ): Promise<void> {
+      if ((await aliasAttachedOnInstance(connection, name)) === false) {
+         logger.error(
+            "DuckLake catalog is missing from its locked DuckDB instance; reopening the connection",
+            { code: DUCKLAKE_CATALOG_UNAVAILABLE, connection: name, origin },
+         );
+         const cached = duckLakeCache.get(name);
+         if (cached && (await cached) === connection) {
+            duckLakeCache.delete(name);
+         }
+         duckLakeAttaches.delete(connection);
+         const eviction = closeOnce(connection)
+            .then(() => hardCloseWhenIdle(connection))
+            .catch((error) =>
+               logger.warn(
+                  "Failed to close a DuckLake connection missing its catalog",
+                  {
+                     connection: name,
+                     error: errMessage(error),
+                  },
+               ),
+            )
+            .then(() => {
+               evictions.delete(eviction);
+            });
+         evictions.add(eviction);
+         onDuckLakeReopened?.(name);
+         throw new DuckLakeCatalogUnavailableError(name);
+      }
+      if (managedSearchPathSet.has(connection)) return;
+      managedSearchPathSet.add(connection);
+      // A connection joining the locked instance renews the instance's
+      // storage secret as the attaching one did.
+      const renew = instanceSecretRenewers.get(
+         duckDBInstanceOf(connection) ?? {},
+      );
+      if (renew) {
+         connection.setStorageSecretRenewer(() => renew(connection));
+      }
+      // The search path is per session, and allowed after the lock: a joining
+      // connection sets its own.
+      if (metadata.apiConnection.managed === true) {
+         await setManagedSearchPath(connection, name);
+      }
+   }
+
    malloyConfig.wrapConnections(
       (base: LookupConnection<Connection>): LookupConnection<Connection> => {
          const resolveConnection = async (
@@ -3485,44 +3655,9 @@ export function buildEnvironmentMalloyConfig(
                   duckLakeCache.set(name!, connectionPromise);
                }
                const connection = await connectionPromise;
-               // A locked instance holds this exact catalog setup (its key
-               // digests the DuckLake config, duckdb_lockdown.ts), and no
-               // ATTACH could run on it: an edit opens a fresh instance.
-               const frozen = isConfigurationFrozen(connection);
-               if (
-                  !frozen &&
-                  (isUpdateConnectionRequest ||
-                     !(await isDatabaseAttached(connection, name!)))
-               ) {
-                  await attachDuckLake(
-                     connection,
-                     name!,
-                     metadata.apiConnection.ducklakeConnection!,
-                     {
-                        origin,
-                        managed: metadata.apiConnection.managed === true,
-                     },
-                  );
-                  if (metadata.apiConnection.managed === true) {
-                     await setManagedSearchPath(connection, name!);
-                  }
-               } else if (frozen && !managedSearchPathSet.has(connection)) {
-                  managedSearchPathSet.add(connection);
-                  // A connection joining the locked instance renews the
-                  // instance's storage secret as the attaching one did.
-                  const renew = instanceSecretRenewers.get(
-                     duckDBInstanceOf(connection) ?? {},
-                  );
-                  if (renew) {
-                     connection.setStorageSecretRenewer(() =>
-                        renew(connection),
-                     );
-                  }
-                  // The search path is per session, and allowed after the
-                  // lock: a joining connection sets its own.
-                  if (metadata.apiConnection.managed === true) {
-                     await setManagedSearchPath(connection, name!);
-                  }
+               await attachDuckLakeOnce(connection, name!, metadata);
+               if (isConfigurationFrozen(connection)) {
+                  await verifyLockedDuckLake(connection, name!, metadata);
                }
                return connection;
             }

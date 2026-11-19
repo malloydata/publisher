@@ -73,6 +73,7 @@ import {
    answeredWith,
    type Answer,
    canDegradeToLive,
+   isDestinationCatalogUnavailableError,
    isStoredDecimalArithmeticError,
    liveFallbackAnswer,
    type Leg,
@@ -919,6 +920,8 @@ export class ModelServing {
          //    produced THIS shape (a sibling source must not decide);
          //  - or for DECIMAL arithmetic past 38 digits, whatever the policy
          //    (`isStoredDecimalArithmeticError`): the table is right;
+         //  - or for a destination catalog the worker lost, whatever the
+         //    policy (`isDestinationCatalogUnavailableError`);
          //  - never for a client error (bad given) or an abort;
          //  - the retry re-supplies the REAL givens, or the live source could
          //    serve unfiltered rows.
@@ -934,7 +937,9 @@ export class ModelServing {
          logger.warn(
             isStoredDecimalArithmeticError(error)
                ? "Storage-served query's DECIMAL arithmetic exceeded 38 digits; falling back to live"
-               : "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
+               : isDestinationCatalogUnavailableError(error)
+                 ? "Storage-served query found its destination catalog unavailable; falling back to live"
+                 : "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
             {
                modelPath: this.host.modelPath,
                error: error instanceof Error ? error.message : String(error),

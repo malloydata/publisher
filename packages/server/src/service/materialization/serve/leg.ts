@@ -32,6 +32,7 @@
  * {@link makeLegs}, and its rows in `domain/leg_decline.ts`.
  */
 
+import { DUCKLAKE_CATALOG_UNAVAILABLE } from "../../ducklake_catalog_unavailable";
 import type { Leg as LegName } from "../domain/vocabulary";
 import type {
    GivenValue,
@@ -390,9 +391,11 @@ function bindingsAllowDegradeToLive(bindings: readonly Binding[]): boolean {
  * `freshnessFallback=live` marks the tier as an optimisation, not a
  * dependency. Deliberately narrow: only an answer read through a virtual map,
  * only per {@link bindingsAllowDegradeToLive} over the bindings that produced
- * THIS shape (a sibling source must not decide), or for DECIMAL arithmetic the
- * destination cannot hold ({@link isStoredDecimalArithmeticError}), never for
- * a client error (a bad given) or an abort.
+ * THIS shape (a sibling source must not decide), for DECIMAL arithmetic the
+ * destination cannot hold ({@link isStoredDecimalArithmeticError}), or for a
+ * destination whose catalog is unavailable
+ * ({@link isDestinationCatalogUnavailableError}), never for a client error (a
+ * bad given) or an abort.
  */
 export function canDegradeToLive(
    answer: Answer,
@@ -408,8 +411,25 @@ export function canDegradeToLive(
          "runtime-given-",
       ) &&
       (bindingsAllowDegradeToLive(answer.answer.shapeBindings) ||
-         isStoredDecimalArithmeticError(error))
+         isStoredDecimalArithmeticError(error) ||
+         isDestinationCatalogUnavailableError(error))
    );
+}
+
+/**
+ * Whether `error` is a stored read finding its destination's catalog missing:
+ * the lookup's own check ({@link DUCKLAKE_CATALOG_UNAVAILABLE}), or DuckDB
+ * binding the read on an instance without the catalog. The stored table is an
+ * optimisation and the fault is the worker's, not the model's or the
+ * caller's, so such an answer degrades to live whatever the bindings'
+ * `freshnessFallback` says; the path report names it `READ_FAILED`.
+ */
+export function isDestinationCatalogUnavailableError(error: unknown): boolean {
+   if ((error as { code?: unknown })?.code === DUCKLAKE_CATALOG_UNAVAILABLE) {
+      return true;
+   }
+   const message = error instanceof Error ? error.message : String(error);
+   return /Binder Error: Catalog "[^"]+" does not exist/.test(message);
 }
 
 /**
