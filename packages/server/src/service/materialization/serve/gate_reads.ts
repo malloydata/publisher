@@ -845,11 +845,7 @@ class GateReadWalk {
          return f?.expressionType === "aggregate" && nonStringType(f.type);
       };
       for (const p of paths) if (measure(p)) this.namedMeasure(ctx, p);
-      const computedScalar = paths.some((p) => {
-         const f = fieldAt(ctx.entry, p);
-         return f === undefined || (f.e !== undefined && !measure(p));
-      });
-      if (!computedScalar && this.leavesNotString(e, owner)) return;
+      if (this.comparesNoStringThroughScalars(e, owner)) return;
       this.scoped = true;
       this.comparesNoString = false;
       if (!this.equalityOrNotString(e, owner)) this.equalityOnly = false;
@@ -858,6 +854,29 @@ class GateReadWalk {
          this.entryPaths.push(p);
          this.resolve(ctx.entry, p, [], [], true);
       }
+   }
+
+   /**
+    * Whether `e` compares no string, reading each computed dimension it names
+    * through its own expression: a dimension's type says what it yields, not
+    * what it compares (`is_books is category = 'books'` is a boolean), and
+    * `leavesNotString` reads only the type. A measure's value is a number;
+    * its own filters are followed as terms of their own.
+    */
+   private comparesNoStringThroughScalars(
+      e: unknown,
+      source: unknown,
+      depth = 0,
+   ): boolean {
+      if (depth > 32 || !this.leavesNotString(e, source)) return false;
+      return fieldPathsIn(e).every((p) => {
+         const f = fieldAt(source, p);
+         if (f?.e === undefined || f.expressionType === "aggregate")
+            return true;
+         const owner =
+            p.length === 1 ? source : fieldAt(source, p.slice(0, -1));
+         return this.comparesNoStringThroughScalars(f.e, owner, depth + 1);
+      });
    }
 
    /** A term of a later stage, on the previous stage's output. */
