@@ -20,7 +20,7 @@
  * - `binary` (byte-exact, every operator): BigQuery; a DuckDB-dialect source
  *   whose instance has no `default_collation` and that names no `COLLATE` in
  *   its SQL or in any table or view it can read; a Postgres column whose
- *   collation is `C` or `POSIX`;
+ *   collation is `C`, `POSIX` or of the builtin provider;
  * - `deterministic` (equality is byte-exact, ordering is not): any other
  *   deterministic Postgres collation, the database default included;
  * - `unknown`: everything else, every other dialect, and any probe that fails.
@@ -167,7 +167,7 @@ export async function stringGateCollationRefusal(args: {
    // A comparison of a string the query makes (a given, a literal, a cast,
    // a `pick`) compares under the database's default collation, which must
    // then meet the comparison's need as a column's would.
-   if (!reads.comparesNoString) {
+   if (!reads.comparesNoString && reads.comparesOnlyColumns !== true) {
       const fallback = await probeOnce(
          modelDef,
          `${connectionName}\u0000default`,
@@ -384,18 +384,24 @@ export async function duckdbCollation(
 /**
  * A Postgres collation row, judged: the database default by the database's
  * own collation and locale provider (an ICU default is deterministic, never
- * binary, whatever `datcollate` says), any other by its own row. Binary only
- * under a libc `C` or `POSIX`.
+ * binary, whatever `datcollate` says), any other by its own row. Binary under
+ * a libc `C` or `POSIX`, and under the builtin provider (Postgres 17+:
+ * `pg_c_utf8`, `ucs_basic`, `pg_unicode_fast`, or a database created with
+ * it), which orders and compares by code point, as UTF-8 bytes do.
  */
-function postgresJudged(row: Record<string, unknown> | undefined): Collation {
+export function postgresJudged(
+   row: Record<string, unknown> | undefined,
+): Collation {
    if (!row) return "unknown";
    const binaryName = (c: unknown) => c === "C" || c === "POSIX";
    if (row.name === "default") {
+      if (row.dbp === "b") return "binary";
       return row.dbp !== "i" && binaryName(row.dbc)
          ? "binary"
          : "deterministic";
    }
    if (row.det !== true) return "unknown";
+   if (row.prov === "b") return "binary";
    return row.prov === "c" && binaryName(row.cc) ? "binary" : "deterministic";
 }
 
