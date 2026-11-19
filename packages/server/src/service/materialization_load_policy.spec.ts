@@ -508,11 +508,8 @@ describe("the load-versus-refused policy", () => {
          ],
       ];
       const rows: [string, string][] = [
-         // A table name is also checked on the raw text before the models
-         // compile (assertPersistNamesQuoted), which a run does not re-read.
-         ...CASES.filter((c) => !/ name=$/.test(c.label.split(" on ")[0])).map(
-            (c) => [c.label, c.model] as [string, string],
-         ),
+         // A table name checked on the raw text included: a run reads it too.
+         ...CASES.map((c) => [c.label, c.model] as [string, string]),
          ...NEAR_MISSES,
       ];
       for (const [label, model] of rows) {
@@ -530,21 +527,10 @@ describe("the load-versus-refused policy", () => {
                      await packages.create({ "model.malloy": model }),
                   );
                   expect(
-                     loadGateText(
-                        {
-                           plan: plan.plan,
-                           annotationFindings: plan.annotationFindings,
-                           incrementalDeclarations:
-                              plan.incrementalDeclarations,
-                           ...(plan.materializePlans
-                              ? { materializePlans: plan.materializePlans }
-                              : {}),
-                           ...(plan.modelGateLines
-                              ? { modelGateLines: plan.modelGateLines }
-                              : {}),
-                        },
-                        { enforceCollisions: true, versionScoped: false },
-                     ),
+                     loadGateText(plan, {
+                        enforceCollisions: true,
+                        versionScoped: false,
+                     }),
                   ).toBe(loadFailure);
                } finally {
                   await packages.cleanup();

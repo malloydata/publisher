@@ -16,7 +16,7 @@ import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_ha
 import { installSettings } from "../../../test_helpers/settings_env";
 import { dialectsWith } from "../domain/dialect";
 import { persistRefusalWarnings } from "../package_warnings";
-import { deriveBuildPlanOutcome } from "./build_plan";
+import { derivePackagePlan } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 
 /** A DuckDB connection compiled as BigQuery's dialect: the plan only reads its dialect. */
@@ -68,10 +68,7 @@ async function planOver(connection: DuckDBConnection) {
          getMalloyConnection: async () => connection,
       },
    );
-   const outcome = deriveBuildPlanOutcome(
-      await compilePackageBuildPlan(pkg),
-      null,
-   );
+   const outcome = derivePackagePlan(await compilePackageBuildPlan(pkg), null);
    const warnings = persistRefusalWarnings(
       outcome.plan,
       outcome.refusedRollups,

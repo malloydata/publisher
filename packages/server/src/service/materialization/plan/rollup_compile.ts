@@ -46,7 +46,9 @@ import { pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
 import {
+   companionFailure,
    companionOmissions,
+   type CompanionFailure,
    declaredInModel,
    GeneratedFiles,
    type SynthesizedRuntimeFactory,
@@ -479,6 +481,8 @@ export async function tryCompileRollupCompanion(args: {
    refused: RollupRefusal[];
    /** The rollups a failure left out of the plan (see omitted_sources). */
    omitted?: Omission[];
+   /** Why the companion failed, for the caller to report. */
+   failure?: CompanionFailure;
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const companionHref = rollupCompanionURL(
@@ -530,12 +534,12 @@ export async function tryCompileRollupCompanion(args: {
       if (!overlay) {
          // Building over the author's files as they are would chain a rollup
          // onto its base's table; build nothing instead.
-         logger.error(
-            "A #(rollup) companion was not built: a `#@` line of the author's files could not be left out of it",
-            { modelPath: args.modelPath },
-         );
          return {
             refused,
+            failure: {
+               kind: "rollup_blanking",
+               error: "a `#@` line of the author's files could not be set aside",
+            },
             omitted: companionOmissions("rollup_blanking", {
                file: companionHref,
                names: plannedNames,
@@ -591,15 +595,9 @@ export async function tryCompileRollupCompanion(args: {
          refused,
       };
    } catch (error) {
-      logger.error(
-         "Failed to plan or compile the generated #(rollup) companion",
-         {
-            modelPath: args.modelPath,
-            error: error instanceof Error ? error.message : String(error),
-         },
-      );
       return {
          refused,
+         failure: companionFailure("rollup", error),
          omitted: companionOmissions("rollup", {
             file: companionHref,
             names: plannedNames,

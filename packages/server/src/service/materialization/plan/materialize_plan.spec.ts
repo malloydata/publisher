@@ -16,7 +16,7 @@ import {
 import {
    addressSQL,
    computeSourceEntityId,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 import {
@@ -785,7 +785,7 @@ source: orders is orders_raw -> { select: * }
          expect(Object.values(sourcesIn(c)).map((s) => s.name)).toEqual([
             "orders",
          ]);
-         const wire = deriveBuildPlanOutcome(c, null).plan;
+         const wire = derivePackagePlan(c, null).plan;
          expect(Object.values(wire?.sources ?? {}).map((s) => s.name)).toEqual([
             "orders",
          ]);
@@ -1142,7 +1142,7 @@ source: orders is orders_raw
       });
       const c = await compiled(text);
       const [sourceID] = Object.keys(materializePlansIn(c) ?? {});
-      return { c, sourceID, outcome: deriveBuildPlanOutcome(c, null) };
+      return { c, sourceID, outcome: derivePackagePlan(c, null) };
    }
 
    it(

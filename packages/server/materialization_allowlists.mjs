@@ -41,7 +41,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2n",
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
       "2n",
-   "package_load/protocol.ts -> service/materialization/plan/build_plan": "2n",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
       "2n",
    "service/catalog_admin.ts -> service/materialization/run/storage_admin":
@@ -66,7 +65,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/model_policy.ts -> service/materialization/serve/query_path": "2n",
    "service/package.ts -> service/materialization/package_materialization":
       "2n",
-   "service/package.ts -> service/materialization/plan/build_plan": "2n",
    "service/package.ts -> service/materialization/plan/incremental_policy":
       "2n",
    "service/package.ts -> service/materialization/plan/materialization_config_validation":
@@ -100,7 +98,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/plan/eligibility_collect.ts -> logger": "2o",
    "service/materialization/plan/materialize_compile.ts -> logger": "2o",
    "service/materialization/plan/persist_source_fields.ts -> logger": "2o",
-   "service/materialization/plan/persisted_view_compile.ts -> logger": "2o",
    "service/materialization/plan/rollup_compile.ts -> logger": "2o",
    "service/materialization/serve/rollup_variants.ts -> logger": "2o",
    "service/materialization/serve/served_copy_serve.ts -> logger": "2o",

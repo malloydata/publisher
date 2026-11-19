@@ -231,6 +231,27 @@ export async function compileInMemory(
    return { runtime, model };
 }
 
+/**
+ * A generated companion that failed to plan or compile: a publisher bug (the
+ * text is generated), which costs its model that companion's tables and
+ * nothing else. Returned, never logged here: the plan's caller reports it.
+ */
+export interface CompanionFailure {
+   kind: CompanionKind;
+   error: string;
+}
+
+/** {@link CompanionFailure} of `error`. */
+export function companionFailure(
+   kind: CompanionKind,
+   error: unknown,
+): CompanionFailure {
+   return {
+      kind,
+      error: error instanceof Error ? error.message : String(error),
+   };
+}
+
 /** The kinds of generated companion a plan compiles. */
 type CompanionKind =
    | "rollup"

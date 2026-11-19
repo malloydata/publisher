@@ -5,9 +5,7 @@
  * Characterization of {@link PlanLifecycle}: one package version's build plan
  * as it is loaded, marked stale by a connection edit, re-derived and waited
  * on. Pinned through its public surface with a fake owner and a `derive`
- * the spec controls, so the planned `PlanState` refactor must leave every
- * case here as it is, except the one named for the failed-refresh field skew,
- * which that refactor fixes on purpose.
+ * the spec controls.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -31,7 +29,6 @@ function lifecycle(): { plan: PlanLifecycle; refreshed: () => number } {
          packageName: () => "pkg",
          versionId: () => undefined,
          metadata: () => ({}) as never,
-         models: () => new Map(),
          buildPlanPackage: {} as never,
       },
       () => refreshed++,
@@ -129,14 +126,12 @@ describe("PlanLifecycle.load", () => {
       expect(plan.connectionNames()).toBeNull();
    });
 
-   it("CURRENT: a failed load keeps the previous load's annotation findings and materialize plans", async () => {
-      // Pinned as it is: these two fields are not reset by a failed load.
+   it("a failed load keeps nothing of the previous load, its findings and materialize plans included", async () => {
       const { plan } = lifecycle();
-      const outcome = richOutcome();
-      await plan.load(okWorkerPlan(outcome));
+      await plan.load(okWorkerPlan(richOutcome()));
       await plan.load(failedWorkerPlan());
-      expect(plan.annotationFindings).toBe(outcome.annotationFindings);
-      expect(plan.materializePlans).toBe(outcome.materializePlans);
+      expect(plan.annotationFindings).toEqual([]);
+      expect(plan.materializePlans).toEqual({});
    });
 });
 
@@ -321,17 +316,28 @@ describe("PlanLifecycle after a failed refresh", () => {
       expect(plan.connectionNames()).toBeNull();
    });
 
-   it("CURRENT: a refresh that fails after a good plan restores eligibility, compiler keys and connections, empties rollupsKeepingGates, refusedRollups and refusalNotices, and leaves annotationFindings and materializePlans stale", async () => {
-      // The field skew the plan audit found (plan_lifecycle.ts load's catch
-      // against refresh's restore), pinned as it is. PR 2 is expected to
-      // change it, with one immutable PlanState and an explicit last-good
-      // rule, and to update this case.
+   it("a refresh that fails after a good plan keeps the whole last good record, every side table included, behind a null buildPlan", async () => {
       const { plan, outcome } = await failedAfterEdit();
-      expect([...plan.rollupsKeepingGates]).toEqual([]);
-      expect(plan.refusedRollups).toEqual({});
-      expect(plan.refusalNotices).toEqual({});
+      expect(plan.buildPlan).toBeNull();
+      expect([...plan.rollupsKeepingGates]).toEqual(["r@m.malloy"]);
+      expect(plan.refusedRollups).toBe(outcome.refusedRollups);
+      expect(plan.refusalNotices).toBe(outcome.refusalNotices);
       expect(plan.annotationFindings).toBe(outcome.annotationFindings);
       expect(plan.materializePlans).toBe(outcome.materializePlans);
+      expect(plan.incrementalPolicySources).toEqual([]);
+   });
+
+   it("keeps the last good record across a second failed refresh, less both edited connections", async () => {
+      const { plan, outcome } = await failedAfterEdit();
+      plan.markStale(["conn_b"]);
+      expect(await plan.refresh(async () => failedWorkerPlan())).toBe(false);
+      expect(plan.servingPlan()).toBe(outcome.plan);
+      expect([...plan.databaseSourceEligibility!.eligibleEntityIds]).toEqual(
+         [],
+      );
+      expect(
+         Object.keys(plan.databaseSourceEligibility!.refused).sort(),
+      ).toEqual(["addr-a", "addr-b"]);
    });
 
    it("forgets the edited connections once a later refresh derives", async () => {

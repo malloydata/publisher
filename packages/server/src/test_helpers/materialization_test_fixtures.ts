@@ -11,8 +11,8 @@ import {
    BuildInstruction,
    BuildPlan,
 } from "../service/materialization/domain/types";
+import type { PackagePlan } from "../service/materialization/domain/package_plan";
 import {
-   type BuildPlanOutcome,
    CompiledBuildPlan,
    setTestAddressForTarget,
    plannedSources,
@@ -419,17 +419,26 @@ export function makeTwoConnectionPlan(): BuildPlan {
 }
 
 /**
- * A package build plan outcome as the load worker hands it over, every side
- * table empty unless given: what `PlanLifecycle.load` adopts.
+ * A package plan as the load worker hands it over, every side table empty
+ * unless given: what `PlanLifecycle.load` adopts.
  */
 export function makePlanOutcome(
-   overrides: Partial<BuildPlanOutcome> = {},
-): BuildPlanOutcome {
+   overrides: Partial<PackagePlan<never>> = {},
+): PackagePlan<never> {
    return {
       plan: makeBuildPlan(),
+      tables: {},
+      builds: [],
+      connectionDigests: {},
+      connectionTypes: {},
+      versionScoped: false,
+      tableFolds: {},
+      addresses: {},
+      persistedViews: {},
+      eligibilityRefused: {},
       droppedPersistSources: [],
       annotationFindings: [],
-      modelGateLines: { preaggregate: [], nearMiss: [] },
+      modelGateLines: { preaggregate: [], nearMiss: [], nameProblems: [] },
       sourceEligibility: { eligible: [], refused: {} },
       databaseSourceEligibility: { eligibleEntityIds: new Set(), refused: {} },
       incrementalDeclarations: {},
@@ -445,14 +454,13 @@ export function makePlanOutcome(
 
 /** The load worker's plan, derived. */
 export function okWorkerPlan(
-   outcome: BuildPlanOutcome = makePlanOutcome(),
+   packagePlan: PackagePlan<never> = makePlanOutcome(),
 ): WorkerBuildPlan {
    return {
       ok: true,
-      outcome,
+      packagePlan,
       durationMs: 1,
       digestSkipped: [],
-      eligibilityRefused: {},
    };
 }
 
