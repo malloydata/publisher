@@ -90,14 +90,21 @@ function renderBuildSQL(
    // before parent reuse could run. Strict is enforced below, where a
    // recompute would really happen. A database build keeps strict: its
    // buildSQL IS what runs.
+   //
+   // `reducedManifest` is keyed by address only, as the ledger is; the
+   // compiler looks an upstream up by its own key, which differs from the
+   // address of a source whose address folds in a `name=`, projection or
+   // destination. So the render reads `buildManifest`, which also files each
+   // entry under that key.
    const reducedManifest = manifestExcludingStorage(
       manifest,
       builtEntries,
       planFacts,
    );
-   const buildManifest = isStorageBuild
-      ? { ...reducedManifest, strict: false }
-      : reducedManifest;
+   const buildManifest = manifestForCompiler(
+      isStorageBuild ? { ...reducedManifest, strict: false } : reducedManifest,
+      planFacts,
+   );
    // Entries left out of the warehouse render only because they are at the
    // wrong tier for the upstream as declared now, by address.
    const wrongTier = Object.entries(builtEntries).filter(
@@ -285,10 +292,14 @@ function classifyStoredUpstreams(
    // omits `upstreamReuse`; a storage build fails, because stacking on parents
    // needs the answer. Neither runs when nothing was excluded, and the strict
    // render is skipped for a strict database build (already strict above).
-   const fullForCompiler = manifestForCompiler(
-      manifest.buildManifest,
-      planFacts,
-   );
+   // A compiler key two folded sources share (a `name=` source and its
+   // `storage=` twin) keeps the table the build SQL read, so the compare sees
+   // only what was really left out.
+   const fullAliased = manifestForCompiler(manifest.buildManifest, planFacts);
+   const fullForCompiler = {
+      ...fullAliased,
+      entries: { ...fullAliased.entries, ...buildManifest.entries },
+   };
    const excludedSomething =
       Object.keys(reducedManifest.entries).length !==
       Object.keys(manifest.buildManifest.entries).length;
