@@ -74,4 +74,10 @@ export interface GateReads {
     * Absent reads false.
     */
    readonly comparesOnlyColumns?: boolean;
+   /**
+    * Groups of entry paths that one value combines (`cc = cu`,
+    * `concat(cc, cu)`): live compares them under one collation only when
+    * every column in a group holds the same, and fails otherwise.
+    */
+   readonly sameCollation?: readonly (readonly (readonly string[])[])[];
 }
