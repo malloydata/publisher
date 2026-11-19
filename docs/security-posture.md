@@ -305,11 +305,12 @@ a source that should not answer schema questions to outsiders wants a lock as we
 
 ### Stored tables read past a gate
 
-A gated query answered from a stored table is held to one list of rules, decided in one place
-(`admitRead`): the row scope, the caller's own filters, the result's order and grouping, whether
-the leg and every table it read keep the gate, and whether every column the gate reads is stored
-exactly, without a zone, and compared as its source compares it. Anything that cannot be read is
-answered live. The list is in [materialization.md](materialization.md#the-rules-every-table-read-past-a-gate-is-held-to).
+A gated query answered from a stored table is held, by one decision (`admitRead`), to the rules
+every stored answer meets (the caller's own filters, the result's order and grouping) and to the
+gate's own: whether the leg and every table it read keep the gate, and whether every column the
+gate reads is stored exactly, without a zone, and compared as its source compares it. A gate fact
+that cannot be read answers live. The list is in
+[materialization.md](materialization.md#the-rules-a-stored-answer-is-held-to).
 The gate itself is still proven by `govern()` on every answer, and it holds only on reads through
 Publisher, never on a direct read of a destination.
 

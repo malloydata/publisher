@@ -127,10 +127,12 @@ them can prove the same answer.
 **pin** the model's snapshot once, so every leg, the run and the path report read the tables bound
 at one instant; **prepare** the caller's own compile (the boundary, the caller-text guards, filter
 injection); **route** over the legs `makeLegs` made for that pin, each `{ kind, applies, attempt }`;
-**admit** a stored answer through `admitRead` (`domain/admission.ts`), the one decision over the gate
-policy, exactness, zone, collation, the row scope and a composite's row filter, which the shell in
-`serve/read_admission.ts` gathers facts for (the collation probes through a `CollationProbe` port)
-before an attempt and over the bindings the answer read; **govern** whatever answered, the authority on every answer, routed or live; **run** it with the
+**admit** a stored answer through `admitRead` (`domain/admission.ts`), the one decision over the
+row scope, the caller's own filters, the result's order, and past a gate the gate policy, exactness,
+zone, collation and a composite's row filter (its shell, `serve/read_admission.ts`, gathers the
+facts over the tables the answer read, asking the collation probes through a `CollationProbe` port
+only when a rule needs one); **govern** whatever answered, the authority on every answer, routed or
+live; **run** it with the
 manifest or virtual map the answer names, retrying live only when every binding it read allows it;
 and **report**: the caps, the metrics, the access record and the path report, all read off the one
 `Answer`. A notebook cell is governed and run on its own compile, not routed.
@@ -152,8 +154,10 @@ run's load gate reads that `PackagePlan`. It takes its instructions from that pl
 builds each table in build order on its **tier**
 (database, in the source's own warehouse, or `storage=`, loaded into a DuckDB or DuckLake
 destination) by its **method** (a full build or a delta), checks its keys, and commits one manifest.
-Every session on a storage destination runs under the DuckDB lockdown, confined to the destination's
-own data path, once the destination is attached and before any of its SQL runs.
+Every session on a storage destination runs its work under the DuckDB lockdown, confined to the
+destination's own data path: the session's setup runs first (attaching the destination, Publisher's
+own session settings, and for a federated build attaching the source), then the lockdown, then the
+build's, drop's or listing's own SQL.
 The facade then **binds** the manifest into a new snapshot, swapped by reference, and computes each
 source's serve verdict and the package's warnings.
 
