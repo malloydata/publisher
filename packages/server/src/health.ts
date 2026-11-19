@@ -273,9 +273,11 @@ export function registerHealthEndpoints(
 
    // `?strict=true` also fails (503) while any configured environment or
    // package failed to load, or a package serves a stale model after a failed
-   // reload, naming each under `loadErrors` as /status does. Without it, the
-   // probe is 200 once the server is ready, whatever loaded: one bad package
-   // must not take a pod out of rotation for its healthy siblings.
+   // reload. Without it, the probe is 200 once the server is ready, whatever
+   // loaded: one bad package must not take a pod out of rotation for its
+   // healthy siblings. The body names each entry and nothing more: probes
+   // are often reachable where the API is not, and a load error's message can
+   // quote model source or a driver's text, so the causes stay on /status.
    app.get("/health/readiness", (req: Request, res: Response) => {
       const strict = parseBooleanParam(req.query.strict);
       if (!strict.ok) {
@@ -295,7 +297,18 @@ export function registerHealthEndpoints(
       }
       const problems = strict.value ? (options.loadProblems?.() ?? []) : [];
       if (problems.length > 0) {
-         res.status(503).json({ status: "DOWN", loadErrors: problems });
+         res.status(503).json({
+            status: "DOWN",
+            loadErrors: problems.map((problem) => ({
+               environment: problem.environment,
+               ...(problem.package !== undefined
+                  ? { package: problem.package }
+                  : {}),
+               stale: problem.stale === true,
+            })),
+            details:
+               "GET /api/v0/status names the cause of each under loadErrors.",
+         });
          return;
       }
       res.status(200).json({ status: "UP" });

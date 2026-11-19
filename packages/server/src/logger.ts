@@ -283,7 +283,15 @@ export const logger = guardedEntries(
       // An unknown level is the default, debug, with a startup warning.
       level: settings.get("logging.level"),
       format: publisherLogFormat(isTelemetryEnabled),
-      transports: [new winston.transports.Console()],
+      // Check mode's stdout carries its findings alone, so its log goes to
+      // stderr, every level.
+      transports: [
+         new winston.transports.Console(
+            settings.get("check")
+               ? { stderrLevels: Object.keys(winston.config.npm.levels) }
+               : {},
+         ),
+      ],
    }),
 );
 

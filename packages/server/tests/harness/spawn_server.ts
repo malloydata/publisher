@@ -108,6 +108,7 @@ export interface SpawnedServer {
    baseUrl: string;
    /** Everything written to stdout and stderr so far. */
    output(): string;
+   stdout(): string;
    stderr(): string;
    exited(): boolean;
    /**
@@ -309,8 +310,12 @@ function launch(
    });
    let all = "";
    let err = "";
+   let out = "";
    let exitCode: number | null | undefined;
-   proc.stdout?.on("data", (d: Buffer) => (all += d.toString()));
+   proc.stdout?.on("data", (d: Buffer) => {
+      all += d.toString();
+      out += d.toString();
+   });
    proc.stderr?.on("data", (d: Buffer) => {
       all += d.toString();
       err += d.toString();
@@ -337,6 +342,7 @@ function launch(
       serverRoot,
       baseUrl,
       output: () => all,
+      stdout: () => out,
       stderr: () => err,
       exited,
       waitUntilServing: async (timeoutMs = 120_000) => {

@@ -5,16 +5,19 @@
 
 /**
  * `--check` end to end: a real `bun src/server.ts --check` process against a
- * real config, for the contract CI reads — the exit code, one line per
- * problem with its file, line and column, and the summary line on stderr —
- * and that it exits without binding either port.
+ * real config, for the contract CI reads: the exit code (0 clean, 1 problems,
+ * 2 could not check), stdout holding finding lines and nothing else, and the
+ * summary line on stderr. Also that it reads the config as written, never
+ * stored state or the bundled samples, and never writes the server root.
  */
 
 import { afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
+import fs from "fs";
 import path from "path";
 import {
    spawnServer,
    type SpawnedServer,
+   tempDir,
    writeSourcePackage,
 } from "../../harness/spawn_server";
 
@@ -35,6 +38,9 @@ const config = (packages: { name: string; location: string }[]) => ({
    environments: [{ name: ENV, packages, connections: [] }],
 });
 
+/** A finding line, or (under GitHub Actions) its workflow command. */
+const FINDING = /^(\S.*: (error|warning): .+|::(error|warning)( [^:]*)?::.+)$/;
+
 describe("check mode", () => {
    let server: SpawnedServer | undefined;
    const cleanups: (() => void)[] = [];
@@ -54,18 +60,27 @@ describe("check mode", () => {
    const check = async (
       options: Parameters<typeof spawnServer>[0] = {},
    ): Promise<{ code: number | null; stdout: string; stderr: string }> => {
+      await server?.stop();
       server = await spawnServer({
          ...options,
+         // A CI runner sets it; these cases read the plain lines.
+         env: { GITHUB_ACTIONS: undefined, ...options.env },
          args: ["--check", ...(options.args ?? [])],
       });
       const code = await server.waitForExit(120_000);
-      // The harness keeps stderr apart, and stdout only interleaved with it;
-      // the findings are stdout's lines, and nothing on stderr looks like one.
-      return { code, stdout: server.output(), stderr: server.stderr() };
+      return { code, stdout: server.stdout(), stderr: server.stderr() };
    };
 
    const summary = (stderr: string) =>
       stderr.split("\n").filter((line) => line.startsWith("PUBLISHER_CHECK"));
+
+   /** stdout is findings and nothing else: no log line, no colour. */
+   const findingsOnly = (stdout: string) => {
+      const lines = stdout.split("\n").filter((line) => line.length > 0);
+      for (const line of lines) expect(line).toMatch(FINDING);
+      expect(stdout).not.toContain("\u001b[");
+      return lines;
+   };
 
    it("exits 1 and prints every model's errors with their locations", async () => {
       const good = source("good", { "good.malloy": GOOD });
@@ -78,18 +93,15 @@ describe("check mode", () => {
       });
 
       expect(code).toBe(1);
-      const lines = stdout
-         .split("\n")
-         .filter((line) => line.endsWith(`[${ENV}/broken]`));
-      expect(lines).toEqual([
+      expect(findingsOnly(stdout)).toEqual([
          expect.stringMatching(
             new RegExp(
-               `${escape(path.join(broken, "a.malloy"))}:3:1: error: unexpected '}'`,
+               `^${escape(path.join(broken, "a.malloy"))}:3:1: error: unexpected '}'.* \\[${ENV}/broken\\]$`,
             ),
          ),
          expect.stringMatching(
             new RegExp(
-               `${escape(path.join(broken, "b.malloy"))}:1:\\d+: error: 'nope' is not defined`,
+               `^${escape(path.join(broken, "b.malloy"))}:1:\\d+: error: 'nope' is not defined.* \\[${ENV}/broken\\]$`,
             ),
          ),
       ]);
@@ -101,17 +113,53 @@ describe("check mode", () => {
       expect(server!.output()).not.toContain("listening at");
    });
 
-   it("exits 0 when every package loads", async () => {
+   it("exits 0 when every package loads, and writes nothing into the server root", async () => {
       const good = source("good", { "good.malloy": GOOD });
       const { code, stdout, stderr } = await check({
          config: config([{ name: "good", location: good }]),
       });
 
       expect(code).toBe(0);
-      expect(stdout).not.toMatch(/: error: /);
+      expect(findingsOnly(stdout)).toEqual([]);
       expect(summary(stderr)).toEqual([
          "PUBLISHER_CHECK_OK environments=1 packages=1 load_errors=0 errors=0 warnings=0",
       ]);
+      expect(fs.readdirSync(server!.serverRoot)).toEqual([
+         "publisher.config.json",
+      ]);
+   });
+
+   it("checks the config as written on every run, not what a root stored", async () => {
+      const pkg = source("edited", { "m.malloy": GOOD });
+      const root = tempDir("check-reused-root-");
+      cleanups.push(root.cleanup);
+      fs.writeFileSync(
+         path.join(root.dir, "publisher.config.json"),
+         JSON.stringify(config([{ name: "edited", location: pkg }])),
+      );
+      expect((await check({ serverRoot: root.dir })).code).toBe(0);
+
+      // Break the model and add a package: a check that read stored state
+      // would still pass.
+      fs.writeFileSync(
+         path.join(pkg, "m.malloy"),
+         "source: s is duckdb.sql(\n",
+      );
+      const added = source("added", { "n.malloy": GOOD });
+      fs.writeFileSync(
+         path.join(root.dir, "publisher.config.json"),
+         JSON.stringify(
+            config([
+               { name: "edited", location: pkg },
+               { name: "added", location: added },
+            ]),
+         ),
+      );
+      const second = await check({ serverRoot: root.dir });
+      expect(second.code).toBe(1);
+      expect(summary(second.stderr)[0]).toStartWith(
+         "PUBLISHER_CHECK_FAILED environments=1 packages=1 load_errors=1",
+      );
    });
 
    it("prints a package warning without failing, unless warnings are fatal", async () => {
@@ -124,13 +172,14 @@ describe("check mode", () => {
          config: config([{ name: "warned", location: warned }]),
       });
       expect(lenient.code).toBe(0);
-      expect(lenient.stdout).toMatch(
-         /m\.malloy: warning: s -> v: Unknown render tag 'subtitle'/,
-      );
+      expect(findingsOnly(lenient.stdout)).toEqual([
+         expect.stringMatching(
+            /m\.malloy: warning: s -> v: Unknown render tag 'subtitle'/,
+         ),
+      ]);
       expect(summary(lenient.stderr)[0]).toStartWith(
          "PUBLISHER_CHECK_OK environments=1 packages=1 load_errors=0 errors=0 warnings=1",
       );
-      await server?.stop();
 
       const strict = await check({
          config: config([{ name: "warned", location: warned }]),
@@ -140,15 +189,60 @@ describe("check mode", () => {
       expect(summary(strict.stderr)[0]).toStartWith("PUBLISHER_CHECK_FAILED");
    });
 
-   it("exits 1 when there is no config to check", async () => {
-      const { code, stdout, stderr } = await check({
-         args: ["--config", path.join(path.sep, "no", "such", "config.json")],
+   it("follows each finding with its workflow command under GitHub Actions", async () => {
+      const broken = source("broken", BROKEN);
+      const { code, stdout } = await check({
+         config: config([{ name: "broken", location: broken }]),
+         env: { GITHUB_ACTIONS: "true" },
       });
       expect(code).toBe(1);
-      expect(stdout).toContain("Serving with no environments");
-      expect(summary(stderr)).toEqual([
-         "PUBLISHER_CHECK_FAILED environments=0 packages=0 load_errors=0 errors=1 warnings=0",
+      const lines = findingsOnly(stdout);
+      expect(lines).toContainEqual(
+         `::error file=${path.join(broken, "a.malloy").replace(/:/g, "%3A").replace(/,/g, "%2C")},line=3,col=1,title=Malloy check%3A ${ENV}/broken::unexpected '}' (syntax-error)`,
+      );
+   });
+
+   it("exits 2 when there is no config, and never falls back to the bundled samples", async () => {
+      const { code, stdout, stderr } = await check({
+         env: { PUBLISHER_USE_BUNDLED_DEFAULT: "true" },
+      });
+      expect(code).toBe(2);
+      expect(findingsOnly(stdout)).toEqual([
+         expect.stringContaining("publisher: error: No publisher.config.json"),
       ]);
+      expect(summary(stderr)).toEqual([
+         expect.stringMatching(
+            /^PUBLISHER_CHECK_ERROR error="No publisher\.config\.json at /,
+         ),
+      ]);
+      expect(fs.readdirSync(server!.serverRoot)).toEqual([]);
+   });
+
+   it("exits 2 when --config names a missing file", async () => {
+      const { code, stderr } = await check({
+         args: ["--config", path.join(path.sep, "no", "such", "config.json")],
+      });
+      expect(code).toBe(2);
+      expect(summary(stderr)[0]).toStartWith("PUBLISHER_CHECK_ERROR");
+   });
+
+   it("exits 2 when a setting does not parse", async () => {
+      const { code, stderr } = await check({
+         env: { PUBLISHER_CHECK_FAIL_ON_WARNINGS: "maybe" },
+      });
+      expect(code).toBe(2);
+      expect(stderr).toContain("PUBLISHER_INIT_FAILED");
+      expect(summary(stderr)[0]).toStartWith("PUBLISHER_CHECK_ERROR");
+   });
+
+   it("exits 2 when the config declares no environments", async () => {
+      const { code, stderr } = await check({
+         config: { environments: [] },
+      });
+      expect(code).toBe(2);
+      expect(summary(stderr)[0]).toStartWith(
+         'PUBLISHER_CHECK_ERROR error="Nothing to check',
+      );
    });
 });
 

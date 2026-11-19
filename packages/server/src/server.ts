@@ -8,6 +8,11 @@ import { assertSupportedNodeVersion } from "./node_version_check";
 import { printHelpIfAsked } from "./cli_args";
 import { Settings, SettingsError } from "./settings";
 import {
+   CHECK_COULD_NOT_RUN,
+   checkErrorLine,
+   checkRequested,
+} from "./check_signals";
+import {
    initFailedLine,
    redactPgSecrets,
    redactSignedUrlParams,
@@ -41,6 +46,12 @@ if (failures.length > 0) {
    process.stderr.write(
       `${redactSignedUrlParams(redactPgSecrets(message))}\n${initFailedLine(message)}`,
    );
+   // Check mode could not check: its own line and code, so CI tells a broken
+   // setup from broken models.
+   if (checkRequested(argv, () => loaded.get("check"))) {
+      process.stderr.write(checkErrorLine(message));
+      process.exit(CHECK_COULD_NOT_RUN);
+   }
    process.exit(1);
 }
 
@@ -56,6 +67,14 @@ for (const warning of loaded.warnings) {
 const { settingsLine } = await import("./settings/reference");
 logger.info(settingsLine(loaded));
 
+if (loaded.get("check")) {
+   // Check mode: load and compile every package the config names into a
+   // temporary root, print what is wrong, and exit; nothing binds,
+   // so which APIs the config serves does not matter. See check.ts.
+   const { runCheck } = await import("./check");
+   process.exit(await runCheck(loaded));
+}
+
 // Checked before either server's module loads, so a contradiction fails startup
 // before anything binds or opens storage. Imported here, after the version check,
 // because config.ts brings the logger and the rest of the application with it.
@@ -63,13 +82,6 @@ const { getServerApiSettings } = await import("./config");
 const { assertServerApis } = await import("./server_apis");
 const apis = getServerApiSettings();
 assertServerApis(apis);
-
-if (loaded.get("check")) {
-   // Check mode: load and compile every configured package, print what is
-   // wrong, and exit; nothing binds. See check.ts.
-   const { runCheck } = await import("./check");
-   process.exit(await runCheck(loaded));
-}
 
 if (apis.servingApiEnabled) {
    // The composition root: builds every service once, then binds REST, MCP

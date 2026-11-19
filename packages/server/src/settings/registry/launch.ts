@@ -62,8 +62,8 @@ export const launch = [
       default: false,
       kind: "launch",
       description:
-         "Load and compile every configured package, print each problem, and exit: 0 when everything loaded, 1 otherwise. Binds no port.",
-      notes: "For CI. Boots as the server would with the same flags (`--config`, `--root`, `--init`), loads and compiles every configured package, prints one line per problem to stdout (`<file>:<line>:<col>: error: <message> [<env>/<package>]`), then a `PUBLISHER_CHECK_OK` or `PUBLISHER_CHECK_FAILED` summary line to stderr, and exits `0` when every environment and package loaded or `1` when any did not. Binds no port and writes no `.mcp.json`. It checks what this boot would serve: with an existing `publisher.db` in the server root that is the stored environments, so check a fresh root, or pass `--init`, to check the config as written. See [Check mode](#check-mode-for-ci).",
+         "Load and compile every package the config names, print each problem, and exit: 0 clean, 1 problems found, 2 could not check. Binds no port.",
+      notes: "For CI. Reads the config as written (the `--config` file, or `publisher.config.json` in the server root; never the bundled samples and never stored state), loads every package it names into a temporary server root it deletes afterwards, prints one line per problem to stdout (`<file>:<line>:<col>: error: <message> [<env>/<package>]`), then `PUBLISHER_CHECK_OK`, `PUBLISHER_CHECK_FAILED` or `PUBLISHER_CHECK_ERROR` to stderr. Exits `0` when everything loaded, `1` when anything did not, and `2` when it could not check (no config, a config or setting that does not parse, storage that would not open). Binds no port, writes nothing to the server root, and writes no `.mcp.json`. See [Check mode](#check-mode-for-ci).",
    }),
    setting({
       key: "checkFailOnWarnings",

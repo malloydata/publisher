@@ -134,7 +134,14 @@ describe("strict readiness", () => {
       expect([plain.status, plain.body]).toEqual([200, { status: "UP" }]);
       const res = await request(app).get("/health/readiness?strict=true");
       expect(res.status).toBe(503);
-      expect(res.body).toEqual({ status: "DOWN", loadErrors: [failed] });
+      // Names only: the cause, which can quote model source, stays on /status.
+      expect(res.body).toEqual({
+         status: "DOWN",
+         loadErrors: [{ environment: "e", package: "broken", stale: false }],
+         details:
+            "GET /api/v0/status names the cause of each under loadErrors.",
+      });
+      expect(JSON.stringify(res.body)).not.toContain("a.malloy");
    });
 
    it("answers 503 naming a package serving a stale model", async () => {
@@ -144,7 +151,9 @@ describe("strict readiness", () => {
          "/health/readiness?strict=true",
       );
       expect(res.status).toBe(503);
-      expect(res.body.loadErrors).toEqual([stale]);
+      expect(res.body.loadErrors).toEqual([
+         { environment: "e", package: "edited", stale: true },
+      ]);
    });
 
    it("answers 200 when everything loaded", async () => {
