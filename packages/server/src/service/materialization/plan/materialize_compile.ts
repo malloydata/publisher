@@ -1790,10 +1790,11 @@ async function crossFileParents(
             const url = pathToFileURL(file);
             const { model, materializer } = await files.compile(url);
             const def = modelDefOf(model);
+            const modelPath = relative.split(path.sep).join("/");
             const { generated, failure } = await tryCompileMaterializeCompanion(
                {
                   packagePath: args.packagePath,
-                  modelPath: relative.split(path.sep).join("/"),
+                  modelPath,
                   contents: (def.contents ?? {}) as Record<string, unknown>,
                   givens: (def.givens ?? {}) as Record<string, unknown>,
                   getRuntime: args.getRuntime,
@@ -1802,7 +1803,7 @@ async function crossFileParents(
                   crossFileCompanions: companions,
                },
             );
-            if (failure) logCompanionFailure(failure, relative);
+            if (failure) logCompanionFailure(failure, modelPath);
             // A file that plans nothing is kept too: a chain may pass
             // through it to a parent in a file beyond.
             return {
