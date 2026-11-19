@@ -895,7 +895,8 @@ export async function buildSourceIntoStorage(params: {
       if (federatedClose) {
          await federatedClose().catch((e) =>
             logger.warn(
-               `Failed to close the SSH proxy a storage build federated through: ${String(e)}`,
+               "Failed to close the SSH proxy a storage build federated through",
+               { code: errorCodeOf(e) },
             ),
          );
       }
