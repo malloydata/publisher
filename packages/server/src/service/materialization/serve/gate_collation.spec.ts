@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { runInternalSQL } from "../../duckdb_lockdown";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
@@ -83,7 +84,10 @@ describe("a DuckDB source's string comparison", () => {
             /locked/,
          );
          const [row] = (
-            await db.runSQL("SELECT current_setting('default_collation') AS c")
+            await runInternalSQL(
+               db,
+               "SELECT current_setting('default_collation') AS c",
+            )
          ).rows;
          expect(row.c).toBe("nocase");
          expect(

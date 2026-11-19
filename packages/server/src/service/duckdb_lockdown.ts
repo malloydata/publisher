@@ -63,7 +63,10 @@ import {
 } from "../config";
 import { logger } from "../logger";
 import {
+   DUCKLAKE_FUNCTION_PREFIX,
+   introspectionCallInParse,
    introspectionNameIn,
+   isIntrospectionCall,
    isIntrospectionName,
 } from "./duckdb_introspection";
 import {
@@ -386,7 +389,8 @@ async function setting(
    name: string,
 ): Promise<unknown> {
    const rows = rowsOf(
-      await connection.runSQL(
+      await runInternalSQL(
+         connection,
          `SELECT current_setting(${sqlString(name)}) AS v`,
       ),
    );
@@ -1052,7 +1056,10 @@ export function refusedOnLockedInstance(
       }
       if (token.kind !== "word") continue;
       codeWords.push(token.value);
-      if (CALL_ONLY.has(token.value)) {
+      if (
+         CALL_ONLY.has(token.value) ||
+         token.value.startsWith(DUCKLAKE_FUNCTION_PREFIX)
+      ) {
          const next = tokens.slice(t + 1).find((x) => x.kind !== "comment");
          const previous = tokens
             .slice(0, t)
@@ -1108,7 +1115,9 @@ async function refusedByParser(sql: string): Promise<string | undefined> {
             const name = value.toLowerCase();
             if (
                REFUSED_NAMES.has(name) ||
-               isIntrospectionName(name) ||
+               (key === "function_name"
+                  ? isIntrospectionCall(name)
+                  : isIntrospectionName(name)) ||
                (key === "function_name" && CALL_ONLY.has(name))
             ) {
                refused = `'${name}'`;
@@ -1331,7 +1340,12 @@ export async function authorSqlRefusals(
    };
    for (const { fragments, argCount } of expressions) {
       const shown = fragments.join(" ? ");
-      const name = introspectionNameIn(fragments.join(" "));
+      const name =
+         introspectionNameIn(fragments.join(" ")) ??
+         introspectionCallInParse(
+            (await serializeSQL(`SELECT ${fragments.join(" NULL ")}`))
+               .statements,
+         );
       if (name) {
          introspection("a raw SQL expression", name);
       } else if (
@@ -1341,7 +1355,9 @@ export async function authorSqlRefusals(
       }
    }
    for (const [sql, what] of checks) {
-      const name = introspectionNameIn(sql);
+      const name =
+         introspectionNameIn(sql) ??
+         introspectionCallInParse((await serializeSQL(sql)).statements);
       if (name) introspection(what, name);
       else if (!(await isOneSelect(sql))) refuse(what, sql);
    }
