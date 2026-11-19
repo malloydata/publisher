@@ -21,18 +21,9 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — an explicit reload or publish now refetches table schemas
-
-An explicit reload or publish now refetches the columns of every table the package reads, so a column added, dropped or retyped in the warehouse is seen without restarting the server. Until now a table's schema was cached until restart, in each package-load worker and in the environment connection, so a reload or a publish compiled against the columns first fetched.
-
-- **Refetches:** `GET …/packages/{pkg}?reload=true`, the `reload_package` MCP tool, a publish (`POST …/packages`, a version or an install from a location, and its dry run), and a `PATCH` that reinstalls from a location. Each table and SQL source is fetched once per load (once in all, when refreshing loads overlap) and replaces the cached entry, in every worker, which applies it between loads; another package that reads the same table reads the new columns on its next load. A table dropped since is no longer cached, so the reload fails, and so does a later watch-mode recompile, rather than compiling against its old columns.
-- **Keeps the cache:** the recompile watch mode runs on a save, a boot, and a report write. Reload the package to pick up a warehouse change. (A package's own `duckdb` connection opens afresh on every load, so the files it reads were, and are, read again each time.)
-- A published version is immutable, so a reload answers it unchanged and refetches nothing; publish a new version to recompile it.
-- No new setting, field or parameter. `packageLoad.schemaCacheBytes` still bounds the worker cache.
-
 ## [Unreleased] — (BREAKING) upgrading from 0.16.0: the checklist
 
-This release is a patch on 0.16.0, by the maintainers' call, but it carries a change marked breaking: every session Publisher opens on a DuckLake storage destination is now confined to that destination's data path, so a destination whose data path Publisher cannot learn now fails operations that worked on 0.16.0 (the first section below). Everything else is a fix, a hardening or an addition: no route, field, wire value, setting name or metric label is removed or renamed beyond the log fields and the one refusal code listed below (`persist-view-invalid` in place of `persist-invalid` for a persisted view's incremental declaration), and a package that loads on 0.16.0 still loads. Several log fields are renamed, and more queries move between stored tables and live in both directions. This list is what to check, in the order to check it; each item's section below has the detail.
+This release is a patch on 0.16.0, by the maintainers' call, but it carries three changes marked breaking, each in its own section below: Postgres and DuckLake catalogs attach through DuckDB secrets and caller and author SQL may no longer introspect DuckDB; every session Publisher opens on a DuckLake storage destination is confined to that destination's data path, so a destination whose data path Publisher cannot learn now fails operations that worked on 0.16.0; and a stored source that reads the current time builds again, as of its build. Everything else is a fix, a hardening or an addition: no route, field, wire value, setting name or metric label is removed or renamed beyond the log fields and the one refusal code listed below (`persist-view-invalid` in place of `persist-invalid` for a persisted view's incremental declaration), and a package that loads on 0.16.0 still loads. Several log fields are renamed, and more queries move between stored tables and live in both directions. This list is what to check, in the order to check it; each item's section below has the detail.
 
 **Coming from 0.15 or earlier:** work through the `[0.16.0] — (BREAKING) upgrading from 0.15: the checklist` section further down this file first (and, from 0.14 or earlier, the 0.15.0 checklist before it), then this one.
 
@@ -110,6 +101,15 @@ This release is a patch on 0.16.0, by the maintainers' call, but it carries a ch
 **To answer as of each query instead:** move the window from the persisted query into the source's own extend block (`source: events is raw -> { select: * } extend { where: ts ~ f'last 7 days' }`) when the time column survives into the output; read a `filter<timestamp>` given there instead; or persist a finer source that keeps the time column (one row per day) and filter it at query time.
 
 A client that switches on a warning's `code` should handle the new `persist-reads-current-time`.
+
+## [Unreleased] — an explicit reload or publish now refetches table schemas
+
+An explicit reload or publish now refetches the columns of every table the package reads, so a column added, dropped or retyped in the warehouse is seen without restarting the server. Until now a table's schema was cached until restart, in each package-load worker and in the environment connection, so a reload or a publish compiled against the columns first fetched.
+
+- **Refetches:** `GET …/packages/{pkg}?reload=true`, the `reload_package` MCP tool, a publish (`POST …/packages`, a version or an install from a location, and its dry run), and a `PATCH` that reinstalls from a location. Each table and SQL source is fetched once per load (once in all, when refreshing loads overlap) and replaces the cached entry, in every worker, which applies it between loads; another package that reads the same table reads the new columns on its next load. A table dropped since is no longer cached, so the reload fails, and so does a later watch-mode recompile, rather than compiling against its old columns.
+- **Keeps the cache:** the recompile watch mode runs on a save, a boot, and a report write. Reload the package to pick up a warehouse change. (A package's own `duckdb` connection opens afresh on every load, so the files it reads were, and are, read again each time.)
+- A published version is immutable, so a reload answers it unchanged and refetches nothing; publish a new version to recompile it.
+- No new setting, field or parameter. `packageLoad.schemaCacheBytes` still bounds the worker cache.
 
 ## [Unreleased] — a storage destination is no longer left detached after concurrent first use
 
