@@ -2096,7 +2096,9 @@ export class ServedCopyServe {
          // A destination catalog the worker lost (connection.ts reopens it)
          // is not the copy's text: neither contained to a source nor
          // remembered, or a failure recorded while the destination reopens
-         // would outlive the invalidation that reopen triggers.
+         // would outlive the invalidation that reopen triggers. A compile
+         // reports it as a `failed-to-fetch-table-schema` problem quoting the
+         // typed error, which the check reads too.
          if (isDuckLakeCatalogUnavailable(err)) {
             problems.push({
                reason: "compile_failed",
