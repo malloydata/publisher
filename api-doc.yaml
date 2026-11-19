@@ -8944,6 +8944,7 @@ components:
             histogram for rates and percentiles.
         queryCostBytes:
           type: ["integer", "null"]
+          format: int64
           description: >-
             Warehouse bytes this query SCANNED, as reported by the backend that
             ran it. Not what it is billed — see below.
@@ -12456,6 +12457,7 @@ components:
           description: Retained; always `COPY`.
         rowCount:
           type: ["integer", "null"]
+          format: int64
         buildDurationMs:
           type: ["integer", "null"]
           description: >-
@@ -12473,6 +12475,7 @@ components:
             the run's duration by whatever the orchestration cost.
         queryCostBytes:
           type: ["integer", "null"]
+          format: int64
           description: >-
             Warehouse bytes SCANNED by the read that produced this table — the
             recurring cost of keeping the source materialized, and the debit
