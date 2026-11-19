@@ -336,7 +336,7 @@ export async function copyStorageTable(params: {
          }),
          lockConfiguration: false,
       });
-      const from =[sourceAlias, source.schemaName, source.tableName]
+      const from = [sourceAlias, source.schemaName, source.tableName]
          .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
          .join(".");
       // The copy keeps the source's layout: DuckLake applies a partition spec
