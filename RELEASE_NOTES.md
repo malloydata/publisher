@@ -32,6 +32,7 @@ This release is a patch on 0.16.0, by the maintainers' call, but it carries a ch
 - **Make sure Publisher can learn each DuckLake destination's data path**, and the data path of any DuckLake catalog you copy tables out of: either `storage.bucketUrl` on its `ducklakeConnection`, or a data path the catalog recorded when it was created. Without one, a chained build (one stored table built from another), the key checks after a build, dropping or listing a destination's tables, the DuckLake file cleanup and a copy between catalogs now fail with DuckDB's `file system operations are disabled by configuration`, as builds and loads into such a destination already did on 0.16.0.
 <!-- #1937 (sources that read the current time) adds its checklist item here when it merges. -->
 - **Plan to upgrade any worker that serves a DuckLake destination with an S3 or GCS storage secret.** On 0.15.0 and 0.16.0 a worker could lose the destination's catalog at start and fail every stored read of it until restarted; this release fixes that.
+- **Check models and raw queries for DuckDB introspection or the postgres extension's passthrough functions** on a `duckdb` or `ducklake` connection: they are now refused (see the attach-hardening section below).
 - **Regenerate a strict client in a language with 32-bit integers** (Java, for one) from this release's `api-doc.yaml`: eight counts are now declared `int64`. TypeScript and Python clients see no change.
 
 **In your logs, alerts and meters**
@@ -48,9 +49,23 @@ This release is a patch on 0.16.0, by the maintainers' call, but it carries a ch
 - **A status reader may see a `storage=` table's serve verdict move from `serves` to `live` (`row_level_gate`)** where its gate column is stored as a zoned timestamp. Query answers do not change.
 - **A client that matches the text or code of a run's 400, a re-derivation's failure or a compile check's refusal** for a persisted view's incremental declaration now sees `persist-view-invalid`, named by the view and its source, as the load reports it.
 
+**After you upgrade**
+
+- **Rotate the Postgres credentials of your DuckLake catalogs and of the Postgres databases attached to `duckdb` connections**, then update the stored connection and storage-destination configs.
+
 **Coming from a release before 0.15**
 
 - **One missed scheduled run may be skipped on the first restart.** The scheduler no longer reads the `SCHEDULER` trigger releases before 0.15 wrote; trigger the run by hand after the upgrade if the missed occurrence matters.
+
+## [Unreleased] — (BREAKING) Postgres and DuckLake catalogs attach through DuckDB secrets, and caller and author SQL may not introspect DuckDB
+
+**Hardening: Publisher now attaches every Postgres database it hands to DuckDB through a temporary DuckDB secret.** A DuckLake catalog (a `ducklake` connection, a storage destination, the admin catalog API), a Postgres database in a `duckdb` connection's `attachedDatabases`, and a Postgres source federated into a build all keep their user and password in a temporary, never-persisted DuckDB secret; the attach path carries only the host, port, database and connection options. A connection string given as a `postgres://` URI is read into keyword/value form for the attach; a string that cannot be read as either form is now refused at attach time with a message that does not repeat it.
+
+**Hardening: caller and author SQL on a Publisher DuckDB connection may not introspect the instance or reach an attached database other than through its tables.** Raw SQL (`sqlQuery`, `sqlSource`, `sqlTemporaryTable`, per environment and per package) that names one of DuckDB's catalog, settings or secret introspection functions, one of the postgres extension's passthrough or connection functions, or a DuckLake metadata catalog is refused with a 400 naming the word. The same SQL in a model (a `.sql()` source, a raw SQL expression, or a `.table()` path) fails the package load, and any statement that reaches a locked DuckDB instance is refused before DuckDB runs it. Malloy's own generated SQL is unaffected.
+
+**Who is affected, and why this is marked breaking:** a model or raw query that called the postgres extension's passthrough functions on a `duckdb` connection with an attached Postgres database, or read DuckDB's introspection functions, now fails. Read the attached tables directly instead (`attached.schema.table`), or model the database as a `postgres` connection.
+
+**What to do:** upgrade, then **rotate the Postgres credentials of your DuckLake catalogs (connections and storage destinations) and of the Postgres databases attached to `duckdb` connections**, and update the stored connection configs with the new values. Rotate after the upgrade is in place.
 
 ## [Unreleased] — (BREAKING) every session on a storage destination is confined to that destination
 

@@ -29,7 +29,9 @@ function recorder(): { conn: DuckDBConnection; attach: () => string } {
    const attach = () => {
       const found = sql.filter((q) => q.includes("'ducklake:postgres:"));
       expect(found.length).toBe(1);
-      return found[0];
+      // The catalog's credential secret is ducklake_attach_text.spec.ts's
+      // concern; these cases read the data-path clauses alone.
+      return found[0].replace(/, METADATA_PARAMETERS MAP \{[^}]*\}/, "");
    };
    return { conn, attach };
 }

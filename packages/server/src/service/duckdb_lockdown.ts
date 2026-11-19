@@ -63,6 +63,10 @@ import {
 } from "../config";
 import { logger } from "../logger";
 import {
+   introspectionNameIn,
+   isIntrospectionName,
+} from "./duckdb_introspection";
+import {
    assertSingleSelect,
    countStatements,
    serializeSQL,
@@ -869,7 +873,8 @@ export class DuckDBStatementRefusedError extends Error {
       super(
          `This DuckDB connection is locked down and refuses ${reason}. ` +
             `Publisher's DuckDB connections do not expose logging, profiling, ` +
-            `SQL run from text, or secret management to SQL.`,
+            `SQL run from text, secret management, or catalog and settings ` +
+            `introspection to SQL.`,
       );
       this.name = "DuckDBStatementRefusedError";
    }
@@ -1023,7 +1028,9 @@ export function refusedOnLockedInstance(
 ): string | undefined {
    const words = rawWords(sql);
    for (let w = 0; w < words.length; w++) {
-      if (REFUSED_NAMES.has(words[w])) return `'${words[w]}'`;
+      if (REFUSED_NAMES.has(words[w]) || isIntrospectionName(words[w])) {
+         return `'${words[w]}'`;
+      }
       if (words[w] === "import" && words[w + 1] === "database") {
          return "IMPORT DATABASE";
       }
@@ -1093,12 +1100,15 @@ async function refusedByParser(sql: string): Promise<string | undefined> {
       }
       for (const [key, value] of Object.entries(node)) {
          if (
-            (key === "function_name" || key === "table_name") &&
+            (key === "function_name" ||
+               key === "table_name" ||
+               key === "catalog_name") &&
             typeof value === "string"
          ) {
             const name = value.toLowerCase();
             if (
                REFUSED_NAMES.has(name) ||
+               isIntrospectionName(name) ||
                (key === "function_name" && CALL_ONLY.has(name))
             ) {
                refused = `'${name}'`;
@@ -1141,6 +1151,19 @@ export function runAsInternalStatement<T>(
    fn: () => Promise<T>,
 ): Promise<T> {
    return internalStatement.run(sql, fn);
+}
+
+/**
+ * Run Publisher's own `sql` on `connection`, admitted by the gate on a locked
+ * instance: a read of the instance's own catalog (which databases are
+ * attached, a DuckLake catalog's recorded settings) that caller and author SQL
+ * may not make.
+ */
+export function runInternalSQL<R>(
+   connection: { runSQL(sql: string, options?: never): Promise<R> },
+   sql: string,
+): Promise<R> {
+   return runAsInternalStatement(sql, () => connection.runSQL(sql));
 }
 
 /**
@@ -1233,13 +1256,18 @@ export async function assertStatementAllowed(
  * expression of one SELECT, so it cannot end the query Malloy builds around
  * it and start another statement. Decided by DuckDB's parser, for sources of
  * the DuckDB dialect only; a built-in function's own template (its
- * `overload`) is the compiler's SQL and is not read.
+ * `overload`) is the compiler's SQL and is not read. Author SQL and `.table()`
+ * paths that name an introspection function or a DuckLake metadata catalog
+ * (duckdb_introspection.ts) are refused here too, at load, because a build
+ * session runs author SQL before any lock would refuse it.
  */
 export async function authorSqlRefusals(
    modelPath: string,
    modelDef: unknown,
 ): Promise<string[]> {
    const checks = new Map<string, string>();
+   /** Table paths named by `.table()` sources. */
+   const tablePaths = new Set<string>();
    /** Raw SQL expressions, by their fragments and how many arguments each places. */
    const expressions: { fragments: string[]; argCount: number }[] = [];
    const seen = new Set<object>();
@@ -1260,6 +1288,9 @@ export async function authorSqlRefusals(
             typeof record.selectStr === "string"
          ) {
             checks.set(record.selectStr, `a .sql() source`);
+         }
+         if (record.type === "table" && typeof record.tablePath === "string") {
+            tablePaths.add(record.tablePath);
          }
          if (record.node === "genericSQLExpr" && Array.isArray(record.src)) {
             // Each argument stands as its own column reference, placed where
@@ -1290,14 +1321,33 @@ export async function authorSqlRefusals(
             `SELECT), and this one does not: ${shown}`,
       );
    };
+   const introspection = (what: string, name: string) => {
+      refusals.push(
+         `${modelPath}: ${what} on a DuckDB connection names '${name}', which ` +
+            `author SQL may not use: Publisher's DuckDB connections do not ` +
+            `expose catalog and settings introspection, or an attached ` +
+            `database beyond its tables, to SQL.`,
+      );
+   };
    for (const { fragments, argCount } of expressions) {
       const shown = fragments.join(" ? ");
-      if (!(await expressionReadsArgumentsAsValues(fragments, argCount))) {
+      const name = introspectionNameIn(fragments.join(" "));
+      if (name) {
+         introspection("a raw SQL expression", name);
+      } else if (
+         !(await expressionReadsArgumentsAsValues(fragments, argCount))
+      ) {
          refuse("a raw SQL expression", `SELECT ${shown}`);
       }
    }
    for (const [sql, what] of checks) {
-      if (!(await isOneSelect(sql))) refuse(what, sql);
+      const name = introspectionNameIn(sql);
+      if (name) introspection(what, name);
+      else if (!(await isOneSelect(sql))) refuse(what, sql);
+   }
+   for (const tablePath of tablePaths) {
+      const name = introspectionNameIn(tablePath);
+      if (name) introspection("a .table() source", name);
    }
    return refusals;
 }
