@@ -329,15 +329,20 @@ export function loadGateText(
 /**
  * `lines` with the raw text's `name=` problems first, less the plan's own
  * line for a name the raw text already reports unsafe: one line per mistake.
+ * The raw value is as written, escapes included; the plan names the value
+ * the tag parser read, so both spellings are matched. Only a plan line the
+ * raw text already reports is dropped, so the text still fails closed.
  */
 export function withNameProblems(
    problems: readonly PersistNameProblem[],
    lines: readonly string[],
 ): string {
    const unsafe = problems.flatMap((p) =>
-      p.unsafeValue !== undefined
-         ? [`its name= "${p.unsafeValue}" is not a plain identifier path`]
-         : [],
+      p.unsafeValue === undefined
+         ? []
+         : [p.unsafeValue, unescapedTagValue(p.unsafeValue)].map(
+              (value) => `its name= "${value}" is not a plain identifier path`,
+           ),
    );
    return [
       ...problems.map((p) => p.line),
@@ -349,6 +354,11 @@ export function withNameProblems(
    ]
       .filter(Boolean)
       .join("\n");
+}
+
+/** A quoted tag value as the tag parser reads it: each backslash escape replaced by the character it escapes. */
+function unescapedTagValue(raw: string): string {
+   return raw.replace(/\\(.)/g, "$1");
 }
 
 /**

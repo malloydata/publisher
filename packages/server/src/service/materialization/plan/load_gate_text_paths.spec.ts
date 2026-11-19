@@ -47,6 +47,12 @@ const UNSAFE_NAME = `${HEADER}source: raw is ${ROWS}
 source: daily is raw -> { group_by: category }
 `;
 
+/** An unsafe `name=` holding an escaped quote, as an injection would. */
+const ESCAPED_QUOTE_NAME = `${HEADER}source: raw is ${ROWS}
+#@ persist name="t\\"; DROP TABLE x; --"
+source: daily is raw -> { group_by: category }
+`;
+
 /** A `#@ persist` whose `name=` is not quoted, which only the raw text reads. */
 const UNQUOTED_NAME = `${HEADER}source: raw is ${ROWS}
 #@ persist name=t
@@ -116,6 +122,14 @@ describe("the load gate's text on the load and on a derived plan", () => {
       expect(load.split("\n")).toHaveLength(1);
       expect(load).toContain('Offending annotation: #@ persist name="t; drop"');
       expect(await planText(UNSAFE_NAME)).toBe(load);
+   }, 60000);
+
+   it("reads an unsafe name= holding an escaped quote as one line on both, and still fails", async () => {
+      const load = await loadText(ESCAPED_QUOTE_NAME);
+      expect(load.split("\n")).toHaveLength(1);
+      expect(load).toContain("[persist-invalid]");
+      expect(load).toContain("DROP TABLE x");
+      expect(await planText(ESCAPED_QUOTE_NAME)).toBe(load);
    }, 60000);
 
    it("fails an unquoted name= on both", async () => {

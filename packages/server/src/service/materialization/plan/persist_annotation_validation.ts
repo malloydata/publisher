@@ -44,7 +44,11 @@ const UNQUOTED_NAME_PATTERN = /(?<![.\w])name\s*=\s*(?!["'])/;
  * because a line may repeat the key; every occurrence is validated, so which one
  * the tag parser keeps does not matter.
  */
-const QUOTED_NAME_VALUE_PATTERN = /(?<![.\w])name\s*=\s*(["'])(.*?)\1/g;
+// A backslash escapes the next character, so an escaped quote stays inside
+// the value: the whole value is judged (and is unsafe, as it holds a
+// backslash), and matches the value the tag parser reads once unescaped.
+const QUOTED_NAME_VALUE_PATTERN =
+   /(?<![.\w])name\s*=\s*(["'])((?:\\.|(?!\1)[^\\])*)\1/g;
 
 /**
  * The only safe persist name: dot-separated `[A-Za-z0-9_-]` segments. The value
