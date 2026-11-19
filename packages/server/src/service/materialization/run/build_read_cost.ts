@@ -4,8 +4,8 @@
 /**
  * What a `storage=` build's warehouse read cost, as BigQuery's job record or
  * Snowflake's session history accounts for it, and which of the session's
- * queries was the build's read. The queries that read the cost are
- * warehouse_sql.ts's.
+ * queries was the build's read, with the readers of a `runSQL` result's rows
+ * and values. The queries that read the cost are warehouse_sql.ts's.
  */
 
 /**
@@ -131,6 +131,13 @@ function num(value: unknown): number | null {
 /** A non-empty string value, or null for anything else. */
 export function str(value: unknown): string | null {
    return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** Rows from a `runSQL` result, which is either the array itself or wraps one. */
+export function resultRows(result: unknown): Record<string, unknown>[] {
+   if (Array.isArray(result)) return result as Record<string, unknown>[];
+   const rows = (result as { rows?: unknown })?.rows;
+   return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
 }
 
 function bool(value: unknown): boolean | null {

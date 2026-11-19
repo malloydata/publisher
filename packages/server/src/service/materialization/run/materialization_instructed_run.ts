@@ -45,34 +45,39 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
-import { addressSQL, computeSourceEntityId } from "../plan/build_plan";
 import {
-   sourcesInBuildOrder,
-   type CompiledBuildPlan,
-} from "../domain/compiled_build_plan";
+   addressSQL,
+   computeSourceEntityId,
+   declaredStorage,
+   type RunPlan,
+} from "./run_plan";
+import { sourcesInBuildOrder } from "../domain/compiled_build_plan";
 import {
    classifySourceFailure,
    failedUpstreamsOf,
    type FailedUpstream,
 } from "./build_failure_class";
+import { redactConnectionSecrets } from "./connection_redaction";
 import {
-   declaredStorage,
-   redactConnectionSecrets,
    type BuildEnvironment,
-   type BuildQueryMetadata,
    type ChainedPlanFacts,
    type WarehouseReach,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import { type BuildQueryMetadata } from "./build_query_tag";
 import type { IncrementalRunContext } from "./incremental_build";
 import type { UniquenessLedger } from "./inline_uniqueness";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import {
+   isPersistedResultSourceID,
+   originOfTable,
+} from "../domain/table_plans";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { reportSourceFailed } from "./run_telemetry";
 
 /** One instructed run: what `InstructedBuild.run` reads. */
 export interface InstructedBuildOptions {
-   compiled: CompiledBuildPlan;
+   compiled: RunPlan;
    /**
     * The declared freshness window of each table, by address, at the run's
     * start: a rollup reads its base's stored table only when that table is
@@ -314,8 +319,8 @@ export function indexInstructions(
 export function resolveInstruction(
    index: InstructionIndex,
    persistSource: PersistSource,
-   connectionDigests: CompiledBuildPlan["connectionDigests"],
-   tableFolds?: CompiledBuildPlan["tableFolds"],
+   connectionDigests: RunPlan["connectionDigests"],
+   tableFolds?: RunPlan["tableFolds"],
 ): ResolvedInstruction | undefined {
    // sourceID first, so the caller's sourceEntityId scheme stays opaque; the
    // sourceEntityId lookup is the fallback for instructions without one.
@@ -359,11 +364,11 @@ export function resolveInstruction(
  * setting is `false` (it is on by default).
  */
 export function assertNoTableCollisions(
-   builds: CompiledBuildPlan["builds"],
-   tables: CompiledBuildPlan["tables"],
-   connectionDigests: CompiledBuildPlan["connectionDigests"],
+   builds: RunPlan["builds"],
+   tables: RunPlan["tables"],
+   connectionDigests: RunPlan["connectionDigests"],
    index: InstructionIndex,
-   tableFolds?: CompiledBuildPlan["tableFolds"],
+   tableFolds?: RunPlan["tableFolds"],
 ): void {
    // Keyed by the table segment on its connection or destination: `main.t`
    // and `t` may be one table, as the plan's collision check reads them
@@ -484,7 +489,7 @@ export function assertNoTableCollisions(
 export function assertInstructedDestinationWritable(
    persistSource: PersistSource,
    instruction: BuildInstruction,
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
 ): void {
    if (instructsUnwritableDestination(instruction, getPersistStorageMode())) {
       throw new BadRequestError(
@@ -642,4 +647,53 @@ export function recordInstructedBuildFailure(
       materializedTableId: instruction.materializedTableId,
       error: reason,
    } as ManifestEntry;
+}
+
+/**
+ * The record a run keeps for a source the eligibility gate refused, in the
+ * plan's `RefusedSource` shape so both report it identically.
+ */
+export function refusalRecord(
+   persistSource: PersistSource,
+   err: MaterializationEligibilityError,
+   tier: RefusedSource["tier"],
+   modelPath: string | undefined,
+   /** Its planned table's kind, which names its mechanism (`origin`). */
+   kind?: Parameters<typeof originOfTable>[0],
+): RefusedSource {
+   return {
+      origin:
+         tier === "preaggregate"
+            ? "rollup"
+            : originOfTable(
+                 kind ??
+                    (isPersistedResultSourceID(persistSource.sourceID)
+                       ? "view"
+                       : "persist"),
+                 persistSource.sourceID,
+              ),
+      name: persistSource.name,
+      sourceID: persistSource.sourceID,
+      ...(modelPath ? { modelPath } : {}),
+      tier,
+      reason: err.reason || "authorize",
+      message: errMessage(err),
+   };
+}
+
+/**
+ * The run-level refusal when every targeted source was refused. Several
+ * refusals are joined so the run names every source, not only the first.
+ */
+export function allSourcesRefusedError(
+   errors: MaterializationEligibilityError[],
+): MaterializationEligibilityError {
+   if (errors.length === 1) return errors[0];
+   const reason = errors.every((e) => e.reason === errors[0].reason)
+      ? errors[0].reason
+      : undefined;
+   return new MaterializationEligibilityError({
+      message: errors.map((e) => e.message).join("; "),
+      reason,
+   });
 }

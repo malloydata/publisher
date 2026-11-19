@@ -55,7 +55,7 @@ import {
 } from "../stored_column_types";
 import { quoteManifestTablePath, quoteTablePath } from "../../quoting";
 import { reachPersisted } from "../text/source_map";
-import { extensionOverStoredModel } from "../plan/materialize_stored_chain";
+import { extensionOverStoredModel } from "./run_plan";
 import {
    type MaterializeParent,
    type MaterializePlan,
@@ -87,29 +87,29 @@ import {
    type IncrementalRunContext,
 } from "./incremental_build";
 import {
-   BilledReadNotCapturedError,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
-   dropStorageTable,
    oneFileModel,
    withDestinationSession,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
+import { BilledReadNotCapturedError } from "./build_attribution";
+import { dropStorageTable } from "./storage_admin";
+import { backupSuffix } from "./build_table_names";
 import {
-   backupSuffix,
    BuildEnvironment,
-   ChainedPlanFacts,
-   NO_PLAN_FACTS,
-   redactConnectionSecrets,
-   currentUpstreamEntries,
-   noteWrongTierRecompute,
    ChainedPackageStaleError,
+   ChainedPlanFacts,
+   currentUpstreamEntries,
    HostSuppliedWrongTierError,
+   NO_PLAN_FACTS,
+   noteWrongTierRecompute,
    upstreamEntryIsCurrent,
    WRONG_TIER_MARKER,
    wrongTierDetail,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import { redactConnectionSecrets } from "./connection_redaction";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 import { compiledTextReader } from "../../../utils";
 import {
@@ -1329,7 +1329,7 @@ export class StorageBuildStrategy
          // Its text names the generated sources; logged, never returned.
          logger.warn(
             "A storage= extension table did not build over its parent's stored table",
-            { sourceName: persistSource.name, error: errMessage(err) },
+            { sourceName: persistSource.name, code: errorCodeOf(err) },
          );
          throw new ChainedShapeNotCarriedError(
             `'${persistSource.name}' could not be built over the stored table ` +

@@ -69,6 +69,8 @@
  * the same names write the same mark.
  */
 
+import { errorCodeOf } from "./error_code";
+import { leafKey } from "../domain/physical_table";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PersistSource } from "@malloydata/malloy";
 import { TableOwnershipError } from "../../../errors";
@@ -76,8 +78,7 @@ import { logger } from "../../../logger";
 import { externalEnv } from "../../../settings/external";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
-import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
-import { deriveAnnotationFields } from "../plan/persist_source_fields";
+import { deriveAnnotationFields, type RunPlan } from "./run_plan";
 import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
 import { capabilitiesOf } from "../domain/dialect";
 import { hasReservedTableSuffix } from "../domain/table_name";
@@ -89,15 +90,12 @@ import {
 } from "./table_mark_sql";
 import { ownedTableProbeSql, tableCommentSql } from "./warehouse_sql";
 import { KeyedLock } from "./keyed_lock";
-import { tableIdentity } from "../../versions/materialization_scope";
 import {
    atTableSite,
    type TableSite,
    type TableSiteContext,
 } from "./table_site";
 import type { BuildInstruction } from "../domain/types";
-
-export { parseOwnedTableComment };
 
 /** The code of a build refused because another holds its `name=`. */
 export const TABLE_OWNED_ELSEWHERE = "table-owned-elsewhere";
@@ -117,7 +115,7 @@ export { TableOwnershipError };
  * packages that probe one free name at once would both build it, and each
  * serve whichever wrote last. Held from the ownership check until the mark is
  * written, so the second build's check sees the first one's mark. Keyed by
- * `tableIdentity` (the last segment, unquoted, lower-cased): two connections
+ * `leafKey` (the last segment, unquoted, lower-cased): two connections
  * or environments may reach one schema under different names, and an
  * over-wide key only serializes.
  */
@@ -141,17 +139,14 @@ export async function withOwnedNameLock<T>(
 ): Promise<T> {
    // Nested, it would wait on itself for the same name.
    assertNoOwnedNameHeld("owned-name");
-   return OWNED_NAME_LOCK.withLock(
-      tableIdentity(physicalTableName),
-      async () => {
-         const hold = { held: true };
-         try {
-            return await ownedNameHolds.run(hold, fn);
-         } finally {
-            hold.held = false;
-         }
-      },
-   );
+   return OWNED_NAME_LOCK.withLock(leafKey(physicalTableName), async () => {
+      const hold = { held: true };
+      try {
+         return await ownedNameHolds.run(hold, fn);
+      } finally {
+         hold.held = false;
+      }
+   });
 }
 
 /** A lock taken out of the run's order (run/README.md); thrown under test. */
@@ -181,7 +176,7 @@ export function assertNoOwnedNameHeld(lock: string): void {
  * table that defaults to its source's name are Publisher's.
  */
 export function hasAuthorTableName(
-   compiled: Pick<CompiledBuildPlan, "tables">,
+   compiled: Pick<RunPlan, "tables">,
    persistSource: PersistSource,
 ): boolean {
    const table = compiled.tables[persistSource.sourceID];
@@ -498,7 +493,7 @@ export async function markOwnedTable(
    } catch (err) {
       logger.warn(
          "Could not mark a built table as this package's; its run's records say so instead",
-         { physicalTableName, owner, error: errMessage(err) },
+         { physicalTableName, owner, code: errorCodeOf(err) },
       );
    }
 }

@@ -16,6 +16,14 @@
  * marked as its own.
  */
 
+import { errorCodeOf } from "./error_code";
+import {
+   dropVerdict,
+   isTransientGuard,
+   keptReasonOf,
+   renameVerdict,
+   type RenameGuard,
+} from "../domain/table_ledger";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import {
    databaseAccessFailure,
@@ -30,6 +38,7 @@ import { UnquotableIdentifierError } from "../../quoting";
 import {
    type DropOccasion,
    recordDropTables,
+   recordStorageTableRetained,
 } from "../../../materialization_metrics";
 import {
    Materialization,
@@ -44,7 +53,6 @@ import {
    isVersionOwnedRun,
    newestServingEntries,
    readsRun,
-   tableIdentity,
    type ServingReader,
    tableNamesIn,
    WRITES_TABLES_KEY,
@@ -59,15 +67,11 @@ import {
 } from "../domain/types";
 import { DatabaseTier } from "./database_build_strategy";
 import { StorageBuildStrategy } from "./storage_build_strategy";
-import {
-   backupSuffix,
-   BuildEnvironment,
-   stagingSuffix,
-   statementRunOptions,
-   isActiveRun,
-   redactConnectionSecrets,
-   tableKeyOf,
-} from "./materialization_run_support";
+import { backupSuffix, stagingSuffix } from "./build_table_names";
+import { BuildEnvironment } from "./build_upstreams";
+import { statementRunOptions } from "./build_query_tag";
+import { isActiveRun } from "./run_status";
+import { redactConnectionSecrets } from "./connection_redaction";
 import {
    dropLeftoverNameViews,
    heldByOwnNameView,
@@ -90,8 +94,14 @@ import {
    type TableSiteContext,
 } from "./table_site";
 import { capabilitiesOf } from "../domain/dialect";
-import type { RunLifecycle } from "./run_lifecycle";
-import { leafKey, mayBeSameTable } from "../domain/physical_table";
+import { type RunLifecycle } from "./run_lifecycle";
+import {
+   entryTable,
+   leafKey,
+   mayBeSameTable,
+   recordedTableKey,
+   tableKey,
+} from "../domain/physical_table";
 import { previousDestinationOf, type RenamedTable } from "./run_instructions";
 import { hasReservedTableSuffix } from "../domain/table_name";
 
@@ -106,11 +116,6 @@ const DATABASE = new DatabaseTier();
 // Only its drop. A build goes through the service's adapter, which routes a
 // chained build through the run's collaborators; this one would not.
 const STORAGE: Pick<StorageBuildStrategy, "drop"> = new StorageBuildStrategy();
-
-/** A physical table's key for drop bookkeeping: where it lives, and its name. */
-function tableKey(destination: string, physicalTableName: string): string {
-   return `${destination}:${physicalTableName}`;
-}
 
 /**
  * Where a run records the tables it built under new names or in new places
@@ -189,7 +194,7 @@ export function keptTablesResolverFor(
 
 /** One kept table, wherever it is listed. */
 function keptKey(t: KeptTable): string {
-   return `${t.connectionName}\u0000${t.storageDestinationName ?? ""}\u0000${t.physicalTableName}`;
+   return recordedTableKey(t);
 }
 
 /** The {@link RenamedTable}s a run's metadata records, or empty. */
@@ -209,17 +214,6 @@ function renamedTablesIn(
    );
 }
 
-/**
- * The guards of Reclaimer.reclaimRenamedTables a later run may find passing
- * (its replacement commits, it becomes what is served, the other run naming
- * the table goes): a table kept by one stays recorded, to be tried again.
- */
-const TRANSIENT_GUARDS: ReadonlySet<string> = new Set([
-   "replacement-not-committed",
-   "not-serving-replacement",
-   "still-referenced",
-]);
-
 /** How many kept tables' existence is probed at once. */
 const KEPT_PROBES_AT_ONCE = 4;
 
@@ -233,7 +227,11 @@ function renamedKey(
       | "previousPlace"
    >,
 ): string {
-   return `${t.connectionName}\u0000${previousDestinationOf(t) ?? ""}\u0000${t.previousName}`;
+   return recordedTableKey({
+      connectionName: t.connectionName,
+      storageDestinationName: previousDestinationOf(t),
+      physicalTableName: t.previousName,
+   });
 }
 
 /** When a committed run committed; the serving line is ordered by it. */
@@ -251,21 +249,9 @@ function committedAt(m: Materialization): number {
  */
 function reclaimableEntries(m: Materialization): ManifestEntry[] {
    const entries = Object.values(m.manifest?.entries ?? {});
-   const named = new Set(
-      entries.map((e) =>
-         tableKeyOf(
-            e.connectionName ?? "",
-            e.storageDestinationName,
-            e.physicalTableName,
-         ),
-      ),
-   );
+   const named = new Set(entries.map((e) => recordedTableKey(e)));
    for (const target of writeTargetsIn(m.metadata ?? null)) {
-      const key = tableKeyOf(
-         target.connectionName,
-         target.storageDestinationName,
-         target.physicalTableName,
-      );
+      const key = recordedTableKey(target);
       if (named.has(key)) continue;
       named.add(key);
       entries.push({
@@ -295,7 +281,7 @@ function destinationForCleanup(
    } catch (error) {
       logger.warn(
          "Skipping a table drop: its storage destination is no longer configured",
-         { destinationName, error: errMessage(error) },
+         { destinationName, code: errorCodeOf(error) },
       );
       return undefined;
    }
@@ -434,7 +420,7 @@ async function dropStorageTable(
          ...context,
          // The drop attaches read-write, so a failure can echo the catalog
          // connstring.
-         error: redactConnectionSecrets(errMessage(err), destinationConnection),
+         code: errorCodeOf(err),
       });
       return false;
    }
@@ -455,6 +441,20 @@ function recordedNameViews(
       (m) => nameViewsIn(m.metadata),
    );
    return recorded.length > 0 ? recorded : undefined;
+}
+
+/**
+ * The key {@link tablesStillReferenced} holds a referenced table under, in its
+ * place: case-folded in a destination (DuckDB folds), exactly as written on a
+ * connection, whose dialect is not known here. A case variant on a folding
+ * warehouse is still kept, by its table segment ({@link leafReferenceKey}).
+ */
+function referenceKey(entry: {
+   connectionName?: string | null;
+   storageDestinationName?: string | null;
+   physicalTableName: string;
+}): string {
+   return tableKey(entryTable(entry), !!entry.storageDestinationName);
 }
 
 /**
@@ -482,9 +482,8 @@ function tablesStillReferenced(
       if (!include(other)) continue;
       if (other.status !== "MANIFEST_FILE_READY") continue;
       for (const e of Object.values(other.manifest?.entries ?? {})) {
-         const dest = e.storageDestinationName ?? e.connectionName;
-         if (dest && e.physicalTableName) {
-            stillReferenced.add(tableKey(dest, e.physicalTableName));
+         if (e.physicalTableName) {
+            stillReferenced.add(referenceKey(e));
             stillReferenced.add(leafReferenceKey(e.physicalTableName));
          }
       }
@@ -508,7 +507,15 @@ async function keptInPlace(
    materializationId: string,
 ): Promise<boolean> {
    const destForKey = entry.storageDestinationName ?? connectionName;
-   if (stillReferenced.has(tableKey(destForKey, physicalTableName))) {
+   const verdict = dropVerdict({
+      referencedThere: stillReferenced.has(
+         referenceKey({ ...entry, connectionName, physicalTableName }),
+      ),
+      referencedByLeaf: stillReferenced.has(
+         leafReferenceKey(physicalTableName),
+      ),
+   });
+   if (verdict === "still_referenced") {
       logger.info(
          "Skipping drop: table still referenced by another materialization",
          {
@@ -519,7 +526,7 @@ async function keptInPlace(
       );
       return true;
    }
-   if (stillReferenced.has(leafReferenceKey(physicalTableName))) {
+   if (verdict === "may_be_served") {
       logger.info("Keeping a table a reclaim would drop: it may be served", {
          runId: materializationId,
          physicalTableName,
@@ -618,7 +625,7 @@ async function dropDatabaseTable(
                runId: materializationId,
                physicalTableName,
                connectionName,
-               error: err.message,
+               code: errorCodeOf(err),
             },
          );
          return "unquotable";
@@ -628,7 +635,7 @@ async function dropDatabaseTable(
          runId: materializationId,
          physicalTableName,
          connectionName,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
       return "owed";
    }
@@ -944,8 +951,12 @@ export class Reclaimer {
             const table = entry.physicalTableName;
             if (!dest || !table) continue;
             if (
-               stillReferenced.has(tableKey(dest, table)) ||
-               stillReferenced.has(leafReferenceKey(table))
+               dropVerdict({
+                  referencedThere: stillReferenced.has(referenceKey(entry)),
+                  referencedByLeaf: stillReferenced.has(
+                     leafReferenceKey(table),
+                  ),
+               }) !== "drop"
             ) {
                logger.info(
                   "Keeping a table from a failed run: a live manifest still serves it",
@@ -963,7 +974,7 @@ export class Reclaimer {
       } catch (err) {
          // Never let cleanup mask the build failure that triggered it.
          logger.warn("Failed-run table reclaim did not complete", {
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -1199,7 +1210,7 @@ export class Reclaimer {
    ): Promise<void> {
       const { environment, environmentId, connectionName, physicalTableName } =
          request;
-      const identity = tableIdentity(physicalTableName);
+      const identity = leafKey(physicalTableName);
       const copies: { label: string; names: string[] }[] = [];
       for (const pkg of environment.getLoadedPackages()) {
          copies.push({
@@ -1220,7 +1231,7 @@ export class Reclaimer {
          });
       }
       const bound = copies.find((c) =>
-         c.names.some((name) => tableIdentity(name) === identity),
+         c.names.some((name) => leafKey(name) === identity),
       );
       if (bound) {
          throw new MaterializedTableDropRefusedError(
@@ -1290,7 +1301,7 @@ export class Reclaimer {
             packageName,
             connectionName,
             physicalTableName,
-            error: redacted(err),
+            code: errorCodeOf(err),
          });
          throw unverified("whose it is could not be read (the probe failed)");
       }
@@ -1343,7 +1354,7 @@ export class Reclaimer {
                packageName,
                connectionName,
                physicalTableName,
-               error: redacted(err),
+               code: errorCodeOf(err),
             },
          );
          throw (
@@ -1379,7 +1390,7 @@ export class Reclaimer {
                         packageName,
                         connectionName,
                         physicalTableName: copy,
-                        error: redacted(err),
+                        code: errorCodeOf(err),
                      },
                   );
                },
@@ -1666,7 +1677,7 @@ export class Reclaimer {
       } catch (err) {
          logger.warn(
             "Reclaiming tables readable names replaced did not complete",
-            { error: errMessage(err) },
+            { code: errorCodeOf(err) },
          );
          return undefined;
       }
@@ -1874,7 +1885,7 @@ export class Reclaimer {
             continue;
          }
          // A guard that a later run may find passing keeps the record.
-         if (TRANSIENT_GUARDS.has(guard)) retried.add(key);
+         if (isTransientGuard(guard)) retried.add(key);
          if (log) {
             logger.info("Keeping a table a readable name replaced", {
                physicalTableName: table.previousName,
@@ -1882,9 +1893,10 @@ export class Reclaimer {
                guard,
             });
          }
-         if (guard === "author_name" || guard === "may_be_served") {
+         const reason = keptReasonOf(guard);
+         if (reason) {
             kept.push({
-               ...keptOf(entry, guard),
+               ...keptOf(entry, reason),
                ...(table.sourceName ? { sourceName: table.sourceName } : {}),
             });
          }
@@ -1911,7 +1923,7 @@ export class Reclaimer {
                   "Could not forget the incremental boundary of a dropped table",
                   {
                      physicalTableName: entry.physicalTableName,
-                     error: errMessage(err),
+                     code: errorCodeOf(err),
                   },
                ),
             );
@@ -1920,35 +1932,23 @@ export class Reclaimer {
 
    /**
     * Which guard of {@link reclaimRenamedTables} keeps `table`, or undefined
-    * when none does (guard 3 is the drop's, and a missing destination the
-    * caller's). `author_name` and `may_be_served` are the ones that list it
-    * as kept.
+    * when none does ({@link renameVerdict} over what the runs say).
     */
    private renamedTableGuard(
       table: RenamedTable,
       run: Materialization,
       runs: Materialization[],
       reader: ServingReader,
-   ): string | undefined {
+   ): RenameGuard | undefined {
       const place = placeKey;
       const oldAt: Place = {
          connectionName: table.connectionName,
          storageDestinationName: previousDestinationOf(table),
       };
-      // 4: the source is served from this run, wherever its table is now.
       const current = run.manifest?.entries?.[table.sourceEntityId];
-      if (!current?.physicalTableName || isLegacyFailedEntry(current)) {
-         return "replacement-not-committed";
-      }
       const serving = newestServingEntries(runs, reader);
       const served = serving[table.sourceEntityId];
-      if (
-         served?.physicalTableName !== current.physicalTableName ||
-         place(served) !== place(current)
-      ) {
-         return "not-serving-replacement";
-      }
-      // 2: an earlier auto-run of this package built it for this source,
+      // An earlier auto-run of this package built it for this source,
       // there. A host's run named its tables itself.
       const builtIt = (m: Materialization) => {
          const e = m.manifest?.entries?.[table.sourceEntityId];
@@ -1957,67 +1957,52 @@ export class Reclaimer {
             place(e) === place(oldAt)
          );
       };
-      if (
-         !runs.some(
+      // By table segment alone (leafKey): a table's name does not say where
+      // it is, and two places (two names for one DuckLake, a connection that
+      // reaches a destination) can reach one table, which no config or probe
+      // proves otherwise; nor does a container (on DuckDB `memory.t` and
+      // `main.t` are one table).
+      const namesIt = (e: ManifestEntry) =>
+         !!e.physicalTableName &&
+         leafKey(e.physicalTableName) === leafKey(table.previousName);
+      const servedUnderName = Object.values(serving).filter(namesIt);
+      return renameVerdict({
+         replacementCommitted:
+            !!current?.physicalTableName && !isLegacyFailedEntry(current),
+         replacementServed:
+            served?.physicalTableName === current?.physicalTableName &&
+            !!current &&
+            place(served ?? {}) === place(current),
+         builtByPackage: runs.some(
             (m) =>
                m.id !== run.id &&
                m.status === "MANIFEST_FILE_READY" &&
                m.metadata?.mode !== "orchestrated" &&
                readsRun(m, reader) &&
                builtIt(m),
-         )
-      ) {
-         return "not-in-package-records";
-      }
-      // 5: no table the package serves now may be it. By table segment
-      // alone (leafKey): a table's name does not say where it
-      // is, and two places (two names for one DuckLake, a connection that
-      // reaches a destination) can reach one table, which no config or
-      // probe proves otherwise; nor does a container (on DuckDB `memory.t`
-      // and `main.t` are one table). Served at that very name in this very
-      // place, it is the served table; otherwise it may be, so it is never
-      // dropped: kept and listed.
-      const namesIt = (e: ManifestEntry) =>
-         !!e.physicalTableName &&
-         leafKey(e.physicalTableName) === leafKey(table.previousName);
-      const servedUnderName = Object.values(serving).filter(namesIt);
-      if (
-         servedUnderName.some(
+         ),
+         servedThere: servedUnderName.some(
             (e) =>
                place(e) === place(oldAt) &&
                mayBeSameTable(e.physicalTableName, table.previousName),
-         )
-      ) {
-         return "still-served";
-      }
-      if (servedUnderName.length > 0) return "may_be_served";
-      // 5: no run this run does not supersede still names it.
-      if (
-         runs.some(
+         ),
+         servedByLeaf: servedUnderName.length > 0,
+         referencedElsewhere: runs.some(
             (m) =>
                m.status === "MANIFEST_FILE_READY" &&
                !readsRun(m, reader) &&
                Object.values(m.manifest?.entries ?? {}).some(namesIt),
-         )
-      ) {
-         return "still-referenced";
-      }
-      // 5: no active run (an orchestrated run of another version, say) has
-      // claimed a name that may be it, to write.
-      if (
-         runs.some(
+         ),
+         // An orchestrated run of another version, say.
+         claimedByActiveRun: runs.some(
             (m) =>
                isActiveRun(m.status) &&
                tableNamesIn(m.metadata, WRITES_TABLES_KEY).some(
                   (name) => leafKey(name) === leafKey(table.previousName),
                ),
-         )
-      ) {
-         return "still-referenced";
-      }
-      // 1: an author's exact name= is never dropped.
-      if (!hasReservedTableSuffix(table.previousName)) return "author_name";
-      return undefined;
+         ),
+         publisherNamed: hasReservedTableSuffix(table.previousName),
+      });
    }
 
    /**
@@ -2080,7 +2065,7 @@ export class Reclaimer {
             environmentName,
             packageName,
             version: versionId,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -2119,7 +2104,7 @@ export class Reclaimer {
             environmentName,
             packageName,
             version: versionId,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -2142,7 +2127,7 @@ export class Reclaimer {
             environmentName,
             packageName,
             version: versionId,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
       await this.reclaimVersionTables(environmentName, packageName, versionId);
@@ -2314,7 +2299,7 @@ export class Reclaimer {
          } catch (err) {
             logger.warn("Failed to finish reclaiming versions at startup", {
                environmentName,
-               error: errMessage(err),
+               code: errorCodeOf(err),
             });
          }
       }
@@ -2330,4 +2315,62 @@ function logRetiredByView(
       "Skipped drop: a name= view this package made in an earlier release replaced the table, which is gone",
       { runId: materializationId, physicalTableName },
    );
+}
+
+/**
+ * Name the stored tables a failed run wrote and did not reclaim. Otherwise
+ * there is no record at all (no manifest committed, and the host's orphan
+ * sweep does not cover storage destinations; see
+ * {@link isReclaimableStorageTable}).
+ *
+ * Deliberately does NOT call them orphans: `refresh: "full"` covers both a
+ * rebuild at a fresh generational name (unreferenced) and a seed fallback on
+ * the stable name a previous manifest still binds (live). It reports only what
+ * is certain.
+ */
+export function reportRetainedStorageTables(
+   retained: ManifestEntry[],
+   packageName: string,
+): void {
+   for (const entry of retained) {
+      recordStorageTableRetained();
+      logger.warn(
+         "A failed run left a table in a storage destination and did not reclaim " +
+            "it: the source is refreshed incrementally, so this name may be the " +
+            "one it serves from. Unreferenced if the run was building a fresh " +
+            "generation, in which case reclaiming it needs the destination sweep.",
+         {
+            packageName,
+            sourceName: entry.sourceName,
+            destinationName: entry.storageDestinationName,
+            physicalTableName: entry.physicalTableName,
+            refresh: entry.refresh,
+         },
+      );
+   }
+}
+
+/**
+ * Whether a manifest entry names a stored table a failed run may reclaim.
+ *
+ * An INCREMENTALLY REFRESHED source (`entry.refresh` present) is never
+ * reclaimed: its physical name is stable across runs, a prior manifest may bind
+ * it, and a refresh writes it in place. Dropping it because a later source
+ * failed would take the source off its table until a rebuild. A source with a
+ * stored upstream is retained on the same terms, because the host sees its
+ * `refresh="incremental"` and hands it a stable serving name too.
+ *
+ * Conservative in one direction: an incremental source's FIRST (or forced)
+ * build is at a fresh, unbound name that `entry.refresh` cannot distinguish,
+ * so it leaks. The host's orphan sweep does not catch it (it enumerates a
+ * connection's catalog and skips storage-destination rows), and the reclaim's
+ * `stillReferenced` check only sees READY manifests of the SAME package name.
+ * Accepted: a destination already accumulates superseded generations, and
+ * leaking costs storage while reclaiming a serving table costs data. The
+ * premise (an incremental source is built at the name it serves from) is the
+ * host's to keep; minting generations per source rather than per address
+ * breaks it.
+ */
+export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
+   return !!entry.storageDestinationName && entry.refresh === undefined;
 }

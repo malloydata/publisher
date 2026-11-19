@@ -8,7 +8,7 @@ import * as path from "path";
 import { BuildPlanUnavailableError } from "../../src/errors";
 import { Environment } from "../../src/service/environment";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
-import { PACKAGE_STALE_MARKER } from "../../src/service/materialization/run/materialization_run_support";
+import { PACKAGE_STALE_MARKER } from "../../src/service/materialization/run/build_upstreams";
 import type {
    Materialization,
    ResourceRepository,

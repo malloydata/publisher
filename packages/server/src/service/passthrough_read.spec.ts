@@ -3,10 +3,8 @@
 
 import { describe, expect, it } from "bun:test";
 
-import {
-   BilledReadNotCapturedError,
-   issuePassthroughRead,
-} from "./materialization/run/materialization_build_session";
+import { issuePassthroughRead } from "./materialization/run/materialization_build_session";
+import { BilledReadNotCapturedError } from "./materialization/run/build_attribution";
 
 /** A build session that records what it was asked to run and replays canned rows. */
 function fakeSession(replies: Record<string, unknown>[][] = []) {

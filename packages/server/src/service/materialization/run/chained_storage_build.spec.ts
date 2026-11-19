@@ -49,10 +49,7 @@ import type { ManifestEntry } from "../domain/types";
 import { chainBuildText } from "../serve/served_copy_serve";
 import { servedCopyAlias } from "../serve/served_copy_config";
 import * as session from "./materialization_build_session";
-import {
-   chainedPlanFacts,
-   type ChainedPlanFacts,
-} from "./materialization_run_support";
+import { type ChainedPlanFacts, chainedPlanFacts } from "./build_upstreams";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 
 const duckdb = new DuckDBConnection("duckdb", ":memory:");

@@ -12,6 +12,7 @@
  * miss by the author's source. Counts each chained storage build.
  */
 
+import { errorCodeOf } from "./error_code";
 import { instructionTier } from "../domain/placement";
 import { plannedModelDefOf } from "../../governance/ir/compiled_model";
 import type {
@@ -28,7 +29,7 @@ import {
    buildSQLOf,
    projectToStoredColumns,
    resolveQueryMetadata,
-} from "../plan/build_plan";
+} from "./run_plan";
 import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
@@ -40,21 +41,23 @@ import {
 } from "./incremental_build";
 import {
    BuildEnvironment,
-   BuildQueryMetadata,
    ChainedPlanFacts,
    compilerMissingUpstream,
-   connectionMetadataLayers,
+   HostSuppliedWrongTierError,
    manifestExcludingStorage,
    manifestForCompiler,
    NO_PLAN_FACTS,
    noteWrongTierRecompute,
    presentedSourceName,
    strictMissSourceId,
-   HostSuppliedWrongTierError,
    upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
    wrongTierDetail,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import {
+   BuildQueryMetadata,
+   connectionMetadataLayers,
+} from "./build_query_tag";
 import type {
    StorageBuildRequest,
    StoredRollupBase,
@@ -317,7 +320,7 @@ function classifyStoredUpstreams(
          "Could not classify a database build's stored upstreams; the entry carries no upstreamReuse",
          {
             sourceName: persistSource.name,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          },
       );
    }

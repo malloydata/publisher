@@ -10,7 +10,7 @@ import {
    ManifestReference,
 } from "../service/materialization/domain/types";
 import { MaterializationService } from "../service/materialization/run/materialization_service";
-import type { WarehouseReach } from "../service/materialization/run/materialization_run_support";
+import { type WarehouseReach } from "../service/materialization/run/build_upstreams";
 import { VersionRef } from "../service/identity";
 import { isUsableTableName } from "../service/materialization";
 import { queryMetadataViolations } from "../service/query_metadata";

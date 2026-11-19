@@ -5,7 +5,7 @@
  * Which names share one stored table, and which of a plan's sources a
  * manifest entry stands for, matched by name and content address.
  *
- * Read by the build's plan facts (run/materialization_run_support.ts) and by
+ * Read by the build's plan facts (run/build_upstreams.ts) and by
  * the facade when it derives serve bindings. A name declared at more than one
  * address is never an alias; a source matches an entry only at the exact
  * address its plan computed.

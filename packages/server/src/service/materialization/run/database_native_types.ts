@@ -23,8 +23,8 @@
  * served copy answers the table's big-integer columns live.
  */
 
+import { errorCodeOf } from "./error_code";
 import { logger } from "../../../logger";
-import { errMessage } from "../../../utils";
 import { nativeTypeCatalogRead, type NativeColumn } from "./warehouse_sql";
 
 /** Enough rows for any table's columns (runSQL's default is ten). */
@@ -76,7 +76,7 @@ export async function capturedNativeSchema(args: {
          {
             sourceName: args.sourceName,
             physicalTableName: args.physicalTableName,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          },
       );
       return undefined;
