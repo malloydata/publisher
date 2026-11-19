@@ -18,11 +18,7 @@ import { errMessage } from "../../utils";
 import type { Model } from "../model";
 import { collectEntryPointGates } from "../gate_classification";
 import { structsReachedFrom } from "../governance/ir/source_graph";
-import {
-   answerKeepsGates,
-   legMayPassGate,
-   SERVING_GATE_CONTEXT,
-} from "./domain/gate_policy";
+import { keepsGatesWhenReadExact, mayAttempt } from "./domain/admission";
 import { type Binding, pin, type Snapshot } from "./domain/binding";
 import { storageTablePath } from "./domain/storage_table_path";
 import type { FreshnessManifest } from "./domain/types";
@@ -391,11 +387,11 @@ export class ServeVerdicts {
          keepsGate: (sourceID, tier) => {
             if (isRollupOrigin(buildPlan?.sources?.[sourceID]?.origin)) {
                return (
-                  legMayPassGate("rollup", switches, SERVING_GATE_CONTEXT) &&
+                  mayAttempt("rollup", switches) &&
                   plan.rollupsKeepingGates.has(sourceID)
                );
             }
-            return answerKeepsGates(
+            return keepsGatesWhenReadExact(
                "served",
                [
                   {
@@ -409,7 +405,6 @@ export class ServeVerdicts {
                   },
                ],
                switches,
-               SERVING_GATE_CONTEXT,
             );
          },
          refusedAtBind: (sourceID, source, tier) =>
