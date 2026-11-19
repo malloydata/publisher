@@ -444,8 +444,10 @@ const importDirectionRule = {
 //   H1  every non-spec module under materialization/ opens, after the
 //       license, with a block comment saying what it is responsible for.
 //   H2  no history in a comment there: no ticket number, `phase N`, `step N`
-//       or `pull request N` label, or date. History belongs in the commit
-//       message.
+//       or `pull request N` label, or date, and no plan or review label
+//       standing for a concept (`P10`, `G3`, `known limitation 29`,
+//       `question 14`, `g-mixed`): spell the concept. History belongs in the
+//       commit message.
 //
 // Both allow no exceptions: their lists in materialization_allowlists.mjs are
 // empty, and src/service/materialization/layer_rules.spec.ts fails on any
@@ -494,7 +496,13 @@ const moduleHeaderRule = {
  * date, in a comment.
  */
 export const HISTORY_IN_COMMENT =
-   /#\d{3,}\b|\bphase \d|\bstep \d+[a-z]?\b|\bpull request \d|\b20\d\d-\d\d-\d\d\b/gi;
+   /#\d{3,}\b|\bphase \d|\bstep \d+[a-z]?\b|\bpull request \d|\b20\d\d-\d\d-\d\d\b|\bknown limitation \d|\bquestion \d|\bg-mixed\b|\bPR \d|\b\w+\/\w+#\d/gi;
+/**
+ * A plan or review label standing for a concept (`P10`, `G3`, `A7`, `R3`,
+ * `P2-41`, `F-08`). Case-sensitive, so a duration (`2d`) or a directory
+ * (`r4`) is not one.
+ */
+export const LABEL_IN_COMMENT = /\b[PRGADHQL]\d{1,2}(?:-\d+)?\b|\bF-\d+\b/g;
 const noHistoryCommentsRule = {
    meta: {
       type: "suggestion",
@@ -517,11 +525,12 @@ const noHistoryCommentsRule = {
             let count = 0;
             for (const c of source.getAllComments()) {
                count += (c.value.match(HISTORY_IN_COMMENT) ?? []).length;
+               count += (c.value.match(LABEL_IN_COMMENT) ?? []).length;
             }
             if (count > allowed) {
                context.report({
                   node,
-                  message: `History in comments H2: ${file} has ${count} ticket numbers, phase or step labels or dates in comments, ${allowed} allowed. Move them to the commit message.`,
+                  message: `History in comments H2: ${file} has ${count} ticket numbers, phase, step or plan labels or dates in comments, ${allowed} allowed. Move them to the commit message.`,
                });
             }
          },

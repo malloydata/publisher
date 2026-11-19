@@ -161,6 +161,18 @@ describe("H1 and H2: the documentation lint rules", () => {
       expect(history?.message).toContain("has 3");
    });
 
+   it("H2 fires on a plan or review label standing for a concept", async () => {
+      // Each label counts once; a duration and the r4 directory do not.
+      const [planted] = await eslint.lintText(
+         "/** Header. */\n// As G3 keeps it (P10, known limitation 29, question 14, g-mixed, F-08, malloydata/malloy#3208); every `2d`, r4.\nexport const x = 1;\n",
+         { filePath: path.join(MZ_DIR, "plan", "__planted__.ts") },
+      );
+      const history = planted.messages.find(
+         (m) => m.ruleId === "publisher/no-history-comments",
+      );
+      expect(history?.message).toContain("has 7");
+   });
+
    it("H1: the modules with no header are exactly the seeded ones", () => {
       expectExact(
          "H1",
