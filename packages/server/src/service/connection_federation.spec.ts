@@ -20,6 +20,7 @@ import {
    attachDuckLakeReadWrite,
    federateSourceForPassthrough,
    buildProxiedPgAttachString,
+   pgAttachSecretName,
    pgConninfoPair,
 } from "./connection";
 import { installSettings } from "../test_helpers/settings_env";
@@ -235,7 +236,15 @@ describe("federateSourceForPassthrough", () => {
       expect(attach).toStartWith("ATTACH OR REPLACE ");
       // The ATTACH alias is dialect-quoted; the handle stays the raw name (it
       // becomes the postgres_query string literal, which matches the catalog).
-      expect(attach).toContain('AS "src_pg" (TYPE postgres, READ_ONLY)');
+      expect(attach).toContain(
+         `AS "src_pg" (TYPE postgres, READ_ONLY, SECRET ${pgAttachSecretName("src_pg")})`,
+      );
+      // The credential is in the secret, not in the attach path.
+      expect(attach).not.toContain("pw");
+      expect(attach).not.toContain("user=");
+      expect(sql).toContain(
+         `CREATE OR REPLACE TEMPORARY SECRET ${pgAttachSecretName("src_pg")} (TYPE postgres, USER 'u', PASSWORD 'pw');`,
+      );
    });
 
    it("postgres: re-federating the same source on one session is idempotent (no 'already exists')", async () => {
@@ -275,7 +284,9 @@ describe("federateSourceForPassthrough", () => {
       });
       expect(result.handle).toBe("my-pg");
       const attach = sql.find((s) => s.startsWith("ATTACH"));
-      expect(attach).toContain('AS "my-pg" (TYPE postgres, READ_ONLY)');
+      expect(attach).toContain(
+         `AS "my-pg" (TYPE postgres, READ_ONLY, SECRET ${pgAttachSecretName("my-pg")})`,
+      );
    });
 
    it("postgres: a proxied source is federated through its tunnel, not at its own host", async () => {
@@ -324,11 +335,14 @@ describe("federateSourceForPassthrough", () => {
          "host=db.internal.example hostaddr=127.0.0.1 port=54321",
       );
       expect(attach).not.toContain("host=127.0.0.1");
-      expect(attach).toContain("dbname=d user=u password=pw");
+      expect(attach).toContain("dbname=d");
+      expect(attach).not.toContain("password=");
       // Encrypt without verifying by default (a force-SSL target must not be
       // refused for plaintext; the query path defaults the same way).
       expect(attach).toContain("sslmode=require");
-      expect(attach).toContain('AS "src_pg" (TYPE postgres, READ_ONLY)');
+      expect(attach).toContain(
+         `AS "src_pg" (TYPE postgres, READ_ONLY, SECRET ${pgAttachSecretName("src_pg")})`,
+      );
       expect(result.handle).toBe("src_pg");
       // The handle carries the tunnel's close for the build session's finally.
       expect(result.close).toBeDefined();

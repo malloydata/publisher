@@ -3,6 +3,7 @@
 
 import { DuckDBInstance } from "@duckdb/node-api";
 import { BadRequestError } from "../errors";
+import { introspectionNameIn } from "./duckdb_introspection";
 
 /**
  * Raw SQL on a managed DuckLake connection (`Connection.managed`) runs only when
@@ -111,7 +112,10 @@ export async function classifySelect(
    }
 }
 
-/** Throws a 400 unless `sql` is exactly one SELECT. */
+/**
+ * Throws a 400 unless `sql` is exactly one SELECT that names no introspection
+ * function or DuckLake metadata catalog (duckdb_introspection.ts).
+ */
 export async function assertSingleSelect(
    connectionName: string,
    sql: string,
@@ -120,7 +124,15 @@ export async function assertSingleSelect(
       | "locked-down DuckDB connection" = "managed database",
 ): Promise<void> {
    const verdict = await classifySelect(sql);
-   if ("selects" in verdict && verdict.selects === 1) return;
+   if ("selects" in verdict && verdict.selects === 1) {
+      const name = introspectionNameIn(sql);
+      if (name === undefined) return;
+      throw new BadRequestError(
+         `'${connectionName}' is a ${kind}: raw SQL on it may not name '${name}', ` +
+            `because Publisher's DuckDB connections do not expose catalog and ` +
+            `settings introspection, or an attached database beyond its tables, to SQL.`,
+      );
+   }
    const why =
       "refused" in verdict
          ? "it is not a SELECT"

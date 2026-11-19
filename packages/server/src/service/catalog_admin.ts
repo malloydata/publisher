@@ -26,6 +26,7 @@ import {
    attachDuckLakeForCreate,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
+   createPgAttachSecret,
    escapeSQL,
    isDuckLakeInitRace,
    tablePartitionKeys,
@@ -721,8 +722,13 @@ export class CatalogAdmin {
       try {
          await applySessionResourceLimits(session, { tempDirectory: workDir });
          await session.runSQL("INSTALL postgres; LOAD postgres;");
+         const { path, secret } = await createPgAttachSecret(
+            session,
+            "admin_pg",
+            this.config.catalogDatabase,
+         );
          await session.runSQL(
-            `ATTACH '${escapeSQL(this.config.catalogDatabase)}' AS admin_pg (TYPE postgres, READ_ONLY)`,
+            `ATTACH '${escapeSQL(path)}' AS admin_pg (TYPE postgres, READ_ONLY${secret ? `, SECRET ${secret}` : ""})`,
          );
          return await fn((sql) =>
             rows(

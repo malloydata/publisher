@@ -51,4 +51,23 @@ describe("assertSingleSelect", () => {
       await expect(refused).rejects.toThrow(`'sales' is a managed database`);
       await expect(refused).rejects.toThrow(why);
    });
+
+   it.each([
+      ["SELECT * FROM duckdb_databases()", "duckdb_databases"],
+      ["SELECT value FROM duckdb_settings()", "duckdb_settings"],
+      ["SELECT * FROM postgres_query('lake', 'SELECT 1')", "postgres_query"],
+      [
+         "SELECT * FROM __ducklake_metadata_lake.ducklake_metadata",
+         "__ducklake_metadata_lake",
+      ],
+      ["SELECT 1 -- duckdb_secrets()", "duckdb_secrets"],
+   ])(
+      "refuses introspection %p with a 400 naming the database and the name",
+      async (sql, name) => {
+         const refused = assertSingleSelect("sales", sql);
+         await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+         await expect(refused).rejects.toThrow(`'sales' is a managed database`);
+         await expect(refused).rejects.toThrow(`may not name '${name}'`);
+      },
+   );
 });
