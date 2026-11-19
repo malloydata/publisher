@@ -22,7 +22,7 @@
  * ledger in the run store; logs and counts each step.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { recordedTableKey } from "../domain/physical_table";
 import { logger } from "../../../logger";
 import {
@@ -752,7 +752,7 @@ function reportDeltaApplied(params: {
    durationMs: number;
 }): void {
    recordIncrementalStep("delta");
-   logger.info("Applied an incremental delta", params);
+   logger.debug("Applied an incremental delta", params);
 }
 
 /**

@@ -31,7 +31,7 @@ import {
    WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import {
    recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
@@ -943,7 +943,7 @@ export class StorageBuildStrategy
          destinationConnection,
       } = ctx;
       const { persistSource, instruction, environment, builtEntries } = params;
-      // An extension table (P10) builds over its parent's stored table from
+      // An extension table builds over its parent's stored table from
       // the chain its plan carries, never by lifting author text by name.
       const extension = storedExtensionOf(
          planFacts.materializePlans?.[persistSource.sourceID],
@@ -1022,15 +1022,16 @@ export class StorageBuildStrategy
          ...params,
          physicalTableName: ctx.physicalTableName,
       };
-      const declined = (detail: string) => {
+      // Logged by a code: a decline's text can name a host's table.
+      const declined = (code: string) => {
          logger.warn(
             "A storage= rollup did not build over its base's stored table; it builds from the warehouse",
-            { sourceName: persistSource.name, destinationName, detail },
+            { sourceName: persistSource.name, destinationName, code },
          );
          return { stacked: false };
       };
       if (!environment.chainBuildText) {
-         return declined("this package has no served copy to write it from");
+         return declined("no_served_copy");
       }
       const text = environment.chainBuildText({
          downstream: {
@@ -1049,7 +1050,7 @@ export class StorageBuildStrategy
          ],
          rollup: { baseSourceID: base.baseSourceID, companion: base.companion },
       });
-      if ("declined" in text) return declined(text.declined);
+      if ("declined" in text) return declined("chain_text_declined");
       try {
          const result = await withStatementUsage(
             {
@@ -1085,7 +1086,7 @@ export class StorageBuildStrategy
          return { result, stacked: true };
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;
-         return declined(errMessage(err));
+         return declined(errorCodeOf(err));
       }
    }
 
@@ -1222,7 +1223,7 @@ export class StorageBuildStrategy
 
    /**
     * Build a `storage=` extension table over its parent's stored table in the
-    * same destination (P10): the parent's build source declared as the
+    * same destination: the parent's build source declared as the
     * virtual source of that table, the extension's chain over it
     * ({@link extensionOverStoredModel}), compiled and run on the destination
     * alone, so nothing reads the warehouse. A parent with no current table in
@@ -1339,7 +1340,7 @@ export class StorageBuildStrategy
    }
 }
 
-/** A `storage=` extension table (P10) and the parent it builds over. */
+/** A `storage=` extension table and the parent it builds over. */
 interface StoredExtension {
    plan: MaterializePlan;
    parent: MaterializeParent;

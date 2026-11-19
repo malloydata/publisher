@@ -16,7 +16,7 @@
  * bindings the answer read, and it reads the decline's code itself.
  *
  * {@link makeLegs} makes the legs for one pinned snapshot, in the router's
- * order (R1: the view or named query by exact call, then the coarsest
+ * order (the view or named query by exact call, then the coarsest
  * rollup, then the served copy). A leg is listed only when it exists for
  * the model and the snapshot, so the gate check runs exactly when one could
  * route.
@@ -98,7 +98,7 @@ export interface LegAnswer {
    readonly shapeBindings: readonly Binding[];
    /** How the runnable's `virtual()` handles resolve, when it reads storage. */
    readonly virtualMap: VirtualMap | undefined;
-   /** Where `govern()` grafts a row-level gate on this answer (R3). */
+   /** Where `govern()` grafts a row-level gate on this answer. */
    readonly graftScope: GraftScope | undefined;
    /** For a rollup answer: the rollup that answered. */
    readonly rollupMember?: string;
@@ -129,7 +129,7 @@ export type Answer =
         readonly answer: LegAnswer;
         /**
          * The answering leg was let past an entry-point gate because it keeps
-         * the contracts (R3): `govern()` must find and enforce that gate on it.
+         * the contracts: `govern()` must find and enforce that gate on it.
          */
         readonly pastEntryPointGate: boolean;
         /** The stored run failed and the query was answered live. */
@@ -191,7 +191,7 @@ function pinnedManifest(p: Pinned): BuildManifest | undefined {
 }
 
 /**
- * A persisted view (R1), then a persisted named query by exact call (`run:
+ * A persisted view, then a persisted named query by exact call (`run:
  * q`, `run: q -> { … }`): each applicable only when the text calls one, so a
  * look-alike or a nest never costs a compile. The gate policy has no row for
  * the query leg, so it is never tried past an entry-point gate: a persisted
@@ -249,7 +249,7 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
          return {
             runnable: answer.runnable,
             tablesRead: undefined,
-            // The tables it read, for the gate policy (G3 for rollups) and
+            // The tables it read, for the gate policy (for rollups) and
             // the row-scope and collation checks: a join branch in a storage
             // destination, the query source's tables there and the
             // rollup's, as the branch lists them; else the rollup, a

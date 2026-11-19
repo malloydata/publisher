@@ -36,7 +36,7 @@ import { buildSourceBody, importAlias } from "./build_file_generator";
 
 /**
  * The text a `storage=` extension table's build compiles in its destination
- * (P10): the parent's declaration and each one on the path to the
+ *: the parent's declaration and each one on the path to the
  * extension's, edited as the build copy edits them (the parent re-rooted on
  * its build source, the extension's given-reading terms out) and nothing else
  * of the file, so the build reads no source but the parent's stored table.
@@ -117,7 +117,7 @@ export function storedChainText(
    }
    return {
       parentBuildSourceName: parent.buildSourceName,
-      // The lift's `include { public: * }` needs its flag here too (P3).
+      // The lift's `include { public: * }` needs its flag here too.
       flags: [
          ...new Set([
             ...documentFlagLines(text),
@@ -139,7 +139,7 @@ export interface StoredColumnType {
 
 /**
  * The model a `storage=` extension table builds from in its destination
- * (P10): the parent's build source declared as the virtual source of its
+ *: the parent's build source declared as the virtual source of its
  * stored table on `connectionName`, the extension's {@link StoredChain} over
  * it, and the extension's generated build source, `#@ persist storage=`, last.
  * Its given-reading terms are not written: the build leaves them out, and the

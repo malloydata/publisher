@@ -12,7 +12,7 @@
  * recorded scheduler fire. Logs and counts each fire.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import type { MaterializationSchedulerConfig } from "../../../config";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";

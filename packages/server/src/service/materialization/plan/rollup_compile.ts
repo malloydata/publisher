@@ -29,7 +29,7 @@
  * same, in the same second compile: Malloy sees no `#@ persist` on the base,
  * so the companion imports the base from a copy of its file that re-roots it
  * on its generated build source (as an extension's build copy re-roots its
- * parent, P10), beside the `#(materialize)` companion's own files. The
+ * parent), beside the `#(materialize)` companion's own files. The
  * build source is persisted, so the build reads the base's table through the
  * run's build manifest. The re-root moves the rollup's SQL, so the run checks
  * the build source, not the rollup, against the plan's addresses.
@@ -40,6 +40,7 @@ import type {
    ModelMaterializer,
    Runtime,
 } from "@malloydata/malloy";
+import { errorCodeOf } from "../../../error_code";
 import * as path from "path";
 import { getMaterializeEnabled } from "../../../config";
 import { pathToFileURL } from "url";
@@ -343,7 +344,7 @@ function storedMaterializeBase(
       return undefined;
    }
    // Where the build source is declared: the companion, or, with a chain
-   // (P10), its level's file (build_file_generator.ts).
+   //, its level's file (build_file_generator.ts).
    const levels = chainLevels(materialized.plans);
    const modelName = path.basename(modelFile);
    const importFrom = [...levels.values()].some((level) => level > 0)
@@ -670,7 +671,7 @@ async function compileOverStoredBases(args: {
             {
                modelPath: args.modelPath,
                base: name,
-               error: error instanceof Error ? error.message : String(error),
+               code: errorCodeOf(error),
             },
          );
          stored.delete(name);
@@ -689,7 +690,7 @@ async function compileOverStoredBases(args: {
          "The rollups over #(materialize) bases build from the warehouse: their companion over the bases' stored tables did not compile",
          {
             modelPath: args.modelPath,
-            error: error instanceof Error ? error.message : String(error),
+            code: errorCodeOf(error),
          },
       );
       out.clear();
@@ -768,7 +769,7 @@ function warnWarehouse(modelPath: string, error: unknown): void {
       "The rollups of a model build from the warehouse: their companion over the bases' stored tables did not compile",
       {
          modelPath,
-         error: error instanceof Error ? error.message : String(error),
+         code: errorCodeOf(error),
       },
    );
 }
@@ -840,7 +841,7 @@ export async function compileParentKeyChecks(
                {
                   source: name,
                   keyColumn,
-                  error: error instanceof Error ? error.message : String(error),
+                  code: errorCodeOf(error),
                },
             );
             return undefined;
@@ -899,7 +900,7 @@ export async function compileParentKeyChecks(
 }
 
 /**
- * Compile each rollup's key check (known limitation 29, see
+ * Compile each rollup's key check (see
  * `rollupKeyCheckQuery`) against the companion, onto its plan. A check that
  * does not compile is left off, logged: its rollup's join_one is then never
  * known unique, and the join-to-rollup branch declines it.
@@ -920,7 +921,7 @@ async function compileRollupKeyChecks(
          logger.warn("A #(rollup) rollup's key check did not compile", {
             modelPath,
             rollup: plan.rollupSourceName,
-            error: error instanceof Error ? error.message : String(error),
+            code: errorCodeOf(error),
          });
       }
    }

@@ -15,7 +15,7 @@ import type { PackageAnnotationFinding } from "../../annotation_reader";
 import type { BuildPlan } from "../domain/types";
 import { persistRefusalWarnings } from "../package_warnings";
 import { projectRefusals } from "./build_plan";
-import { assertPersistNamesQuoted } from "./persist_annotation_validation";
+import { persistNameProblems } from "./persist_annotation_validation";
 import { measureRefusalKey } from "./rollup_plan";
 
 /** The model file's URL as a package load makes it, on this platform. */
@@ -235,23 +235,17 @@ describe("persistRefusalWarnings", () => {
    });
 });
 
-describe("assertPersistNamesQuoted", () => {
-   it("fails with one coded line per offending annotation", () => {
-      let message = "";
-      try {
-         assertPersistNamesQuoted(
-            [
-               '#@ persist name="a b"',
-               "source: x is y",
-               "#@ persist name=bare",
-               "source: z is y",
-            ].join("\n"),
-            "m.malloy",
-         );
-      } catch (error) {
-         message = (error as Error).message;
-      }
-      const lines = message.split("\n");
+describe("persistNameProblems", () => {
+   it("reports one coded line per offending annotation", () => {
+      const lines = persistNameProblems(
+         [
+            '#@ persist name="a b"',
+            "source: x is y",
+            "#@ persist name=bare",
+            "source: z is y",
+         ].join("\n"),
+         "m.malloy",
+      ).map((p) => p.line);
       expect(lines).toHaveLength(2);
       // In the order the file writes them.
       expect(lines[0]).toContain("plain identifier path");

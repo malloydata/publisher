@@ -156,7 +156,7 @@ const LIFTED_LABELS: ReadonlySet<string> = new Set(["private", "internal"]);
 
 /**
  * The edits that lift a source declaration's own access modifiers, so a query
- * over the source can select the fields they hide (P3: the build stores the
+ * over the source can select the fields they hide (the build stores the
  * source's private and internal fields). Offsets are into `declaration`.
  *
  * - A statement's label (`private dimension:`, `internal rename:`) is deleted.

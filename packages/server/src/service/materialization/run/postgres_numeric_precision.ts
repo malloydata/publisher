@@ -38,7 +38,7 @@ import { escapeSQL } from "../../connection";
 import { quoteIdentifier } from "../../quoting";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { fromSubselect } from "../subselect";
 import { errMessage } from "../../../utils";
 

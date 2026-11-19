@@ -14,7 +14,7 @@
  * store's unique index; every table write goes through its collaborators.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { leafKey } from "../domain/physical_table";
 import {
    BadRequestError,
@@ -1074,7 +1074,7 @@ export class MaterializationService {
          }
 
          // A rollup this run may rewrite in place no longer holds what its
-         // bound key check said (known limitation 29): forget it before any
+         // bound key check said: forget it before any
          // table is written, so a run that fails part-way never leaves a
          // check bound over rows it did not read. This run's own commit binds
          // what it checks.
@@ -1156,7 +1156,7 @@ export class MaterializationService {
 
       // A published version's tree never changes, so compiling it needs
       // no lock; an unversioned package's can be replaced under it.
-      const compiled =
+      const { runPlan: compiled, packagePlan } =
          versionId !== undefined
             ? await compileRunPlan(pkg, signal)
             : await environment.withPackageLock(packageName, () =>
@@ -1176,7 +1176,7 @@ export class MaterializationService {
          versionId === undefined &&
          environment.getStaleCompileErrors().has(packageName);
       // The load gate's own text, so the run and the load agree.
-      const invalid = runPlanGateText(compiled, pkg, {
+      const invalid = runPlanGateText(packagePlan, {
          enforceCollisions: getPersistCollisionEnforce(),
          versionScoped: owned !== undefined,
       });

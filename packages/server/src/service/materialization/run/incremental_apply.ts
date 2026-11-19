@@ -22,7 +22,7 @@
 
 import { BuildCancelledError } from "../domain/build_cancelled";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
 import type { IncrementalStrategy } from "../domain/types";
@@ -244,7 +244,7 @@ export function boundMinusSeconds(
  * Not the recorded boundary itself. That is the previous run's START TIME (a
  * time watermark's range ends at the run clock), and a row stamped before it
  * but landing after it would be below every later range, never written
- * (F-23). The newest stored value is the highest point the table is known to
+ *. The newest stored value is the highest point the table is known to
  * hold; anything stamped at or above it is read again. The range is
  * inclusive below (`>=`), so a row stamped in the very second of the newest
  * stored one is read too: a merge matches it by key, and a range replace

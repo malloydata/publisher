@@ -348,6 +348,18 @@ const IMPORT_DIRECTION_RULES = [
       message:
          "telemetry is emitted from run/, the facade and the query pipeline only: return a value and let the shell log or count it",
    },
+   {
+      id: "H6",
+      from: (f) =>
+         MZ_PLAN.test(f) ||
+         MZ_SERVE.test(f) ||
+         MZ_DOMAIN.test(f) ||
+         MZ_TEXT.test(f),
+      to: (m) => m === "config",
+      allowTypeImports: true,
+      message:
+         "plan/, serve/, domain/ and text/ read no setting: the shell reads the switches once (domain/switches.ts) and passes them down",
+   },
 ];
 export const IMPORT_DIRECTION_ALLOWLIST = {
    ...MATERIALIZATION_IMPORT_ALLOWLIST,
@@ -432,8 +444,10 @@ const importDirectionRule = {
 //   H1  every non-spec module under materialization/ opens, after the
 //       license, with a block comment saying what it is responsible for.
 //   H2  no history in a comment there: no ticket number, `phase N`, `step N`
-//       or `pull request N` label, or date. History belongs in the commit
-//       message.
+//       or `pull request N` label, or date, and no plan or review label
+//       standing for a concept (`P10`, `G3`, `known limitation 29`,
+//       `question 14`, `g-mixed`): spell the concept. History belongs in the
+//       commit message.
 //
 // Both allow no exceptions: their lists in materialization_allowlists.mjs are
 // empty, and src/service/materialization/layer_rules.spec.ts fails on any
@@ -482,7 +496,18 @@ const moduleHeaderRule = {
  * date, in a comment.
  */
 export const HISTORY_IN_COMMENT =
-   /#\d{3,}\b|\bphase \d|\bstep \d+[a-z]?\b|\bpull request \d|\b20\d\d-\d\d-\d\d\b/gi;
+   /#\d{3,}\b|\bphase \d|\bstep \d+[a-z]?\b|\bpull request \d|\b20\d\d-\d\d-\d\d\b|\bknown limitation \d|\bquestion \d|\bg-mixed\b|\bPR \d|\b\w+\/\w+#\d/gi;
+/**
+ * A plan or review label standing for a concept, from the plan's own
+ * series: the plan audit's P1–P14, the gate findings G1–G8, the architecture
+ * audit's A1–A7, D1–D3, H1–H6 and R3–R10, a finding id (`P2-41`, `F-08`).
+ * Labels that collide with ordinary words (R1/R2, the leaks L1–L3, a
+ * question Qn) count only in parentheses, as the plan cites them (`(R2)`);
+ * a percentile (`P95`), a quarter (`Q1`) or a cache level (`L2`) do not.
+ * Case-sensitive, so a duration (`2d`) or a directory (`r4`) is not one.
+ */
+export const LABEL_IN_COMMENT =
+   /\b(?:P(?:1[0-4]|[1-9])|G[1-8]|A[1-7]|D[1-3]|H[1-6]|R(?:10|[3-9]))(?:-\d+)?\b|\((?:R[12]|L[1-3]|Q\d{1,2})\)|\bF-\d{2}\b/g;
 const noHistoryCommentsRule = {
    meta: {
       type: "suggestion",
@@ -505,11 +530,12 @@ const noHistoryCommentsRule = {
             let count = 0;
             for (const c of source.getAllComments()) {
                count += (c.value.match(HISTORY_IN_COMMENT) ?? []).length;
+               count += (c.value.match(LABEL_IN_COMMENT) ?? []).length;
             }
             if (count > allowed) {
                context.report({
                   node,
-                  message: `History in comments H2: ${file} has ${count} ticket numbers, phase or step labels or dates in comments, ${allowed} allowed. Move them to the commit message.`,
+                  message: `History in comments H2: ${file} has ${count} ticket numbers, phase, step or plan labels or dates in comments, ${allowed} allowed. Move them to the commit message.`,
                });
             }
          },

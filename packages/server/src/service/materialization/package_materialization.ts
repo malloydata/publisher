@@ -4,8 +4,8 @@
 /**
  * The package facade: one package version's materialization, composing
  * plan/, run/ and serve/ for `Package` and `Environment`, and the module's
- * one door for them. It holds the version's bindings and snapshot itself, and
- * delegates the rest to three collaborators:
+ * one door for them. It holds the version's bindings, its snapshot and
+ * whether a host owns it, and delegates the rest to three collaborators:
  *
  * | Concern | Held by |
  * | --- | --- |
@@ -13,6 +13,15 @@
  * | Serve verdicts, the preview, the path report's catalog | {@link ServeVerdicts} (`serve_verdicts.ts`) |
  * | Package warnings and publish rejections | `package_warnings.ts` |
  * | Bind a manifest, swap the snapshot, push it to the models | this facade |
+ *
+ * Its public surface is wide, not narrow: sixty-two members, most of
+ * them one accessor or one warning list each, in these groups: the package's
+ * identity and files; the plan's lifecycle; the binding (bind, mark bound,
+ * live, failed or host-owned, the manifest it holds); what it pushes to the
+ * models (serving context, destinations, deployment facts); the serve
+ * verdicts; and one method per package-warning family plus the load gate's
+ * text, which `Package` composes in its own order. `facade_surface.spec.ts`
+ * lists every public name, so the surface only shrinks.
  *
  * Effects: logs, and the bind metrics.
  */
@@ -214,6 +223,20 @@ export class PackageMaterialization {
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
+   /**
+    * A host owns this version's binding: a manifest it named bound, or its
+    * instructed run committed (see Environment.isHostOwned). Never cleared:
+    * a later clear leaves the version live, not back on this server's store.
+    */
+   private hostOwned = false;
+   /**
+    * The declined bindings already warned of under the plan they were
+    * judged by ({@link logDecline}); a new plan warns afresh.
+    */
+   private warnedDeclines: { plan: unknown; keys: Set<string> } = {
+      plan: undefined,
+      keys: new Set(),
+   };
    /**
     * The type findings of the bound `storage=` tables a model's own
     * `#@ persist` check does not make ({@link boundTableTypeFindings}), as of
@@ -478,6 +501,16 @@ export class PackageMaterialization {
       this.manifestBindingStatus = "unbound";
    }
 
+   /** Record that a host owns this version's binding ({@link hostOwned}). */
+   markHostOwned(): void {
+      this.hostOwned = true;
+   }
+
+   /** Whether a host owns this version's binding ({@link hostOwned}). */
+   isHostOwned(): boolean {
+      return this.hostOwned;
+   }
+
    /**
     * Mark that a configured `manifestLocation` could not be fetched/bound, so
     * the package is serving live despite intending to be materialized-routed.
@@ -727,7 +760,7 @@ export class PackageMaterialization {
    }
 
    /**
-    * Drop the rollup key checks (known limitation 29) bound for these content
+    * Drop the rollup key checks bound for these content
     * addresses: a run is about to write their tables, so what a check found
     * over the rows before no longer describes them. The routing itself is
     * kept; the join-to-rollup branch reads the table as unknown until a run
@@ -760,7 +793,7 @@ export class PackageMaterialization {
          next[id] = rest;
       }
       // A database pair table's leaf key check rides on its binding
-      // (`primaryKeys`, known limitation 40): the snapshot drops it too.
+      // (`primaryKeys`): the snapshot drops it too.
       if (next) this.databaseEntries = next;
       this.publish();
    }
@@ -791,12 +824,14 @@ export class PackageMaterialization {
       for (const _entry of Object.keys(admitted.entries)) recordSourceBound();
       for (const decline of admitted.declined) {
          recordSourceDeclined(decline.reason);
-         logger.warn(
+         this.logDecline(
+            `database\u0000${decline.sourceEntityId}\u0000${decline.reason}`,
             "Refusing a database serve binding: the source is not eligible to be served from a materialized table",
             {
                packageName: this.owner.packageName(),
                sourceEntityId: decline.sourceEntityId,
-               reason: decline.detail,
+               // The decline's code: its text can name a host's table.
+               reason: decline.reason,
             },
          );
       }
@@ -811,6 +846,29 @@ export class PackageMaterialization {
          );
       }
       return admitted.entries;
+   }
+
+   /**
+    * Log a declined binding: warned the first time under a plan, then at
+    * debug, since a rebind of an unchanged manifest (a poll) declines the
+    * same entries again. A new plan (a reload, a refresh) warns again, so a
+    * decline that comes back after a fix is seen.
+    */
+   private logDecline(
+      key: string,
+      message: string,
+      fields: Record<string, unknown>,
+   ): void {
+      const plan = this.plan.buildPlan;
+      if (this.warnedDeclines.plan !== plan) {
+         this.warnedDeclines = { plan, keys: new Set() };
+      }
+      if (this.warnedDeclines.keys.has(key)) {
+         logger.debug(message, fields);
+         return;
+      }
+      this.warnedDeclines.keys.add(key);
+      logger.warn(message, fields);
    }
 
    /** The `storage=` bindings the bind admits, logging the rest. */
@@ -844,14 +902,16 @@ export class PackageMaterialization {
       }
       for (const decline of admitted.declined) {
          recordSourceDeclined(decline.reason);
-         logger.warn(
+         this.logDecline(
+            `storage\u0000${decline.sourceName}\u0000${decline.reason}`,
             "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
             {
                packageName: this.owner.packageName(),
                sourceName: decline.sourceName,
                // A generated rollup name means nothing to an operator alone.
                ...(decline.rollup ? { kind: "pre-aggregation rollup" } : {}),
-               reason: decline.detail,
+               // The decline's code: its text can name a host's table.
+               reason: decline.reason,
             },
          );
       }
@@ -1020,7 +1080,7 @@ export class PackageMaterialization {
 
    /**
     * Give the package the environment's deployment facts its publish warnings
-    * read (P13), read live on every package read, so a destination configured
+    * read, read live on every package read, so a destination configured
     * after the load clears its warning with no reload.
     */
    setDeploymentFacts(facts: DeploymentFacts): void {

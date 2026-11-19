@@ -14,6 +14,7 @@
  */
 
 import { components } from "../../../api";
+import type { TableRecord } from "./physical_table";
 
 // Wire types for the build protocol.
 export type MaterializationStatus =
@@ -156,11 +157,11 @@ export interface FreshnessAwareManifestEntry {
    /**
     * The database table's columns with their types as the warehouse's own
     * catalog names them (the wire entry's `nativeSchema`), which the served
-    * copy casts a big-integer column to exactly (known limitation 12).
+    * copy casts a big-integer column to exactly.
     */
    nativeSchema?: { name: string; type: string }[];
    /**
-    * A `#(rollup)` rollup's key check (known limitation 29), as the
+    * A `#(rollup)` rollup's key check, as the
     * auto-run that wrote or carried this table recorded it: whether the rows
     * it grouped held its one grain dimension once per value. Internal, never
     * on the wire; absent (unknown) on every entry a host's manifest binds.
@@ -277,11 +278,9 @@ export type KeptTableReason =
  * source is served under now, left in its old place by a `storage=` or tier
  * move (`may_be_served`), which may be the very table served.
  */
-export interface KeptTable {
+export interface KeptTable extends TableRecord {
    sourceEntityId: string;
    sourceName?: string;
-   /** The kept table. */
-   physicalTableName: string;
    connectionName: string;
    storageDestinationName?: string;
    reason: KeptTableReason;

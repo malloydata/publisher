@@ -219,7 +219,7 @@ export function loadVerdictOfPlan(
 
 /**
  * One warning per bound `#(rollup)` rollup whose last build found its
- * join_one key repeated (known limitation 29's check, `keyUniqueness`
+ * join_one key repeated (the rollup key check, `keyUniqueness`
  * false): the data breaks a `join_one` declared on that key, so queries that
  * read it beside other aggregates are answered live. Recomputed from what is
  * bound, so it clears once a build finds the key unique, or forgets the check.
@@ -910,7 +910,7 @@ function servedCopyProblemMessage(
 }
 
 /** The code of the warning for a bound database table the bind could not read. */
-export const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
+const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
 
 /** What a `database-table-unread` warning says of each reason. */
 const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {

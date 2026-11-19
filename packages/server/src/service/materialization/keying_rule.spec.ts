@@ -33,6 +33,8 @@ const NAME_KEY = new RegExp(
       String.raw`(?:[\w\])]|\?\.)\[\s*[A-Za-z_][A-Za-z0-9_]*\.sourceName\s*\]`,
       String.raw`\.(?:set|get|has|delete|includes)\(\s*[A-Za-z_]*(?:[Ss]ource|[Bb]inding|[Pp]lan|[Rr]ollup|persist)[A-Za-z_]*\.name\b`,
       String.raw`(?:[\w\])]|\?\.)\[\s*[A-Za-z_]*(?:[Ss]ource|[Bb]inding|[Pp]lan|[Rr]ollup)[A-Za-z_]*\.name\s*\]`,
+      // A name matched as a sourceID's prefix (`${name}@url`): a key by name.
+      String.raw`\.startsWith\(\s*\x60\$\{\s*[\w.]*[nN]ame\s*\}@`,
    ].join("|"),
 );
 
@@ -75,6 +77,10 @@ const ALLOWED: Record<string, Record<string, string>> = {
          "phase 3: storage bindings are emitted by name; migrate verdict facts to sourceID with the catalog",
       "!facts.freshStorageNames.has(source.name)":
          "phase 3: storage bindings are emitted by name; migrate verdict facts to sourceID with the catalog",
+   },
+   "serve_verdicts.ts": {
+      ": [...ids].some((id) => id.startsWith(`${sourceName}@`));":
+         "a verdict fact with no sourceID, matched by the name its sourceIDs start with; migrate with the verdict facts to sourceID",
    },
    "serve/storage_bindings.ts": {
       "const def = contents?.[binding.sourceName] as":
@@ -129,6 +135,11 @@ describe("the keying rule: a source's name is never a map key", () => {
       expect(NAME_KEY.test("...(e.sourceName ? [e.sourceName] : []),")).toBe(
          false,
       );
+      // A sourceID matched by its name prefix.
+      expect(
+         NAME_KEY.test("ids.some((id) => id.startsWith(`${sourceName}@`))"),
+      ).toBe(true);
+      expect(NAME_KEY.test("key.startsWith(`${packageName}/`)")).toBe(false);
    });
 
    it("adds no new name-keyed lookup", () => {

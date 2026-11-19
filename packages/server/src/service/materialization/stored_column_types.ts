@@ -187,7 +187,7 @@ export function declaredColumnsOf(
 /**
  * The declared columns of a persist source being built, each under the name
  * its build's SELECT outputs it as, or none when its field list cannot be read
- * (the build then runs uncast, as it did before, and the serve-side check
+ * (the build then runs uncast, and the serve-side check
  * still guards the result).
  *
  * A field a trailing `extend` renames (`rename: kind is sub`) is the query's
@@ -754,7 +754,7 @@ function structOf(
  * a dialect Malloy says returns its results through JSON
  * (`supportsBigIntPrecision`), where live reads 9007199254740993 as
  * 9007199254740992 and a stored read must round it the same way (Postgres:
- * measured by the R4 big-integer spec). DuckDB inherits `false` from its
+ * measured by the r4 big-integer spec). DuckDB inherits `false` from its
  * Postgres base, yet its driver keeps every digit (measured too), so it is
  * read as true. An unknown dialect counts as exact: a stored read then keeps
  * every digit too, or leaves the column live.
@@ -807,7 +807,7 @@ const HUGEINT_EXACT =
 
 /**
  * The stored columns live answers with more digits than a plain `number`
- * keeps (known limitation 12), and how a stored read keeps them: each a
+ * keeps, and how a stored read keeps them: each a
  * column whose author field Malloy types as a `bigint` number (DuckDB
  * BIGINT, HUGEINT and UBIGINT; BigQuery INT64; Snowflake NUMBER(p,0); a sum
  * or max over one). A served `type:` can declare such a column only as a
@@ -1159,7 +1159,7 @@ export function storedMalloyType(stored: string): string | undefined {
  * `bigint` number where live keeps every digit (`keepsBigIntegers`), which
  * Malloy reads through a declared `number` as a JavaScript number, rounding it
  * past 2^53. A nested value has no cast that reads it exactly, as a top-level
- * BIGINT has (known limitation 12).
+ * BIGINT has.
  */
 export function storedMalloyTypeFor(
    stored: string,
@@ -1401,7 +1401,7 @@ export function previewNativeSchema(
  * when no other stored column folds to it. A warehouse that folds quoted
  * identifiers (Snowflake with `QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE`)
  * returns Malloy's lower-case aliases upper-cased; stored under the declared
- * names, every reader finds them by exact name, as live does (P3-06..09).
+ * names, every reader finds them by exact name, as live does.
  */
 export function canonicalRenames(
    stored: readonly { name?: string }[],

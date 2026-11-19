@@ -31,7 +31,7 @@ import {
 import { installSettings } from "../../../test_helpers/settings_env";
 import { logger } from "../../../logger";
 import * as sinon from "sinon";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 
 /**
  * The pure helpers behind a materialization run (build_upstreams.ts),

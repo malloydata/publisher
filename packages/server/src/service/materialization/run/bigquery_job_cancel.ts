@@ -19,7 +19,7 @@
  * carries this session's marker, which no other build's can.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { randomUUID } from "node:crypto";
 import {
    BigQuery,
