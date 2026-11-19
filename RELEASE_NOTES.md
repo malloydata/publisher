@@ -21,6 +21,15 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — an explicit reload or publish now refetches table schemas
+
+An explicit reload or publish now refetches the columns of every table the package reads, so a column added, dropped or retyped in the warehouse is seen without restarting the server. Until now a table's schema was cached until restart, in each package-load worker and in the environment connection, so a reload or a publish compiled against the columns first fetched.
+
+- **Refetches:** `GET …/packages/{pkg}?reload=true`, the `reload_package` MCP tool, a publish (`POST …/packages`, a version or an install from a location, and its dry run), and a `PATCH` that reinstalls from a location. Each table and SQL source is fetched once per load and replaces the cached entry, in every worker; another package that reads the same table reads the new columns on its next load.
+- **Keeps the cache:** the recompile watch mode runs on a save, a boot, and a report write. Reload the package to pick up a warehouse change. (A package's own `duckdb` connection opens afresh on every load, so the files it reads were, and are, read again each time.)
+- A published version is immutable, so a reload answers it unchanged and refetches nothing; publish a new version to recompile it.
+- No new setting, field or parameter. `packageLoad.schemaCacheBytes` still bounds the worker cache.
+
 ## [Unreleased] — (BREAKING) upgrading from 0.16.0: the checklist
 
 This release is a patch on 0.16.0, by the maintainers' call, but it carries a change marked breaking: every session Publisher opens on a DuckLake storage destination is now confined to that destination's data path, so a destination whose data path Publisher cannot learn now fails operations that worked on 0.16.0 (the first section below). Everything else is a fix, a hardening or an addition: no route, field, wire value, setting name or metric label is removed or renamed beyond the log fields and the one refusal code listed below (`persist-view-invalid` in place of `persist-invalid` for a persisted view's incremental declaration), and a package that loads on 0.16.0 still loads. Several log fields are renamed, and more queries move between stored tables and live in both directions. This list is what to check, in the order to check it; each item's section below has the detail.

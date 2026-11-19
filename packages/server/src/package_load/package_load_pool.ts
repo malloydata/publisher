@@ -57,6 +57,7 @@ import type {
    LoadPackageError,
    LoadPackageRequest,
    LoadPackageResult,
+   ForgetSchemasMessage,
    MainToWorkerMessage,
    ReadUrlRequest,
    ReadUrlResponse,
@@ -240,6 +241,12 @@ export interface LoadPackageJob {
     * waits for at most the background job already running, never a backlog.
     */
    background?: boolean;
+   /**
+    * An explicit refresh (a reload, a publish): refetch every schema the load
+    * reads, here and in every worker's cache (see
+    * {@link LoadPackageRequest.refreshTimestamp}).
+    */
+   refreshSchemas?: boolean;
 }
 
 /** One pass of a model's served copy to compile (see CompileServedCopyRequest). */
@@ -546,7 +553,9 @@ export class PackageLoadPool {
          urlReader: qj.request.urlReader ?? defaultUrlReader,
          resolve: (result) => {
             clearTimeout(timeout);
-            qj.resolve(adaptResult(checkLoadPackageResult(result)));
+            const checked = checkLoadPackageResult(result);
+            this.forgetElsewhere(pw, checked.refreshedSchemaKeys);
+            qj.resolve(adaptResult(checked));
          },
          reject: (err) => {
             clearTimeout(timeout);
@@ -570,8 +579,29 @@ export class PackageLoadPool {
          ...(qj.request.publishedVersion ? { publishedVersion: true } : {}),
          withEntities: qj.request.withEntities,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
+         ...(qj.request.refreshSchemas
+            ? { refreshTimestamp: nextRefreshTimestamp() }
+            : {}),
       };
       pw.worker.postMessage(message);
+   }
+
+   /**
+    * Tell every worker but `refreshed`, the one that ran a refreshing load,
+    * to drop its entries for the schemas that load refetched, so none of them
+    * compiles the package (or another reading the same table) against the
+    * columns from before. A load under way in another worker may still use
+    * what it already read.
+    */
+   private forgetElsewhere(
+      refreshed: PoolWorker,
+      keys: string[] | undefined,
+   ): void {
+      if (!keys || keys.length === 0) return;
+      const message: ForgetSchemasMessage = { type: "forget-schemas", keys };
+      for (const pw of this.workers) {
+         if (pw !== refreshed) this.postToWorker(pw, message);
+      }
    }
 
    /**
@@ -1020,6 +1050,19 @@ export class PackageLoadPool {
          });
       }
    }
+}
+
+let lastRefreshTimestamp = 0;
+
+/**
+ * A refreshing load's stamp: later than any schema the main thread's
+ * connections cached before it, since a connection refetches an entry only
+ * when the stamp is greater than the entry's own, and greater than every
+ * stamp before it.
+ */
+function nextRefreshTimestamp(): number {
+   lastRefreshTimestamp = Math.max(Date.now() + 1, lastRefreshTimestamp + 1);
+   return lastRefreshTimestamp;
 }
 
 function buildFetchOptions(options: {

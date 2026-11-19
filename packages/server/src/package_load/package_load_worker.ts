@@ -225,6 +225,16 @@ const schemaCache = new SchemaCache<CachedSchema>(
    (workerData as { schemaCacheBytes?: number } | null)?.schemaCacheBytes ?? 0,
 );
 
+/**
+ * A refreshing load's refresh (see LoadPackageRequest.refreshTimestamp): its
+ * stamp, and the cache keys it has refetched so far. Each key is refetched
+ * once per load; later asks in the load share that fetch or its entry.
+ */
+interface SchemaRefresh {
+   timestamp: number;
+   refetched: Set<string>;
+}
+
 /** What a job carries while it runs in this worker (see runJob). */
 interface JobContext {
    jobId: string;
@@ -266,16 +276,19 @@ class ProxyConnection {
    private readonly jobId: string;
    /** Prefix of this connection's schema-cache keys. */
    private readonly cacheScope: string;
+   private readonly refresh: SchemaRefresh | undefined;
 
    constructor(
       metadata: ConnectionMetadata,
       jobId: string,
       environmentScope: string,
+      refresh?: SchemaRefresh,
    ) {
       this.name = metadata.name;
       this.dialectName = metadata.dialectName;
       this.digest = metadata.digest;
       this.jobId = jobId;
+      this.refresh = refresh;
       // The environment is in the key because a digest can be a configured
       // fingerprint, and two environments must never share what one can see.
       // The generation retires entries when the connection is replaced.
@@ -312,8 +325,13 @@ class ProxyConnection {
       const errors: Record<string, string> = {};
       const joined: [string, Promise<InFlightAnswer<CachedSchema>>][] = [];
       const missing: Record<string, string> = {};
+      const refetch: Record<string, string> = {};
       for (const [key, tablePath] of Object.entries(tables)) {
          const cacheKey = this.tableCacheKey(tablePath);
+         if (this.claimRefetch(cacheKey)) {
+            refetch[key] = tablePath;
+            continue;
+         }
          const hit = schemaCache.get(cacheKey);
          const pending =
             hit === undefined ? schemaCache.joinInFlight(cacheKey) : undefined;
@@ -325,19 +343,16 @@ class ProxyConnection {
             missing[key] = tablePath;
          }
       }
-      if (Object.keys(missing).length > 0) {
-         const request = this.fetchSchemaForTablesFromMain(missing, options);
-         for (const [key, tablePath] of Object.entries(missing)) {
-            schemaCache.trackInFlight(
-               this.tableCacheKey(tablePath),
-               request.then((r) => ({
-                  value: r.schemas[key],
-                  error: r.errors[key],
-               })),
-            );
-         }
-         const fetched = await request;
-         this.cacheTableSchemas(missing, fetched.schemas);
+      const fetches = [this.fetchAndCacheTables(missing, options)];
+      if (this.refresh && Object.keys(refetch).length > 0) {
+         fetches.push(
+            this.fetchAndCacheTables(refetch, {
+               ...options,
+               refreshTimestamp: this.refresh.timestamp,
+            }),
+         );
+      }
+      for (const fetched of await Promise.all(fetches)) {
          Object.assign(schemas, fetched.schemas);
          Object.assign(errors, fetched.errors);
       }
@@ -353,6 +368,47 @@ class ProxyConnection {
          }
       }
       return { schemas, errors };
+   }
+
+   /**
+    * Fetch `tables` through the main thread, recorded as under way so
+    * concurrent asks share the fetch, and cache what comes back.
+    */
+   private async fetchAndCacheTables(
+      tables: Record<string, string>,
+      options: FetchSchemaOptions,
+   ): Promise<{
+      schemas: Record<string, TableSourceDef>;
+      errors: Record<string, string>;
+   }> {
+      if (Object.keys(tables).length === 0) return { schemas: {}, errors: {} };
+      const request = this.fetchSchemaForTablesFromMain(tables, options);
+      for (const [key, tablePath] of Object.entries(tables)) {
+         schemaCache.trackInFlight(
+            this.tableCacheKey(tablePath),
+            request.then((r) => ({
+               value: r.schemas[key],
+               error: r.errors[key],
+            })),
+         );
+      }
+      const fetched = await request;
+      this.cacheTableSchemas(tables, fetched.schemas);
+      return fetched;
+   }
+
+   /**
+    * Whether a refreshing load must refetch `cacheKey`: true the first time
+    * the load asks for it, when its cached entry is dropped so the load's
+    * later asks wait on the refetch rather than read the old entry. Another
+    * fetch already under way is not joined, since it may answer from the
+    * main thread's cache.
+    */
+   private claimRefetch(cacheKey: string): boolean {
+      if (!this.refresh || this.refresh.refetched.has(cacheKey)) return false;
+      this.refresh.refetched.add(cacheKey);
+      schemaCache.forget(cacheKey);
+      return true;
    }
 
    private cacheTableSchemas(
@@ -418,9 +474,10 @@ class ProxyConnection {
          }
          return refreshed;
       }
-      const hit = schemaCache.get(cacheKey);
+      const refetch = this.claimRefetch(cacheKey);
+      const hit = refetch ? undefined : schemaCache.get(cacheKey);
       if (hit) return { structDef: hit as SQLSourceDef };
-      const pending = schemaCache.joinInFlight(cacheKey);
+      const pending = refetch ? undefined : schemaCache.joinInFlight(cacheKey);
       if (pending) {
          const answer = await pending;
          if (answer.value) {
@@ -429,7 +486,12 @@ class ProxyConnection {
          }
          return { error: answer.error ?? "No schema returned for the SQL" };
       }
-      const request = this.fetchSchemaForSQLStructFromMain(sentence, options);
+      const request = this.fetchSchemaForSQLStructFromMain(
+         sentence,
+         refetch && this.refresh
+            ? { ...options, refreshTimestamp: this.refresh.timestamp }
+            : options,
+      );
       schemaCache.trackInFlight(
          cacheKey,
          request.then((r) => ({ value: r.structDef, error: r.error })),
@@ -579,6 +641,7 @@ function buildWorkerMalloyConfig(
       LoadPackageRequest,
       "packagePath" | "requestId" | "defaultConnectionName" | "environmentName"
    >,
+   refresh?: SchemaRefresh,
 ): MalloyConfig {
    const proxies = new Map<string, ProxyConnection>();
    const inflight = new Map<string, Promise<ProxyConnection>>();
@@ -612,6 +675,7 @@ function buildWorkerMalloyConfig(
                         response.metadata,
                         job.requestId,
                         job.environmentName,
+                        refresh,
                      ),
                      response.metadata.connectionType,
                   );
@@ -1431,7 +1495,11 @@ async function loadPackage(
       job.packagePath,
       modelPaths,
    );
-   const malloyConfig = buildWorkerMalloyConfig(job);
+   const refresh: SchemaRefresh | undefined =
+      job.refreshTimestamp !== undefined
+         ? { timestamp: job.refreshTimestamp, refetched: new Set() }
+         : undefined;
+   const malloyConfig = buildWorkerMalloyConfig(job, refresh);
 
    const replacementMatchedExisting = job.replacement
       ? modelPaths.includes(job.replacement.modelPath)
@@ -1507,6 +1575,7 @@ async function loadPackage(
       packageMetadata,
       models,
       replacementMatchedExisting,
+      ...(refresh ? { refreshedSchemaKeys: [...refresh.refetched] } : {}),
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Clamped: rounding can nudge it slightly negative.
@@ -1611,6 +1680,10 @@ port.on("message", (message: MainToWorkerMessage) => {
    if (message.type === "compile-served-copy") {
       inFlightJobs.add(message.requestId);
       void runServedCopyJob(message);
+      return;
+   }
+   if (message.type === "forget-schemas") {
+      for (const key of message.keys) schemaCache.forget(key);
       return;
    }
    dispatchMainResponse(message);

@@ -12,8 +12,10 @@
  * Bounded by serialized bytes rather than entry count, so a few very wide
  * tables cannot take an unbounded share of the heap. Keys must name everything
  * the schema depends on (environment, connection instance, table path or
- * SQL). Entries never go stale on their own; a `refreshTimestamp` request
- * bypasses the cache and overwrites the entry.
+ * SQL). Entries never go stale on their own: an explicit refresh (a reload
+ * or a publish) refetches each schema its package reads and replaces the
+ * entry, and the other workers {@link forget} theirs; a `refreshTimestamp`
+ * request bypasses the cache and overwrites the entry.
  */
 export class SchemaCache<T> {
    private readonly entries = new Map<string, { value: T; bytes: number }>();
@@ -54,6 +56,11 @@ export class SchemaCache<T> {
          if (oldest === undefined) break;
          this.delete(oldest);
       }
+   }
+
+   /** Drop `key`'s entry, if any; a fetch under way for it is left alone. */
+   forget(key: string): void {
+      this.delete(key);
    }
 
    private delete(key: string): void {

@@ -230,6 +230,10 @@ compiles it, and serves it. A package that declares no `version` fails to load. 
   `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST or the `reload_package`
   MCP tool. A reload that fails to compile leaves the files alone and keeps serving the previous
   model.
+- A reload and a publish read the columns of each table the package reads from the warehouse
+  again, so a column added, dropped or retyped there shows up. The recompile watch mode runs on a
+  save, and a boot, reuse the columns already fetched: reload the package to see a warehouse
+  change.
 - `--init` deletes `publisher_data/` and publishes everything again from the configured
   locations. Keep your source of truth outside `publisher_data/`.
 
