@@ -99,6 +99,10 @@ function seed(builtin: boolean): string[] {
       `INSERT INTO raw_items VALUES ${rows.join(", ")}`,
       `CREATE TABLE items (id int, cat text, icu text COLLATE "und-x-icu", ci text COLLATE ci_l2, cc text COLLATE "C",${builtin ? ` bc text COLLATE pg_c_utf8,` : ""} amt int)`,
       `INSERT INTO items SELECT id, v, v, v, v,${builtin ? " v," : ""} amt FROM raw_items`,
+      `ALTER TABLE items ADD COLUMN cu text COLLATE "C.utf8"`,
+      `UPDATE items SET cu = cat`,
+      `CREATE TABLE kinds2 (kname2 text, w2 int)`,
+      `INSERT INTO kinds2 VALUES ('apple', 1), ('Apple', 2), ('banana', 3), ('Banana', 4), ('cherry', 5)`,
       `CREATE TABLE kinds (kname text COLLATE ci_l2, w int)`,
       `INSERT INTO kinds VALUES ('apple', 10), ('banana', 20), ('cherry', 30)`,
    ];
@@ -114,8 +118,12 @@ source: items_src is pg.table('public.items') extend {
 source: kinds is pg.table('public.kinds') extend { primary_key: kname }
 
 #(materialize) storage="lake"
+source: kinds2 is pg.table('public.kinds2') extend { primary_key: kname2 }
+
+#(materialize) storage="lake"
 source: m is items_src extend {
   join_one: k is kinds on ci = k.kname
+  join_one: k2 is kinds2 on cat = k2.kname2
   dimension: lc is concat(cat, '!')
   dimension: side is pick 'hi' when cat > 'b' else 'lo'
   dimension: cst is cast(amt - 75 as string)
@@ -139,8 +147,11 @@ type Served = "materialized" | "rollup" | "view" | "query";
 interface Shape {
    name: string;
    query: string;
-   /** Served from this leg, or declined with this code and answered live. */
-   want: { served: Served } | { live: string };
+   /**
+    * Served from this leg, declined with this code and answered live, or
+    * refused by live and by the copy alike.
+    */
+   want: { served: Served } | { live: string } | { error: true };
    /** Only on a server with the builtin provider (Postgres 17+). */
    builtin?: true;
 }
@@ -214,7 +225,61 @@ const SHAPES: Shape[] = [
       query: "run: m -> { group_by: cst }",
       want: { live: DECLINED },
    },
+   // A value made from literals takes the database's default collation,
+   // whatever column a `when:`, a join or a length reads (Postgres's
+   // `pg_collation_for` says "default" of each).
+   {
+      name: "default: max of a pick of literals chosen by a C column",
+      query: "run: m -> { aggregate: x is max(concat(pick 'a' when cc > 'b' else 'B', '')) }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "default: max of a pick of literals chosen through a join",
+      query: "run: m -> { aggregate: x is max(concat(pick 'a' when k2.w2 > 2 else 'B', '')) }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "default: a range over a pick of literals, grouped",
+      query: "run: m -> { group_by: g is concat(pick 'a' when cc > 'b' else 'B', '') > 'M'; aggregate: n }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "default: a range over a coalesce of literals, grouped",
+      query: "run: m -> { group_by: g is coalesce(pick 'a' when cc = 'apple' else null, 'B') > 'M'; aggregate: n }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "default: a C column's length, as a string, ordered",
+      query: "run: m -> { group_by: s is cast(length(cc) - 6 as string) }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "default: a C column's strpos, as a string, ordered",
+      query: "run: m -> { select: id, s is cast(strpos(cc, 'a') - 2 as string); order_by: s, id }",
+      want: { live: DECLINED },
+   },
+   // Two columns' collations in one value: live refuses, and so does the copy.
+   {
+      name: "C and C.utf8 compared",
+      query: "run: m -> { group_by: e is cc = cu; aggregate: n }",
+      want: { error: true },
+   },
+   {
+      name: "C and C.utf8 concatenated, ordered",
+      query: "run: m -> { group_by: s is concat(cc, cu) }",
+      want: { error: true },
+   },
    // ...and what still serves under en_US: equality is byte equality.
+   {
+      name: "C: a C column with a literal, ordered by the column's collation",
+      query: "run: m -> { group_by: c is concat(cc, '!') }",
+      want: { served: "materialized" },
+   },
+   {
+      name: "C.utf8: a group_by alone, in Malloy's implicit order",
+      query: "run: m -> { group_by: cu }",
+      want: { served: "materialized" },
+   },
    {
       name: "en_US: the longest string's length",
       query: "run: m -> { aggregate: m is max(length(cat)) }",
@@ -561,11 +626,18 @@ describe.skipIf(!POSTGRES_URL)(
          const how =
             "served" in s.want
                ? `served from ${s.want.served}`
-               : `declined (${s.want.live}), answered live`;
+               : "live" in s.want
+                 ? `declined (${s.want.live}), answered live`
+                 : "refused as live refuses it";
          it(`${s.name}: ${how}, equal to live`, () => {
             if (s.builtin && !builtin) return;
             const l = live.get(s)!;
             const got = served.get(s)!;
+            if ("error" in s.want) {
+               expect("error" in l, JSON.stringify(l)).toBe(true);
+               expect("error" in got, JSON.stringify(got)).toBe(true);
+               return;
+            }
             if ("error" in l) throw new Error(`live failed: ${l.error}`);
             if ("error" in got) throw new Error(`served failed: ${got.error}`);
             expect(l.answer.servedBy).toBe("live");

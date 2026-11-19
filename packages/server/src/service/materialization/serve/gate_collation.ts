@@ -201,7 +201,61 @@ export async function stringGateCollationRefusal(args: {
          return `\`${path.join(".")}\` compares under a ${collation} collation`;
       }
    }
+   // Columns one value combines: live derives no single collation from two
+   // different ones and fails, where the copy would answer.
+   for (const group of reads.sameCollation ?? []) {
+      const ids = new Set<string | undefined>();
+      for (const path of group) {
+         ids.add(
+            await probeIdentityOnce(
+               modelDef,
+               `${connectionName}\u0000${path.join(".")}`,
+               async () =>
+                  postgresCollationIdentity(
+                     await runtime.connections.lookupConnection(connectionName),
+                     unfinalizedPostgresSQL(
+                        await probeSql({
+                           runtime,
+                           modelDef,
+                           entryName,
+                           path,
+                           ...(args.givens ? { givens: args.givens } : {}),
+                        }),
+                     ),
+                  ),
+            ),
+         );
+      }
+      if (ids.has(undefined) || ids.size > 1) {
+         return `one value combines columns under different collations (${group.map((p) => p.join(".")).join(", ")})`;
+      }
+   }
    return undefined;
+}
+
+/** Each column's collation identity, by model, then connection and path. */
+const identities = new WeakMap<
+   object,
+   Map<string, Promise<string | undefined>>
+>();
+
+function probeIdentityOnce(
+   modelDef: object,
+   key: string,
+   run: () => Promise<string | undefined>,
+): Promise<string | undefined> {
+   let byKey = identities.get(modelDef);
+   if (!byKey) {
+      byKey = new Map();
+      identities.set(modelDef, byKey);
+   }
+   let p = byKey.get(key);
+   if (!p) {
+      if (byKey.size >= 1000) byKey.clear();
+      p = run().catch(() => undefined);
+      byKey.set(key, p);
+   }
+   return p;
 }
 
 function probeOnce(

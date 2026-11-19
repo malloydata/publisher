@@ -210,39 +210,107 @@ function isAggregate(t: unknown): boolean {
 }
 
 /**
- * Whether a function call or a cast makes a string: a cast to a string (a
- * raw cast to a type that may be one), or a function whose declared return
- * type is a string. A generic return (`coalesce`, `greatest`) is its
- * arguments' type, whose own strings are read where they are made.
+ * Whether a cast makes a string: a cast to a string, or a raw cast to a
+ * type that may be one.
  */
-function makesString(n: Record<string, unknown>): boolean {
-   if (n.node === "cast") {
-      const dst = (n.dstType as { type?: unknown } | undefined)?.type;
-      if (dst !== undefined) return dst === "string";
-      return !/^\s*(big|small|tiny)?(int|integer|numeric|decimal|real|double|float|bool|boolean|date|time|timestamp|timestamptz)\b/i.test(
-         String(n.dstSQLType ?? ""),
-      );
-   }
-   const returned = (
-      n.overload as { returnType?: { type?: unknown } } | undefined
-   )?.returnType?.type;
-   return returned === "string";
+function castMakesString(n: Record<string, unknown>): boolean {
+   const dst = (n.dstType as { type?: unknown } | undefined)?.type;
+   if (dst !== undefined) return dst === "string";
+   return !/^\s*(big|small|tiny)?(int|integer|numeric|decimal|real|double|float|bool|boolean|date|time|timestamp|timestamptz)\b/i.test(
+      String(n.dstSQLType ?? ""),
+   );
 }
+
+/** A string column a value takes its collation from, and whether its path is the entry point's. */
+interface Col {
+   readonly path: readonly string[];
+   readonly entry: boolean;
+}
+
+/**
+ * Where a value's collation comes from, as Postgres derives it
+ * (`assign_collations_walker`): one or more string columns (implicit), the
+ * database's default (a literal, a given, a string made from no string), or
+ * nothing (not a string).
+ */
+type Src =
+   | { readonly kind: "none" }
+   | { readonly kind: "default" }
+   | { readonly kind: "columns"; readonly cols: ReadonlyMap<string, Col> };
+
+const NONE: Src = { kind: "none" };
+const DEFAULT: Src = { kind: "default" };
+
+/**
+ * The collation of a value made from `srcs` together (a `concat`, a `pick`'s
+ * values, a comparison's operands): a column's outranks the default, and
+ * the default outranks nothing.
+ */
+function combine(srcs: readonly Src[]): Src {
+   const cols = new Map<string, Col>();
+   let dflt = false;
+   for (const s of srcs) {
+      if (s.kind === "columns") for (const [k, c] of s.cols) cols.set(k, c);
+      else if (s.kind === "default") dflt = true;
+   }
+   if (cols.size > 0) return { kind: "columns", cols };
+   return dflt ? DEFAULT : NONE;
+}
+
+/** The column `path` (read from the entry point or not), as a {@link Src}. */
+function column(path: readonly string[], entry: boolean): Src {
+   return {
+      kind: "columns",
+      cols: new Map([
+         [`${entry ? "e" : "x"}\u0000${path.join("\u0000")}`, { path, entry }],
+      ]),
+   };
+}
+
+/** Nodes whose value is not a string, whatever their operands are. */
+const NON_STRING_NODES = new Set([
+   "and",
+   "or",
+   "not",
+   "is-null",
+   "is-not-null",
+   "+",
+   "-",
+   "*",
+   "/",
+   "%",
+   "unary-",
+   "trunc",
+   "extract",
+   "delta",
+   "timeDiff",
+]);
 
 /** A path's records, by its key, and whether each is read from the entry point. */
 class Reads {
    readonly paths = new Map<string, readonly string[]>();
    /** A read that is not a path from the entry point (an inner query's base). */
    elsewhere = false;
-   /**
-    * A literal or a given read as a string value (a `pick`'s `'hi'`), which
-    * compares under the database's default collation.
-    */
+   /** A string under the database's default collation was compared. */
    literal = false;
+   /** The columns one value combines, which must hold one collation. */
+   readonly same: (readonly string[])[][] = [];
 
-   add(path: readonly string[], entry: boolean): void {
-      if (!entry) this.elsewhere = true;
-      else this.paths.set(path.join("\u0000"), path);
+   consume(src: Src): void {
+      if (src.kind === "default") {
+         this.literal = true;
+         return;
+      }
+      if (src.kind !== "columns") return;
+      const group: (readonly string[])[] = [];
+      for (const c of src.cols.values()) {
+         if (!c.entry) this.elsewhere = true;
+         else {
+            this.paths.set(c.path.join("\u0000"), c.path);
+            group.push(c.path);
+         }
+      }
+      if (src.cols.size > 1) this.same.push(group);
    }
 
    get empty(): boolean {
@@ -256,15 +324,6 @@ class ResultReadWalk {
    readonly grouped = new Reads();
    unresolved = false;
    private steps = 0;
-   /** How many string column reads have been recorded, by any use. */
-   private recorded = 0;
-   /**
-    * A string value met so far that compares under the database's default
-    * collation (a literal, a given, a string made from no string column),
-    * by use: an enclosing derivation that also reads a string column takes
-    * that column's collation instead, as Postgres does ({@link derive}).
-    */
-   pending = { order: false, group: false };
    /** Each join's `on` and each inner query, walked once. */
    private readonly walked = new Set<unknown>();
 
@@ -277,49 +336,10 @@ class ResultReadWalk {
       return ++this.steps > 8192;
    }
 
-   private record(path: readonly string[], use: Use, entry: boolean): void {
-      if (use === "value") return;
-      this.recorded++;
-      if (use === "order") this.ordered.add(path, entry);
-      else this.grouped.add(path, entry);
-   }
-
-   /** A string value under the database's default collation, used as `use`. */
-   private loose(use: Use): void {
-      if (use === "order") this.pending.order = true;
-      else if (use === "group") this.pending.group = true;
-   }
-
-   /**
-    * One collation derivation (Postgres's): the operands `walk` reads. When
-    * one is a string column, the result takes that column's collation, so
-    * the default-collation strings met inside (`'!'` in `concat(cat, '!')`,
-    * `'M'` in `cat > 'M'`) compare under it, not under the default. When
-    * none is, a comparison compares them under the default (committed: no
-    * enclosing node changes that), and a function or cast that makes a
-    * string (`cast(amt as string)`, `chr(65)`) makes one under the default,
-    * which an enclosing derivation may still take a column's collation over.
-    */
-   private derive(
-      kind: "comparison" | "value",
-      walk: () => void,
-      makesString: boolean,
-      use: Use,
-   ): void {
-      const before = this.recorded;
-      const saved = { ...this.pending };
-      walk();
-      if (this.recorded > before) {
-         this.pending = saved;
-         return;
-      }
-      if (kind === "comparison") {
-         if (this.pending.order && !saved.order) this.ordered.literal = true;
-         if (this.pending.group && !saved.group) this.grouped.literal = true;
-         this.pending = saved;
-         return;
-      }
-      if (makesString) this.loose(use);
+   /** A value of collation `src` compared as `use` needs. */
+   private consume(src: Src, use: Use): void {
+      if (use === "order") this.ordered.consume(src);
+      else if (use === "group") this.grouped.consume(src);
    }
 
    /**
@@ -402,10 +422,10 @@ class ResultReadWalk {
          // An `index:` groups each field's values and ranges them: each is
          // read as ordered, the stricter need.
          for (const qf of asArray(stage.indexFields) as FieldLike[]) {
-            this.queryField(qf, input, "order", "judge", stage);
+            this.consume(this.queryField(qf, input, "judge", stage), "order");
          }
          for (const f of asArray(stage.filterList)) {
-            this.expr((f as { e?: unknown }).e, input, "value", "judge", stage);
+            this.expr((f as { e?: unknown }).e, input, "judge", stage);
          }
          return;
       }
@@ -424,14 +444,17 @@ class ResultReadWalk {
          }
          const kind = this.kindOf(qf, input);
          if (isAnalytic(kind)) analytic = true;
-         const use: Use =
-            stage.type === "reduce" && !isAggregate(kind) && !isAnalytic(kind)
-               ? "group"
-               : "value";
-         this.queryField(qf, input, use, "judge", stage);
+         const src = this.queryField(qf, input, "judge", stage);
+         if (
+            stage.type === "reduce" &&
+            !isAggregate(kind) &&
+            !isAnalytic(kind)
+         ) {
+            this.consume(src, "group");
+         }
       }
       for (const f of asArray(stage.filterList)) {
-         this.expr((f as { e?: unknown }).e, input, "value", "judge", stage);
+         this.expr((f as { e?: unknown }).e, input, "judge", stage);
       }
       this.ordering(stage, input, last, analytic);
    }
@@ -461,8 +484,8 @@ class ResultReadWalk {
             continue;
          }
          // The key is the stage's own output, judged with its fields (or
-         // computed by a stored result's build): only its columns are traced.
-         this.queryField(qf, input, "order", "trace", stage);
+         // computed by a stored result's build): only its collation is read.
+         this.consume(this.queryField(qf, input, "trace", stage), "order");
       }
    }
 
@@ -481,47 +504,44 @@ class ResultReadWalk {
       return f?.expressionType ?? "scalar";
    }
 
-   /** One of a stage's fields, read from the stage's input. */
+   /** One of a stage's fields, read from the stage's input: its collation. */
    private queryField(
       qf: FieldLike,
       input: Scope,
-      use: Use,
       mode: Mode,
       stage: Stage,
-   ): void {
+   ): Src {
       if (qf.type === "fieldref" && Array.isArray(qf.path)) {
-         this.field(input, qf.path as string[], use, mode);
-      } else if (qf.type === "turtle") {
-         // A nest's rows, read as a value of a later stage: not followed.
-         if (use !== "value") this.unresolved = true;
-      } else if (qf.e !== undefined) {
-         if (mode === "trace" && nonStringType(qf.type)) return;
-         this.expr(qf.e, input, use, mode, stage);
-      } else {
-         this.unresolved = true;
+         return this.field(input, qf.path as string[], mode);
       }
+      if (qf.type === "turtle") return NONE;
+      if (qf.e !== undefined) {
+         if (mode === "trace" && nonStringType(qf.type)) return NONE;
+         const src = this.expr(qf.e, input, mode, stage);
+         return nonStringType(qf.type) ? NONE : src;
+      }
+      this.unresolved = true;
+      return NONE;
    }
 
-   /** A field path read in `scope`, to the columns it reads. */
-   field(scope: Scope, path: readonly string[], use: Use, mode: Mode): void {
+   /** A field path read in `scope`: the collation of its value. */
+   field(scope: Scope, path: readonly string[], mode: Mode): Src {
       if (this.tooDeep() || path.length === 0) {
          this.unresolved = true;
-         return;
+         return NONE;
       }
-      if (mode === "trace" && use === "value") return;
       if (scope.kind === "stage") {
          const qf =
             path.length === 1
                ? stageFields(scope.stage).get(path[0])
                : undefined;
          if (qf === undefined) {
-            if (use !== "value") this.unresolved = true;
-            return;
+            this.unresolved = true;
+            return NONE;
          }
          // A stage's output was computed by that stage, which is judged on
-         // its own: only the columns the value comes from are traced.
-         this.queryField(qf, scope.input, use, "trace", scope.stage);
-         return;
+         // its own: only the collation its value carries is traced.
+         return this.queryField(qf, scope.input, "trace", scope.stage);
       }
       let owner = scope.source;
       const prefix = [...scope.prefix];
@@ -529,7 +549,7 @@ class ResultReadWalk {
          const j = fieldsOf(owner).get(name);
          if (j === undefined || j.join === undefined) {
             this.unresolved = true;
-            return;
+            return NONE;
          }
          if (mode === "judge") this.join(owner, j, prefix, scope.entry);
          owner = j;
@@ -539,7 +559,7 @@ class ResultReadWalk {
       const f = fieldsOf(owner).get(last);
       if (f === undefined) {
          this.unresolved = true;
-         return;
+         return NONE;
       }
       const at: Scope = {
          kind: "source",
@@ -548,16 +568,13 @@ class ResultReadWalk {
          entry: scope.entry,
       };
       if (f.e !== undefined) {
-         if (mode === "trace" && nonStringType(f.type)) return;
-         this.expr(f.e, at, use, mode, undefined);
-         return;
+         if (mode === "trace" && nonStringType(f.type)) return NONE;
+         const src = this.expr(f.e, at, mode, undefined);
+         return nonStringType(f.type) ? NONE : src;
       }
+      if (f.join !== undefined) return NONE;
       const query = (owner as { query?: unknown }).query;
-      if (
-         query !== undefined &&
-         f.join === undefined &&
-         !this.isStored(owner)
-      ) {
+      if (query !== undefined && !this.isStored(owner)) {
          // A stage output of a query-shaped source computed when the table
          // is read: its query is judged (once its source is reached), and
          // the output traced back.
@@ -568,7 +585,7 @@ class ResultReadWalk {
          const base = this.baseOf(query as { structRef?: unknown });
          if (stages.length === 0 || base === undefined) {
             this.unresolved = true;
-            return;
+            return NONE;
          }
          let s: Scope = {
             kind: "source",
@@ -578,21 +595,15 @@ class ResultReadWalk {
          };
          for (const stage of stages) s = { kind: "stage", stage, input: s };
          // A rename keeps the stage output's own name.
-         this.field(
+         return this.field(
             s,
             [typeof f.name === "string" ? f.name : last],
-            use,
             "trace",
          );
-         return;
       }
-      if (f.join !== undefined) {
-         // A joined record read as a value: its fields are not compared.
-         if (use !== "value") this.unresolved = true;
-         return;
-      }
-      if (!nonStringType(f.type))
-         this.record([...prefix, last], use, scope.entry);
+      return nonStringType(f.type)
+         ? NONE
+         : column([...prefix, last], scope.entry);
    }
 
    /**
@@ -611,14 +622,16 @@ class ResultReadWalk {
       const at: Scope = { kind: "source", source: owner, prefix, entry };
       this.inner(j);
       if (j.onExpression !== undefined) {
-         this.expr(j.onExpression, at, "value", "judge", undefined);
+         this.expr(j.onExpression, at, "judge", undefined);
       }
       const name = activeName(j);
       if (typeof j.primaryKey === "string") {
-         this.field(at, [name, j.primaryKey], "group", "trace");
+         this.consume(this.field(at, [name, j.primaryKey], "trace"), "group");
       }
       const own = (owner as { primaryKey?: unknown }).primaryKey;
-      if (typeof own === "string") this.field(at, [own], "group", "trace");
+      if (typeof own === "string") {
+         this.consume(this.field(at, [own], "trace"), "group");
+      }
    }
 
    /**
@@ -660,54 +673,52 @@ class ResultReadWalk {
    }
 
    /**
-    * An expression read in `scope` and used as `use`. Judged, each node
-    * decides how its operands are used; traced, every operand carries the
-    * value's use.
+    * An expression read in `scope`: the collation of its value, derived
+    * bottom-up as Postgres derives it. Judged, each comparison, ordering
+    * and grouping inside it is recorded as its operands' collation needs;
+    * traced (computed before the table is read), only the collation is
+    * derived.
     */
    expr(
       e: unknown,
       scope: Scope,
-      use: Use,
       mode: Mode,
       stage: Stage | undefined,
       depth = 0,
-   ): void {
+   ): Src {
       if (depth > 64 || this.tooDeep()) {
          this.unresolved = true;
-         return;
+         return NONE;
       }
-      if (e === null || typeof e !== "object" || Array.isArray(e)) return;
+      if (e === null || typeof e !== "object" || Array.isArray(e)) return NONE;
       const n = e as Record<string, unknown> & { node?: unknown };
-      const go = (x: unknown, u: Use) =>
-         this.expr(x, scope, u, mode, stage, depth + 1);
       switch (n.node) {
          case "field":
             if (Array.isArray(n.path)) {
-               this.field(scope, n.path as string[], use, mode);
-            } else this.unresolved = true;
-            return;
+               return this.field(scope, n.path as string[], mode);
+            }
+            this.unresolved = true;
+            return NONE;
          case "outputField": {
             const qf =
                stage === undefined
                   ? undefined
                   : stageFields(stage).get(String(n.name));
             if (qf === undefined) {
-               if (use !== "value") this.unresolved = true;
-               return;
+               this.unresolved = true;
+               return NONE;
             }
-            this.queryField(qf, scope, use, "trace", stage!);
-            return;
+            return this.queryField(qf, scope, "trace", stage!);
          }
          case "compositeField":
          case "error":
          case "spread":
          case "source-reference":
             this.unresolved = true;
-            return;
+            return NONE;
          case "stringLiteral":
          case "given":
-            this.loose(use);
-            return;
+            return DEFAULT;
          case "numberLiteral":
          case "regexpLiteral":
          case "filterLiteral":
@@ -723,217 +734,152 @@ class ResultReadWalk {
          case "aggregate_order_by":
          case "aggregate_limit":
          case "":
-            return;
+            return NONE;
       }
-      if (mode === "trace") this.traced(n, use, go);
-      else this.judged(n, scope, use, stage, depth, go);
+      return this.operation(n, scope, mode, stage, depth);
    }
 
-   /** A traced node: every operand carries the value's use. */
-   private traced(
-      n: Record<string, unknown>,
-      use: Use,
-      go: (x: unknown, u: Use) => void,
-   ): void {
-      const kids = (n.kids ?? {}) as Record<string, unknown>;
-      const all = () => {
-         for (const c of this.children(n)) go(c, use);
-      };
-      if (n.node === "function_call" || n.node === "cast") {
-         this.derive("value", all, makesString(n), use);
-      } else if (n.node === "case" && kids.caseValue === undefined) {
-         // The value is the `then`s' and the `else`'s; a `when:` was
-         // decided when the value was computed.
-         this.derive(
-            "value",
-            () => {
-               for (const t of asArray(kids.caseThen)) go(t, use);
-               go(kids.caseElse, use);
-            },
-            false,
-            use,
-         );
-      } else if (n.node === "coalesce") {
-         this.derive("value", all, false, use);
-      } else all();
-   }
-
-   /** A judged node: it decides how its operands are used. */
-   private judged(
+   /** A node with operands: what it does with them, and its value's collation. */
+   private operation(
       n: Record<string, unknown>,
       scope: Scope,
-      use: Use,
+      mode: Mode,
       stage: Stage | undefined,
       depth: number,
-      go: (x: unknown, u: Use) => void,
-   ): void {
+   ): Src {
+      const sub = (x: unknown) => this.expr(x, scope, mode, stage, depth + 1);
+      const need = (src: Src, u: Use) => {
+         if (mode === "judge") this.consume(src, u);
+      };
       const kids = (n.kids ?? {}) as Record<string, unknown>;
-      switch (n.node) {
+      const node = typeof n.node === "string" ? n.node : "";
+      switch (node) {
          case "aggregate": {
-            const fn = n.function;
-            go(
-               n.e,
-               fn === "min" || fn === "max"
-                  ? "order"
-                  : fn === "distinct"
-                    ? "group"
-                    : "value",
-            );
-            return;
+            const src = sub(n.e);
+            if (n.function === "min" || n.function === "max") {
+               need(src, "order");
+               return src;
+            }
+            if (n.function === "distinct") need(src, "group");
+            return NONE;
          }
          case "in":
-            this.derive(
-               "comparison",
-               () => {
-                  go(kids.e, "group");
-                  for (const x of asArray(kids.oneOf)) go(x, "group");
-               },
-               false,
-               use,
+            need(
+               combine([sub(kids.e), ...asArray(kids.oneOf).map(sub)]),
+               "group",
             );
-            return;
+            return NONE;
          case "inGiven":
-            this.derive("comparison", () => go(n.e, "group"), false, use);
-            return;
+            need(sub(n.e), "group");
+            return NONE;
          case "regexpMatch":
-            go(kids.expr, "group");
-            go(kids.regex, "value");
-            return;
+            need(sub(kids.expr), "group");
+            sub(kids.regex);
+            return NONE;
          case "filterMatch":
-            go(kids.expr, "group");
-            return;
+            need(sub(kids.expr), "group");
+            return NONE;
          case "filteredExpr":
             // Its filter is the query-filter check's (`gate_reads.ts`).
-            go(kids.e, use);
-            return;
+            return sub(kids.e);
          case "case": {
-            // A `when:` is a condition of its own; the value is the
-            // `then`s' and the `else`'s derivation.
             if (kids.caseValue !== undefined) {
-               this.derive(
-                  "comparison",
-                  () => {
-                     go(kids.caseValue, "group");
-                     for (const w of asArray(kids.caseWhen)) go(w, "group");
-                  },
-                  false,
-                  use,
+               need(
+                  combine([
+                     sub(kids.caseValue),
+                     ...asArray(kids.caseWhen).map(sub),
+                  ]),
+                  "group",
                );
-            } else {
-               for (const w of asArray(kids.caseWhen)) go(w, "value");
+            } else if (mode === "judge") {
+               // A `when:` is a condition of its own, not the value's.
+               for (const w of asArray(kids.caseWhen)) sub(w);
             }
-            this.derive(
-               "value",
-               () => {
-                  for (const t of asArray(kids.caseThen)) go(t, use);
-                  go(kids.caseElse, use);
-               },
-               false,
-               use,
-            );
-            return;
+            return combine([
+               ...asArray(kids.caseThen).map(sub),
+               sub(kids.caseElse),
+            ]);
          }
          case "cast": {
-            const dst = (n.dstType as { type?: unknown } | undefined)?.type;
-            const toString = makesString(n);
-            this.derive(
-               "value",
-               () =>
-                  go(
-                     n.e,
-                     dst !== undefined && nonStringType(dst) ? "value" : use,
-                  ),
-               toString,
-               use,
-            );
-            return;
+            const src = sub(n.e);
+            if (!castMakesString(n)) return NONE;
+            // A string cast from a string keeps its collation; one cast from
+            // anything else has the default.
+            return src.kind === "columns" ? src : DEFAULT;
          }
          case "function_call":
-            this.functionCall(n, scope, use, stage, depth);
-            return;
-         case "genericSQLExpr":
+            return this.functionCall(n, scope, mode, stage, depth);
+         case "genericSQLExpr": {
             // Raw SQL: what it does with its arguments is not read.
-            for (const a of asArray(kids.args)) go(a, "order");
-            return;
+            const args = asArray(kids.args).map(sub);
+            for (const a of args) need(a, "order");
+            const src = combine(args);
+            return src.kind === "columns" ? src : DEFAULT;
+         }
       }
-      if (typeof n.node === "string" && RANGE_OPERATORS.has(n.node)) {
-         this.derive(
-            "comparison",
-            () => {
-               for (const c of this.children(n)) go(c, "order");
-            },
-            false,
-            use,
-         );
-         return;
+      if (RANGE_OPERATORS.has(node)) {
+         need(combine(this.children(n).map(sub)), "order");
+         return NONE;
       }
-      if (typeof n.node === "string" && EQUALITY_OPERATORS.has(n.node)) {
-         this.derive(
-            "comparison",
-            () => {
-               for (const c of this.children(n)) go(c, "group");
-            },
-            false,
-            use,
-         );
-         return;
+      if (EQUALITY_OPERATORS.has(node)) {
+         need(combine(this.children(n).map(sub)), "group");
+         return NONE;
       }
-      if (n.node === "coalesce") {
-         this.derive(
-            "value",
-            () => {
-               for (const c of this.children(n)) go(c, use);
-            },
-            false,
-            use,
-         );
-         return;
-      }
-      // Logic, arithmetic, `()`, time arithmetic, an ungrouping: their
-      // operands' values pass on as the value is used.
-      for (const c of this.children(n)) go(c, use);
+      const operands = this.children(n).map(sub);
+      // Logic, arithmetic, time arithmetic: not a string. `()`,
+      // `coalesce`, an ungrouping, anything else: its operands' collation.
+      return NON_STRING_NODES.has(node) ? NONE : combine(operands);
    }
 
    /** A function call: scalar, aggregate or window. */
    private functionCall(
       n: Record<string, unknown>,
       scope: Scope,
-      use: Use,
+      mode: Mode,
       stage: Stage | undefined,
       depth: number,
-   ): void {
-      const go = (x: unknown, u: Use) =>
-         this.expr(x, scope, u, "judge", stage, depth + 1);
+   ): Src {
+      const sub = (x: unknown) => this.expr(x, scope, mode, stage, depth + 1);
+      const need = (src: Src, u: Use) => {
+         if (mode === "judge") this.consume(src, u);
+      };
       const kids = (n.kids ?? {}) as { args?: unknown; orderBy?: unknown };
       const name = String(n.name ?? "").toLowerCase();
       for (const o of asArray(kids.orderBy)) {
-         go((o as { e?: unknown }).e, "order");
+         need(sub((o as { e?: unknown }).e), "order");
       }
       for (const p of asArray(n.partitionBy)) {
          const qf =
             stage === undefined ? undefined : stageFields(stage).get(String(p));
          if (qf === undefined) this.unresolved = true;
-         else this.queryField(qf, scope, "group", "trace", stage!);
+         else need(this.queryField(qf, scope, "trace", stage!), "group");
       }
-      let argUse: Use = use;
-      if (ORDERING_FUNCTIONS.has(name)) argUse = "order";
-      else if (EQUALITY_FUNCTIONS.has(name)) argUse = "group";
-      else if (COLLATION_FREE_FUNCTIONS.has(name)) argUse = "value";
+      const args = combine(asArray(kids.args).map(sub));
+      if (ORDERING_FUNCTIONS.has(name)) need(args, "order");
+      else if (EQUALITY_FUNCTIONS.has(name)) need(args, "group");
+      else if (COLLATION_FREE_FUNCTIONS.has(name)) return NONE;
       else if (isAggregate(n.expressionType)) {
-         argUse = name.includes("distinct")
-            ? "group"
-            : UNORDERED_AGGREGATES.has(name)
-              ? "value"
-              : "order";
+         if (name.includes("distinct")) need(args, "group");
+         else if (!UNORDERED_AGGREGATES.has(name)) need(args, "order");
       }
-      this.derive(
-         "value",
-         () => {
-            for (const a of asArray(kids.args)) go(a, argUse);
-         },
-         makesString(n),
-         use,
-      );
+      const returned = (
+         n.overload as { returnType?: { type?: unknown } } | undefined
+      )?.returnType?.type;
+      if (returned === "string") {
+         // A string made from strings has their collation; from none, the
+         // default.
+         return args.kind === "columns" ? args : DEFAULT;
+      }
+      if (
+         typeof returned === "string" &&
+         returned !== "generic" &&
+         returned !== "any"
+      ) {
+         return NONE;
+      }
+      // A generic return (`greatest`, `nullif`, a window's `lag`) is its
+      // arguments' value.
+      return args;
    }
 }
 
@@ -942,10 +888,7 @@ function readsOf(
    reads: Reads,
    unresolved: boolean,
    equalityOnly: boolean,
-   /** A default-collation string no column's collation took over. */
-   pending: boolean,
 ): GateReads {
-   if (pending) reads.literal = true;
    const entryPaths = [...reads.paths.values()];
    return {
       names: new Set(entryPaths.flat()),
@@ -958,6 +901,7 @@ function readsOf(
       entryPathsComplete: !reads.elsewhere,
       comparesNoString: reads.empty && !unresolved,
       comparesOnlyColumns: !reads.literal,
+      ...(reads.same.length > 0 ? { sameCollation: reads.same } : {}),
    };
 }
 
@@ -1006,18 +950,8 @@ export async function resultReadsOfQuery(
       );
       const dialect = named?.dialect;
       return {
-         ordered: readsOf(
-            walk.ordered,
-            walk.unresolved,
-            false,
-            walk.pending.order,
-         ),
-         grouped: readsOf(
-            walk.grouped,
-            walk.unresolved,
-            true,
-            walk.pending.group,
-         ),
+         ordered: readsOf(walk.ordered, walk.unresolved, false),
+         grouped: readsOf(walk.grouped, walk.unresolved, true),
          stringCollation: capabilitiesOf(
             typeof dialect === "string" ? dialect : "",
          ).stringCollation,
