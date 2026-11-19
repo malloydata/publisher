@@ -208,16 +208,14 @@ async function loadAndBind(mode: string): Promise<{
       pkg.materialization().setServeDestinationConfig(() => config);
 
       const run = async (c: Case): Promise<Answer> => {
-         const r = await pkg
-            .getModel(c.model)!
-            .runQuery(
-               unrecordedAudit(),
-               {
-                  query: c.query,
-                  ...(c.givens ? { givens: c.givens } : {}),
-               } as never,
-               QueryPrivileges.of({ includeHiddenFilesAndSources: false }),
-            );
+         const r = await pkg.getModel(c.model)!.runQuery(
+            unrecordedAudit(),
+            {
+               query: c.query,
+               ...(c.givens ? { givens: c.givens } : {}),
+            } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: false }),
+         );
          const by = r.path?.servedBy as
             | { kind?: string; tier?: string }
             | undefined;
