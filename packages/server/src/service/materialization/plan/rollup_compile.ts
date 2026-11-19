@@ -29,7 +29,7 @@
  * same, in the same second compile: Malloy sees no `#@ persist` on the base,
  * so the companion imports the base from a copy of its file that re-roots it
  * on its generated build source (as an extension's build copy re-roots its
- * parent, P10), beside the `#(materialize)` companion's own files. The
+ * parent), beside the `#(materialize)` companion's own files. The
  * build source is persisted, so the build reads the base's table through the
  * run's build manifest. The re-root moves the rollup's SQL, so the run checks
  * the build source, not the rollup, against the plan's addresses.
@@ -344,7 +344,7 @@ function storedMaterializeBase(
       return undefined;
    }
    // Where the build source is declared: the companion, or, with a chain
-   // (P10), its level's file (build_file_generator.ts).
+   //, its level's file (build_file_generator.ts).
    const levels = chainLevels(materialized.plans);
    const modelName = path.basename(modelFile);
    const importFrom = [...levels.values()].some((level) => level > 0)
@@ -900,7 +900,7 @@ export async function compileParentKeyChecks(
 }
 
 /**
- * Compile each rollup's key check (known limitation 29, see
+ * Compile each rollup's key check (see
  * `rollupKeyCheckQuery`) against the companion, onto its plan. A check that
  * does not compile is left off, logged: its rollup's join_one is then never
  * known unique, and the join-to-rollup branch declines it.

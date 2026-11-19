@@ -1074,7 +1074,7 @@ export class MaterializationService {
          }
 
          // A rollup this run may rewrite in place no longer holds what its
-         // bound key check said (known limitation 29): forget it before any
+         // bound key check said: forget it before any
          // table is written, so a run that fails part-way never leaves a
          // check bound over rows it did not read. This run's own commit binds
          // what it checks.

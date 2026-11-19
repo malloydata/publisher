@@ -754,7 +754,7 @@ export class PackageMaterialization {
    }
 
    /**
-    * Drop the rollup key checks (known limitation 29) bound for these content
+    * Drop the rollup key checks bound for these content
     * addresses: a run is about to write their tables, so what a check found
     * over the rows before no longer describes them. The routing itself is
     * kept; the join-to-rollup branch reads the table as unknown until a run
@@ -787,7 +787,7 @@ export class PackageMaterialization {
          next[id] = rest;
       }
       // A database pair table's leaf key check rides on its binding
-      // (`primaryKeys`, known limitation 40): the snapshot drops it too.
+      // (`primaryKeys`): the snapshot drops it too.
       if (next) this.databaseEntries = next;
       this.publish();
    }
@@ -1067,7 +1067,7 @@ export class PackageMaterialization {
 
    /**
     * Give the package the environment's deployment facts its publish warnings
-    * read (P13), read live on every package read, so a destination configured
+    * read, read live on every package read, so a destination configured
     * after the load clears its warning with no reload.
     */
    setDeploymentFacts(facts: DeploymentFacts): void {

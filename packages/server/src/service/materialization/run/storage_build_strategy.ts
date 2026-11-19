@@ -943,7 +943,7 @@ export class StorageBuildStrategy
          destinationConnection,
       } = ctx;
       const { persistSource, instruction, environment, builtEntries } = params;
-      // An extension table (P10) builds over its parent's stored table from
+      // An extension table builds over its parent's stored table from
       // the chain its plan carries, never by lifting author text by name.
       const extension = storedExtensionOf(
          planFacts.materializePlans?.[persistSource.sourceID],
@@ -1222,7 +1222,7 @@ export class StorageBuildStrategy
 
    /**
     * Build a `storage=` extension table over its parent's stored table in the
-    * same destination (P10): the parent's build source declared as the
+    * same destination: the parent's build source declared as the
     * virtual source of that table, the extension's chain over it
     * ({@link extensionOverStoredModel}), compiled and run on the destination
     * alone, so nothing reads the warehouse. A parent with no current table in
@@ -1339,7 +1339,7 @@ export class StorageBuildStrategy
    }
 }
 
-/** A `storage=` extension table (P10) and the parent it builds over. */
+/** A `storage=` extension table and the parent it builds over. */
 interface StoredExtension {
    plan: MaterializePlan;
    parent: MaterializeParent;

@@ -287,7 +287,7 @@ export class ManifestCommitter {
       entries: Record<string, ManifestEntry>,
       // The version the run built; undefined for an unversioned package.
       versionId?: string,
-      // The rollup key checks this run stands behind (known limitation 29).
+      // The rollup key checks this run stands behind.
       rollupKeys?: Readonly<Record<string, RollupKeyRecord>>,
       // Records the run done, with what this reports; called under the
       // package's lock, after the load (see commit).

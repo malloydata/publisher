@@ -80,7 +80,7 @@ export interface ChainedPlanFacts {
     * destination the annotation does not declare), else from `storage=`. A
     * destination that is the source's own connection counts as null: the same
     * database (see {@link normalizedTier}).
-    * The address does not include the destination (P12), so a source that moved
+    * The address does not include the destination, so a source that moved
     * tier keeps its address, and an entry for it may describe the table it had
     * before the move. {@link upstreamEntryIsCurrent} reads this. Absent without
     * a plan, which leaves every entry trusted.
@@ -108,7 +108,7 @@ export interface ChainedPlanFacts {
    warehouseReach?: WarehouseReach;
    /**
     * The plan's `#(materialize)` plans by sourceID. A `storage=` extension
-    * table among them (one with `buildsOver.overStored`, P10) builds over its
+    * table among them (one with `buildsOver.overStored`) builds over its
     * parent's stored table from its own chain, not by lifting author text.
     */
    materializePlans?: Readonly<Record<string, MaterializePlan>>;

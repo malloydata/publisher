@@ -76,7 +76,7 @@ export interface Compiled {
    modelDef?: unknown;
    /** Whether any source in {@link modelDef} names a row-level gate; read once. */
    hasRowLevelGates?: boolean;
-   /** The runtime it compiled in: a row-level graft reloads through it (R3). */
+   /** The runtime it compiled in: a row-level graft reloads through it. */
    runtime?: GraftRuntime;
    /** The `sourceID`s of sources that opt out with `#@ -persist`. */
    optOutIDs?: ReadonlySet<string>;
@@ -102,7 +102,7 @@ export interface Compiled {
    /**
     * Tables that store a computed dimension (`#(materialize)`) whose value
     * may depend on the time zone, by table path: one of the source's own the
-    * probe compiler did not clear (P9), or an inlined join's or pair table's
+    * probe compiler did not clear, or an inlined join's or pair table's
     * child column; or whose rows the probe did not clear (a `where:` with a
     * timestamp literal). The build evaluated it in the default timezone, so a
     * query that sets its own `timezone:` would read values live computes
@@ -160,7 +160,7 @@ export interface Compiled {
     */
    declined?: Map<string, LegDecline>;
    /**
-    * The pair tables (inlined join_many, P5) the copy reads flat: a query that
+    * The pair tables (inlined join_many) the copy reads flat: a query that
     * reads one is checked against it (governance/ir/pair_flat_query.ts).
     */
    pairs?: readonly {
@@ -187,7 +187,7 @@ export interface Compiled {
    pairGatesRead?: Map<string, Promise<{ level: number; fansOut: boolean }>>;
    /**
     * Definitions left out because a join they read crosses connections in the
-    * served copy (question 11): a query that reads one skips the served copy
+    * served copy: a query that reads one skips the served copy
     * with reason `cross_connection`.
     */
    leftOut?: readonly LeftOutDefinition[];

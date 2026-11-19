@@ -44,7 +44,7 @@ import { capabilitiesOf } from "./dialect";
 
 /**
  * Whether live writes a float4 as its shortest text (Postgres, whose JSON
- * stage reads it through `float4out`). Measured by the R4 float4 parity spec.
+ * stage reads it through `float4out`). Measured by the r4 float4 parity spec.
  */
 export function liveWritesFloat4AsPostgres(dialect: unknown): boolean {
    return capabilitiesOf(dialect).liveWritesFloat4Shortest;

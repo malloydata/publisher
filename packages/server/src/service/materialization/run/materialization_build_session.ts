@@ -1667,7 +1667,7 @@ export async function createTableWithDeclaredTypes(
 /**
  * The output columns a DuckDB-computed build (same-catalog or chained: no
  * passthrough `sourceType`) produces as a 128-bit integer, which DuckLake
- * would store as a DOUBLE (P4-01): stored as `DECIMAL(38,0)` instead
+ * would store as a DOUBLE: stored as `DECIMAL(38,0)` instead
  * ({@link wideIntegerColumns}). Read by describing the SELECT in the
  * destination's session, which prepares it and runs nothing: the SELECT
  * reads only the destination's own tables. A passthrough's columns arrive

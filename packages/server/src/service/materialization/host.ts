@@ -50,7 +50,7 @@ interface MaterializationPackage extends BuildPlanPackage {
    /** The publish-gate rejections the scheduler honours before it arms a cron. */
    persistencePolicyWarnings(): string[];
    /**
-    * Drop the bound rollup key checks (known limitation 29) of the tables at
+    * Drop the bound rollup key checks of the tables at
     * these content addresses, which a run is about to write. Required, so a
     * package that stops implementing it fails to compile rather than
     * silently serving a check over rows the run rewrote.

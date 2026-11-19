@@ -219,7 +219,7 @@ export function loadVerdictOfPlan(
 
 /**
  * One warning per bound `#(rollup)` rollup whose last build found its
- * join_one key repeated (known limitation 29's check, `keyUniqueness`
+ * join_one key repeated (the rollup key check, `keyUniqueness`
  * false): the data breaks a `join_one` declared on that key, so queries that
  * read it beside other aggregates are answered live. Recomputed from what is
  * bound, so it clears once a build finds the key unique, or forgets the check.

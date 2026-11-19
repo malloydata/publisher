@@ -824,7 +824,7 @@ async function collectGeneratedMaterialize(
          givens: authorDef.givens ?? {},
          sourceRegistry: (authorDef as { sourceRegistry?: unknown })
             .sourceRegistry,
-         // P9's probes compile against the author's model, never run.
+         // The caller-dependence probes compile against the author's model, never run.
          probe: args.materializer,
       });
    addCompanionOutcome(
@@ -856,7 +856,7 @@ async function collectGeneratedMaterialize(
    const generatedPlans = new Map<PersistSource, MaterializePlan>();
    const rename = new Map<string, string>();
    // A build source of another file's companion, which a cross-file
-   // extension's build reads (P10): that file plans its table, and this
+   // extension's build reads: that file plans its table, and this
    // model's builds name it by the author's source, so the extension orders
    // after it.
    const ownIDs = new Set(generated.plans.map((p) => p.sourceID));
@@ -872,7 +872,7 @@ async function collectGeneratedMaterialize(
    }
    // A source declared in a generated file that no plan names (a parent an
    // extension's build copy re-roots on its build source, and the extension
-   // over it, P10) is on that build source's table: not a build of its own.
+   // over it) is on that build source's table: not a build of its own.
    const unplannedGenerated = (id: string) =>
       !rename.has(id) &&
       generated.generatedURLs.has(splitSourceID(id)?.url ?? "");
@@ -1015,7 +1015,7 @@ async function collectGeneratedRollups(
 }
 
 /**
- * The `#@ persist` views (P14) a model declares:
+ * The `#@ persist` views a model declares:
  * one generated build source per view, planned only in the model that
  * declares the view's source, so a view is listed once however many models
  * import it. Each keeps its compiled `sourceID`
@@ -1420,7 +1420,7 @@ async function collectGeneratedTables(
          keyCheckCompilers,
          crossFileCompanions,
       });
-      // `#@ persist` on a view (P14), under the same switch.
+      // `#@ persist` on a view, under the same switch.
       await collectGeneratedPersistedViews(parts, {
          modelPath,
          packagePath,
@@ -1564,7 +1564,7 @@ function reportPersistLineFindings(
    // A `#@` line that does not parse is reported by what it cost. Malloy drops
    // a source only when none of its `#@` lines parse; when another does, the
    // source is still planned, built without the broken line's directives.
-   // A location in the build copy (D3) sits one line below the author's,
+   // A location in the build copy sits one line below the author's,
    // since the copy opens with the flag: the finding names the author's line.
    // The copy's own location still matches the planned sources' notes.
    const companionURL =

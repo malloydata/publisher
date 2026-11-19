@@ -332,14 +332,14 @@ type AuthorReroot = Reroot & {
    authorDef: unknown;
    /**
     * For a `#(materialize)` re-root: its rows depend on the zone it was built
-    * in, which the probe compiler did not clear (P9): a `where:` term or base
+    * in, which the probe compiler did not clear: a `where:` term or base
     * relation whose SQL moves with the zone. Any read in another zone is
     * declined.
     */
    zonedRows?: true;
    /**
     * For a `#(materialize)` re-root: the stored computed dimensions the probe
-    * compiler did not clear of the zone (P9), each as the build evaluated it
+    * compiler did not clear of the zone, each as the build evaluated it
     * in the re-root's zone. Only a read of one in another zone is declined.
     */
    zonedDimensions?: string[];
@@ -356,7 +356,7 @@ type AuthorReroot = Reroot & {
     * one fails to compile here and answers live; their absence is not a lost
     * field. For a v1 re-root, the columns no cast reads as their declared
     * type; on any re-root, the big-integer columns no native cast reads
-    * exactly (known limitation 12: one stored as a float, a warehouse whose
+    * exactly (one stored as a float, a warehouse whose
     * bigint type Malloy does not read back as one).
     */
    columnsLeftOut?: readonly string[];
@@ -635,7 +635,7 @@ export class ServedCopyServe {
       gateTablesRead: Binding[];
       /**
        * The served copy's compiled model, where a row-level gate is grafted
-       * when this answer runs (R3): the gate's text is the author's, kept in
+       * when this answer runs: the gate's text is the author's, kept in
        * the copy, so the graft and its proofs read the same compile that runs.
        */
       graftScope: GraftScope;
@@ -690,7 +690,7 @@ export class ServedCopyServe {
          memo.set(queryString, error);
          throw error;
       };
-      // A query through a join left out across connections (question 11)
+      // A query through a join left out across connections
       // fails to compile for the field it reads: declined as
       // `cross_connection`, which depends only on the query and this compile.
       const compiling = async <T>(work: () => Promise<T>): Promise<T> => {
@@ -957,8 +957,8 @@ export class ServedCopyServe {
    }
 
    /**
-    * What the join-to-rollup branch (A7) builds on to answer a query in a
-    * storage destination (known limitation 26): the copy's re-rooted files
+    * What the join-to-rollup branch builds on to answer a query in a
+    * storage destination: the copy's re-rooted files
     * and connections, over which it compiles the query's source with one
     * join re-pointed at a joined source's rollup in the same destination,
     * and the checks this copy runs on a query it answers, for the tables
@@ -1319,7 +1319,7 @@ export class ServedCopyServe {
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
          // An `except:` naming a column the table does not store has nothing
-         // to exclude on any re-root, v1 or `#(materialize)` (P2-29).
+         // to exclude on any re-root, v1 or `#(materialize)`.
          dropsUnstoredExcepts: true as const,
          ...(!plan
             ? {
@@ -1348,7 +1348,7 @@ export class ServedCopyServe {
       const { binding, node, sourceName, def, fieldsByName, problems } =
          subject;
       let { columns, columnsLeftOut } = kept;
-      // A column live answers above 2^53 (a BIGINT, known limitation 12) is
+      // A column live answers above 2^53 (a BIGINT) is
       // read through its native type, which keeps every digit; one no cast
       // reads exactly is left out, so only a query reading it answers live.
       const ownReads = bigIntegerReadsOf(
@@ -1462,10 +1462,10 @@ export class ServedCopyServe {
     * its own file or the files it imports, root first
     * ({@link keptAncestorChainOrDeclared}, confirmed against each file's
     * text), which its re-root keeps ahead of its own blocks. Kept
-    * for an extension table (P10), whose table holds every one of their rows
+    * for an extension table, whose table holds every one of their rows
     * and stored columns, so it loses no measure, join or view any of them
     * declares; and for one whose bases declare a measure, view or join it
-    * inherits (G8), which the re-root would otherwise lose. Undefined when
+    * inherits, which the re-root would otherwise lose. Undefined when
     * the source is neither, or no such ancestor is on the walk: a source with
     * none keeps only its own blocks (decision 2). A base's given-reading
     * `where:` or dimension is never left out of a build (it refuses the
@@ -1480,7 +1480,7 @@ export class ServedCopyServe {
       if (!plan) return undefined;
       // Across files: an extension in a file that imports its base's file
       // keeps that base's blocks too, so it is re-rooted on its own table
-      // rather than left reading its base's (P2-22).
+      // rather than left reading its base's.
       const confirmed = confirmedAncestors(
          fileText,
          reroot.url,
@@ -1496,7 +1496,7 @@ export class ServedCopyServe {
          confirmed.some(
             (a) => this.materializePlans[a.sourceID] !== undefined,
          ) ||
-         // G8: a base the re-root replaces declares a measure, view or join
+         // A base the re-root replaces declares a measure, view or join
          // the source inherits; only its block, written again over the
          // table, keeps it (else the source is not carried, call 2).
          confirmed.some((a) => declaresBlocks(map.node(a.sourceID)?.def));
@@ -1717,7 +1717,7 @@ export class ServedCopyServe {
       // An extension of a re-rooted source reads it by name already, and
       // re-rooting the extension too would replace the base it inherits its
       // parent's fields from. Leave it as written, unless it is an extension
-      // table (P10): a `#(materialize)` source with its own table, whose
+      // table: a `#(materialize)` source with its own table, whose
       // re-root keeps its ancestors' blocks in its file (`keptBlocks`), so it
       // loses nothing it inherits from them.
       // The chain comes from the source map; the declaration's own text,
@@ -1763,7 +1763,7 @@ export class ServedCopyServe {
          return reads;
       };
       // An extension table that does not compile over its kept blocks falls
-      // back to what it was before P10: left as written when it reads a
+      // back to the extension as written when it reads a
       // re-rooted base, else re-rooted with its own blocks only.
       const withoutKept = new Map<
          (typeof candidates)[number],
@@ -2301,7 +2301,7 @@ export class ServedCopyServe {
                .map((c) => c.binding.tablePath),
          ),
          // A stored computed dimension of the source's own, unless the probe
-         // compiler found it the same in every zone (P9), holds the value
+         // compiler found it the same in every zone, holds the value
          // the build computed in the source's zone; a restated timestamp
          // truncation is truncated again at read. Each is declined only
          // where a query reads it in another zone (`checkZonedColumns`).
@@ -2485,7 +2485,7 @@ function keepInlinedJoins(state: CopyPassState, error: unknown): boolean {
 /**
  * A column left out of its source's `type:` (a v1 column no cast
  * makes faithful; a big-integer column no native cast reads
- * exactly, known limitation 12). When the model's own text names it
+ * exactly). When the model's own text names it
  * (a dimension or measure over it, an extension's dimension), the
  * copy cannot compile with it gone: that source is left as written
  * and answers live, and every other source keeps its table.
@@ -2555,7 +2555,7 @@ function withoutPairs(state: CopyPassState, detail: string): boolean {
 
 /**
  * The bind guard (`proveReroot`): a re-rooted source keeps every
- * field the author's has, each exactly as hidden (P3), and applies
+ * field the author's has, each exactly as hidden, and applies
  * every filter the author's applies at read. One that does not is
  * left as written, and the copy compiled again. A field it inherited
  * from a base the re-root replaced (a measure, a view, a join
@@ -2796,7 +2796,7 @@ function materializedColumnsOf(
    }
    // A joined big-integer field is read through its native type in the
    // record; one no cast reads exactly leaves the source to its
-   // fallback (known limitation 12).
+   // fallback.
    const readOptions = bigIntegerOptionsOf(def, binding);
    const joinedReads = joined.map((j) => {
       const fields = joinedFieldsAt(def.fields, [j.join]);
@@ -3253,7 +3253,7 @@ function blockPaths(
 }
 
 /**
- * How the served copy reads one pair table (P5), from its plan, the stored
+ * How the served copy reads one pair table, from its plan, the stored
  * schema, the author's compiled source (`sourceFields`) and the joined
  * sources': each stored child column renamed internally under a name no
  * field of the model has (`taken`), and each measure over one level above the
@@ -3447,7 +3447,7 @@ function pairRecordsOf(
          }
          const field = fieldsOf.get(c.dimension);
          // A big-integer child field is read through its native type in the
-         // record (known limitation 12); one no cast reads exactly leaves
+         // record; one no cast reads exactly leaves
          // the table to its fallback.
          const big = bigRead(field, { name: c.column, type });
          // So does one live types as a warehouse-native type, which no
@@ -3757,7 +3757,7 @@ function joinedFieldsAt(
 }
 
 /**
- * The big-integer columns among `columns` (known limitation 12), by name, to
+ * The big-integer columns among `columns`, by name, to
  * the native type each is read through, or to undefined when no cast reads it
  * exactly ({@link bigIntegerReads}). Decided by the author's source's dialect
  * (the one live answers on) and where the binding's table is.
@@ -3942,7 +3942,7 @@ export function v1StoredColumns(
 /**
  * Whether a compiled source declares (or inherits) a measure, a view or a
  * join: what a re-root that replaces it as a base would lose unless it keeps
- * its blocks (G8).
+ * its blocks.
  */
 function declaresBlocks(def: unknown): boolean {
    const fields = (def as { fields?: unknown[] } | undefined)?.fields ?? [];
@@ -4092,7 +4092,7 @@ export function chainBuildText(
    for (const upstream of request.upstreams) {
       // An upstream table holding a 128-bit integer (a list's or struct's
       // leaf included) holds its digits rounded
-      // (DuckLake stores it as a DOUBLE, P4-01): never stacked on, so the
+      // (DuckLake stores it as a DOUBLE): never stacked on, so the
       // downstream recomputes from its raw source rather than storing those
       // rounded values as exact. Its text then reads the upstream as written.
       if (

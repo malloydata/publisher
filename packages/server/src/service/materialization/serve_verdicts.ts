@@ -62,7 +62,7 @@ function declaresMaterialize(def: unknown): boolean {
 
 /**
  * What the environment answers about where a package's tables can be written
- * (P13), read live. `undefined` from either means "not known", which never
+ *, read live. `undefined` from either means "not known", which never
  * warns.
  */
 export interface DeploymentFacts {
@@ -151,7 +151,7 @@ export class ServeVerdicts {
    constructor(private readonly host: ServeVerdictsHost) {}
 
    /**
-    * Each materialized source's serve verdict (D2), read from the plan and the
+    * Each materialized source's serve verdict, read from the plan and the
     * binding as they stand now. `views` adds per-view verdicts (a preview).
     * Reporting only: one that cannot be computed is logged and none is
     * returned, so the dry run, package read or status poll never fails here.
@@ -319,7 +319,7 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
-      // A `storage=` table that holds only ungated rows (g-mixed), read the
+      // A `storage=` table that holds only ungated rows (the ungated-rows rule), read the
       // same way: off the bound bindings, or, not bound yet, by the bind's
       // own rule.
       const ungatedTables = ungatedTableAddresses(

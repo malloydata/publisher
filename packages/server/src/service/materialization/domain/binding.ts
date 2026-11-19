@@ -70,14 +70,14 @@ export interface Binding {
     */
    primaryKeys?: Record<string, boolean>;
    /**
-    * A stored rollup's own key check (known limitation 29), as the run that
+    * A stored rollup's own key check, as the run that
     * wrote or carried the table found it: whether its base held the grain's
     * one dimension once per row. Internal, as {@link primaryKeys} is.
     */
    rollupKey?: { keyColumn: string; unique: boolean };
    /**
     * A `storage=` table plan admitted past a stored source's own row-level
-    * gate under G3 (`SourceEligibility.gateKept`), marked under every name
+    * gate under own-gate keeping (`SourceEligibility.gateKept`), marked under every name
     * it is bound by: the router lets a served answer reading it past an
     * entry-point gate, as it does a database table's. Set by the bind;
     * absent reads as not kept (fail closed).
@@ -89,7 +89,7 @@ export interface Binding {
     * derivations included), marked under every name it is bound by: the
     * router lets an answer reading it past a gated entry point's gate, as it
     * does a database table's, and `govern()` grafts and proves that gate on
-    * the answer (g-mixed). Set by the bind; absent reads as not proven (fail
+    * the answer (the ungated-rows rule). Set by the bind; absent reads as not proven (fail
     * closed).
     */
    holdsOnlyUngatedRows?: boolean;

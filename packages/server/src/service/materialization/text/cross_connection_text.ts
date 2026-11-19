@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 /**
- * Joins a served copy moves across connections (question 11).
+ * Joins a served copy moves across connections.
  *
  * Malloy refuses a join whose source is on another connection than the source
  * it joins into (`join-connection-mismatch`), and it

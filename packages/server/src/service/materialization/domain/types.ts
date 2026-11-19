@@ -157,11 +157,11 @@ export interface FreshnessAwareManifestEntry {
    /**
     * The database table's columns with their types as the warehouse's own
     * catalog names them (the wire entry's `nativeSchema`), which the served
-    * copy casts a big-integer column to exactly (known limitation 12).
+    * copy casts a big-integer column to exactly.
     */
    nativeSchema?: { name: string; type: string }[];
    /**
-    * A `#(rollup)` rollup's key check (known limitation 29), as the
+    * A `#(rollup)` rollup's key check, as the
     * auto-run that wrote or carried this table recorded it: whether the rows
     * it grouped held its one grain dimension once per value. Internal, never
     * on the wire; absent (unknown) on every entry a host's manifest binds.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#@ persist` on a view (P14): reading the
+ * `#@ persist` on a view: reading the
  * declarations and writing their build file.
  *
  *     source: ops is duckdb.table('flights') extend {
@@ -47,7 +47,7 @@
  * compiled them (`build_plan.ts`): a view that reads a given or the current
  * time (its result differs per caller or per read), a nested result on
  * either tier (the view leg cannot rebuild a nest's rows exactly), and a
- * gated source whose gate the view's result cannot keep (question 3).
+ * gated source whose gate the view's result cannot keep.
  *
  * Behind `PUBLISHER_MATERIALIZE`. Every name in the generated text goes
  * through `malloy_text`; the author's own `#@` line is copied verbatim.

@@ -914,7 +914,7 @@ type WhereTermDependency =
    /** Neither a given nor the current time: built once, never re-applied. */
    | { kind: "fixed" }
    /**
-    * A given (P2): {@link DynamicTerm} as {@link dynamicTerm} reads it, with
+    * A given: {@link DynamicTerm} as {@link dynamicTerm} reads it, with
     * where it reads each field and given (see {@link termLocations}).
     */
    | {
@@ -1191,7 +1191,7 @@ export function currentTimeFields(fields: unknown): Set<string> {
  * Every field of a source whose value reads a given, as a dotted path, by the
  * same rule as {@link currentTimeFields}: it reads one itself (the IR walk
  * {@link readsAGiven}, which also reads Malloy's `givenUsage` summary), or
- * reads a field or join that does. P9's IR signal, beside the probe
+ * reads a field or join that does. The caller-dependence IR signal, beside the probe
  * compiler's: such a dimension is never stored, since its value differs per
  * caller. Fails closed: a field the walk cannot finish is listed.
  */
