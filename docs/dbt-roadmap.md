@@ -207,13 +207,14 @@ Every team running dbt + Publisher today has had to build the same harness: a bi
 CI gates, a per-tenant package producer, refresh coordination. None of it is differentiated work a
 team should own. All of it becomes product:
 
-- **Honest CI signals.** Part of this has shipped: `GET /api/v0/status` names every package that
-  failed to load under `loadErrors`, and marks one still serving its previous model after a failed
-  reload with `stale: true`; the startup line `PUBLISHER_READY … load_errors=<n>` counts them
-  ([startup signals](configuration.md#startup-signals)). Still to do: `/health/readiness` returns
-  200 even when a package failed, so CI has to read `/status`. Fix: `publisher --check` boots,
-  compiles every package, prints per-model errors, and exits non-zero; a strict health variant
-  returns 503 while any package is failed or serving stale.
+- **Honest CI signals.** `GET /api/v0/status` names every package that failed to load under
+  `loadErrors`, and marks one still serving its previous model after a failed reload with
+  `stale: true`; the startup line `PUBLISHER_READY … load_errors=<n>` counts them
+  ([startup signals](configuration.md#startup-signals)). `publisher --check` boots, compiles every
+  package, prints each model's errors with file, line and column, and exits non-zero
+  ([check mode](configuration.md#check-mode-for-ci)); `GET /health/readiness?strict=true` answers
+  503 while any package is failed or serving stale, naming each, where plain readiness stays 200
+  ([readiness probes](configuration.md#readiness-probes)).
 - **`malloy-pub dbt bind` / `dbt check`.** Generate the physical-binding layer from dbt's
   `manifest.json` — one binding source per selected model, with dbt column descriptions carried
   over as `#(doc)` annotations so documentation is authored once and flows to the agent — plus a
@@ -393,7 +394,7 @@ driven by declarations, not a team-maintained build system.
 
 | Horizon | Items |
 | --- | --- |
-| Now | Honest CI signals (partly shipped: `/status` `loadErrors` with `stale`, and `PUBLISHER_READY … load_errors=`; `publisher --check` and strict health not yet) · `dbt bind`/`check` · `lint` skeleton + contributed checks · refresh hook · the "Malloy for dbt users" guide · fold the severity/scoping/warn-stream requirements into the assertions design |
+| Now | Honest CI signals (`/status` `loadErrors` with `stale`, `PUBLISHER_READY … load_errors=`, `publisher --check`, strict readiness) · `dbt bind`/`check` · `lint` skeleton + contributed checks · refresh hook · the "Malloy for dbt users" guide · fold the severity/scoping/warn-stream requirements into the assertions design |
 | Next | Semantic-layer converter + reconciliation harness · `ci compile` + example package · package variants · npm-style package dependencies · override sources · unit tests in `lint` · warehouse-joinable seeds · SCD2 design doc · SQL-source dependency-edge spike |
 | Later | Language features in measured-usage order · full staging conversion (SQL sources → progressive Malloy-ification) · expression-level macros |
 

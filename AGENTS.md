@@ -100,6 +100,14 @@ files on disk. Nothing else says so. The package's entry under `environments`, a
 resource, both read as serving, so join on the package name to tell a current package from a stale
 one. Fix the model and reload to clear it.
 
+For a yes-or-no answer with no parsing, `GET /health/readiness?strict=true` answers `503` while anything
+is in that array (failed or stale) and `200` otherwise; plain `/health/readiness` stays `200` once the
+server is ready. To check packages without serving them at all, as a CI step or before you hand a
+change back, run the server with `--check`: it loads and compiles every configured package, prints each
+error as `file:line:col: error: message [env/package]`, ends with a `PUBLISHER_CHECK_OK` or
+`PUBLISHER_CHECK_FAILED` line on stderr, exits `0` or `1`, and binds no port, so it never collides with a
+server you are running ([check mode](docs/configuration.md#check-mode-for-ci)).
+
 ### Starting from your own data
 
 To serve the user's data rather than the bundled examples, scaffold a package — in a fresh directory,

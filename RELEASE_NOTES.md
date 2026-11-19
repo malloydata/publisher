@@ -21,6 +21,27 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — check mode for CI, and a strict readiness probe
+
+**New: `--check` loads and compiles every configured package, reports what is wrong, and exits.** Run
+the server with `--check` (or `PUBLISHER_CHECK=true`) and it boots as it would with the same
+`--config` and `--server_root`, loads every configured environment and package, and exits instead of
+serving: `0` when everything loaded, `1` when anything did not. It binds no port. Each problem is one
+line on stdout, `<file>:<line>:<col>: error: <message> [<env>/<package>]`, and a package published from
+a local directory has every model's errors reported, not only the first its load stopped at. The run
+ends with `PUBLISHER_CHECK_OK` or `PUBLISHER_CHECK_FAILED` on stderr, with the same counts
+`PUBLISHER_READY` carries plus `errors` and `warnings`. A package's `warn`-severity `warnings` are
+printed and do not fail the check unless `--check-fail-on-warnings` is set. [Check mode](docs/configuration.md#check-mode-for-ci)
+has the format, and [deployment.md](docs/deployment.md#checking-packages-in-ci) a GitHub Actions
+workflow.
+
+**New: `GET /health/readiness?strict=true` fails while a package is failed or stale.** It answers `503`,
+naming each entry under `loadErrors` as `/api/v0/status` does, while any configured environment or
+package failed to load or a package serves a stale model after a failed reload. Plain
+`/health/readiness` is unchanged: `200` once the server is ready, whatever loaded. **Who is affected:**
+nobody who does not ask for it. A probe that already sends a `strict` query parameter with a value
+other than `true` or `false` now gets `400`.
+
 ## [Unreleased] — a materialization run's logs carry error codes, not error messages
 
 **Changed: a run's logs name an error by its code, never its message.** A warehouse driver's message can quote the SQL that failed or a value from a row, so every log line a materialization run, its reclaim or its scheduler writes now carries `code` (the error's code, as `materialization.run.finished` already did) in place of `error`. A second error on the same line is `restoreCode`, `cleanupCode` or `transitionErrorCode` (was `restoreError`, `cleanupError`, `transitionError`). Three lines change shape beyond that: a source the eligibility gate refuses logs its refusal code as `reason` (was the refusal's message); the warning that a run's manifest did not load into the package no longer carries the message, which stays on the run's record; and the warning that the SSH proxy of a federated storage build did not close carries `code` instead of the message in its text. The run's record still holds the redacted message, so `GET …/materializations/{id}` is unchanged. An incremental source skipped because no new data arrived now logs at `info` (it is the steady state of a schedule); a seed and an unreadable frontier still warn. `materialization.run.finished`'s `durationMs` on a committed run now spans the whole run, rebinds and reclaim included, as `publisher_materialization_run_duration_ms` always did. **Who is affected:** an operator whose log queries or alerts read `error` (or the renamed fields) on these lines: read `code`.
