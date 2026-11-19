@@ -32,7 +32,7 @@ import { getPersistStorageMode } from "../../config";
 import { storageWritable } from "./domain/placement";
 import { addressDestination } from "./plan/addressing";
 import { assertInstructedDestinationWritable } from "./run/materialization_instructed_run";
-import { resolveStorageDestination } from "./run/materialization_run_support";
+import { resolveStorageDestination } from "./run/build_upstreams";
 import { buildTierOf } from "./run/run_telemetry";
 
 const MODES = ["off", "write-only", "on"] as const;

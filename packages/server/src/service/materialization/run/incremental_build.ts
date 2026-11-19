@@ -22,6 +22,8 @@
  * ledger in the run store; logs and counts each step.
  */
 
+import { errorCodeOf } from "./error_code";
+import { recordedTableKey } from "../domain/physical_table";
 import { logger } from "../../../logger";
 import {
    persistSourceDeclaredColumns,
@@ -47,9 +49,9 @@ import type {
 import {
    collectIncrementalDeclarations,
    deriveColumns,
+   type RunPlan,
    storedColumnOf,
-} from "../plan/build_plan";
-import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
+} from "./run_plan";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import { storageDeltaTarget } from "./incremental_storage";
 import { type StorageIncrementalRefresh } from "./materialization_build_session";
@@ -134,20 +136,6 @@ export interface IncrementalRunContext {
 }
 
 /**
- * The caller-ledger index key: a boundary is a fact about a TABLE. Connection and
- * destination are separate NUL-delimited fields because they are separate
- * namespaces: a connection and a destination both called `lake` are different
- * warehouses.
- */
-function ledgerTableKey(table: LedgerTableIdentity): string {
-   return [
-      table.connectionName,
-      table.storageDestinationName ?? "",
-      table.physicalTableName,
-   ].join("\u0000");
-}
-
-/**
  * Index a caller-supplied ledger by table (the same key the local store uses),
  * converting each wire entry into the boundary shape the planner reads. Every
  * field is one the publisher reported on a manifest entry, echoed back.
@@ -158,7 +146,7 @@ export function indexCallerLedger(
    const index = new Map<string, RecordedBoundary>();
    for (const entry of entries) {
       index.set(
-         ledgerTableKey({
+         recordedTableKey({
             connectionName: entry.connectionName,
             storageDestinationName: entry.storageDestinationName,
             physicalTableName: entry.physicalTableName,
@@ -343,7 +331,7 @@ export async function planSourceRefresh(params: {
       // No fallback to the local store for a table the caller omitted: a
       // worker's own row may be a generation stale, which is why this mode
       // exists. No entry means the ordinary `no_boundary` seed.
-      ledgerEntry = context.callerLedger.get(ledgerTableKey(lineage)) ?? null;
+      ledgerEntry = context.callerLedger.get(recordedTableKey(lineage)) ?? null;
    } else {
       try {
          ledgerEntry = await context.ledger.getIncrementalLedgerEntry(
@@ -441,7 +429,7 @@ async function advanceLedger(params: {
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
          sourceEntityId: lineage.sourceEntityId,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
    }
 }
@@ -470,7 +458,7 @@ export async function resetLedger(
       logger.warn("Failed to clear the covered_through boundary", {
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
    }
 }
@@ -729,10 +717,16 @@ export function reportIncrementalStep(params: {
    const { step, sourceName, packageName, physicalTableName } = params;
    recordIncrementalStep(step.mode, step.reasonCode);
    // Warn: a seed's reason is the only signal that an incremental source is
-   // quietly being rebuilt in full every run. The code only: the free-text
-   // reason can quote a watermark boundary, which is a value from the data,
-   // or a driver's error. The boundary in force is on the manifest entry.
-   logger.warn(
+   // quietly being rebuilt in full every run. A skip because no new data
+   // arrived is the steady state of a schedule: info. The code only: the
+   // free-text reason can quote a watermark boundary, which is a value from
+   // the data, or a driver's error. The boundary in force is on the manifest
+   // entry.
+   const level =
+      step.mode === "skip" && step.reasonCode === "not_advanced"
+         ? "info"
+         : "warn";
+   logger[level](
       step.mode === "seed"
          ? "Rebuilding an incremental source in full"
          : "Skipping an incremental source's refresh",
@@ -823,7 +817,7 @@ export function ledgerFields(
  * compiled source's schema and query, which the wire plan does not carry.
  */
 export function incrementalRunContext(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    run: {
       environmentId: string;
       packageName: string;

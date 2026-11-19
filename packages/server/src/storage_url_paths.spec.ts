@@ -15,7 +15,7 @@ import { internalErrorToHttpError, ModelCompilationError } from "./errors";
 import { readPackageCatalog } from "./retrieval/model/package_catalog";
 import { EnvironmentStore } from "./service/environment_store";
 import { notServed } from "./service/materialization/run/manifest_committer";
-import { redactConnectionSecrets } from "./service/materialization/run/materialization_run_support";
+import { redactConnectionSecrets } from "./service/materialization/run/connection_redaction";
 import { fakeOf } from "./test_helpers/store_fakes";
 
 const URL_TEXT =

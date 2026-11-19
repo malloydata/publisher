@@ -36,8 +36,11 @@
  */
 
 import type { SerializedNotebookCell } from "./notebook_cell_wire";
-import type { EligibilityRefusalReason } from "../materialization_metrics";
-import type { BuildPlanOutcome } from "../service/materialization/plan/build_plan";
+import type { PackageAnnotationFinding } from "../service/annotation_reader";
+import type {
+   EligibilityRefusals,
+   PackagePlan,
+} from "../service/materialization/domain/package_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
@@ -60,12 +63,15 @@ import type { ModelEntitiesPlan } from "../service/entities/plan";
  *
  * 3: `SerializedModel.governsAccess`.
  *
- * 4: every field of a build plan's outcome is sent (`BuildPlanOutcome`), so
+ * 4: every field of a build plan's outcome is sent, so
  * the pool reads none as missing.
  *
  * 5: the served-copy compile job ({@link CompileServedCopyRequest}).
+ *
+ * 6: the build plan is sent as its `PackagePlan` (its tables, builds and
+ * addresses as data), and the pre-aggregation companion fields are gone.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 5;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 6;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -132,18 +138,12 @@ export interface LoadPackageRequest {
    computeBuildPlan?: boolean;
    /**
     * How long into the job the worker keeps doing optional work for the main
-    * thread (render-tag results, pre-aggregation companions, build plan).
-    * Checked before each render-tag target and each companion; past it, the
+    * thread (render-tag results, entities, build plan). Checked before each
+    * render-tag target and each model's plan parts; past it, the
     * remaining work (and the plan, once any model's parts are missing) is left
     * to the main thread. The pool's jobLimitMs adds room for it.
     */
    mainThreadWorkBudgetMs: number;
-   /**
-    * Compile each model's pre-aggregation companion for the main thread to
-    * hydrate (see SerializedModel.preaggregateCompanion). Set by the loads
-    * that serve the package; a compile preview does not serve it.
-    */
-   withPreaggregateCompanions?: boolean;
    /**
     * The package is a published version (its version owns its runs' tables
     * when its scope is `"version"`), so its tables take readable names whose
@@ -223,13 +223,6 @@ export interface SerializedModel {
     * under the same text prepares different results.
     */
    renderTagResultsDigest?: string;
-   /**
-    * The model's pre-aggregation companion, for the main thread to hydrate
-    * rather than compile (see Model.buildPreaggregateServeModel). `{}` when
-    * there is none or it failed; absent when not attempted, and the main
-    * thread compiles it.
-    */
-   preaggregateCompanion?: { modelDef?: unknown };
    /**
     * The model's entities, planned before its sources' queryability is known
     * (`service/entities/plan.ts`); the main thread resolves it against the
@@ -345,12 +338,11 @@ export interface WorkerUnhandledRejectionMessage {
 export type WorkerBuildPlan =
    | {
         ok: true;
-        outcome: BuildPlanOutcome;
+        /** Its eligibility refusals are counted on it (`eligibilityRefused`). */
+        packagePlan: PackagePlan<PackageAnnotationFinding>;
         durationMs: number;
         /** Connections whose digest could not be read (see resolveConnectionDigests). */
         digestSkipped: string[];
-        /** Eligibility refusals counted while deriving it, by reason. */
-        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
      }
    | {
         ok: false;
@@ -359,7 +351,7 @@ export type WorkerBuildPlan =
         /** Connections whose digest could not be read before it failed. */
         digestSkipped: string[];
         /** Refusals counted before the derivation failed. */
-        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+        eligibilityRefused: EligibilityRefusals;
      };
 
 export interface LoadPackageError {

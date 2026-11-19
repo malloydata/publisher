@@ -12,6 +12,7 @@
  * recorded scheduler fire. Logs and counts each fire.
  */
 
+import { errorCodeOf } from "./error_code";
 import type { MaterializationSchedulerConfig } from "../../../config";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -60,7 +61,7 @@ interface ScheduleState {
  * loads (through the memory governor) only when its cron comes due. Archiving a
  * version takes it out of the sweep; unarchiving arms it again. Only packages
  * whose persistence policy is valid fire (the publish rule). Arming state is in
- * memory, re-anchored after a restart from the newest recorded `SCHEDULER` fire
+ * memory, re-anchored after a restart from the newest recorded `scheduler` fire
  * (see {@link arm}).
  */
 export class MaterializationScheduler {
@@ -130,7 +131,7 @@ export class MaterializationScheduler {
          } catch (err) {
             logger.warn("MaterializationScheduler: could not list versions", {
                environmentName,
-               error: err instanceof Error ? err.message : String(err),
+               code: errorCodeOf(err),
             });
             continue;
          }
@@ -211,7 +212,7 @@ export class MaterializationScheduler {
             environmentName,
             packageName,
             versionId,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -357,7 +358,7 @@ export class MaterializationScheduler {
 
    /**
     * The instant to compute the first `nextFireAt` from after a (re)start: the
-    * newest recorded `SCHEDULER` fire if any, else `now`. Any lookup failure
+    * newest recorded `scheduler` fire if any, else `now`. Any lookup failure
     * degrades to `now` (no catch-up) so arming always succeeds.
     */
    private async recoveryAnchor(
@@ -381,7 +382,7 @@ export class MaterializationScheduler {
             {
                environmentName,
                packageName,
-               error: err instanceof Error ? err.message : String(err),
+               code: errorCodeOf(err),
             },
          );
          return new Date(nowMs);
@@ -437,7 +438,7 @@ export class MaterializationScheduler {
             environmentName,
             packageName,
             versionId,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
    }

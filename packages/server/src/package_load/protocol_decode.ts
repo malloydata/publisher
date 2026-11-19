@@ -87,7 +87,6 @@ const OPTIONAL_MODEL_FIELDS: ReadonlyArray<[keyof SerializedModel, Expect]> = [
    ["gateWarnings", "array"],
    ["renderTagResults", "array"],
    ["renderTagResultsDigest", "string"],
-   ["preaggregateCompanion", "object"],
    ["entities", "object"],
    ["governsAccess", "boolean"],
 ];

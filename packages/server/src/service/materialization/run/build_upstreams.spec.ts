@@ -5,25 +5,25 @@ import { Manifest } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import type { ManifestEntry } from "../domain/types";
 import {
-   manifestExcludingStorage,
-   manifestForCompiler,
-   redactConnectionSecrets,
-   stagingSuffix,
-   strictMissSourceId,
-   tallySources,
+   ChainedPackageStaleError,
    chainedPlanFacts,
    currentUpstreamEntries,
    entryTier,
-   noteWrongTierRecompute,
+   manifestExcludingStorage,
+   manifestForCompiler,
    normalizedTier,
+   noteWrongTierRecompute,
+   PACKAGE_STALE_MARKER,
+   strictMissSourceId,
    upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
+   withChainBuildText,
    WRONG_TIER_MARKER,
    wrongTierDetail,
-   PACKAGE_STALE_MARKER,
-   withChainBuildText,
-   ChainedPackageStaleError,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import { redactConnectionSecrets } from "./connection_redaction";
+import { stagingSuffix } from "./build_table_names";
+import { tallySources } from "./run_telemetry";
 import {
    fakeSource,
    persistTables,
@@ -34,7 +34,7 @@ import * as sinon from "sinon";
 import { errorCodeOf } from "./error_code";
 
 /**
- * The pure helpers behind a materialization run (materialization_run_support.ts),
+ * The pure helpers behind a materialization run (build_upstreams.ts),
  * tested directly: secret redaction, staging names, manifest filtering and
  * upstream-reuse reporting, tallies, and the strict-miss reader.
  */

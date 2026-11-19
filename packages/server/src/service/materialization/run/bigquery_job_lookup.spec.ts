@@ -5,10 +5,8 @@ import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../../../logger";
-import {
-   BilledReadNotCapturedError,
-   issuePassthroughRead,
-} from "./materialization_build_session";
+import { issuePassthroughRead } from "./materialization_build_session";
+import { BilledReadNotCapturedError } from "./build_attribution";
 
 /**
  * A labelled BigQuery read runs as a script, and its rows sit in an anonymous

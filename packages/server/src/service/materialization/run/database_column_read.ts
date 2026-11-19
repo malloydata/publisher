@@ -32,7 +32,7 @@ import {
 } from "../stored_column_types";
 import type { FreshnessManifest, ObservedColumns } from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
-import { redactConnectionSecrets } from "./materialization_run_support";
+import { redactConnectionSecrets } from "./connection_redaction";
 import {
    type CatalogBatch,
    type CatalogTable,

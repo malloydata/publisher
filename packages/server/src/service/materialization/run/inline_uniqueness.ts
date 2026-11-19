@@ -23,7 +23,7 @@
 import { placedLeafKey } from "../domain/physical_table";
 import { createHash } from "node:crypto";
 import { recordKeyCheck } from "../../../materialization_metrics";
-import { isActiveRun } from "./materialization_run_support";
+import { isActiveRun } from "./run_status";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import type { KeyUniqueness, ManifestEntry } from "../domain/types";
 import type {

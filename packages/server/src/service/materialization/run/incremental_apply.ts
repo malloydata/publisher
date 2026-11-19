@@ -913,7 +913,7 @@ export async function applyDeltaScript(
             logger.warn(
                "Could not roll back a failed delta; a pooled connection may " +
                   "stay in an aborted transaction",
-               { dialect, error: errMessage(rollbackErr) },
+               { dialect, code: errorCodeOf(rollbackErr) },
             );
          }
       }

@@ -19,7 +19,7 @@ import { installSettings } from "../test_helpers/settings_env";
 import { tempBuildPlanPackages } from "../test_helpers/incremental_test_harness";
 import { compilePackageBuildPlan } from "./materialization/plan/build_plan_compile";
 import {
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
    type FinishedBuildPlan,
 } from "./materialization/plan/build_plan";
 import { deriveSelfInstructions } from "./materialization/run/run_instructions";
@@ -76,7 +76,7 @@ async function compile(
 
 /** Each planned rollup, by name: what its build and its table are. */
 type PlannedSource = NonNullable<
-   ReturnType<typeof deriveBuildPlanOutcome>["plan"]
+   ReturnType<typeof derivePackagePlan>["plan"]
 >["sources"][string];
 
 interface PlannedRollup {
@@ -87,7 +87,7 @@ interface PlannedRollup {
 }
 
 function rollupsOf(compiled: FinishedBuildPlan): Record<string, PlannedRollup> {
-   const { plan } = deriveBuildPlanOutcome(compiled, null);
+   const { plan } = derivePackagePlan(compiled, null);
    const out: Record<string, PlannedRollup> = {};
    for (const s of Object.values(plan?.sources ?? {})) {
       if (s.origin !== "rollup") continue;

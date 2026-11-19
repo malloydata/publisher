@@ -38,7 +38,7 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 import {
    collectModelBuildPlan,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
    finishBuildPlan,
    emptyBuildPlanParts,
    type FinishedBuildPlan,
@@ -161,7 +161,7 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
    const addresses = addressesOf(compiled);
    learnAddresses(normalizer, addresses);
    const { connections: _connections, ...collected } = compiled;
-   const outcome = deriveBuildPlanOutcome(collected, null);
+   const outcome = derivePackagePlan(collected, null);
    const wirePlan = outcome.plan && {
       ...outcome.plan,
       sources: Object.fromEntries(

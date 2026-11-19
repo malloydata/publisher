@@ -33,7 +33,6 @@ import type {
 } from "@malloydata/malloy";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import { logger } from "../../../logger";
 import {
    ownLevelNotes,
    type AnnotationNote,
@@ -65,7 +64,9 @@ import {
    type PersistedViewPlan,
 } from "../domain/table_plans";
 import {
+   companionFailure,
    companionOmissions,
+   type CompanionFailure,
    declaredInModel,
    GeneratedFiles,
    type SynthesizedRuntimeFactory,
@@ -460,6 +461,8 @@ export async function tryCompilePersistedViewCompanion(args: {
    refusedQueries: PersistedQueryRefusal[];
    /** The views and queries a failure left out of the plan (see omitted_sources). */
    omitted?: Omission[];
+   /** Why the companion failed, for the caller to report. */
+   failure?: CompanionFailure;
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const companionHref = persistedViewCompanionHref(
@@ -547,16 +550,10 @@ export async function tryCompilePersistedViewCompanion(args: {
          refusedQueries,
       };
    } catch (error) {
-      logger.error(
-         "Failed to plan or compile the generated persisted-view companion",
-         {
-            modelPath: args.modelPath,
-            error: error instanceof Error ? error.message : String(error),
-         },
-      );
       return {
          refused,
          refusedQueries,
+         failure: companionFailure("persisted_view", error),
          omitted: companionOmissions("persisted_view", {
             file: companionHref,
             names: plannedNames,

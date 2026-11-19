@@ -19,6 +19,7 @@
  * carries this session's marker, which no other build's can.
  */
 
+import { errorCodeOf } from "./error_code";
 import { randomUUID } from "node:crypto";
 import {
    BigQuery,
@@ -203,7 +204,7 @@ export class BigQueryBuildJobs {
          failed = true;
          logger.warn(
             "Could not cancel a cancelled storage= build's BigQuery jobs",
-            { error: error instanceof Error ? error.message : String(error) },
+            { code: errorCodeOf(error) },
          );
       } finally {
          clearTimeout(timer);
@@ -250,8 +251,7 @@ export class BigQueryBuildJobs {
                } catch (error) {
                   logger.warn("Could not cancel a BigQuery job", {
                      jobId: job.id,
-                     error:
-                        error instanceof Error ? error.message : String(error),
+                     code: errorCodeOf(error),
                   });
                }
             }),

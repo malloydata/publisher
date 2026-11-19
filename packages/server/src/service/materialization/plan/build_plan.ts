@@ -11,14 +11,14 @@
  * `build_plan_compile.ts` on the main thread), and `mergeBuildPlanParts`
  * joins per-model parts in model order. `deriveBuildPlan` projects the plan
  * into the wire `BuildPlan` (the facade, for REST and the control plane);
- * `deriveBuildPlanOutcome` projects it into what a package load keeps, which
- * crosses the load worker as plain data. `collectIncrementalDeclarations`
+ * `derivePackagePlan` projects it into the `PackagePlan`, the plain data that
+ * crosses the load worker and the facade holds. `collectIncrementalDeclarations`
  * gives the incremental gate and the run's incremental build each source's
  * resolved declaration. It also re-exports the addressing, plan-layer and
  * eligibility helpers its importers read.
  *
  * Compiles, never runs: on the load worker its connection refuses SQL, and
- * `deriveBuildPlanOutcome` reads connection digests, never live connections.
+ * `derivePackagePlan` reads connection digests, never live connections.
  * It imports nothing from `service/model.ts`, so the load worker can run it.
  */
 
@@ -66,7 +66,10 @@ import {
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
 import { declares, destinationOf, readNotesIfAny } from "./declaration";
-import { persistDeclarationProblems } from "./persist_annotation_validation";
+import {
+   persistDeclarationProblems,
+   persistNameProblems,
+} from "./persist_annotation_validation";
 import { Annotations, isSourceDef } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -86,7 +89,10 @@ import type { IncrementalDeclaration, PairDelta } from "../domain/incremental";
 import { isAuthorizeAttributedToEntryPoint } from "./materialization_eligibility";
 
 import {
+   companionFailure,
    companionOmissions,
+   GeneratedFiles,
+   type CompanionFailure,
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
 import type { RollupPlan } from "../domain/rollup_measures";
@@ -109,6 +115,7 @@ import {
 } from "./materialize_plan";
 import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
 import {
+   logCompanionFailure,
    tryCompileMaterializeCompanion,
    type CrossFileCompanions,
 } from "./materialize_compile";
@@ -163,6 +170,7 @@ import {
    plannedTargetOf,
    presentAs,
    renameBuildSourceIDs,
+   resolveConnectionDigests,
    withoutSourceIDs,
    sourceBuildsOf,
    type PlanAddresses,
@@ -182,10 +190,19 @@ import {
    refuseRewrittenNames,
    sharedTables,
    withoutSources,
-   type DatabaseSourceEligibility,
-   type SourceEligibility,
    type TableVerdict,
 } from "./eligibility_collect";
+import {
+   countRefusal,
+   noModelGateLines,
+   type EligibilityRefusals,
+   type ModelGateLines,
+   type PackagePlan,
+   type PersistedViewName,
+   type RefusalNotices,
+   type RefusedRollup,
+   type TablePlanData,
+} from "../domain/package_plan";
 import { resolveFreshness, resolveQueryMetadata } from "./plan_layers";
 import {
    finalizeOmissions,
@@ -206,7 +223,6 @@ export {
    foldDistinctTableNames,
    planAddresses,
    plannedSources,
-   resolveConnectionDigests,
    setTestAddressForTarget,
    sourceBuildsOf,
 } from "./addressing";
@@ -216,12 +232,7 @@ export {
    type SourceBuild,
 } from "../domain/compiled_build_plan";
 export type { TableFolds } from "./addressing";
-export {
-   sharedTables,
-   tierGateInputs,
-   type DatabaseSourceEligibility,
-   type SourceEligibility,
-} from "./eligibility_collect";
+export { sharedTables, tierGateInputs } from "./eligibility_collect";
 export {
    composeDeclaredQueryMetadata,
    resolveFreshness,
@@ -601,11 +612,12 @@ export interface BuildPlanParts {
    /** Findings on the `#@` annotations of this model's sources (see annotation_reader). */
    annotationFindings: PackageAnnotationFinding[];
    /**
-    * Each model's invalid `#@ preaggregate` declarations and misspelled
-    * materialization routes, as load-failure lines (plan/load_gate_text.ts),
-    * so a run over the files reads them as the load does.
+    * Each model's own load-failure lines (plan/load_gate_text.ts), so a run
+    * over the files reads them as the load does.
     */
-   modelGateLines: { preaggregate: string[]; nearMiss: string[] };
+   modelGateLines: ModelGateLines;
+   /** See {@link CompiledBuildPlan.persistedViews}. */
+   persistedViews: Record<string, PersistedViewName>;
    /** See {@link CompiledBuildPlan.omittedSources}. */
    omittedSources: Omission[];
 }
@@ -616,7 +628,8 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       tables: {},
       droppedPersistSources: [],
       annotationFindings: [],
-      modelGateLines: { preaggregate: [], nearMiss: [] },
+      modelGateLines: noModelGateLines(),
+      persistedViews: {},
       omittedSources: [],
    };
 }
@@ -641,6 +654,8 @@ export function mergeBuildPlanParts(
    }
    into.modelGateLines.preaggregate.push(...from.modelGateLines.preaggregate);
    into.modelGateLines.nearMiss.push(...from.modelGateLines.nearMiss);
+   into.modelGateLines.nameProblems.push(...from.modelGateLines.nameProblems);
+   Object.assign(into.persistedViews, from.persistedViews);
 }
 
 /**
@@ -724,15 +739,18 @@ function sourceIDFileURL(sourceID: string): string | undefined {
 
 /**
  * A companion compile's refusals, as findings, and the sources it left out,
- * added to `parts`: the start every generated companion shares.
+ * added to `parts`, and its failure logged once: the start every generated
+ * companion shares.
  */
 function addCompanionOutcome(
    parts: BuildPlanParts,
    findings: readonly PackageAnnotationFinding[],
    omitted: readonly Omission[] | undefined,
+   failed?: { failure: CompanionFailure | undefined; modelPath: string },
 ): void {
    for (const finding of findings) addAnnotationFinding(parts, finding);
    parts.omittedSources.push(...(omitted ?? []));
+   if (failed?.failure) logCompanionFailure(failed.failure, failed.modelPath);
 }
 
 /**
@@ -792,8 +810,8 @@ async function collectGeneratedMaterialize(
    },
 ): Promise<MaterializedBases | undefined> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
-   const { generated, refused, omitted } = await tryCompileMaterializeCompanion(
-      {
+   const { generated, refused, omitted, failure } =
+      await tryCompileMaterializeCompanion({
          ...args,
          contents: authorDef.contents ?? {},
          givens: authorDef.givens ?? {},
@@ -801,12 +819,12 @@ async function collectGeneratedMaterialize(
             .sourceRegistry,
          // P9's probes compile against the author's model, never run.
          probe: args.materializer,
-      },
-   );
+      });
    addCompanionOutcome(
       parts,
       refused.map((r) => materializeRefusalFinding(r, args.modelPath)),
       omitted,
+      { failure, modelPath: args.modelPath },
    );
    if (!generated) return undefined;
    for (const [key, compile] of generated.checkCompilers) {
@@ -929,12 +947,13 @@ async function collectGeneratedRollups(
       materialized?: MaterializedBases;
    },
 ): Promise<void> {
-   const { generated, refused, omitted } =
+   const { generated, refused, omitted, failure } =
       await tryCompileRollupCompanion(args);
    addCompanionOutcome(
       parts,
       refused.map((r) => rollupRefusalFinding(r, args.modelPath)),
       omitted,
+      { failure, modelPath: args.modelPath },
    );
    if (!generated) return;
    const planByName = new Map(
@@ -1028,7 +1047,7 @@ async function collectGeneratedPersistedViews(
    },
 ): Promise<void> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
-   const { generated, refused, refusedQueries, omitted } =
+   const { generated, refused, refusedQueries, omitted, failure } =
       await tryCompilePersistedViewCompanion({
          packagePath: args.packagePath,
          modelPath: args.modelPath,
@@ -1045,8 +1064,15 @@ async function collectGeneratedPersistedViews(
          ),
       ],
       omitted,
+      { failure, modelPath: args.modelPath },
    );
    if (!generated) return;
+   for (const plan of generated.plans) {
+      parts.persistedViews[plan.buildSourceID] = {
+         sourceName: plan.sourceName,
+         viewName: plan.viewName,
+      };
+   }
    const planByName = new Map(
       generated.plans.map((p) => [p.buildSourceName, p]),
    );
@@ -1377,6 +1403,18 @@ async function collectGeneratedTables(
             annotationNearMisses(authoredNotes(authorDef)),
          ),
       );
+      // An unquoted or unsafe `#@ persist name=`, read from the raw text, the
+      // ground truth for quoting, as the load reads it. A text that cannot be
+      // read adds nothing: the load reads it itself, and the plan's own
+      // finding still refuses an unsafe name (an unquoted one plans nothing).
+      const text = await GeneratedFiles.over(getRuntime)
+         .readIfAny(pathToFileURL(path.join(packagePath, modelPath)))
+         .catch(() => undefined);
+      if (text !== undefined) {
+         parts.modelGateLines.nameProblems.push(
+            ...persistNameProblems(text, modelPath),
+         );
+      }
    }
    // `#@ persist` on a named query: its key findings always, and, with
    // PUBLISHER_MATERIALIZE off, the warning that it is not built. A query
@@ -1507,17 +1545,15 @@ async function v1PlanModel(
          packagePath,
          modelPath,
          getRuntime,
-         onCompileFailed: (error) => {
-            logger.error(
-               "The v1 build copy of a model could not be read or did not compile; its #@ persist sources are left out of the build plan",
-               { modelPath, error: errMessage(error) },
-            );
-            parts.omittedSources.push(
-               ...companionOmissions("v1_build", {
+         onCompileFailed: (error) =>
+            addCompanionOutcome(
+               parts,
+               [],
+               companionOmissions("v1_build", {
                   sourceIDs: declaredPersistSourceIDs(malloyModel),
                }),
-            );
-         },
+               { failure: companionFailure("v1_build", error), modelPath },
+            ),
       });
       if (!companion) return undefined;
       planModel = companion.model;
@@ -1883,57 +1919,6 @@ function refuseDatabaseTablesSharedWithARefusal(
    }
 }
 
-/** What a package load keeps from its build plan. */
-export interface BuildPlanOutcome {
-   plan: BuildPlan | null;
-   droppedPersistSources: { name: string; modelPath: string }[];
-   annotationFindings: PackageAnnotationFinding[];
-   /** See {@link BuildPlanParts.modelGateLines}. */
-   modelGateLines: { preaggregate: string[]; nearMiss: string[] };
-   sourceEligibility: SourceEligibility;
-   databaseSourceEligibility: DatabaseSourceEligibility;
-   incrementalDeclarations: Record<string, IncrementalDeclaration>;
-   /**
-    * Every connection a persist source builds on, including sources the plan
-    * skipped (a connection that did not resolve) or refused, so a connection
-    * edit that creates or fixes one re-derives the plan.
-    */
-   buildConnectionNames: string[];
-   /**
-    * The generated `#(materialize)` build sources, by their sourceID (see
-    * the `materialize` of {@link CompiledBuildPlan.tables}), for the served copy to
-    * re-root each author source on its build source's table.
-    */
-   materializePlans: Record<string, MaterializePlan>;
-   /**
-    * The `#(rollup)` rollups over a gated base whose gates are grafted
-    * on their variant at read ({@link rollupGateEnforcedAtRead}), by their
-    * sourceID, so the serve verdict does not call them gated out.
-    */
-   rollupsKeepingGates: string[];
-   /**
-    * The base and grain of each rollup in `plan.refusedSources`, by its
-    * sourceID, so its package warning names what the author wrote rather
-    * than the generated name (a refusal may also leave `plan.sources`).
-    */
-   refusedRollups: Record<string, RefusedRollup>;
-   /** See {@link RefusalNotices}. */
-   refusalNotices: RefusalNotices;
-   /**
-    * The key Malloy files each table under (its target's `buildId`), by
-    * content address, where the two differ: an address
-    * foldDistinctTableNames gave a source its own `name=` or projection on.
-    */
-   compilerKeys: Record<string, string>;
-}
-
-/**
- * The warning code and subject of each refusal a finding made, by its
- * `refusedSources` key: the record says why, the notice says how the
- * package warning names it.
- */
-export type RefusalNotices = Record<string, { code: string; subject?: string }>;
-
 /**
  * Move each valid declaration a finding refused (an `unservable` finding
  * with its refusal record) into the plan's `refusedSources`, counted once,
@@ -1944,6 +1929,7 @@ export type RefusalNotices = Record<string, { code: string; subject?: string }>;
 export function projectRefusals(
    plan: BuildPlan | null,
    findings: readonly PackageAnnotationFinding[],
+   counts: EligibilityRefusals = {},
 ): {
    plan: BuildPlan | null;
    annotationFindings: PackageAnnotationFinding[];
@@ -1977,7 +1963,7 @@ export function projectRefusals(
          code: finding.code,
          ...(finding.subject !== undefined ? { subject: finding.subject } : {}),
       };
-      recordEligibilityRefused(key.reason);
+      countRefusal(counts, key.reason);
    }
    if (!moved) return { plan, annotationFindings: kept, refusalNotices };
    return {
@@ -1985,12 +1971,6 @@ export function projectRefusals(
       annotationFindings: kept,
       refusalNotices,
    };
-}
-
-/** What a refused rollup's warning names: its base and its grain. */
-export interface RefusedRollup {
-   baseSourceName: string;
-   grainDimensions: string[];
 }
 
 /**
@@ -2045,14 +2025,54 @@ export function finishBuildPlan(
 }
 
 /**
- * Project a finished build plan ({@link finishBuildPlan}) into what a package
- * load keeps. Reads the connection digests, never the live connections, so it
- * runs the same in the package-load worker as on the main thread.
+ * The one tail of every package plan, the load worker's and the main
+ * thread's: each connection a build runs on resolved and its digest read,
+ * then the parts finished ({@link finishBuildPlan}). Returns the connections
+ * whose digest could not be read, for the caller to report; reports nothing
+ * itself.
  */
-export function deriveBuildPlanOutcome(
+export async function finishPackagePlan(
+   parts: BuildPlanParts,
+   ctx: Omit<
+      Parameters<typeof finishBuildPlan>[1],
+      "connectionDigests" | "connections"
+   > & {
+      getMalloyConnection(name: string): Promise<MalloyConnection>;
+   },
+): Promise<{ compiled: FinishedBuildPlan; digestSkipped: string[] }> {
+   const { getMalloyConnection, ...finish } = ctx;
+   const connections = await resolvePackageConnections(
+      { getMalloyConnection },
+      parts.builds.map((b) => b.connectionName),
+   );
+   const digestSkipped: string[] = [];
+   const connectionDigests = await resolveConnectionDigests(
+      connections,
+      parts.builds,
+      (name) => digestSkipped.push(name),
+   );
+   return {
+      compiled: finishBuildPlan(parts, {
+         ...finish,
+         connectionDigests,
+         connections,
+      }),
+      digestSkipped,
+   };
+}
+
+/**
+ * Project a finished build plan ({@link finishBuildPlan}) into its
+ * {@link PackagePlan}. Reads the connection digests, never the live
+ * connections, so it runs the same in the package-load worker as on the main
+ * thread; counts each refusal into `eligibilityRefused` (and into `counts`,
+ * which a caller holds when the derivation may throw) and records none.
+ */
+export function derivePackagePlan(
    compiled: Omit<FinishedBuildPlan, "connections">,
    materializationConfig: WirePackageMaterialization | null,
-): BuildPlanOutcome {
+   counts: EligibilityRefusals = {},
+): PackagePlan<PackageAnnotationFinding> {
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.tables,
    );
@@ -2060,7 +2080,7 @@ export function deriveBuildPlanOutcome(
    // once.
    const verdicts = planVerdicts(compiled);
    for (const { counted } of verdicts.values()) {
-      if (counted) recordEligibilityRefused(counted);
+      if (counted) countRefusal(counts, counted);
    }
    // A plan that lost sources is not "no plan": it is kept, so a host reads
    // `omittedSources` rather than an empty plan.
@@ -2075,6 +2095,7 @@ export function deriveBuildPlanOutcome(
       compiled.annotationFindings.map((f) =>
          relaxedCollision(f, getPersistCollisionEnforce()),
       ),
+      counts,
    );
    const { annotationFindings, refusalNotices } = projected;
    const plan = withRefusalOrigins(
@@ -2084,20 +2105,28 @@ export function deriveBuildPlanOutcome(
    );
    return {
       plan,
-      droppedPersistSources: compiled.droppedPersistSources,
+      tables: tablePlanDataOf(compiled.tables),
+      builds: compiled.builds,
+      connectionDigests: compiled.connectionDigests,
+      connectionTypes: compiled.connectionTypes ?? {},
+      buildConnectionNames: [
+         ...new Set(compiled.builds.map((b) => b.connectionName)),
+      ].sort(),
+      versionScoped: compiled.versionScoped === true,
+      tableFolds: { ...compiled.tableFolds },
+      addresses: { ...compiled.addresses },
+      compilerKeys: compilerKeysOf(compiled),
       annotationFindings,
-      refusalNotices,
+      droppedPersistSources: compiled.droppedPersistSources,
       modelGateLines: compiled.modelGateLines,
+      persistedViews: compiled.persistedViews ?? {},
+      refusalNotices,
+      refusedRollups: refusedRollupsOf(plan, compiled.tables),
       sourceEligibility: collectSourceEligibility(compiled, verdicts),
       databaseSourceEligibility: collectDatabaseSourceEligibility(
          compiled,
          verdicts,
       ),
-      incrementalDeclarations,
-      buildConnectionNames: [
-         ...new Set(compiled.builds.map((b) => b.connectionName)),
-      ].sort(),
-      materializePlans: materializePlansOf(compiled.tables),
       rollupsKeepingGates: Object.entries(compiled.tables)
          .filter(
             ([, table]) =>
@@ -2106,12 +2135,38 @@ export function deriveBuildPlanOutcome(
          )
          .map(([sourceID]) => sourceID)
          .sort(),
-      refusedRollups: refusedRollupsOf(plan, compiled.tables),
-      compilerKeys: compilerKeysOf(compiled),
+      incrementalDeclarations,
+      materializePlans: materializePlansOf(compiled.tables),
+      eligibilityRefused: { ...counts },
    };
 }
 
-/** {@link BuildPlanOutcome.compilerKeys}. */
+/** Each planned table as plain data: its compiled source and target left out. */
+function tablePlanDataOf(
+   tables: Readonly<Record<string, TablePlan>>,
+): Record<string, TablePlanData> {
+   return Object.fromEntries(
+      Object.entries(tables).map(([sourceID, table]) => {
+         const {
+            source,
+            target: _target,
+            overStoredBase,
+            ...data
+         } = table as TablePlan & { overStoredBase?: unknown };
+         return [
+            sourceID,
+            {
+               ...data,
+               name: source.name,
+               connectionName: source.connectionName,
+               ...(overStoredBase ? { overStoredBaseCandidate: true } : {}),
+            } as TablePlanData,
+         ];
+      }),
+   );
+}
+
+/** {@link PackagePlan.compilerKeys}. */
 function compilerKeysOf(
    compiled: Pick<
       CompiledBuildPlan,
@@ -2266,7 +2321,7 @@ function withRefusalOrigins(
    };
 }
 
-/** {@link BuildPlanOutcome.refusedRollups}. */
+/** {@link PackagePlan.refusedRollups}. */
 function refusedRollupsOf(
    plan: BuildPlan | null,
    tables: Readonly<Record<string, Pick<TablePlan, "rollup">>>,

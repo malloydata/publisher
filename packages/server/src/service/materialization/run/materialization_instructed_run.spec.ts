@@ -1697,7 +1697,7 @@ describe("executeInstructedBuild", () => {
       it("classifies the host-supplied refusal as deterministic", async () => {
          const { classifyBuildError } = await import("./build_failure_class");
          const { HostSuppliedWrongTierError } = await import(
-            "./materialization_run_support"
+            "./build_upstreams"
          );
          expect(
             classifyBuildError(
