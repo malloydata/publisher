@@ -369,8 +369,8 @@ source: events_as_of_build is raw -> { where: ts ~ f'last 7 days'; select: * }
   caller may see, so a frozen clock is a grant that outlives its time. The check reads every model
   of the package and what each imports, and fails closed: a definition it cannot read counts.
   **At read, independently of that check,** a query that carries a gate or reads a given (in the
-  model, or in the caller's own text, such as an ad-hoc join that filters by a given), or that is
-  sent givens, never reads a table stored as of its build: such an answer is declined and the query
+  model, or in the caller's own text, such as an ad-hoc join that filters by a given) never reads a
+  table stored as of its build: such an answer is declined and the query
   answers live, on every serving path (the served copy, a rollup, a persisted view or query). A
   legacy `.malloynb` notebook cell never reads one.
 - **`refresh="incremental"`:** a delta reads only rows past its watermark, so a window over the

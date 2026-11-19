@@ -188,10 +188,7 @@ export class ReadAdmission {
 
    /** See {@link queryReadsAccess}; read once per query. */
    private readsAccessOnce(): Promise<boolean> {
-      return (this.access ??= queryReadsAccess(
-         this.query.authorRunnable,
-         this.givens,
-      ));
+      return (this.access ??= queryReadsAccess(this.query.authorRunnable));
    }
 
    private compositeOnce(): Promise<boolean> {
@@ -431,15 +428,11 @@ function legDecline(
 /**
  * Whether a query is an access decision: it reads a given (Malloy's own
  * given-usage summary of the query, or a `{node: "given"}` anywhere in it),
- * the caller supplied givens, or the source it runs carries an
+ * or the source it runs carries an
  * `#(authorize)` or `#(access_filter)` gate anywhere beneath it. Fails
  * closed: a query that cannot be read counts.
  */
-async function queryReadsAccess(
-   runnable: QueryMaterializer,
-   givens: Record<string, unknown> | undefined,
-): Promise<boolean> {
-   if (givens !== undefined && Object.keys(givens).length > 0) return true;
+async function queryReadsAccess(runnable: QueryMaterializer): Promise<boolean> {
    try {
       const prepared = await runnable.getPreparedQuery();
       const usage = queryGivenUsageIds(prepared);
