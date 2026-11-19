@@ -33,11 +33,9 @@ import { malloyIdentifiers } from "../../query_text";
 import { fieldPathsIn } from "./gate_paths";
 import type { GateReads } from "./gate_reads_types";
 
-// The comparison rule beside the column rules, read by the router through
-// this module.
+// The comparison rule beside the column rules, read through this module.
 export {
    storedTableCollationRefusal,
-   storedTypeIsString,
    stringGateCollationRefusal,
 } from "./gate_collation";
 

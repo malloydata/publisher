@@ -438,7 +438,6 @@ source: c_nested is comp extend {
          return stringGateCollationRefusal({
             authorRunnable: q as never,
             reads,
-            stringStored: true,
             givens: { FLAG: true },
          });
       };

@@ -93,7 +93,8 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/model_serving.ts -> service/materialization/serve/served_copy_serve":
       "2n",
    "service/model.ts -> service/materialization/serve/leg": "2n",
-   "service/query_serving.ts -> service/materialization/serve/gate_reads": "2n",
+   "service/query_serving.ts -> service/materialization/serve/read_admission":
+      "2n",
    "service/query_serving.ts -> service/materialization/serve/leg": "2n",
    "service/query_serving.ts -> service/materialization/serve/query_path": "2n",
    "service/query_serving.ts -> service/materialization/serve/rollup_variants":

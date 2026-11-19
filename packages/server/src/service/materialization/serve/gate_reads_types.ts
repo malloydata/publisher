@@ -4,8 +4,12 @@
 /**
  * The shape of what an entry point's row-level gates and row scope read
  * (`gate_reads.ts` computes it, `gate_collation.ts` judges its string
- * comparisons), in a module of its own so neither imports the other for it.
+ * comparisons), and the collation probe port that judges them, in a module
+ * of its own so none of those modules imports another for it.
  */
+
+import type { QueryMaterializer } from "@malloydata/malloy";
+import type { TableRead } from "../domain/gate_policy";
 
 /** What an entry point's row-level gates read. */
 export interface GateReads {
@@ -67,4 +71,33 @@ export interface GateReads {
     * not a comparison here.
     */
    readonly comparesNoString: boolean;
+}
+
+/** A table an answer read, as the stored-side probe reads it. */
+export type ProbedTable = TableRead & {
+   readonly virtualHandle?: string;
+   readonly tablePath?: string;
+   readonly destinationName?: string;
+};
+
+/**
+ * The collation probes, as a port: whether the source compares what `reads`
+ * compare as a byte-exact copy does, and whether the stored tables an answer
+ * read compare their strings as their sources do. Each answers why not, or
+ * undefined. They read the warehouse; admission only reads their answers.
+ */
+export interface CollationProbe {
+   sourceRefusal(args: {
+      authorRunnable: QueryMaterializer;
+      reads: GateReads | undefined;
+      givens?: Record<string, unknown>;
+   }): Promise<string | undefined>;
+   storedRefusal(args: {
+      tables: readonly ProbedTable[];
+      answerRunnable: QueryMaterializer;
+      virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
+      authorRunnable: QueryMaterializer;
+      reads: GateReads | undefined;
+      givens?: Record<string, unknown>;
+   }): Promise<string | undefined>;
 }

@@ -60,7 +60,7 @@ import { identifier } from "../../malloy_text";
 import { collectEntryPointGates } from "../../gate_classification";
 import { capabilitiesOf } from "../domain/dialect";
 
-import type { GateReads } from "./gate_reads_types";
+import type { CollationProbe, GateReads } from "./gate_reads_types";
 import { fieldPathsIn } from "./gate_paths";
 
 type Collation = "binary" | "deterministic" | "unknown";
@@ -76,25 +76,15 @@ interface ProbeRuntime {
 /** Each probe's answer, by model, then connection and column SQL. */
 const probes = new WeakMap<object, Map<string, Promise<Collation>>>();
 
-const STRING_STORED_TYPE = /\b(VARCHAR|TEXT|STRING|CHAR|CHARACTER)\b/i;
-
-/** Whether a stored column type holds a string. */
-export function storedTypeIsString(type: string): boolean {
-   return STRING_STORED_TYPE.test(type);
-}
-
 /**
  * Why an answer that read a `storage=` table past the entry point's gates
  * does not compare a string column as live does, or undefined when every
- * string column it compares does. `stringStored` says whether any `storage=`
- * table the answer read holds a gate column as a string. No probe runs only
- * when nothing the gates and scopes compare is a string
- * (`GateReads.comparesNoString`).
+ * string column it compares does. No probe runs only when nothing the gates
+ * and scopes compare is a string (`GateReads.comparesNoString`).
  */
 export async function stringGateCollationRefusal(args: {
    authorRunnable: QueryMaterializer;
    reads: GateReads | undefined;
-   stringStored: boolean;
    /** The caller's givens: a probe of a source whose rows read one needs it. */
    givens?: Record<string, unknown>;
 }): Promise<string | undefined> {
@@ -203,6 +193,12 @@ export async function stringGateCollationRefusal(args: {
    }
    return undefined;
 }
+
+/** The collation probes admission reads through (`serve/read_admission.ts`). */
+export const collationProbe: CollationProbe = {
+   sourceRefusal: stringGateCollationRefusal,
+   storedRefusal: storedTableCollationRefusal,
+};
 
 function probeOnce(
    modelDef: object,

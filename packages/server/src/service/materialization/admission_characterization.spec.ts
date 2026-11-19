@@ -7,7 +7,7 @@
  * leg x table read x gate shape x switch. It drives the router's own
  * candidates (`variantsOf` and `routeQuery`) over a real author compile, so
  * every rule an answer passes today is in it at once: the gate policy
- * (`domain/gate_policy.ts`, legMayPassGate / answerKeepsGates), the bind's
+ * (`domain/gate_policy.ts`, through `domain/admission.ts`), the bind's
  * marks (`ownGateKept`, `holdsOnlyUngatedRows`), and query_serving's
  * exactness, zone, collation, composite and row-scope checks.
  *
@@ -34,15 +34,16 @@ import { installSettings } from "../../test_helpers/settings_env";
 import { routeQuery } from "../query_router";
 import { variantsOf } from "../query_serving";
 import { type Binding, EMPTY_SNAPSHOT, pin } from "./domain/binding";
-import { admitRead, type ReadFacts } from "./domain/admission";
 import {
-   answerKeepsGates,
-   SERVING_GATE_CONTEXT,
-   type TableRead,
-} from "./domain/gate_policy";
+   admitRead,
+   keepsGatesWhenReadExact,
+   type ReadFacts,
+} from "./domain/admission";
+import type { TableRead } from "./domain/gate_policy";
 import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
 import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
+import { type CollationProbe, ReadAdmission } from "./serve/read_admission";
 
 const DUMP = process.env.ADMISSION_DUMP;
 const dumped: Record<string, unknown> = {};
@@ -1310,8 +1311,9 @@ describe("the bind's admission marks", () => {
 });
 
 /**
- * The serve verdict's question (`serve_verdicts.ts` `keepsGate`), asked of
- * one source's own table as it asks it: the gate policy over the table's
+ * The serve verdict's question (`serve_verdicts.ts` `keepsGate`, through
+ * admission's `keepsGatesWhenReadExact`), asked of one source's own table
+ * as it asks it: the gate policy over the table's
  * tier, marks and gate column types, with none of the router's comparison,
  * composite or row-scope checks. So it says `true` for a `storage=` table
  * whose gate column is zoned, where the router above declines the same read
@@ -1367,7 +1369,7 @@ describe("the serve verdict's narrower question, for the same tables", () => {
                ["zoned gate column", ["TIMESTAMP WITH TIME ZONE"]],
                ["string gate column", ["VARCHAR"]],
             ] as const) {
-               rows[`${read}, ${columns}`] = answerKeepsGates(
+               rows[`${read}, ${columns}`] = keepsGatesWhenReadExact(
                   "served",
                   [
                      {
@@ -1383,7 +1385,6 @@ describe("the serve verdict's narrower question, for the same tables", () => {
                      },
                   ],
                   { materialize: true, gatedSources },
-                  SERVING_GATE_CONTEXT,
                );
             }
          }
@@ -1440,15 +1441,16 @@ const SHAPE_FACTS: Record<
    "row filter on a composite": { composite: true, types: ["BIGINT"] },
 };
 
-/** admitRead's verdict for one row, written as the router's outcome reads. */
-function admitted(args: {
-   leg: Leg;
+/**
+ * The facts {@link SHAPE_FACTS} writes by hand for one row: the tables
+ * as the router judges them, and what it knows of the query.
+ */
+function handFacts(args: {
    shape: Shape;
    tables: Binding[];
-   gatedSources: boolean;
    authorCollation?: "binary" | "nocase";
    storedCollation?: "binary" | "nocase";
-}): string {
+}): { tables: TableRead[]; facts: ReadFacts } {
    const f = SHAPE_FACTS[args.shape];
    const gated = GATED(args.shape);
    const tables: TableRead[] = args.tables.map((t) => ({
@@ -1471,13 +1473,31 @@ function admitted(args: {
       compositeRowFilter: f.composite === true,
       reads: { scoped: f.scoped === true, gated },
       columnsListed: tables.some((t) => t.tier === "storage"),
-      sourceCollationRefusal: refusal(args.authorCollation),
-      storedCollationRefusal: refusal(args.storedCollation),
+      probes: {
+         scope: {
+            source: { refusal: refusal(args.authorCollation) },
+            stored: { refusal: refusal(args.storedCollation) },
+         },
+      },
    };
+   return { tables, facts };
+}
+
+/** admitRead's verdict for one row, written as the router's outcome reads. */
+function admitted(args: {
+   leg: Leg;
+   shape: Shape;
+   tables: Binding[];
+   gatedSources: boolean;
+   authorCollation?: "binary" | "nocase";
+   storedCollation?: "binary" | "nocase";
+}): string {
+   const { tables, facts } = handFacts(args);
    const verdict = admitRead(args.leg, tables, facts, {
       materialize: true,
       gatedSources: args.gatedSources,
    });
+   if (verdict.admit === "needs_probe") return "needs a probe";
    if (verdict.admit) {
       return verdict.pastEntryPointGate ? "used, past the gate" : "used";
    }
@@ -1533,14 +1553,22 @@ function admittedOverMoves(args: {
       columnsListed: tables.some(
          (t) => t.tier === "storage" || t.gateColumnTypes !== undefined,
       ),
-      sourceCollationRefusal: args.unreadable
-         ? "what the scope compares cannot be read"
-         : undefined,
+      probes: {
+         scope: {
+            source: {
+               refusal: args.unreadable
+                  ? "what the scope compares cannot be read"
+                  : undefined,
+            },
+            stored: { refusal: undefined },
+         },
+      },
    };
    const verdict = admitRead(args.leg, tables, facts, {
       materialize: true,
       gatedSources: false,
    });
+   if (verdict.admit === "needs_probe") return "needs a probe";
    if (verdict.admit) {
       return verdict.pastEntryPointGate ? "used, past the gate" : "used";
    }
@@ -1619,3 +1647,100 @@ describe("admitRead reproduces the router's admission", () => {
       }
    });
 });
+
+/**
+ * The facts above are written by hand; the router gathers its own, through
+ * the admission shell, from the author's compile and each answer. They must
+ * be the same facts, or the table above proves nothing about the router.
+ * Every probe answers binary here (a fake port), so only the probes asked
+ * differ between rows, and the verdicts must agree.
+ */
+describe("the admission shell gathers the facts admitRead is held to", () => {
+   const probeAll: CollationProbe = {
+      sourceRefusal: async () => undefined,
+      storedRefusal: async () => undefined,
+   };
+   for (const [switchLabel, gatedSources] of SWITCHES) {
+      it(switchLabel, async () => {
+         await withSwitches(gatedSources, async () => {
+            for (const shape of Object.keys(SHAPES) as Shape[]) {
+               for (const leg of LEGS) {
+                  for (const [read, bindings] of Object.entries(READS)) {
+                     const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+                     const authorRunnable = authorOf(SHAPES[shape]);
+                     const query = {
+                        queryString: `run: ${SHAPES[shape]} -> v`,
+                        givens: undefined,
+                        authorRunnable,
+                     };
+                     const [made] = makeLegs(
+                        pinned,
+                        legHost(leg, bindings, authorRunnable),
+                     ).filter((l) => l.kind === leg);
+                     const answer = await made.attempt(query, pinned);
+                     const gathered = await new ReadAdmission(
+                        query,
+                        { materialize: true, gatedSources },
+                        probeAll,
+                     ).decide(leg, answer, GATED(shape));
+                     const hand = handFacts({ shape, tables: bindings });
+                     const row = `${shape} | ${leg}, ${read}`;
+                     // The row scope's facts are read for the legs that
+                     // re-apply one.
+                     if (leg === "served" || leg === "rollup") {
+                        expect({ row, reads: gathered.facts.reads }).toEqual({
+                           row,
+                           reads: hand.facts.reads,
+                        });
+                     }
+                     expect({
+                        row,
+                        composite: gathered.facts.compositeRowFilter,
+                        columnsListed: gathered.facts.columnsListed,
+                        tables: judgedOf(
+                           gathered.tables,
+                           shape === "row filter on a composite",
+                        ),
+                     }).toEqual({
+                        row,
+                        composite: hand.facts.compositeRowFilter,
+                        columnsListed: hand.facts.columnsListed,
+                        tables: judgedOf(
+                           hand.tables,
+                           shape === "row filter on a composite",
+                        ),
+                     });
+                     const verdict = admitRead(leg, hand.tables, hand.facts, {
+                        materialize: true,
+                        gatedSources,
+                     });
+                     expect({
+                        row,
+                        verdict: gathered.verdict as unknown,
+                     }).toEqual({ row, verdict });
+                  }
+               }
+            }
+         });
+      });
+   }
+});
+
+/**
+ * A judged table as admission reads it. A composite's gate reads no column
+ * the walk lists (its row filter is declined before any column is judged),
+ * so its hand-written column types are not compared.
+ */
+function judgedOf(tables: readonly TableRead[], composite = false): unknown[] {
+   return tables.map((t) => ({
+      tier: t.tier,
+      ownGateKept: t.ownGateKept === true,
+      holdsOnlyUngatedRows: t.holdsOnlyUngatedRows === true,
+      ...(composite
+         ? {}
+         : {
+              gateColumnTypes: t.gateColumnTypes,
+              gatesReadNoColumn: t.gatesReadNoColumn === true,
+           }),
+   }));
+}
