@@ -28,8 +28,8 @@ A fair objection to all of this: the non-query half of dbt — orchestration, in
 snapshots, tests, contracts, seeds — has no analog in Malloy. That is true of Malloy-the-language.
 It is no longer true of the platform. The Publisher and the managed platform around it ship a
 declarative orchestration layer: a content-addressed build DAG with per-unit classification, scoped
-and selective reruns, freshness objectives the scheduler meets, incremental refresh with watermark,
-merge-key and lookback semantics, and a version lifecycle — promote, soak, rollback, archive — beyond what
+and selective reruns, freshness objectives the scheduler meets, incremental refresh with watermark
+and merge-key semantics, and a version lifecycle — promote, soak, rollback, archive — beyond what
 dbt-core runs. What dbt *runs*, this layer already runs, declaratively, with content-addressed
 reuse dbt doesn't have.
 
@@ -53,23 +53,26 @@ parity with dbt; it is the runtime absorbing another thing humans used to hand-c
 ### Stored answers you can trust
 
 A runtime that reroutes queries is worth having only if the rerouted answer is the answer. So the
-rule is strict: **a stored table answers only when it provably matches live; anything Publisher
-cannot prove is answered live**, and every result carries a
+rule is strict: **a stored table answers only when Publisher can show it matches live, and
+otherwise the query answers live**; the known exceptions are listed below. Every result carries a
 [path report](materialization.md#which-table-answered-a-query-the-path-report) naming the table
-that answered and why every other candidate did not. What that proof covers today:
+that answered and why every other candidate did not. What the check covers today:
 
 - **Row-level gates.** A gated source's table is admitted only when its gate is proven to be the
   entry point's own row filter or `#(authorize)` lock, and the gate is grafted onto the stored
   table and proven again on every read, exactly as on live
   ([gated sources](materialization.md#access_filter-gated-sources-and-materialization)).
-- **Collation.** A string compares on the stored table as the source compares it, or the query
-  answers live. A `storage=` copy in DuckLake compares bytes, so a query whose result depends on a
+- **Collation.** For a Postgres or DuckDB source, a string compares on the stored table as the
+  source compares it, or the query answers live (BigQuery compares bytes on both sides; a Snowflake
+  column's collation is not yet judged for ordering). A `storage=` copy in DuckLake compares bytes, so a query whose result depends on a
   string's order (an `order_by:`, a top-N, a `min`/`max`, a range comparison) over a source whose
   collation is not binary answers live, as does an equality under a nondeterministic collation. A
   Postgres database-tier table read past a gate or under a scope is checked against its source's
   collation on every answer, matched by identity (provider, locales, library version), not by name.
+  The ordering and grouping check on a `storage=` copy is on main and ships in the next release.
 - **Numbers and time.** A Postgres `numeric` is stored exactly or answered live; a big integer past
-  2^53 is served with live's JSON type; a `real` is written as live writes it; a `storage=` table is
+  2^53 is served with live's JSON type; a `real` is written as live writes it (on main; ships in the
+next release); a `storage=` table is
   never read past a gate over a column it holds as a float; and a value stored in the build's time
   zone answers live under a query that sets its own `timezone:`
   ([stored column types](materialization.md#stored-column-types-follow-the-model-not-the-warehouse)).
@@ -79,14 +82,26 @@ that answered and why every other candidate did not. What that proof covers toda
 
 The honest costs. On a `storage=` copy of a Postgres source with a non-binary collation (the
 `en_US` default of most managed Postgres included), queries that order by a string or compare
-string ranges answer live; equality, joins, counts and grouping ordered by a measure still serve.
+string ranges answer live; equality, joins, counts and grouping ordered by a measure still serve
+under a deterministic collation (the libc `en_US` default included), while under a nondeterministic
+ICU collation equality, joins and `count(x)` answer live too.
 Serving an ICU collation's order from the copy by emulating it may come later; a libc collation has
 no exact equivalent outside Postgres. On a database-tier table, a query's filters, scopes and
 gates are re-checked after someone alters a stored column's collation, but its string grouping and
-ordering are not yet. On Postgres, each gated or scoped answer from a database-tier table that
-compares a string costs a few catalog probes. The executed served-against-live evidence is DuckDB
-and Postgres-to-DuckLake; BigQuery and Snowflake have none yet
-([the v2 plan](materialization-v2-plan.md)). And, as with every access control here, a gate holds
+ordering are not yet. A DuckDB `default_collation` set on a storage destination out of band
+(Publisher never sets one) is not re-checked for a query's grouping and ordering. On Postgres, each
+gated or scoped answer from a database-tier table that compares a string costs a few catalog
+probes. Some answers are known to differ: on Snowflake, a `sum()` over a `NUMBER(38,0)` past 2^53
+is rounded live and exact served, and a `TIMESTAMP_TZ` renders in the account's format live and in
+UTC served (both need a fix in Malloy's Snowflake connector;
+[stored column types](materialization.md#stored-column-types-follow-the-model-not-the-warehouse));
+a `sum` of a Postgres `real` served from a `storage=` table can differ from live in its last digit;
+and `freshness.fallback="stale_ok"` serves a table past its window by design
+([freshness](materialization.md#freshness-a-window-and-a-fallback)). The executed
+served-against-live evidence is DuckDB, plus Postgres-to-DuckLake through the nightly hammer;
+BigQuery, Snowflake, Databricks and MotherDuck have none yet
+([the v2 plan](materialization-v2-plan.md)), and a nightly conformance workflow against real
+BigQuery and Snowflake is pending in #1872. And, as with every access control here, a gate holds
 only behind the gateway that authenticates the caller and sets the givens
 ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 
@@ -115,11 +130,11 @@ renamed table it can prove is its own and lists the ones it keeps
 ([the rename rule](materialization.md#the-rename-rule)); a guarded drop route
 ([the drop route](materialization.md#the-drop-route)); and the `malloy-pub` CLI for builds,
 schedules and run history ([manage it with the CLI](materialization.md#manage-it-with-the-cli)).
-What stays with a hosted control plane is what
-[standalone vs. hosted](materialization.md#standalone-vs-hosted-control-plane-deployments) lists:
-the two-phase build that also builds indexes, scheduling refresh against freshness objectives
-rather than a cron (standalone, nothing rebuilds a table the moment its window passes), and
-assigning versioned build targets and distributing manifests across a fleet. The hooks for a host
+What stays with a hosted control plane: the two-phase build that also builds indexes, scheduling
+refresh against freshness objectives rather than a cron (standalone, nothing rebuilds a table the
+moment its window passes), and distributing manifests across a fleet
+([standalone vs. hosted](materialization.md#standalone-vs-hosted-control-plane-deployments) covers
+the differences). The hooks for a host
 to do that are open: `buildInstructions` on a run, a bound `manifestLocation`, and the ledger echo.
 
 ## Where the seam sits — and where it moves
@@ -152,12 +167,12 @@ deployments running the dbt → Malloy pattern today:
 | dbt capability | Where Malloy + the platform stand | Verdict |
 | --- | --- | --- |
 | DAG, `ref()`, build order, selective builds | Run + build-plan DAG, scoped reruns (`sourceNames`), content-addressed reuse, freshness-objective scheduling — all shipped. Since then: chained builds (a stored table builds from the stored tables it reads, across files), cross-connection destinations (`storage=`), a guarded drop route (`DELETE …/connections/{connectionName}/materializedTables/{tableName}`), and an auto-run that reclaims a renamed table it can prove is its own | **Closed** |
-| Incremental models | `refresh="incremental"` with `watermark=`/`merge_key=` on Postgres, BigQuery and Snowflake sources, into the warehouse or a `storage=` destination. Late rows are handled (0.16.0): each delta starts at the newest stored watermark, `lookback=` re-reads a window, rows a delta never read are reported (`lateRows`, `persist-incremental-late-rows`), and without `merge_key=` a refresh replaces the whole range it re-reads, so deletions in it carry through. Other dialects refuse it and build with `refresh="full"` | **Closed** (Postgres, BigQuery, Snowflake) |
+| Incremental models | `refresh="incremental"` with `watermark=`/`merge_key=` on Postgres, BigQuery and Snowflake sources, into the warehouse or a `storage=` destination. Late rows are handled (0.16.0): each delta starts at the newest stored watermark, `lookback=` re-reads a window, rows a delta never read are reported (`lateRows`, `persist-incremental-late-rows`), and without `merge_key=` a refresh replaces the whole range it re-reads, so deletions in it carry through. `lookback=` takes a `merge_key=` and a date or timestamp watermark. On other dialects the source is refused and answered live until it declares `refresh="full"` | **Closed** (Postgres, BigQuery, Snowflake) |
 | Materialization configs | Still one annotation: `#(materialize)` on a source (optionally `storage="…"`), `#(rollup) grain=[…]` on a measure, `#@ persist` on a view or a named query, `#(index)` on a dimension. `name=` is optional and only places the table; without it Publisher picks a readable name (`<package>__<file>__<source>__p<hash>`), and every database table a build writes carries its package's ownership mark. `#@ preaggregate` is deprecated for `#(rollup)`; v1 `#@ persist` keeps working. The platform absorbs identity, scheduling, and cleanup | **Closed — simpler than dbt** |
 | Test framework (severities, scoping) | Nothing today — the clearest place dbt leads. Data tests: design in progress. Unit tests (fixture → expected result): cheap once source rebinding lands | Open · design in progress |
 | Enforced contracts | Really two contracts. *Downstream, in policy terms:* `#(carries)` on an entry point refuses the package load when any field reachable from it carries a [class](classification.md) the list omits, or none (a preview: a review aid until its known gaps close). *Pre-merge:* `compile_model` at `package` scope (and a `dryRun` publish) compiles every file as a reload would, importers and materialization annotations included, without serving the result; the [serve verdict](materialization.md#will-it-serve-the-serve-verdict) and path report say whether a stored table will answer. Still open: *upstream* (warehouse → model), where compile catches shape errors deep in a model rather than at a named boundary and misses what only a warehouse dry-run catches; and the output-space contract, where a removed view field compiles clean and breaks dashboards and agents silently | Partly closed · the rest lands in `lint` |
 | Seeds | Package-local CSVs already work — the per-package duckdb reads `.csv`/`.xlsx` in place, versioned with the package. Missing: joinability — the CSV sits on the sandbox connection, marts on the warehouse connection, and Malloy can't join across them. `storage=` does not close it: a `storage=` build refuses a sandbox source (`storage_source_unsupported`), and the join is refused at compile (`join-connection-mismatch`) before anything is stored | **Mostly closed** |
-| SCD2 snapshots | The incremental machinery — watermark ledger, stable physical naming, transactional in-place advance, retry discipline — is most of the write path. But the shipped modes can't hold history (`merge` overwrites the prior value; a no-key refresh replaces the range it re-reads), and the cache lifecycle — re-address → clean rebuild → collection — discards accumulated observations. The lifecycle pieces Stage 2 builds on now exist: stored tables keyed by content address and destination, never by name; an ownership mark on every database table a build writes; a reclaim that never drops a table at an author's `name=` and lists every table it keeps (`metadata.keptTables`, `table-kept`) | Open · a write path + lifecycle exemptions, not a new engine |
+| SCD2 snapshots | The incremental machinery — watermark ledger, stable physical naming, transactional in-place advance, retry discipline — is most of the write path. But the shipped modes can't hold history (`merge` overwrites the prior value; a no-key refresh replaces the range it re-reads), and the cache lifecycle — re-address → clean rebuild → collection — discards accumulated observations. The lifecycle pieces Stage 2 builds on now exist: stored tables keyed by content address (the destination folded in for a `storage=` twin, or always with `persist.addressIncludesDestination`), not by the table's name; an ownership mark on every database table a build writes; a reclaim that never drops a table at an author's `name=` (outside `scope: "version"`) and lists every table it keeps (`metadata.keptTables`, `table-kept`) | Open · a write path + lifecycle exemptions, not a new engine |
 | Staging query shapes (`UNION ALL`, correlated date explosion, non-linear pipelines) | `connection.sql()` sources are already persistable, so staging SQL can be lifted verbatim and gain the orchestrator immediately | Open · bridged; closed only by language work |
 | Feature-flag DAG pruning, dispatch hooks, templating | Givens cover value substitution; per-tenant variance requires an external build step today | Open · package variants |
 | Macros & packages (reuse across projects and tenants) | npm-style package dependencies for Malloy packages — versioned, declared, lockfile-resolved — are being scoped; override sources (a package declares a typed default, a consumer rebinds it) follow; expression-level macros are language work | Open · package dependencies + override sources |
@@ -318,9 +333,10 @@ retention becomes a stated posture. Both land in the open-source Publisher, whic
 incremental ledger: the write path, and the invariants that make history safe — history artifacts
 are exempt from collection and re-addressing, and a definition change carries history forward or
 refuses rather than rebuilding from current state. Those invariants have a footing now: a reclaim
-already never drops a table at an author's `name=` and lists each table it keeps on the run record,
-every database table a build writes carries its package's ownership mark, and stored tables are
-keyed by content address and destination rather than by name
+already never drops a table at an author's `name=` (outside `scope: "version"`) and lists each
+table it keeps on the run record, every database table a build writes carries its package's
+ownership mark, and stored tables are keyed by content address (the destination folded in for a
+`storage=` twin, or always with `persist.addressIncludesDestination`), not by the table's name
 ([whose table it is](materialization.md#whose-table-it-is),
 [the rename rule](materialization.md#the-rename-rule)). As with every other mechanism here, the
 Publisher ships a basic refresh schedule and exposes the run and lifecycle mechanics over the API
@@ -341,9 +357,8 @@ Two decoupled lanes, so conversion isn't gated on language design:
   source on the package sandbox or on another dialect (a DuckLake source building into its own
   catalog aside) cannot be built this way. One spike first:
   confirming dependency edges arise between SQL sources, so a pure-SQL staging DAG builds in order
-  rather than flattening to unordered roots. The current source map records no base edge for a SQL
-  source ([materialization-source-map.md](materialization-source-map.md)), so the spike is still
-  needed.
+  rather than flattening to unordered roots. Nothing on main yet shows a build-plan edge between
+  two SQL sources, so the spike stands.
 - **Lane B, language, long-term:** the Malloy language work, in measured-usage order — **set
   operations** first (the single disqualifier for staging: multi-source entities, taxonomy
   unpivots, past/future splits are all `UNION ALL`), then **correlated table functions** (per-row
@@ -399,8 +414,8 @@ answers will shape the design.
   feel complete — derived metrics, cumulative metrics, saved queries — and where is the line beyond
   which the answer is "model it natively"?
 - **SQL-source dependency edges.** Confirm build-plan edges materialize when one SQL source
-  consumes another persist source; this decides how much of dbt's `ref()` Lane A replaces. Not yet
-  answered: the source map records no base edge for a SQL source, so the spike stands.
+  consumes another persist source; this decides how much of dbt's `ref()` Lane A replaces. Nothing on
+  main yet shows a build-plan edge between two SQL sources, so the spike stands.
 - **Where tests are declared** — annotations in the model, or a separate spec file.
 - **The OSS-local floor.** Largely answered: a local schedule, a local ledger and run store,
   freshness windows, reclaim and a guarded drop all ship in the open-source Publisher
