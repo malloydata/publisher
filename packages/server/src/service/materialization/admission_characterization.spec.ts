@@ -867,87 +867,113 @@ describe("read admission under a collation that is not binary (served leg, gated
 });
 
 /**
- * The row scope's two fail-closed inputs, on the ungated shapes (no gate,
- * and a `where:` on `amount`): a database table whose columns moved since
- * its build (`retypedColumns`, so their stored types are listed and judged,
- * admitRead's `columnsListed`), and a compile whose gate and scope reads
- * cannot be listed (admitRead's `reads === undefined`).
+ * The row scope's and the gate's two fail-closed inputs, on no gate, a
+ * `where:` on `amount`, and a row filter on `id` (past the gate): a database
+ * table whose columns moved since its build (`retypedColumns`, so their
+ * stored types are listed and judged, admitRead's `columnsListed`), and a
+ * compile whose gate and scope reads cannot be listed (admitRead's
+ * `reads === undefined`).
  */
 const MOVED_READS: Record<string, Binding[]> = {
    database: [table("database")],
-   "database, the scoped column moved to a float": [
+   "database, amount moved to a float": [
       table("database", {
          retypedColumns: [{ name: "amount", type: "DOUBLE" }],
       }),
    ],
-   "database, an unscoped column moved to a float": [
+   "database, id moved to a float": [
       table("database", { retypedColumns: [{ name: "id", type: "DOUBLE" }] }),
    ],
    storage: [table("storage")],
 };
 
-/** The columns each ungated shape's row scope reads, by name. */
-const SCOPE_COLUMNS: Partial<Record<Shape, string[]>> = {
+/** The columns each shape's gates and row scope read, by name. */
+const READ_COLUMNS: Partial<Record<Shape, string[]>> = {
    "no gate": [],
    "no gate, a where: on a float column": ["amount"],
+   "row filter, number": ["id"],
 };
 
 /** shape -> "reads, leg, table read" -> outcome, gated sources off. */
 const ROW_SCOPE: Record<string, Record<string, string>> = {
    "no gate": {
       "readable, served, database": "used",
-      "readable, served, database, the scoped column moved to a float": "used",
-      "readable, served, database, an unscoped column moved to a float": "used",
+      "readable, served, database, amount moved to a float": "used",
+      "readable, served, database, id moved to a float": "used",
       "readable, served, storage": "used",
       "readable, rollup, database": "used",
-      "readable, rollup, database, the scoped column moved to a float": "used",
-      "readable, rollup, database, an unscoped column moved to a float": "used",
+      "readable, rollup, database, amount moved to a float": "used",
+      "readable, rollup, database, id moved to a float": "used",
       "readable, rollup, storage": "used",
       "unreadable, served, database": "used",
-      "unreadable, served, database, the scoped column moved to a float":
+      "unreadable, served, database, amount moved to a float":
          "skipped does_not_answer (served_copy_not_served)",
-      "unreadable, served, database, an unscoped column moved to a float":
+      "unreadable, served, database, id moved to a float":
          "skipped does_not_answer (served_copy_not_served)",
       "unreadable, served, storage":
          "skipped does_not_answer (served_copy_not_served)",
       "unreadable, rollup, database": "used",
-      "unreadable, rollup, database, the scoped column moved to a float":
-         "used",
-      "unreadable, rollup, database, an unscoped column moved to a float":
-         "used",
+      "unreadable, rollup, database, amount moved to a float": "used",
+      "unreadable, rollup, database, id moved to a float": "used",
       "unreadable, rollup, storage":
          "skipped does_not_answer (rollup_row_level_gate)",
    },
    "no gate, a where: on a float column": {
       "readable, served, database": "used",
-      "readable, served, database, the scoped column moved to a float":
+      "readable, served, database, amount moved to a float":
          "skipped does_not_answer (served_copy_not_served)",
-      "readable, served, database, an unscoped column moved to a float": "used",
+      "readable, served, database, id moved to a float": "used",
       "readable, served, storage":
          "skipped does_not_answer (served_copy_not_served)",
       "readable, rollup, database": "used",
-      "readable, rollup, database, the scoped column moved to a float": "used",
-      "readable, rollup, database, an unscoped column moved to a float": "used",
+      "readable, rollup, database, amount moved to a float": "used",
+      "readable, rollup, database, id moved to a float": "used",
       "readable, rollup, storage": "used",
       "unreadable, served, database": "used",
-      "unreadable, served, database, the scoped column moved to a float":
+      "unreadable, served, database, amount moved to a float":
          "skipped does_not_answer (served_copy_not_served)",
-      "unreadable, served, database, an unscoped column moved to a float":
+      "unreadable, served, database, id moved to a float":
          "skipped does_not_answer (served_copy_not_served)",
       "unreadable, served, storage":
          "skipped does_not_answer (served_copy_not_served)",
       "unreadable, rollup, database": "used",
-      "unreadable, rollup, database, the scoped column moved to a float":
-         "used",
-      "unreadable, rollup, database, an unscoped column moved to a float":
-         "used",
+      "unreadable, rollup, database, amount moved to a float": "used",
+      "unreadable, rollup, database, id moved to a float": "used",
+      "unreadable, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate)",
+   },
+   "row filter, number": {
+      "readable, served, database": "used, past the gate",
+      "readable, served, database, amount moved to a float":
+         "used, past the gate",
+      "readable, served, database, id moved to a float":
+         "skipped row_level_gate",
+      "readable, served, storage": "skipped row_level_gate",
+      "readable, rollup, database": "used, past the gate",
+      "readable, rollup, database, amount moved to a float":
+         "used, past the gate",
+      "readable, rollup, database, id moved to a float":
+         "skipped row_level_gate",
+      "readable, rollup, storage": "skipped row_level_gate",
+      "unreadable, served, database": "used, past the gate",
+      "unreadable, served, database, amount moved to a float":
+         "skipped does_not_answer (served_copy_not_served)",
+      "unreadable, served, database, id moved to a float":
+         "skipped does_not_answer (served_copy_not_served)",
+      "unreadable, served, storage":
+         "skipped does_not_answer (served_copy_not_served)",
+      "unreadable, rollup, database": "used, past the gate",
+      "unreadable, rollup, database, amount moved to a float":
+         "skipped row_level_gate",
+      "unreadable, rollup, database, id moved to a float":
+         "skipped row_level_gate",
       "unreadable, rollup, storage":
          "skipped does_not_answer (rollup_row_level_gate)",
    },
 };
 
 describe("read admission over moved columns and unreadable reads, gated sources off", () => {
-   for (const shape of Object.keys(SCOPE_COLUMNS) as Shape[]) {
+   for (const shape of Object.keys(READ_COLUMNS) as Shape[]) {
       it(shape, async () => {
          const rows: Record<string, string> = {};
          await withSwitches(false, async () => {
@@ -1194,7 +1220,8 @@ function admittedOverMoves(args: {
    tables: Binding[];
    unreadable: boolean;
 }): string {
-   const scoped = SCOPE_COLUMNS[args.shape] ?? [];
+   const read = READ_COLUMNS[args.shape] ?? [];
+   const gated = GATED(args.shape);
    const typeOf = (name: string) =>
       SCHEMA.find((c) => c.name === name)?.type ?? "";
    const tables: TableRead[] = args.tables.map((t) => {
@@ -1203,8 +1230,8 @@ function admittedOverMoves(args: {
             ? { tier: "storage" }
             : {
                  tier: "storage",
-                 gateColumnTypes: scoped.map(typeOf),
-                 ...(scoped.length === 0 ? { gatesReadNoColumn: true } : {}),
+                 gateColumnTypes: read.map(typeOf),
+                 ...(read.length === 0 ? { gatesReadNoColumn: true } : {}),
               };
       }
       const moved = t.retypedColumns ?? [];
@@ -1212,16 +1239,16 @@ function admittedOverMoves(args: {
       return {
          tier: "database",
          gateColumnTypes: moved
-            .filter((c) => args.unreadable || scoped.includes(c.name))
+            .filter((c) => args.unreadable || read.includes(c.name))
             .map((c) => c.type),
       };
    });
    const facts: ReadFacts = {
-      pastEntryPointGate: false,
+      pastEntryPointGate: gated,
       compositeRowFilter: false,
       reads: args.unreadable
          ? undefined
-         : { scoped: scoped.length > 0, gated: false },
+         : { scoped: !gated && read.length > 0, gated },
       columnsListed: tables.some(
          (t) => t.tier === "storage" || t.gateColumnTypes !== undefined,
       ),
@@ -1233,7 +1260,10 @@ function admittedOverMoves(args: {
       materialize: true,
       gatedSources: false,
    });
-   if (verdict.admit) return "used";
+   if (verdict.admit) {
+      return verdict.pastEntryPointGate ? "used, past the gate" : "used";
+   }
+   if (verdict.reason === "row_level_gate") return "skipped row_level_gate";
    return args.leg === "served"
       ? "skipped does_not_answer (served_copy_not_served)"
       : "skipped does_not_answer (rollup_row_level_gate)";
