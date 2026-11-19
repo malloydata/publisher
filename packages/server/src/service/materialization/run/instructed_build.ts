@@ -15,6 +15,7 @@
  * manifest; the committer does.
  */
 
+import { errorCodeOf } from "./error_code";
 import { instructionTier } from "../domain/placement";
 import {
    instructedTable,
@@ -290,7 +291,7 @@ async function markBuiltOwnedTable(
    ).catch((err) =>
       logger.warn("Could not reach a built table to mark it", {
          sourceName: persistSource.name,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       }),
    );
 }
@@ -623,7 +624,7 @@ export class InstructedBuild {
                "Could not retire a package's entries for a table it does not own",
                {
                   sourceName: persistSource.name,
-                  error: errMessage(retireErr),
+                  code: errorCodeOf(retireErr),
                },
             );
          });
@@ -837,7 +838,7 @@ export class InstructedBuild {
                logger.warn(
                   "Seeded upstream's table name cannot be quoted for its dialect; " +
                      "not binding it for downstream reads",
-                  { sourceEntityId, error: err.message },
+                  { sourceEntityId, code: errorCodeOf(err) },
                );
             }
             if (tableName !== undefined) {
@@ -1650,7 +1651,7 @@ function databaseRefusalOn(
                   {
                      packageName: run.owner?.packageName,
                      sourceName: source.name,
-                     error: errMessage(err),
+                     code: errorCodeOf(err),
                   },
                );
             }
@@ -1756,7 +1757,7 @@ async function storedJoinOf(
    } catch (err) {
       logger.debug(
          "Inline uniqueness check: the joined table could not be proven; checking as compiled",
-         { sourceName: parent.name, join: check.join, error: errMessage(err) },
+         { sourceName: parent.name, join: check.join, code: errorCodeOf(err) },
       );
       return undefined;
    }
@@ -1996,7 +1997,7 @@ export async function checkAndRecordKey(
       record = await runCheck();
    } catch (err) {
       recordKeyCheck(kind, "not_run");
-      logger.warn(messages.notRun, { ...logContext, error: errMessage(err) });
+      logger.warn(messages.notRun, { ...logContext, code: errorCodeOf(err) });
       return;
    }
    if (!record) {

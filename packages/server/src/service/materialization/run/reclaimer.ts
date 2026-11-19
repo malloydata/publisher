@@ -16,6 +16,7 @@
  * marked as its own.
  */
 
+import { errorCodeOf } from "./error_code";
 import {
    dropVerdict,
    isTransientGuard,
@@ -281,7 +282,7 @@ function destinationForCleanup(
    } catch (error) {
       logger.warn(
          "Skipping a table drop: its storage destination is no longer configured",
-         { destinationName, error: errMessage(error) },
+         { destinationName, code: errorCodeOf(error) },
       );
       return undefined;
    }
@@ -420,7 +421,7 @@ async function dropStorageTable(
          ...context,
          // The drop attaches read-write, so a failure can echo the catalog
          // connstring.
-         error: redactConnectionSecrets(errMessage(err), destinationConnection),
+         code: errorCodeOf(err),
       });
       return false;
    }
@@ -611,7 +612,7 @@ async function dropDatabaseTable(
                runId: materializationId,
                physicalTableName,
                connectionName,
-               error: err.message,
+               code: errorCodeOf(err),
             },
          );
          return "unquotable";
@@ -621,7 +622,7 @@ async function dropDatabaseTable(
          runId: materializationId,
          physicalTableName,
          connectionName,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
       return "owed";
    }
@@ -962,7 +963,7 @@ export class Reclaimer {
       } catch (err) {
          // Never let cleanup mask the build failure that triggered it.
          logger.warn("Failed-run table reclaim did not complete", {
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -1289,7 +1290,7 @@ export class Reclaimer {
             packageName,
             connectionName,
             physicalTableName,
-            error: redacted(err),
+            code: errorCodeOf(err),
          });
          throw unverified("whose it is could not be read (the probe failed)");
       }
@@ -1342,7 +1343,7 @@ export class Reclaimer {
                packageName,
                connectionName,
                physicalTableName,
-               error: redacted(err),
+               code: errorCodeOf(err),
             },
          );
          throw (
@@ -1378,7 +1379,7 @@ export class Reclaimer {
                         packageName,
                         connectionName,
                         physicalTableName: copy,
-                        error: redacted(err),
+                        code: errorCodeOf(err),
                      },
                   );
                },
@@ -1665,7 +1666,7 @@ export class Reclaimer {
       } catch (err) {
          logger.warn(
             "Reclaiming tables readable names replaced did not complete",
-            { error: errMessage(err) },
+            { code: errorCodeOf(err) },
          );
          return undefined;
       }
@@ -1911,7 +1912,7 @@ export class Reclaimer {
                   "Could not forget the incremental boundary of a dropped table",
                   {
                      physicalTableName: entry.physicalTableName,
-                     error: errMessage(err),
+                     code: errorCodeOf(err),
                   },
                ),
             );
@@ -2053,7 +2054,7 @@ export class Reclaimer {
             environmentName,
             packageName,
             version: versionId,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -2092,7 +2093,7 @@ export class Reclaimer {
             environmentName,
             packageName,
             version: versionId,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -2115,7 +2116,7 @@ export class Reclaimer {
             environmentName,
             packageName,
             version: versionId,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
       await this.reclaimVersionTables(environmentName, packageName, versionId);
@@ -2287,7 +2288,7 @@ export class Reclaimer {
          } catch (err) {
             logger.warn("Failed to finish reclaiming versions at startup", {
                environmentName,
-               error: errMessage(err),
+               code: errorCodeOf(err),
             });
          }
       }

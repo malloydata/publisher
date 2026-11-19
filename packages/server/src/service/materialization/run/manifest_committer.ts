@@ -14,6 +14,7 @@
  * the run; the run's record says what is served.
  */
 
+import { errorCodeOf } from "./error_code";
 import { storageWritable } from "../domain/placement";
 import { redactStorageUrls } from "../../../pg_helpers";
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
@@ -358,7 +359,7 @@ export class ManifestCommitter {
                {
                   packageName,
                   step: outcome.step,
-                  error: outcome.error,
+                  // The message is on the run's record (notServed).
                },
             );
             await finish(notServed(outcome.step, outcome.error));
@@ -435,7 +436,7 @@ export class ManifestCommitter {
             "Reference resolve-local lookup failed; using references as supplied",
             {
                packageName,
-               error: err instanceof Error ? err.message : String(err),
+               code: errorCodeOf(err),
             },
          );
          return;
@@ -484,7 +485,7 @@ export class ManifestCommitter {
             "Build upstream resolution: bound manifest fetch failed; ignoring",
             {
                manifestLocation,
-               error: err instanceof Error ? err.message : String(err),
+               code: errorCodeOf(err),
             },
          );
          return;
@@ -553,7 +554,7 @@ export class ManifestCommitter {
          logger.warn("Failed to rebind a run's own version", {
             packageName,
             versionId,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -601,7 +602,7 @@ export class ManifestCommitter {
       } catch (err) {
          logger.warn("Failed to rebind serve bindings", {
             packageName,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
          return false;
       }
@@ -648,7 +649,7 @@ export class ManifestCommitter {
             logger.warn(
                "Failed to rebind serve bindings (leaving current bindings; a " +
                   "reload/build will re-derive)",
-               { packageName, versionId, error: errMessage(err) },
+               { packageName, versionId, code: errorCodeOf(err) },
             );
          }
       }

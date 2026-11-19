@@ -11,11 +11,11 @@
  * its store.
  */
 
+import { errorCodeOf } from "./error_code";
 import { leafKey } from "../domain/physical_table";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
 import { ResourceRepository } from "../../../storage/DatabaseInterface";
-import { errMessage } from "../../../utils";
 import {
    isVersionOwnedRun,
    SUPERSEDED_TABLES_KEY,
@@ -213,7 +213,7 @@ export class TableClaims {
             // Deleted meanwhile: nothing of it is read any more.
             logger.debug("Could not mark a run's entries superseded", {
                runId: m.id,
-               error: errMessage(err),
+               code: errorCodeOf(err),
             });
          }
       }
@@ -285,7 +285,7 @@ export class TableClaims {
             } catch (err) {
                logger.warn(
                   "Could not retire a run's entry for a table it no longer holds",
-                  { runId: m.id, error: errMessage(err) },
+                  { runId: m.id, code: errorCodeOf(err) },
                );
             }
          }

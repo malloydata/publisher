@@ -1329,7 +1329,7 @@ export class StorageBuildStrategy
          // Its text names the generated sources; logged, never returned.
          logger.warn(
             "A storage= extension table did not build over its parent's stored table",
-            { sourceName: persistSource.name, error: errMessage(err) },
+            { sourceName: persistSource.name, code: errorCodeOf(err) },
          );
          throw new ChainedShapeNotCarriedError(
             `'${persistSource.name}' could not be built over the stored table ` +

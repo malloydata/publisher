@@ -14,6 +14,7 @@
  * store's unique index; every table write goes through its collaborators.
  */
 
+import { errorCodeOf } from "./error_code";
 import { leafKey } from "../domain/physical_table";
 import {
    BadRequestError,
@@ -40,7 +41,6 @@ import {
 import { DuplicateActiveMaterializationError } from "../../../storage/duckdb/MaterializationRepository";
 import type { components } from "../../../api";
 import { withSpan } from "../../../telemetry";
-import { errMessage } from "../../../utils";
 import {
    parseEnvironmentName,
    parsePackageName,
@@ -1749,7 +1749,7 @@ export class MaterializationService {
       } catch (err) {
          logger.warn(
             "Could not list earlier runs; every inline uniqueness check runs",
-            { packageName, error: errMessage(err) },
+            { packageName, code: errorCodeOf(err) },
          );
          return undefined;
       }

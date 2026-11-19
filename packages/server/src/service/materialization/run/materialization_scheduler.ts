@@ -12,6 +12,7 @@
  * recorded scheduler fire. Logs and counts each fire.
  */
 
+import { errorCodeOf } from "./error_code";
 import type { MaterializationSchedulerConfig } from "../../../config";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -130,7 +131,7 @@ export class MaterializationScheduler {
          } catch (err) {
             logger.warn("MaterializationScheduler: could not list versions", {
                environmentName,
-               error: err instanceof Error ? err.message : String(err),
+               code: errorCodeOf(err),
             });
             continue;
          }
@@ -211,7 +212,7 @@ export class MaterializationScheduler {
             environmentName,
             packageName,
             versionId,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -381,7 +382,7 @@ export class MaterializationScheduler {
             {
                environmentName,
                packageName,
-               error: err instanceof Error ? err.message : String(err),
+               code: errorCodeOf(err),
             },
          );
          return new Date(nowMs);
@@ -437,7 +438,7 @@ export class MaterializationScheduler {
             environmentName,
             packageName,
             versionId,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
    }

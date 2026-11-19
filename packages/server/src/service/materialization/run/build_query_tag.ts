@@ -19,6 +19,7 @@
  * Pinned to @malloydata/malloy 0.0.427.
  */
 
+import { errorCodeOf } from "./error_code";
 import { snowflakeSetQueryTagStatement } from "./warehouse_sql";
 import type { components } from "../../../api";
 import { logger } from "../../../logger";
@@ -222,7 +223,7 @@ export function connectionMetadataLayers(
       // Logged because the lost enforced layer has no metric behind it.
       logger.debug("No query-metadata layers for connection", {
          connectionName,
-         error,
+         code: errorCodeOf(error),
       });
       return { default: null, enforced: null };
    }

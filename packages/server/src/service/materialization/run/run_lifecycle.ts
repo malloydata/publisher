@@ -203,7 +203,7 @@ export class RunLifecycle {
                   } catch (readErr) {
                      logger.warn(
                         "Could not read a run's record; recording its status without its metadata",
-                        { runId: id, error: errMessage(readErr) },
+                        { runId: id, code: errorCodeOf(readErr) },
                      );
                   }
                }
@@ -256,7 +256,7 @@ export class RunLifecycle {
                logger.error("Failed to record materialization failure", {
                   runId: id,
                   code,
-                  transitionError: errMessage(transitionErr),
+                  transitionErrorCode: errorCodeOf(transitionErr),
                });
             }
          })

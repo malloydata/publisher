@@ -69,6 +69,7 @@
  * the same names write the same mark.
  */
 
+import { errorCodeOf } from "./error_code";
 import { leafKey } from "../domain/physical_table";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PersistSource } from "@malloydata/malloy";
@@ -492,7 +493,7 @@ export async function markOwnedTable(
    } catch (err) {
       logger.warn(
          "Could not mark a built table as this package's; its run's records say so instead",
-         { physicalTableName, owner, error: errMessage(err) },
+         { physicalTableName, owner, code: errorCodeOf(err) },
       );
    }
 }

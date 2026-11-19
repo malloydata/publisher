@@ -13,6 +13,7 @@
  * session; logs and attribution-skipped counts.
  */
 
+import { errorCodeOf } from "./error_code";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { logger } from "../../../logger";
 import { recordAttributionSkipped } from "../../../materialization_metrics";
@@ -57,7 +58,7 @@ async function alignSnowflakeSession(
             "Could not set a Malloy session setting on the Snowflake build session",
             {
                statement: sql,
-               error: error instanceof Error ? error.message : String(error),
+               code: errorCodeOf(error),
             },
          );
       }
@@ -118,7 +119,7 @@ export async function tagSnowflakeSession(
       await session.runSQL(sql);
    } catch (error) {
       logger.warn("Could not tag the Snowflake build session", {
-         error: error instanceof Error ? error.message : String(error),
+         code: errorCodeOf(error),
       });
       // Untagged, the read is unattributable in the customer's query history AND
       // unfindable by the cost lookup, which keys on that same tag.
@@ -150,7 +151,7 @@ export async function canSplitBigQueryRead(
          "Cannot list BigQuery jobs for this connection, so this build's " +
             "warehouse read will not be labelled or costed",
          {
-            error: error instanceof Error ? error.message : String(error),
+            code: errorCodeOf(error),
          },
       );
       recordAttributionSkipped("job_listing_unavailable");
@@ -202,7 +203,7 @@ export async function withBigQueryLookupRetry<T>(
                   attempt,
                   of: BIGQUERY_LOOKUP_ATTEMPTS,
                   parentJobId,
-                  error: error instanceof Error ? error.message : String(error),
+                  code: errorCodeOf(error),
                },
             );
             await new Promise((resolve) =>
@@ -266,7 +267,7 @@ export async function snowflakeReadCostAfterBuild(
       return snowflakeReadCost(row);
    } catch (error) {
       logger.warn("Could not read back what the Snowflake build read cost", {
-         error: error instanceof Error ? error.message : String(error),
+         code: errorCodeOf(error),
       });
       recordAttributionSkipped("cost_query_failed");
       return null;
@@ -297,7 +298,7 @@ export async function clearSnowflakeSessionTag(
       );
    } catch (error) {
       logger.warn("Could not clear the Snowflake build session's query tag", {
-         error: error instanceof Error ? error.message : String(error),
+         code: errorCodeOf(error),
       });
    }
 }

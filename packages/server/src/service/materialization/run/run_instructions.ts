@@ -41,7 +41,6 @@ import {
 } from "../../../errors";
 import { logger } from "../../../logger";
 import { recordEligibilityRefused } from "../../../materialization_metrics";
-import { errMessage } from "../../../utils";
 import {
    packageTableSuffix,
    versionedTableName,
@@ -232,7 +231,7 @@ function gateSources(
                   "Skipping a persist source the eligibility gate refuses",
                   {
                      sourceName: persistSource.name,
-                     reason: errMessage(err),
+                     reason: err.reason,
                   },
                );
             }

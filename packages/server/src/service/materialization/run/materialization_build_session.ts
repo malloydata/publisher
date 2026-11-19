@@ -392,7 +392,7 @@ export function createIsolatedBuildSession(sessionName: string): {
       } catch (err) {
          logger.warn("Failed to close build session (leaked session)", {
             sessionName,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
       try {
@@ -400,7 +400,7 @@ export function createIsolatedBuildSession(sessionName: string): {
       } catch (err) {
          logger.warn("Failed to disconnect build session (leaked connection)", {
             sessionName,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
       try {
@@ -409,7 +409,7 @@ export function createIsolatedBuildSession(sessionName: string): {
          logger.warn("Failed to remove build session working directory", {
             sessionName,
             workDir,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
    };
@@ -623,7 +623,7 @@ export function interruptOnAbort(
          connection?.interrupt?.();
       } catch (err) {
          logger.warn("Could not interrupt a cancelled build's session", {
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
    };
@@ -1936,7 +1936,7 @@ async function inTransaction<T>(
                "have been replaced",
             {
                table: quotedTablePath,
-               error: errMessage(rollbackErr),
+               code: errorCodeOf(rollbackErr),
                // The build's error can quote its SQL or a value; it is
                // rethrown to the run's record.
                causeCode: errorCodeOf(buildErr),
@@ -1966,7 +1966,7 @@ async function countStoredRows(
    } catch (error) {
       logger.debug("Could not count a built table's rows", {
          table: quotedTablePath,
-         error: errMessage(error),
+         code: errorCodeOf(error),
       });
       return null;
    }

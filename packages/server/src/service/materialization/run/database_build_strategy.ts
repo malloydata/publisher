@@ -297,7 +297,7 @@ export async function capturedDatabaseSchema(args: {
          {
             sourceName: args.sourceName,
             physicalTableName: key,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          },
       );
       return undefined;
@@ -333,7 +333,7 @@ async function dropStagingAfterFailure({
          {
             stagingTableName,
             connectionName,
-            cleanupError: errMessage(cleanupErr),
+            cleanupCode: errorCodeOf(cleanupErr),
          },
       );
    }
@@ -425,7 +425,7 @@ async function swapInTransaction({
             logger.warn("Failed to roll back a materialized table swap", {
                physicalTableName,
                connectionName,
-               error: errMessage(rollbackErr),
+               code: errorCodeOf(rollbackErr),
                // The swap's error can quote its SQL; it reaches the run's
                // record.
                causeCode: errorCodeOf(failure),
@@ -580,8 +580,8 @@ async function swapByRenamingAside({
                   backupTableName,
                   stagingTableName,
                   connectionName,
-                  error: errMessage(err),
-                  restoreError: errMessage(restoreErr),
+                  code: errorCodeOf(err),
+                  restoreCode: errorCodeOf(restoreErr),
                },
             );
             throw err;
@@ -602,7 +602,7 @@ async function swapByRenamingAside({
             physicalTableName,
             backupTableName,
             connectionName,
-            error: errMessage(dropErr),
+            code: errorCodeOf(dropErr),
          },
       );
    }

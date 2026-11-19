@@ -22,6 +22,7 @@
  * ledger in the run store; logs and counts each step.
  */
 
+import { errorCodeOf } from "./error_code";
 import { ledgerRowKey } from "../domain/physical_table";
 import { logger } from "../../../logger";
 import {
@@ -428,7 +429,7 @@ async function advanceLedger(params: {
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
          sourceEntityId: lineage.sourceEntityId,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
    }
 }
@@ -457,7 +458,7 @@ export async function resetLedger(
       logger.warn("Failed to clear the covered_through boundary", {
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
    }
 }
@@ -716,10 +717,16 @@ export function reportIncrementalStep(params: {
    const { step, sourceName, packageName, physicalTableName } = params;
    recordIncrementalStep(step.mode, step.reasonCode);
    // Warn: a seed's reason is the only signal that an incremental source is
-   // quietly being rebuilt in full every run. The code only: the free-text
-   // reason can quote a watermark boundary, which is a value from the data,
-   // or a driver's error. The boundary in force is on the manifest entry.
-   logger.warn(
+   // quietly being rebuilt in full every run. A skip because no new data
+   // arrived is the steady state of a schedule: info. The code only: the
+   // free-text reason can quote a watermark boundary, which is a value from
+   // the data, or a driver's error. The boundary in force is on the manifest
+   // entry.
+   const level =
+      step.mode === "skip" && step.reasonCode === "not_advanced"
+         ? "info"
+         : "warn";
+   logger[level](
       step.mode === "seed"
          ? "Rebuilding an incremental source in full"
          : "Skipping an incremental source's refresh",

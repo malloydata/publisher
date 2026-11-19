@@ -459,3 +459,51 @@ describe("stackFrames", () => {
       expect(stackFrames(cut)).toBeUndefined();
    });
 });
+
+// A driver's message can quote SQL or a row value, so a log call in run/
+// carries an error's code (errorCodeOf), never its message. Read from the
+// source: every logger call in every run/ module.
+describe("run/ logs an error's code, never its message", () => {
+   it("has no logger call carrying errMessage, .message or a redacted message", async () => {
+      const { readdirSync, readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const offenders: string[] = [];
+      for (const file of readdirSync(__dirname)) {
+         if (!file.endsWith(".ts") || file.endsWith(".spec.ts")) continue;
+         const text = readFileSync(join(__dirname, file), "utf8");
+         for (const call of loggerCalls(text)) {
+            if (
+               /errMessage\(|\.message\b|redact\w*\(|\berror,/.test(call.text)
+            ) {
+               offenders.push(`${file}:${call.line}`);
+            }
+         }
+      }
+      expect(offenders).toEqual([]);
+   });
+});
+
+/** Each `logger.<level>(...)` call in `text`, with the line it starts on. */
+function loggerCalls(text: string): { text: string; line: number }[] {
+   const calls: { text: string; line: number }[] = [];
+   const start = /logger\.(debug|info|warn|error)\(/g;
+   for (let m = start.exec(text); m; m = start.exec(text)) {
+      let depth = 0;
+      let i = m.index + m[0].length - 1;
+      for (; i < text.length; i++) {
+         const c = text[i];
+         if (c === "(") depth++;
+         else if (c === ")" && --depth === 0) break;
+         else if (c === '"' || c === "'" || c === "`") {
+            for (i++; i < text.length && text[i] !== c; i++) {
+               if (text[i] === "\\") i++;
+            }
+         }
+      }
+      calls.push({
+         text: text.slice(m.index, i + 1),
+         line: text.slice(0, m.index).split("\n").length,
+      });
+   }
+   return calls;
+}
