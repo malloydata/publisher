@@ -9,7 +9,7 @@
  * manifest committer and the reclaimer.
  *
  * Effects: writes the run store, logs a failed or cancelled run (secrets
- * redacted), counts each run's outcome. In-process only: a run on another
+ * redacted). In-process only: a run on another
  * process cannot be cancelled from here.
  */
 
@@ -21,10 +21,6 @@ import {
 } from "../../../errors";
 import { classifyRunFailure, failedRunManifestOf } from "./build_failure_class";
 import { logger } from "../../../logger";
-import {
-   MaterializationMode,
-   recordMaterializationRun,
-} from "../../../materialization_metrics";
 import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 import {
    Materialization,
@@ -33,7 +29,7 @@ import {
 } from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
 import { MaterializationStatus } from "../domain/types";
-import { VALID_TRANSITIONS } from "./materialization_run_support";
+import { VALID_TRANSITIONS } from "./run_status";
 import { errorCodeOf } from "./error_code";
 import { runFailureReported } from "./run_telemetry";
 
@@ -132,14 +128,6 @@ export class RunLifecycle {
       );
    }
 
-   recordRun(
-      mode: MaterializationMode,
-      outcome: "success" | "partial" | "failed" | "cancelled",
-      startedAtMs: number,
-   ): void {
-      recordMaterializationRun(mode, outcome, Date.now() - startedAtMs);
-   }
-
    runInBackground(
       id: string,
       run: (signal: AbortSignal) => Promise<void>,
@@ -215,7 +203,7 @@ export class RunLifecycle {
                   } catch (readErr) {
                      logger.warn(
                         "Could not read a run's record; recording its status without its metadata",
-                        { runId: id, error: errMessage(readErr) },
+                        { runId: id, code: errorCodeOf(readErr) },
                      );
                   }
                }
@@ -268,7 +256,7 @@ export class RunLifecycle {
                logger.error("Failed to record materialization failure", {
                   runId: id,
                   code,
-                  transitionError: errMessage(transitionErr),
+                  transitionErrorCode: errorCodeOf(transitionErr),
                });
             }
          })

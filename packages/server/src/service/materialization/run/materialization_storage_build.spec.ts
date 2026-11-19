@@ -356,9 +356,7 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
    // Decided 2026-11-12: a host-instructed build refuses a host-supplied
    // upstream entry at the wrong tier, strict or not, instead of recomputing.
    it("host-instructed + a parent supplied at the wrong tier: refuses, strict or not, and never recomputes", async () => {
-      const { HostSuppliedWrongTierError } = await import(
-         "./materialization_run_support"
-      );
+      const { HostSuppliedWrongTierError } = await import("./build_upstreams");
       for (const strict of [false, true]) {
          const call = callInto({
             strict,
@@ -373,9 +371,7 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
    });
 
    it("host-instructed: names only the upstream supplied at the wrong tier, each with its own reason", async () => {
-      const { HostSuppliedWrongTierError } = await import(
-         "./materialization_run_support"
-      );
+      const { HostSuppliedWrongTierError } = await import("./build_upstreams");
       const err = await callInto({
          strict: false,
          stackOnParent: "wrongTierAndMissing",

@@ -15,8 +15,14 @@
  * manifest; the committer does.
  */
 
+import { tableNamesFoldCase } from "../domain/storage_table_path";
+import { errorCodeOf } from "./error_code";
 import { instructionTier } from "../domain/placement";
-import { instructedTable, placedLeafKey } from "../domain/physical_table";
+import {
+   instructedTable,
+   placedLeafKey,
+   tableKey,
+} from "../domain/physical_table";
 import { BuildCancelledError } from "../domain/build_cancelled";
 import { keyCheckCompilerKey } from "../domain/key_check";
 import {
@@ -33,7 +39,17 @@ import type {
    RollupKeyCheck,
 } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
-import { buildSQLOf, presentAs } from "../plan/addressing";
+import {
+   assertMaterializationEligible,
+   assertPlacementNamed,
+   assertTierEligible,
+   buildSQLOf,
+   computeSourceEntityId,
+   deriveAnnotationFields,
+   presentAs,
+   type RunPlan,
+   tierGateInputs,
+} from "./run_plan";
 import { outputColumnsOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
@@ -73,20 +89,9 @@ import {
    storedColumnTypeMismatches,
 } from "../stored_column_types";
 import {
-   computeSourceEntityId,
-   deriveAnnotationFields,
-   tierGateInputs,
-} from "../plan/build_plan";
-import {
-   type CompiledBuildPlan,
    materializePlansOf,
    sourcesInBuildOrder,
 } from "../domain/compiled_build_plan";
-import {
-   assertMaterializationEligible,
-   assertPlacementNamed,
-   assertTierEligible,
-} from "../plan/materialization_eligibility";
 import {
    BuildInstruction,
    ManifestEntry,
@@ -110,17 +115,20 @@ import { freshnessOf } from "../domain/freshness";
 import { STORAGE_DIALECT } from "../domain/dialect";
 import {
    allSourcesRefusedError,
+   refusalRecord,
+} from "./materialization_instructed_run";
+import {
    BuildEnvironment,
    chainedPlanFacts,
-   upstreamEntryIsCurrent,
-   isReclaimableStorageTable,
    manifestExcludingStorage,
-   physicalTargetKey,
-   refusalRecord,
+   upstreamEntryIsCurrent,
+} from "./build_upstreams";
+import {
+   isReclaimableStorageTable,
    reportRetainedStorageTables,
-   selfAssignTableName,
-   statementRunOptions,
-} from "./materialization_run_support";
+} from "./reclaimer";
+import { selfAssignTableName } from "./build_table_names";
+import { statementRunOptions } from "./build_query_tag";
 import {
    dropOwnNameView,
    provenOwnView,
@@ -240,14 +248,12 @@ interface GatedSource {
    orchestrated: boolean;
    /** The source's CONTENT address, which keys the manifest. */
    sourceEntityId: string;
-   /** The physical table it writes ({@link physicalTargetKey}). */
+   /** The physical table it writes ({@link tableKey}). */
    target: string;
 }
 
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
-function upstreamsBySourceID(
-   builds: CompiledBuildPlan["builds"],
-): Map<string, string[]> {
+function upstreamsBySourceID(builds: RunPlan["builds"]): Map<string, string[]> {
    const out = new Map<string, string[]>();
    for (const build of builds) {
       for (const [sourceID, reads] of Object.entries(build.dependsOn ?? {})) {
@@ -286,7 +292,7 @@ async function markBuiltOwnedTable(
    ).catch((err) =>
       logger.warn("Could not reach a built table to mark it", {
          sourceName: persistSource.name,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       }),
    );
 }
@@ -619,7 +625,7 @@ export class InstructedBuild {
                "Could not retire a package's entries for a table it does not own",
                {
                   sourceName: persistSource.name,
-                  error: errMessage(retireErr),
+                  code: errorCodeOf(retireErr),
                },
             );
          });
@@ -725,9 +731,9 @@ export class InstructedBuild {
     */
    private async buildEveryTable(
       run: InstructedRun,
-      builds: CompiledBuildPlan["builds"],
-      tables: CompiledBuildPlan["tables"],
-      connections: CompiledBuildPlan["connections"],
+      builds: RunPlan["builds"],
+      tables: RunPlan["tables"],
+      connections: RunPlan["connections"],
    ): Promise<void> {
       const deferred: {
          persistSource: PersistSource;
@@ -803,7 +809,7 @@ export class InstructedBuild {
     */
    private seedInstructedRun(
       seedEntries: Record<string, ManifestEntry>,
-      connections: CompiledBuildPlan["connections"],
+      connections: RunPlan["connections"],
       strict: boolean,
    ): Pick<InstructedRun, "manifest" | "entries"> {
       // Accumulates physical names as sources build so downstreams resolve to
@@ -833,7 +839,7 @@ export class InstructedBuild {
                logger.warn(
                   "Seeded upstream's table name cannot be quoted for its dialect; " +
                      "not binding it for downstream reads",
-                  { sourceEntityId, error: err.message },
+                  { sourceEntityId, code: errorCodeOf(err) },
                );
             }
             if (tableName !== undefined) {
@@ -1038,7 +1044,13 @@ export class InstructedBuild {
       // refused unless PERSIST_COLLISION_ENFORCE=false) by
       // assertNoTableCollisions, so reaching here means the deployment opted
       // out, to warn and write anyway.
-      const target = physicalTargetKey(instruction, graphConnectionName);
+      const target = tableKey(
+         instructedTable(instruction, graphConnectionName),
+         tableNamesFoldCase(
+            persistSource.dialectName,
+            !!instruction.destination,
+         ),
+      );
       const written = run.writtenTargets.get(target);
       if (written && written.sourceEntityId === sourceEntityId) {
          // Another route to the same table: nothing to build or record.
@@ -1644,7 +1656,7 @@ function databaseRefusalOn(
                   {
                      packageName: run.owner?.packageName,
                      sourceName: source.name,
-                     error: errMessage(err),
+                     code: errorCodeOf(err),
                   },
                );
             }
@@ -1750,7 +1762,7 @@ async function storedJoinOf(
    } catch (err) {
       logger.debug(
          "Inline uniqueness check: the joined table could not be proven; checking as compiled",
-         { sourceName: parent.name, join: check.join, error: errMessage(err) },
+         { sourceName: parent.name, join: check.join, code: errorCodeOf(err) },
       );
       return undefined;
    }
@@ -1772,7 +1784,7 @@ async function storedJoinOf(
  */
 async function checkRollupKeys(
    ledger: UniquenessLedger,
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    entry: ManifestEntry,
    connection: MalloyConnection,
@@ -1820,7 +1832,7 @@ async function checkRollupKeys(
 
 /** The key check a run builds for the rollup `sourceID`, if any (known limitation 29). */
 function rollupKeyCheckOf(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sourceID: string,
 ): RollupKeyCheck | undefined {
    return (
@@ -1832,7 +1844,7 @@ function rollupKeyCheckOf(
 
 /** The query source key checks a run builds for the rollup `sourceID`. */
 function rollupParentKeyChecksOf(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sourceID: string,
 ): ParentKeyCheck[] {
    return (
@@ -1990,7 +2002,7 @@ export async function checkAndRecordKey(
       record = await runCheck();
    } catch (err) {
       recordKeyCheck(kind, "not_run");
-      logger.warn(messages.notRun, { ...logContext, error: errMessage(err) });
+      logger.warn(messages.notRun, { ...logContext, code: errorCodeOf(err) });
       return;
    }
    if (!record) {

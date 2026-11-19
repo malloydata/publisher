@@ -36,7 +36,7 @@ import { errMessage } from "../../../utils";
 import {
    HostSuppliedWrongTierError,
    strictMissSourceId,
-} from "./materialization_run_support";
+} from "./build_upstreams";
 import { InlinedJoinNotUniqueError } from "./inline_uniqueness";
 import type { SourceFailure } from "../domain/types";
 
@@ -395,7 +395,7 @@ export class BuildRunFailedError extends Error {
  * or binds it, since every reader that binds or reuses a run counts
  * MANIFEST_FILE_READY runs only.
  */
-export interface FailedRunManifest {
+interface FailedRunManifest {
    failures: Record<string, SourceFailure>;
 }
 

@@ -43,7 +43,7 @@ import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import type { MaterializationService } from "../../src/service/materialization/run/materialization_service";
-import { backupSuffix } from "../../src/service/materialization/run/materialization_run_support";
+import { backupSuffix } from "../../src/service/materialization/run/build_table_names";
 import { ownedTableComment } from "../../src/service/materialization/run/table_ownership";
 import type {
    Materialization,

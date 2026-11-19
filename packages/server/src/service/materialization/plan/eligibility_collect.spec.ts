@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { planPackages } from "../../../test_helpers/materialization_fixture";
 import { BASE } from "../../../test_helpers/materialize_spec_models";
 import { computeSourceEntityId } from "./addressing";
-import { deriveBuildPlanOutcome } from "./build_plan";
+import { derivePackagePlan } from "./build_plan";
 
 /**
  * The plan-wide collision checks in `eligibility_collect.ts`: rollups that
@@ -47,7 +47,7 @@ describe("rollups of same-named bases in two models", () => {
             ),
          );
          expect(new Set(addresses).size).toBe(2);
-         const outcome = deriveBuildPlanOutcome(c, null);
+         const outcome = derivePackagePlan(c, null);
          for (const [id] of rollups) {
             expect(outcome.plan?.refusedSources?.[id]).toBeUndefined();
             expect(outcome.plan?.sources[id]).toBeDefined();

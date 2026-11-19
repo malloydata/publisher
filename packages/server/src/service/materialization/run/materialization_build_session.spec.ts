@@ -20,8 +20,6 @@ import {
    type BuildSessionDeps,
    createIsolatedBuildSession,
    createTableAndDescribe,
-   dropStorageTable,
-   dropStorageTableSql,
    partitionKeySql,
    partitionOrderSql,
    passthroughSourceType,
@@ -29,6 +27,7 @@ import {
    writePartitionedTable,
    oneFileModel,
 } from "./materialization_build_session";
+import { dropStorageTable, dropStorageTableSql } from "./storage_admin";
 import { identifier } from "../../malloy_text";
 import { declarableColumns } from "../stored_column_types";
 import { buildVirtualMap } from "../serve/bindings";

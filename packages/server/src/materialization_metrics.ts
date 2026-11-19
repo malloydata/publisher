@@ -809,39 +809,18 @@ export function recordAttributionSkipped(
 }
 
 /**
- * Record a materialization-eligibility refusal. A build plan records each
- * source in its `refusedSources` once per derivation, under the reason there,
- * and never a source it does not refuse (a database source only unservable
- * from storage); a run records the refusals only it can find. The `given`
- * reason is a security
- * refusal (a frozen given-filtered table would leak rows across tenants); worth
- * tracking how often authors attempt it.
+ * Record a materialization-eligibility refusal. A build plan's refusals are
+ * counted as it is derived and recorded where the plan is adopted (a load, a
+ * run's guard), each source in its `refusedSources` once, under the reason
+ * there, and never a source it does not refuse (a database source only
+ * unservable from storage); a run records the refusals only it can find. The
+ * `given` reason is a security refusal (a frozen given-filtered table would
+ * leak rows across tenants); worth tracking how often authors attempt it.
  */
 export function recordEligibilityRefused(
    reason: EligibilityRefusalReason,
 ): void {
-   const counts = eligibilityRefusalSink?.();
-   if (counts) {
-      counts[reason] = (counts[reason] ?? 0) + 1;
-      return;
-   }
    eligibilityRefusedCounter().add(1, { reason });
-}
-
-let eligibilityRefusalSink:
-   | (() => Partial<Record<EligibilityRefusalReason, number>> | undefined)
-   | undefined;
-
-/**
- * Route eligibility refusals to the counts `sink` returns instead of the
- * meter, whenever it returns any. The package-load worker derives build plans
- * on a thread whose meter is a no-op, so it counts each job's refusals in that
- * job's own context and hands them back for the main thread to record.
- */
-export function setEligibilityRefusalSink(
-   sink: () => Partial<Record<EligibilityRefusalReason, number>> | undefined,
-): void {
-   eligibilityRefusalSink = sink;
 }
 
 /**

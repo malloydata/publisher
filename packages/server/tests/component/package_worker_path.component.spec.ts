@@ -1296,14 +1296,14 @@ source: orders is duckdb.sql("""
             }
             // The package serves the worker's plan rather than compiling its own.
             expect(pkg.getPackageMetadata().buildPlan).toEqual(
-               workerPlan.outcome.plan ?? undefined,
+               workerPlan.packagePlan.plan ?? undefined,
             );
 
             const { computePackageBuildPlan } = await import(
                "../../src/service/materialization/plan/build_plan_compile"
             );
             const mainThread = await computePackageBuildPlan(pkg);
-            expect(workerPlan.outcome).toEqual(mainThread);
+            expect(workerPlan.packagePlan).toEqual(mainThread);
             // The fixture reaches every part of the plan, so equality above is
             // not equality of empty results.
             expect(
@@ -1347,7 +1347,7 @@ source: orders is duckdb.sql("""
                   malloyConfig,
                );
                expect(derivedHere.getPackageMetadata().buildPlan).toEqual(
-                  workerPlan.outcome.plan ?? undefined,
+                  workerPlan.packagePlan.plan ?? undefined,
                );
                expect(durations.mock.calls.map((call) => call[1])).toEqual([
                   "main_thread",

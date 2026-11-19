@@ -824,16 +824,13 @@ function loadVerdictProblems(
            ];
    }
    if (!workerPlan.ok) return [materializationCheckSkipped(workerPlan.error)];
-   const plan = workerPlan.outcome;
+   const plan = workerPlan.packagePlan;
    const { refusals, warnings } = loadVerdictOfPlan(
       withNearMiss
          ? plan
          : {
               ...plan,
-              modelGateLines: {
-                 preaggregate: plan.modelGateLines.preaggregate,
-                 nearMiss: [],
-              },
+              modelGateLines: { ...plan.modelGateLines, nearMiss: [] },
            },
       {
          enforceCollisions: getPersistCollisionEnforce(),

@@ -28,7 +28,7 @@ import {
 import { quoteTablePath } from "../../quoting";
 import type { DialectName } from "../domain/dialect";
 import type { ManifestEntry } from "../domain/types";
-import { backupSuffix, stagingSuffix } from "./materialization_run_support";
+import { backupSuffix, stagingSuffix } from "./build_table_names";
 import { Reclaimer } from "./reclaimer";
 import { ownedTableComment } from "./table_ownership";
 

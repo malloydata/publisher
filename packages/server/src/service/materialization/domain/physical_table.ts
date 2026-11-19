@@ -7,8 +7,15 @@
  * namespaces that may share a name), and is compared three ways, each
  * named for what it is safe for:
  *
- * - {@link exactTableKey}: the name as written, in its place. Over-narrow:
- *   `Foo` and `foo` are two tables here, though one on a case-folding engine.
+ * - {@link tableKey}: the written name in its place, case-folded only where
+ *   the place folds it (every DuckDB destination; a connection whose dialect
+ *   folds table names), never elsewhere: on Postgres `"T"` and `"t"` are two
+ *   tables. A run's duplicate target and failed target's reuse.
+ * - {@link recordedTableKey}: a recorded table exactly as recorded, on its
+ *   connection and in its destination: a ledger row (the store matches it
+ *   exactly, and a host echoes back the names it was given) and the
+ *   reclaim's bookkeeping of the tables it renamed away from and keeps, so
+ *   two recorded tables are never decided as one.
  * - {@link leafKey} / {@link placedLeafKey}: the last segment, unquoted and
  *   case-folded (in its place, for the placed form). Over-wide: `a.t` and
  *   `b.t` are one table here, which only ever makes a run refuse, a version
@@ -49,11 +56,53 @@ export function instructedTable(
 }
 
 /**
- * The table, exactly as written, in its place. JSON-encoded because a
- * physical name can contain a space.
+ * The table a manifest entry (or any record of a built table) names: in its
+ * storage destination when it has one, else on its connection.
  */
-export function exactTableKey(t: PhysicalTable): string {
-   return JSON.stringify([t.place.kind, t.place.name, t.name]);
+export function entryTable(entry: {
+   connectionName?: string | null;
+   storageDestinationName?: string | null;
+   physicalTableName: string;
+}): PhysicalTable {
+   return {
+      place: entry.storageDestinationName
+         ? { kind: "destination", name: entry.storageDestinationName }
+         : { kind: "connection", name: entry.connectionName ?? "" },
+      name: entry.physicalTableName,
+   };
+}
+
+/**
+ * "This table" as a run compares it: the written name in its place, every
+ * segment case-folded only when `foldsCase` (the place's own folding:
+ * `tableNamesFoldCase`), else exactly as written. JSON-encoded because a
+ * physical name can contain a space. Never folds where the warehouse keeps
+ * case, so two tables there are never one.
+ */
+export function tableKey(t: PhysicalTable, foldsCase: boolean): string {
+   return JSON.stringify([
+      t.place.kind,
+      t.place.name,
+      foldsCase ? foldedSegments(t.name).join(".") : t.name,
+   ]);
+}
+
+/**
+ * A recorded table's identity: the name as written, on its connection and in
+ * its destination (both, as the store keys a ledger row and a run records a
+ * table). Exact: the store matches a row exactly, a host echoes back the
+ * names it was given, and the reclaim decides each recorded table on its own.
+ */
+export function recordedTableKey(row: {
+   connectionName?: string | null;
+   storageDestinationName?: string | null;
+   physicalTableName: string;
+}): string {
+   return JSON.stringify([
+      row.connectionName ?? "",
+      row.storageDestinationName ?? "",
+      row.physicalTableName,
+   ]);
 }
 
 /**

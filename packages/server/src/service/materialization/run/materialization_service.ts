@@ -14,6 +14,8 @@
  * store's unique index; every table write goes through its collaborators.
  */
 
+import { errorCodeOf } from "./error_code";
+import { leafKey } from "../domain/physical_table";
 import {
    BadRequestError,
    BuildInstructionsInvalidError,
@@ -39,7 +41,6 @@ import {
 import { DuplicateActiveMaterializationError } from "../../../storage/duckdb/MaterializationRepository";
 import type { components } from "../../../api";
 import { withSpan } from "../../../telemetry";
-import { errMessage } from "../../../utils";
 import {
    parseEnvironmentName,
    parsePackageName,
@@ -49,16 +50,11 @@ import { resolveEnvironmentId } from "../../resolve_environment";
 import {
    ownedVersionOf,
    ServingReader,
-   tableIdentity,
    tableNamesIn,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationHost } from "../host";
-import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
-import {
-   compilePackageBuildPlan,
-   runLoadGateText,
-} from "../plan/build_plan_compile";
+import { compileRunPlan, type RunPlan, runPlanGateText } from "./run_plan";
 import {
    BuildInstruction,
    LedgerEntry,
@@ -90,14 +86,13 @@ import {
    referenceManifestToEntries,
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
+import { isActiveRun, outcomeFor } from "./run_status";
 import {
-   isActiveRun,
-   outcomeFor,
    packageRelativeRun,
-   tallySources,
    type WarehouseReach,
    withChainBuildText,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import { tallySources } from "./run_telemetry";
 import type { QueryContext } from "../../query_metadata";
 import { packageOwner } from "./table_mark_sql";
 import { Reclaimer, RENAMED_TABLES_KEY } from "./reclaimer";
@@ -105,7 +100,6 @@ import { RunLifecycle } from "./run_lifecycle";
 import {
    buildKindOf,
    buildKindsByAddress,
-   markRunFailureReported,
    reportSourceRefused,
    reportSourceReused,
    RunTelemetry,
@@ -165,7 +159,7 @@ export interface RunCollaborators {
    deriveSelfInstructions: typeof deriveSelfInstructions;
    /** The run's incremental context, over the service's ledger store. */
    incrementalRunContext(
-      compiled: CompiledBuildPlan,
+      compiled: RunPlan,
       run: Parameters<typeof incrementalRunContext>[1],
    ): IncrementalRunContext | undefined;
    /** The instructed build loop ({@link InstructedBuild.run}). */
@@ -221,9 +215,7 @@ interface CreateMaterializationOptions {
    ledger?: LedgerEntry[];
    /**
     * What initiated this run: `on_demand` (default, manual/API) or
-    * `scheduler` (the standalone scheduler). Recorded on the run metadata;
-    * releases before 0.15 wrote `ON_DEMAND` and `SCHEDULER`, which readers
-    * still accept.
+    * `scheduler` (the standalone scheduler). Recorded on the run metadata.
     */
    trigger?: "on_demand" | "scheduler";
    /**
@@ -281,7 +273,7 @@ interface RunTarget {
    pkg: Awaited<ReturnType<RunTarget["environment"]["getPackage"]>>;
    owned: string | undefined;
    reader: ServingReader;
-   compiled: CompiledBuildPlan;
+   compiled: RunPlan;
 }
 
 /** A run's instructions, and what deriving them decided. */
@@ -303,7 +295,6 @@ interface CommittedRun {
    served: Awaited<ReturnType<RunCollaborators["commitManifest"]>>;
    failures: ReturnType<typeof packageRelativeRun>["failures"];
    sourcesFailed: number;
-   durationMs: number;
 }
 
 /**
@@ -814,7 +805,7 @@ export class MaterializationService {
             // one's rows under both definitions.
             const seen = new Set<string>();
             for (const i of buildInstructions) {
-               const table = tableIdentity(i.physicalTableName);
+               const table = leafKey(i.physicalTableName);
                if (seen.has(table)) {
                   throw new BuildInstructionsInvalidError(
                      `buildInstructions name table ${i.physicalTableName} more than once; give each source a table of its own.`,
@@ -1010,7 +1001,7 @@ export class MaterializationService {
          packagePath: undefined,
       };
       const mode: MaterializationMode = telemetry.mode;
-      const startedAt = Date.now();
+      const startedAt = telemetry.startedAtMs;
       const run: RunScope = {
          telemetry,
          id,
@@ -1101,9 +1092,7 @@ export class MaterializationService {
          await this.finishCommittedRun(run, target, derived, committed, state);
       } catch (err) {
          const outcome = outcomeFor(signal);
-         this.lifecycle.recordRun(mode, outcome, startedAt);
-         telemetry.finished(outcome, Date.now() - startedAt, err);
-         markRunFailureReported(err);
+         telemetry.finished(outcome, err);
          if (state.packagePath !== undefined && err instanceof Error) {
             err.message = packageRelativeText(err.message, state.packagePath);
             // Each source's reason on the failed run's manifest, as a
@@ -1169,9 +1158,9 @@ export class MaterializationService {
       // no lock; an unversioned package's can be replaced under it.
       const compiled =
          versionId !== undefined
-            ? await compilePackageBuildPlan(pkg, signal)
+            ? await compileRunPlan(pkg, signal)
             : await environment.withPackageLock(packageName, () =>
-                 compilePackageBuildPlan(pkg, signal),
+                 compileRunPlan(pkg, signal),
               );
 
       // A `#@ persist` source Malloy's build walk did not plan fails the
@@ -1187,7 +1176,7 @@ export class MaterializationService {
          versionId === undefined &&
          environment.getStaleCompileErrors().has(packageName);
       // The load gate's own text, so the run and the load agree.
-      const invalid = runLoadGateText(compiled, pkg, {
+      const invalid = runPlanGateText(compiled, pkg, {
          enforceCollisions: getPersistCollisionEnforce(),
          versionScoped: owned !== undefined,
       });
@@ -1633,7 +1622,7 @@ export class MaterializationService {
                        ),
                  ),
       );
-      return { served, failures, sourcesFailed, durationMs };
+      return { served, failures, sourcesFailed };
    }
 
    /**
@@ -1648,18 +1637,10 @@ export class MaterializationService {
       committed: CommittedRun,
       state: RunState,
    ): Promise<void> {
-      const {
-         telemetry,
-         id,
-         environmentName,
-         packageName,
-         orchestrated,
-         mode,
-         startedAt,
-      } = run;
+      const { telemetry, id, environmentName, packageName, orchestrated } = run;
       const { versionId, pkg, reader, compiled } = target;
       const { carried, renamed } = derived;
-      const { served, failures, sourcesFailed, durationMs } = committed;
+      const { served, failures, sourcesFailed } = committed;
       // Whether every loaded copy of the package now reads this run: its
       // own load, then the other versions' rebinds below.
       let bound = !orchestrated && served?.autoLoad === "loaded";
@@ -1735,12 +1716,7 @@ export class MaterializationService {
       // consumer expected. An auto-run refusal is not a loss: it is a property
       // of the model, and counting it would make every run partial.
       const partial = sourcesFailed > 0;
-      this.lifecycle.recordRun(
-         mode,
-         partial ? "partial" : "success",
-         startedAt,
-      );
-      telemetry.finished(partial ? "partial" : "success", durationMs);
+      telemetry.finished(partial ? "partial" : "success");
    }
 
    // ==================== UNIQUENESS PASSES ====================
@@ -1773,7 +1749,7 @@ export class MaterializationService {
       } catch (err) {
          logger.warn(
             "Could not list earlier runs; every inline uniqueness check runs",
-            { packageName, error: errMessage(err) },
+            { packageName, code: errorCodeOf(err) },
          );
          return undefined;
       }

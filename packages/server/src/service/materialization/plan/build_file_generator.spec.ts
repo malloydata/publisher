@@ -16,7 +16,7 @@ import {
    addressSQL,
    buildSQLOf,
    computeSourceEntityId,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 
@@ -1488,7 +1488,7 @@ source: orders is orders_raw
             "freshness.window": "24h",
             "freshness.fallback": "stale_ok",
          });
-         const outcome = deriveBuildPlanOutcome(c, null);
+         const outcome = derivePackagePlan(c, null);
          const wire = Object.values(outcome.plan?.sources ?? {}).find(
             (s) => s.name === "orders",
          );
@@ -1528,7 +1528,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
          expect(c.builds.flatMap((b) => b.order)).toContain(p.sourceID);
          // Every name in the plan is unique: a source that is both #@ persist
          // and #(materialize) is refused, so the author's name is free.
-         const outcome = deriveBuildPlanOutcome(c, null);
+         const outcome = derivePackagePlan(c, null);
          const names = Object.values(outcome.plan?.sources ?? {}).map(
             (s) => s.name,
          );

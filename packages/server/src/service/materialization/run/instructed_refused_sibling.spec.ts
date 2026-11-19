@@ -20,7 +20,7 @@ import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import { logger } from "../../../logger";
 import { InstructedBuild } from "./instructed_build";
 import { RunTelemetry, withRunTelemetry } from "./run_telemetry";
-import type { BuildEnvironment } from "./materialization_run_support";
+import { type BuildEnvironment } from "./build_upstreams";
 
 const ADDRESS = "bshared7078storage";
 
