@@ -69,7 +69,9 @@ export function createMainApp(options: MainAppOptions): express.Express {
    app.use(frameAncestorsMiddleware(options.frameAncestors));
    // Health probes come before every middleware they do not need, such as
    // static-file serving, which would stat the filesystem first.
-   registerHealthEndpoints(app);
+   registerHealthEndpoints(app, {
+      loadProblems: () => environmentStore.getLoadProblems(),
+   });
    // Mounted before every route; probes and /metrics are exempt inside it.
    app.use(rateLimitMiddleware(options.rateLimitPerMinute ?? 0));
 

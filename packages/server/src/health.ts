@@ -11,6 +11,7 @@ import { Server } from "http";
 import { components } from "./api";
 import { shutdownSDK } from "./instrumentation";
 import { logger } from "./logger";
+import { invalidBooleanMessage, parseBooleanParam } from "./query_param_utils";
 export type OperationalState =
    components["schemas"]["ServerStatus"]["operationalState"];
 
@@ -236,7 +237,25 @@ export function drainingGuard(
    next();
 }
 
-export function registerHealthEndpoints(app: Express): void {
+/** A `/status` `loadErrors` entry, as the strict readiness probe reports it. */
+export type LoadProblem = NonNullable<
+   components["schemas"]["ServerStatus"]["loadErrors"]
+>[number];
+
+export interface HealthEndpointOptions {
+   /**
+    * The environments and packages that did not load, and the packages
+    * serving a stale model: what `GET /health/readiness?strict=true` fails
+    * on. A listener that loads no packages (the standalone admin server)
+    * passes none, so strict readiness there is plain readiness.
+    */
+   loadProblems?: () => readonly LoadProblem[];
+}
+
+export function registerHealthEndpoints(
+   app: Express,
+   options: HealthEndpointOptions = {},
+): void {
    app.get("/health", (_req: Request, res: Response) => {
       res.status(200).json({
          status: "UP",
@@ -252,10 +271,33 @@ export function registerHealthEndpoints(app: Express): void {
       res.status(200).json({ status: "UP" });
    });
 
-   app.get("/health/readiness", (_req: Request, res: Response) => {
-      const isReady = ready;
-      res.status(isReady ? 200 : 503).json({
-         status: isReady ? "UP" : "DOWN",
-      });
+   // `?strict=true` also fails (503) while any configured environment or
+   // package failed to load, or a package serves a stale model after a failed
+   // reload, naming each under `loadErrors` as /status does. Without it, the
+   // probe is 200 once the server is ready, whatever loaded: one bad package
+   // must not take a pod out of rotation for its healthy siblings.
+   app.get("/health/readiness", (req: Request, res: Response) => {
+      const strict = parseBooleanParam(req.query.strict);
+      if (!strict.ok) {
+         res.status(400).json({
+            message: invalidBooleanMessage(
+               "strict",
+               req.query.strict,
+               "GET",
+               "/health/readiness",
+            ),
+         });
+         return;
+      }
+      if (!ready) {
+         res.status(503).json({ status: "DOWN" });
+         return;
+      }
+      const problems = strict.value ? (options.loadProblems?.() ?? []) : [];
+      if (problems.length > 0) {
+         res.status(503).json({ status: "DOWN", loadErrors: problems });
+         return;
+      }
+      res.status(200).json({ status: "UP" });
    });
 }

@@ -20,7 +20,9 @@ export const MCP_ENDPOINT = "/mcp";
  */
 export function createMcpApp(services: McpServices): express.Express {
    const mcpApp = express();
-   registerHealthEndpoints(mcpApp);
+   registerHealthEndpoints(mcpApp, {
+      loadProblems: () => services.environmentStore.getLoadProblems(),
+   });
 
    mcpApp.use(MCP_ENDPOINT, express.json());
    // Cross-origin access is opt-in via MCP_CORS_ORIGINS (origins, or `*`). By

@@ -101,6 +101,103 @@ afterAll(async () => {
    await __setPackageLoadPoolForTests(null);
 });
 
+describe("strict readiness", () => {
+   const failed = {
+      environment: "e",
+      package: "broken",
+      message: "Error(s) compiling model: FILE: a.malloy",
+   };
+   const stale = {
+      environment: "e",
+      package: "edited",
+      message: "line 1: unexpected end of input",
+      stale: true,
+      failedAt: "2026-11-18T00:00:00.000Z",
+   };
+
+   function strictApp(
+      health: Health,
+      problems: () => readonly Record<string, unknown>[],
+   ) {
+      const app = express();
+      health.registerHealthEndpoints(app, {
+         loadProblems: problems as never,
+      });
+      return app;
+   }
+
+   it("answers 503 naming a package that failed to load, while plain readiness stays 200", async () => {
+      const health = await freshHealth();
+      health.markReady();
+      const app = strictApp(health, () => [failed]);
+      const plain = await request(app).get("/health/readiness");
+      expect([plain.status, plain.body]).toEqual([200, { status: "UP" }]);
+      const res = await request(app).get("/health/readiness?strict=true");
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({ status: "DOWN", loadErrors: [failed] });
+   });
+
+   it("answers 503 naming a package serving a stale model", async () => {
+      const health = await freshHealth();
+      health.markReady();
+      const res = await request(strictApp(health, () => [stale])).get(
+         "/health/readiness?strict=true",
+      );
+      expect(res.status).toBe(503);
+      expect(res.body.loadErrors).toEqual([stale]);
+   });
+
+   it("answers 200 when everything loaded", async () => {
+      const health = await freshHealth();
+      health.markReady();
+      const res = await request(strictApp(health, () => [])).get(
+         "/health/readiness?strict=true",
+      );
+      expect([res.status, res.body]).toEqual([200, { status: "UP" }]);
+   });
+
+   it("answers 503 before ready, without reading the problems", async () => {
+      const health = await freshHealth();
+      let read = false;
+      const res = await request(
+         strictApp(health, () => {
+            read = true;
+            return [];
+         }),
+      ).get("/health/readiness?strict=true");
+      expect([res.status, res.body]).toEqual([503, { status: "DOWN" }]);
+      expect(read).toBe(false);
+   });
+
+   it("strict=false is plain readiness", async () => {
+      const health = await freshHealth();
+      health.markReady();
+      const res = await request(strictApp(health, () => [failed])).get(
+         "/health/readiness?strict=false",
+      );
+      expect(res.status).toBe(200);
+   });
+
+   it("refuses a strict value that is not true or false", async () => {
+      const health = await freshHealth();
+      health.markReady();
+      const res = await request(strictApp(health, () => [failed])).get(
+         "/health/readiness?strict=1",
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.message).toContain('Invalid strict value "1"');
+   });
+
+   it("is plain readiness on a listener that loads no packages", async () => {
+      const health = await freshHealth();
+      health.markReady();
+      const res = await request(appFor(health)).get(
+         "/health/readiness?strict=true",
+      );
+      expect(res.status).toBe(200);
+   });
+});
+
 describe("operational state and probes", () => {
    it("starts initializing: alive but not ready", async () => {
       const health = await freshHealth();
