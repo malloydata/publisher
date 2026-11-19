@@ -307,15 +307,18 @@ async function withSwitches<T>(
 // The table: leg x table read, per gate shape and switch.
 // ---------------------------------------------------------------------------
 
+// "gated sources off" is the gate policy's G3 row (gate_policy.ts): past a
+// gate, only a database table, or a `storage=` table kept past its own gate
+// or holding only ungated rows, keeps the gates.
 const SWITCHES = [
-   ["gated sources off (G3)", false],
+   ["gated sources off", false],
    ["gated sources on", true],
 ] as const;
 
 /** shape -> switch -> "leg, table read" -> outcome. */
 const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
    "no gate": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used",
          "served, storage": "used",
          "served, storage, kept past its own gate": "used",
@@ -353,7 +356,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "no gate, a where: on a float column": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used",
          "served, storage": "skipped does_not_answer (served_copy_not_served)",
          "served, storage, kept past its own gate":
@@ -395,7 +398,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "no gate, a where: ordering a string": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used",
          "served, storage": "used",
          "served, storage, kept past its own gate": "used",
@@ -433,7 +436,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "row filter, number": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used, past the gate",
          "served, storage": "skipped row_level_gate",
          "served, storage, kept past its own gate": "used, past the gate",
@@ -471,7 +474,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "row filter, string equality": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used, past the gate",
          "served, storage": "skipped row_level_gate",
          "served, storage, kept past its own gate": "used, past the gate",
@@ -509,7 +512,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "row filter, string ordering": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used, past the gate",
          "served, storage": "skipped row_level_gate",
          "served, storage, kept past its own gate": "used, past the gate",
@@ -547,7 +550,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "row filter, boolean over a string": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used, past the gate",
          "served, storage": "skipped row_level_gate",
          "served, storage, kept past its own gate": "used, past the gate",
@@ -585,7 +588,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "lock only": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used, past the gate",
          "served, storage": "skipped row_level_gate",
          "served, storage, kept past its own gate": "used, past the gate",
@@ -623,7 +626,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "row filter, float column": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used, past the gate",
          "served, storage": "skipped row_level_gate",
          "served, storage, kept past its own gate": "skipped row_level_gate",
@@ -661,7 +664,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "row filter, zoned timestamp column": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "used, past the gate",
          "served, storage": "skipped row_level_gate",
          "served, storage, kept past its own gate": "skipped row_level_gate",
@@ -699,7 +702,7 @@ const ADMISSION: Record<string, Record<string, Record<string, string>>> = {
       },
    },
    "row filter on a composite": {
-      "gated sources off (G3)": {
+      "gated sources off": {
          "served, database": "skipped row_level_gate",
          "served, storage": "skipped row_level_gate",
          "served, storage, kept past its own gate": "skipped row_level_gate",
@@ -766,7 +769,7 @@ describe("read admission at the router, per leg, table read, gate shape and swit
    }
 });
 
-/** shape -> "where the collation is not binary, table read" -> outcome, served leg, G3. */
+/** shape -> "where the collation is not binary, table read" -> outcome, served leg, gated sources off. */
 const COLLATION: Record<string, Record<string, string>> = {
    "row filter, number": {
       "author instance nocase, database": "used, past the gate",
@@ -823,7 +826,7 @@ const COLLATION: Record<string, Record<string, string>> = {
    },
 };
 
-describe("read admission under a collation that is not binary (served leg, G3)", () => {
+describe("read admission under a collation that is not binary (served leg, gated sources off)", () => {
    const shapes: Shape[] = [
       "row filter, number",
       "row filter, string equality",
@@ -889,7 +892,7 @@ const SCOPE_COLUMNS: Partial<Record<Shape, string[]>> = {
    "no gate, a where: on a float column": ["amount"],
 };
 
-/** shape -> "reads, leg, table read" -> outcome, G3. */
+/** shape -> "reads, leg, table read" -> outcome, gated sources off. */
 const ROW_SCOPE: Record<string, Record<string, string>> = {
    "no gate": {
       "readable, served, database": "used",
@@ -943,7 +946,7 @@ const ROW_SCOPE: Record<string, Record<string, string>> = {
    },
 };
 
-describe("read admission over moved columns and unreadable reads (G3)", () => {
+describe("read admission over moved columns and unreadable reads, gated sources off", () => {
    for (const shape of Object.keys(SCOPE_COLUMNS) as Shape[]) {
       it(shape, async () => {
          const rows: Record<string, string> = {};
@@ -1008,7 +1011,7 @@ describe("the bind's admission marks", () => {
  * (`row filter, zoned timestamp column`): the drift `admitRead` removes.
  */
 const VERDICT: Record<string, Record<string, boolean>> = {
-   "gated sources off (G3)": {
+   "gated sources off": {
       "database, number gate column": true,
       "database, float gate column": true,
       "database, zoned gate column": true,

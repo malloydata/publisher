@@ -59,6 +59,9 @@ function servedCopy() {
       serveDestinationConfig: () => undefined,
    } as never);
    const calls: CompileCall[] = [];
+   // Replaces the private `compile`: ServedCopyServe has no public seam for
+   // it yet, and a rename of it fails this spec only at run time. PR 4 of
+   // the refactor must move this onto a public seam.
    (serve as unknown as { compile: unknown }).compile = (
       key: string,
       generation: number,

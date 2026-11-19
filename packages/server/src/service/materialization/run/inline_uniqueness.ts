@@ -624,9 +624,9 @@ export function uncontestedAutoRun<
 
 /**
  * The identity a uniqueness record names a table by: where it lives and its
- * name as `leafKey` (domain/physical_table.ts) reads it. Two names a warehouse may read as
- * one table get one identity, so a write to either loses the record: the
- * safe direction.
+ * name as `leafKey` (domain/physical_table.ts) reads it. Two names a
+ * warehouse may read as one table get one identity, so a write to either
+ * loses the record: the safe direction.
  */
 export function tableIdentityKey(
    kind: "connection" | "destination",

@@ -63,8 +63,8 @@ export function exactTableKey(t: PhysicalTable): string {
  * `main.t` are one table), and nor does a place (two names for one DuckLake).
  */
 export function leafKey(physicalTableName: string): string {
-   const segments = physicalTableName.split(".");
-   return segments[segments.length - 1].replace(/["`[\]]/g, "").toLowerCase();
+   const segments = foldedSegments(physicalTableName);
+   return segments[segments.length - 1];
 }
 
 /** The table's {@link leafKey}, in its place. */
@@ -77,10 +77,16 @@ export function placedLeafKey(t: PhysicalTable): string {
  * unquoted and case-folded, with {@link tableNamesMeet}'s container rule.
  */
 export function mayBeSameTable(a: string, b: string): boolean {
-   const canon = (name: string) =>
-      name
-         .split(".")
-         .map((s) => s.replace(/["`[\]]/g, "").toLowerCase())
-         .join(".");
-   return tableNamesMeet(canon(a), canon(b));
+   return tableNamesMeet(
+      foldedSegments(a).join("."),
+      foldedSegments(b).join("."),
+   );
+}
+
+/**
+ * A written name's segments, each unquoted (every `"`, backtick and bracket
+ * dropped, a doubled quote included) and case-folded.
+ */
+function foldedSegments(name: string): string[] {
+   return name.split(".").map((s) => s.replace(/["`[\]]/g, "").toLowerCase());
 }

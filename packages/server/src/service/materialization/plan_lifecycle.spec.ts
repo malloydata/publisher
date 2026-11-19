@@ -321,10 +321,11 @@ describe("PlanLifecycle after a failed refresh", () => {
       expect(plan.connectionNames()).toBeNull();
    });
 
-   it("CURRENT, changed on purpose in PR 2: restores eligibility, compiler keys and connections, but empties rollupsKeepingGates, refusedRollups and refusalNotices, and leaves annotationFindings and materializePlans stale", async () => {
+   it("CURRENT: a refresh that fails after a good plan restores eligibility, compiler keys and connections, empties rollupsKeepingGates, refusedRollups and refusalNotices, and leaves annotationFindings and materializePlans stale", async () => {
       // The field skew the plan audit found (plan_lifecycle.ts load's catch
-      // against refresh's restore). PR 2 replaces it with one immutable
-      // PlanState and an explicit last-good rule, and updates this case.
+      // against refresh's restore), pinned as it is. PR 2 is expected to
+      // change it, with one immutable PlanState and an explicit last-good
+      // rule, and to update this case.
       const { plan, outcome } = await failedAfterEdit();
       expect([...plan.rollupsKeepingGates]).toEqual([]);
       expect(plan.refusedRollups).toEqual({});
