@@ -9,7 +9,7 @@
  * manifest committer and the reclaimer.
  *
  * Effects: writes the run store, logs a failed or cancelled run (secrets
- * redacted), counts each run's outcome. In-process only: a run on another
+ * redacted). In-process only: a run on another
  * process cannot be cancelled from here.
  */
 
@@ -21,10 +21,6 @@ import {
 } from "../../../errors";
 import { classifyRunFailure, failedRunManifestOf } from "./build_failure_class";
 import { logger } from "../../../logger";
-import {
-   MaterializationMode,
-   recordMaterializationRun,
-} from "../../../materialization_metrics";
 import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 import {
    Materialization,
@@ -130,14 +126,6 @@ export class RunLifecycle {
       return new MaterializationConflictError(
          `Package ${packageName} already has an active materialization${suffix}`,
       );
-   }
-
-   recordRun(
-      mode: MaterializationMode,
-      outcome: "success" | "partial" | "failed" | "cancelled",
-      startedAtMs: number,
-   ): void {
-      recordMaterializationRun(mode, outcome, Date.now() - startedAtMs);
    }
 
    runInBackground(

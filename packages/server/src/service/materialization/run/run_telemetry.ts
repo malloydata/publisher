@@ -37,6 +37,7 @@ import {
    recordBuildDuration,
    recordBuildOutcome,
    recordBuildReadBytes,
+   recordMaterializationRun,
 } from "../../../materialization_metrics";
 import {
    isPersistedQuerySourceID,
@@ -163,6 +164,8 @@ export class RunTelemetry {
       readonly runId: string,
       readonly mode: MaterializationMode,
       readonly packageName: string,
+      /** When the run started, which its duration is measured from. */
+      readonly startedAtMs: number = Date.now(),
    ) {}
 
    /** `materialization.run.started`, once the run holds its tables. */
@@ -177,15 +180,19 @@ export class RunTelemetry {
    }
 
    /**
-    * `materialization.run.finished`: info, warn when partial, error when
-    * failed. The counts are the sources the build counter counted for this
-    * run; the error that ended it, if any, is reduced to its code.
+    * How the run ended, recorded once, on every terminal path: the run
+    * counter and duration (`publisher_materialization_runs_total`, by mode
+    * and outcome) and `materialization.run.finished` (info, warn when
+    * partial, error when failed). The counts are the sources the build
+    * counter counted for this run; the error that ended it, if any, is
+    * reduced to its code. The run's status and manifest are written by the
+    * committer (a committed run) or the lifecycle's settle (a thrown one).
     */
-   finished(
-      outcome: MaterializationOutcome,
-      durationMs: number,
-      err?: unknown,
-   ): void {
+   finished(outcome: MaterializationOutcome, err?: unknown): void {
+      const durationMs = Date.now() - this.startedAtMs;
+      recordMaterializationRun(this.mode, outcome, durationMs);
+      // The background runner does not log a failure reported here again.
+      if (err !== undefined) markRunFailureReported(err);
       const { built, reused, refused, failed, cancelled } = this.tally;
       const level =
          outcome === "failed"
@@ -215,7 +222,7 @@ export class RunTelemetry {
 const reportedRunFailures = new WeakSet<object>();
 
 /** Mark `err` as reported by `materialization.run.finished`. */
-export function markRunFailureReported(err: unknown): void {
+function markRunFailureReported(err: unknown): void {
    if (typeof err === "object" && err !== null) reportedRunFailures.add(err);
 }
 

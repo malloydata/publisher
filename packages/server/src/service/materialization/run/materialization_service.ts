@@ -100,7 +100,6 @@ import { RunLifecycle } from "./run_lifecycle";
 import {
    buildKindOf,
    buildKindsByAddress,
-   markRunFailureReported,
    reportSourceRefused,
    reportSourceReused,
    RunTelemetry,
@@ -298,7 +297,6 @@ interface CommittedRun {
    served: Awaited<ReturnType<RunCollaborators["commitManifest"]>>;
    failures: ReturnType<typeof packageRelativeRun>["failures"];
    sourcesFailed: number;
-   durationMs: number;
 }
 
 /**
@@ -1005,7 +1003,7 @@ export class MaterializationService {
          packagePath: undefined,
       };
       const mode: MaterializationMode = telemetry.mode;
-      const startedAt = Date.now();
+      const startedAt = telemetry.startedAtMs;
       const run: RunScope = {
          telemetry,
          id,
@@ -1096,9 +1094,7 @@ export class MaterializationService {
          await this.finishCommittedRun(run, target, derived, committed, state);
       } catch (err) {
          const outcome = outcomeFor(signal);
-         this.lifecycle.recordRun(mode, outcome, startedAt);
-         telemetry.finished(outcome, Date.now() - startedAt, err);
-         markRunFailureReported(err);
+         telemetry.finished(outcome, err);
          if (state.packagePath !== undefined && err instanceof Error) {
             err.message = packageRelativeText(err.message, state.packagePath);
             // Each source's reason on the failed run's manifest, as a
@@ -1628,7 +1624,7 @@ export class MaterializationService {
                        ),
                  ),
       );
-      return { served, failures, sourcesFailed, durationMs };
+      return { served, failures, sourcesFailed };
    }
 
    /**
@@ -1643,18 +1639,10 @@ export class MaterializationService {
       committed: CommittedRun,
       state: RunState,
    ): Promise<void> {
-      const {
-         telemetry,
-         id,
-         environmentName,
-         packageName,
-         orchestrated,
-         mode,
-         startedAt,
-      } = run;
+      const { telemetry, id, environmentName, packageName, orchestrated } = run;
       const { versionId, pkg, reader, compiled } = target;
       const { carried, renamed } = derived;
-      const { served, failures, sourcesFailed, durationMs } = committed;
+      const { served, failures, sourcesFailed } = committed;
       // Whether every loaded copy of the package now reads this run: its
       // own load, then the other versions' rebinds below.
       let bound = !orchestrated && served?.autoLoad === "loaded";
@@ -1730,12 +1718,7 @@ export class MaterializationService {
       // consumer expected. An auto-run refusal is not a loss: it is a property
       // of the model, and counting it would make every run partial.
       const partial = sourcesFailed > 0;
-      this.lifecycle.recordRun(
-         mode,
-         partial ? "partial" : "success",
-         startedAt,
-      );
-      telemetry.finished(partial ? "partial" : "success", durationMs);
+      telemetry.finished(partial ? "partial" : "success");
    }
 
    // ==================== UNIQUENESS PASSES ====================
