@@ -373,7 +373,12 @@ describe.skipIf(!POSTGRES_URL)(
                   name: "admin",
                   connectionString: POSTGRES_URL!,
                });
-               await admin.runSQL(`CREATE DATABASE ${warehouse}`);
+               // A binary (`C`) warehouse: a `storage=` copy orders and ranges a
+               // string as live does only under a binary collation, so a string
+               // order here serves (the server default, often `en_US`, answers it live).
+               await admin.runSQL(
+                  `CREATE DATABASE ${warehouse} LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
+               );
                if (tier.storage)
                   await admin.runSQL(`CREATE DATABASE ${catalog}`);
                const parsed = new URL(POSTGRES_URL!);

@@ -575,10 +575,13 @@ export async function startPostgres(
       async createDb(name: string): Promise<void> {
          if (await this.dbExists(name)) return;
          // CREATE DATABASE can't run in a transaction/among other statements.
+         // Under `C` so a storage= copy compares strings as the warehouse
+         // does: the image's en_US default makes a query ordering a string
+         // answer live, which scenarios that expect storage don't mean to test.
          await runOrThrow([
             ...psqlBase("postgres"),
             "-c",
-            `CREATE DATABASE ${name}`,
+            `CREATE DATABASE ${name} LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
          ]);
       },
       async dropDb(name: string): Promise<void> {
@@ -599,7 +602,7 @@ export async function startPostgres(
          const script = names
             .flatMap((n) => [
                `DROP DATABASE IF EXISTS ${n} WITH (FORCE);`,
-               `CREATE DATABASE ${n};`,
+               `CREATE DATABASE ${n} LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0;`,
             ])
             .join("\n");
          await runOrThrow(psqlBase("postgres"), { stdin: script });

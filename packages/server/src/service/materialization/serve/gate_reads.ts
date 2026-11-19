@@ -33,13 +33,14 @@ import { malloyIdentifiers } from "../../query_text";
 import { fieldPathsIn } from "./gate_paths";
 import type { GateReads } from "./gate_reads_types";
 
-// The comparison rule beside the column rules, read by the router through
-// this module.
+// The comparison rule beside the column rules, and what a query's result
+// orders and groups strings by, read by the router through this module.
 export {
    storedTableCollationRefusal,
    storedTypeIsString,
    stringGateCollationRefusal,
 } from "./gate_collation";
+export { resultReadsOfQuery } from "./result_reads";
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
 export function gateIdentifiers(exprs: readonly string[]): string[] {
