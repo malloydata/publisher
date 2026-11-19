@@ -60,7 +60,7 @@ interface ScheduleState {
  * loads (through the memory governor) only when its cron comes due. Archiving a
  * version takes it out of the sweep; unarchiving arms it again. Only packages
  * whose persistence policy is valid fire (the publish rule). Arming state is in
- * memory, re-anchored after a restart from the newest recorded `SCHEDULER` fire
+ * memory, re-anchored after a restart from the newest recorded `scheduler` fire
  * (see {@link arm}).
  */
 export class MaterializationScheduler {
@@ -357,7 +357,7 @@ export class MaterializationScheduler {
 
    /**
     * The instant to compute the first `nextFireAt` from after a (re)start: the
-    * newest recorded `SCHEDULER` fire if any, else `now`. Any lookup failure
+    * newest recorded `scheduler` fire if any, else `now`. Any lookup failure
     * degrades to `now` (no catch-up) so arming always succeeds.
     */
    private async recoveryAnchor(

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { parseOwnedTableComment } from "./table_mark_sql";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -34,7 +35,6 @@ import {
    ownedTableComment,
    ownedTableMarkSql,
    packageRecordsName,
-   parseOwnedTableComment,
    probeTableHolder,
    tableHolderOf,
    tableLocationOf,

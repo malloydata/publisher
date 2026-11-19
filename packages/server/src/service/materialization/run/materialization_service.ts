@@ -215,9 +215,7 @@ interface CreateMaterializationOptions {
    ledger?: LedgerEntry[];
    /**
     * What initiated this run: `on_demand` (default, manual/API) or
-    * `scheduler` (the standalone scheduler). Recorded on the run metadata;
-    * releases before 0.15 wrote `ON_DEMAND` and `SCHEDULER`, which readers
-    * still accept.
+    * `scheduler` (the standalone scheduler). Recorded on the run metadata.
     */
    trigger?: "on_demand" | "scheduler";
    /**

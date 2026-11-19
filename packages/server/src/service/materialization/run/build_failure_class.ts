@@ -395,7 +395,7 @@ export class BuildRunFailedError extends Error {
  * or binds it, since every reader that binds or reuses a run counts
  * MANIFEST_FILE_READY runs only.
  */
-export interface FailedRunManifest {
+interface FailedRunManifest {
    failures: Record<string, SourceFailure>;
 }
 

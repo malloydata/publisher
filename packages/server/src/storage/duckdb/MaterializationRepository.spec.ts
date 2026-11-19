@@ -108,25 +108,24 @@ describe("MaterializationRepository.getLatestScheduledFireAt (real DuckDB)", () 
 
    it("returns the created_at of the newest SCHEDULER run", async () => {
       const { db, repo } = await freshRepo();
-      await insertRun(db, "s1", day("01-15"), "SCHEDULER");
-      await insertRun(db, "s2", day("03-15"), "SCHEDULER");
+      await insertRun(db, "s1", day("01-15"), "scheduler");
+      await insertRun(db, "s2", day("03-15"), "scheduler");
       const at = await repo.getLatestScheduledFireAt(ENV_ID, PKG);
       expect(at).not.toBeNull();
       expect(at!.toISOString().slice(0, 10)).toBe("2026-03-15");
    });
 
-   it("reads a scheduler run in either spelling: today's `scheduler` and an older server's `SCHEDULER`", async () => {
+   it("reads only today's `scheduler` spelling, not an older server's `SCHEDULER`", async () => {
       const { db, repo } = await freshRepo();
-      await insertRun(db, "s1", day("01-15"), "SCHEDULER");
-      await insertRun(db, "s2", day("04-15"), "scheduler");
-      await insertRun(db, "d1", day("06-01"), "on_demand");
+      await insertRun(db, "s1", day("04-15"), "scheduler");
+      await insertRun(db, "s2", day("05-15"), "SCHEDULER");
       const at = await repo.getLatestScheduledFireAt(ENV_ID, PKG);
       expect(at!.toISOString().slice(0, 10)).toBe("2026-04-15");
    });
 
    it("ignores ON_DEMAND and trigger-less runs even when they are newer", async () => {
       const { db, repo } = await freshRepo();
-      await insertRun(db, "s1", day("02-01"), "SCHEDULER"); // the only match
+      await insertRun(db, "s1", day("02-01"), "scheduler"); // the only match
       await insertRun(db, "d1", day("06-01"), "ON_DEMAND"); // newer, wrong trigger
       await insertRun(db, "n1", day("07-01"), null); // newer, no trigger key
       await insertRun(db, "m1", day("08-01"), undefined); // newer, metadata NULL
