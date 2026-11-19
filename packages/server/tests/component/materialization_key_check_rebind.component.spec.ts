@@ -131,7 +131,12 @@ async function fixture(
       connectionString: url!,
    });
    await admin.runSQL(`CREATE DATABASE ${catalog}`);
-   await admin.runSQL(`CREATE DATABASE ${warehouseDb}`);
+   // A binary (`C`) warehouse: a `storage=` copy orders and ranges a
+   // string as live does only under a binary collation, so a string
+   // order here serves (the server default, often `en_US`, answers it live).
+   await admin.runSQL(
+      `CREATE DATABASE ${warehouseDb} LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
+   );
    const parsed = new URL(url!);
    const pg = {
       host: parsed.hostname,

@@ -5,8 +5,8 @@
  * The admission shell: for one query, gathers what `admitRead`
  * (`domain/admission.ts`) decides a stored answer by, and turns its verdict
  * into the router's terms. The decision itself is pure; this module reads
- * the author's compile for the gates', the row scope's and the query
- * filters' reads, the bind's stored types, and the collation probes through
+ * the author's compile for the gates', the row scope's, the query filters'
+ * and the result's reads, the bind's stored types, and the collation probes through
  * the {@link CollationProbe} port, each only when the decision needs it.
  *
  * One {@link ReadAdmission} per query: what it reads of the author's compile
@@ -32,6 +32,7 @@ import {
    type ProbeRequest,
    type QueryFilterFacts,
    type ReadFacts,
+   type ResultOrderFacts,
 } from "../domain/admission";
 import type { Binding } from "../domain/binding";
 import type { GateSwitches, TableRead } from "../domain/gate_policy";
@@ -47,6 +48,7 @@ import type {
    ProbedTable,
 } from "./gate_reads_types";
 import type { LegAnswer, LegKind, QueryFacts } from "./leg";
+import { type ResultReads, resultReadsOfQuery } from "./result_reads";
 
 // The port, and its implementation for the query pipeline to hand in.
 export type { CollationProbe } from "./gate_reads_types";
@@ -67,6 +69,10 @@ interface Gathered {
    readonly scopeReads: () => Promise<GateReads | undefined>;
    readonly filterReads?: GateReads;
    readonly filterTables: readonly TableRead[];
+   /** What the result orders and groups strings by, when it is judged. */
+   readonly resultReads?: ResultReads;
+   /** The `storage=` tables the result is read from. */
+   readonly resultTables: readonly TableRead[];
    /** The probes' answers so far, kept across this answer's decisions. */
    probes: NonNullable<ReadFacts["probes"]>;
 }
@@ -93,14 +99,14 @@ export class ReadAdmission {
 
    /**
     * Whether the answer `leg` produced is used: before the gate (the row
-    * scope and the query filters only) or past it (every rule).
+    * scope, the query filters and the result only) or past it (every rule).
     */
    async admit(
       leg: LegKind,
       answer: LegAnswer,
       pastEntryPointGate: boolean,
    ): Promise<AdmissionOutcome> {
-      const { verdict, filterTables, tables } = await this.decide(
+      const { verdict, filterTables, resultTables, tables } = await this.decide(
          leg,
          answer,
          pastEntryPointGate,
@@ -110,7 +116,11 @@ export class ReadAdmission {
          return { used: false, gateNotKept: true };
       }
       const declined =
-         verdict.reason === "query_filter_comparison" ? filterTables : tables;
+         verdict.reason === "query_filter_comparison"
+            ? filterTables
+            : verdict.reason === "result_order_comparison"
+              ? resultTables
+              : tables;
       return {
          used: false,
          decline: legDecline(leg, verdict.detail, tableIdsOf(declined)),
@@ -131,6 +141,7 @@ export class ReadAdmission {
       facts: ReadFacts;
       tables: readonly TableRead[];
       filterTables: readonly TableRead[];
+      resultTables: readonly TableRead[];
    }> {
       const g = await this.gather(leg, answer);
       let facts: ReadFacts = {
@@ -147,6 +158,7 @@ export class ReadAdmission {
                facts,
                tables: g.tables,
                filterTables: g.filterTables,
+               resultTables: g.resultTables,
             };
          }
          facts = await this.withProbe(facts, verdict.probe, g, answer);
@@ -193,11 +205,14 @@ export class ReadAdmission {
       const reads =
          leg === "served" || leg === "rollup" ? await scopeReads() : undefined;
       const filters = await this.queryFilters(leg, answer);
+      const result = await this.resultOrder(leg, answer);
       return {
          tables: judged,
          scopeReads,
          ...(filters.reads ? { filterReads: filters.reads } : {}),
          filterTables: filters.facts.applies ? filters.facts.tables : [],
+         ...(result.reads ? { resultReads: result.reads } : {}),
+         resultTables: result.tables,
          probes: {},
          facts: {
             pastEntryPointGate: false,
@@ -208,6 +223,7 @@ export class ReadAdmission {
                   : { scoped: reads.scoped, gated: reads.gated },
             columnsListed: judged !== read,
             queryFilters: filters.facts,
+            resultOrder: result.facts,
          },
       };
    }
@@ -267,6 +283,62 @@ export class ReadAdmission {
       };
    }
 
+   /**
+    * What the query's result orders and groups strings by, over the
+    * `storage=` tables the answer reads (a database table sits in its
+    * source's warehouse and compares as its source does), when the source's
+    * dialect's collation is read (Postgres per column, DuckDB per
+    * instance). Which stages count: every one on the served copy and a
+    * rollup; on a persisted view or named query, the later stages, and the
+    * ordering its read applies again to its own last stage's stored rows.
+    */
+   private async resultOrder(
+      leg: LegKind,
+      answer: LegAnswer,
+   ): Promise<{
+      facts: ResultOrderFacts;
+      reads?: ResultReads;
+      tables: readonly TableRead[];
+   }> {
+      const { queryString, authorRunnable } = this.query;
+      const persisted = leg === "view" || leg === "query";
+      const read = persisted
+         ? (answer.tablesRead ?? [])
+         : (answer.gateTablesRead ?? answer.tablesRead ?? []);
+      const tables = read.filter((t) => t.tier === "storage");
+      if (tables.length === 0) return { facts: { applies: false }, tables };
+      let fromStage = 0;
+      let orderOnly: number | undefined;
+      if (persisted) {
+         const later = (
+            leg === "view"
+               ? extractRunViewCall(queryString)
+               : extractRunQueryCall(queryString)
+         )?.laterStages;
+         const pipeline = (
+            await readPreparedQuery(authorRunnable).catch(() => undefined)
+         )?.pipeline;
+         // Unread: every stage is judged, which only declines more.
+         if (later !== undefined && Array.isArray(pipeline)) {
+            orderOnly = pipeline.length - later - 1;
+            fromStage = orderOnly + 1;
+         }
+      }
+      const reads = await resultReadsOfQuery(
+         authorRunnable,
+         storedSourceIDs(read),
+         { fromStage, ...(orderOnly !== undefined ? { orderOnly } : {}) },
+      );
+      if (reads === undefined) {
+         return { facts: { applies: true, reads: "unread" }, tables };
+      }
+      const collation = reads.stringCollation;
+      if (collation !== "column" && collation !== "instance") {
+         return { facts: { applies: false }, tables };
+      }
+      return { facts: { applies: true, reads: "read" }, reads, tables };
+   }
+
    /** `facts` with the answer to `request`, from the probe port. */
    private async withProbe(
       facts: ReadFacts,
@@ -275,7 +347,13 @@ export class ReadAdmission {
       answer: LegAnswer,
    ): Promise<ReadFacts> {
       const reads =
-         request.comparison === "scope" ? await g.scopeReads() : g.filterReads;
+         request.comparison === "scope"
+            ? await g.scopeReads()
+            : request.comparison === "filters"
+              ? g.filterReads
+              : request.comparison === "result_ordered"
+                ? g.resultReads?.ordered
+                : g.resultReads?.grouped;
       const tables = request.comparison === "scope" ? g.tables : g.filterTables;
       const givens = this.givens ? { givens: this.givens } : {};
       const refusal =

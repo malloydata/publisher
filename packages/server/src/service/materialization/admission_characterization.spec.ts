@@ -1769,7 +1769,11 @@ describe("the collation probes run at most once per answer", () => {
       const repeated: string[] = [];
       await withSwitches(false, async () => {
          for (const shape of Object.keys(SHAPES) as Shape[]) {
-            for (const query of [undefined, ...Object.values(FILTERS)]) {
+            for (const query of [
+               undefined,
+               ...Object.values(FILTERS),
+               "{ group_by: region; order_by: region }",
+            ]) {
                for (const collations of [
                   {},
                   { authorCollation: "nocase" as const },

@@ -18,6 +18,9 @@
  *   the exactness and comparison rules too;
  * - the caller's own query filters, re-applied to stored rows, held to the
  *   comparison rules;
+ * - the query's result: a string it orders by needs the source to compare
+ *   bytes as a `storage=` table does, and one it groups or compares by
+ *   equality needs equality to be byte equality there;
  * - a row filter declared on a composite, which live refuses every caller of.
  *
  * Pure: the switches and every fact are inputs. The collation probes run
@@ -65,7 +68,11 @@ export type Comparison =
    /** What the entry point's gates and row scope compare. */
    | "scope"
    /** What the caller's own query filters compare. */
-   | "filters";
+   | "filters"
+   /** The strings the query's result orders by (the source side only). */
+   | "result_ordered"
+   /** The strings the query's result groups or compares by (the source side only). */
+   | "result_grouped";
 
 /** One probe admission needs before it can decide. */
 export interface ProbeRequest {
@@ -88,6 +95,15 @@ export type QueryFilterFacts =
         readonly tables: readonly TableRead[];
      };
 
+/**
+ * Whether the query's result depends on how a `storage=` table it reads
+ * compares strings: absent or not applying when it reads no `storage=` table
+ * or its source's dialect compares bytes; `unread` fails closed.
+ */
+export type ResultOrderFacts =
+   | { readonly applies: false }
+   | { readonly applies: true; readonly reads: "unread" | "read" };
+
 /** What is known about one query and its answer, gathered by the caller. */
 export interface ReadFacts {
    /** The router vetoes the query past its entry point: the entry point carries a gate. */
@@ -104,6 +120,8 @@ export interface ReadFacts {
    readonly columnsListed: boolean;
    /** The caller's own filters; absent, none is judged. */
    readonly queryFilters?: QueryFilterFacts;
+   /** The query's result over `storage=` tables; absent, it is not judged. */
+   readonly resultOrder?: ResultOrderFacts;
    /** The probes' answers, by comparison, as far as they were asked. */
    readonly probes?: Partial<Record<Comparison, ComparisonProbes>>;
 }
@@ -117,7 +135,9 @@ type AdmissionDecline =
    /** A row scope reads a column a stored table does not compare as live. */
    | "row_scope_comparison"
    /** The caller's own filters compare a string a stored table does not compare as live. */
-   | "query_filter_comparison";
+   | "query_filter_comparison"
+   /** The result orders or groups by a string a stored table does not compare as live. */
+   | "result_order_comparison";
 
 export type AdmissionVerdict =
    | { readonly admit: true; readonly pastEntryPointGate: boolean }
@@ -288,9 +308,37 @@ function queryFilterVerdict(facts: ReadFacts): AdmissionVerdict | undefined {
 }
 
 /**
+ * The result rule: a string the result orders by must compare bytes at the
+ * source (a binary collation), and one it groups or compares by must at
+ * least compare equal as bytes do; each judged by the source side's probe.
+ * Fails closed when the result cannot be read.
+ */
+function resultOrderVerdict(facts: ReadFacts): AdmissionVerdict | undefined {
+   const result = facts.resultOrder;
+   if (result === undefined || !result.applies) return undefined;
+   if (result.reads === "unread") {
+      return decline("result_order_comparison", "the query's result unread");
+   }
+   for (const [comparison, what] of [
+      ["result_ordered", "orders"],
+      ["result_grouped", "groups or compares"],
+   ] as const) {
+      const source = facts.probes?.[comparison]?.source;
+      if (source === undefined) return needs({ comparison, side: "source" });
+      if (source.refusal !== undefined) {
+         return decline(
+            "result_order_comparison",
+            `the result ${what} a string a stored table does not compare as its source does: ${source.refusal}`,
+         );
+      }
+   }
+   return undefined;
+}
+
+/**
  * Whether the answer `leg` produced, reading `tables`, is used: the row
  * scope first (judged as the leg answers), then the caller's own filters,
- * then, past an entry-point gate, the gate policy with the composite, zone
+ * then the query's result, then, past an entry-point gate, the gate policy with the composite, zone
  * and collation rules. A leg the gate policy has no row for (the query leg)
  * is never used past a gate.
  */
@@ -304,6 +352,8 @@ export function admitRead(
    if (scope !== undefined) return scope;
    const filters = queryFilterVerdict(facts);
    if (filters !== undefined) return filters;
+   const result = resultOrderVerdict(facts);
+   if (result !== undefined) return result;
    if (!facts.pastEntryPointGate) {
       return { admit: true, pastEntryPointGate: false };
    }
