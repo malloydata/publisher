@@ -146,17 +146,15 @@ file:
 
 ```bash
 curl -s .../api/v0/environments/<env>/packages/<pkg>/models      # compiles the model
-curl -s .../api/v0/environments/<env>/packages/<pkg>/notebooks   # lists the notebook
+curl -s .../api/v0/environments/<env>/packages/<pkg>/reports     # lists the report
 ```
 
 `models` returns a 424 with the full compiler error when the Malloy is broken,
-which is the fastest way to see a compile failure. Notebooks are listed by
-`notebooks` and are **not** in the `models` list. A `.malloy` notebook still compiles
+which is the fastest way to see a compile failure. Reports are listed by
+`reports`, and a linear report is **not** in the `models` list. It still compiles
 as a model, so `models/notebooks/eval_run.malloy` shows its compile errors; only a
-legacy `.malloynb` returns `404 "<file> is a notebook"` there. A notebook fetched from `notebooks/<file>` reports
-its cells' compiled schemas under `modelInfo`, but only the cells it treats as
-anonymous queries -- do not read a low count there as cells failing to compile. To
-verify every cell, run each named query through `execute_query`.
+legacy `.malloynb` returns `404 "<file> is a notebook"` there. To verify every
+tile, run each named query through `execute_query`.
 
 Pass `--mcp_port` explicitly. It defaults to 4040 and any other local Publisher
 already holds it; the server logs `Port 4040 in use` and carries on without an MCP

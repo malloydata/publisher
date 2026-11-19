@@ -938,11 +938,11 @@ everywhere else. A tile's `query` is an expression, so send it as `{"query": "ru
 `text` tiles, which have nothing to run.
 [ai-agents.md](ai-agents.md) has the REST playbook.
 
-**Deprecated aliases.** `GET …/notebooks`, `…/notebooks/{path}` and `…/notebooks/{path}/cells/{i}` answer
-for the linear reports. An old Console link `/<env>/<pkg>/dashboards/<name>` or `/notebooks/<name>` still
+**Deprecated aliases.** An old Console link `/<env>/<pkg>/dashboards/<name>` or `/notebooks/<name>` still
 opens: a file that is there opens at its path, and otherwise a unique basename redirects to the report's
-path. All of these are removed in a later release; use `…/reports`. The `…/dashboards` API routes are
-removed: list with `GET …/reports` and read one by its path with `GET …/reports/{path}`.
+path. It is removed in a later release. The `…/dashboards` and `…/notebooks` API routes are removed: list
+with `GET …/reports`, read one by its path with `GET …/reports/{path}`, and run a `.malloynb`'s code cell
+as a tile is run, its `run:` statement as `query` and the `.malloynb`'s path as the model.
 
 After editing a report file in a watched environment (`--watch-env`), `GET …/packages/<pkg>?reload=true`
 recompiles the package in place, and a reload that fails to compile leaves the previously compiled model
@@ -1071,9 +1071,8 @@ browser instead, keyed by the report's path, and the package page lists those dr
 ## Rendering one in your own React app
 
 `@malloy-publisher/sdk` exports a `Report` component that renders a `.malloy` report of either layout from
-`GET …/reports/{path}`, running every tile and `run:` cell through the query endpoint. `<Notebook>` stays
-exported as a deprecated wrapper over the same renderers, and is the one that renders a legacy `.malloynb`:
-its cells run only through the deprecated notebook routes, which `Report` never calls. The Console is one consumer of these components rather than their
+`GET …/reports/{path}`, running every tile through the query endpoint. It renders a legacy `.malloynb` cell
+by cell, each code cell through the same endpoint. The Console is one consumer of these components rather than their
 home: they take props instead of reading a router, so the host decides what a drill and a filter change
 mean.
 

@@ -15,14 +15,15 @@ are no open questions.
   path, drill by path, the Console's path routes, and the docs and skills. `kind=`, the query-level
   `# artifact` and the bare-name drill fallback are removed, not deprecated: `kind=` is the
   `report-kind-removed` error.
-- **Removed** (Delivery step 5, the dashboards half): the `…/dashboards*` routes and the basename
-  alias they resolved, the `report-name-ambiguous` warning, and the SDK `Dashboard` wrapper, once
-  Credible had moved.
+- **Removed** (Delivery step 5, the routes): the `…/dashboards*` routes and the basename alias they
+  resolved, the `report-name-ambiguous` warning, and the SDK `Dashboard` wrapper; then the
+  `…/notebooks*` routes with their cell route, `routes/deprecated.ts`,
+  `controller/legacy_report.controller.ts` and the SDK `Notebook` wrapper, once Credible had moved.
+  `Report` renders a `.malloynb` cell by cell through the query endpoint.
 - **Deferred** (Delivery step 5, the rest): removing what stays deprecated behind its own seam — the
-  `…/notebooks*` routes (`routes/deprecated.ts`, `controller/legacy_report.controller.ts`,
-  `service/legacy_report_views.ts`), the Console `/dashboards/<name>` and `/notebooks/<name>` alias,
-  and the SDK `Notebook` wrapper and kind-typed props (`components/legacy/`); and `.malloynb`,
-  `explores`, `queryableSources` and `#(filter)` (`service/deprecated/`).
+  Console `/dashboards/<name>` and `/notebooks/<name>` alias (`service/legacy_report_views.ts`), the
+  kind-typed props (`components/legacy/`); and `.malloynb`, `explores`, `queryableSources` and
+  `#(filter)` (`service/deprecated/`).
 
 [Where the split lives today](#where-the-split-lives-today) records the code as it stood before
 this change, which is why it names files and symbols that no longer exist.
@@ -207,9 +208,9 @@ One resource replaces two.
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **new** `GET …/reports`                            | Every report in the package: `path`, `name` (label), `layout`, `title`, `description`, `editable` (false for `.malloynb` and `run:`-cell reports), and the load `error` for one that does not compile.                                                                                                                                                          |
 | **new** `GET …/reports/{path}`                     | One report's manifest, where `{path}` is the package path including `.malloy` (or `.malloynb`), exactly as `GET …/reports` returns it, the convention `…/notebooks/{path}` already uses: today's `DashboardManifest` fields with `layout` in place of `kind`; for a `run:`-cell or `.malloynb` report, its cells, as `RawNotebook` returns them today.          |
-| (no cell route)                                    | A `.malloy` report's tiles run through `POST …/models/{path}/query`; a `.malloynb`'s cells through the deprecated `…/notebooks/{path}/cells/{i}`. A `…/reports/{path}/cells/{i}` route was built and removed before release: the query endpoint already applies the same surface, `#(authorize)` and row-level gates (`cell_query_parity.integration.spec.ts`). |
+| (no cell route)                                    | A `.malloy` report's tiles and a `.malloynb`'s code cells run through `POST …/models/{path}/query`. A `…/reports/{path}/cells/{i}` route was built and removed before release: the query endpoint already applies the same surface, `#(authorize)` and row-level gates. The deprecated `…/notebooks/{path}/cells/{i}` was removed in Delivery step 5 (`malloynb_query_route.integration.spec.ts` pins a `.malloynb` on the query endpoint). |
 | `GET …/dashboards`, `GET …/dashboards/{name}`      | **Removed** (Delivery step 5). They were deprecated aliases: the listing returned the grid reports; the item resolved a unique basename and answered 409 naming every match when it was ambiguous.                                                                                                                                                              |
-| `GET …/notebooks`, `…/notebooks/{path}`, `…/cells` | **Deprecated aliases** for the linear reports; already path-addressed.                                                                                                                                                                                                                                                                                          |
+| `GET …/notebooks`, `…/notebooks/{path}`, `…/cells` | **Removed** (Delivery step 5). They were deprecated aliases for the linear reports, already path-addressed, and the cell route ran a `.malloynb` one cell at a time.                                                                                                                                                                                           |
 | `PUT …/models/{path}`                              | Any location; one rule for both layouts (§7).                                                                                                                                                                                                                                                                                                                   |
 | `GET …/models`                                     | Unchanged rule, by discovery: served reports are excluded under a curated surface, linear reports always (as served notebooks are today). Open to simplifying to "reports are never models" in a follow-up.                                                                                                                                                     |
 
@@ -330,9 +331,8 @@ and its old by-name link, and gives back a package's own `public/dashboards/` an
 - **One component.** A new `Report` export renders a `.malloy` report by layout from
   `GET …/reports/{path}`. `Dashboard` and `Notebook` stay exported as thin wrappers over the same
   renderers (`components/legacy/`), because Credible's app imports both today; they are deprecated,
-  not removed, until Credible has moved. `Dashboard` has since been removed (Delivery step 5). A
-  `.malloynb` is `Notebook`'s to render, through the deprecated notebook routes, so `Report` imports
-  nothing deprecated.
+  not removed, until Credible has moved. Both have since been removed (Delivery step 5), and
+  `Report` renders a `.malloynb` cell by cell, each code cell through the query endpoint.
 - **Location resolution** (`documentLocation.ts`, `useDocumentLocation.ts`): one listing, resolved
   by exact path. The basename lookup survives only behind the compatibility alias and reports
   ambiguity rather than taking the first match.
@@ -403,8 +403,8 @@ map, and the `compile_model` description's statement of the kind rule becomes th
   - A kindless, tileless model-level tag in `dashboards/` (an unserved empty dashboard before) is
     now linear (`report-layout-implicit`).
 - **Every existing URL and REST route answers.** Path routes cover every file already in the two
-  directories; the old routes are deprecated aliases (§4, §9). The dashboards routes have since been
-  removed (Delivery step 5).
+  directories; the old routes are deprecated aliases (§4, §9). The dashboards and notebooks routes
+  have since been removed (Delivery step 5).
 - **A `# drill { to=<name> }` names a root file.** A bare name that named a dashboard under
   `dashboards/` must be written as its path (`to="dashboards/overview"`); the load lint reports one
   that resolves to nothing.
@@ -414,7 +414,7 @@ map, and the `compile_model` description's statement of the kind rule becomes th
 - **Malloyyo** reads dashboards only from `dashboards/`, by bare names, with `kind=`. Reports
   elsewhere, path drill targets, and `layout=` work in Publisher and not in Malloyyo. Decided.
 - **SDK consumers** keep `Notebook` and the old notebook client calls through the deprecation
-  (`Dashboard` and the dashboards calls have since been removed);
+  (both, and the dashboards calls, have since been removed);
   they will not open a report outside the two directories by path until they upgrade.
 
 ## Delivery
@@ -433,11 +433,12 @@ Each step is shippable alone and leaves the system consistent.
    name alias go (delete `routes/deprecated.ts`, its controller and `legacy_report_views.ts`);
    `Dashboard` and `Notebook` SDK exports go once Credible has moved. `kind=`, the query-level
    `# artifact` and bare-name drill fallback are already gone: they existed only for this format.
-   **The dashboards half is done**: the `…/dashboards` routes, their basename alias and its
-   `report-name-ambiguous` warning, and the SDK `Dashboard` wrapper are removed. The `…/notebooks`
-   routes, the Console `/dashboards/<name>` and `/notebooks/<name>` alias (which resolves over
-   `GET …/reports` and never called the removed routes) and the SDK `Notebook` wrapper remain,
-   deferred.
+   **The routes are done**: the `…/dashboards` routes, their basename alias and its
+   `report-name-ambiguous` warning, the SDK `Dashboard` wrapper, the `…/notebooks` routes with their
+   cell route, and the SDK `Notebook` wrapper are removed. A `.malloynb`'s per-cell given scope,
+   per-cell graft scope and per-cell `#(filter)` refinement went with the cell route rather than
+   moving to the query endpoint. The Console `/dashboards/<name>` and `/notebooks/<name>` alias
+   (which resolves over `GET …/reports` and never called the removed routes) remains, deferred.
 
 ## Test plan
 

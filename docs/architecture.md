@@ -135,7 +135,7 @@ only when a rule needs one); **govern** whatever answered, the authority on ever
 live; **run** it with the
 manifest or virtual map the answer names, retrying live only when every binding it read allows it;
 and **report**: the caps, the metrics, the access record and the path report, all read off the one
-`Answer`. A notebook cell is governed and run on its own compile, not routed.
+`Answer`.
 
 **The build path.** A package's load plans it: the load worker compiles each model and plans it in
 `plan/`, which reads each declaration once (`declaration.ts`), plans and compiles each generated
