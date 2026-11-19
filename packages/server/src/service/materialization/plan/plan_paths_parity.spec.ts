@@ -52,7 +52,62 @@ source: b is raw -> { group_by: c }
 source: a is raw extend { where: id > 0 }
 `,
    ],
+   [
+      "a #(rollup) and a v1 #@ preaggregate",
+      `${RAW}source: r is raw extend {
+  #(rollup) grain=["c"]
+  measure: n is count()
+}
+source: v is raw extend {
+  #@ preaggregate grain="c"
+  measure: total is id.sum()
+}
+`,
+   ],
+   [
+      "a persisted view beside a #@ persist source",
+      `${RAW}#@ persist name="p"
+source: p is raw -> { group_by: c }
+source: d is raw extend {
+  #@ persist name="by_c"
+  view: by_c is { group_by: c }
+}
+`,
+   ],
+   [
+      "a gated #@ persist source and a gated #(materialize) source",
+      `${RAW.replace("composite_sources", "composite_sources givens")}given:
+  ORG :: number
+
+#(access_filter) id = $ORG
+#@ persist name="gp"
+source: gp is raw -> { select: id, c } extend {}
+#(access_filter) id = $ORG
+#(materialize) name="gm"
+source: gm is raw extend { where: id > 0 }
+`,
+   ],
 ];
+
+/**
+ * Everything a derived plan carries, as plain sorted data, so the two paths
+ * are compared field by field.
+ */
+function whole(outcome: BuildPlanOutcome) {
+   const sorted = <T>(values: Iterable<T>) => [...values].sort();
+   return {
+      ...outcome,
+      annotationFindings: sorted(
+         outcome.annotationFindings.map((f) => JSON.stringify(f)),
+      ),
+      databaseSourceEligibility: {
+         ...outcome.databaseSourceEligibility,
+         eligibleEntityIds: sorted(
+            outcome.databaseSourceEligibility.eligibleEntityIds,
+         ),
+      },
+   };
+}
 
 /** What both paths must agree on, order-free. */
 function judged(outcome: BuildPlanOutcome) {
@@ -126,8 +181,17 @@ describe("the load worker and compilePackageBuildPlan plan alike", () => {
          expect(worker?.ok).toBe(true);
          if (!worker?.ok) return;
          expect(judged(worker.outcome)).toEqual(judged(main));
+         // Every side table, not only the judgement.
+         expect(whole(worker.outcome)).toEqual(whole(main));
       });
    }
+
+   it("sends a plan that survives structured cloning unchanged", async () => {
+      const { worker } = await bothPaths(packages, SHAPES[4][1]);
+      expect(worker?.ok).toBe(true);
+      if (!worker?.ok) return;
+      expect(structuredClone(worker.outcome)).toEqual(worker.outcome);
+   });
 
    it("a published version of a scope: version package", async () => {
       // Two `name=` the same: each a readable name of its own per version,
