@@ -11,7 +11,10 @@ import {
    pinnedOf,
    storedViewBinding,
 } from "../../../test_helpers/persisted_result_fixture";
+import { gateSwitches } from "../../../config";
 import { LegDecline } from "../domain/leg_decline";
+import { makeLegs } from "./leg";
+import { collationProbe, ReadAdmission } from "./read_admission";
 import { PersistedViewServe } from "./view_variants";
 
 /**
@@ -255,6 +258,49 @@ describe("PersistedViewServe (database)", () => {
       } finally {
          warn.restore();
       }
+   });
+
+   it("marks a table stored as of its build, so read admission declines an access decision over it", async () => {
+      // The other checks keep access decisions off this leg today; this
+      // backstop must decline one on its own, so it has to see the flag.
+      const asOfBuild = storedViewBinding(
+         f.buildSourceIDOf("orders__by_region__view"),
+         { tier: "database", virtualHandle: tableId, asOfBuild: true },
+      );
+      const pinned = pinnedOf([asOfBuild], built);
+      const query = {
+         queryString: "run: orders -> by_region",
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery("run: orders -> by_region"),
+      };
+      const [leg] = makeLegs(pinned, { persistedViews: f.views });
+      const answer = await leg.attempt(query, pinned);
+      expect(answer.resultTableRead).toMatchObject({
+         tier: "database",
+         tablePath: STORED,
+         asOfBuild: true,
+      });
+      // The path report does not carry it.
+      expect(answer.viewTable).not.toHaveProperty("asOfBuild");
+      const admission = new ReadAdmission(
+         query,
+         gateSwitches(),
+         collationProbe,
+      );
+      // Past an entry-point gate: an access decision, declined.
+      expect((await admission.decide("view", answer, true)).verdict).toEqual({
+         admit: false,
+         reason: "as_of_build_access",
+         detail: expect.any(String),
+      });
+      // The query reads no given and passes no gate: it reads the table.
+      expect((await admission.decide("view", answer, false)).verdict).toEqual({
+         admit: true,
+         pastEntryPointGate: false,
+      });
+      // Without the flag the same answer is not an as-of-build read.
+      const plain = await leg.attempt(query, pinnedOf([], built));
+      expect(plain.resultTableRead).not.toHaveProperty("asOfBuild");
    });
 
    it("names the compiler key of a planned table, and none for an unplanned one", () => {
