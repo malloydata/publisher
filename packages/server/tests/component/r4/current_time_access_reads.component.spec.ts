@@ -62,6 +62,10 @@ ${[
    "t5",
    "t6",
    "t7",
+   "t8",
+   "t9",
+   "t10",
+   "t11",
 ]
    .map(
       (s) =>
@@ -195,7 +199,42 @@ source: vis_s15 is draw_t7 extend { join_one: g is graw_t7 on g.doc_id = id } ->
   select: id, user_id is g.user_id
 }
 source: c_s15 is compose(vis_s15 extend { dimension: k is 1 }, vis_s15)
-source: d_s15 is c_s15 extend { where: user_id = $USER }`,
+source: d_s15 is c_s15 extend { where: user_id = $USER }
+
+// A3: a model query reads a given over it.
+#@ persist name="vis_a3"
+source: vis_a3 is draw_t8 extend { join_one: g is graw_t8 on g.doc_id = id } -> {
+  where: g.expires_at > now
+  select: id, user_id is g.user_id
+}
+query: q_a3 is vis_a3 -> { where: user_id = $USER; group_by: id; order_by: id }
+
+// A4: a gated extension of a plain alias of it.
+#@ persist name="vis_a4"
+source: vis_a4 is draw_t9 extend { join_one: g is graw_t9 on g.doc_id = id } -> {
+  where: g.expires_at > now
+  select: id, user_id is g.user_id
+}
+source: vis_a4_alias is vis_a4
+#(access_filter) user_id = $USER
+source: d_a4 is vis_a4_alias extend {}
+
+// A7: a model query refines a view of it with a given.
+#@ persist name="vis_a7"
+source: vis_a7 is draw_t10 extend { join_one: g is graw_t10 on g.doc_id = id } -> {
+  where: g.expires_at > now
+  select: id, user_id is g.user_id
+}
+source: vis_a7v is vis_a7 extend { view: by_id is { group_by: id, user_id; order_by: id } }
+query: q_a7 is vis_a7v -> by_id + { where: user_id = $USER }
+
+// A9: no access decision of the model reads it, so it is stored as of its
+// build; the caller's own query joins it and filters by a given.
+#@ persist name="vis_a9"
+source: vis_a9 is draw_t11 extend { join_one: g is graw_t11 on g.doc_id = id } -> {
+  where: g.expires_at > now
+  select: id, user_id is g.user_id
+}`,
    };
    if (storage) {
       for (const k of Object.keys(out)) {
@@ -209,7 +248,15 @@ source: d_s15 is c_s15 extend { where: user_id = $USER }`,
 }
 
 /** Each access decision, the query it answers, and the relation it reads. */
-const CASES: Record<string, { query: string; frozen: string; what: string }> = {
+const CASES: Record<
+   string,
+   {
+      query: string;
+      /** The relation refused at plan; absent: built, and answered live at read. */
+      frozen?: string;
+      what: string;
+   }
+> = {
    s1: {
       query: "run: d_s1 -> { group_by: id; order_by: id }",
       frozen: "g_s1",
@@ -290,6 +337,25 @@ const CASES: Record<string, { query: string; frozen: string; what: string }> = {
       frozen: "vis_s15",
       what: "a given-scoped extension of a composite over it",
    },
+   a3: {
+      query: "run: q_a3",
+      frozen: "vis_a3",
+      what: "a model query reads a given over it",
+   },
+   a4: {
+      query: "run: d_a4 -> { group_by: id; order_by: id }",
+      frozen: "vis_a4",
+      what: "a gated extension of an alias of it",
+   },
+   a7: {
+      query: "run: q_a7",
+      frozen: "vis_a7",
+      what: "a model query refines a view of it with a given",
+   },
+   a9: {
+      query: "run: draw_t11 extend { join_one: v is vis_a9 on v.id = id } -> { where: v.user_id = $USER; group_by: id; order_by: id }",
+      what: "the caller's own query joins it and filters by a given",
+   },
 };
 const GIVENS = { USER: 1, ORG: 1 };
 
@@ -330,14 +396,19 @@ for (const storage of [false, true]) {
          );
          // Every case at once, so a failure names each one that is wrong.
          const wrong = Object.entries(CASES).flatMap(([s, { frozen, what }]) =>
-            refused.get(frozen) === "current_time" &&
-            !fixture.built.some((b) => b.name === frozen)
+            frozen === undefined ||
+            (refused.get(frozen) === "current_time" &&
+               !fixture.built.some((b) => b.name === frozen))
                ? []
                : [
                     `${s} (${what}): ${frozen} is ${refused.get(frozen) ?? "built"}`,
                  ],
          );
          expect(wrong).toEqual([]);
+      });
+
+      it("stores a relation no access decision of the model reads, as of its build", () => {
+         expect(fixture.built.some((b) => b.name === "vis_a9")).toBe(true);
       });
 
       it("leaves the expired grant out of every answer once it expires, as live does", async () => {
@@ -356,6 +427,16 @@ for (const storage of [false, true]) {
             }
          }
          expect(wrong).toEqual([]);
+         // The same table, read by a query that is no access decision,
+         // answers as of its build: the expired grant is still there.
+         const plain = await fixture.run(
+            "m.malloy",
+            "run: vis_a9 -> { group_by: id; order_by: id }",
+         );
+         expect(ids(plain)).toEqual([10, 20]);
+         expect("answer" in plain && plain.answer.servedBy).toBe(
+            "materialized",
+         );
       }, 120_000);
    });
 }

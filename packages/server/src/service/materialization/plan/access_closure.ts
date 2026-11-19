@@ -29,8 +29,26 @@ import { irCarriesAGate } from "./materialization_eligibility";
 /** Max IR depth to walk for names; deep enough for real models. */
 const MAX_WALK_DEPTH = 200;
 
-/** Keys whose string value names another source a definition depends on. */
-const DEPENDENCY_KEYS: ReadonlySet<string> = new Set(["sourceID", "extends"]);
+/**
+ * Keys whose string value is another source's sourceID a definition depends
+ * on: a source's own (`sourceID`), the base it extends (`extends`), and the
+ * source a plain alias renames (`referenceID`, `source: a is b`).
+ */
+const DEPENDENCY_KEYS: ReadonlySet<string> = new Set([
+   "sourceID",
+   "extends",
+   "referenceID",
+]);
+
+/**
+ * Keys whose string value is a source's NAME in the model's contents: a
+ * model `query:`'s run target (`structRef: "vis"`), which a query, its
+ * refinements and the views it runs compile against.
+ */
+const NAME_KEYS: ReadonlySet<string> = new Set(["structRef"]);
+
+/** The key a model `query:` is followed by, which no stored source has. */
+const QUERY_KEY = "query:";
 
 /** Keys that carry no dependency: locations and annotations. */
 const SKIPPED_KEYS: ReadonlySet<string> = new Set([
@@ -51,17 +69,25 @@ const SKIPPED_KEYS: ReadonlySet<string> = new Set([
  */
 export function collectAccessReads(contents: unknown, out: Set<string>): void {
    if (contents === null || typeof contents !== "object") return;
-   const defs = Object.values(contents as Record<string, unknown>).filter(
-      (d): d is Record<string, unknown> => d !== null && typeof d === "object",
+   const entries = Object.entries(contents as Record<string, unknown>).filter(
+      (e): e is [string, Record<string, unknown>] =>
+         e[1] !== null && typeof e[1] === "object",
    );
-   // Each definition's direct dependencies, by its own sourceID.
+   // A definition's key: its sourceID, or for a model `query:` (which has
+   // none) its name in the contents.
+   const keyOf = (name: string, def: Record<string, unknown>): string =>
+      typeof def.sourceID === "string" ? def.sourceID : `${QUERY_KEY}${name}`;
+   const keys = new Map(entries.map(([name, def]) => [name, keyOf(name, def)]));
+   // A name the contents do not hold cannot be followed: fail closed.
+   const byName = (name: string): string => keys.get(name) ?? EVERY_SOURCE;
+   // Each definition's direct dependencies, by its key.
    const direct = new Map<string, Set<string>>();
    const access: Set<string>[] = [];
-   for (const def of defs) {
+   for (const [name, def] of entries) {
       const own = typeof def.sourceID === "string" ? def.sourceID : undefined;
       const deps = new Set<string>();
-      namesIn(def, deps, own, new WeakSet(), 0);
-      if (own !== undefined) direct.set(own, deps);
+      namesIn(def, deps, own, byName, new WeakSet(), 0);
+      direct.set(keyOf(name, def), deps);
       if (isAccessDefinition(def)) access.push(deps);
    }
    for (const deps of access) {
@@ -69,6 +95,8 @@ export function collectAccessReads(contents: unknown, out: Set<string>): void {
       while (queue.length > 0) {
          const id = queue.pop()!;
          if (out.has(id)) continue;
+         // A query's key matches no stored source; it is kept only so the
+         // walk does not follow it twice.
          out.add(id);
          for (const next of direct.get(id) ?? []) {
             if (!out.has(next)) queue.push(next);
@@ -92,6 +120,7 @@ function namesIn(
    node: unknown,
    out: Set<string>,
    self: string | undefined,
+   byName: (name: string) => string,
    seen: WeakSet<object>,
    depth: number,
 ): void {
@@ -103,7 +132,9 @@ function namesIn(
    if (seen.has(node)) return;
    seen.add(node);
    if (Array.isArray(node)) {
-      for (const item of node) namesIn(item, out, self, seen, depth + 1);
+      for (const item of node) {
+         namesIn(item, out, self, byName, seen, depth + 1);
+      }
       return;
    }
    for (const [key, value] of Object.entries(node)) {
@@ -114,6 +145,10 @@ function namesIn(
          }
          continue;
       }
-      namesIn(value, out, self, seen, depth + 1);
+      if (NAME_KEYS.has(key) && typeof value === "string") {
+         out.add(byName(value));
+         continue;
+      }
+      namesIn(value, out, self, byName, seen, depth + 1);
    }
 }

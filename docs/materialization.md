@@ -355,17 +355,24 @@ source: events_as_of_build is raw -> { where: ts ~ f'last 7 days'; select: * }
 - **A gated source:** an `#(authorize)` or `#(access_filter)` gate anywhere beneath it, its own,
   inherited or joined (a persisted view over a gated source, and a persisted query that reaches a
   gate, as before). The gate's decision would read a clock frozen at the build.
-- **An access input:** a relation an access decision of the package reads. A source, query or
-  view that carries an `#(authorize)` or `#(access_filter)` gate, or reads a given anywhere (a
-  `where:`, a dimension, a measure, a join's `on`), is an access decision; every source it depends
-  on, at any depth, is an access input: one it extends, one it derives from with `->`, one it joins
-  (directly, through another source's join, or from another file), a composite's member, and the
-  base of a `#(materialize)` source, rollup, persisted view or persisted query over it, whether
-  the access decision is itself stored or answered live. So is a source whose own extend-block
+- **An access input:** a relation an access decision of the package reads. A source, a model
+  `query:` or a view that carries an `#(authorize)` or `#(access_filter)` gate, or reads a given
+  anywhere (a `where:`, a dimension, a measure, a join's `on`, a query's or refinement's
+  `where:`), is an access decision; every source it depends on, at any depth, is an access input:
+  one it extends, renames (`source: a is b`), derives from with `->` or runs as a query
+  (`query: q is b -> { … }`, `b -> view + { … }`), one it joins (directly, through another
+  source's join, or from another file), a composite's member, and the base of a `#(materialize)`
+  source, rollup, persisted view or persisted query over it, whether the access decision is itself
+  stored or answered live. So is a source whose own extend-block
   `where:` reads a given, or that joins a given-scoped source (the
   [grant-table idiom](#per-user-visibility-through-a-joined-grant-table)). Its rows decide what a
   caller may see, so a frozen clock is a grant that outlives its time. The check reads every model
   of the package and what each imports, and fails closed: a definition it cannot read counts.
+  **At read, independently of that check,** a query that carries a gate or reads a given (in the
+  model, or in the caller's own text, such as an ad-hoc join that filters by a given), or that is
+  sent givens, never reads a table stored as of its build: such an answer is declined and the query
+  answers live, on every serving path (the served copy, a rollup, a persisted view or query). A
+  legacy `.malloynb` notebook cell never reads one.
 - **`refresh="incremental"`:** a delta reads only rows past its watermark, so a window over the
   clock would never drop the rows it has passed.
 - **A rollup:** a `#@ preaggregate` or `#(rollup)` rollup whose base, measure or grain reads the

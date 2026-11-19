@@ -83,6 +83,33 @@ source: by_given is raw extend {
       ).toEqual(expect.arrayContaining(["base"]));
    });
 
+   it("follows a model query's run target by name, a refinement, a query over a query, and an alias", async () => {
+      expect(
+         await accessReads(`${HEAD}
+query: q is base -> { where: user_id = $USER; group_by: id }
+`),
+      ).toEqual(expect.arrayContaining(["base"]));
+      expect(
+         await accessReads(`${HEAD}
+source: bv is base extend { view: by_id is { group_by: id, user_id } }
+query: q is bv -> by_id + { where: user_id = $USER }
+`),
+      ).toEqual(expect.arrayContaining(["base", "bv"]));
+      expect(
+         await accessReads(`${HEAD}
+query: q1 is base -> { group_by: id, user_id }
+query: q2 is q1 -> { where: user_id = $USER; group_by: id }
+`),
+      ).toEqual(expect.arrayContaining(["base"]));
+      expect(
+         await accessReads(`${HEAD}
+source: alias is base
+#(access_filter) user_id = $USER
+source: gated is alias extend {}
+`),
+      ).toEqual(expect.arrayContaining(["alias", "base"]));
+   });
+
    it("names nothing no access decision reads", async () => {
       const reads = await accessReads(`${HEAD}
 source: plain is other extend { dimension: k is 1 }

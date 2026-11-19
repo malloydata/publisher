@@ -1429,8 +1429,12 @@ export class ModelServing {
       // The freshness-filtered manifest minus rollups (a notebook has no
       // companion), and none for a cell whose model lacks the
       // persistence flag (see manifestIfPersistent).
+      const pinnedForCell = this.pin();
       const buildManifest = this.manifestIfPersistent(
-         this.host.withoutPreaggregateEntries(pinnedManifest(this.pin())),
+         withoutAsOfBuildEntries(
+            this.host.withoutPreaggregateEntries(pinnedManifest(pinnedForCell)),
+            pinnedForCell,
+         ),
          cell.modelDef ?? this.host.modelDef(),
       );
       // See filterGivensToModelSurface.
@@ -1704,6 +1708,29 @@ export class ModelServing {
       }
       return persistent ? manifest : undefined;
    }
+}
+
+/**
+ * `manifest` less every table stored as of its build (`Binding.asOfBuild`):
+ * a legacy notebook cell compiles with the manifest and passes no read
+ * admission, so a cell that is an access decision could otherwise read one.
+ * Such a table is answered live there, gated or not (fail closed).
+ */
+function withoutAsOfBuildEntries(
+   manifest: BuildManifest | undefined,
+   pinned: Pinned,
+): BuildManifest | undefined {
+   if (!manifest) return manifest;
+   const asOfBuild = new Set(
+      pinned.snapshot.bindings
+         .filter((b) => b.asOfBuild === true)
+         .map((b) => b.virtualHandle),
+   );
+   if (asOfBuild.size === 0) return manifest;
+   const entries = Object.fromEntries(
+      Object.entries(manifest.entries).filter(([id]) => !asOfBuild.has(id)),
+   );
+   return { ...manifest, entries } as BuildManifest;
 }
 
 /** The pinned build manifest, or undefined when nothing database is bound. */

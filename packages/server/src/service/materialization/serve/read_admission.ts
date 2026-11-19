@@ -18,9 +18,14 @@
 
 import type { QueryMaterializer } from "@malloydata/malloy";
 import {
+   preparedQueryView,
+   queryGivenUsageIds,
    readPreparedQuery,
    resolveStructRefSource,
+   sqlTargetRef,
 } from "../../governance/ir/prepared_query";
+import { readsAGiven } from "../../governance/ir/compiled_model";
+import { parseAuthorizeAnnotation } from "../../authorize";
 import { rowFilterOnComposite } from "../../composite_row_filter";
 import { extractRunQueryCall, extractRunViewCall } from "../../query_text";
 import {
@@ -81,6 +86,7 @@ interface Gathered {
 export class ReadAdmission {
    private readonly reads = new Map<string, Promise<GateReads | undefined>>();
    private composite: Promise<boolean> | undefined;
+   private access: Promise<boolean> | undefined;
    private readonly gathered = new WeakMap<LegAnswer, Promise<Gathered>>();
    private readonly givens: Record<string, unknown> | undefined;
 
@@ -180,6 +186,14 @@ export class ReadAdmission {
       return r;
    }
 
+   /** See {@link queryReadsAccess}; read once per query. */
+   private readsAccessOnce(): Promise<boolean> {
+      return (this.access ??= queryReadsAccess(
+         this.query.authorRunnable,
+         this.givens,
+      ));
+   }
+
    private compositeOnce(): Promise<boolean> {
       return (this.composite ??= entryRowFilterOnComposite(
          this.query.authorRunnable,
@@ -206,6 +220,11 @@ export class ReadAdmission {
          leg === "served" || leg === "rollup" ? await scopeReads() : undefined;
       const filters = await this.queryFilters(leg, answer);
       const result = await this.resultOrder(leg, answer);
+      const readsAsOfBuild = [
+         ...read,
+         ...(answer.tablesRead ?? []),
+         ...(answer.resultTableRead ? [answer.resultTableRead] : []),
+      ].some((t) => (t as { asOfBuild?: unknown }).asOfBuild === true);
       return {
          tables: judged,
          scopeReads,
@@ -224,6 +243,12 @@ export class ReadAdmission {
             columnsListed: judged !== read,
             queryFilters: filters.facts,
             resultOrder: result.facts,
+            ...(readsAsOfBuild
+               ? {
+                    readsAsOfBuild,
+                    readsAccess: await this.readsAccessOnce(),
+                 }
+               : {}),
          },
       };
    }
@@ -401,6 +426,74 @@ function legDecline(
       case "query":
          return new LegDecline("query_missing_field", message);
    }
+}
+
+/**
+ * Whether a query is an access decision: it reads a given (Malloy's own
+ * given-usage summary of the query, or a `{node: "given"}` anywhere in it),
+ * the caller supplied givens, or the source it runs carries an
+ * `#(authorize)` or `#(access_filter)` gate anywhere beneath it. Fails
+ * closed: a query that cannot be read counts.
+ */
+async function queryReadsAccess(
+   runnable: QueryMaterializer,
+   givens: Record<string, unknown> | undefined,
+): Promise<boolean> {
+   if (givens !== undefined && Object.keys(givens).length > 0) return true;
+   try {
+      const prepared = await runnable.getPreparedQuery();
+      const usage = queryGivenUsageIds(prepared);
+      if (usage === undefined || usage.length > 0) return true;
+      const view = preparedQueryView(prepared);
+      if (readsAGiven(view.query)) return true;
+      const source = resolveStructRefSource<unknown>(
+         sqlTargetRef(view),
+         view.modelDef,
+      );
+      return carriesAGate(source) || carriesAGate(view.query);
+   } catch {
+      return true;
+   }
+}
+
+/** Max IR depth {@link carriesAGate} walks; past it, a gate is assumed. */
+const MAX_GATE_WALK_DEPTH = 200;
+
+/**
+ * Whether a slice of IR carries an `#(authorize)` or `#(access_filter)`
+ * note anywhere (the plan's gate walk, `referencesAuthorize`, read with the
+ * same parser). Fails closed.
+ */
+function carriesAGate(
+   node: unknown,
+   seen: WeakSet<object> = new WeakSet(),
+   depth = 0,
+): boolean {
+   if (depth > MAX_GATE_WALK_DEPTH) return true;
+   if (node === null || typeof node !== "object") return false;
+   if (seen.has(node)) return false;
+   seen.add(node);
+   if (Array.isArray(node)) {
+      return node.some((item) => carriesAGate(item, seen, depth + 1));
+   }
+   const record = node as Record<string, unknown>;
+   for (const key of ["blockNotes", "notes"]) {
+      const notes = record[key];
+      if (!Array.isArray(notes)) continue;
+      for (const note of notes) {
+         const text =
+            typeof note === "string"
+               ? note
+               : (note as { text?: unknown } | null)?.text;
+         if (typeof text !== "string") continue;
+         try {
+            if (parseAuthorizeAnnotation(text) !== null) return true;
+         } catch {
+            return true;
+         }
+      }
+   }
+   return Object.values(record).some((v) => carriesAGate(v, seen, depth + 1));
 }
 
 /** The tables' virtual handles, so the path report names each one declined. */

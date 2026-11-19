@@ -399,6 +399,7 @@ export class PackageMaterialization {
          plan.servingPlan(),
          plan.materializePlans,
          plan.databaseSourceEligibility,
+         plan.asOfBuild,
          this.owner.models(),
          getMaterializeEnabled(),
       ];
@@ -418,13 +419,14 @@ export class PackageMaterialization {
          drifted: observed.drifted,
          unread: observed.unread,
       };
+      const asOfBuild = this.asOfBuildBinding();
       const bindings = [
          ...this.storageBindings.map((b) => {
             const kind = kindOf(b);
             return kind === b.kind ? b : { ...b, kind };
          }),
          ...observed.bindings,
-      ];
+      ].map((b) => (asOfBuild(b) ? { ...b, asOfBuild: true } : b));
       const signature = JSON.stringify(bindings);
       const snapshot = makeSnapshot(
          memo && memo.signature === signature
@@ -434,6 +436,26 @@ export class PackageMaterialization {
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;
+   }
+
+   /**
+    * Whether a binding reads a table stored as of its build: one of its
+    * sources, or its content address, is one the plan marks `asOfBuild`.
+    * Read admission answers an access decision over it live.
+    */
+   private asOfBuildBinding(): (b: Binding) => boolean {
+      const ids = new Set(Object.keys(this.plan.asOfBuild));
+      if (ids.size === 0) return () => false;
+      const sources = this.plan.buildPlan?.sources ?? {};
+      const addresses = new Set(
+         [...ids].flatMap((id) => {
+            const address = sources[id]?.sourceEntityId;
+            return address ? [address] : [];
+         }),
+      );
+      return (b) =>
+         addresses.has(b.virtualHandle) ||
+         (b.sourceIDs ?? []).some((id) => ids.has(id));
    }
 
    /**
