@@ -10,9 +10,11 @@
  *
  * Every leg reads the storage table first, while the mode serves it
  * (`storageLookupOf`, `servedCopyReadsTier`). Under `write-only` and `off`
- * the served copy reads the database table instead; the rollup, persisted
- * view and persisted query legs, whose binding decides their tier, answer
- * live.
+ * a leg that falls back reads the database table instead
+ * (`readsDatabaseWhenStorageUnread`: the served copy); the others, whose
+ * storage binding decides their tier, answer live. Each case checks the
+ * verdict against what the query read, so a leg whose fallback changes
+ * without that rule fails here.
  *
  * Before the fix the served copy re-rooted the source on both tables,
  * spliced its declaration twice and refused both, so its queries were
@@ -32,6 +34,7 @@ import { unrecordedAudit } from "../../../src/service/access_record";
 import { recordConnectionsAsForTests } from "../../../src/service/connection_type";
 import { Environment } from "../../../src/service/environment";
 import { parsePackageName } from "../../../src/service/identity";
+import { readsDatabaseWhenStorageUnread } from "../../../src/service/materialization/domain/placement";
 import {
    castToDeclaredTypes,
    wideIntegerColumns,
@@ -264,7 +267,14 @@ async function loadAndBind(
 /** The tier each leg reads a source bound in both tiers in, under `mode`. */
 function expectedTier(leg: Leg, mode: string): string | undefined {
    if (mode === "on") return "storage";
-   return leg === "materialized" ? "database" : undefined;
+   // The verdict's own rule for where the mode reads no storage table: a
+   // leg changed to fall back to the database table changes it, or the
+   // verdict and this query disagree here.
+   return readsDatabaseWhenStorageUnread({
+      servedCopy: leg === "materialized",
+   })
+      ? "database"
+      : undefined;
 }
 
 for (const mode of ["on", "write-only", "off"] as const) {
@@ -290,6 +300,11 @@ for (const mode of ["on", "write-only", "off"] as const) {
                const verdict = verdicts.filter(c.verdictOf);
                expect(verdict).toHaveLength(1);
                const [v] = verdict;
+               // The verdict says what the query read, whatever the rule.
+               expect(v.verdict).toBe(
+                  after.servedBy === "live" ? "live" : "serves",
+               );
+               if (after.tier) expect(v.tier).toBe(after.tier);
                if (tier) {
                   expect(after).toMatchObject({ servedBy: c.leg, tier });
                   expect(v).toMatchObject({ tier, verdict: "serves" });

@@ -28,7 +28,11 @@ import {
    switches,
    switchesLabel,
 } from "./domain/gate_policy_frozen_rows";
-import { servedCopyReadsTier, storageServes } from "./domain/placement";
+import {
+   readsDatabaseWhenStorageUnread,
+   servedCopyReadsTier,
+   storageServes,
+} from "./domain/placement";
 import type { StorageMode } from "./domain/switches";
 import { LEGS, type Tier } from "./domain/vocabulary";
 import { computeServeVerdicts } from "./serve/serve_verdict";
@@ -290,7 +294,9 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
          // The tiers whose binding the served copy may read under `mode`.
          const readable: Tier[] = storageServes(mode as StorageMode)
             ? ["database", "storage"]
-            : ["database"];
+            : readsDatabaseWhenStorageUnread({ servedCopy: true })
+              ? ["database"]
+              : [];
          const read = readable.find((t) => servedCopyReadsTier(t, readable));
          if (!read) throw new Error(`no tier read under ${mode}`);
          for (const sw of switches()) {
@@ -351,5 +357,73 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
       expect(wrong).toEqual([]);
       expect([...tiersSaid].sort()).toEqual(["database", "storage"]);
       expect(outcomes.has("serves")).toBe(true);
+   });
+
+   // The same source shape read by a leg whose storage binding decides its
+   // tier (a rollup): under `on` it reads the storage table; where the mode
+   // reads none, it follows the database table exactly when the leg falls
+   // back to it (readsDatabaseWhenStorageUnread), and is live
+   // (`storage_mode`) on the storage tier otherwise.
+   it("judges a rollup bound fresh in both tiers on the tier its leg reads, under every mode", () => {
+      const sourceID = "orders__rollup__region@file:///pkg/m.malloy";
+      const plan = {
+         graphs: [],
+         sources: {
+            [sourceID]: {
+               name: "orders__rollup__region",
+               sourceID,
+               origin: "rollup",
+               connectionName: "duckdb",
+               sourceEntityId: "entity-rollup",
+               sql: "SELECT 1",
+               columns: [],
+               modelPath: "m.malloy",
+               preaggregate: {
+                  baseSourceName: "orders",
+                  grainDimensions: ["region"],
+               },
+            },
+         },
+      };
+      const wrong: string[] = [];
+      for (const mode of ["on", "write-only", "off"] as const) {
+         const served = storageServes(mode as StorageMode);
+         const fallsBack = readsDatabaseWhenStorageUnread({
+            servedCopy: false,
+         });
+         const expected = served
+            ? { tier: "storage", verdict: "serves" }
+            : fallsBack
+              ? { tier: "database", verdict: "serves" }
+              : { tier: "storage", verdict: "live", reason: "storage_mode" };
+         const [verdict] = computeServeVerdicts({
+            plan: plan as never,
+            storageMode: mode,
+            reachable: () => true,
+            gated: () => false,
+            keepsGate: () => true,
+            refusedAtBind: () => undefined,
+            boundEntityIds: new Set(["entity-rollup"]),
+            freshEntityIds: new Set(["entity-rollup"]),
+            boundStorageNames: new Set(["orders__rollup__region"]),
+            boundStorageIds: new Set([sourceID]),
+            freshStorageIds: new Set([sourceID]),
+            servedStorageNames: new Set(["orders__rollup__region"]),
+            freshStorageNames: new Set(["orders__rollup__region"]),
+            materialize: () => undefined,
+            persistedViewOf: () => undefined,
+            destinationConfigured: () => undefined,
+            connectionCanHoldTable: () => undefined,
+         });
+         const said = {
+            tier: verdict.tier,
+            verdict: verdict.verdict,
+            ...(verdict.reason ? { reason: verdict.reason } : {}),
+         };
+         if (JSON.stringify(said) !== JSON.stringify(expected)) {
+            wrong.push(`mode=${mode}: ${JSON.stringify(said)}`);
+         }
+      }
+      expect(wrong).toEqual([]);
    });
 });

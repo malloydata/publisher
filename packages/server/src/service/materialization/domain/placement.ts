@@ -60,16 +60,32 @@ export function servedCopyReadsTier(tier: Tier, others: readonly Tier[]) {
 }
 
 /**
+ * Whether a leg falls back to a database table bound beside a storage one
+ * when the mode does not let it read the storage table (`write-only`,
+ * `off`): the served copy does, re-rooting the source on its database
+ * binding; the rollup, persisted view and persisted query legs, whose
+ * storage binding decides their tier (`storageLookupOf`), answer live. The
+ * one place the serve verdict reads that rule from, so a leg that starts
+ * falling back changes its verdict with it.
+ */
+export function readsDatabaseWhenStorageUnread(leg: {
+   servedCopy: boolean;
+}): boolean {
+   return leg.servedCopy;
+}
+
+/**
  * The tier a query reads a planned source's table in, as the serve verdict
  * judges it: a storage binding storing the source decides it
  * (`storageLookupOf`), since a host may place a source with no `storage=` in
- * a storage destination; with none, a declared `storage=` does. The served
- * copy (every source but a rollup, persisted view or persisted query, which
- * read their storage binding through their own leg) reads the storage table
- * when it may ({@link servedCopyReadsTier}): fresh, and under `on`. Else a
- * database table bound beside it: under another mode, whatever its
- * freshness, which the verdict then judges; under `on`, a fresh one beside a
- * stale storage table.
+ * a storage destination; with none, a declared `storage=` does. Where the
+ * mode lets no query read the storage table, a database table bound beside
+ * it, whatever its freshness (which the verdict then judges), for a leg
+ * that falls back to it ({@link readsDatabaseWhenStorageUnread}). Under
+ * `on`, the served copy (every source but a rollup, persisted view or
+ * persisted query, which read their storage binding through their own leg)
+ * reads the storage table while it is fresh ({@link servedCopyReadsTier}),
+ * else a fresh database table beside it.
  */
 export function readTier(facts: {
    storageBound: boolean;
@@ -84,10 +100,12 @@ export function readTier(facts: {
    if (!facts.storageBound) {
       return facts.declaredStorage ? "storage" : "database";
    }
-   if (!facts.servedCopy) return "storage";
    if (!facts.storageServed) {
-      return facts.databaseBound ? "database" : "storage";
+      return facts.databaseBound && readsDatabaseWhenStorageUnread(facts)
+         ? "database"
+         : "storage";
    }
+   if (!facts.servedCopy) return "storage";
    return !facts.storageFresh && facts.databaseFresh ? "database" : "storage";
 }
 

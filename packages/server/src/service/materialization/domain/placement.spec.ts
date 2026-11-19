@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   readsDatabaseWhenStorageUnread,
    readTier,
    servedCopyReadsTier,
    storageServes,
@@ -68,19 +69,27 @@ describe("the tier a query reads a source bound in both tiers in", () => {
       });
    });
 
-   it("is the storage binding's for a leg that reads it alone, whatever the mode", () => {
-      for (const storageServed of [true, false]) {
-         expect(
-            readTier({
+   it("follows a database table where the mode reads no storage table, exactly for a leg that falls back to it", () => {
+      for (const servedCopy of [true, false]) {
+         for (const storageServed of [true, false]) {
+            const tier = readTier({
                storageBound: true,
                storageFresh: true,
                storageServed,
                databaseBound: true,
                databaseFresh: true,
-               servedCopy: false,
+               servedCopy,
                declaredStorage: false,
-            }),
-         ).toBe("storage");
+            });
+            expect(tier).toBe(
+               !storageServed && readsDatabaseWhenStorageUnread({ servedCopy })
+                  ? "database"
+                  : "storage",
+            );
+         }
       }
+      // Today only the served copy falls back.
+      expect(readsDatabaseWhenStorageUnread({ servedCopy: true })).toBe(true);
+      expect(readsDatabaseWhenStorageUnread({ servedCopy: false })).toBe(false);
    });
 });
