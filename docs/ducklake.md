@@ -137,8 +137,8 @@ with no re-attach and no package reload — the catalog is consulted per transac
 at attach time. Note that this is a property of a **Postgres-backed** catalog, which is the supported
 configuration; a DuckDB-file catalog attached read-only does not behave this way.
 
-**The catalog's credentials live in a DuckDB secret.** Publisher puts the catalog role's user and
-password in a temporary DuckDB secret (never persisted, redacted when listed) and attaches with a
+**The catalog's credentials live in a DuckDB secret.** Publisher puts the catalog role's user,
+password and any client-key password (`sslpassword`) in a temporary DuckDB secret (never persisted, redacted when listed) and attaches with a
 path that carries only the host, port, database and connection options. A `connectionString` in
 either libpq form (keyword/value or a `postgres://` URI) is read and split the same way.
 

@@ -3,7 +3,10 @@
 
 import { DuckDBInstance } from "@duckdb/node-api";
 import { BadRequestError } from "../errors";
-import { introspectionNameIn } from "./duckdb_introspection";
+import {
+   introspectionCallInParse,
+   introspectionNameIn,
+} from "./duckdb_introspection";
 
 /**
  * Raw SQL on a managed DuckLake connection (`Connection.managed`) runs only when
@@ -125,7 +128,9 @@ export async function assertSingleSelect(
 ): Promise<void> {
    const verdict = await classifySelect(sql);
    if ("selects" in verdict && verdict.selects === 1) {
-      const name = introspectionNameIn(sql);
+      const name =
+         introspectionNameIn(sql) ??
+         introspectionCallInParse((await serializeSQL(sql)).statements);
       if (name === undefined) return;
       throw new BadRequestError(
          `'${connectionName}' is a ${kind}: raw SQL on it may not name '${name}', ` +

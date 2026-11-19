@@ -2157,7 +2157,7 @@ export function pgConninfoPair(key: string, value: string): string {
 }
 
 /** The keywords a Postgres attach carries in its secret rather than its path. */
-const PG_SECRET_KEYS = new Set(["user", "password"]);
+const PG_SECRET_KEYS = new Set(["user", "password", "sslpassword"]);
 
 /**
  * The keyword/value pairs of a libpq connection URI, as libpq reads one
@@ -2283,7 +2283,8 @@ function pgConninfoKeyValues(
 
 /**
  * A Postgres connection string split for a DuckDB attach: `path` carries
- * every keyword but the user and password, which go to a DuckDB secret
+ * every keyword but the user, password and client-key password
+ * (`sslpassword`), which go to a DuckDB secret
  * instead ({@link createPgAttachSecret}), so an attach path carries no
  * credential. libpq reads the last of a repeated keyword, and so does this.
  * Exported for tests.
@@ -2291,16 +2292,18 @@ function pgConninfoKeyValues(
 export function splitPgAttachCredentials(
    subject: string,
    conninfo: string,
-): { path: string; user?: string; password?: string } {
+): { path: string; user?: string; password?: string; sslpassword?: string } {
    let user: string | undefined;
    let password: string | undefined;
+   let sslpassword: string | undefined;
    const kept: string[] = [];
    for (const { key, value } of pgConninfoKeyValues(subject, conninfo)) {
       if (key === "user") user = value;
       else if (key === "password") password = value;
+      else if (key === "sslpassword") sslpassword = value;
       else if (!PG_SECRET_KEYS.has(key)) kept.push(pgConninfoPair(key, value));
    }
-   return { path: kept.join(" "), user, password };
+   return { path: kept.join(" "), user, password, sslpassword };
 }
 
 /**
@@ -2317,11 +2320,11 @@ export function pgAttachSecretName(handle: string): string {
 
 /**
  * Prepare a DuckDB `TYPE postgres` attach of `conninfo` under `handle`: its
- * user and password go into a temporary DuckDB secret, never persisted and
+ * user, password and `sslpassword` go into a temporary DuckDB secret, never persisted and
  * redacted when listed, and the returned `path` is what the ATTACH names,
  * with no credential in it. `secret` is the secret's name, for the ATTACH's
  * `SECRET` option (or DuckLake's `METADATA_PARAMETERS`); undefined when the
- * string carries neither a user nor a password. Runs before an instance's
+ * string carries none of them. Runs before an instance's
  * lock, as every attach does.
  */
 export async function createPgAttachSecret(
@@ -2329,16 +2332,25 @@ export async function createPgAttachSecret(
    handle: string,
    conninfo: string,
 ): Promise<{ path: string; secret?: string }> {
-   const { path, user, password } = splitPgAttachCredentials(
+   const { path, user, password, sslpassword } = splitPgAttachCredentials(
       `Connection '${handle}'`,
       conninfo,
    );
-   if (user === undefined && password === undefined) return { path };
+   if (
+      user === undefined &&
+      password === undefined &&
+      sslpassword === undefined
+   ) {
+      return { path };
+   }
    const secret = pgAttachSecretName(handle);
    const options = [
       "TYPE postgres",
       ...(user !== undefined ? [`USER '${escapeSQL(user)}'`] : []),
       ...(password !== undefined ? [`PASSWORD '${escapeSQL(password)}'`] : []),
+      ...(sslpassword !== undefined
+         ? [`SSLPASSWORD '${escapeSQL(sslpassword)}'`]
+         : []),
    ];
    await connection.runSQL(
       `CREATE OR REPLACE TEMPORARY SECRET ${secret} (${options.join(", ")});`,

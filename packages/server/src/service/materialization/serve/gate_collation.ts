@@ -50,6 +50,7 @@ import {
    type ModelMaterializer,
    type QueryMaterializer,
 } from "@malloydata/malloy";
+import { runAsInternalStatement } from "../../duckdb_lockdown";
 import { malloyIdentifiers } from "../../query_text";
 import {
    readPreparedQuery,
@@ -389,11 +390,17 @@ async function probe(args: {
 
 type Rows = { rows: Record<string, unknown>[] };
 
+/**
+ * Publisher's own catalog read, admitted past a locked DuckDB instance's gate,
+ * which refuses settings reads to caller and author SQL (duckdb_lockdown.ts).
+ */
 async function rows(
    connection: Connection,
    sql: string,
 ): Promise<Rows["rows"]> {
-   const result = (await connection.runSQL(sql)) as unknown as Rows;
+   const result = (await runAsInternalStatement(sql, () =>
+      connection.runSQL(sql),
+   )) as unknown as Rows;
    return result.rows ?? [];
 }
 
