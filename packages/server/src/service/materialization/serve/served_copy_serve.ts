@@ -4051,8 +4051,10 @@ function liveTypesAsNative(field: unknown): boolean {
  * field in (`storedMalloyTypeFor`), or undefined when none reads it back as
  * live does: a field live types as `sql native` (a Postgres composite type,
  * stored by DuckDB as a STRUCT), or one holding such a leaf or a `bigint`
- * number live keeps every digit of. Any other column, or one whose field is
- * not known here, keeps the stored type's own declaration.
+ * number live keeps every digit of. A list or record live answers, stored as
+ * a scalar (its text, say), is fitted the same way, so it is left out rather
+ * than declared as that scalar. Any other column, or one whose field is not
+ * known here, keeps the stored type's own declaration.
  */
 function nestedDeclarationOf(
    storedType: string,
@@ -4061,7 +4063,12 @@ function nestedDeclarationOf(
 ): string | undefined {
    const declared = storedMalloyType(storedType);
    if (declared === undefined) return undefined;
-   const nested = declared.startsWith("{") || declared.endsWith("[]");
+   const liveType = (field as { type?: unknown } | undefined)?.type;
+   const nested =
+      declared.startsWith("{") ||
+      declared.endsWith("[]") ||
+      liveType === "array" ||
+      liveType === "record";
    if (!nested || field === undefined) return declared;
    return storedMalloyTypeFor(storedType, field, keepsBigIntegers);
 }
