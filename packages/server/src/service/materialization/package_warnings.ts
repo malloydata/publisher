@@ -201,6 +201,7 @@ export function loadVerdictOfPlan(
       | "incrementalDeclarations"
       | "materializePlans"
       | "modelGateLines"
+      | "persistedViews"
    >,
    judgement: { enforceCollisions: boolean; versionScoped: boolean },
 ): { refusals: string[]; warnings: ApiPackageWarning[] } {

@@ -156,7 +156,7 @@ export interface ModelGateLines {
 }
 
 /** A persisted view's generated build source, named as its author wrote it. */
-interface PersistedViewName {
+export interface PersistedViewName {
    sourceName: string;
    viewName: string;
 }

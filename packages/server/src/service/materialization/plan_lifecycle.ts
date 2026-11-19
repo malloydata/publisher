@@ -23,11 +23,11 @@ import {
 } from "../../materialization_metrics";
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import { errMessage } from "../../utils";
-import type { Model } from "../model";
 import type { BuildPlanPackage } from "./plan/build_plan";
 import type {
    DatabaseSourceEligibility,
    PackagePlan,
+   PersistedViewName,
    RefusalNotices,
    RefusedRollup,
    SourceEligibility,
@@ -43,6 +43,7 @@ import {
 } from "./plan/load_gate_text";
 import type { IncrementalPolicySource } from "./plan/incremental_policy";
 import type { MaterializePlan } from "./domain/table_plans";
+import type { IncrementalDeclaration } from "./domain/incremental";
 import type { BuildPlan } from "./domain/types";
 
 type ApiPackage = components["schemas"]["Package"];
@@ -60,7 +61,6 @@ interface PlanLifecycleOwner {
    packageName(): string;
    versionId(): string | undefined;
    metadata(): ApiPackage;
-   models(): Map<string, Model>;
    buildPlanPackage: BuildPlanPackage;
 }
 
@@ -82,6 +82,8 @@ interface PlanRecord {
    /** The database analogue, keyed by sourceEntityId. Same rule. */
    databaseSourceEligibility: DatabaseSourceEligibility | undefined;
    incrementalPolicySources: IncrementalPolicySource[];
+   incrementalDeclarations: Record<string, IncrementalDeclaration>;
+   persistedViews: Record<string, PersistedViewName>;
    /**
     * Every connection a persist source builds on, the skipped and refused
     * sources' included.
@@ -101,6 +103,8 @@ const EMPTY_RECORD: PlanRecord = {
    sourceEligibility: undefined,
    databaseSourceEligibility: undefined,
    incrementalPolicySources: [],
+   incrementalDeclarations: {},
+   persistedViews: {},
    buildConnectionNames: new Set(),
 };
 
@@ -219,6 +223,12 @@ export class PlanLifecycle {
    get incrementalPolicySources(): IncrementalPolicySource[] {
       return this.serving().incrementalPolicySources;
    }
+   get incrementalDeclarations(): Record<string, IncrementalDeclaration> {
+      return this.serving().incrementalDeclarations;
+   }
+   get persistedViews(): Record<string, PersistedViewName> {
+      return this.serving().persistedViews;
+   }
 
    // Test seams, and `Package`'s own setters for a spec that isolates a
    // filter: each replaces the record in force with one changed field.
@@ -320,22 +330,6 @@ export class PlanLifecycle {
    private recordOf(
       outcome: PackagePlan<PackageAnnotationFinding>,
    ): PlanRecord {
-      // A persisted view's plan entry is its generated build source; its
-      // findings name the author's view and the source it is declared on.
-      const persistedViews = new Map<
-         string,
-         { sourceName: string; viewName: string }
-      >();
-      for (const model of this.owner.models().values()) {
-         for (const v of model.persistedViewBuilds() ?? []) {
-            // A persisted query takes no incremental key.
-            if (v.queryName !== undefined) continue;
-            persistedViews.set(v.buildSourceID, {
-               sourceName: v.sourceName,
-               viewName: v.viewName,
-            });
-         }
-      }
       return {
          plan: outcome.plan,
          materializePlans: outcome.materializePlans,
@@ -346,12 +340,16 @@ export class PlanLifecycle {
          annotationFindings: outcome.annotationFindings,
          sourceEligibility: outcome.sourceEligibility,
          databaseSourceEligibility: outcome.databaseSourceEligibility,
+         // A persisted view's plan entry is its generated build source; its
+         // findings name the author's view and the source it is declared on.
          incrementalPolicySources: incrementalPolicySourcesOf(
             outcome.plan,
             outcome.incrementalDeclarations,
             outcome.materializePlans,
-            persistedViews,
+            outcome.persistedViews,
          ),
+         incrementalDeclarations: outcome.incrementalDeclarations,
+         persistedViews: outcome.persistedViews,
          buildConnectionNames: new Set(outcome.buildConnectionNames),
       };
    }

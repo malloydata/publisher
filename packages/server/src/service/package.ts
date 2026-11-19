@@ -4,7 +4,7 @@
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import { recordConnectionType } from "./connection_type";
-import { nearMissGateLines, withRetainedAliases } from "./materialization";
+import { withNameProblems, withRetainedAliases } from "./materialization";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -2452,53 +2452,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * and the load.
     */
    public formatInvalidAnnotations(): string {
-      return this.withNameProblems([
+      return withNameProblems(this.persistNameProblems, [
          this.mz.formatInvalidAnnotations(),
-         ...this.materializationNearMissLines(),
+         ...this.mz.nearMissLines(),
       ]);
-   }
-
-   /** A misspelled materialization route or directive, one line each. */
-   private materializationNearMissLines(): string[] {
-      return [...this.models].flatMap(([modelPath, model]) =>
-         nearMissGateLines(modelPath, model.annotationNearMisses?.() ?? []),
-      );
    }
 
    /**
     * The load gate's text: every invalid materialization annotation in the
     * package, one line each with its code, or "" when it is valid. The load
-    * fails with it; a run over the package's files and a re-derivation read
-    * the same text off the plan they derive (plan/load_gate_text.ts).
+    * fails with it; a run over the package's files, a re-derivation and a
+    * package compile read the same text off the plan they derive
+    * (plan/load_gate_text.ts).
     */
    public formatLoadGateText(): string {
-      return this.withNameProblems([
-         this.mz.formatLoadGateText(),
-         ...this.materializationNearMissLines(),
-      ]);
-   }
-
-   /**
-    * `text`'s lines with the raw-text `name=` problems first, less the plan's
-    * own line for a name the raw text already reports unsafe: one line per
-    * mistake.
-    */
-   private withNameProblems(text: string[]): string {
-      const unsafe = this.persistNameProblems.flatMap((p) =>
-         p.unsafeValue !== undefined
-            ? [`its name= "${p.unsafeValue}" is not a plain identifier path`]
-            : [],
-      );
-      return [
-         ...this.persistNameProblems.map((p) => p.line),
-         ...text
-            .filter(Boolean)
-            .join("\n")
-            .split("\n")
-            .filter((line) => !unsafe.some((u) => line.includes(u))),
-      ]
-         .filter(Boolean)
-         .join("\n");
+      return this.mz.loadGateText(this.persistNameProblems);
    }
 
    /**

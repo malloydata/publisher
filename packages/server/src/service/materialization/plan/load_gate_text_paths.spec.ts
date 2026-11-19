@@ -4,8 +4,8 @@
 /**
  * The load gate's text on each path that reads it: the load itself (through
  * `Package`), and the plan a run guard, a re-derivation and a package
- * compile derive from the files (`loadGateText`). Pinned on the two inputs
- * where they are known to part: a persisted view's invalid incremental
+ * compile derive from the files (`loadGateText`), held equal on the two
+ * inputs where they once parted: a persisted view's invalid incremental
  * declaration, and a `name=` only the raw text reads.
  */
 
@@ -103,33 +103,24 @@ describe("the load gate's text on the load and on a derived plan", () => {
    usePackageLoadPool();
    afterAll(() => settings.restore());
 
-   it("CURRENT: a persisted view's invalid incremental line names the view on the load, the generated source on a derived plan", async () => {
+   it("names a persisted view's invalid incremental line by the author's view, under persist-view-invalid, on both", async () => {
       const load = await loadText(VIEW_INCREMENTAL);
-      const plan = await planText(VIEW_INCREMENTAL);
       expect(load).toContain("[persist-view-invalid]");
-      expect(load).toContain("by_category");
+      expect(load).toContain('view "by_category" of source "orders"');
       expect(load).not.toContain("orders__by_category__view");
-      expect(plan).toContain("[persist-invalid]");
-      expect(plan).toContain("orders__by_category__view");
-      expect(plan).not.toBe(load);
+      expect(await planText(VIEW_INCREMENTAL)).toBe(load);
    }, 60000);
 
-   it("CURRENT: an unsafe name= reads as the raw text's line on the load, and the plan's own line on a derived plan", async () => {
+   it("reads an unsafe name= as the raw text's one line on both", async () => {
       const load = await loadText(UNSAFE_NAME);
-      const plan = await planText(UNSAFE_NAME);
       expect(load.split("\n")).toHaveLength(1);
       expect(load).toContain('Offending annotation: #@ persist name="t; drop"');
-      expect(plan.split("\n")).toHaveLength(1);
-      expect(plan).toContain(
-         'its name= "t; drop" is not a plain identifier path',
-      );
-      expect(plan).not.toBe(load);
+      expect(await planText(UNSAFE_NAME)).toBe(load);
    }, 60000);
 
-   it("CURRENT: an unquoted name= is on the load's text alone", async () => {
+   it("fails an unquoted name= on both", async () => {
       const load = await loadText(UNQUOTED_NAME);
-      const plan = await planText(UNQUOTED_NAME);
       expect(load).toContain("[persist-invalid]");
-      expect(plan).toBe("");
+      expect(await planText(UNQUOTED_NAME)).toBe(load);
    }, 60000);
 });

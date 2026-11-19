@@ -19,7 +19,11 @@ import type {
 } from "@malloydata/malloy";
 import type { KeyCheckCompiler } from "./key_check";
 import type { Omission } from "./omitted_sources";
-import type { ModelGateLines, SourceBuild } from "./package_plan";
+import type {
+   ModelGateLines,
+   PersistedViewName,
+   SourceBuild,
+} from "./package_plan";
 import type { MaterializePlan, TablePlan } from "./table_plans";
 
 export type { SourceBuild } from "./package_plan";
@@ -84,6 +88,8 @@ export interface CompiledBuildPlan<Finding = unknown> {
     * a run over the files reads them as the load does.
     */
    modelGateLines?: ModelGateLines;
+   /** Each persisted view's build source, named as its author wrote it. */
+   persistedViews?: Record<string, PersistedViewName>;
    /**
     * Each `#(materialize)` uniqueness check's compiler over a run's compiler
     * manifest, by `keyCheckCompilerKey`; set only on a plan compiled on the thread

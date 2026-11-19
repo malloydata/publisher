@@ -66,7 +66,10 @@ import {
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
 import { declares, destinationOf, readNotesIfAny } from "./declaration";
-import { persistDeclarationProblems } from "./persist_annotation_validation";
+import {
+   persistDeclarationProblems,
+   persistNameProblems,
+} from "./persist_annotation_validation";
 import { Annotations, isSourceDef } from "@malloydata/malloy";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
@@ -87,6 +90,7 @@ import { isAuthorizeAttributedToEntryPoint } from "./materialization_eligibility
 
 import {
    companionOmissions,
+   GeneratedFiles,
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
 import type { RollupPlan } from "../domain/rollup_measures";
@@ -191,6 +195,7 @@ import {
    type EligibilityRefusals,
    type ModelGateLines,
    type PackagePlan,
+   type PersistedViewName,
    type RefusalNotices,
    type RefusedRollup,
    type TablePlanData,
@@ -608,6 +613,8 @@ export interface BuildPlanParts {
     * over the files reads them as the load does.
     */
    modelGateLines: ModelGateLines;
+   /** See {@link CompiledBuildPlan.persistedViews}. */
+   persistedViews: Record<string, PersistedViewName>;
    /** See {@link CompiledBuildPlan.omittedSources}. */
    omittedSources: Omission[];
 }
@@ -619,6 +626,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       droppedPersistSources: [],
       annotationFindings: [],
       modelGateLines: noModelGateLines(),
+      persistedViews: {},
       omittedSources: [],
    };
 }
@@ -644,6 +652,7 @@ export function mergeBuildPlanParts(
    into.modelGateLines.preaggregate.push(...from.modelGateLines.preaggregate);
    into.modelGateLines.nearMiss.push(...from.modelGateLines.nearMiss);
    into.modelGateLines.nameProblems.push(...from.modelGateLines.nameProblems);
+   Object.assign(into.persistedViews, from.persistedViews);
 }
 
 /**
@@ -1050,6 +1059,12 @@ async function collectGeneratedPersistedViews(
       omitted,
    );
    if (!generated) return;
+   for (const plan of generated.plans) {
+      parts.persistedViews[plan.buildSourceID] = {
+         sourceName: plan.sourceName,
+         viewName: plan.viewName,
+      };
+   }
    const planByName = new Map(
       generated.plans.map((p) => [p.buildSourceName, p]),
    );
@@ -1380,6 +1395,18 @@ async function collectGeneratedTables(
             annotationNearMisses(authoredNotes(authorDef)),
          ),
       );
+      // An unquoted or unsafe `#@ persist name=`, read from the raw text, the
+      // ground truth for quoting, as the load reads it. A text that cannot be
+      // read adds nothing: the load reads it itself, and the plan's own
+      // finding still refuses an unsafe name (an unquoted one plans nothing).
+      const text = await GeneratedFiles.over(getRuntime)
+         .readIfAny(pathToFileURL(path.join(packagePath, modelPath)))
+         .catch(() => undefined);
+      if (text !== undefined) {
+         parts.modelGateLines.nameProblems.push(
+            ...persistNameProblems(text, modelPath),
+         );
+      }
    }
    // `#@ persist` on a named query: its key findings always, and, with
    // PUBLISHER_MATERIALIZE off, the warning that it is not built. A query
@@ -2086,7 +2113,7 @@ export function derivePackagePlan(
       annotationFindings,
       droppedPersistSources: compiled.droppedPersistSources,
       modelGateLines: compiled.modelGateLines,
-      persistedViews: {},
+      persistedViews: compiled.persistedViews ?? {},
       refusalNotices,
       refusedRollups: refusedRollupsOf(plan, compiled.tables),
       sourceEligibility: collectSourceEligibility(compiled, verdicts),

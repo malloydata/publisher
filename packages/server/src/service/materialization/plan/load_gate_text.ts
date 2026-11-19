@@ -7,10 +7,11 @@
  * files on disk, and a connection edit's re-derivation all read it here, so
  * the three never disagree on what is invalid.
  *
- * It carries every `malformed` finding (the invalid annotations, near misses
- * excepted, which are the loaded models'), two sources an author's `name=`
- * puts on one table (unless `PERSIST_COLLISION_ENFORCE=false`), and the
- * invalid incremental declarations, each line with its code.
+ * It carries the `#@ persist name=` values the raw model text refuses, every
+ * `malformed` finding, two sources an author's `name=` puts on one table
+ * (unless `PERSIST_COLLISION_ENFORCE=false`), the invalid incremental
+ * declarations, and each model's invalid `#@ preaggregate` declarations and
+ * misspelled routes, each line with its code.
  */
 
 import {
@@ -43,6 +44,11 @@ import {
    persistTableTarget,
 } from "./eligibility_collect";
 import type { IncrementalDeclaration } from "../domain/incremental";
+import type {
+   ModelGateLines,
+   PersistedViewName,
+   PersistNameProblem,
+} from "../domain/package_plan";
 import type { RefusedReason } from "../domain/types";
 import {
    incrementalPolicyRejections,
@@ -51,18 +57,19 @@ import {
 
 type BuildPlan = components["schemas"]["BuildPlan"];
 
-/** What the gate text reads of a derived plan. */
+/**
+ * What the gate text reads of a derived plan (a `PackagePlan`, or the load's
+ * own plan with the models' lines): the same fields on every path.
+ */
 interface GatedPlan {
    plan: BuildPlan | null;
    annotationFindings: readonly PackageAnnotationFinding[];
    incrementalDeclarations: Readonly<Record<string, IncrementalDeclaration>>;
    materializePlans?: Readonly<Record<string, MaterializePlan>>;
-   /**
-    * The models' own invalid `#@ preaggregate` and near-miss lines
-    * ({@link preaggregateGateLines}, {@link nearMissGateLines}), as the plan
-    * collected them from the files.
-    */
-   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
+   /** Each persisted view's build source, named as its author wrote it. */
+   persistedViews?: Readonly<Record<string, PersistedViewName>>;
+   /** The models' own lines, as the plan collected them from the files. */
+   modelGateLines?: Partial<ModelGateLines>;
 }
 
 /** How this deployment judges the plan. */
@@ -71,11 +78,6 @@ interface GateJudgement {
    enforceCollisions: boolean;
    /** A published version of a `scope: "version"` package. */
    versionScoped: boolean;
-   /** A persisted view's build source, by sourceID, named as its author wrote it. */
-   persistedViews?: ReadonlyMap<
-      string,
-      { sourceName: string; viewName: string }
-   >;
 }
 
 /**
@@ -243,16 +245,13 @@ export function incrementalPolicySourcesOf(
    plan: BuildPlan | null,
    declarations: Readonly<Record<string, IncrementalDeclaration>>,
    materializePlans: Readonly<Record<string, MaterializePlan>> | undefined,
-   persistedViews: ReadonlyMap<
-      string,
-      { sourceName: string; viewName: string }
-   > = new Map(),
+   persistedViews: Readonly<Record<string, PersistedViewName>> = {},
 ): IncrementalPolicySource[] {
    return Object.entries(plan?.sources ?? {})
       .filter(([sourceID]) => declarations[sourceID])
       .map(([sourceID, source]) => ({
-         ...(persistedViews.get(sourceID) ?? { sourceName: source.name }),
-         invalidCode: persistedViews.has(sourceID)
+         ...(persistedViews[sourceID] ?? { sourceName: source.name }),
+         invalidCode: persistedViews[sourceID]
             ? PERSIST_VIEW_INVALID_CODE
             : materializePlans?.[sourceID]
               ? MATERIALIZE_INVALID_CODE
@@ -269,7 +268,7 @@ export function incrementalPolicySourcesOf(
 }
 
 /** The invalid incremental declarations, one line each with its route's code. */
-export function incrementalGateLines(
+function incrementalGateLines(
    sources: readonly IncrementalPolicySource[],
 ): string[] {
    return sources.flatMap((source) =>
@@ -289,17 +288,17 @@ export function collisionGateLines(
 }
 
 /**
- * The load-failure text of a derived plan, or "" when it is valid: its
- * invalid findings, its collisions (when enforced) and its invalid
- * incremental declarations, then the models' invalid `#@ preaggregate`
- * declarations and near misses as the plan collected them: the same text, in
- * the same order, as the load's (Package.formatLoadGateText).
+ * The load-failure text of a derived plan, or "" when it is valid: the raw
+ * text's `name=` problems, its invalid findings, its collisions (when
+ * enforced) and its invalid incremental declarations, then the models'
+ * invalid `#@ preaggregate` declarations and near misses. The one text the
+ * load, a run's guard, a re-derivation and a package compile read.
  */
 export function loadGateText(
    gated: GatedPlan,
    judgement: GateJudgement,
 ): string {
-   return [
+   return withNameProblems(gated.modelGateLines?.nameProblems ?? [], [
       ...invalidFindingLines(
          gated.annotationFindings.map((f) =>
             relaxedCollision(f, judgement.enforceCollisions),
@@ -319,12 +318,37 @@ export function loadGateText(
             gated.plan,
             gated.incrementalDeclarations,
             gated.materializePlans,
-            judgement.persistedViews,
+            gated.persistedViews,
          ),
       ),
       ...(gated.modelGateLines?.preaggregate ?? []),
       ...(gated.modelGateLines?.nearMiss ?? []),
-   ].join("\n");
+   ]);
+}
+
+/**
+ * `lines` with the raw text's `name=` problems first, less the plan's own
+ * line for a name the raw text already reports unsafe: one line per mistake.
+ */
+export function withNameProblems(
+   problems: readonly PersistNameProblem[],
+   lines: readonly string[],
+): string {
+   const unsafe = problems.flatMap((p) =>
+      p.unsafeValue !== undefined
+         ? [`its name= "${p.unsafeValue}" is not a plain identifier path`]
+         : [],
+   );
+   return [
+      ...problems.map((p) => p.line),
+      ...lines
+         .filter(Boolean)
+         .join("\n")
+         .split("\n")
+         .filter((line) => !unsafe.some((u) => line.includes(u))),
+   ]
+      .filter(Boolean)
+      .join("\n");
 }
 
 /**

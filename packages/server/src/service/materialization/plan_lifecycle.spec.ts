@@ -29,7 +29,6 @@ function lifecycle(): { plan: PlanLifecycle; refreshed: () => number } {
          packageName: () => "pkg",
          versionId: () => undefined,
          metadata: () => ({}) as never,
-         models: () => new Map(),
          buildPlanPackage: {} as never,
       },
       () => refreshed++,
