@@ -301,19 +301,17 @@ export function recordEligibilityRefusals(counts: EligibilityRefusals): void {
 }
 
 /**
- * The load gate's text for a plan a run compiled (plan/load_gate_text.ts),
- * read off the plan the run derives so the run and the load agree: empty
- * when the files carry no invalid materialization annotation. The
- * derivation's eligibility refusals are recorded, as every derivation's are.
+ * The load gate's text over a package plan a run derived
+ * (plan/load_gate_text.ts), so the run refuses what the load refuses: empty
+ * when the files carry no invalid materialization annotation. The plan's
+ * eligibility refusals are recorded, as every adopted plan's are.
  */
 export function runLoadGateText(
-   compiled: FinishedBuildPlan,
-   pkg: BuildPlanPackage,
+   packagePlan: PackagePlan<PackageAnnotationFinding>,
    judgement: { versionScoped: boolean; enforceCollisions: boolean },
 ): string {
-   const derived = derivePackagePlan(compiled, pkg.getMaterializationConfig());
-   recordEligibilityRefusals(derived.eligibilityRefused);
-   return loadGateText(derived, judgement);
+   recordEligibilityRefusals(packagePlan.eligibilityRefused);
+   return loadGateText(packagePlan, judgement);
 }
 
 /**

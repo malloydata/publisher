@@ -1156,7 +1156,7 @@ export class MaterializationService {
 
       // A published version's tree never changes, so compiling it needs
       // no lock; an unversioned package's can be replaced under it.
-      const compiled =
+      const { runPlan: compiled, packagePlan } =
          versionId !== undefined
             ? await compileRunPlan(pkg, signal)
             : await environment.withPackageLock(packageName, () =>
@@ -1176,7 +1176,7 @@ export class MaterializationService {
          versionId === undefined &&
          environment.getStaleCompileErrors().has(packageName);
       // The load gate's own text, so the run and the load agree.
-      const invalid = runPlanGateText(compiled, pkg, {
+      const invalid = runPlanGateText(packagePlan, {
          enforceCollisions: getPersistCollisionEnforce(),
          versionScoped: owned !== undefined,
       });
