@@ -257,6 +257,8 @@ export interface QueryPathInput {
       stale: boolean;
       /** A storage table the storage mode does not read (`storage_mode`). */
       storageNotServed?: true;
+      /** A database table read in place of a storage one the mode does not read. */
+      storageTwinNotServed?: true;
       dataAsOf?: string;
    };
    /** The `sourceID` chain of every source in the model, for `notConsidered`. */
@@ -505,6 +507,16 @@ function viewTableDecision(
          unbuilt: !input.view.built,
          ...(input.view.dataAsOf ? { dataAsOf: input.view.dataAsOf } : {}),
       };
+      if (input.view.storageTwinNotServed) {
+         // Its storage twin, which the storage mode does not read: named as
+         // a rollup's is, before the database table that answered.
+         skip(
+            { ...t, key: `${t.key}/storage`, tier: "storage", stale: false },
+            "NOT_SERVED",
+            undefined,
+            "storage_mode",
+         );
+      }
       if (viewDecision?.outcome === "used") {
          if (input.runFailed) {
             skip(t, "READ_FAILED");

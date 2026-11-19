@@ -7,8 +7,9 @@
  * `PERSIST_STORAGE_MODE=on` the storage table answers, as it did. Under
  * `write-only` and `off` no storage table is read, so each leg answers as
  * `on`'s rules would with the storage tier removed: from its fresh database
- * table. The path report names that table as used, and a storage twin it
- * names is skipped `NOT_SERVED` with the serve verdict's `storage_mode`.
+ * table. The path report names that table as used, and the rollup, view and
+ * query legs name the storage twin skipped `NOT_SERVED` with the serve
+ * verdict's `storage_mode`.
  *
  * Before the fix the rollup, persisted-view and persisted-query legs found
  * the storage binding, declined it, and answered live under `write-only` and
@@ -176,10 +177,11 @@ for (const mode of ["on", "write-only", "off"] as const) {
             if (mode === "on") {
                expect(after.skipped).toEqual([]);
             } else {
-               // At most the storage twin, as the storage mode leaves it.
-               expect(
-                  after.skipped.filter((s) => s !== "NOT_SERVED:storage_mode"),
-               ).toEqual([]);
+               // The storage twin, as the storage mode leaves it. The served
+               // copy's path report names only the table it read.
+               expect(after.skipped).toEqual(
+                  l.kind === "materialized" ? [] : ["NOT_SERVED:storage_mode"],
+               );
             }
          });
       }

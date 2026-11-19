@@ -164,6 +164,12 @@ export interface ViewTable {
     * bound beside it: the serve verdict's `storage_mode`.
     */
    storageNotServed?: true;
+   /**
+    * A database table read because the storage mode reads no destination,
+    * while a storage table is bound beside it: the path report names that
+    * one `NOT_SERVED` (`storage_mode`).
+    */
+   storageTwinNotServed?: true;
    dataAsOf?: string;
 }
 
@@ -413,6 +419,11 @@ export class PersistedViewServe {
       // off): a database table bound beside the storage one answers, as
       // `on`'s rules would with the storage tier removed.
       const lookup = !storageServes && bound ? undefined : stored;
+      // The storage table read in its place, named by the path report.
+      const databaseId =
+         !lookup && stored && stored.state !== "not_built"
+            ? { ...withId, storageTwinNotServed: true as const }
+            : withId;
       if (lookup) {
          if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
@@ -462,7 +473,7 @@ export class PersistedViewServe {
          };
       }
       if (!bound || tableId === undefined) {
-         return { ...withId, tier: "database", built: false, stale: false };
+         return { ...databaseId, tier: "database", built: false, stale: false };
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
       const fresh = freshManifest?.entries[tableId]?.tableName;
@@ -483,7 +494,7 @@ export class PersistedViewServe {
             : undefined;
       if (held) {
          return {
-            ...withId,
+            ...databaseId,
             ...dataAsOf,
             tier: "database",
             built: true,
@@ -498,7 +509,7 @@ export class PersistedViewServe {
       }
       return fresh
          ? {
-              ...withId,
+              ...databaseId,
               ...dataAsOf,
               tier: "database",
               built: true,
@@ -507,7 +518,7 @@ export class PersistedViewServe {
               ...leftOut,
            }
          : {
-              ...withId,
+              ...databaseId,
               ...dataAsOf,
               tier: "database",
               built: true,

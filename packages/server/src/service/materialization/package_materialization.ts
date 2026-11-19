@@ -1238,9 +1238,11 @@ export class PackageMaterialization {
    }
 
    storageWarnings(): ApiPackageWarning[] {
-      return warnings.storageWarnings(
-         this.plan.buildPlan,
-         getPersistStorageMode(),
+      const mode = getPersistStorageMode();
+      if (mode === "on") return [];
+      const fresh = this.getFreshBuildManifest() ?? {};
+      return warnings.storageWarnings(this.plan.buildPlan, mode, (id) =>
+         Object.hasOwn(fresh, id),
       );
    }
 
