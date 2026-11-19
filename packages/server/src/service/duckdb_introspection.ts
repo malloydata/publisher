@@ -97,11 +97,20 @@ export function isIntrospectionCall(name: string): boolean {
  */
 export function introspectionNameIn(sql: string): string | undefined {
    const lower = sql.toLowerCase();
-   for (const word of lower.match(/[a-z0-9_$\u0080-\uffff]+/g) ?? []) {
+   let call: string | undefined;
+   // One pass over the words, linear in the text: no backtracking pattern
+   // runs on caller SQL.
+   for (const match of lower.matchAll(/[a-z0-9_$\u0080-\uffff]+/g)) {
+      const word = match[0];
       if (isIntrospectionName(word)) return word;
+      if (call === undefined && word.startsWith(DUCKLAKE_FUNCTION_PREFIX)) {
+         let i = (match.index ?? 0) + word.length;
+         if (lower[i] === '"') i++;
+         while (i < lower.length && /\s/.test(lower[i])) i++;
+         if (lower[i] === "(") call = word;
+      }
    }
-   const call = /(ducklake_[a-z0-9_$]*)"?\s*\(/.exec(lower);
-   return call ? call[1] : undefined;
+   return call;
 }
 
 /**
