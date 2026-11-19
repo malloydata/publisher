@@ -43,6 +43,7 @@ import type {
    ResourceRepository,
 } from "../../../src/storage/DatabaseInterface";
 import type { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
+import { float4AsLive } from "../../../src/service/materialization/domain/live_float4";
 import { freshLoadPool } from "../../../src/test_helpers/conformance/package_runner";
 import { serviceOverEnvironment } from "../../../src/test_helpers/materialization_service_harness";
 import { installSettings } from "../../../src/test_helpers/settings_env";
@@ -75,7 +76,12 @@ const SEED = [
       (6, 'c', NULL, NULL),
       (7, 'c', 16777217, 16777217),
       (8, 'b', 1e-7, 1e-7),
-      (9, 'a', 3.4e38, 1e300)`,
+      (9, 'a', 3.4e38, 1e300),
+      (10, 'd', 1e7, 1e7),
+      (11, 'd', 0.1, 0.1)`,
+   // A join's side: a sum through it Malloy writes symmetrically, as numeric.
+   `CREATE TABLE fb (id integer PRIMARY KEY, g text, r real)`,
+   `INSERT INTO fb VALUES (1, 'x', 1e7), (2, 'x', 0.1)`,
 ];
 
 /** The model, its stored tables in `storage` (`""` for the database tier). */
@@ -92,6 +98,13 @@ source: fm is pg.table('public.f') extend {
   dimension: r_neg is -r
   measure: r_total is r.sum()
 }
+
+#(materialize)${lake}
+source: fbig is pg.table('public.fb') extend { primary_key: id }
+
+source: fmb is fm extend { join_one: o is fbig on o.id = id }
+
+source: fmk is fm extend { join_many: k is fbig on k.g = g }
 `,
       "persist.malloy": `##! experimental { persistence }
 import "raw.malloy"
@@ -128,6 +141,14 @@ source: fr is f_raw extend {
 }
 
 interface Query {
+   /**
+    * Columns live answers as a float8 or numeric that the stored answer
+    * computes in DuckDB a little differently (a symmetric sum, which live
+    * takes through NUMERIC; arithmetic over a float4 sum): never written as
+    * a float4. Compared within 1e-6, and checked not to have been shortened
+    * to a float4's text, where live's value is not one.
+    */
+   widenedOnly?: string[];
    name: string;
    model: string;
    malloy: string;
@@ -183,6 +204,36 @@ const QUERIES: Query[] = [
       model: "mat.malloy",
       malloy:
          "run: fm -> { group_by: g; nest: rows is { select: id, r; order_by: id }; order_by: g }",
+      servedBy: "materialized",
+   },
+   {
+      name: "#(materialize): a sum through a join_one, symmetric and numeric live",
+      model: "mat.malloy",
+      malloy: "run: fmb -> { aggregate: x is o.r.sum(), hi is o.r.max() }",
+      widenedOnly: ["x"],
+      servedBy: "materialized",
+   },
+   {
+      name: "#(materialize): a base sum in a query that also reads a join_many",
+      model: "mat.malloy",
+      malloy:
+         "run: fmk -> { where: g != 'c'; group_by: g; aggregate: s is r.sum(), hi is r.max(), n is k.count(); order_by: g }",
+      widenedOnly: ["s"],
+      servedBy: "materialized",
+   },
+   {
+      name: "#(materialize): a division of reals, a float8 live",
+      model: "mat.malloy",
+      malloy:
+         "run: fm -> { group_by: g; aggregate: ratio is r.sum() / r.max(), share is r.sum() / all(r.sum()); order_by: g }",
+      widenedOnly: ["ratio", "share"],
+      servedBy: "materialized",
+   },
+   {
+      name: "#(materialize): a pick of reals and a coalesce with a literal",
+      model: "mat.malloy",
+      malloy:
+         "run: fm -> { select: id, p is pick r when r > 1 else r_neg, q is pick r when r > 1 else 0.5, c is r ?? 0.5; order_by: id }",
       servedBy: "materialized",
    },
    {
@@ -413,7 +464,45 @@ describe.skipIf(!POSTGRES_URL)(
                   if ("error" in s)
                      throw new Error(`served failed: ${s.error}`);
                   expect(l.answer.servedBy ?? "live").toBe("live");
-                  expect(s.answer.json).toBe(l.answer.json);
+                  const widened = q.widenedOnly ?? [];
+                  const without = (json: string) =>
+                     JSON.stringify(
+                        (JSON.parse(json) as Record<string, unknown>[]).map(
+                           (row) =>
+                              Object.fromEntries(
+                                 Object.entries(row).filter(
+                                    ([k]) => !widened.includes(k),
+                                 ),
+                              ),
+                        ),
+                     );
+                  expect(without(s.answer.json)).toBe(without(l.answer.json));
+                  const lRows = JSON.parse(l.answer.json) as Record<
+                     string,
+                     number | null
+                  >[];
+                  const sRows = JSON.parse(s.answer.json) as Record<
+                     string,
+                     number | null
+                  >[];
+                  for (const [i, lRow] of lRows.entries()) {
+                     for (const k of widened) {
+                        const lv = lRow[k];
+                        const sv = sRows[i]?.[k];
+                        if (lv === null || sv === null || sv === undefined) {
+                           expect(sv).toBe(lv);
+                           continue;
+                        }
+                        expect(Math.abs(sv - lv)).toBeLessThanOrEqual(
+                           1e-6 * Math.max(1, Math.abs(lv)),
+                        );
+                        if (float4AsLive(lv) !== lv) {
+                           // Live's value is no float4's text: neither may
+                           // the served one be.
+                           expect(float4AsLive(sv)).not.toBe(sv);
+                        }
+                     }
+                  }
                   expect(s.answer.servedBy).toBe(q.servedBy);
                   expect(s.answer.servedFrom).toBe(tier.servedFrom);
                });

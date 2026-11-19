@@ -1817,10 +1817,12 @@ async function roundStoredAnswerAsLive(
    let shape: Float4Shape;
    try {
       const view = await readPreparedQuery(served.runnable);
+      const live = await readPreparedQuery(liveRunnable);
       shape = float4OutputShape(
          {
             query: view.query,
             root: resolveStructRef(view.structRef, view.modelDef),
+            liveQuery: live.query,
          },
          float4,
       );

@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import {
    float4AsLive,
+   float4AsLiveExact,
    float4ColumnsByHandle,
    float4OutputShape,
    type Float4Shape,
@@ -55,6 +56,38 @@ describe("float4AsLive", () => {
       expect(float4AsLive(1e39)).toBe(1e39);
       expect(Object.is(float4AsLive(-0), -0)).toBe(true);
       expect(float4AsLive(0)).toBe(0);
+   });
+});
+
+describe("float4AsLive's fast path", () => {
+   it("gives exactly the exact path's answer, on every kind of float4", () => {
+      const view = new DataView(new ArrayBuffer(4));
+      let seed = 1923;
+      const next = () => {
+         seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+         return seed;
+      };
+      let checked = 0;
+      for (let i = 0; i < 200_000; i++) {
+         let bits = (next() ^ (next() << 16)) >>> 0;
+         if (i % 5 === 0) bits &= 0x807fffff; // subnormal
+         if (i % 7 === 0) bits = (bits & 0xff800000) | i % 3; // near 2^k
+         if (i % 11 === 0) {
+            // a short decimal, the common case
+            view.setFloat32(0, (next() % 100_000) / 100);
+            bits = view.getUint32(0);
+         }
+         view.setUint32(0, bits >>> 0);
+         const f = view.getFloat32(0);
+         if (!Number.isFinite(f)) continue;
+         checked++;
+         const fast = float4AsLive(f);
+         const exact = float4AsLiveExact(f);
+         if (!Object.is(fast, exact)) {
+            throw new Error(`${f}: fast ${fast}, exact ${exact}`);
+         }
+      }
+      expect(checked).toBeGreaterThan(190_000);
    });
 });
 
@@ -314,6 +347,118 @@ describe("float4OutputShape", () => {
          FLOAT4,
       );
       expect(keys(shape)).toEqual(["hi"]);
+   });
+
+   it("never marks a division: Malloy's Postgres dialect writes a*1.0/b, a float8", () => {
+      const div = (left: unknown, right: unknown) => ({
+         node: "/",
+         kids: { left, right },
+      });
+      const shape = shapeOf([
+         {
+            type: "reduce",
+            queryFields: [
+               def("ratio", div(field("r"), field("r"))),
+               def(
+                  "share",
+                  div(agg("sum", field("r")), {
+                     node: "all",
+                     e: agg("sum", field("r")),
+                  }),
+               ),
+            ],
+         },
+      ]);
+      expect(keys(shape)).toEqual([]);
+   });
+
+   it("marks a pick of reals and a coalesce with a number literal", () => {
+      const lit = (literal: string) => ({ node: "numberLiteral", literal });
+      const pick = (thens: unknown[], caseElse?: unknown) => ({
+         node: "case",
+         kids: {
+            caseWhen: thens.map(() => ({ node: "true" })),
+            caseThen: thens,
+            ...(caseElse ? { caseElse } : {}),
+         },
+      });
+      const shape = shapeOf([
+         {
+            type: "project",
+            queryFields: [
+               def("p", pick([field("r")], field("r"))),
+               def("p_lit", pick([field("r")], lit("0.5"))),
+               def("p_double", pick([field("r")], field("d"))),
+               def("p_none", pick([lit("1")], lit("2"))),
+               def("c_lit", {
+                  node: "coalesce",
+                  kids: { left: field("r"), right: lit("0.5") },
+               }),
+            ],
+         },
+      ]);
+      expect(keys(shape)).toEqual(["c_lit", "p", "p_lit"]);
+   });
+
+   describe("a query that reads a join marks no sum (Malloy may sum it symmetrically, as numeric)", () => {
+      const sumsAnd = (extra: Record<string, unknown>) => [
+         {
+            type: "reduce",
+            queryFields: [
+               def("tot", agg("sum", field("r"))),
+               def("hi", agg("max", field("r"))),
+            ],
+            ...extra,
+         },
+      ];
+      it("with no join, marks the sum", () => {
+         expect(keys(shapeOf(sumsAnd({})))).toEqual(["hi", "tot"]);
+      });
+      for (const [label, extra] of [
+         ["an active join", { activeJoins: [{ path: ["o"] }] }],
+         ["a field read through a join", { orderBy: [{ e: field("o", "x") }] }],
+         [
+            "an aggregate at a join",
+            {
+               filterList: [agg("count", { node: "" })],
+               probe: {
+                  node: "aggregate",
+                  function: "count",
+                  structPath: ["k"],
+               },
+            },
+         ],
+      ] as const) {
+         it(`with ${label}, marks min and max but no sum`, () => {
+            expect(keys(shapeOf(sumsAnd(extra)))).toEqual(["hi"]);
+         });
+      }
+      it("when only the live compile reads a join", () => {
+         const shape = float4OutputShape(
+            {
+               query: { pipeline: sumsAnd({}) },
+               root,
+               liveQuery: { pipeline: [{ type: "reduce", activeJoins: [{}] }] },
+            },
+            FLOAT4,
+         );
+         expect(keys(shape)).toEqual(["hi"]);
+      });
+      it("and so no later stage over the sum", () => {
+         const shape = shapeOf([
+            {
+               type: "reduce",
+               activeJoins: [{ path: ["o"] }],
+               queryFields: [ref("g"), def("tot", agg("sum", field("r")))],
+               outputStruct: { type: "query_result", fields: [] },
+            },
+            {
+               type: "reduce",
+               queryFields: [def("top", agg("max", field("tot")))],
+            },
+         ]);
+         expect(keys(shape)).toEqual([]);
+      });
    });
 
    it("marks nothing for a segment it does not read", () => {

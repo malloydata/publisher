@@ -15,15 +15,20 @@
  *
  * Which values: the output columns whose expression Postgres types `real`,
  * read from the served query's IR. A stored column of a `storage=` table its
- * build captured as FLOAT is one, and so is `min`, `max` or `sum` of one (a
- * `sum` of `real` is `real` in Postgres; the stored answer sums the same
- * float4 values in double precision and rounds the sum once, where Postgres
- * rounds after every row, so a long sum may differ in its last digits, as two
- * live runs that add in different orders can). A unary minus, parentheses, a
- * filtered or ungrouped aggregate keep their operand's type, and `+ - * /`
- * and `coalesce` are `real` when both operands are. Anything else (an `avg`,
- * which Postgres answers as a float8 mean of the widened values, arithmetic
- * with an integer or a decimal, any function) is left as it ran, which is
+ * build captured as FLOAT is one, and so is `min` or `max` of one, and `sum`
+ * of one in a query that reads no join (a `sum` of `real` is `real` in
+ * Postgres; the stored answer sums the same float4 values in double
+ * precision and rounds the sum once, where Postgres rounds after every row,
+ * so a sum can differ in its last digits, and so can any later arithmetic on
+ * it). Where the query reads a join, in the served compile or the live one,
+ * no sum is marked: Malloy's Postgres dialect may write it symmetrically,
+ * through NUMERIC, which live answers as a `numeric`. A unary minus,
+ * parentheses, a filtered or ungrouped aggregate keep their operand's type;
+ * `+ - *` are `real` when both operands are; `coalesce` and a `pick` are
+ * when their values are reals or number literals, one a real. Anything else
+ * (an `avg`, which Postgres answers as a float8 mean of the widened values,
+ * any `/`, which Malloy writes as `a*1.0/b`, arithmetic with an integer or a
+ * decimal, any function) is left as it ran, which is
  * what live gives for those. Only top-level columns: Malloy's Postgres
  * dialect casts every number of a nest to DOUBLE PRECISION, so live's nested
  * values are the widened doubles the stored read gives. A database table is
@@ -94,8 +99,71 @@ export function float4AsLive(value: number): number {
    const f = Math.fround(value);
    if (!Number.isFinite(f)) return value;
    if (f === 0) return f;
-   const text = shortestFloat4Text(Math.abs(f));
-   return f < 0 ? -Number(text) : Number(text);
+   const a = Math.abs(f);
+   const out = shortestFloat4Fast(a) ?? Number(shortestFloat4Text(a));
+   return f < 0 ? -out : out;
+}
+
+/**
+ * {@link float4AsLive} by exact integer arithmetic alone, never the fast
+ * path: what the fast path is checked against.
+ */
+export function float4AsLiveExact(value: number): number {
+   if (!Number.isFinite(value)) return value;
+   const f = Math.fround(value);
+   if (!Number.isFinite(f)) return value;
+   if (f === 0) return f;
+   const out = Number(shortestFloat4Text(Math.abs(f)));
+   return f < 0 ? -out : out;
+}
+
+const BITS = new DataView(new ArrayBuffer(4));
+
+/** The float4 `steps` units in the last place from a positive float4. */
+function float4Beside(f: number, steps: 1 | -1): number {
+   BITS.setFloat32(0, f);
+   BITS.setUint32(0, BITS.getUint32(0) + steps);
+   return BITS.getFloat32(0);
+}
+
+/**
+ * The common case of {@link shortestFloat4Text} without integer arithmetic,
+ * or undefined where it cannot be sure, which the exact path then decides.
+ * For a normal float4 that is not a power of two the rounding interval is
+ * symmetric, so at each length the correctly rounded decimal
+ * (`toPrecision`) is the closest one and the only one that can fall inside.
+ * Unsure: a power of two (its interval is narrower below), a subnormal, a
+ * decimal that reads back exactly on the interval's edge, and a possible tie
+ * at that length (the next digit reads 5), where `toPrecision` rounds up and
+ * `float4out` to even.
+ */
+function shortestFloat4Fast(a: number): number | undefined {
+   BITS.setFloat32(0, a);
+   const bits = BITS.getUint32(0);
+   if ((bits & 0x7fffff) === 0 || bits >>> 23 === 0) return undefined;
+   // Both midpoints are exact doubles (25 significant bits).
+   const low = (a + float4Beside(a, -1)) / 2;
+   const high = (a + float4Beside(a, 1)) / 2;
+   // Inside at one length, inside at every longer one (the closest decimal
+   // only gets closer), so the shortest is found by bisection.
+   let lo = 1;
+   let hi = 9;
+   let found: number | undefined;
+   while (lo <= hi) {
+      const digits = (lo + hi) >> 1;
+      const n = Number(a.toPrecision(digits));
+      if (n === low || n === high) return undefined;
+      if (n > low && n < high) {
+         found = digits;
+         hi = digits - 1;
+      } else {
+         lo = digits + 1;
+      }
+   }
+   if (found === undefined) return undefined;
+   const next = a.toExponential(found);
+   if (next[next.indexOf("e") - 1] === "5") return undefined;
+   return Number(a.toPrecision(found));
 }
 
 /** `float4out`'s digits for a positive finite float4, as `<digits>e<power>`. */
@@ -176,6 +244,18 @@ interface Scope {
 
 const MAX_DEPTH = 64;
 
+/** What the inference reads besides the IR. */
+interface Context {
+   /** The float4 columns of each `storage=` table, by its handle. */
+   float4: ReadonlyMap<string, ReadonlySet<string>>;
+   /**
+    * Whether a `sum` can be a float4: false when the query reads a join,
+    * where Malloy's Postgres dialect may sum symmetrically, through
+    * `NUMERIC`, which live answers as a `numeric`.
+    */
+   sums: boolean;
+}
+
 function asNode(v: unknown): Node | undefined {
    return v && typeof v === "object" ? (v as Node) : undefined;
 }
@@ -244,13 +324,14 @@ function isFloat4Column(
 function isFloat4Expr(
    e: unknown,
    scope: Scope,
-   float4: ReadonlyMap<string, ReadonlySet<string>>,
+   ctx: Context,
    depth: number,
 ): boolean {
    const node = asNode(e);
    if (!node || depth > MAX_DEPTH) return false;
    const kids = asNode(node.kids);
-   const recur = (x: unknown) => isFloat4Expr(x, scope, float4, depth + 1);
+   const recur = (x: unknown) => isFloat4Expr(x, scope, ctx, depth + 1);
+   const realOrLiteral = (x: unknown) => recur(x) || isNumberLiteral(x);
    switch (node.node) {
       case "field": {
          if (!Array.isArray(node.path)) return false;
@@ -262,14 +343,14 @@ function isFloat4Expr(
          }
          const hit = resolve(scope, node.path);
          if (!hit) return false;
-         if (isFloat4Column(hit.field, hit.owner, float4)) return true;
+         if (isFloat4Column(hit.field, hit.owner, ctx.float4)) return true;
          return hit.field.e !== undefined
-            ? isFloat4Expr(hit.field.e, hit.scope, float4, depth + 1)
+            ? isFloat4Expr(hit.field.e, hit.scope, ctx, depth + 1)
             : false;
       }
       case "aggregate":
          return (
-            (node.function === "sum" ||
+            ((node.function === "sum" && ctx.sums) ||
                node.function === "min" ||
                node.function === "max") &&
             recur(node.e)
@@ -281,28 +362,32 @@ function isFloat4Expr(
          return recur(node.e);
       case "filteredExpr":
          return recur(kids?.e);
+      // Not `/`: Malloy's Postgres dialect writes `a*1.0/b`, a float8.
       case "+":
       case "-":
       case "*":
-      case "/":
          return recur(kids?.left) && recur(kids?.right);
+      // A real beside a number literal resolves to real.
       case "coalesce":
+         return recur(kids?.left) && realOrLiteral(kids?.right);
+      case "case": {
+         // `pick`: real when every branch is a real or a number literal, and
+         // one is a real.
+         const thens = Array.isArray(kids?.caseThen) ? kids.caseThen : [];
+         const branches = kids?.caseElse ? [...thens, kids.caseElse] : thens;
          return (
-            recur(kids?.left) &&
-            (recur(kids?.right) || isIntegerLiteral(kids?.right))
+            branches.length > 0 &&
+            branches.every(realOrLiteral) &&
+            branches.some(recur)
          );
+      }
       default:
          return false;
    }
 }
 
-function isIntegerLiteral(e: unknown): boolean {
-   const node = asNode(e);
-   return (
-      node?.node === "numberLiteral" &&
-      typeof node.literal === "string" &&
-      /^-?\d+$/.test(node.literal)
-   );
+function isNumberLiteral(e: unknown): boolean {
+   return asNode(e)?.node === "numberLiteral";
 }
 
 /**
@@ -314,7 +399,7 @@ function isIntegerLiteral(e: unknown): boolean {
 function pipelineShape(
    pipeline: readonly unknown[],
    input: Scope,
-   float4: ReadonlyMap<string, ReadonlySet<string>>,
+   ctx: Context,
 ): Float4Shape {
    let scope = input;
    let shape = new Set<string>();
@@ -335,7 +420,7 @@ function pipelineShape(
       for (const rawField of fields) {
          const f = asNode(rawField);
          const name = f && outputName(f);
-         if (f && name && isFloat4Output(f, stage, float4)) shape.add(name);
+         if (f && name && isFloat4Output(f, stage, ctx)) shape.add(name);
       }
       const out = asNode(segment.outputStruct) as StructLike | undefined;
       scope = { struct: out ?? {}, outputs: shape };
@@ -344,16 +429,45 @@ function pipelineShape(
 }
 
 /** Whether one output field is a float4 (a nest never is). */
-function isFloat4Output(
-   f: Node,
-   scope: Scope,
-   float4: ReadonlyMap<string, ReadonlySet<string>>,
-): boolean {
+function isFloat4Output(f: Node, scope: Scope, ctx: Context): boolean {
    if (f.type === "turtle") return false;
    if (f.type === "fieldref" && Array.isArray(f.path)) {
-      return isFloat4Expr({ node: "field", path: f.path }, scope, float4, 0);
+      return isFloat4Expr({ node: "field", path: f.path }, scope, ctx, 0);
    }
-   return f.e !== undefined && isFloat4Expr(f.e, scope, float4, 0);
+   return f.e !== undefined && isFloat4Expr(f.e, scope, ctx, 0);
+}
+
+/**
+ * Whether a compiled pipeline reads a join anywhere: a segment with an active
+ * join, a path through a join (or a record) in a field it reads, or an
+ * aggregate taken at a join. Read wide, failing toward "yes", since a sum
+ * Malloy writes symmetrically is a `numeric` live.
+ */
+function queryReadsJoin(query: unknown, depth = 0): boolean {
+   if (depth > MAX_DEPTH) return true;
+   if (Array.isArray(query)) {
+      return query.some((q) => queryReadsJoin(q, depth + 1));
+   }
+   const node = asNode(query);
+   if (!node) return false;
+   if (Array.isArray(node.activeJoins) && node.activeJoins.length > 0) {
+      return true;
+   }
+   if (Array.isArray(node.structPath) && node.structPath.length > 0) {
+      return true;
+   }
+   if (Array.isArray(node.path) && node.path.length > 1) return true;
+   for (const [key, value] of Object.entries(node)) {
+      if (key === "at" || key === "location") continue;
+      if (
+         value &&
+         typeof value === "object" &&
+         queryReadsJoin(value, depth + 1)
+      ) {
+         return true;
+      }
+   }
+   return false;
 }
 
 /**
@@ -363,6 +477,11 @@ function isFloat4Output(
 interface ServedQueryIr {
    query: unknown;
    root: unknown;
+   /**
+    * The live compile's query, read only for whether it reads a join (a
+    * served shape can answer a join from stored columns without one).
+    */
+   liveQuery?: unknown;
 }
 
 /**
@@ -384,7 +503,10 @@ export function float4OutputShape(
       if (!turtle || !Array.isArray(turtle.pipeline)) return new Set();
       pipeline = [...turtle.pipeline, ...pipeline];
    }
-   return pipelineShape(pipeline, { struct: root }, float4);
+   const sums =
+      !queryReadsJoin(pipeline) &&
+      !queryReadsJoin(asNode(ir.liveQuery)?.pipeline);
+   return pipelineShape(pipeline, { struct: root }, { float4, sums });
 }
 
 /** A run's result, as far as this writes it: its rows. */
@@ -401,12 +523,21 @@ export function roundFloat4AsLive(
    shape: Float4Shape,
 ): void {
    if (shape.size === 0) return;
+   // A column repeats its values (a group-by, a min over few groups).
+   const written = new Map<number, number>();
    for (const raw of result._queryResult.result) {
       const row = asNode(raw);
       if (!row) continue;
       for (const name of shape) {
          const value = row[name];
-         if (typeof value === "number") row[name] = float4AsLive(value);
+         // Zero is written as it is, and -0 must not take 0's memo.
+         if (typeof value !== "number" || value === 0) continue;
+         let out = written.get(value);
+         if (out === undefined) {
+            out = float4AsLive(value);
+            written.set(value, out);
+         }
+         row[name] = out;
       }
    }
 }
