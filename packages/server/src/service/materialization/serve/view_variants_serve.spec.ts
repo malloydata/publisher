@@ -350,7 +350,7 @@ describe("PersistedViewServe (storage=)", () => {
       expect(answer.binding).toBe(binding);
    });
 
-   it("reports a binding stale past its window, and any binding stale with no destination to read it", () => {
+   it("reports a binding stale past its window, and any binding not served with no destination to read it", () => {
       const old = storedViewBinding(buildSourceID, {
          schema,
          freshAsOf: new Date(Date.now() - 3_600_000).toISOString(),
@@ -370,7 +370,12 @@ describe("PersistedViewServe (storage=)", () => {
             pinnedOf([storedViewBinding(buildSourceID, { schema })]),
             undefined,
          ),
-      ).toEqual({ tier: "storage", built: true, stale: true });
+      ).toEqual({
+         tier: "storage",
+         built: true,
+         stale: false,
+         storageNotServed: true,
+      });
       expect(
          f.views.tableOf(
             { buildSourceID, storage: "lake" },

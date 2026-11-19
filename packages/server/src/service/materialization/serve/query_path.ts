@@ -255,6 +255,8 @@ export interface QueryPathInput {
       tier: "storage" | "database";
       built: boolean;
       stale: boolean;
+      /** A storage table the storage mode does not read (`storage_mode`). */
+      storageNotServed?: true;
       dataAsOf?: string;
    };
    /** The `sourceID` chain of every source in the model, for `notConsidered`. */
@@ -522,6 +524,9 @@ function viewTableDecision(
          }
       } else if (!input.view.built) {
          skip(t, "NOT_BUILT");
+      } else if (input.view.storageNotServed) {
+         // The storage mode reads no destination; the serve verdict names it.
+         skip(t, "NOT_SERVED", undefined, "storage_mode");
       } else if (input.view.stale) {
          skip(t, "STALE");
       } else if (viewDecision?.reason === "row_level_gate") {
@@ -906,6 +911,22 @@ function tablesFor(
       };
       // A `#(rollup)` table is the rollup leg's on either tier.
       if (variant && binding) {
+         const database =
+            plan && input.storageWarned && !binding.database
+               ? { ...databaseState(plan, kind, input), ...named }
+               : undefined;
+         if (database && !database.unbuilt) {
+            // The storage mode reads no destination, so the leg reads the
+            // database table bound beside it: the storage one is the tier's,
+            // never the leg's, and is reported as not served.
+            add({
+               ...storageState(binding, plan, kind, fresh),
+               ...(rollupName ? { rollupName } : {}),
+               warned: true,
+            });
+            add(database);
+            return;
+         }
          add({ ...storageState(binding, plan, kind, fresh), ...named });
          return;
       }
