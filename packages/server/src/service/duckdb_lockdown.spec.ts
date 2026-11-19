@@ -201,6 +201,7 @@ async function expectCommonVectorsRefused(
       "SELECT current_setting('allowed_paths') AS p",
       "SELECT * FROM duckdb_variables()",
       "SELECT getvariable('v') AS v",
+      "SELECT * FROM load_aws_credentials()",
       "SELECT * FROM ducklake_settings('lake')",
       "SELECT * FROM ducklake_options('lake')",
       "SELECT * FROM ducklake_snapshots('lake')",

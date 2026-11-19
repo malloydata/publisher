@@ -4,7 +4,7 @@
 /**
  * Names caller and author SQL may not use on a Publisher DuckDB connection:
  * the functions that read the instance's own attachments, secrets, settings,
- * variables and pragmas, the postgres extension's functions that reach an
+ * variables and pragmas, or load the host's cloud credentials, the postgres extension's functions that reach an
  * attached database past the tables a query reads (or open a connection of
  * their own), DuckLake's own functions (its settings, files, snapshots and
  * maintenance), and the metadata catalog DuckLake attaches beside each
@@ -26,6 +26,7 @@ export const INTROSPECTION_NAMES: ReadonlySet<string> = new Set([
    "duckdb_variables",
    "current_setting",
    "getvariable",
+   "load_aws_credentials",
    "postgres_query",
    "postgres_scan",
    "postgres_scan_pushdown",

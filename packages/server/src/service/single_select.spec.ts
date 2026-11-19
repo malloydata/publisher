@@ -67,6 +67,7 @@ describe("assertSingleSelect", () => {
       ["SELECT current_setting('allowed_paths') AS p", "current_setting"],
       ["SELECT * FROM duckdb_variables()", "duckdb_variables"],
       ["SELECT getvariable('v') AS v", "getvariable"],
+      ["SELECT * FROM load_aws_credentials()", "load_aws_credentials"],
       ["SELECT * FROM ducklake_settings('lake')", "ducklake_settings"],
       ["SELECT * FROM ducklake_options('lake')", "ducklake_options"],
       ["SELECT * FROM ducklake_snapshots('lake')", "ducklake_snapshots"],
