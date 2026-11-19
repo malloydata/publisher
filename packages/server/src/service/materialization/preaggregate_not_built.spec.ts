@@ -60,9 +60,7 @@ function holding(
       packageName: () => "pkg",
    } as unknown as PackageMaterializationOwner);
    materialization.plan.buildPlan = plan;
-   Object.assign((materialization as unknown as { plan: object }).plan, {
-      refusedRollups,
-   });
+   materialization.plan.refusedRollups = refusedRollups;
    return materialization;
 }
 
