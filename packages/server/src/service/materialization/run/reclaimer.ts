@@ -16,6 +16,13 @@
  * marked as its own.
  */
 
+import {
+   dropVerdict,
+   isTransientGuard,
+   keptReasonOf,
+   renameVerdict,
+   type RenameGuard,
+} from "../domain/table_ledger";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import {
    databaseAccessFailure,
@@ -206,17 +213,6 @@ function renamedTablesIn(
          typeof (t as RenamedTable).connectionName === "string",
    );
 }
-
-/**
- * The guards of Reclaimer.reclaimRenamedTables a later run may find passing
- * (its replacement commits, it becomes what is served, the other run naming
- * the table goes): a table kept by one stays recorded, to be tried again.
- */
-const TRANSIENT_GUARDS: ReadonlySet<string> = new Set([
-   "replacement-not-committed",
-   "not-serving-replacement",
-   "still-referenced",
-]);
 
 /** How many kept tables' existence is probed at once. */
 const KEPT_PROBES_AT_ONCE = 4;
@@ -499,11 +495,15 @@ async function keptInPlace(
    materializationId: string,
 ): Promise<boolean> {
    const destForKey = entry.storageDestinationName ?? connectionName;
-   if (
-      stillReferenced.has(
+   const verdict = dropVerdict({
+      referencedThere: stillReferenced.has(
          tableKey(entryTable({ ...entry, connectionName, physicalTableName })),
-      )
-   ) {
+      ),
+      referencedByLeaf: stillReferenced.has(
+         leafReferenceKey(physicalTableName),
+      ),
+   });
+   if (verdict === "still_referenced") {
       logger.info(
          "Skipping drop: table still referenced by another materialization",
          {
@@ -514,7 +514,7 @@ async function keptInPlace(
       );
       return true;
    }
-   if (stillReferenced.has(leafReferenceKey(physicalTableName))) {
+   if (verdict === "may_be_served") {
       logger.info("Keeping a table a reclaim would drop: it may be served", {
          runId: materializationId,
          physicalTableName,
@@ -939,8 +939,14 @@ export class Reclaimer {
             const table = entry.physicalTableName;
             if (!dest || !table) continue;
             if (
-               stillReferenced.has(tableKey(entryTable(entry))) ||
-               stillReferenced.has(leafReferenceKey(table))
+               dropVerdict({
+                  referencedThere: stillReferenced.has(
+                     tableKey(entryTable(entry)),
+                  ),
+                  referencedByLeaf: stillReferenced.has(
+                     leafReferenceKey(table),
+                  ),
+               }) !== "drop"
             ) {
                logger.info(
                   "Keeping a table from a failed run: a live manifest still serves it",
@@ -1869,7 +1875,7 @@ export class Reclaimer {
             continue;
          }
          // A guard that a later run may find passing keeps the record.
-         if (TRANSIENT_GUARDS.has(guard)) retried.add(key);
+         if (isTransientGuard(guard)) retried.add(key);
          if (log) {
             logger.info("Keeping a table a readable name replaced", {
                physicalTableName: table.previousName,
@@ -1877,9 +1883,10 @@ export class Reclaimer {
                guard,
             });
          }
-         if (guard === "author_name" || guard === "may_be_served") {
+         const reason = keptReasonOf(guard);
+         if (reason) {
             kept.push({
-               ...keptOf(entry, guard),
+               ...keptOf(entry, reason),
                ...(table.sourceName ? { sourceName: table.sourceName } : {}),
             });
          }
@@ -1915,35 +1922,23 @@ export class Reclaimer {
 
    /**
     * Which guard of {@link reclaimRenamedTables} keeps `table`, or undefined
-    * when none does (guard 3 is the drop's, and a missing destination the
-    * caller's). `author_name` and `may_be_served` are the ones that list it
-    * as kept.
+    * when none does ({@link renameVerdict} over what the runs say).
     */
    private renamedTableGuard(
       table: RenamedTable,
       run: Materialization,
       runs: Materialization[],
       reader: ServingReader,
-   ): string | undefined {
+   ): RenameGuard | undefined {
       const place = placeKey;
       const oldAt: Place = {
          connectionName: table.connectionName,
          storageDestinationName: previousDestinationOf(table),
       };
-      // 4: the source is served from this run, wherever its table is now.
       const current = run.manifest?.entries?.[table.sourceEntityId];
-      if (!current?.physicalTableName || isLegacyFailedEntry(current)) {
-         return "replacement-not-committed";
-      }
       const serving = newestServingEntries(runs, reader);
       const served = serving[table.sourceEntityId];
-      if (
-         served?.physicalTableName !== current.physicalTableName ||
-         place(served) !== place(current)
-      ) {
-         return "not-serving-replacement";
-      }
-      // 2: an earlier auto-run of this package built it for this source,
+      // An earlier auto-run of this package built it for this source,
       // there. A host's run named its tables itself.
       const builtIt = (m: Materialization) => {
          const e = m.manifest?.entries?.[table.sourceEntityId];
@@ -1952,67 +1947,52 @@ export class Reclaimer {
             place(e) === place(oldAt)
          );
       };
-      if (
-         !runs.some(
+      // By table segment alone (leafKey): a table's name does not say where
+      // it is, and two places (two names for one DuckLake, a connection that
+      // reaches a destination) can reach one table, which no config or probe
+      // proves otherwise; nor does a container (on DuckDB `memory.t` and
+      // `main.t` are one table).
+      const namesIt = (e: ManifestEntry) =>
+         !!e.physicalTableName &&
+         leafKey(e.physicalTableName) === leafKey(table.previousName);
+      const servedUnderName = Object.values(serving).filter(namesIt);
+      return renameVerdict({
+         replacementCommitted:
+            !!current?.physicalTableName && !isLegacyFailedEntry(current),
+         replacementServed:
+            served?.physicalTableName === current?.physicalTableName &&
+            !!current &&
+            place(served ?? {}) === place(current),
+         builtByPackage: runs.some(
             (m) =>
                m.id !== run.id &&
                m.status === "MANIFEST_FILE_READY" &&
                m.metadata?.mode !== "orchestrated" &&
                readsRun(m, reader) &&
                builtIt(m),
-         )
-      ) {
-         return "not-in-package-records";
-      }
-      // 5: no table the package serves now may be it. By table segment
-      // alone (leafKey): a table's name does not say where it
-      // is, and two places (two names for one DuckLake, a connection that
-      // reaches a destination) can reach one table, which no config or
-      // probe proves otherwise; nor does a container (on DuckDB `memory.t`
-      // and `main.t` are one table). Served at that very name in this very
-      // place, it is the served table; otherwise it may be, so it is never
-      // dropped: kept and listed.
-      const namesIt = (e: ManifestEntry) =>
-         !!e.physicalTableName &&
-         leafKey(e.physicalTableName) === leafKey(table.previousName);
-      const servedUnderName = Object.values(serving).filter(namesIt);
-      if (
-         servedUnderName.some(
+         ),
+         servedThere: servedUnderName.some(
             (e) =>
                place(e) === place(oldAt) &&
                mayBeSameTable(e.physicalTableName, table.previousName),
-         )
-      ) {
-         return "still-served";
-      }
-      if (servedUnderName.length > 0) return "may_be_served";
-      // 5: no run this run does not supersede still names it.
-      if (
-         runs.some(
+         ),
+         servedByLeaf: servedUnderName.length > 0,
+         referencedElsewhere: runs.some(
             (m) =>
                m.status === "MANIFEST_FILE_READY" &&
                !readsRun(m, reader) &&
                Object.values(m.manifest?.entries ?? {}).some(namesIt),
-         )
-      ) {
-         return "still-referenced";
-      }
-      // 5: no active run (an orchestrated run of another version, say) has
-      // claimed a name that may be it, to write.
-      if (
-         runs.some(
+         ),
+         // An orchestrated run of another version, say.
+         claimedByActiveRun: runs.some(
             (m) =>
                isActiveRun(m.status) &&
                tableNamesIn(m.metadata, WRITES_TABLES_KEY).some(
                   (name) => leafKey(name) === leafKey(table.previousName),
                ),
-         )
-      ) {
-         return "still-referenced";
-      }
-      // 1: an author's exact name= is never dropped.
-      if (!hasReservedTableSuffix(table.previousName)) return "author_name";
-      return undefined;
+         ),
+         publisherNamed: hasReservedTableSuffix(table.previousName),
+      });
    }
 
    /**
