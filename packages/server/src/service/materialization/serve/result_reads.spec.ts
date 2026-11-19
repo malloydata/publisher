@@ -21,6 +21,7 @@ source: t is duckdb.sql("SELECT 1 AS id, 'books' AS category, 2 AS amt, DATE '20
   measure: lo is min(lc)
   dimension: late is category > 'M'
   dimension: lc is lower(category)
+  dimension: cst is cast(amt - 75 as string)
   view: by_cat is { group_by: category; aggregate: c; order_by: category }
   view: by_n is { group_by: category; aggregate: c }
 }
@@ -163,6 +164,72 @@ describe("resultReadsOfQuery: what a result orders and groups strings by", () =>
       expect(lit.ordered.comparesOnlyColumns).toBe(false);
       const col = await reads("run: t -> { group_by: category }");
       expect(col.ordered.comparesOnlyColumns).toBe(true);
+   });
+
+   it("reads a string made from no string column as compared under the database's default", async () => {
+      for (const q of [
+         "run: t -> { group_by: cst }",
+         "run: t -> { group_by: c is chr(65 + amt) }",
+         "run: t -> { group_by: k is concat(cast(amt as string), '!') }",
+      ]) {
+         const r = await reads(q);
+         expect(r.ordered.comparesNoString, q).toBe(false);
+         expect(r.ordered.entryPaths, q).toEqual([]);
+         expect(r.ordered.comparesOnlyColumns, q).toBe(false);
+      }
+   });
+
+   it("reads a column's collation over a literal's where both make one value", async () => {
+      for (const q of [
+         "run: t -> { group_by: l is concat(category, '!') }",
+         "run: t -> { group_by: p is pick 'x' when amt > 1 else category }",
+         "run: t -> { group_by: k is concat(category, cast(amt as string)) }",
+         "run: t -> { group_by: late; aggregate: c }",
+      ]) {
+         const r = await reads(q);
+         expect(paths(r.ordered), q).toEqual(["category"]);
+         expect(r.ordered.comparesOnlyColumns, q).toBe(true);
+      }
+      // A comparison of literals alone compares under the default.
+      const lit = await reads(
+         "run: t -> { group_by: b is pick 'y' when 'B' < 'a' else 'n'; aggregate: c }",
+      );
+      expect(lit.ordered.comparesOnlyColumns).toBe(false);
+   });
+
+   it("reads a number made from a string's length as no string read", async () => {
+      for (const q of [
+         "run: t -> { aggregate: m is max(length(category)) }",
+         "run: t -> { group_by: l is length(category); aggregate: c }",
+      ]) {
+         const r = await reads(q);
+         expect(r.ordered.comparesNoString, q).toBe(true);
+         expect(r.grouped.comparesNoString, q).toBe(true);
+      }
+   });
+
+   it("reads a window min or max over its frame as ordered", async () => {
+      for (const f of [
+         "min_window",
+         "max_window",
+         "min_cumulative",
+         "max_cumulative",
+      ]) {
+         const r = await reads(
+            `run: t -> { group_by: category; aggregate: c; calculate: w is ${f}(category) }`,
+         );
+         expect(paths(r.ordered), f).toEqual(["category"]);
+      }
+   });
+
+   it("reads nullif and a substring search as grouped", async () => {
+      for (const q of [
+         "run: t -> { aggregate: x is sum(pick 1 when nullif(category, 'apple') = null else 0) }",
+         "run: t -> { select: s is starts_with(category, 'a') }",
+         "run: t -> { select: s is replace(category, 'a', 'b') }",
+      ]) {
+         expect(paths((await reads(q)).grouped), q).toEqual(["category"]);
+      }
    });
 
    it("reads a range comparison inside a field as ordered, an equality as grouped", async () => {
@@ -325,6 +392,19 @@ describe("postgresJudged", () => {
       expect(postgresJudged({ name: "default", dbp: "b", dbc: "C" })).toBe(
          "binary",
       );
+      for (const cc of ["C.UTF-8", "C.utf8", "C.UTF8"]) {
+         expect(postgresJudged({ name: cc, det: true, prov: "c", cc })).toBe(
+            "binary",
+         );
+         expect(postgresJudged({ name: "default", dbp: "c", dbc: cc })).toBe(
+            "binary",
+         );
+      }
+      for (const cc of ["C.UTF-16", "c.utf8"]) {
+         expect(postgresJudged({ name: "x", det: true, prov: "c", cc })).toBe(
+            "deterministic",
+         );
+      }
    });
 
    it("judges libc and ICU locales deterministic, a nondeterministic one unknown", () => {

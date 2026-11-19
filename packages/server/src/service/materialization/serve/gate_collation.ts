@@ -385,7 +385,7 @@ export async function duckdbCollation(
  * A Postgres collation row, judged: the database default by the database's
  * own collation and locale provider (an ICU default is deterministic, never
  * binary, whatever `datcollate` says), any other by its own row. Binary under
- * a libc `C` or `POSIX`, and under the builtin provider (Postgres 17+:
+ * a libc `C`, `POSIX` or `C.UTF-8`, and under the builtin provider (Postgres 17+:
  * `pg_c_utf8`, `ucs_basic`, `pg_unicode_fast`, or a database created with
  * it), which orders and compares by code point, as UTF-8 bytes do.
  */
@@ -393,7 +393,12 @@ export function postgresJudged(
    row: Record<string, unknown> | undefined,
 ): Collation {
    if (!row) return "unknown";
-   const binaryName = (c: unknown) => c === "C" || c === "POSIX";
+   // libc `C`, `POSIX`, and `C.UTF-8` (its codeset spelled any way; the
+   // locale name itself compares exactly),
+   // which glibc orders by code point, as UTF-8 bytes do.
+   const binaryName = (c: unknown) =>
+      typeof c === "string" &&
+      (c === "C" || c === "POSIX" || /^C\.[Uu][Tt][Ff]-?8$/.test(c));
    if (row.name === "default") {
       if (row.dbp === "b") return "binary";
       return row.dbp !== "i" && binaryName(row.dbc)

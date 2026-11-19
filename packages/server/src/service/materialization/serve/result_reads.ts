@@ -111,8 +111,44 @@ export interface ResultReads {
 
 const RANGE_OPERATORS = new Set([">", "<", ">=", "<="]);
 const EQUALITY_OPERATORS = new Set(["=", "!=", "like", "!like"]);
-/** Functions whose value is chosen by ordering their arguments (a window `min`/`max` too). */
-const ORDERING_FUNCTIONS = new Set(["greatest", "least", "min", "max"]);
+/**
+ * Functions whose value is chosen by ordering their arguments: a scalar
+ * `greatest`/`least`, and a window's `min`/`max` over its frame.
+ */
+const ORDERING_FUNCTIONS = new Set([
+   "greatest",
+   "least",
+   "min",
+   "max",
+   "min_window",
+   "max_window",
+   "min_cumulative",
+   "max_cumulative",
+]);
+/**
+ * Functions that compare their string arguments for equality, or search one
+ * in another, which a nondeterministic collation does otherwise.
+ */
+const EQUALITY_FUNCTIONS = new Set([
+   "nullif",
+   "starts_with",
+   "ends_with",
+   "strpos",
+   "replace",
+   "split_part",
+   "regexp_extract",
+   "regexp_replace",
+]);
+/**
+ * Functions whose value (a number) does not depend on how a collation
+ * compares their string argument: its length, its first code point.
+ */
+const COLLATION_FREE_FUNCTIONS = new Set([
+   "length",
+   "byte_length",
+   "ascii",
+   "unicode",
+]);
 /** Aggregate functions known not to order their argument. */
 const UNORDERED_AGGREGATES = new Set([
    "string_agg",
@@ -173,6 +209,26 @@ function isAggregate(t: unknown): boolean {
    return t === "aggregate" || t === "ungrouped_aggregate";
 }
 
+/**
+ * Whether a function call or a cast makes a string: a cast to a string (a
+ * raw cast to a type that may be one), or a function whose declared return
+ * type is a string. A generic return (`coalesce`, `greatest`) is its
+ * arguments' type, whose own strings are read where they are made.
+ */
+function makesString(n: Record<string, unknown>): boolean {
+   if (n.node === "cast") {
+      const dst = (n.dstType as { type?: unknown } | undefined)?.type;
+      if (dst !== undefined) return dst === "string";
+      return !/^\s*(big|small|tiny)?(int|integer|numeric|decimal|real|double|float|bool|boolean|date|time|timestamp|timestamptz)\b/i.test(
+         String(n.dstSQLType ?? ""),
+      );
+   }
+   const returned = (
+      n.overload as { returnType?: { type?: unknown } } | undefined
+   )?.returnType?.type;
+   return returned === "string";
+}
+
 /** A path's records, by its key, and whether each is read from the entry point. */
 class Reads {
    readonly paths = new Map<string, readonly string[]>();
@@ -200,6 +256,15 @@ class ResultReadWalk {
    readonly grouped = new Reads();
    unresolved = false;
    private steps = 0;
+   /** How many string column reads have been recorded, by any use. */
+   private recorded = 0;
+   /**
+    * A string value met so far that compares under the database's default
+    * collation (a literal, a given, a string made from no string column),
+    * by use: an enclosing derivation that also reads a string column takes
+    * that column's collation instead, as Postgres does ({@link derive}).
+    */
+   pending = { order: false, group: false };
    /** Each join's `on` and each inner query, walked once. */
    private readonly walked = new Set<unknown>();
 
@@ -213,8 +278,48 @@ class ResultReadWalk {
    }
 
    private record(path: readonly string[], use: Use, entry: boolean): void {
+      if (use === "value") return;
+      this.recorded++;
       if (use === "order") this.ordered.add(path, entry);
-      else if (use === "group") this.grouped.add(path, entry);
+      else this.grouped.add(path, entry);
+   }
+
+   /** A string value under the database's default collation, used as `use`. */
+   private loose(use: Use): void {
+      if (use === "order") this.pending.order = true;
+      else if (use === "group") this.pending.group = true;
+   }
+
+   /**
+    * One collation derivation (Postgres's): the operands `walk` reads. When
+    * one is a string column, the result takes that column's collation, so
+    * the default-collation strings met inside (`'!'` in `concat(cat, '!')`,
+    * `'M'` in `cat > 'M'`) compare under it, not under the default. When
+    * none is, a comparison compares them under the default (committed: no
+    * enclosing node changes that), and a function or cast that makes a
+    * string (`cast(amt as string)`, `chr(65)`) makes one under the default,
+    * which an enclosing derivation may still take a column's collation over.
+    */
+   private derive(
+      kind: "comparison" | "value",
+      walk: () => void,
+      makesString: boolean,
+      use: Use,
+   ): void {
+      const before = this.recorded;
+      const saved = { ...this.pending };
+      walk();
+      if (this.recorded > before) {
+         this.pending = saved;
+         return;
+      }
+      if (kind === "comparison") {
+         if (this.pending.order && !saved.order) this.ordered.literal = true;
+         if (this.pending.group && !saved.group) this.grouped.literal = true;
+         this.pending = saved;
+         return;
+      }
+      if (makesString) this.loose(use);
    }
 
    /**
@@ -575,7 +680,6 @@ class ResultReadWalk {
       const n = e as Record<string, unknown> & { node?: unknown };
       const go = (x: unknown, u: Use) =>
          this.expr(x, scope, u, mode, stage, depth + 1);
-      const kids = (n.kids ?? {}) as Record<string, unknown>;
       switch (n.node) {
          case "field":
             if (Array.isArray(n.path)) {
@@ -602,8 +706,7 @@ class ResultReadWalk {
             return;
          case "stringLiteral":
          case "given":
-            if (use === "order") this.ordered.literal = true;
-            else if (use === "group") this.grouped.literal = true;
+            this.loose(use);
             return;
          case "numberLiteral":
          case "regexpLiteral":
@@ -622,10 +725,49 @@ class ResultReadWalk {
          case "":
             return;
       }
-      if (mode === "trace") {
+      if (mode === "trace") this.traced(n, use, go);
+      else this.judged(n, scope, use, stage, depth, go);
+   }
+
+   /** A traced node: every operand carries the value's use. */
+   private traced(
+      n: Record<string, unknown>,
+      use: Use,
+      go: (x: unknown, u: Use) => void,
+   ): void {
+      const kids = (n.kids ?? {}) as Record<string, unknown>;
+      const all = () => {
          for (const c of this.children(n)) go(c, use);
-         return;
-      }
+      };
+      if (n.node === "function_call" || n.node === "cast") {
+         this.derive("value", all, makesString(n), use);
+      } else if (n.node === "case" && kids.caseValue === undefined) {
+         // The value is the `then`s' and the `else`'s; a `when:` was
+         // decided when the value was computed.
+         this.derive(
+            "value",
+            () => {
+               for (const t of asArray(kids.caseThen)) go(t, use);
+               go(kids.caseElse, use);
+            },
+            false,
+            use,
+         );
+      } else if (n.node === "coalesce") {
+         this.derive("value", all, false, use);
+      } else all();
+   }
+
+   /** A judged node: it decides how its operands are used. */
+   private judged(
+      n: Record<string, unknown>,
+      scope: Scope,
+      use: Use,
+      stage: Stage | undefined,
+      depth: number,
+      go: (x: unknown, u: Use) => void,
+   ): void {
+      const kids = (n.kids ?? {}) as Record<string, unknown>;
       switch (n.node) {
          case "aggregate": {
             const fn = n.function;
@@ -640,11 +782,18 @@ class ResultReadWalk {
             return;
          }
          case "in":
-            go(kids.e, "group");
-            for (const x of asArray(kids.oneOf)) go(x, "group");
+            this.derive(
+               "comparison",
+               () => {
+                  go(kids.e, "group");
+                  for (const x of asArray(kids.oneOf)) go(x, "group");
+               },
+               false,
+               use,
+            );
             return;
          case "inGiven":
-            go(n.e, "group");
+            this.derive("comparison", () => go(n.e, "group"), false, use);
             return;
          case "regexpMatch":
             go(kids.expr, "group");
@@ -658,18 +807,45 @@ class ResultReadWalk {
             go(kids.e, use);
             return;
          case "case": {
-            const compared = kids.caseValue !== undefined;
-            if (compared) go(kids.caseValue, "group");
-            for (const w of asArray(kids.caseWhen)) {
-               go(w, compared ? "group" : "value");
+            // A `when:` is a condition of its own; the value is the
+            // `then`s' and the `else`'s derivation.
+            if (kids.caseValue !== undefined) {
+               this.derive(
+                  "comparison",
+                  () => {
+                     go(kids.caseValue, "group");
+                     for (const w of asArray(kids.caseWhen)) go(w, "group");
+                  },
+                  false,
+                  use,
+               );
+            } else {
+               for (const w of asArray(kids.caseWhen)) go(w, "value");
             }
-            for (const t of asArray(kids.caseThen)) go(t, use);
-            go(kids.caseElse, use);
+            this.derive(
+               "value",
+               () => {
+                  for (const t of asArray(kids.caseThen)) go(t, use);
+                  go(kids.caseElse, use);
+               },
+               false,
+               use,
+            );
             return;
          }
          case "cast": {
             const dst = (n.dstType as { type?: unknown } | undefined)?.type;
-            go(n.e, dst !== undefined && nonStringType(dst) ? "value" : use);
+            const toString = makesString(n);
+            this.derive(
+               "value",
+               () =>
+                  go(
+                     n.e,
+                     dst !== undefined && nonStringType(dst) ? "value" : use,
+                  ),
+               toString,
+               use,
+            );
             return;
          }
          case "function_call":
@@ -681,15 +857,40 @@ class ResultReadWalk {
             return;
       }
       if (typeof n.node === "string" && RANGE_OPERATORS.has(n.node)) {
-         for (const c of this.children(n)) go(c, "order");
+         this.derive(
+            "comparison",
+            () => {
+               for (const c of this.children(n)) go(c, "order");
+            },
+            false,
+            use,
+         );
          return;
       }
       if (typeof n.node === "string" && EQUALITY_OPERATORS.has(n.node)) {
-         for (const c of this.children(n)) go(c, "group");
+         this.derive(
+            "comparison",
+            () => {
+               for (const c of this.children(n)) go(c, "group");
+            },
+            false,
+            use,
+         );
          return;
       }
-      // Logic, arithmetic, `coalesce`, `()`, time arithmetic, an ungrouping:
-      // their operands' values pass on as the value is used.
+      if (n.node === "coalesce") {
+         this.derive(
+            "value",
+            () => {
+               for (const c of this.children(n)) go(c, use);
+            },
+            false,
+            use,
+         );
+         return;
+      }
+      // Logic, arithmetic, `()`, time arithmetic, an ungrouping: their
+      // operands' values pass on as the value is used.
       for (const c of this.children(n)) go(c, use);
    }
 
@@ -716,6 +917,8 @@ class ResultReadWalk {
       }
       let argUse: Use = use;
       if (ORDERING_FUNCTIONS.has(name)) argUse = "order";
+      else if (EQUALITY_FUNCTIONS.has(name)) argUse = "group";
+      else if (COLLATION_FREE_FUNCTIONS.has(name)) argUse = "value";
       else if (isAggregate(n.expressionType)) {
          argUse = name.includes("distinct")
             ? "group"
@@ -723,7 +926,14 @@ class ResultReadWalk {
               ? "value"
               : "order";
       }
-      for (const a of asArray(kids.args)) go(a, argUse);
+      this.derive(
+         "value",
+         () => {
+            for (const a of asArray(kids.args)) go(a, argUse);
+         },
+         makesString(n),
+         use,
+      );
    }
 }
 
@@ -732,7 +942,10 @@ function readsOf(
    reads: Reads,
    unresolved: boolean,
    equalityOnly: boolean,
+   /** A default-collation string no column's collation took over. */
+   pending: boolean,
 ): GateReads {
+   if (pending) reads.literal = true;
    const entryPaths = [...reads.paths.values()];
    return {
       names: new Set(entryPaths.flat()),
@@ -793,8 +1006,18 @@ export async function resultReadsOfQuery(
       );
       const dialect = named?.dialect;
       return {
-         ordered: readsOf(walk.ordered, walk.unresolved, false),
-         grouped: readsOf(walk.grouped, walk.unresolved, true),
+         ordered: readsOf(
+            walk.ordered,
+            walk.unresolved,
+            false,
+            walk.pending.order,
+         ),
+         grouped: readsOf(
+            walk.grouped,
+            walk.unresolved,
+            true,
+            walk.pending.group,
+         ),
          stringCollation: capabilitiesOf(
             typeof dialect === "string" ? dialect : "",
          ).stringCollation,

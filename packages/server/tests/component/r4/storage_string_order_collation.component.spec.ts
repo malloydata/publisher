@@ -118,6 +118,7 @@ source: m is items_src extend {
   join_one: k is kinds on ci = k.kname
   dimension: lc is concat(cat, '!')
   dimension: side is pick 'hi' when cat > 'b' else 'lo'
+  dimension: cst is cast(amt - 75 as string)
   #@ persist name="v_by_cat_ordered" storage="lake"
   view: by_cat_ordered is { group_by: cat; aggregate: n; order_by: cat }
   #@ persist name="v_by_cat_counted" storage="lake"
@@ -198,7 +199,27 @@ const SHAPES: Shape[] = [
       query: "run: m -> { group_by: cat; aggregate: n } -> { select: cat, n; order_by: cat }",
       want: { live: DECLINED },
    },
+   {
+      name: "en_US: a window min over the string",
+      query: "run: m -> { group_by: cat; aggregate: n; calculate: w is min_window(cat) }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "en_US: a cumulative min over the string",
+      query: "run: m -> { group_by: cat; aggregate: n; calculate: w is min_cumulative(cat) }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "en_US default: a string made from a number, ordered",
+      query: "run: m -> { group_by: cst }",
+      want: { live: DECLINED },
+   },
    // ...and what still serves under en_US: equality is byte equality.
+   {
+      name: "en_US: the longest string's length",
+      query: "run: m -> { aggregate: m is max(length(cat)) }",
+      want: { served: "materialized" },
+   },
    {
       name: "en_US: a group_by ordered by its measure",
       query: "run: m -> { group_by: cat; aggregate: n }",
@@ -255,6 +276,16 @@ const SHAPES: Shape[] = [
       name: "nondeterministic: an equality, grouped",
       query: "run: m -> { group_by: is_apple is ci = 'apple'; aggregate: n }",
       want: { live: DECLINED },
+   },
+   {
+      name: "nondeterministic: nullif, an equality",
+      query: "run: m -> { aggregate: x is sum(pick 1 when nullif(ci, 'apple') = null else 0) }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "nondeterministic: grouped by the string's length",
+      query: "run: m -> { group_by: l is length(ci); aggregate: n }",
+      want: { served: "materialized" },
    },
    {
       name: "nondeterministic: a join on the string",
