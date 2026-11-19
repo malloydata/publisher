@@ -20,6 +20,53 @@ source: t is duckdb.sql("SELECT 1 AS id, 'books' AS category, 2 AS amt") extend 
   dimension: lc is lower(category)
   view: v is { where: category = 'books'; group_by: category; aggregate: c }
   view: vn is { where: amt > 1; group_by: category; aggregate: c }
+  dimension: is_big is amt > 1
+  dimension: is_big_small is is_big and amt < 10
+  dimension: is_books is category = 'books'
+  dimension: is_big_book is is_big and is_books
+  measure: nbig is count() { where: is_big }
+  measure: nbooks is count() { where: is_books }
+}
+
+source: grants is duckdb.sql("SELECT 1 AS user_id, 2 AS opp_id, 'x' AS tag") -> { select: * } extend {
+  dimension: tagged is tag = 'x'
+}
+
+source: opps is duckdb.sql("SELECT 2 AS opp_id, 0 AS restricted, 100 AS amount") -> { select: * } extend {
+  join_one: g is grants on opp_id = g.opp_id
+  dimension: visible is restricted = 0 or g.opp_id is not null
+  dimension: visible_tagged is restricted = 0 or g.tagged
+  measure: visible_amount is amount.sum() { where: visible }
+  measure: hidden is count() { where: not visible }
+}
+
+source: v is t -> { select: id, category, amt, sb is category = 'books', big2 is amt > 1 } extend {
+  dimension: vis2 is sb or amt > 1000
+  dimension: ok2 is big2 or amt > 1000
+  measure: nv is count() { where: vis2 }
+}
+
+source: v3 is v extend { dimension: vis3 is vis2 and id > 0 }
+
+source: vstar is t -> { select: * }
+
+source: jv is duckdb.sql("SELECT 1 AS oid") extend {
+  join_one: vv is v on oid = vv.id
+  dimension: jvis is vv.sb or oid > 1000
+  dimension: jvis2 is vv.vis2
+  dimension: jok is vv.big2 or oid > 1000
+}
+
+source: vg is t -> { group_by: category; aggregate: n is count() } extend {
+  dimension: many is n > 2
+}
+
+source: vgn is t -> { group_by: amt; aggregate: n is count(), s is amt.sum() } extend {
+  dimension: many is n > 2
+}
+
+source: vgb is t -> { group_by: amt; aggregate: nb } extend {
+  dimension: many is nb > 2
 }
 `;
 
@@ -168,6 +215,90 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
       );
       expect(computed.comparesNoString).toBe(false);
       expect(computed.entryPathsComplete).toBe(false);
+   });
+
+   it("reads a computed dimension that compares no string as comparing none, in `where:` and in a filtered measure", async () => {
+      for (const q of [
+         "run: t -> { where: is_big; select: id }",
+         "run: t -> { where: not is_big_small; select: id }",
+         "run: t -> { group_by: id; aggregate: nbig }",
+         "run: t -> { group_by: id; aggregate: x is count() { where: is_big } }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(true);
+         expect(r.scoped, q).toBe(false);
+         expect(r.entryPaths, q).toEqual([]);
+      }
+   });
+
+   it("reads a computed dimension through a join to a query-shaped source, as a grant table is read", async () => {
+      const r = await reads(
+         "run: opps -> { aggregate: visible_amount, hidden }",
+      );
+      expect(r.comparesNoString).toBe(true);
+      expect(r.unresolved).toBe(false);
+      expect(r.entryPaths).toEqual([]);
+   });
+
+   it("still reads a computed dimension that compares a string, however it is reached", async () => {
+      for (const q of [
+         "run: t -> { where: is_books; select: id }",
+         "run: t -> { group_by: id; aggregate: nbooks }",
+         "run: t -> { where: is_big_book; select: id }",
+         "run: opps -> { where: visible_tagged; select: opp_id }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.scoped, q).toBe(true);
+      }
+      const books = await reads("run: t -> { where: is_books; select: id }");
+      expect(books.equalityOnly).toBe(true);
+      expect(books.entryPaths).toContainEqual(["category"]);
+      const tagged = await reads(
+         "run: opps -> { where: visible_tagged; select: opp_id }",
+      );
+      expect(tagged.entryPaths).toContainEqual(["g", "tag"]);
+   });
+
+   it("reads a query-shaped source's output through the stage that computes it", async () => {
+      // Each compares a string in a stage, and reads as one however it is named.
+      for (const q of [
+         "run: v -> { where: sb; select: id }",
+         "run: v -> { where: vis2; select: id }",
+         "run: v -> { aggregate: nv }",
+         "run: v3 -> { where: vis3; select: id }",
+         "run: jv -> { where: jvis; select: oid }",
+         "run: jv -> { where: jvis2; select: oid }",
+         "run: jv -> { where: vv.sb; select: oid }",
+         "run: vg -> { where: many; select: category, n }",
+         "run: vg -> { where: n > 2; select: category, n }",
+         "run: vgb -> { where: many; select: amt }",
+         "run: t -> { select: id, sb is category = 'books' } -> { where: sb; select: id }",
+         "run: t -> { group_by: category; aggregate: c } -> { where: c > 1; select: c }",
+         "run: t -> { group_by: id; nest: n is { select: sb is category = 'books' } -> { where: sb; select: sb } }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.scoped, q).toBe(true);
+      }
+   });
+
+   it("still reads a query-shaped source's output that compares no string as comparing none", async () => {
+      for (const q of [
+         "run: v -> { where: big2; select: id }",
+         "run: v -> { where: ok2; select: id }",
+         "run: v -> { where: amt > 1; select: id }",
+         "run: vstar -> { where: amt > 1; select: id }",
+         "run: jv -> { where: jok; select: oid }",
+         "run: vgn -> { where: many and s > 1; select: amt }",
+         "run: t -> { select: id, b is amt > 1 } -> { where: b; select: id }",
+         "run: t -> { group_by: id; aggregate: c } -> { where: c > 1; select: c }",
+         "run: t -> { group_by: id; nest: n is { select: b is amt > 1 } -> { where: b; select: b } }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(true);
+         expect(r.scoped, q).toBe(false);
+      }
    });
 
    it("reads no filter at all as comparing no string", async () => {
