@@ -87,15 +87,15 @@ import {
    type IncrementalRunContext,
 } from "./incremental_build";
 import {
-   BilledReadNotCapturedError,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
-   dropStorageTable,
    oneFileModel,
    withDestinationSession,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
+import { BilledReadNotCapturedError } from "./build_attribution";
+import { dropStorageTable } from "./storage_admin";
 import { backupSuffix } from "./build_table_names";
 import {
    BuildEnvironment,

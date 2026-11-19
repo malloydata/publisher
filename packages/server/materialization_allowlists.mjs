@@ -33,7 +33,7 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2n",
    "controller/materialization.controller.ts -> service/materialization/run/materialization_service":
       "2n",
-   "controller/storage_destination.controller.ts -> service/materialization/run/materialization_build_session":
+   "controller/storage_destination.controller.ts -> service/materialization/run/storage_admin":
       "2n",
    "main_server.ts -> service/materialization/run/materialization_scheduler":
       "2n",
@@ -43,6 +43,8 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2n",
    "package_load/protocol.ts -> service/materialization/plan/build_plan": "2n",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
+      "2n",
+   "service/catalog_admin.ts -> service/materialization/run/storage_admin":
       "2n",
    "service/catalog_admin.ts -> service/materialization/run/storage_table_load":
       "2n",
@@ -144,7 +146,13 @@ export const RATCHET_DIALECT_LITERALS = {
    // Connection types (FederatedSourceType, the storage destination types),
    // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 7,
+      count: 4,
+      step: "table",
+   },
+   // FederatedSourceType's `snowflake`, the one engine whose session the
+   // build tags, aligns and reads its cost back from.
+   "service/materialization/run/build_attribution.ts": {
+      count: 3,
       step: "table",
    },
    // PASSTHROUGH_SOURCE_TYPES, connection types a `storage=` build reads,

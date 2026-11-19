@@ -26,13 +26,15 @@ import * as connection from "../../connection";
 import { storageDestinationRoot } from "../../connection_config";
 import * as lockdown from "../../duckdb_lockdown";
 import {
-   cleanupStorageFiles,
    createIsolatedBuildSession,
    createLocalDataPaths,
-   dropStorageTable,
-   listStorageTables,
    withDestinationSession,
 } from "./materialization_build_session";
+import {
+   cleanupStorageFiles,
+   dropStorageTable,
+   listStorageTables,
+} from "./storage_admin";
 
 type ApiConnection = components["schemas"]["Connection"];
 
