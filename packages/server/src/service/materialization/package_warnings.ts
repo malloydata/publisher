@@ -31,7 +31,11 @@ import {
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
 import { INCREMENTAL_LATE_ROWS_CODE } from "./domain/incremental";
-import { isRollupOrigin, type MaterializePlan } from "./domain/table_plans";
+import {
+   isPersistedQuerySourceID,
+   isRollupOrigin,
+   type MaterializePlan,
+} from "./domain/table_plans";
 import type {
    BuildPlan,
    FreshnessManifest,
@@ -467,6 +471,61 @@ export function persistRefusalWarnings(
       if (source.modelPath) warning.model = source.modelPath;
       if (subject) warning.subject = subject;
       return [warning];
+   });
+}
+
+/**
+ * The code on the warning for a table stored as of its build: a v1
+ * `#@ persist` source, persisted view or persisted query whose build reads
+ * the current time (`now`, or a relative time filter string).
+ */
+export const PERSIST_READS_CURRENT_TIME_CODE = "persist-reads-current-time";
+
+/**
+ * One warning per table stored as of its build ({@link PERSIST_READS_CURRENT_TIME_CODE}):
+ * its answers are as of its last build, it is rebuilt on every run, where
+ * its build reads the clock, and what to do to answer as of each read.
+ * `subject` the source, the view (`<source> -> <view>`) or the query.
+ */
+export function asOfBuildWarnings(
+   asOfBuild: Readonly<
+      Record<string, { name: string; modelPath?: string; reads: string[] }>
+   >,
+   persistedViews: Readonly<
+      Record<string, { sourceName: string; viewName: string }>
+   >,
+): ApiPackageWarning[] {
+   return Object.entries(asOfBuild).map(([sourceID, table]) => {
+      const view = persistedViews[sourceID];
+      const query =
+         view === undefined && isPersistedQuerySourceID(sourceID)
+            ? table.name.replace(/__query$/, "")
+            : undefined;
+      const subject = view
+         ? `${view.sourceName} -> ${view.viewName}`
+         : (query ?? table.name);
+      const what = view
+         ? `view "${view.viewName}" of source "${view.sourceName}"`
+         : query !== undefined
+           ? `query "${query}"`
+           : `source "${table.name}"`;
+      const where =
+         table.reads.length > 0 ? ` (${table.reads.join(", ")})` : "";
+      return {
+         ...(table.modelPath ? { model: table.modelPath } : {}),
+         subject,
+         code: PERSIST_READS_CURRENT_TIME_CODE,
+         severity: "warn" as const,
+         message:
+            `#@ persist on ${what} stores a relation that reads the ` +
+            `current time${where}, so its answers are as of its last build ` +
+            `rather than of each query, and it is rebuilt on every run. To ` +
+            `answer as of each query instead, move the window into the ` +
+            `persisted source's own extend block (a \`where:\`, dimension ` +
+            `or measure there is applied at every read), read a given there, ` +
+            `or persist a finer source that keeps the time column and filter ` +
+            `it at query time.`,
+      };
    });
 }
 

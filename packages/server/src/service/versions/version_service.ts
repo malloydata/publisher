@@ -50,7 +50,7 @@ export interface VersionHost<P> {
     * Compile the version whose files are at `versionPath`, bound to
     * `manifestPath` when one is set. A `hostOwned` version with no manifest
     * serves live, never this server's own run store. Throws when it does not
-    * load.
+    * load. `refreshSchemas`: a publish refetches the schemas it reads.
     */
    loadVersion(
       packageName: string,
@@ -59,6 +59,7 @@ export interface VersionHost<P> {
          Version,
          "versionId" | "manifestPath" | "sourceLocation" | "hostOwned"
       >,
+      options?: { refreshSchemas?: boolean },
    ): Promise<P>;
    /** Release a loaded version's connections; it is no longer served. */
    releaseVersion(packageName: string, versionId: string, loaded: P): void;
@@ -166,6 +167,11 @@ export interface PublishOptions<P> {
    promotion: VersionPromotionMode;
    /** The publish checks; a message refuses the version with 400. */
    validate?: (loaded: P) => string | undefined;
+   /**
+    * A request's publish, as opposed to a configured package's at boot:
+    * the version's load refetches the schemas it reads.
+    */
+   refreshSchemas?: boolean;
 }
 
 export interface PublishResult<P> {
@@ -684,6 +690,7 @@ export class VersionService<P = unknown> {
                   sourceLocation: options.sourceLocation,
                   hostOwned: false,
                },
+               options.refreshSchemas ? { refreshSchemas: true } : undefined,
             );
             const refusal = options.validate?.(loaded);
             if (refusal) throw new BadRequestError(refusal);

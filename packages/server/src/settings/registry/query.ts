@@ -146,7 +146,7 @@ export const query = [
       default: DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES,
       description:
          "Serialized schema each package-load worker caches across loads, in bytes; 0 turns it off.",
-      notes: "Serialized size of the table and SQL schemas each package-load worker keeps across loads, so a model's repeated and later requests for the same table skip the round trip to the main thread. Least recently used entries go first. Scoped per environment and per connection instance, so editing a connection drops its entries; a request that asks to refresh a schema is fetched again, and the result replaces the entry. Heap use is a few times the serialized size. `0` disables it; empty takes the default, and a value that is not a byte count stops the server from starting.",
+      notes: "Serialized size of the table and SQL schemas each package-load worker keeps across loads, so a model's repeated and later requests for the same table skip the round trip to the main thread. Least recently used entries go first. Scoped per environment and per connection instance, so editing a connection drops its entries. An explicit refresh (a reload with `?reload=true` or `reload_package`, a publish, or a `PATCH` that reinstalls) fetches every table and SQL schema the package reads again, in the connection's own cache too, and every worker drops its old entry; a watch-mode recompile and a boot read the cached schemas. Heap use is a few times the serialized size. `0` disables it; empty takes the default, and a value that is not a byte count stops the server from starting.",
       defaultText: "`16777216` (16 MiB)",
       aliases: { env: ["PACKAGE_LOAD_SCHEMA_CACHE_BYTES"] },
    }),

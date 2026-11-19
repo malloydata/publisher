@@ -55,6 +55,7 @@ import {
    readTimeDynamicTerms,
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
+import { EVERY_SOURCE } from "../domain/compiled_build_plan";
 import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import {
@@ -611,6 +612,19 @@ function referencesAuthorize(persistSource: PersistSource): boolean {
 }
 
 /**
+ * {@link referencesAuthorize} over a slice of compiled IR: a source or query
+ * definition of a model's contents. Fails closed: a walk that cannot finish
+ * reads as gated.
+ */
+export function irCarriesAGate(def: unknown): boolean {
+   try {
+      return walkForAuthorize(def, new WeakSet(), 0);
+   } catch {
+      return true;
+   }
+}
+
+/**
  * True if an annotation note is an authorize gate, via
  * {@link parseAuthorizeAnnotation}. Must share the enforcement path's parser: a
  * spelling enforcement gates on but this misses (e.g. the block form
@@ -951,7 +965,10 @@ export interface TierGateInputs {
    tables?: Readonly<
       Record<
          string,
-         Pick<TablePlan, "kind" | "materialize" | "rollup" | "gate">
+         Pick<TablePlan, "kind" | "materialize" | "rollup" | "gate"> & {
+            /** The planned source, which the access-input rule reads. */
+            source?: PersistSource;
+         }
       >
    >;
    /**
@@ -960,6 +977,12 @@ export interface TierGateInputs {
     * build can read a source.
     */
    connectionTypes?: Readonly<Record<string, string>>;
+   /**
+    * Every sourceID an access decision of the package reads
+    * (`CompiledBuildPlan.accessReads`); unknown refuses every relation that
+    * reads the current time.
+    */
+   accessReads?: readonly string[];
 }
 
 /**
@@ -1112,13 +1135,21 @@ export function assertTierEligible(
 }
 
 /**
- * Refuse a v1 `#@ persist` source whose build reads the current time
- * ({@link buildReadsCurrentTime}): its table would hold the rows as of the
- * build and serve them until the next rebuild, while a live query reads `now`
- * again every time. Not built, and answered live. `now` in the source's own
- * extend block is re-applied at every read, so it is admitted. A rollup
- * (rollup_plan.ts, `rollup-not-built`, reason `current_time`) and a `#(materialize)` source
- * (materialize_plan.ts) are judged by their own planners.
+ * Refuse a v1 `#@ persist` source, persisted view or persisted query whose
+ * build reads the current time ({@link buildReadsCurrentTime}: `now`, or a
+ * relative time filter string) where a table as of its build is unsafe:
+ *
+ * - it is gated (`#(authorize)` or `#(access_filter)` beneath it): the rows a
+ *   caller may see would be decided by a clock frozen at the build;
+ * - it is an access input ({@link currentTimeAccessInput}): the rows it
+ *   holds decide what a caller may see, so a frozen clock is a stale grant;
+ * - it refreshes incrementally: a delta reads only rows past its watermark,
+ *   so a window over the clock would never drop the rows it has passed.
+ *
+ * Every other such source builds, and is served as of its build and rebuilt
+ * on every run (see {@link storedAsOfBuild}). A rollup (rollup_plan.ts) and
+ * a `#(materialize)` source (materialize_plan.ts) are judged by their own
+ * planners.
  */
 export function assertBuildReadsNoCurrentTime(
    source: PersistSource,
@@ -1127,18 +1158,71 @@ export function assertBuildReadsNoCurrentTime(
    const table = plan?.tables?.[source.sourceID];
    if (table?.rollup || table?.materialize) return;
    if (!buildReadsCurrentTime(source)) return;
+   const why = currentTimeRefusalCause(source, plan);
+   if (why === undefined) return;
    throw new MaterializationEligibilityError({
       reason: "current_time",
       message:
          `Source '${source.name}' cannot be materialized: the relation it ` +
-         `persists reads the current time (\`now\`), in its query, a view ` +
-         `it runs, the \`where:\`, a field or a join of the source that ` +
-         `query reads, or the query of a query-shaped source it is built ` +
-         `from or joins. Its table would hold the rows as of the build and ` +
-         `serve them until the next rebuild, while a live query reads \`now\` ` +
-         `again every time, so it is not built and is answered live. To serve ` +
-         `it from a table, move the \`now\` into the persisted source's own ` +
-         `extend block (a \`where:\`, dimension or measure there is applied ` +
-         `at every read), or stop persisting this source.`,
+         `persists reads the current time (\`now\`, or a relative time ` +
+         `filter such as \`f'last 7 days'\`), so its table would hold the ` +
+         `rows as of its build, and ${why}. It is not built and is answered ` +
+         `live. To serve it from a table, move the \`now\` or the filter into ` +
+         `the persisted source's own extend block (a \`where:\`, dimension or ` +
+         `measure there is applied at every read).`,
    });
+}
+
+/**
+ * Why a source whose build reads the current time must not be stored as of
+ * its build, or undefined when it may be ({@link assertBuildReadsNoCurrentTime}).
+ */
+function currentTimeRefusalCause(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): string | undefined {
+   if (referencesAuthorize(source)) {
+      return (
+         "it is protected by an #(authorize) or #(access_filter) gate, whose " +
+         "decision a table as of its build would freeze"
+      );
+   }
+   if (deriveAnnotationFields(source).refresh === "incremental") {
+      return (
+         "it refreshes incrementally, and a delta never re-reads the rows " +
+         "its window has passed"
+      );
+   }
+   if (currentTimeAccessInput(source, plan)) {
+      return (
+         "its rows feed an access decision (it is scoped by a given, joins " +
+         "a source scoped by one, or a source that carries a gate or reads " +
+         "a given extends, derives from, joins or composes it), so a table " +
+         "as of its build would keep a grant past its time"
+      );
+   }
+   return undefined;
+}
+
+/**
+ * Whether a source's rows feed an access decision: its own read-time terms
+ * or joins read a given (a caller-scoped source, or one that joins a grant
+ * table, {@link admitGivenPositions}), or a definition of the package that
+ * carries a gate or reads a given depends on it, at any depth: extends it,
+ * derives from it with `->`, joins it, composes it, or builds a stored
+ * relation over it (`accessReads`). Fails closed: an unknown closure, or a
+ * classification that cannot be read, counts.
+ */
+function currentTimeAccessInput(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): boolean {
+   const admitted = admitGivenPositions(source);
+   if (!admitted.ok) return true;
+   if (admitted.terms.length > 0 || (admitted.joinedTerms ?? []).length > 0) {
+      return true;
+   }
+   const reads = plan?.accessReads;
+   if (reads === undefined) return true;
+   return reads.includes(source.sourceID) || reads.includes(EVERY_SOURCE);
 }

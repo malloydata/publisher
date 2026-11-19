@@ -489,9 +489,12 @@ export class PackageController {
             mode: "reinstalled",
          };
       }
+      // An explicit reload reads its tables' columns as the warehouse holds
+      // them now; a watch-mode reload keeps the cached ones.
       const _package = await environment.getPackage(
          parsePackageName(packageName),
          true,
+         { refreshSchemas: true },
       );
       return {
          metadata: _package.getPackageMetadata(),
@@ -682,7 +685,9 @@ export class PackageController {
                },
             );
          } else {
-            result = await environment.addPackage(packageName);
+            result = await environment.addPackage(packageName, {
+               refreshSchemas: true,
+            });
          }
       } catch (error) {
          // A 5xx is an operator's problem the caller may never show one, so
@@ -747,6 +752,7 @@ export class PackageController {
          description: body.description ?? undefined,
          promotion: getVersionPromotionMode(),
          validate: (pkg) => formatPublishRejections(pkg),
+         refreshSchemas: true,
       });
       return published.loaded;
    }
