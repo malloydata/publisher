@@ -18,6 +18,8 @@
  */
 
 import type { components } from "../../../api";
+import { readTier } from "../domain/placement";
+import type { Tier } from "../domain/vocabulary";
 import {
    isPersistedQuerySourceID,
    isPersistedResultSourceID,
@@ -191,6 +193,17 @@ export interface ServeVerdictFacts {
    freshEntityIds?: ReadonlySet<string>;
    /** Storage: the source names the package holds a serve binding for. */
    boundStorageNames: ReadonlySet<string>;
+   /**
+    * The sourceIDs a storage binding stores (its `sourceIDs`), whatever the
+    * annotation says: the tier a query reads the source's table in
+    * (`storageLookupOf`).
+    */
+   boundStorageIds: ReadonlySet<string>;
+   /**
+    * The sourceIDs a storage binding still within its freshness window (or
+    * whose fallback serves stale) stores. Absent: every bound one is.
+    */
+   freshStorageIds?: ReadonlySet<string>;
    /** Storage: the source names some model kept a binding for. */
    servedStorageNames: ReadonlySet<string>;
    /** Storage: the bound source names still fresh. Absent: every bound one is. */
@@ -260,9 +273,28 @@ function originOf(
    return "persist";
 }
 
-/** The tier a plan source's table lives in. */
-function planTier(source: PersistSourcePlan): "database" | "storage" {
-   return source.annotationFields?.storage?.trim() ? "storage" : "database";
+/** The tier a query reads a plan source's table in ({@link readTier}). */
+function planTier(
+   sourceID: string,
+   source: PersistSourcePlan,
+   servedCopy: boolean,
+   facts: Pick<
+      ServeVerdictFacts,
+      | "boundStorageIds"
+      | "freshStorageIds"
+      | "boundEntityIds"
+      | "freshEntityIds"
+   >,
+): Tier {
+   return readTier({
+      storageBound: facts.boundStorageIds.has(sourceID),
+      storageFresh: facts.freshStorageIds?.has(sourceID) ?? true,
+      databaseFresh:
+         facts.boundEntityIds.has(source.sourceEntityId) &&
+         (facts.freshEntityIds?.has(source.sourceEntityId) ?? true),
+      servedCopy,
+      declaredStorage: !!source.annotationFields?.storage?.trim(),
+   });
 }
 
 /**
@@ -310,7 +342,7 @@ function verdictFor(
    facts: ServeVerdictFacts,
 ): ServeVerdict {
    const s = verdictSubjectOf(sourceID, source, facts);
-   const { origin, tier, rollupBase, view, subject, live } = s;
+   const { origin, tier, storageBound, rollupBase, view, subject, live } = s;
 
    // Deployment facts, ahead of the storage mode: under `write-only` the
    // build runs and fails on them, so they are the reason worth naming. Under
@@ -318,19 +350,22 @@ function verdictFor(
    // already bound is never called unbuildable: what serves is reported as it
    // is, and the fact is read only to explain a table nothing has bound.
    const destination = source.annotationFields?.storage?.trim();
-   // Read once, here and in the storage branch below: one name-keyed lookup.
-   const storageBound = facts.boundStorageNames.has(source.name);
    const deployment = deploymentVerdict(s, destination, storageBound);
    if (deployment) return deployment;
 
    if (tier === "storage" && facts.storageMode !== "on") {
       return live(
          "storage_mode",
-         facts.storageMode === "off"
+         // A host's storage binding with no `storage=` has none to drop.
+         facts.storageMode === "off" && destination
             ? `${subject} declares storage=, which PERSIST_STORAGE_MODE=off ignores.`
             : `${subject} is built into storage, but PERSIST_STORAGE_MODE is ` +
                  `${facts.storageMode}, so no query is routed to it.`,
-         ["Set PERSIST_STORAGE_MODE=on on the server, or drop storage=."],
+         [
+            destination
+               ? "Set PERSIST_STORAGE_MODE=on on the server, or drop storage=."
+               : "Set PERSIST_STORAGE_MODE=on on the server.",
+         ],
       );
    }
 
@@ -413,6 +448,8 @@ interface VerdictSubject {
    facts: ServeVerdictFacts;
    origin: ServeVerdict["origin"];
    tier: "database" | "storage";
+   /** Whether the package holds a storage binding for it. */
+   storageBound: boolean;
    base: Omit<ServeVerdict, "verdict" | "message">;
    rollupBase: string | undefined;
    view: ReturnType<NonNullable<ServeVerdictFacts["persistedViewOf"]>>;
@@ -434,7 +471,15 @@ function verdictSubjectOf(
    const origin = originOf(sourceID, isRollupOrigin(source.origin), {
       materialize: facts.materialize,
    });
-   const tier = planTier(source);
+   // Read once, for the deployment facts and the storage branch: one
+   // name-keyed lookup. The tier is the sourceID's.
+   const storageBound = facts.boundStorageNames.has(source.name);
+   // A rollup, persisted view or persisted query is read through its own
+   // leg (`storageLookupOf`); everything else through the served copy.
+   const servedCopy =
+      !isRollupOrigin(source.origin) &&
+      facts.persistedViewOf(sourceID) === undefined;
+   const tier = planTier(sourceID, source, servedCopy, facts);
    const base: Omit<ServeVerdict, "verdict" | "message"> = {
       sourceName: source.name,
       sourceID,
@@ -472,6 +517,7 @@ function verdictSubjectOf(
       facts,
       origin,
       tier,
+      storageBound,
       base,
       rollupBase,
       view,

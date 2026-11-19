@@ -59,6 +59,7 @@ import {
    LIVE_ANSWER,
    type QueryFacts,
 } from "./materialization/serve/leg";
+import { storageServes } from "./materialization/domain/placement";
 import { originOfTable } from "./materialization/domain/table_plans";
 import {
    readPreparedQuery,
@@ -364,7 +365,7 @@ export async function queryPathFor(
          rollups: variantRollups.map((r) => ({ ...r, variant: true })),
          // Every `storage=` source carries a package warning when the tier
          // is off or write-only (see storageWarnings).
-         storageWarned: getPersistStorageMode() !== "on",
+         storageWarned: !storageServes(getPersistStorageMode()),
          considered: answer.considered,
          storageTablesRead: routed?.tablesRead?.map(toTable),
          ...(answer.leg === "rollup"

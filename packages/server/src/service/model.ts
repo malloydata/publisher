@@ -45,6 +45,7 @@ import {
    OffSurfaceError,
 } from "../errors";
 import { getMaterializeEnabled, getPersistStorageMode } from "../config";
+import { storageServes } from "./materialization/domain/placement";
 import {
    renderTagFindingsCache,
    renderTagFindingsKey,
@@ -350,7 +351,7 @@ export class Model {
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
       modelMaterializer: () => this.modelMaterializer,
-      serveDestinationConfig: () => this.serveDestinationConfig,
+      serveDestinationConfig: () => this.servingDestinationConfig(),
       catalog: () => this.policy.materializedTables(),
       planModelPersistedViews,
       planModelPersistedQueries,
@@ -364,7 +365,7 @@ export class Model {
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
          modelMaterializer: () => this.modelMaterializer,
-         serveDestinationConfig: () => this.serveDestinationConfig,
+         serveDestinationConfig: () => this.servingDestinationConfig(),
          planModelPersistedViews,
          planModelPersistedQueries,
       },
@@ -387,7 +388,7 @@ export class Model {
    private rollupVariants = new RollupVariantServe({
       modelPath: () => this.modelPath,
       modelDef: () => this.modelDef,
-      serveDestinationConfig: () => this.serveDestinationConfig,
+      serveDestinationConfig: () => this.servingDestinationConfig(),
       catalog: () => this.policy.materializedTables(),
       // A joined source's `storage=` rollup is read through a join only from
       // a query source the served copy reads in the same destination.
@@ -2607,12 +2608,9 @@ export class Model {
             this.ensureSharedQueryModel(materializer),
          modelPath: () => this.modelPath,
          modelDef: () => this.modelDef,
-         // Storage tables only while the storage tier serves; database tables
-         // (on the source's own connection) need no destination.
-         serveDestinationConfig: () =>
-            getPersistStorageMode() === "on"
-               ? this.serveDestinationConfig
-               : undefined,
+         // Database tables (on the source's own connection) need no
+         // destination.
+         serveDestinationConfig: () => this.servingDestinationConfig(),
          pinned: () => this.pinNow(),
          // Off this thread when a load worker is free; inline otherwise.
          compileElsewhere: (args) =>
@@ -2639,6 +2637,18 @@ export class Model {
    /** This model's tables pinned now, for a caller outside a query. */
    private pinNow(): Pinned {
       return pin(this.servingSnapshot(), new Date());
+   }
+
+   /**
+    * The storage destinations a leg may read through: none unless the
+    * storage tier serves (`PERSIST_STORAGE_MODE=on`). Every leg (served
+    * copy, rollup, persisted view, persisted query) reads it here, so under
+    * `write-only` and `off` none answers from a storage table.
+    */
+   private servingDestinationConfig(): (() => MalloyConfig) | undefined {
+      return storageServes(getPersistStorageMode())
+         ? this.serveDestinationConfig
+         : undefined;
    }
 
    /** Set the storage destinations, pushed by the owning package. */
@@ -2965,7 +2975,7 @@ export class Model {
          // Compile-only, as the view preview: a destination's catalog need
          // not exist before the first build.
          serveDestinationConfig: () =>
-            destinations && getPersistStorageMode() === "on"
+            destinations && storageServes(getPersistStorageMode())
                ? () => compileOnlyDestinationConfig(destinations())
                : undefined,
          pinned: () => pinned,
