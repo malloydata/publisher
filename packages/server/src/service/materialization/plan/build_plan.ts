@@ -1548,10 +1548,9 @@ function reportPersistLineFindings(
    args: CollectArgs & { planModel: MalloyModel },
 ): void {
    const { modelPath, packagePath, malloyModel, planModel } = args;
-   // An error is reported as a finding below, so only the rest are logged,
-   // at debug, by Malloy's code.
+   // Logged at debug, by Malloy's code: an error is also a finding below,
+   // which is what an operator sees.
    for (const msg of targets.tagParseLog) {
-      if (msg.severity === "error") continue;
       logger.debug("Persist annotation issue", {
          modelPath,
          code: msg.code,
