@@ -137,6 +137,11 @@ with no re-attach and no package reload — the catalog is consulted per transac
 at attach time. Note that this is a property of a **Postgres-backed** catalog, which is the supported
 configuration; a DuckDB-file catalog attached read-only does not behave this way.
 
+**The catalog's credentials live in a DuckDB secret.** Publisher puts the catalog role's user and
+password in a temporary DuckDB secret (never persisted, redacted when listed) and attaches with a
+path that carries only the host, port, database and connection options. A `connectionString` in
+either libpq form (keyword/value or a `postgres://` URI) is read and split the same way.
+
 **Lazy, and never on the startup path.** The catalog is attached on the _first query_ that uses the
 connection — not when the server boots and not when the environment config is built. This is a
 deliberate isolation boundary: **a slow or unreachable catalog degrades only that connection's
