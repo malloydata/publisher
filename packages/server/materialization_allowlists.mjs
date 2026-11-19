@@ -113,7 +113,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/plan/eligibility_collect.ts -> logger": "2o",
    "service/materialization/plan/materialize_compile.ts -> logger": "2o",
    "service/materialization/plan/persist_source_fields.ts -> logger": "2o",
-   "service/materialization/plan/persisted_view_compile.ts -> logger": "2o",
    "service/materialization/plan/rollup_compile.ts -> logger": "2o",
    "service/materialization/serve/rollup_variants.ts -> logger": "2o",
    "service/materialization/serve/served_copy_serve.ts -> logger": "2o",

@@ -70,7 +70,9 @@ import { SourceMap } from "../text/source_map";
 import { wholeImportsOf } from "../text/declaration_text";
 import {
    compileInMemory,
+   companionFailure,
    companionOmissions,
+   type CompanionFailure,
    declaredInModel,
    GeneratedFiles,
    type SynthesizedRuntimeFactory,
@@ -184,6 +186,8 @@ export async function tryCompileMaterializeCompanion(args: {
    refused: MaterializeRefusal[];
    /** The sources a failure left out of the plan (see omitted_sources). */
    omitted?: Omission[];
+   /** Why the companion failed, for the caller to report. */
+   failure?: CompanionFailure;
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const refused: MaterializeRefusal[] = [];
@@ -248,15 +252,9 @@ export async function tryCompileMaterializeCompanion(args: {
          ? { generated: withStoredColumns(round.generated), refused }
          : { refused };
    } catch (error) {
-      logger.error(
-         "Failed to plan or compile the generated #(materialize) companion",
-         {
-            modelPath: args.modelPath,
-            error: error instanceof Error ? error.message : String(error),
-         },
-      );
       return {
          refused,
+         failure: companionFailure("materialize", error),
          omitted: companionOmissions(
             "materialize",
             plannedIDs
@@ -1792,16 +1790,19 @@ async function crossFileParents(
             const url = pathToFileURL(file);
             const { model, materializer } = await files.compile(url);
             const def = modelDefOf(model);
-            const { generated } = await tryCompileMaterializeCompanion({
-               packagePath: args.packagePath,
-               modelPath: relative.split(path.sep).join("/"),
-               contents: (def.contents ?? {}) as Record<string, unknown>,
-               givens: (def.givens ?? {}) as Record<string, unknown>,
-               getRuntime: args.getRuntime,
-               ...(args.probe ? { probe: materializer } : {}),
-               crossFileStack: stack,
-               crossFileCompanions: companions,
-            });
+            const { generated, failure } = await tryCompileMaterializeCompanion(
+               {
+                  packagePath: args.packagePath,
+                  modelPath: relative.split(path.sep).join("/"),
+                  contents: (def.contents ?? {}) as Record<string, unknown>,
+                  givens: (def.givens ?? {}) as Record<string, unknown>,
+                  getRuntime: args.getRuntime,
+                  ...(args.probe ? { probe: materializer } : {}),
+                  crossFileStack: stack,
+                  crossFileCompanions: companions,
+               },
+            );
+            if (failure) logCompanionFailure(failure, relative);
             // A file that plans nothing is kept too: a chain may pass
             // through it to a parent in a file beyond.
             return {
@@ -2208,4 +2209,31 @@ async function withCrossFileColumnsKept(
    return compile(
       round.plans.map((p) => (ids.has(p.sourceID) ? withoutParent(p) : p)),
    );
+}
+
+/** How a companion failure is logged, by its kind. */
+const COMPANION_FAILURE_TEXT: Record<CompanionFailure["kind"], string> = {
+   materialize:
+      "Failed to plan or compile the generated #(materialize) companion",
+   persisted_view:
+      "Failed to plan or compile the generated persisted-view companion",
+   rollup: "Failed to plan or compile the generated #(rollup) companion",
+   rollup_blanking:
+      "A #(rollup) companion was not built: a `#@` line of the author's files could not be left out of it",
+   v1_build:
+      "The v1 build copy of a model could not be read or did not compile; its #@ persist sources are left out of the build plan",
+};
+
+/**
+ * Log a generated companion's failure once, at `error`: a publisher bug,
+ * since the text is generated.
+ */
+export function logCompanionFailure(
+   failure: CompanionFailure,
+   modelPath: string,
+): void {
+   logger.error(COMPANION_FAILURE_TEXT[failure.kind], {
+      modelPath,
+      error: failure.error,
+   });
 }

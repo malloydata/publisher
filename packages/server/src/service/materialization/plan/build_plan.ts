@@ -89,8 +89,10 @@ import type { IncrementalDeclaration, PairDelta } from "../domain/incremental";
 import { isAuthorizeAttributedToEntryPoint } from "./materialization_eligibility";
 
 import {
+   companionFailure,
    companionOmissions,
    GeneratedFiles,
+   type CompanionFailure,
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
 import type { RollupPlan } from "../domain/rollup_measures";
@@ -113,6 +115,7 @@ import {
 } from "./materialize_plan";
 import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
 import {
+   logCompanionFailure,
    tryCompileMaterializeCompanion,
    type CrossFileCompanions,
 } from "./materialize_compile";
@@ -736,15 +739,18 @@ function sourceIDFileURL(sourceID: string): string | undefined {
 
 /**
  * A companion compile's refusals, as findings, and the sources it left out,
- * added to `parts`: the start every generated companion shares.
+ * added to `parts`, and its failure logged once: the start every generated
+ * companion shares.
  */
 function addCompanionOutcome(
    parts: BuildPlanParts,
    findings: readonly PackageAnnotationFinding[],
    omitted: readonly Omission[] | undefined,
+   failed?: { failure: CompanionFailure | undefined; modelPath: string },
 ): void {
    for (const finding of findings) addAnnotationFinding(parts, finding);
    parts.omittedSources.push(...(omitted ?? []));
+   if (failed?.failure) logCompanionFailure(failed.failure, failed.modelPath);
 }
 
 /**
@@ -804,8 +810,8 @@ async function collectGeneratedMaterialize(
    },
 ): Promise<MaterializedBases | undefined> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
-   const { generated, refused, omitted } = await tryCompileMaterializeCompanion(
-      {
+   const { generated, refused, omitted, failure } =
+      await tryCompileMaterializeCompanion({
          ...args,
          contents: authorDef.contents ?? {},
          givens: authorDef.givens ?? {},
@@ -813,12 +819,12 @@ async function collectGeneratedMaterialize(
             .sourceRegistry,
          // P9's probes compile against the author's model, never run.
          probe: args.materializer,
-      },
-   );
+      });
    addCompanionOutcome(
       parts,
       refused.map((r) => materializeRefusalFinding(r, args.modelPath)),
       omitted,
+      { failure, modelPath: args.modelPath },
    );
    if (!generated) return undefined;
    for (const [key, compile] of generated.checkCompilers) {
@@ -941,12 +947,13 @@ async function collectGeneratedRollups(
       materialized?: MaterializedBases;
    },
 ): Promise<void> {
-   const { generated, refused, omitted } =
+   const { generated, refused, omitted, failure } =
       await tryCompileRollupCompanion(args);
    addCompanionOutcome(
       parts,
       refused.map((r) => rollupRefusalFinding(r, args.modelPath)),
       omitted,
+      { failure, modelPath: args.modelPath },
    );
    if (!generated) return;
    const planByName = new Map(
@@ -1040,7 +1047,7 @@ async function collectGeneratedPersistedViews(
    },
 ): Promise<void> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
-   const { generated, refused, refusedQueries, omitted } =
+   const { generated, refused, refusedQueries, omitted, failure } =
       await tryCompilePersistedViewCompanion({
          packagePath: args.packagePath,
          modelPath: args.modelPath,
@@ -1057,6 +1064,7 @@ async function collectGeneratedPersistedViews(
          ),
       ],
       omitted,
+      { failure, modelPath: args.modelPath },
    );
    if (!generated) return;
    for (const plan of generated.plans) {
@@ -1537,17 +1545,15 @@ async function v1PlanModel(
          packagePath,
          modelPath,
          getRuntime,
-         onCompileFailed: (error) => {
-            logger.error(
-               "The v1 build copy of a model could not be read or did not compile; its #@ persist sources are left out of the build plan",
-               { modelPath, error: errMessage(error) },
-            );
-            parts.omittedSources.push(
-               ...companionOmissions("v1_build", {
+         onCompileFailed: (error) =>
+            addCompanionOutcome(
+               parts,
+               [],
+               companionOmissions("v1_build", {
                   sourceIDs: declaredPersistSourceIDs(malloyModel),
                }),
-            );
-         },
+               { failure: companionFailure("v1_build", error), modelPath },
+            ),
       });
       if (!companion) return undefined;
       planModel = companion.model;
