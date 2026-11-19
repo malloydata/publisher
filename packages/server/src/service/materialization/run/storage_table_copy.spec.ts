@@ -164,6 +164,23 @@ describe("copyStorageTable on file catalogs", () => {
       expect(existsSync(join(dir, "dest"))).toBe(true);
    });
 
+   it("creates only the destination's data path, never the read-only source's", async () => {
+      // The source's attach also records a local path that does not exist.
+      const elsewhere = join(dir, "src-elsewhere");
+      const recordElsewhere = attachFile(true);
+      spies.push(
+         spyOn(connection, "attachDuckLakeReadOnly").mockImplementation(
+            async (session, alias, config) => {
+               await recordElsewhere(session, alias, config);
+               allowForLockdown(session, elsewhere);
+            },
+         ),
+      );
+      expect((await copyStorageTable(base)).rowCount).toBe(3);
+      expect(existsSync(join(dir, "dest"))).toBe(true);
+      expect(existsSync(elsewhere)).toBe(false);
+   });
+
    it("copies within one catalog to another name", async () => {
       const result = await copyStorageTable({
          ...base,

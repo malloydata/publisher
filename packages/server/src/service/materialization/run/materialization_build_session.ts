@@ -105,6 +105,7 @@ import type { LateRows } from "../domain/types";
 import { storageDestinationRoot } from "../../connection_config";
 import {
    allowedForLockdown,
+   hasUrlScheme,
    lockDownDuckDBSession,
 } from "../../duckdb_lockdown";
 import {
@@ -810,6 +811,11 @@ export async function withDestinationSession<T>(
          }
          await pinSessionToUTC(session);
       }
+      if (options.build) {
+         // A build writes table files here: its local data path must exist
+         // before the session is locked, whoever locks it.
+         createLocalDataPaths(session, destinationAllowlist(destination));
+      }
       if (options.lockdown !== "caller") {
          // Setup done (the destination attached): confine the session to it
          // (duckdb_lockdown.ts) before any of its work runs.
@@ -826,33 +832,49 @@ export async function withDestinationSession<T>(
  * Confine a destination session to `allow` and the paths its setup recorded
  * (duckdb_lockdown.ts). The configuration is left unlocked: a build sets
  * per-step options (threads around a partitioned write, a search path).
- *
- * Each of those paths that is a local directory is created first, unless
- * `createLocalPaths` is false (a read-only listing): once locked, the session
- * may create directories only inside an allowed path, never the path itself,
- * so the first write into a fresh local DuckLake data path would fail. An
- * object-store prefix (`s3://`, `gs://`, ...) is left alone.
  */
 export async function lockDownDestinationSession(
    session: DuckDBConnection,
    allow: readonly string[],
-   { createLocalPaths = true }: { createLocalPaths?: boolean } = {},
 ): Promise<void> {
-   if (createLocalPaths) {
-      for (const dir of [...allow, ...allowedForLockdown(session)]) {
-         if (dir !== "" && !URL_PREFIX.test(dir)) {
-            mkdirSync(dir, { recursive: true });
-         }
-      }
-   }
    await lockDownDuckDBSession(session, {
       allow: [...allow],
       lockConfiguration: false,
    });
 }
 
-/** A path with a URL scheme (an object store's prefix), not a local one. */
-const URL_PREFIX = /^[a-z][a-z0-9+.-]*:\/\//i;
+/**
+ * Create each local directory among `allow` and the paths the session's
+ * attaches have recorded so far, for a session that writes table files into
+ * its destination: once locked, a session may create directories only inside
+ * an allowed path, never the path itself, so the first write into a fresh
+ * local DuckLake data path would fail. Called after the destination's attach
+ * and before any other (a copy's source, a build's federation), so only the
+ * destination's own paths are created. An object-store prefix is left alone.
+ *
+ * Best effort: a path that cannot be created here (a read-only or foreign
+ * mount, a path recorded on another host) is logged and skipped, and the
+ * lock proceeds; a write that needs it is still refused by DuckDB.
+ */
+export function createLocalDataPaths(
+   session: DuckDBConnection,
+   allow: readonly string[],
+): void {
+   for (const dir of new Set([...allow, ...allowedForLockdown(session)])) {
+      if (dir === "" || hasUrlScheme(dir)) continue;
+      try {
+         mkdirSync(dir, { recursive: true });
+      } catch (err) {
+         logger.debug(
+            "Could not create a destination's local data path; locking without it",
+            {
+               path: dir,
+               code: (err as NodeJS.ErrnoException).code,
+            },
+         );
+      }
+   }
+}
 
 /**
  * Stop `session`'s work when `signal` aborts (now, if it already has), until
@@ -1836,8 +1858,6 @@ export async function listStorageTables(params: {
       await lockDownDestinationSession(
          session,
          destinationAllowlist({ destinationConnection, environmentPath }),
-         // Only looks: creates nothing.
-         { createLocalPaths: false },
       );
       const rows = resultRows(
          await session.runSQL(

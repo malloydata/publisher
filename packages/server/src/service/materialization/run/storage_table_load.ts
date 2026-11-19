@@ -31,6 +31,7 @@ import {
    type PartitionKey,
 } from "../../connection";
 import {
+   createLocalDataPaths,
    lockDownDestinationSession,
    withIsolatedSession,
    writePartitionedTable,
@@ -201,10 +202,10 @@ export async function loadStorageTable(params: {
       }
       // The reader takes caller options: confine it to the catalog's data path
       // (recorded by the attach) before it runs (duckdb_lockdown.ts).
-      await lockDownDestinationSession(
-         session,
-         configuredPath ? [configuredPath] : [],
-      );
+      const allow = configuredPath ? [configuredPath] : [];
+      // The load writes the destination's table files.
+      createLocalDataPaths(session, allow);
+      await lockDownDestinationSession(session, allow);
       return await writeTableAs(session, params, reader, (error) =>
          readerRefusal(error, params.uri),
       );
@@ -320,6 +321,11 @@ export async function copyStorageTable(params: {
          destinationName,
          destinationConnection.ducklakeConnection!,
       );
+      // The destination's own data path, before the read-only source is
+      // attached: only the catalog written into is created.
+      const destinationPath =
+         destinationConnection.ducklakeConnection?.storage?.bucketUrl;
+      createLocalDataPaths(session, destinationPath ? [destinationPath] : []);
       if (!sameCatalog) {
          await attachDuckLakeReadOnly(
             session,

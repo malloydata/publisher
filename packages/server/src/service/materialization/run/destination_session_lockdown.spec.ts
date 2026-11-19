@@ -11,7 +11,13 @@
  */
 
 import { afterAll, afterEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+   existsSync,
+   mkdirSync,
+   mkdtempSync,
+   rmSync,
+   writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
@@ -22,6 +28,8 @@ import * as lockdown from "../../duckdb_lockdown";
 import {
    cleanupStorageFiles,
    createIsolatedBuildSession,
+   createLocalDataPaths,
+   dropStorageTable,
    listStorageTables,
    withDestinationSession,
 } from "./materialization_build_session";
@@ -190,5 +198,114 @@ describe("the DuckLake file cleanup", () => {
       expect(calls).toHaveLength(2);
       expect(calls[0]).toContain("ducklake_expire_snapshots");
       expect(calls[1]).toContain("ducklake_cleanup_old_files");
+   });
+});
+
+describe("a destination's local data path", () => {
+   let attach: { mockRestore(): void } | undefined;
+   afterEach(() => attach?.mockRestore());
+
+   const lake = {
+      name: "lake",
+      type: "ducklake",
+      ducklakeConnection: {
+         catalog: {
+            postgresConnection: { host: "h", databaseName: "d", userName: "u" },
+         },
+      },
+   } as ApiConnection;
+
+   /**
+    * A file catalog in place of the Postgres one, whose attach records
+    * `recorded` as its data path, as the real attach records the catalog's.
+    */
+   function fileCatalog(name: string, recorded: string): void {
+      const lakeDir = join(environmentPath, name);
+      mkdirSync(join(lakeDir, "data"), { recursive: true });
+      attach?.mockRestore();
+      attach = spyOn(connection, "attachDuckLakeReadWrite").mockImplementation(
+         async (session, alias) => {
+            await session.runSQL("INSTALL ducklake");
+            await session.runSQL("LOAD ducklake");
+            await session.runSQL(
+               `ATTACH 'ducklake:${join(lakeDir, "lake.ducklake")}' AS "${alias}" ` +
+                  `(DATA_PATH '${join(lakeDir, "data")}/')`,
+            );
+            lockdown.allowForLockdown(session, recorded);
+         },
+      );
+   }
+
+   const lakeDestination = {
+      destinationName: "lake",
+      destinationConnection: lake,
+      environmentPath,
+   };
+
+   it("is created for a build, which writes table files there", async () => {
+      const recorded = join(environmentPath, "fresh-build", "recorded");
+      fileCatalog("fresh-build", recorded);
+      await withDestinationSession(
+         lakeDestination,
+         { purpose: "build", build: true },
+         async () => undefined,
+      );
+      expect(existsSync(recorded)).toBe(true);
+   });
+
+   it("is not created for a key check or a table mark, which write no file", async () => {
+      const recorded = join(environmentPath, "fresh-view", "recorded");
+      fileCatalog("fresh-view", recorded);
+      await withDestinationSession(
+         lakeDestination,
+         { purpose: "view" },
+         async () => undefined,
+      );
+      expect(existsSync(recorded)).toBe(false);
+   });
+
+   it("is not created by the file cleanup, which only deletes", async () => {
+      const recorded = join(environmentPath, "fresh-cleanup", "recorded");
+      fileCatalog("fresh-cleanup", recorded);
+      const now = new Date();
+      await cleanupStorageFiles({
+         destinationName: "lake",
+         destinationConnection: lake,
+         snapshotsOlderThan: now,
+         filesOlderThan: now,
+      });
+      expect(existsSync(recorded)).toBe(false);
+   });
+
+   it("that cannot be created on this host leaves a drop working", async () => {
+      // Recorded under a regular file: no directory can be created there.
+      const file = join(environmentPath, "not-a-directory");
+      writeFileSync(file, "");
+      fileCatalog("uncreatable-drop", join(file, "data"));
+      await dropStorageTable({
+         destinationName: "lake",
+         destinationConnection: lake,
+         physicalTableName: "gone",
+         environmentPath,
+      });
+   });
+
+   it("that cannot be created is skipped, not thrown, and the rest are created", async () => {
+      const file = join(environmentPath, "also-not-a-directory");
+      writeFileSync(file, "");
+      const creatable = join(environmentPath, "creatable", "data");
+      const { session, dispose } = createIsolatedBuildSession("paths");
+      try {
+         expect(() =>
+            createLocalDataPaths(session, [
+               join(file, "data"),
+               creatable,
+               "s3://bucket/prefix",
+            ]),
+         ).not.toThrow();
+      } finally {
+         await dispose();
+      }
+      expect(existsSync(creatable)).toBe(true);
    });
 });
