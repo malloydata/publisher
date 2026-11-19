@@ -17,6 +17,15 @@ export function storageWritable(mode: StorageMode): boolean {
 }
 
 /**
+ * Whether a query may read a `storage=` table under `mode`: only `on`.
+ * `write-only` writes the destination but serves live (or from the
+ * database tier), as `off` does.
+ */
+export function storageServes(mode: StorageMode): boolean {
+   return mode === "on";
+}
+
+/**
  * The tier an instruction builds into: its destination's, while a
  * destination may be written; else the source's own database. An
  * instruction naming a destination under `off` is refused before it builds
