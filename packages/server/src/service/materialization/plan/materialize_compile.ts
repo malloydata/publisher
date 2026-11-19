@@ -216,6 +216,12 @@ export async function tryCompileMaterializeCompanion(args: {
       });
       const compile = companionCompiler(args, modelFile, refused, foreign);
       let round = await compile(foreign.plans);
+      // Three checks of a round that compiled, each run once, in this order,
+      // each compiling again through `compile` (whose own loop settles any
+      // failure that brings). They stay out of compileContained's loop: they
+      // judge a compile that succeeded, two of them by compiling again, so
+      // running them after every round would add compiles, and a later
+      // check's recompile would reopen an earlier one's decision.
       round = await unchainStoredChainsNotCompiling(
          round,
          compile,
