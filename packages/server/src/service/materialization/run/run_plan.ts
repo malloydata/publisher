@@ -40,6 +40,7 @@ export type RunPlan = Pick<PackagePlan, "builds" | "connectionDigests"> &
          | "tableFolds"
          | "addresses"
          | "asOfBuild"
+         | "accessReads"
       >
    > & {
       /** sourceID -> the table planned for it, with its compiled source. */
@@ -81,6 +82,7 @@ export async function compileRunPlan(
          tableFolds: packagePlan.tableFolds,
          addresses: packagePlan.addresses,
          asOfBuild: packagePlan.asOfBuild,
+         accessReads: packagePlan.accessReads,
          tables: compiled.tables,
          connections: compiled.connections,
          ...(compiled.keyCheckCompilers

@@ -159,6 +159,7 @@ import {
    getPersistCollisionEnforce,
 } from "../../../config";
 import { resolveConnectionTypes } from "../../connection_type";
+import { collectAccessReads } from "./access_closure";
 import {
    admitGivenPositions,
    currentTimeReadsOf,
@@ -633,6 +634,8 @@ export interface BuildPlanParts {
    persistedViews: Record<string, PersistedViewName>;
    /** See {@link CompiledBuildPlan.omittedSources}. */
    omittedSources: Omission[];
+   /** See {@link CompiledBuildPlan.accessReads}: every model's, merged. */
+   accessReads: string[];
 }
 
 export function emptyBuildPlanParts(): BuildPlanParts {
@@ -644,6 +647,7 @@ export function emptyBuildPlanParts(): BuildPlanParts {
       modelGateLines: noModelGateLines(),
       persistedViews: {},
       omittedSources: [],
+      accessReads: [],
    };
 }
 
@@ -669,6 +673,9 @@ export function mergeBuildPlanParts(
    into.modelGateLines.nearMiss.push(...from.modelGateLines.nearMiss);
    into.modelGateLines.nameProblems.push(...from.modelGateLines.nameProblems);
    Object.assign(into.persistedViews, from.persistedViews);
+   into.accessReads = [
+      ...new Set([...into.accessReads, ...from.accessReads]),
+   ].sort();
 }
 
 /**
@@ -1292,6 +1299,13 @@ function inlineRunTarget(
       : undefined;
 }
 
+/** Add the sources an access decision of `malloyModel` reads to `parts`. */
+function addAccessReads(parts: BuildPlanParts, malloyModel: MalloyModel): void {
+   const reads = new Set(parts.accessReads);
+   collectAccessReads(modelDefOf(malloyModel)?.contents ?? {}, reads);
+   parts.accessReads = [...reads].sort();
+}
+
 /**
  * Add one compiled `.malloy` model's builds, persist sources, dropped
  * `#@ persist` sources, rollups and gate outcomes to `parts`. `materializer`
@@ -1326,6 +1340,7 @@ export async function collectModelBuildPlan(
       crossFileCompanions?: CrossFileCompanions;
    },
 ): Promise<void> {
+   addAccessReads(parts, args.malloyModel);
    await collectGeneratedTables(parts, args);
    const plannable = await v1PlanModel(parts, args);
    if (!plannable) return;
@@ -2093,11 +2108,13 @@ export function derivePackagePlan(
       counts,
    );
    const { annotationFindings, refusalNotices } = projected;
-   const plan = withRefusalOrigins(
+   const refusedPlan = withRefusalOrigins(
       projected.plan,
       compiled.tables,
       refusalNotices,
    );
+   const asOfBuild = asOfBuildOf(refusedPlan, compiled.tables);
+   const plan = withAsOfBuild(refusedPlan, asOfBuild);
    return {
       plan,
       tables: tablePlanDataOf(compiled.tables),
@@ -2132,9 +2149,28 @@ export function derivePackagePlan(
          .sort(),
       incrementalDeclarations,
       materializePlans: materializePlansOf(compiled.tables),
-      asOfBuild: asOfBuildOf(plan, compiled.tables),
+      asOfBuild,
+      accessReads: [...(compiled.accessReads ?? [])],
       eligibilityRefused: { ...counts },
    };
+}
+
+/**
+ * `plan` with `asOfBuild: true` on each source entry stored as of its build,
+ * so a host that reuses a ready table by its address can tell it must
+ * rebuild this one on every run.
+ */
+function withAsOfBuild(
+   plan: BuildPlan | null,
+   asOfBuild: Readonly<Record<string, AsOfBuildSource>>,
+): BuildPlan | null {
+   if (!plan || Object.keys(asOfBuild).length === 0) return plan;
+   const sources = { ...plan.sources };
+   for (const sourceID of Object.keys(asOfBuild)) {
+      const entry = sources[sourceID];
+      if (entry) sources[sourceID] = { ...entry, asOfBuild: true };
+   }
+   return { ...plan, sources };
 }
 
 /** The planned tables stored as of their build (`PackagePlan.asOfBuild`). */

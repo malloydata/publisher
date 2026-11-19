@@ -55,6 +55,7 @@ import {
    readTimeDynamicTerms,
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
+import { EVERY_SOURCE } from "./access_closure";
 import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import {
@@ -611,6 +612,19 @@ function referencesAuthorize(persistSource: PersistSource): boolean {
 }
 
 /**
+ * {@link referencesAuthorize} over a slice of compiled IR: a source or query
+ * definition of a model's contents. Fails closed: a walk that cannot finish
+ * reads as gated.
+ */
+export function irCarriesAGate(def: unknown): boolean {
+   try {
+      return walkForAuthorize(def, new WeakSet(), 0);
+   } catch {
+      return true;
+   }
+}
+
+/**
  * True if an annotation note is an authorize gate, via
  * {@link parseAuthorizeAnnotation}. Must share the enforcement path's parser: a
  * spelling enforcement gates on but this misses (e.g. the block form
@@ -963,6 +977,12 @@ export interface TierGateInputs {
     * build can read a source.
     */
    connectionTypes?: Readonly<Record<string, string>>;
+   /**
+    * Every sourceID an access decision of the package reads
+    * (`CompiledBuildPlan.accessReads`); unknown refuses every relation that
+    * reads the current time.
+    */
+   accessReads?: readonly string[];
 }
 
 /**
@@ -1175,20 +1195,23 @@ function currentTimeRefusalCause(
    }
    if (currentTimeAccessInput(source, plan)) {
       return (
-         "its rows decide what a caller may see (it is scoped by a given, " +
-         "joins a source scoped by one, or a gated source joins it), so a " +
-         "table as of its build would keep a grant past its time"
+         "its rows feed an access decision (it is scoped by a given, joins " +
+         "a source scoped by one, or a source that carries a gate or reads " +
+         "a given extends, derives from, joins or composes it), so a table " +
+         "as of its build would keep a grant past its time"
       );
    }
    return undefined;
 }
 
 /**
- * Whether a source's rows are an access decision: its own read-time terms or
- * joins read a given (a caller-scoped source, or one that joins a grant
- * table, {@link admitGivenPositions}), or a gated table of the plan joins it
- * by name (a grant or visibility table a gate reads). Fails closed: a
- * classification that cannot be read counts.
+ * Whether a source's rows feed an access decision: its own read-time terms
+ * or joins read a given (a caller-scoped source, or one that joins a grant
+ * table, {@link admitGivenPositions}), or a definition of the package that
+ * carries a gate or reads a given depends on it, at any depth: extends it,
+ * derives from it with `->`, joins it, composes it, or builds a stored
+ * relation over it (`accessReads`). Fails closed: an unknown closure, or a
+ * classification that cannot be read, counts.
  */
 function currentTimeAccessInput(
    source: PersistSource,
@@ -1199,44 +1222,7 @@ function currentTimeAccessInput(
    if (admitted.terms.length > 0 || (admitted.joinedTerms ?? []).length > 0) {
       return true;
    }
-   return gateJoinedSourceIDs(plan).has(source.sourceID);
-}
-
-const gateJoinedMemo = new WeakMap<object, ReadonlySet<string>>();
-
-/** The sourceIDs a gated table of the plan joins, at any depth of its joins. */
-function gateJoinedSourceIDs(
-   plan: TierGateInputs | undefined,
-): ReadonlySet<string> {
-   const tables = plan?.tables;
-   if (!tables) return new Set();
-   const memo = gateJoinedMemo.get(tables);
-   if (memo) return memo;
-   const out = new Set<string>();
-   for (const table of Object.values(tables)) {
-      const gated = table.source;
-      if (!gated || !referencesAuthorize(gated)) continue;
-      try {
-         collectJoinedSourceIDs(sourceDefOf(gated), out, 0);
-      } catch {
-         // Unreadable joins name nothing; the gate refuses the source itself.
-      }
-   }
-   gateJoinedMemo.set(tables, out);
-   return out;
-}
-
-function collectJoinedSourceIDs(
-   def: unknown,
-   out: Set<string>,
-   depth: number,
-): void {
-   if (depth > 8 || def === null || typeof def !== "object") return;
-   const fields = (def as { fields?: unknown }).fields;
-   for (const f of Array.isArray(fields) ? fields : []) {
-      const field = f as { join?: unknown; sourceID?: unknown };
-      if (field?.join === undefined) continue;
-      if (typeof field.sourceID === "string") out.add(field.sourceID);
-      collectJoinedSourceIDs(field, out, depth + 1);
-   }
+   const reads = plan?.accessReads;
+   if (reads === undefined) return true;
+   return reads.includes(source.sourceID) || reads.includes(EVERY_SOURCE);
 }

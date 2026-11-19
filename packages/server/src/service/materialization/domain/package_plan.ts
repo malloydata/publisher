@@ -219,6 +219,8 @@ export interface PackagePlan<Finding = unknown> {
     * time), by sourceID: each one's name, model and where it reads the clock.
     */
    asOfBuild?: Record<string, AsOfBuildSource>;
+   /** See `CompiledBuildPlan.accessReads`. */
+   accessReads?: readonly string[];
    /**
     * The declarations this derivation refused for eligibility, counted by
     * reason, for the caller to record: deriving a plan counts nothing.

@@ -208,7 +208,8 @@ function refusalOf(
    plan?: Parameters<typeof assertTierEligible>[2],
 ): MaterializationEligibilityError | undefined {
    try {
-      assertTierEligible(source, storage, plan);
+      // A closure computed and found empty, unless the case names one.
+      assertTierEligible(source, storage, { accessReads: [], ...plan });
       return undefined;
    } catch (err) {
       expect(err).toBeInstanceOf(MaterializationEligibilityError);
@@ -253,7 +254,7 @@ source: p is ev -> { where: ts < now; select: * } extend { where: id = $ORG }
          );
          const refusal = refusalOf(sources["p"], storage);
          expect(refusal?.reason).toBe("current_time");
-         expect(refusal?.message).toContain("decide what a caller may see");
+         expect(refusal?.message).toContain("feed an access decision");
       });
 
       it(`admits now in its own extend block on ${tier}, not stored as of its build`, async () => {
@@ -297,31 +298,22 @@ source: p is ev -> { where: ts < now; select: * } extend {}
       ).toBeUndefined();
    });
 
-   it("refuses one a gated table of the plan joins (a grant table) as current_time", async () => {
-      const { sources } = await compilePersistSources(
-         connections,
-         `##! experimental { persistence givens }
-given: ORG :: number is 1
-${HEAD.replace("##! experimental.persistence\n", "")}
-#@ persist name="grants"
-source: grants is ev -> { where: ts < now; select: id }
-#(access_filter) g.id = $ORG
-#@ persist name="gated"
-source: gated is ev -> { select: * } extend { join_one: g is grants on g.id = id }
-#@ persist name="alone"
-source: alone is ev -> { where: ts < now; select: id }
-`,
+   it("refuses one an access decision reads (accessReads), and one when the closure is unknown", async () => {
+      const source = await persistSource(
+         `#@ persist name="p"\nsource: p is ev -> { where: ts < now; select: * }`,
       );
-      const tables = Object.fromEntries(
-         Object.values(sources).map((source) => [
-            source.sourceID,
-            { kind: "persist" as const, source },
-         ]),
+      const read = refusalOf(source, false, { accessReads: [source.sourceID] });
+      expect(read?.reason).toBe("current_time");
+      expect(read?.message).toContain("feed an access decision");
+      expect(refusalOf(source, false, { accessReads: ["*"] })?.reason).toBe(
+         "current_time",
       );
-      const refusal = refusalOf(sources["grants"], false, { tables });
-      expect(refusal?.reason).toBe("current_time");
-      expect(refusal?.message).toContain("a gated source joins it");
-      expect(refusalOf(sources["alone"], false, { tables })).toBeUndefined();
+      expect(refusalOf(source, false, { accessReads: undefined })?.reason).toBe(
+         "current_time",
+      );
+      expect(
+         refusalOf(source, false, { accessReads: ["other@x"] }),
+      ).toBeUndefined();
    });
 
    it("leaves a rollup and a #(materialize) table to their own planners", async () => {
@@ -357,6 +349,7 @@ source: ok is ev -> { select: * } extend { where: ts < now }
          ),
          connectionDigests: {},
          addresses: {},
+         accessReads: [],
       });
       expect([...eligibility.eligible].sort()).toEqual(
          [sources["p"].sourceID, sources["ok"].sourceID].sort(),

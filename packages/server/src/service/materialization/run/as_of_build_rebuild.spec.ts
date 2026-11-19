@@ -40,7 +40,7 @@ source: plain is ev -> { select: * }
 describe("a run over a table stored as of its build", () => {
    it("rebuilds it on every run and carries the rest forward", async () => {
       const pkg = await packages.create({ "m.malloy": MODEL });
-      const { runPlan: compiled } = await compileRunPlan(pkg);
+      const { runPlan: compiled, packagePlan } = await compileRunPlan(pkg);
       const byName = Object.fromEntries(
          Object.entries(compiled.tables).map(([sourceID, t]) => [
             t.source.name,
@@ -50,6 +50,12 @@ describe("a run over a table stored as of its build", () => {
       expect(Object.keys(compiled.asOfBuild ?? {}).sort()).toEqual(
          [byName.last7, byName.past].sort(),
       );
+      // A host that reuses a ready table by its address reads the flag.
+      const flagged = Object.entries(packagePlan.plan?.sources ?? {})
+         .filter(([, entry]) => entry.asOfBuild === true)
+         .map(([sourceID]) => sourceID)
+         .sort();
+      expect(flagged).toEqual([byName.last7, byName.past].sort());
       // The first run: everything builds.
       const first = deriveSelfInstructions(compiled, undefined, {});
       expect(first.instructions.length).toBe(4);

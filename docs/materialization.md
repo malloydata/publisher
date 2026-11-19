@@ -299,13 +299,16 @@ A source **reads the current time** when its persisted relation reads `now` (a c
 `now` or an offset of it, `now.month` and other truncations, `now::date`), or a filter string over
 a date or timestamp whose window is anchored to the clock: `ts ~ f'last 7 days'`, `f'today'`,
 `f'yesterday'`, `f'this month'`, `f'last week'`, `f'next 2 days'`, `f'7 days ago to now'`,
-`f'before 3 days ago'`, `f'monday'`, and any `or`, `and`, negation or alternation that holds one.
+`f'before 3 days ago'`, `f'monday'`, and any `or`, `and` or negation that holds one.
 Such a filter compiles to no `now`, but its SQL reads the clock all the same. An absolute filter
 string (`f'2024'`, `f'2024-01-01 to 2024-02-01'`, `f'after 2024-01-01'`, `f'2024-01 for 3
 months'`) names fixed days and does not; neither does a filter string over a string, number or
 boolean (`s ~ f'today'` matches the text). A `filter<…>` given in the persisted relation is
-refused as `reads_given` whatever its default, as every given there is. `now` written inside a
-`conn.sql("...")` string is SQL text Publisher does not read.
+refused as `reads_given` whatever its default, as every given there is. A clock read in SQL text
+Publisher does not parse is not detected: `now()` or `current_timestamp` written inside a
+`conn.sql("...")` string, or a raw SQL function call (`current_timestamp!timestamp()`). Such a
+relation is treated as reading no clock, so it is built and carried forward like any other; write
+the window in Malloy (`now`, or a filter string) for it to be recognised.
 
 The persisted relation is what the build runs:
 
@@ -325,7 +328,9 @@ at every read.
 time is built and served as of its build**, like any stored table: its table holds the rows the
 build saw, and every answer from it is as of that build, not of the query. So that it is never
 older than its last run, such a table is **rebuilt on every run**, scheduled or on demand, and never
-carried forward as unchanged. The package carries a `persist-reads-current-time` warning (severity
+carried forward as unchanged. Its build plan entry says so (`sources[…].asOfBuild: true`): a host
+that instructs its own runs and reuses a ready table by its `sourceEntityId` must rebuild such a
+table on every run too, or it serves the same rows indefinitely. The package carries a `persist-reads-current-time` warning (severity
 `warn`, `subject` the source, the view as `<source> -> <view>`, or the query) that says its answers
 are as of its build, names where its relation reads the clock (`` `where: ts ~ f'last 7 days'` ``,
 `` the field `recent` ``), and gives the alternatives below; its serve verdict's message says the same.
@@ -349,11 +354,17 @@ source: events_as_of_build is raw -> { where: ts ~ f'last 7 days'; select: * }
 - **A gated source:** an `#(authorize)` or `#(access_filter)` gate anywhere beneath it, its own,
   inherited or joined (a persisted view over a gated source, and a persisted query that reaches a
   gate, as before). The gate's decision would read a clock frozen at the build.
-- **An access input:** a source whose own extend-block `where:` reads a given, or that joins a
-  given-scoped source (the [grant-table idiom](#per-user-visibility-through-a-joined-grant-table)),
-  or that a gated stored source of the package joins. Its rows decide what a caller may see, so a
-  frozen clock is a grant that outlives its time. A gated source that is not itself stored is not
-  seen by this check; give a grant table a freshness window, or keep its clock in its extend block.
+- **An access input:** a relation an access decision of the package reads. A source, query or
+  view that carries an `#(authorize)` or `#(access_filter)` gate, or reads a given anywhere (a
+  `where:`, a dimension, a measure, a join's `on`), is an access decision; every source it depends
+  on, at any depth, is an access input: one it extends, one it derives from with `->`, one it joins
+  (directly, through another source's join, or from another file), a composite's member, and the
+  base of a `#(materialize)` source, rollup, persisted view or persisted query over it, whether
+  the access decision is itself stored or answered live. So is a source whose own extend-block
+  `where:` reads a given, or that joins a given-scoped source (the
+  [grant-table idiom](#per-user-visibility-through-a-joined-grant-table)). Its rows decide what a
+  caller may see, so a frozen clock is a grant that outlives its time. The check reads every model
+  of the package and what each imports, and fails closed: a definition it cannot read counts.
 - **`refresh="incremental"`:** a delta reads only rows past its watermark, so a window over the
   clock would never drop the rows it has passed.
 - **A rollup:** a `#@ preaggregate` or `#(rollup)` rollup whose base, measure or grain reads the
