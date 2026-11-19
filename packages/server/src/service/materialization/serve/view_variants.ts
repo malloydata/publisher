@@ -178,6 +178,8 @@ export interface ResolvedTable extends ViewTable {
 
 export interface CompiledVariant {
    materializer?: ModelMaterializer;
+   /** This compile's own graft cache scope (`VariantCompileCache`). */
+   cacheScope?: string;
    modelDef?: ModelDef;
    runtime?: GraftRuntime;
    error?: string;
@@ -367,7 +369,7 @@ export class PersistedViewServe {
          table,
          modelPath: this.host.modelPath(),
          subject: `${plan.sourceName} -> ${plan.viewName}`,
-         cacheScope: `persisted_view\u0000${this.compiled.generation}\u0000${plan.buildSourceID}\u0000${localName}`,
+         cacheScope: variant.cacheScope ?? "",
          compilerKey: this.compilerKeyOf(plan.buildSourceID),
       });
    }
@@ -502,7 +504,11 @@ export class PersistedViewServe {
       ].join("\u0000");
       return this.compiled.get(
          key,
-         () => this.compile(plan, localName, table),
+         (scope) =>
+            this.compile(plan, localName, table).then((v) => ({
+               ...v,
+               cacheScope: `persisted_view\u0000${scope}\u0000${plan.buildSourceID}\u0000${localName}`,
+            })),
          (error) => ({ error }),
       );
    }

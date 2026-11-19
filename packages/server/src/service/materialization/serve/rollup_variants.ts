@@ -1770,13 +1770,14 @@ export class RollupVariantServe {
          // its name and the plan.
          ...(use.kind === "base" ? use.views : []),
       ].join("\u0000");
-      // One graft cache scope per compiled variant: two variants naming the
-      // same source (other views, another rollup, a reload) never share a
-      // grafted materializer.
-      const cacheScope = `rollup\u0000${this.compiled.generation}\u0000${key}`;
       return this.compiled.get(
          key,
-         () => {
+         (scope) => {
+            // One graft cache scope per compile: two variants naming the
+            // same source (other views, another rollup, a reload, a compile
+            // again after the cache dropped it) never share a grafted
+            // materializer.
+            const cacheScope = `rollup\u0000${scope}\u0000${key}`;
             const unreadDetail = this.unreadDetailOf(plan, table);
             return this.compile(plan, use, table).then((v) => ({
                ...v,

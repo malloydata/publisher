@@ -28,7 +28,7 @@ export interface LaneCompiled {
    aliased: Binding[];
 }
 
-/** Compile a copy of  for , under . */
+/** Compile a copy of `bindings` for `lane`, under `generation`. */
 type CompileCopy<C> = (
    key: string,
    generation: number,

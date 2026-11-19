@@ -85,4 +85,19 @@ describe("VariantCompileCache", () => {
       expect(await cache.get("a", compile, failed)).toEqual({ value: 1 });
       expect(await cache.get("b", compile, failed)).toEqual({ value: 4 });
    });
+
+   it("hands each compile a scope of its own, a compile again after a drop included", async () => {
+      const cache = new VariantCompileCache<V & { scope?: string }>(1);
+      const scopes: string[] = [];
+      const compile = async (scope: string) => {
+         scopes.push(scope);
+         return { scope };
+      };
+      await cache.get("a", compile, failed);
+      await cache.get("b", compile, failed); // drops a
+      await cache.get("a", compile, failed); // a again, compiled anew
+      cache.invalidate();
+      await cache.get("a", compile, failed);
+      expect(new Set(scopes).size).toBe(4);
+   });
 });

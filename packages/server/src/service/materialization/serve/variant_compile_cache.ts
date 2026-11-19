@@ -22,6 +22,7 @@ const DEFAULT_LIMIT = 500;
 
 export class VariantCompileCache<V> {
    private generationNo = 0;
+   private compiles = 0;
    private readonly entries = new Map<string, Promise<V>>();
    private compiledFor: readonly Binding[] | undefined;
 
@@ -47,11 +48,12 @@ export class VariantCompileCache<V> {
 
    /**
     * The variant for `key`: the one compiled or compiling, else `compile()`'s,
-    * with a rejection kept as `failed(message)`.
+    * with a rejection kept as `failed(message)`. `compile` is handed this
+    * compile's own scope.
     */
    get(
       key: string,
-      compile: () => Promise<V>,
+      compile: (scope: string) => Promise<V>,
       failed: (message: string) => V,
    ): Promise<V> {
       let compiled = this.entries.get(key);
@@ -61,8 +63,9 @@ export class VariantCompileCache<V> {
          this.entries.set(key, compiled);
          return compiled;
       }
-      compiled = compile().catch((error: unknown) =>
-         failed(error instanceof Error ? error.message : String(error)),
+      compiled = compile(`${this.generationNo}\u0000${++this.compiles}`).catch(
+         (error: unknown) =>
+            failed(error instanceof Error ? error.message : String(error)),
       );
       if (this.entries.size >= this.limit) {
          const oldest = this.entries.keys().next().value;
