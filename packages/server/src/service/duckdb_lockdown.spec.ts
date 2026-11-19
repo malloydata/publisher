@@ -28,6 +28,7 @@ import {
    lockDownDuckDBSession,
    networkedDuckDBOptions,
    runAsInternalStatement,
+   runInternalSQL,
    sandboxedDuckDBOptions,
 } from "./duckdb_lockdown";
 import { unrecordedAudit } from "./access_record";
@@ -175,6 +176,41 @@ async function expectCommonVectorsRefused(
    ]) {
       expect(await refused(connection, statement)).toContain("locked down");
    }
+   // Catalog and settings introspection, and the functions that reach an
+   // attached database beyond its tables, in any casing, quoting or position.
+   for (const statement of [
+      "SELECT * FROM duckdb_databases()",
+      'SELECT * FROM "DuckDB_Databases"() WHERE 1 = 1',
+      "PRAGMA database_list",
+      "SELECT * FROM duckdb_secrets()",
+      "SELECT * FROM which_secret('s3://b/x', 's3')",
+      "SELECT * FROM duckdb_settings()",
+      "SELECT * FROM postgres_query('db', 'SELECT 1')",
+      "SELECT * FROM postgres_scan('dbname=x', 'public', 't')",
+      "SELECT * FROM postgres_scan_pushdown('dbname=x', 'public', 't')",
+      "SELECT * FROM postgres_execute('db', 'SELECT 1')",
+      "SELECT * FROM postgres_attach('dbname=x')",
+      "SELECT * FROM postgres_configure_pool(max_connections := 1)",
+      "SELECT * FROM __ducklake_metadata_lake.ducklake_metadata",
+      'SELECT * FROM "__DuckLake_Metadata_lake".main.ducklake_metadata',
+      "SELECT 1 AS a /* duckdb_databases() */",
+   ]) {
+      expect(await refused(connection, statement)).toContain("locked down");
+      expect(await refusedStream(connection, statement)).toContain(
+         "locked down",
+      );
+   }
+   // Publisher's own read of its catalog, marked internal, still runs.
+   expect(
+      Number(
+         rowsOf(
+            await runInternalSQL(
+               connection,
+               "SELECT count(*) AS n FROM duckdb_databases()",
+            ),
+         )[0]?.n,
+      ),
+   ).toBeGreaterThan(0);
    // Hiding a statement from a reader that splits SQL differently from DuckDB:
    // a line comment DuckDB ends at a carriage return, a dollar-quote tag with
    // digits or non-ASCII, SQL run from its serialized form, and a database
@@ -525,6 +561,18 @@ describe("author SQL in a model on a DuckDB connection reads as one SELECT", () 
       }
    });
 
+   it("refuses author SQL that names catalog introspection or a metadata catalog", async () => {
+      for (const model of [
+         `source: s is duckdb.sql("SELECT * FROM duckdb_settings()")`,
+         `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_string("(SELECT max(path) FROM duckdb_databases())") }`,
+         `source: s is duckdb.table('__ducklake_metadata_lake.ducklake_metadata')`,
+      ]) {
+         await expect(load(model)).rejects.toThrow(
+            /introspection|does not exist/,
+         );
+      }
+   });
+
    it("loads one SELECT, CTEs included, and a plain raw expression", async () => {
       const pkg = await load(
          `source: s is duckdb.sql("WITH x AS (SELECT 1 AS a) SELECT a FROM x") extend { dimension: d is sql_number("a + 1") }`,
@@ -771,7 +819,7 @@ describe("environment duckdb with an attached bucket: setup, then lock", () => {
          ),
       ).toContain("locked down");
       const names = rowsOf(
-         await connection.runSQL("SELECT name FROM duckdb_secrets()"),
+         await runInternalSQL(connection, "SELECT name FROM duckdb_secrets()"),
       ).map((row) => row.name);
       expect(names).toContain("internal_renewal");
       expect(names).not.toContain("caller_secret");

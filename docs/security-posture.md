@@ -415,8 +415,12 @@ cloud-metadata or other non-allowlisted URL, no ATTACH of another catalog, no ex
 load beyond what the instance's own setup loaded (extension autoload is off), no persistent
 secret, and no `SET`/`RESET` once locked. On a locked instance, Publisher also refuses, before
 DuckDB sees it, any statement that creates or drops a secret, that reaches DuckDB's logging or
-profiling (which DuckDB's configuration lock does not cover), or that runs SQL taken from text
-(`query()`, a serialized plan, `IMPORT DATABASE`). It reads each statement with DuckDB's own
+profiling (which DuckDB's configuration lock does not cover), that runs SQL taken from text
+(`query()`, a serialized plan, `IMPORT DATABASE`), or that introspects the instance's catalog,
+settings or secrets or reaches an attached database other than through its tables; author SQL
+that does any of these is refused when the package loads. A Postgres database attached to DuckDB
+(a DuckLake catalog, an attached database, a federated build source) is attached through a
+temporary DuckDB secret that holds its user and password, so its attach path carries no credential. It reads each statement with DuckDB's own
 parser where the parser can serialize it, and every statement with a fail-closed lexical check
 that re-reads comment and string text, so a construct read differently from DuckDB hides nothing.
 Publisher's own renewal of a storage secret is the one secret statement it admits. The lockdown is part of each instance's configuration identity, so an instance is never
