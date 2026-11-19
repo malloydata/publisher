@@ -35,6 +35,7 @@
 
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
+import { TemporalFilterExpression } from "@malloydata/malloy-filter";
 import { destinationOf, readRouteIfAny } from "./declaration";
 import { collectGivenRefs } from "../../given";
 import { readsAGiven } from "../../probe_compiler";
@@ -1003,7 +1004,14 @@ export function classifyWhereTerms(def: {
    return out;
 }
 
-/** Whether a slice of compiled IR reads the current time (`now`). */
+/**
+ * Whether a slice of compiled IR reads the current time: `now`, or a filter
+ * expression over a date or timestamp whose window is anchored to the clock
+ * (`ts ~ f'last 7 days'`, `f'today'`, `f'this month'`, `f'7 days ago to
+ * now'`). Such a filter compiles to no `now` node, but its SQL reads the
+ * clock all the same. An absolute filter (`f'2024'`, a range between two
+ * literal days) does not.
+ */
 export function readsCurrentTime(node: unknown, depth = 0): boolean {
    if (depth > MAX_WALK_DEPTH) return true; // fail closed
    if (node === null || typeof node !== "object") return false;
@@ -1012,12 +1020,111 @@ export function readsCurrentTime(node: unknown, depth = 0): boolean {
    }
    const record = node as Record<string, unknown>;
    if (record.node === "now") return true;
+   if (record.node === "filterMatch") {
+      return filterMatchReadsCurrentTime(record, depth);
+   }
+   // A filter string outside a `~` match (Malloy's `ts ? f'…' | f'…'`
+   // alternation): its type is not recorded beside it, so it reads the clock
+   // when it parses as a relative time filter.
+   if (record.node === "filterLiteral") {
+      return relativeTemporalFilter(record.filterSrc, false);
+   }
    for (const [key, value] of Object.entries(record)) {
-      // Locations and annotations carry no expression.
-      if (key === "at" || key === "location" || key === "annotations") continue;
+      // Locations and annotations carry no expression. `stableFilter` repeats
+      // a filter condition's own expression in another form.
+      if (
+         key === "at" ||
+         key === "location" ||
+         key === "annotations" ||
+         key === "stableFilter"
+      ) {
+         continue;
+      }
       if (readsCurrentTime(value, depth + 1)) return true;
    }
    return false;
+}
+
+const TEMPORAL_FILTER_TYPES: ReadonlySet<string> = new Set([
+   "date",
+   "timestamp",
+   "timestamptz",
+]);
+
+/**
+ * A `~` match (`filterMatch`): it reads the current time when the value it
+ * tests does, or when it tests a date or timestamp against a filter string
+ * anchored to the clock. A filter string over any other type never reads it
+ * (`s ~ f'today'` matches the text). A filter that is not a literal (a
+ * given) is the caller's value, applied wherever the given is.
+ */
+function filterMatchReadsCurrentTime(
+   record: Record<string, unknown>,
+   depth: number,
+): boolean {
+   const kids = (record.kids ?? {}) as { expr?: unknown; filterExpr?: unknown };
+   if (readsCurrentTime(kids.expr, depth + 1)) return true;
+   const filter = kids.filterExpr as
+      | { node?: unknown; filterSrc?: unknown }
+      | undefined;
+   if (filter?.node !== "filterLiteral") {
+      return readsCurrentTime(filter, depth + 1);
+   }
+   if (
+      typeof record.dataType !== "string" ||
+      !TEMPORAL_FILTER_TYPES.has(record.dataType)
+   ) {
+      return false;
+   }
+   return relativeTemporalFilter(filter.filterSrc, true);
+}
+
+/** Temporal filter operators whose window ends at the current time. */
+const RELATIVE_TEMPORAL_OPERATORS: ReadonlySet<string> = new Set([
+   "last",
+   "next",
+   "in_last",
+]);
+
+/**
+ * Whether a temporal filter string is anchored to the clock: it uses a
+ * relative operator (`last 7 days`, `next 2 weeks`) or names any moment but
+ * a literal one (`now`, `today`, `this month`, `3 days ago`, `monday`).
+ * `unparseable` is the answer for text that does not parse as a temporal
+ * filter: fail closed where it is known to be one.
+ */
+function relativeTemporalFilter(src: unknown, unparseable: boolean): boolean {
+   if (typeof src !== "string") return unparseable;
+   if (src.trim() === "") return false;
+   let parsed: unknown;
+   try {
+      parsed = TemporalFilterExpression.parse(src).parsed;
+   } catch {
+      return unparseable;
+   }
+   if (parsed === null || parsed === undefined) return unparseable;
+   return temporalFilterIsRelative(parsed, 0);
+}
+
+function temporalFilterIsRelative(node: unknown, depth: number): boolean {
+   if (depth > MAX_WALK_DEPTH) return true; // fail closed
+   if (node === null || typeof node !== "object") return false;
+   if (Array.isArray(node)) {
+      return node.some((item) => temporalFilterIsRelative(item, depth + 1));
+   }
+   const record = node as Record<string, unknown>;
+   if (
+      typeof record.operator === "string" &&
+      RELATIVE_TEMPORAL_OPERATORS.has(record.operator)
+   ) {
+      return true;
+   }
+   if (typeof record.moment === "string" && record.moment !== "literal") {
+      return true;
+   }
+   return Object.values(record).some((value) =>
+      temporalFilterIsRelative(value, depth + 1),
+   );
 }
 
 const COMPARISONS: ReadonlySet<string> = new Set([">=", ">", "<", "<="]);

@@ -285,3 +285,195 @@ source: p is ev -> { where: ts < $CUTOFF; select: * }
       );
    });
 });
+
+// A filter string over a date or timestamp anchored to the clock compiles to
+// no `now` node, but its SQL reads the clock all the same: the same frozen
+// window, so the same refusal. An absolute one reads no clock and builds.
+const FILTER_HEAD = `##! experimental { persistence givens }
+source: ev is duckdb.sql("""SELECT * FROM (VALUES (1, 10, TIMESTAMP '2001-01-01', DATE '2001-01-01', 'today'), (2, 20, TIMESTAMP '2100-01-01', DATE '2100-01-01', 'x')) AS t(id, amt, ts, d, s)""")
+source: base_where is ev extend { where: ts ~ f'last 7 days' }
+source: base_dim is ev extend { dimension: recent is d ~ f'this month' }
+source: query_base is ev -> { where: d ~ f'today'; select: * }
+`;
+
+async function filterPersistSource(body: string): Promise<PersistSource> {
+   const { sources } = await compilePersistSources(
+      connections,
+      `${FILTER_HEAD}\n#@ persist name="p"\n${body}`,
+   );
+   const source = sources["p"];
+   expect(source).toBeDefined();
+   return source;
+}
+
+/** Whether the build SQL reads the clock, as DuckDB renders a relative filter. */
+async function buildReadsClockOrToday(source: PersistSource): Promise<boolean> {
+   return /LOCALTIMESTAMP|CURRENT_TIMESTAMP|CURRENT_DATE|now\(\)/i.test(
+      await source.getSQL(),
+   );
+}
+
+const FILTER_REFUSED: [string, string][] = [
+   [
+      "`last 7 days`",
+      "source: p is ev -> { where: ts ~ f'last 7 days'; select: * }",
+   ],
+   ["`today`", "source: p is ev -> { where: ts ~ f'today'; select: * }"],
+   [
+      "`this month`",
+      "source: p is ev -> { where: d ~ f'this month'; select: * }",
+   ],
+   [
+      "`7 days ago to now`",
+      "source: p is ev -> { where: ts ~ f'7 days ago to now'; select: * }",
+   ],
+   ["`yesterday`", "source: p is ev -> { where: d ~ f'yesterday'; select: * }"],
+   [
+      "`before 3 days ago`",
+      "source: p is ev -> { where: ts ~ f'before 3 days ago'; select: * }",
+   ],
+   [
+      "`after now`",
+      "source: p is ev -> { where: ts ~ f'after now'; select: * }",
+   ],
+   ["`last week`", "source: p is ev -> { where: d ~ f'last week'; select: * }"],
+   [
+      "`next 2 days`",
+      "source: p is ev -> { where: ts ~ f'next 2 days'; select: * }",
+   ],
+   ["`monday`", "source: p is ev -> { where: d ~ f'monday'; select: * }"],
+   [
+      "a relative half of an `or`",
+      "source: p is ev -> { where: d ~ f'2024 or last 7 days'; select: * }",
+   ],
+   [
+      "a relative match in an `or` of two",
+      "source: p is ev -> { where: ts ~ f'2024' or ts ~ f'last 7 days'; select: * }",
+   ],
+   [
+      "a negated relative match",
+      "source: p is ev -> { where: ts !~ f'last 7 days'; select: * }",
+   ],
+   [
+      "a field the persisted query computes",
+      "source: p is ev -> { select: id, recent is ts ~ f'last 7 days' }",
+   ],
+   [
+      "a filtered measure in the persisted query",
+      "source: p is ev -> { group_by: id; aggregate: n is count() { where: ts ~ f'last 7 days' } }",
+   ],
+   [
+      "the where: of the source the query reads",
+      "source: p is base_where -> { select: * }",
+   ],
+   [
+      "a dimension of the source the query reads",
+      "source: p is base_dim -> { select: id, recent }",
+   ],
+   [
+      "a query-shaped base it extends",
+      "source: p is query_base extend { measure: t is amt.sum() }",
+   ],
+];
+
+const FILTER_ADMITTED: [string, string][] = [
+   [
+      "the absolute year `2024`",
+      "source: p is ev -> { where: ts ~ f'2024'; select: * }",
+   ],
+   [
+      "the absolute range `2024-01-01 to 2024-02-01`",
+      "source: p is ev -> { where: d ~ f'2024-01-01 to 2024-02-01'; select: * }",
+   ],
+   [
+      "`after 2024-01-01`",
+      "source: p is ev -> { where: ts ~ f'after 2024-01-01'; select: * }",
+   ],
+   [
+      "`2024-01 for 3 months`",
+      "source: p is ev -> { where: d ~ f'2024-01 for 3 months'; select: * }",
+   ],
+   ["`null`", "source: p is ev -> { where: ts ~ f'null'; select: * }"],
+   [
+      "a string filter that spells a relative word",
+      "source: p is ev -> { where: s ~ f'today'; select: * }",
+   ],
+   [
+      "its own extend-block where:",
+      "source: p is ev -> { select: * } extend { where: ts ~ f'last 7 days' }",
+   ],
+   [
+      "its own dimension",
+      "source: p is ev -> { select: * } extend { dimension: recent is d ~ f'today' }",
+   ],
+   [
+      "its own measure",
+      "source: p is ev -> { select: * } extend { measure: n7 is count() { where: ts ~ f'last 7 days' } }",
+   ],
+   [
+      "a base dimension the query does not read",
+      "source: p is base_dim -> { select: id, amt }",
+   ],
+];
+
+describe("buildReadsCurrentTime: filter strings", () => {
+   for (const [what, body] of FILTER_REFUSED) {
+      it(`refuses ${what}, which the build reads`, async () => {
+         const source = await filterPersistSource(body);
+         expect(await buildReadsClockOrToday(source)).toBe(true);
+         expect(buildReadsCurrentTime(source)).toBe(true);
+      });
+   }
+   for (const [what, body] of FILTER_ADMITTED) {
+      it(`admits ${what}`, async () => {
+         const source = await filterPersistSource(body);
+         expect(await buildReadsClockOrToday(source)).toBe(false);
+         expect(buildReadsCurrentTime(source)).toBe(false);
+      });
+   }
+
+   it("refuses a relative filter on both tiers with current_time", async () => {
+      for (const storage of [false, true]) {
+         const { sources } = await compilePersistSources(
+            connections,
+            `${FILTER_HEAD}
+#@ persist name="p"${storage ? " storage=lake" : ""}
+source: p is ev -> { where: ts ~ f'last 7 days'; select: * }
+`,
+         );
+         let caught: unknown;
+         try {
+            assertTierEligible(sources["p"], storage, undefined);
+         } catch (err) {
+            caught = err;
+         }
+         expect(caught).toBeInstanceOf(MaterializationEligibilityError);
+         expect((caught as MaterializationEligibilityError).reason).toBe(
+            "current_time",
+         );
+         expect((caught as Error).message).toContain("f'last 7 days'");
+      }
+   });
+
+   it("refuses a filter given that defaults to a relative window as reads_given", async () => {
+      const { sources } = await compilePersistSources(
+         connections,
+         `##! experimental { persistence givens }
+given: WINDOW :: filter<timestamp> is f'last 7 days'
+${FILTER_HEAD.replace("##! experimental { persistence givens }\n", "")}
+#@ persist name="p"
+source: p is ev -> { where: ts ~ $WINDOW; select: * }
+`,
+      );
+      let caught: unknown;
+      try {
+         assertTierEligible(sources["p"], false, undefined);
+      } catch (err) {
+         caught = err;
+      }
+      expect(caught).toBeInstanceOf(MaterializationEligibilityError);
+      expect((caught as MaterializationEligibilityError).reason).toBe(
+         "reads_given",
+      );
+   });
+});

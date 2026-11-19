@@ -1111,9 +1111,9 @@ export function assertTierEligible(
 
 /**
  * Refuse a v1 `#@ persist` source whose build reads the current time
- * ({@link buildReadsCurrentTime}): its table would hold the rows as of the
- * build and serve them until the next rebuild, while a live query reads `now`
- * again every time. Not built, and answered live. `now` in the source's own
+ * ({@link buildReadsCurrentTime}: `now`, or a relative time filter string):
+ * its table would hold the rows as of the build and serve them until the next
+ * rebuild, while a live query reads the clock again every time. Not built, and answered live. `now` in the source's own
  * extend block is re-applied at every read, so it is admitted. A rollup
  * (rollup_plan.ts, `rollup-not-built`, reason `current_time`) and a `#(materialize)` source
  * (materialize_plan.ts) are judged by their own planners.
@@ -1129,14 +1129,16 @@ export function assertBuildReadsNoCurrentTime(
       reason: "current_time",
       message:
          `Source '${source.name}' cannot be materialized: the relation it ` +
-         `persists reads the current time (\`now\`), in its query, a view ` +
-         `it runs, the \`where:\`, a field or a join of the source that ` +
-         `query reads, or the query of a query-shaped source it is built ` +
-         `from or joins. Its table would hold the rows as of the build and ` +
-         `serve them until the next rebuild, while a live query reads \`now\` ` +
-         `again every time, so it is not built and is answered live. To serve ` +
-         `it from a table, move the \`now\` into the persisted source's own ` +
-         `extend block (a \`where:\`, dimension or measure there is applied ` +
-         `at every read), or stop persisting this source.`,
+         `persists reads the current time (\`now\`, or a relative time ` +
+         `filter such as \`f'last 7 days'\` or \`f'today'\`), in its query, ` +
+         `a view it runs, the \`where:\`, a field or a join of the source ` +
+         `that query reads, or the query of a query-shaped source it is ` +
+         `built from or joins. Its table would hold the rows as of the build ` +
+         `and serve them until the next rebuild, while a live query reads ` +
+         `the clock again every time, so it is not built and is answered ` +
+         `live. To serve it from a table, move the \`now\` or the filter ` +
+         `into the persisted source's own extend block (a \`where:\`, ` +
+         `dimension or measure there is applied at every read), or stop ` +
+         `persisting this source.`,
    });
 }
