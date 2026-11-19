@@ -296,3 +296,82 @@ describe("MaterializationRepository versions (real DuckDB)", () => {
       expect(await ids()).toEqual([legacy.id, v1.id, v2.id].sort());
    });
 });
+
+// The store's edges a run reads through: what a write returns, what a
+// collision on anything but the active slot raises, and what a corrupt JSON
+// column reads as.
+describe("MaterializationRepository edges (real DuckDB)", () => {
+   const ENV_ID = "env-e";
+   const PKG = "pkg-e";
+   const dbs: DuckDBConnection[] = [];
+
+   afterEach(async () => {
+      while (dbs.length) await dbs.pop()!.close();
+   });
+
+   async function freshDb(): Promise<{
+      db: DuckDBConnection;
+      repo: MaterializationRepository;
+   }> {
+      const db = new DuckDBConnection(":memory:");
+      dbs.push(db);
+      await db.initialize();
+      await initializeSchema(db);
+      await db.run(
+         `INSERT INTO environments (id, name, path, created_at, updated_at)
+          VALUES (?, 'e-env', '/tmp/e-env', now(), now())`,
+         [ENV_ID],
+      );
+      return { db, repo: new MaterializationRepository(db) };
+   }
+
+   it("update returns the row as written", async () => {
+      const { repo } = await freshDb();
+      const run = await repo.create(ENV_ID, PKG, "PENDING");
+      const updated = await repo.update(run.id, {
+         status: "MANIFEST_ROWS_READY",
+         metadata: { a: 1 },
+      });
+      expect(updated.id).toBe(run.id);
+      expect(updated.status).toBe("MANIFEST_ROWS_READY");
+      expect(updated.metadata).toEqual({ a: 1 });
+   });
+
+   it("update of a run that is gone throws", async () => {
+      const { repo } = await freshDb();
+      await expect(
+         repo.update("no-such-run", { status: "FAILED" }),
+      ).rejects.toThrow("not found");
+   });
+
+   it("an active row with no slot key takes the package's slot on its next active move", async () => {
+      const { db, repo } = await freshDb();
+      await db.run(
+         `INSERT INTO materializations (id, environment_id, package_name, status, active_key, created_at, updated_at)
+          VALUES ('keyless', ?, ?, 'PENDING', NULL, now(), now())`,
+         [ENV_ID, PKG],
+      );
+      await repo.update("keyless", { status: "MANIFEST_ROWS_READY" });
+      expect((await repo.getActive(ENV_ID, PKG))?.id).toBe("keyless");
+   });
+
+   it("refuses a metadata or manifest that is not JSON at the write: the columns are JSON-typed", async () => {
+      const { db, repo } = await freshDb();
+      const run = await repo.create(ENV_ID, PKG, "CANCELLED");
+      await expect(
+         db.run(
+            "UPDATE materializations SET metadata = '{not json' WHERE id = ?",
+            [run.id],
+         ),
+      ).rejects.toThrow();
+      expect((await repo.getById(run.id))?.metadata).toBeNull();
+   });
+
+   it("raises the active-slot conflict for a second active run of one package", async () => {
+      const { repo } = await freshDb();
+      await repo.create(ENV_ID, PKG, "PENDING");
+      await expect(repo.create(ENV_ID, PKG, "PENDING")).rejects.toBeInstanceOf(
+         DuplicateActiveMaterializationError,
+      );
+   });
+});
