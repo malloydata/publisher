@@ -37,14 +37,14 @@ import type { PackageModelPolicy } from "../model_policy";
 import type { BuildPlanPackage } from "./plan/build_plan";
 import {
    collisionGateLines,
-   incrementalGateLines,
    invalidFindingLines,
+   loadGateText,
+   nearMissGateLines,
    planCollisions,
+   preaggregateGateLines,
 } from "./plan/load_gate_text";
-import {
-   incrementalPolicyAdvisories,
-   incrementalPolicyRejections,
-} from "./plan/incremental_policy";
+import { incrementalPolicyAdvisories } from "./plan/incremental_policy";
+import type { PersistNameProblem } from "./domain/package_plan";
 import {
    type Binding,
    type BindingKind,
@@ -1260,33 +1260,42 @@ export class PackageMaterialization {
    }
 
    /**
-    * The materialization half of the load gate's text, or "" when the package
-    * is valid: invalid annotations and collisions, invalid incremental
-    * declarations, invalid `#@ preaggregate` ones. The same text a run over
-    * the files and a re-derivation read (plan/load_gate_text.ts).
+    * The load gate's text, or "" when the package is valid: the one text
+    * (plan/load_gate_text.ts) over this load's plan, its models' own lines
+    * and the raw text's `name=` problems, the same a run over the files, a
+    * re-derivation and a package compile read off the plan they derive.
     */
-   formatLoadGateText(): string {
-      return [
-         this.formatInvalidAnnotations(),
-         this.formatInvalidIncrementalPolicy(),
-         this.formatInvalidPreaggregatePolicy(),
-      ]
-         .filter(Boolean)
-         .join("\n");
+   loadGateText(nameProblems: readonly PersistNameProblem[]): string {
+      const models = [...this.owner.models()];
+      return loadGateText(
+         {
+            plan: this.plan.buildPlan,
+            annotationFindings: this.plan.annotationFindings,
+            incrementalDeclarations: this.plan.incrementalDeclarations,
+            materializePlans: this.plan.materializePlans,
+            persistedViews: this.plan.persistedViews,
+            modelGateLines: {
+               preaggregate: models.flatMap(([modelPath, model]) =>
+                  preaggregateGateLines(
+                     modelPath,
+                     model.preaggregateViolations(),
+                  ),
+               ),
+               nearMiss: this.nearMissLines(),
+               nameProblems: [...nameProblems],
+            },
+         },
+         {
+            enforceCollisions: getPersistCollisionEnforce(),
+            versionScoped: this.plan.versionOwnsTables(),
+         },
+      );
    }
 
-   /**
-    * REJECTION messages for incremental-refresh declarations. Unlike
-    * {@link persistencePolicyWarnings}, a non-empty result also fails the LOAD.
-    */
-   incrementalPolicyWarnings(): string[] {
-      return incrementalPolicyRejections(this.plan.incrementalPolicySources);
-   }
-
-   /** The {@link incrementalPolicyWarnings}, one per line with its route's code, or "". */
-   formatInvalidIncrementalPolicy(): string {
-      return incrementalGateLines(this.plan.incrementalPolicySources).join(
-         "\n",
+   /** Each model's misspelled materialization routes, one line each. */
+   nearMissLines(): string[] {
+      return [...this.owner.models()].flatMap(([modelPath, model]) =>
+         nearMissGateLines(modelPath, model.annotationNearMisses?.() ?? []),
       );
    }
 

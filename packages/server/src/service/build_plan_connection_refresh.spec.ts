@@ -290,8 +290,7 @@ describe("re-deriving after a connection edit", () => {
          ok: true,
          durationMs: 0,
          digestSkipped: [],
-         eligibilityRefused: {},
-         outcome: {
+         packagePlan: {
             annotationFindings: [
                {
                   route: "@",
@@ -430,7 +429,8 @@ describe("a failed re-derivation", () => {
    function internals(pkg: Package): {
       sourceEligibility: unknown;
       databaseSourceEligibility: unknown;
-      servingPlanWhileUnavailable: unknown;
+      buildPlan: unknown;
+      servingPlan(): unknown;
       buildConnectionNames: ReadonlySet<string>;
    } {
       return (
@@ -470,7 +470,7 @@ describe("a failed re-derivation", () => {
       expect(v1.getBuildPlan()).toBeNull();
       // ...but binding still matches entries as it did before the edit.
       expect(state.sourceEligibility).toBe(storageBefore);
-      expect(state.servingPlanWhileUnavailable).toBe(planBefore);
+      expect(state.servingPlan()).toBe(planBefore);
       // Except a database table on the connection the edit changed: it was
       // built through that connection as it was, and would be read through it
       // as it is now, so it serves live until the plan is re-derived.
@@ -592,7 +592,8 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
       }
       expect(v1.isBuildPlanUnavailable()).toBe(false);
       expect(planned(v1)).toEqual(await compiled(v1));
-      expect(internals(v1).servingPlanWhileUnavailable).toBeNull();
+      // Serving reads the derived plan again, not the kept one.
+      expect(internals(v1).servingPlan()).toBe(internals(v1).buildPlan);
    }, 30_000);
 
    it("re-derives when a connection a skipped source needed is created", async () => {

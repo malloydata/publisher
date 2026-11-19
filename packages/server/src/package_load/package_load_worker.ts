@@ -94,10 +94,6 @@ import {
 } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
-import {
-   setEligibilityRefusalSink,
-   type EligibilityRefusalReason,
-} from "../materialization_metrics";
 import { logger } from "../logger";
 import { installProcessSafetyHandlers } from "../process_safety";
 import type { SynthesizedRuntimeFactory } from "../service/materialization";
@@ -106,15 +102,14 @@ import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
 import { governsAccess } from "../service/governance/ir/array_query";
 import { recordConnectionType } from "../service/connection_type";
+import type { EligibilityRefusals } from "../service/materialization/domain/package_plan";
 import {
    collectModelBuildPlan,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
    emptyBuildPlanParts,
-   finishBuildPlan,
+   finishPackagePlan,
    mergeBuildPlanParts,
    newCrossFileCompanions,
-   resolveConnectionDigests,
-   resolvePackageConnections,
    type BuildPlanParts,
    type CrossFileCompanions,
    type WirePackageMaterialization,
@@ -234,13 +229,10 @@ const schemaCache = new SchemaCache<CachedSchema>(
 interface JobContext {
    jobId: string;
    packagePath: string;
-   refusals: Partial<Record<EligibilityRefusalReason, number>>;
 }
 
-/** The running job, carried across awaits so jobs' logs and refusals never mix. */
+/** The running job, carried across awaits so jobs' logs never mix. */
 const jobContext = new AsyncLocalStorage<JobContext>();
-
-setEligibilityRefusalSink(() => jobContext.getStore()?.refusals);
 
 // OpenTelemetry log export exists only on the main thread, so a job's log
 // entries are intercepted at `write` (where every call arrives as winston's
@@ -981,7 +973,7 @@ function sharedRuntimeForModel(
 
 /**
  * Per-load state for the work done on the main thread's behalf (build plan,
- * render-tag results, companions). Each model's share runs right after its
+ * render-tag results, entities). Each model's share runs right after its
  * compile, so no compiled model is held past it.
  */
 interface LoadContext {
@@ -1042,7 +1034,7 @@ async function compileMalloyModel(
       await extractCheckedModel(mm, compiled);
 
    const compileDurationMs = performance.now() - compileStart;
-   const { renderTagResults, renderTagResultsDigest, preaggregateCompanion } =
+   const { renderTagResults, renderTagResultsDigest } =
       await prepareForMainThread(job, malloyConfig, load, {
          modelPath,
          materializer: mm,
@@ -1087,7 +1079,6 @@ async function compileMalloyModel(
       gateWarnings: warnings.length > 0 ? warnings : undefined,
       renderTagResults,
       renderTagResultsDigest,
-      preaggregateCompanion,
       entities,
       governsAccess: governsAccess(modelDef),
    };
@@ -1175,11 +1166,10 @@ function digestRenderTagResults(
 
 /**
  * Do one compiled model's share of the main thread's work: render-tag
- * results, pre-aggregation companion, build-plan parts. Past the soft
- * deadline (checked before each target and the companion) the rest is left to
- * the main thread, so a slow package loads rather than hitting the job limit.
- * Plan parts are still collected after a companion that started in time,
- * since they need no recompile. Never throws: a failure fails at most the plan.
+ * results, then build-plan parts. Past the soft deadline (checked before each
+ * target and before the parts) the rest is left to the main thread, so a slow
+ * package loads rather than hitting the job limit. Never throws: a failure
+ * fails at most the plan.
  */
 async function prepareForMainThread(
    job: LoadPackageRequest,
@@ -1197,7 +1187,6 @@ async function prepareForMainThread(
 ): Promise<{
    renderTagResults?: { label: string; result?: Malloy.Result }[];
    renderTagResultsDigest?: string;
-   preaggregateCompanion?: { modelDef?: unknown };
 }> {
    if (load.failed) return {};
    const pastDeadline = (): boolean => performance.now() >= load.softDeadline;
@@ -1262,24 +1251,15 @@ async function prepareForMainThread(
       ),
       importBaseURL,
    });
-   // A v1 rollup is the rollup leg's (G4), so no composite companion is
-   // compiled: null ("no usable rollup") whenever the plan or the main
-   // thread would have asked for one, so the plan is still made here.
-   const companion: null | undefined =
-      (job.withPreaggregateCompanions || wantsPlan) &&
-      !load.failed &&
-      !pastDeadline()
-         ? null
-         : undefined;
-
    // Rechecked, since another model may have left the plan to the main
-   // thread meanwhile. The deadline is not rechecked: the parts need no
-   // recompile now, and abandoning them would make the main thread compile
-   // every model.
+   // thread meanwhile.
    if (wantsPlan && load.planLeftToMainThread) {
       wantsPlan = false;
    }
-   if (wantsPlan && companion !== undefined && !load.failed) {
+   if (wantsPlan && (load.failed || pastDeadline())) {
+      // The deadline passed while the render-tag results were prepared.
+      load.planLeftToMainThread = true;
+   } else if (wantsPlan) {
       load.planStart ??= performance.now();
       try {
          const parts = emptyBuildPlanParts();
@@ -1302,20 +1282,9 @@ async function prepareForMainThread(
             };
          }
       }
-   } else if (wantsPlan) {
-      // The deadline passed while the companion was being decided.
-      load.planLeftToMainThread = true;
    }
 
-   return {
-      renderTagResults,
-      renderTagResultsDigest,
-      // No composite companion is compiled any more (G4): `{}` says so.
-      preaggregateCompanion:
-         !job.withPreaggregateCompanions || companion === undefined
-            ? undefined
-            : {},
-   };
+   return { renderTagResults, renderTagResultsDigest };
 }
 
 async function compileNotebookModel(
@@ -1571,10 +1540,8 @@ async function finishWorkerBuildPlan(
       return undefined;
    }
    const start = performance.now();
-   const refusals = (): Partial<Record<EligibilityRefusalReason, number>> => ({
-      ...(jobContext.getStore()?.refusals ?? {}),
-   });
-   const digestSkipped: string[] = [];
+   const eligibilityRefused: EligibilityRefusals = {};
+   let digestSkipped: string[] = [];
    try {
       if (load.planError) throw new Error(load.planError.message);
       const parts = emptyBuildPlanParts();
@@ -1584,32 +1551,21 @@ async function finishWorkerBuildPlan(
          if (!own) throw new Error(`Model ${modelPath} did not compile`);
          mergeBuildPlanParts(parts, own);
       }
-      const connections = await resolvePackageConnections(
-         {
-            getMalloyConnection: (name: string) =>
-               malloyConfig.connections.lookupConnection(name),
-         },
-         parts.builds.map((b) => b.connectionName),
-      );
-      const connectionDigests = await resolveConnectionDigests(
-         connections,
-         parts.builds,
-         (name) => digestSkipped.push(name),
-      );
-      const outcome = deriveBuildPlanOutcome(
-         finishBuildPlan(parts, {
-            connectionDigests,
-            connections,
-            versionScoped,
-         }),
-         materializationConfig,
-      );
+      const finished = await finishPackagePlan(parts, {
+         getMalloyConnection: (name: string) =>
+            malloyConfig.connections.lookupConnection(name),
+         versionScoped,
+      });
+      digestSkipped = finished.digestSkipped;
       return {
          ok: true,
-         outcome,
+         packagePlan: derivePackagePlan(
+            finished.compiled,
+            materializationConfig,
+            eligibilityRefused,
+         ),
          durationMs: performance.now() - (load.planStart ?? start),
          digestSkipped,
-         eligibilityRefused: refusals(),
       };
    } catch (error) {
       return {
@@ -1617,7 +1573,7 @@ async function finishWorkerBuildPlan(
          error: errMessage(error),
          durationMs: performance.now() - (load.planStart ?? start),
          digestSkipped,
-         eligibilityRefused: refusals(),
+         eligibilityRefused,
       };
    }
 }
@@ -1704,7 +1660,6 @@ async function runServedCopyJob(job: CompileServedCopyRequest): Promise<void> {
    const context: JobContext = {
       jobId: job.requestId,
       packagePath: job.packagePath,
-      refusals: {},
    };
    try {
       port.postMessage(
@@ -1730,7 +1685,6 @@ async function runJob(job: LoadPackageRequest): Promise<void> {
    const context: JobContext = {
       jobId: job.requestId,
       packagePath: job.packagePath,
-      refusals: {},
    };
    try {
       const result = await jobContext.run(context, () => loadPackage(job));
