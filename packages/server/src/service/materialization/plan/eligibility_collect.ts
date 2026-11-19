@@ -583,7 +583,7 @@ export function collectDatabaseSourceEligibility(
                {
                   sourceID,
                   sourceName: source.name,
-                  refusal: errorCodeOf(err),
+                  reason: errorCodeOf(err),
                   code: errorCodeOf(idErr),
                },
             );
