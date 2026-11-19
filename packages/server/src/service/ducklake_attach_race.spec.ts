@@ -9,7 +9,11 @@
 // not exist` until the process restarted. These specs force that interleaving
 // on a stubbed session.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import type { MalloyQueryData } from "@malloydata/malloy";
+import {
+   MalloyConfig,
+   Runtime,
+   type MalloyQueryData,
+} from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -20,6 +24,10 @@ import { buildEnvironmentMalloyConfig } from "./connection";
 import { DuckLakeCatalogUnavailableError } from "./ducklake_catalog_unavailable";
 import { isInstanceLocked } from "./duckdb_lockdown";
 import { logger } from "../logger";
+import { isDestinationCatalogUnavailableError } from "./materialization/serve/leg";
+
+/** The schema reads a DuckLake connection overrides. */
+type DuckLakeLike = DuckDBConnection;
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -118,6 +126,13 @@ function stubDuckLake(hooks: {
       if (attach) {
          state.attaches++;
          state.attached.add(attach[1]);
+         // A real stand-in catalog on the instance, so a compile's schema
+         // read (`runRawSQL`, not stubbed) finds its table.
+         await rawSQL(this, `ATTACH OR REPLACE ':memory:' AS "${attach[1]}"`);
+         await rawSQL(
+            this,
+            `CREATE TABLE IF NOT EXISTS "${attach[1]}".main.t (x INTEGER)`,
+         );
          hooks.onAttach?.(++attachCount);
          return rows([]);
       }
@@ -180,6 +195,22 @@ function stubDuckLake(hooks: {
       return rows([]);
    });
    return { stateOf };
+}
+
+/** Run `sql` on the connection's real instance, past the stub. */
+function rawSQL(c: DuckDBConnection, sql: string): Promise<unknown> {
+   return (
+      c as unknown as { runRawSQL(sql: string): Promise<unknown> }
+   ).runRawSQL(sql);
+}
+
+/** Lose the catalog from the instance, as the race used to. */
+async function loseCatalog(
+   c: DuckDBConnection,
+   state: FakeInstance,
+): Promise<void> {
+   state.attached.delete("credible");
+   await rawSQL(c, `DETACH "credible"`);
 }
 
 /** A promise and its resolver. */
@@ -248,7 +279,7 @@ describe("concurrent first lookups of a DuckLake destination", () => {
       }
    });
 
-   it("reopens a locked instance that lost its catalog, failing that lookup with a typed error", async () => {
+   it("reopens a locked instance that lost its catalog, the detecting lookup going on to the fresh one", async () => {
       const { stateOf } = stubDuckLake({});
       const reopened: string[] = [];
       const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
@@ -263,26 +294,20 @@ describe("concurrent first lookups of a DuckLake destination", () => {
          // The catalog goes missing on the locked instance.
          stateOf(first).attached.delete("credible");
 
-         const lost = await env.malloyConfig.connections
-            .lookupConnection("credible")
-            .then(
-               () => undefined,
-               (error: unknown) => error,
-            );
-         expect(lost).toBeInstanceOf(DuckLakeCatalogUnavailableError);
-         expect(reopened).toEqual(["credible"]);
-
-         // The next lookup opens a fresh instance and attaches again.
+         // The lookup that finds it gone reopens, and is answered from a
+         // fresh instance it attaches.
          const healed = (await env.malloyConfig.connections.lookupConnection(
             "credible",
          )) as DuckDBConnection;
          expect(healed).not.toBe(first);
          expect(stateOf(healed).attached.has("credible")).toBe(true);
          expect(isInstanceLocked(healed)).toBe(true);
+         expect(reopened).toEqual(["credible"]);
       } finally {
          await env.releaseConnections().catch(() => {});
       }
    });
+
    it("checks a locked instance's catalog once, not on every lookup", async () => {
       const { stateOf } = stubDuckLake({});
       const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
@@ -333,13 +358,11 @@ describe("concurrent first lookups of a DuckLake destination", () => {
             );
          expect(lost).toBeInstanceOf(DuckLakeCatalogUnavailableError);
          const checksBefore = state.catalogChecks;
-         await expect(
-            env.malloyConfig.connections.lookupConnection("credible"),
-         ).rejects.toBeInstanceOf(DuckLakeCatalogUnavailableError);
-         expect(state.catalogChecks).toBe(checksBefore + 1);
          const healed = (await env.malloyConfig.connections.lookupConnection(
             "credible",
          )) as DuckDBConnection;
+         // The cached check was dropped, so this lookup checked again.
+         expect(state.catalogChecks).toBe(checksBefore + 1);
          expect(healed).not.toBe(connection);
          expect(
             await healed.runSQL("SELECT count(*) FROM credible.main.t"),
@@ -391,11 +414,8 @@ describe("concurrent first lookups of a DuckLake destination", () => {
             holders.splice(holders.indexOf(draining), 1);
          }
 
-         // The other holder released: this lookup reopens, once.
-         await expect(
-            env.malloyConfig.connections.lookupConnection("credible"),
-         ).rejects.toBeInstanceOf(DuckLakeCatalogUnavailableError);
-         expect(reopened).toEqual(["credible"]);
+         // The other holder released: this lookup reopens, once, and is
+         // answered from the fresh instance.
          const healed = (await env.malloyConfig.connections.lookupConnection(
             "credible",
          )) as DuckDBConnection;
@@ -426,21 +446,124 @@ describe("concurrent first lookups of a DuckLake destination", () => {
             "credible",
          )) as DuckDBConnection;
          stateOf(first).attached.delete("credible");
-         const [detecting, concurrent] = await Promise.allSettled([
+         const lookups = await Promise.allSettled([
             env.malloyConfig.connections.lookupConnection("credible"),
             env.malloyConfig.connections.lookupConnection("credible"),
          ]);
-         expect(detecting.status).toBe("rejected");
-         expect((detecting as PromiseRejectedResult).reason).toBeInstanceOf(
-            DuckLakeCatalogUnavailableError,
-         );
-         // The concurrent lookup found its connection closed and looked up
-         // again, onto a fresh instance.
-         expect(concurrent.status).toBe("fulfilled");
-         const fresh = (concurrent as PromiseFulfilledResult<DuckDBConnection>)
-            .value;
-         expect(fresh).not.toBe(first);
-         expect(stateOf(fresh).attached.has("credible")).toBe(true);
+         // Both looked up again, onto one fresh instance: the detecting one
+         // after its own reopen, the concurrent one after finding its
+         // connection closed.
+         for (const l of lookups) {
+            expect(l.status).toBe("fulfilled");
+            const fresh = (l as PromiseFulfilledResult<DuckDBConnection>).value;
+            expect(fresh).not.toBe(first);
+            expect(stateOf(fresh).attached.has("credible")).toBe(true);
+         }
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("confirms a catalog lost after its check was cached on a compile's schema read, and a compile then heals it", async () => {
+      const { stateOf } = stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      const runtime = new Runtime({ config: env.malloyConfig });
+      const model = `source: s is credible.table('credible.main.t')`;
+      try {
+         // Attached, locked, and its check cached.
+         await env.malloyConfig.connections.lookupConnection("credible");
+         const connection =
+            (await env.malloyConfig.connections.lookupConnection(
+               "credible",
+            )) as DuckLakeLike;
+         const state = stateOf(connection);
+         await runtime.loadModel(model).getModel();
+
+         // A misbinding on the schema read keeps its own error.
+         const misbound = await connection
+            .fetchTableSchema("k", "wrong_catalog.main.t")
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(misbound).not.toBeInstanceOf(DuckLakeCatalogUnavailableError);
+
+         await loseCatalog(connection, state);
+         const lost = await connection
+            .fetchTableSchema("k", "credible.main.t")
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(lost).toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         await expect(
+            connection.fetchSelectSchema({
+               connection: "credible",
+               selectStr: "SELECT * FROM credible.main.t",
+            }),
+         ).rejects.toBeInstanceOf(DuckLakeCatalogUnavailableError);
+
+         // A compile now: its lookup checks again (the schema read dropped
+         // the cached check), reopens, and compiles on the fresh instance.
+         const checksBefore = state.catalogChecks;
+         const compiled = await new Runtime({ config: env.malloyConfig })
+            .loadModel(model)
+            .getModel();
+         expect(compiled).toBeDefined();
+         expect(state.catalogChecks).toBe(checksBefore + 1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("recognises the compile's wrapped schema-read failure as a lost catalog", async () => {
+      // Malloy catches the schema read's error and reports it as a problem,
+      // with neither its type nor its code: the served copy must still know
+      // it, or it would remember the failure past the reopen.
+      const { stateOf } = stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         await env.malloyConfig.connections.lookupConnection("credible");
+         const connection =
+            (await env.malloyConfig.connections.lookupConnection(
+               "credible",
+            )) as DuckDBConnection;
+         await loseCatalog(connection, stateOf(connection));
+         // Malloy reads the schema through the connection it was handed, so
+         // the compile sees the loss before any lookup checks again.
+         const handedConfig = new MalloyConfig({ connections: {} });
+         handedConfig.wrapConnections(() => ({
+            lookupConnection: async () => connection,
+         }));
+         const handed = new Runtime({ config: handedConfig });
+         const failure = await handed
+            .loadModel(`source: s is credible.table('credible.main.t')`)
+            .getModel()
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(failure).toBeDefined();
+         expect(failure).not.toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         expect(isDestinationCatalogUnavailableError(failure)).toBe(true);
+
+         // A compile failing for any other reason is not one.
+         await env.malloyConfig.connections
+            .lookupConnection("credible")
+            .catch(() => undefined);
+         const other = await new Runtime({ config: env.malloyConfig })
+            .loadModel(`source: s is credible.table('credible.main.nope')`)
+            .getModel()
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(other).toBeDefined();
+         expect(isDestinationCatalogUnavailableError(other)).toBe(false);
       } finally {
          await env.releaseConnections().catch(() => {});
       }
