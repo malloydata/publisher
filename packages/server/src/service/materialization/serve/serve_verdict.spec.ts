@@ -131,6 +131,65 @@ describe("computeServeVerdicts", () => {
       expect(serves.verdict).toBe("serves");
    });
 
+   // F-45: a host may place a source with no `storage=` in a storage
+   // destination, and queries read it from that storage binding
+   // (`storageLookupOf`). The verdict's tier is the binding's, as theirs is.
+   it("judges a source a host placed in storage by its storage binding, not its annotation", () => {
+      const sources = [
+         plan("orders"),
+         plan("orders_rollup_1", { origin: "rollup" }),
+         plan("ops__by_carrier__view"),
+      ];
+      const names = new Set(sources.map(([, s]) => s.name));
+      const asked: string[] = [];
+      const verdicts = computeServeVerdicts(
+         facts(sources, {
+            boundStorageNames: names,
+            servedStorageNames: names,
+            keepsGate: (_id, tier) => {
+               asked.push(tier);
+               return true;
+            },
+            refusedAtBind: (_id, _source, tier) => {
+               asked.push(tier);
+               return undefined;
+            },
+            gated: () => true,
+         }),
+      );
+      expect(verdicts.map((v) => [v.tier, v.verdict])).toEqual([
+         ["storage", "serves"],
+         ["storage", "serves"],
+         ["storage", "serves"],
+      ]);
+      // The gate and the bind are asked of the storage tier too.
+      expect(new Set(asked)).toEqual(new Set(["storage"]));
+      // With no storage binding, the annotation still decides.
+      const [unbound] = computeServeVerdicts(facts([plan("orders")]));
+      expect(unbound).toMatchObject({
+         tier: "database",
+         verdict: "awaiting_build",
+      });
+   });
+
+   it("names no storage= to drop for a host's storage binding while the storage mode is off", () => {
+      const [verdict] = computeServeVerdicts(
+         facts([plan("orders")], {
+            storageMode: "off",
+            boundStorageNames: new Set(["orders"]),
+         }),
+      );
+      expect(verdict).toMatchObject({
+         tier: "storage",
+         verdict: "live",
+         reason: "storage_mode",
+      });
+      expect(verdict.message).not.toContain("storage=");
+      expect(verdict.fixes).toEqual([
+         "Set PERSIST_STORAGE_MODE=on on the server.",
+      ]);
+   });
+
    it("serves nothing from storage unless PERSIST_STORAGE_MODE is on", () => {
       for (const storageMode of ["off", "write-only"]) {
          const [verdict] = computeServeVerdicts(

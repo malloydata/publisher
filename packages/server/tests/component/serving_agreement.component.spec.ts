@@ -513,3 +513,79 @@ describe("the verdicts, path report, preview and warnings agree on one package",
       expect(tLive.servedFrom).not.toBe("storage");
    });
 });
+
+const HOST_PLACED_MODEL = `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'east', 10), (2, 'west', 20), (3, 'east', 5))
+    AS t(id, region, amount)
+""")
+
+#@ persist name="daily_h"
+source: daily_h is orders -> { group_by: region; aggregate: t is amount.sum() }
+`;
+
+// F-45: a source with no `storage=` that a host's build instructions placed in
+// a storage destination is bound as a storage table, and queries read it from
+// there (`storageLookupOf`). The verdict judged it by its annotation and said
+// `awaiting_build` while queries were served from storage.
+describe("a database-origin source a host placed in a storage destination", () => {
+   let restoreTypes: () => void;
+   beforeEach(() => {
+      restoreTypes = recordConnectionsAsForTests({ duckdb: "postgres" });
+   });
+   afterEach(() => restoreTypes());
+
+   it("reads serves, from storage, as the path report says it was served", async () => {
+      const { pkg } = await loadPackage({
+         "model.malloy": HOST_PLACED_MODEL,
+         "index.malloy": 'import "model.malloy"\nexport { daily_h }\n',
+      });
+      const { lake, config } = lakeDestination(rootDir);
+      pkg.materialization().setServeDestinationConfig(() => config);
+      const entry = planEntry(pkg, "daily_h");
+      expect(entry.annotationFields?.storage).toBeUndefined();
+
+      // The host's run wrote the table into `lake` (its sum as an exact
+      // integer, as a real build stores one), and its manifest binds it as a
+      // storage table.
+      await lake.runSQL(
+         `CREATE OR REPLACE TABLE host_daily_h AS ` +
+            `SELECT region, CAST(t AS BIGINT) AS t FROM (${entry.sql})`,
+      );
+      const described = await lake.runSQL("DESCRIBE host_daily_h");
+      pkg.materialization().bind({
+         storage: {
+            [entry.sourceEntityId]: {
+               sourceEntityId: entry.sourceEntityId,
+               sourceName: entry.name,
+               physicalTableName: "host_daily_h",
+               storageDestinationName: "lake",
+               schema: (
+                  described.rows as {
+                     column_name: string;
+                     column_type: string;
+                  }[]
+               ).map((r) => ({ name: r.column_name, type: r.column_type })),
+            },
+         } as never,
+      });
+
+      const verdicts = pkg
+         .materialization()
+         .serveVerdicts()
+         .filter((v) => v.sourceName === "daily_h");
+      expect(verdicts).toHaveLength(1);
+      expect(verdicts[0]).toMatchObject({
+         tier: "storage",
+         verdict: "serves",
+      });
+
+      const result = await run(
+         pkg,
+         "index.malloy",
+         "run: daily_h -> { group_by: region; aggregate: x is t.sum() }",
+      );
+      expect(result.servedFrom).toBe("storage");
+      expect(result.path?.servedBy.kind).toBe("materialized");
+   });
+});

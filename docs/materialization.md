@@ -913,7 +913,9 @@ not, why and what to change. A materialized table that no query reads otherwise 
 a working one: the build succeeds, the manifest binds, and every query is quietly answered live.
 
 `GET …/packages/{pkg}/status` reports the verdicts as `serveVerdicts`, recomputed from the build
-plan and the binding on every read:
+plan and the binding on every read. Its `tier` is where queries read the table: a storage binding
+decides it, so a source with no `storage=` that a host's build instructions placed in a storage
+destination is judged as a storage table, as queries read it; with no storage binding, `storage=` does.
 
 | `verdict` | Meaning |
 | --- | --- |
@@ -926,7 +928,7 @@ A `live` verdict's `reason`:
 | `reason` | Why | Fix |
 | --- | --- | --- |
 | `refused` | The plan refused to build it (the build plan's `refusedSources` names why). | Remove what the refusal names. |
-| `storage_mode` | `storage=` while `PERSIST_STORAGE_MODE` is not `on`. | Turn the mode on, or drop `storage=`. |
+| `storage_mode` | `storage=`, or a host's storage binding, while `PERSIST_STORAGE_MODE` is not `on`. | Turn the mode on, or drop `storage=`. |
 | `unreachable` | No source on the package's published surface reads it: `index.malloy` hides it, and nothing it publishes is built on it, extends it or joins it. | Publish it, or a source built on it, or drop the annotation. |
 | `row_level_gate` | Every query through it carries an `#(authorize)` or `#(access_filter)` gate the table does not keep: a rollup's, or a `storage=` table's that holds a gated source's rows the plan did not admit. A `storage=` table under its own source's gate keeps it, as a database one does, and so does a `storage=` table that holds only ungated sources' rows (g-mixed). | Materialize without `storage=`, or move the gate onto the stored source itself, or onto an entry point over the table. |
 | `shadowed` | Its storage table is bound, but every model's source of that name is another source. | Rename it. |

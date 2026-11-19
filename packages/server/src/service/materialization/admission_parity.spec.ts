@@ -29,6 +29,7 @@ import {
    switchesLabel,
 } from "./domain/gate_policy_frozen_rows";
 import { LEGS } from "./domain/vocabulary";
+import { computeServeVerdicts } from "./serve/serve_verdict";
 import { verdictKeepsGate } from "./serve_verdicts";
 
 /** A read past an entry point's gate whose every probe finds it exact. */
@@ -64,6 +65,12 @@ const ZONED: Record<string, readonly TableRead[]> = Object.fromEntries(
          ),
       ]),
 );
+
+/** A table of each tier whose gate columns are stored exactly. */
+const EXACT_TABLE = {
+   database: {},
+   storage: { gateColumnTypes: ["BIGINT", "VARCHAR"] },
+} as const;
 
 // The serving context routes with own-gate keeping on (`g3=1`).
 const keeps = (leg: string, read: string, label: string) =>
@@ -137,5 +144,76 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
       }
       expect(wrong).toEqual([]);
       expect([...outcomes].sort()).toEqual([false, true]);
+   });
+
+   // F-45: a database-origin source (no `storage=`) a host placed in a
+   // storage destination is read from its storage binding, so the verdict
+   // asks the gate policy of that table, and keeps a gate exactly where
+   // admitRead admits the read.
+   it("judges a host-placed storage table of a database-origin source as admitRead does, gated and ungated", () => {
+      const sourceID = "orders@file:///pkg/m.malloy";
+      const plan = {
+         graphs: [],
+         sources: {
+            [sourceID]: {
+               name: "orders",
+               sourceID,
+               connectionName: "duckdb",
+               sourceEntityId: "entity-orders",
+               sql: "SELECT 1",
+               columns: [],
+               modelPath: "m.malloy",
+            },
+         },
+      };
+      const wrong: string[] = [];
+      const outcomes = new Set<string>();
+      for (const sw of switches()) {
+         const label = switchesLabel(sw);
+         for (const gated of [false, true]) {
+            const asked: string[] = [];
+            const [verdict] = computeServeVerdicts({
+               plan: plan as never,
+               storageMode: "on",
+               reachable: () => true,
+               gated: () => gated,
+               keepsGate: (_id, tier) => {
+                  asked.push(tier);
+                  return verdictKeepsGate(
+                     { rollup: false, table: { tier, ...EXACT_TABLE[tier] } },
+                     sw,
+                  );
+               },
+               refusedAtBind: () => undefined,
+               boundEntityIds: new Set(),
+               boundStorageNames: new Set(["orders"]),
+               servedStorageNames: new Set(["orders"]),
+               materialize: () => undefined,
+               persistedViewOf: () => undefined,
+               destinationConfigured: () => undefined,
+               connectionCanHoldTable: () => undefined,
+            });
+            outcomes.add(verdict.verdict);
+            const admitted =
+               admitRead(
+                  "served",
+                  [{ tier: "storage", ...EXACT_TABLE.storage }],
+                  EXACT,
+                  sw,
+               ).admit === true;
+            const expected = gated && !admitted ? "live" : "serves";
+            if (verdict.tier !== "storage" || verdict.verdict !== expected) {
+               wrong.push(
+                  `gated=${gated} ${label}: ${verdict.tier} ${verdict.verdict}`,
+               );
+            }
+            // Asked of the storage table, never the database one.
+            if (asked.some((t) => t !== "storage")) {
+               wrong.push(`gated=${gated} ${label}: asked ${asked}`);
+            }
+         }
+      }
+      expect(wrong).toEqual([]);
+      expect([...outcomes].sort()).toEqual(["live", "serves"]);
    });
 });
