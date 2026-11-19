@@ -47,9 +47,23 @@ source: col_b is col_a -> { group_by: k; aggregate: grand is total.sum() }
 const WITH_TWIN = `##! experimental.persistence\n${COL_A}${TWIN_A}${COL_B}`;
 /** The twin declared first, so it is first to claim the compiler's key. */
 const TWIN_FIRST = `##! experimental.persistence\n${TWIN_A}${COL_A}${COL_B}`;
+/** A storage source over the twin, and a database source over it. */
+const TWIN_B = `#@ persist name="tb" storage="lake"
+source: twin_b is twin_a -> { group_by: k; aggregate: grand is total.sum() }
+`;
+const DB_C = `#@ persist name="fc"
+source: db_c is twin_a -> { group_by: k; aggregate: grand is total.sum() }
+`;
+const OVER_TWIN = `##! experimental.persistence\n${COL_A}${TWIN_A}${TWIN_B}`;
+const DB_OVER_TWIN = `##! experimental.persistence\n${COL_A}${TWIN_A}${DB_C}`;
 const WITHOUT_TWIN = `##! experimental.persistence\n${COL_A}${COL_B}`;
 
 async function scenario(model: string) {
+   // The statements each build ran, by source: a database build's, and the
+   // recompute a storage build copies.
+   const ran: Record<string, string[]> = {};
+   /** Whether each storage build would stack on a stored parent. */
+   const stacks: Record<string, boolean> = {};
    const pkg = await packages.create(model);
    const duckdb = (await pkg.getMalloyConnection(
       "duckdb",
@@ -73,6 +87,8 @@ async function scenario(model: string) {
    // table is entered in the run's manifest, as the real tier does.
    const storage: Parameters<typeof buildSource>[1] = async (request) => {
       const table = request.instruction.physicalTableName;
+      (ran[request.persistSource.name] ??= []).push(request.storedBuildSQL);
+      stacks[request.persistSource.name] = request.dependsOnStorageUpstream;
       await duckdb.runSQL(
          `CREATE OR REPLACE TABLE ${table} AS ${request.storedBuildSQL}`,
       );
@@ -87,8 +103,6 @@ async function scenario(model: string) {
          storageDestinationName: "lake",
       } as ManifestEntry;
    };
-   // The statements each database build ran, by source.
-   const ran: Record<string, string[]> = {};
    const build = new InstructedBuild({
       buildOneSource: (options) => {
          const statements = (ran[options.persistSource.name] ??= []);
@@ -118,23 +132,36 @@ async function scenario(model: string) {
       undefined,
       { environmentName: "env", packageName: "pkg" },
    );
-   const run = (opts: { strict: boolean; hostInstructed: boolean }) =>
-      build.run({
+   const run = (
+      opts: { strict: boolean; hostInstructed: boolean },
+      /** Build only these sources, over `seedEntries` (a later run). */
+      later?: { only: string[]; seedEntries: Record<string, ManifestEntry> },
+   ) => {
+      for (const name of later?.only ?? Object.keys(ran)) delete ran[name];
+      return build.run({
          compiled,
          environment,
-         instructions,
-         seedEntries: {},
+         instructions: later
+            ? instructions.filter((i) =>
+                 later.only.some(
+                    (name) => addresses[idOf(name)] === i.sourceEntityId,
+                 ),
+              )
+            : instructions,
+         seedEntries: later?.seedEntries ?? {},
          signal: new AbortController().signal,
          strict: opts.strict,
          priorRefusals: [],
          hostInstructed: opts.hostInstructed,
          warehouseReach: "recompute",
       });
+   };
    return {
       duckdb,
       run,
       address: (name: string) => addresses[idOf(name)] as string,
       compilerKey: (name: string) => compilerBuildId(sources[idOf(name)]),
+      stacks,
       /** Whether `source`'s build read the table `table`. */
       read: (source: string, table: string) =>
          (ran[source] ?? []).some((sql) =>
@@ -189,6 +216,71 @@ describe("a database build over an upstream whose address folds in its name=", (
          );
       }
    }
+
+   // The key col_a and twin_a share belongs to twin_a for a source that reads
+   // twin_a: col_a's table, in another tier and possibly of another age, is
+   // never read in its place.
+   for (const mode of MODES) {
+      it(
+         `builds a storage source over the twin from the twin's rows, not col_a's older table (${mode.label})`,
+         async () => {
+            const s = await scenario(OVER_TWIN);
+            const first = await s.run(mode);
+            expect(first.failures).toEqual({});
+            // The warehouse changes; twin_a alone is rebuilt, col_a is stale.
+            await s.duckdb.runSQL("INSERT INTO ev_src VALUES ('a', 10)");
+            const without = (
+               entries: Record<string, ManifestEntry>,
+               name: string,
+            ) =>
+               Object.fromEntries(
+                  Object.entries(entries).filter(
+                     ([address]) => address !== s.address(name),
+                  ),
+               );
+            const second = await s.run(mode, {
+               only: ["twin_a"],
+               seedEntries: without(first.entries, "twin_a"),
+            });
+            expect(second.failures).toEqual({});
+            // twin_b, with both col_a's and twin_a's tables supplied.
+            const third = await s.run(mode, {
+               only: ["twin_b"],
+               seedEntries: without(second.entries, "twin_b"),
+            });
+            expect(third.failures).toEqual({});
+            // It inlined twin_a, so the real tier stacks on twin_a's table.
+            expect(s.read("twin_b", "fa")).toBe(false);
+            expect(s.stacks.twin_b).toBe(true);
+            expect(
+               (
+                  await s.duckdb.runSQL(
+                     "SELECT k, grand::INTEGER AS grand FROM tb ORDER BY k",
+                  )
+               ).rows,
+            ).toEqual([
+               { k: "a", grand: 13 },
+               { k: "b", grand: 3 },
+            ]);
+         },
+         { timeout: 60000 },
+      );
+   }
+
+   it(
+      "never reads col_a's table for a database source over the twin",
+      async () => {
+         const s = await scenario(DB_OVER_TWIN);
+         const result = await s.run({ strict: false, hostInstructed: false });
+         expect(result.failures).toEqual({});
+         expect(s.read("db_c", "fa")).toBe(false);
+         expect(s.read("db_c", "ev_src")).toBe(true);
+         expect(result.entries[s.address("db_c")].upstreamReuse).toBe(
+            "recomputed",
+         );
+      },
+      { timeout: 60000 },
+   );
 
    for (const mode of MODES) {
       it(
