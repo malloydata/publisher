@@ -1786,6 +1786,38 @@ export function planModelRollups(
    return { plans, refused };
 }
 
+/**
+ * The refusal of a planned rollup whose build reads a given: its table would
+ * hold one given value's rows, served to every caller.
+ */
+export function rollupReadsGivenRefusal(
+   plan: {
+      baseSourceName: string;
+      grainDimensions: readonly string[];
+      storage?: string;
+   },
+   source: { sourceID: string; name: string },
+): RollupRefusal {
+   return {
+      tier: "unservable",
+      code: ROLLUP_NOT_BUILT_CODE,
+      message:
+         `#(rollup) rollup of source "${plan.baseSourceName}" at ` +
+         `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
+         "are served live: its rows read a given, and a table holds one " +
+         "value's rows.",
+      sourceName: plan.baseSourceName,
+      // A given read while the stored relation is built, as every other
+      // mechanism names it.
+      refused: refusalKey(
+         source.sourceID,
+         source.name,
+         "reads_given",
+         tierOf(plan.storage),
+      ),
+   };
+}
+
 /** A refusal as a package finding. */
 export function rollupRefusalFinding(
    refusal: RollupRefusal,

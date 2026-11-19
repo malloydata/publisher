@@ -125,8 +125,10 @@ export {
 } from "./materialize_compile";
 import {
    PERSIST_VIEW_NOT_BUILT,
+   persistedQueryReadsGivenRefusal,
    persistedQueryRefusalFinding,
    persistedQueryRefusalKey,
+   persistedViewReadsGivenRefusal,
    persistedViewRefusalFinding,
    planModelPersistedViews,
 } from "./persisted_view";
@@ -145,8 +147,12 @@ import {
    type MaterializedBases,
 } from "./rollup_compile";
 import { compileV1BuildCompanion } from "./v1_build_companion";
-import { measureRefusalKey, rollupGateEnforcedAtRead } from "./rollup_plan";
-import { rollupRefusalFinding } from "./rollup_plan";
+import {
+   measureRefusalKey,
+   rollupGateEnforcedAtRead,
+   rollupReadsGivenRefusal,
+   rollupRefusalFinding,
+} from "./rollup_plan";
 import {
    getMaterializeEnabled,
    getPersistCollisionEnforce,
@@ -967,24 +973,7 @@ async function collectGeneratedRollups(
          addAnnotationFinding(
             parts,
             rollupRefusalFinding(
-               {
-                  tier: "unservable",
-                  code: ROLLUP_NOT_BUILT_CODE,
-                  message:
-                     `#(rollup) rollup of source "${plan.baseSourceName}" at ` +
-                     `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
-                     "are served live: its rows read a given, and a table holds one " +
-                     "value's rows.",
-                  sourceName: plan.baseSourceName,
-                  refused: {
-                     sourceID: source.sourceID,
-                     name: source.name,
-                     tier: tierOf(plan.storage),
-                     // A given read while the stored relation is built,
-                     // as every other mechanism names it.
-                     reason: "reads_given",
-                  },
-               },
+               rollupReadsGivenRefusal(plan, source),
                args.modelPath,
             ),
          );
@@ -1079,8 +1068,6 @@ async function collectGeneratedPersistedViews(
    const queryByID = new Map(
       generated.queries.map((p) => [p.buildSourceID, p]),
    );
-   const readsAGiven =
-      "its result reads a given, so it differs per caller and a table holds one caller's result";
    const targets = withoutGivenReadingTargets(
       await generated.runtime.getBuildTargets(generated.model),
       (source) => {
@@ -1090,29 +1077,15 @@ async function collectGeneratedPersistedViews(
             addAnnotationFinding(
                parts,
                persistedViewRefusalFinding(
-                  {
-                     ...plan,
-                     reason: readsAGiven,
-                     outcome: { refused: "reads_given" },
-                  },
+                  persistedViewReadsGivenRefusal(plan),
                   args.modelPath,
                ),
             );
          } else if (query) {
-            // The query's own stages, its source's own given-reading
-            // `where:`, or one it inherits: a build would read the given.
             addAnnotationFinding(
                parts,
                persistedQueryRefusalFinding(
-                  {
-                     queryName: query.queryName,
-                     reason: readsAGiven,
-                     refusal: "reads_given",
-                     declaringURL: query.declaringURL,
-                     ...(query.storage !== undefined
-                        ? { storage: query.storage }
-                        : {}),
-                  },
+                  persistedQueryReadsGivenRefusal(query),
                   args.modelPath,
                ),
             );

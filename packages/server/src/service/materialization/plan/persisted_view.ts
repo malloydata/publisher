@@ -374,6 +374,44 @@ export function persistedViewRefusalFinding(
    };
 }
 
+/** Why a persisted view or query whose result reads a given is not built. */
+const READS_A_GIVEN =
+   "its result reads a given, so it differs per caller and a table holds one caller's result";
+
+/** The refusal of a planned persisted view whose result reads a given. */
+export function persistedViewReadsGivenRefusal(
+   plan: Pick<
+      PersistedViewPlan,
+      "sourceID" | "sourceName" | "viewName" | "storage"
+   >,
+): PersistedViewRefusal {
+   return {
+      sourceID: plan.sourceID,
+      sourceName: plan.sourceName,
+      viewName: plan.viewName,
+      reason: READS_A_GIVEN,
+      outcome: { refused: "reads_given" },
+      ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
+   };
+}
+
+/**
+ * The refusal of a planned persisted query whose result reads a given: the
+ * query's own stages, its source's own given-reading `where:`, or one it
+ * inherits.
+ */
+export function persistedQueryReadsGivenRefusal(
+   plan: Pick<PersistedQueryPlan, "queryName" | "declaringURL" | "storage">,
+): PersistedQueryRefusal {
+   return {
+      queryName: plan.queryName,
+      reason: READS_A_GIVEN,
+      refusal: "reads_given",
+      declaringURL: plan.declaringURL,
+      ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
+   };
+}
+
 /**
  * The refusal record of a persisted view or query: keyed by the generated
  * build source it would have had.
