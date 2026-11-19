@@ -791,8 +791,9 @@ it to the run's record, which holds the failure's or the refusal's message: the 
 code, since a driver's message can quote SQL or a value.
 
 Every materialization log line names the same things by the same fields: `runId` (the run),
-`destinationName` (a `storage=` destination), `error` (an error's message, where one is logged),
-`environmentName` and `packageName`.
+`destinationName` (a `storage=` destination), `code` (an error's code, where one is logged, on
+most lines; the message stays on the run's record, and the release notes list the lines that
+still carry error text), `environmentName` and `packageName`.
 
 With `OTEL_EXPORTER_OTLP_ENDPOINT` set, queries are traced as a `publisher.query` span (package,
 model path, the tier it was served from) with `publisher.query.execute` beneath it, and compiles as
