@@ -1213,20 +1213,6 @@ export class ServedCopyServe {
       let columns: ServedColumn[];
       let inlinedJoins: InlinedJoin[] = [];
       let columnsLeftOut: string[] = [];
-      // A column named in a caller's detail or the package warning, unless
-      // the author's source hides it: then only that one is.
-      const hidden = new Set([
-         ...(plan?.columns ?? [])
-            .filter((c) => c.access !== undefined)
-            .flatMap((c) => [c.column, c.dimension]),
-         ...[...fieldsByName]
-            .filter(
-               ([, f]) =>
-                  (f as { accessModifier?: unknown }).accessModifier !==
-                  undefined,
-            )
-            .map(([name]) => name),
-      ]);
       const leftOutWhy = new Map<string, string>();
       const subject: RerootSubject = {
          binding,
@@ -1237,8 +1223,7 @@ export class ServedCopyServe {
          timeframeOf,
          problems,
          storesOutputNames: !plan,
-         columnRef: (name) =>
-            hidden.has(name) ? "a hidden column" : `column \`${name}\``,
+         columnRef: columnRefOf(plan, fieldsByName),
          leftOutWhy,
       };
       if (plan) {
@@ -1322,33 +1307,7 @@ export class ServedCopyServe {
             : {}),
          columns,
          reservedNames,
-         ...(plan
-            ? {
-                 storedDimensions: plan.columns
-                    .filter(
-                       (c) =>
-                          c.computed &&
-                          c.join === undefined &&
-                          !columnsLeftOut.includes(c.dimension),
-                    )
-                    .map((c) => c.dimension),
-              }
-            : {}),
-         ...(plan && !plan.zoneFreeRows ? { zonedRows: true } : {}),
-         ...(plan
-            ? (() => {
-                 const zonedDimensions = plan.columns
-                    .filter(
-                       (c) =>
-                          c.computed &&
-                          c.join === undefined &&
-                          !c.zoneFree &&
-                          !columnsLeftOut.includes(c.dimension),
-                    )
-                    .map((c) => c.dimension);
-                 return zonedDimensions.length > 0 ? { zonedDimensions } : {};
-              })()
-            : {}),
+         ...(plan ? planDimensionsOf(plan, columnsLeftOut) : {}),
          ...(zoned.restated.length > 0
             ? { restatedTruncations: zoned.restated }
             : {}),
@@ -1360,12 +1319,7 @@ export class ServedCopyServe {
          ...(columnsLeftOut.length > 0
             ? {
                  columnsLeftOut,
-                 leftOutWhy: new Map(
-                    columnsLeftOut.map((c) => [
-                       c,
-                       leftOutWhy.get(c) ?? noCastPhrase(subject.columnRef(c)),
-                    ]),
-                 ),
+                 leftOutWhy: leftOutWhyOf(subject, columnsLeftOut),
               }
             : {}),
          // An `except:` naming a column the table does not store has nothing
@@ -2831,6 +2785,67 @@ function noCastPhrase(ref: string): string {
    return `no cast reads ${ref} as declared`;
 }
 
+/**
+ * A `#(materialize)` re-root's stored computed dimensions, those zoned, and
+ * whether its rows are, less the columns it leaves out.
+ */
+function planDimensionsOf(
+   plan: MaterializePlan,
+   columnsLeftOut: readonly string[],
+): Pick<AuthorReroot, "storedDimensions" | "zonedRows" | "zonedDimensions"> {
+   const stored = plan.columns.filter(
+      (c) =>
+         c.computed &&
+         c.join === undefined &&
+         !columnsLeftOut.includes(c.dimension),
+   );
+   const zonedDimensions = stored
+      .filter((c) => !c.zoneFree)
+      .map((c) => c.dimension);
+   return {
+      storedDimensions: stored.map((c) => c.dimension),
+      ...(!plan.zoneFreeRows ? { zonedRows: true } : {}),
+      ...(zonedDimensions.length > 0 ? { zonedDimensions } : {}),
+   };
+}
+
+/**
+ * How a caller's detail names a re-root's column: `column \`x\``, or `a
+ * hidden column` when the author's source hides it (a plan column with an
+ * access modifier, or a field with one).
+ */
+function columnRefOf(
+   plan: MaterializePlan | undefined,
+   fieldsByName: ReadonlyMap<string, unknown>,
+): (name: string) => string {
+   const hidden = new Set([
+      ...(plan?.columns ?? [])
+         .filter((c) => c.access !== undefined)
+         .flatMap((c) => [c.column, c.dimension]),
+      ...[...fieldsByName]
+         .filter(
+            ([, f]) =>
+               (f as { accessModifier?: unknown }).accessModifier !== undefined,
+         )
+         .map(([name]) => name),
+   ]);
+   return (name) =>
+      hidden.has(name) ? "a hidden column" : `column \`${name}\``;
+}
+
+/** Why each of `columns` is left out, by name, for a decline's detail. */
+function leftOutWhyOf(
+   subject: RerootSubject,
+   columns: readonly string[],
+): Map<string, string> {
+   return new Map(
+      columns.map((c) => [
+         c,
+         subject.leftOutWhy.get(c) ?? noCastPhrase(subject.columnRef(c)),
+      ]),
+   );
+}
+
 /** A `column_types` problem's `detail` naming `columns`, when there are any. */
 function leftOutDetail(
    subject: RerootSubject,
@@ -2863,9 +2878,7 @@ function materializedColumnsOf(
         inlinedJoins: InlinedJoin[];
      }
    | undefined {
-   const { binding, node, sourceName, def, fieldsByName, timeframeOf } =
-      subject;
-   const { problems } = subject;
+   const { binding, node, sourceName, def, problems } = subject;
    let inlinedJoins: InlinedJoin[] = [];
    // Exactly what the build stored: the plan's columns (the source's
    // atomic dimensions, computed ones too, each under its own name, a
@@ -2879,8 +2892,6 @@ function materializedColumnsOf(
    const lineage = readSourceClassifications(
       def.fields as IrField[] | undefined,
    );
-   const columns: ServedColumn[] = [];
-   const columnsLeftOut: string[] = [];
    // A stored column whose type is not live's (the upstream column's type
    // changed under the same content address, or the table was altered): read
    // through a faithful cast, else left out so only a query reading it
@@ -2904,13 +2915,115 @@ function materializedColumnsOf(
          c.castTo === "BOOLEAN" ? ("boolean" as const) : ("date" as const),
       ]),
    );
-   const leftOut = new Set(typePlan.leftOut.map((m) => m.column));
+   const own = materializedOwnColumns(subject, plan, {
+      stored,
+      lineage,
+      leftOut: new Set(typePlan.leftOut.map((m) => m.column)),
+      castTo,
+   });
+   if (!own) return undefined;
+   const { columns, columnsLeftOut } = own;
+   const joined = inlinedJoinsOf(plan, def.fields, stored, lineage);
+   if (
+      joined === undefined ||
+      joined.some((j) =>
+         j.columns.some((c) => storedMalloyType(c.type) === undefined),
+      )
+   ) {
+      const undeclared = undeclaredJoinedColumns(def.fields, joined ?? []);
+      problems.push({
+         sourceName,
+         sourceID: node.sourceID,
+         reason: "column_types",
+         ...(undeclared.length > 0 ? { detail: undeclared.join("; ") } : {}),
+      });
+      return undefined;
+   }
+   // A joined big-integer field is read through its native type in the
+   // record; one no cast reads exactly leaves the source to its
+   // fallback.
+   const readOptions = bigIntegerOptionsOf(def, binding);
+   const joinedReads = joined.map((j) => {
+      const fields = joinedFieldsAt(def.fields, [j.join]);
+      return storedColumnReadPlan(
+         j.columns.map((c) => ({ name: c.column, type: c.type })),
+         j.columns.map((c) => ({
+            name: c.column,
+            type: "",
+            field: fields.find((f) => fieldNameOf(f) === c.name),
+         })),
+         { ...readOptions, ducklake: !isDatabase(binding) },
+      );
+   });
+   // A joined field live types as a warehouse-native type has no
+   // stored declaration that reads back as live's either.
+   const joinedNative = joined.some((j) => {
+      const fields = joinedFieldsAt(def.fields, [j.join]);
+      return j.columns.some((c) =>
+         liveTypesAsNative(fields.find((f) => fieldNameOf(f) === c.name)),
+      );
+   });
+   if (
+      joinedNative ||
+      joinedReads.some(
+         (plan) => plan.refusals.length > 0 || plan.leftOut.length > 0,
+      )
+   ) {
+      problems.push({
+         sourceName,
+         sourceID: node.sourceID,
+         reason: "column_types",
+      });
+      return undefined;
+   }
+   inlinedJoins = joined.map((j, i) => ({
+      ...j,
+      columns: j.columns.map((c) => {
+         const nativeCast = joinedReads[i].casts.find(
+            (r) => r.column === c.column,
+         )?.castTo;
+         return nativeCast ? { ...c, nativeCast } : c;
+      }),
+   }));
+   return { columns, columnsLeftOut, inlinedJoins };
+}
+
+/**
+ * {@link materializedColumnsOf}'s own (not joined) columns: each plan column
+ * the table stores as live's type or through a faithful cast, the ones no
+ * read gives exactly left out with why. Undefined, with a `column_types`
+ * problem, when the table lacks a column that is not a list, or stored one
+ * under another name.
+ */
+function materializedOwnColumns(
+   subject: RerootSubject,
+   plan: MaterializePlan,
+   read: {
+      stored: ReadonlyMap<string, string>;
+      lineage: ReturnType<typeof readSourceClassifications>;
+      leftOut: ReadonlySet<string>;
+      castTo: ReadonlyMap<string, "boolean" | "date">;
+   },
+): { columns: ServedColumn[]; columnsLeftOut: string[] } | undefined {
+   const { binding, node, sourceName, fieldsByName, timeframeOf, problems } =
+      subject;
+   const { stored, lineage, leftOut, castTo } = read;
+   const columns: ServedColumn[] = [];
+   const columnsLeftOut: string[] = [];
    for (const c of plan.columns) {
       // An inlined join's columns are read under the join's name
       // (inlinedJoinsOf, below), not as fields of the source.
       if (c.join !== undefined) continue;
       if (leftOut.has(c.column)) {
          columnsLeftOut.push(c.column);
+         subject.leftOutWhy.set(
+            c.column,
+            leftOutPhrase(
+               subject.columnRef(c.column),
+               fieldsByName.get(c.dimension),
+               stored.get(c.column),
+            ),
+         );
          continue;
       }
       const type = stored.get(c.column);
@@ -2987,87 +3100,38 @@ function materializedColumnsOf(
             : {}),
       });
    }
-   const joined = inlinedJoinsOf(plan, def.fields, stored, lineage);
-   if (
-      joined === undefined ||
-      joined.some((j) =>
-         j.columns.some((c) => storedMalloyType(c.type) === undefined),
-      )
-   ) {
-      // Each joined column no `type:` declares, named through its join
-      // unless the join or the field is hidden.
-      const undeclared = (joined ?? []).flatMap((j) => {
-         const fields = joinedFieldsAt(def.fields, [j.join]);
-         return j.columns
-            .filter((c) => storedMalloyType(c.type) === undefined)
-            .map((c) => {
-               const field = fields.find((f) => fieldNameOf(f) === c.name);
-               const hidden =
-                  j.access !== undefined ||
-                  (field as { accessModifier?: unknown } | undefined)
-                     ?.accessModifier !== undefined;
-               return leftOutPhrase(
-                  hidden ? "a hidden column" : `column \`${j.join}.${c.name}\``,
-                  field,
-                  c.type,
-               );
-            });
-      });
-      problems.push({
-         sourceName,
-         sourceID: node.sourceID,
-         reason: "column_types",
-         ...(undeclared.length > 0 ? { detail: undeclared.join("; ") } : {}),
-      });
-      return undefined;
-   }
-   // A joined big-integer field is read through its native type in the
-   // record; one no cast reads exactly leaves the source to its
-   // fallback.
-   const readOptions = bigIntegerOptionsOf(def, binding);
-   const joinedReads = joined.map((j) => {
-      const fields = joinedFieldsAt(def.fields, [j.join]);
-      return storedColumnReadPlan(
-         j.columns.map((c) => ({ name: c.column, type: c.type })),
-         j.columns.map((c) => ({
-            name: c.column,
-            type: "",
-            field: fields.find((f) => fieldNameOf(f) === c.name),
-         })),
-         { ...readOptions, ducklake: !isDatabase(binding) },
-      );
+   return { columns, columnsLeftOut };
+}
+
+/**
+ * Each inlined-join column no `type:` declares, as a caller's detail names
+ * it: through its join, unless the join or the field is hidden.
+ */
+function undeclaredJoinedColumns(
+   fields: unknown[] | undefined,
+   joined: readonly {
+      join: string;
+      access?: unknown;
+      columns: readonly { name: string; type: string }[];
+   }[],
+): string[] {
+   return joined.flatMap((j) => {
+      const joinFields = joinedFieldsAt(fields, [j.join]);
+      return j.columns
+         .filter((c) => storedMalloyType(c.type) === undefined)
+         .map((c) => {
+            const field = joinFields.find((f) => fieldNameOf(f) === c.name);
+            const hidden =
+               j.access !== undefined ||
+               (field as { accessModifier?: unknown } | undefined)
+                  ?.accessModifier !== undefined;
+            return leftOutPhrase(
+               hidden ? "a hidden column" : `column \`${j.join}.${c.name}\``,
+               field,
+               c.type,
+            );
+         });
    });
-   // A joined field live types as a warehouse-native type has no
-   // stored declaration that reads back as live's either.
-   const joinedNative = joined.some((j) => {
-      const fields = joinedFieldsAt(def.fields, [j.join]);
-      return j.columns.some((c) =>
-         liveTypesAsNative(fields.find((f) => fieldNameOf(f) === c.name)),
-      );
-   });
-   if (
-      joinedNative ||
-      joinedReads.some(
-         (plan) => plan.refusals.length > 0 || plan.leftOut.length > 0,
-      )
-   ) {
-      problems.push({
-         sourceName,
-         sourceID: node.sourceID,
-         reason: "column_types",
-      });
-      return undefined;
-   }
-   inlinedJoins = joined.map((j, i) => ({
-      ...j,
-      columns: j.columns.map((c) => {
-         const nativeCast = joinedReads[i].casts.find(
-            (r) => r.column === c.column,
-         )?.castTo;
-         return nativeCast ? { ...c, nativeCast } : c;
-      }),
-   }));
-   return { columns, columnsLeftOut, inlinedJoins };
 }
 
 /**
@@ -3162,6 +3226,17 @@ function v1ColumnsOf(
    );
    const leftOut = new Set(typePlan.leftOut.map((m) => m.column));
    columnsLeftOut = [...leftOut];
+   const storedTypeOf = new Map(narrowed.map((c) => [c.name, c.type]));
+   for (const name of leftOut) {
+      subject.leftOutWhy.set(
+         name,
+         leftOutPhrase(
+            subject.columnRef(name),
+            fieldsByName.get(name),
+            storedTypeOf.get(name),
+         ),
+      );
+   }
    // A nest of the persisted query a destination did not store (a lake
    // that cannot hold a repeated record): left out like a column no
    // type reads, so only a query through it answers live, as the serve
@@ -3184,6 +3259,10 @@ function v1ColumnsOf(
          !stored.has(name.toLowerCase())
       ) {
          columnsLeftOut.push(name);
+         subject.leftOutWhy.set(
+            name,
+            leftOutPhrase(subject.columnRef(name), f, undefined),
+         );
       }
    }
    // Each with its field's annotations (`#(doc)`, `# label`, `#
