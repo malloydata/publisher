@@ -77,9 +77,9 @@ export interface Binding {
    rollupKey?: { keyColumn: string; unique: boolean };
    /**
     * A `storage=` table plan admitted past a stored source's own row-level
-    * gate under own-gate keeping (`SourceEligibility.gateKept`), marked under every name
-    * it is bound by: the router lets a served answer reading it past an
-    * entry-point gate, as it does a database table's. Set by the bind;
+    * gate under own-gate keeping (`SourceEligibility.gateKept`), marked under
+    * every name it is bound by: the router lets a served answer reading it past
+    * an entry-point gate, as it does a database table's. Set by the bind;
     * absent reads as not kept (fail closed).
     */
    ownGateKept?: boolean;
@@ -89,8 +89,8 @@ export interface Binding {
     * derivations included), marked under every name it is bound by: the
     * router lets an answer reading it past a gated entry point's gate, as it
     * does a database table's, and `govern()` grafts and proves that gate on
-    * the answer (the ungated-rows rule). Set by the bind; absent reads as not proven (fail
-    * closed).
+    * the answer (the ungated-rows rule). Set by the bind; absent reads as not
+    * proven (fail closed).
     */
    holdsOnlyUngatedRows?: boolean;
    /**

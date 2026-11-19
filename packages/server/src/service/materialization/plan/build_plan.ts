@@ -824,7 +824,8 @@ async function collectGeneratedMaterialize(
          givens: authorDef.givens ?? {},
          sourceRegistry: (authorDef as { sourceRegistry?: unknown })
             .sourceRegistry,
-         // The caller-dependence probes compile against the author's model, never run.
+         // The caller-dependence probes compile against the author's model,
+         // never run.
          probe: args.materializer,
       });
    addCompanionOutcome(

@@ -319,9 +319,9 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
-      // A `storage=` table that holds only ungated rows (the ungated-rows rule), read the
-      // same way: off the bound bindings, or, not bound yet, by the bind's
-      // own rule.
+      // A `storage=` table that holds only ungated rows (the ungated-rows
+      // rule), read the same way: off the bound bindings, or, not bound yet, by
+      // the bind's own rule.
       const ungatedTables = ungatedTableAddresses(
          plan.sourceEligibility?.ungated,
          buildPlan?.sources ?? {},

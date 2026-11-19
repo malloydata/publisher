@@ -1191,9 +1191,9 @@ export function currentTimeFields(fields: unknown): Set<string> {
  * Every field of a source whose value reads a given, as a dotted path, by the
  * same rule as {@link currentTimeFields}: it reads one itself (the IR walk
  * {@link readsAGiven}, which also reads Malloy's `givenUsage` summary), or
- * reads a field or join that does. The caller-dependence IR signal, beside the probe
- * compiler's: such a dimension is never stored, since its value differs per
- * caller. Fails closed: a field the walk cannot finish is listed.
+ * reads a field or join that does. The caller-dependence IR signal, beside the
+ * probe compiler's: such a dimension is never stored, since its value differs
+ * per caller. Fails closed: a field the walk cannot finish is listed.
  */
 export function givenReadingFields(fields: unknown): Set<string> {
    const reads = (node: unknown): boolean => {

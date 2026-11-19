@@ -71,22 +71,21 @@
  * redeclares the run target over the rollup IN AN OVERLAY OF ITS OWN
  * DECLARING FILE (`declaring_file_variant.ts`), so it keeps the author's
  * `sourceID` and carries the run target's entry-point gates as note lines.
- * With `materialize.gatedSources` on, or under own-gate keeping with it off for a database
- * rollup or for an entry point whose gates are locks reading no column on
- * either tier (the gate policy, `domain/gate_policy.ts`), the router lets the leg
- * past a gated entry point; a rollup then answers only when it was built for
- * its gate
- * (`rollupGateEnforcedAtRead`) and the pre-proof holds (`proveGates`): the
- * variant's run target is the author's `sourceID`, its gates equal the live
- * entry point's (`sameGateSet`, the rule `govern()` re-proves with) and each
- * field they read is a grain dimension. Else it is skipped `ROW_LEVEL_GATE`, with a
- * detail that never names the gate. `govern()` then grafts the gates on the
- * variant's own scope; a denial there is a defect, not a routing outcome. A
- * join branch answers past a gate only over a rollup of an ungated
- * joined source, its gate reading the query source's own plain columns
- * (`joinGateDecline`), redeclared in its declaring file with its gates
- * (`compileJoinGated`; in a storage destination, in the served copy's copy
- * of it) and proven by `joinGraft`.
+ * With `materialize.gatedSources` on, or under own-gate keeping with it off for
+ * a database rollup or for an entry point whose gates are locks reading no
+ * column on either tier (the gate policy, `domain/gate_policy.ts`), the router
+ * lets the leg past a gated entry point; a rollup then answers only when it was
+ * built for its gate (`rollupGateEnforcedAtRead`) and the pre-proof holds
+ * (`proveGates`): the variant's run target is the author's `sourceID`, its
+ * gates equal the live entry point's (`sameGateSet`, the rule `govern()`
+ * re-proves with) and each field they read is a grain dimension. Else it is
+ * skipped `ROW_LEVEL_GATE`, with a detail that never names the gate. `govern()`
+ * then grafts the gates on the variant's own scope; a denial there is a defect,
+ * not a routing outcome. A join branch answers past a gate only over a rollup
+ * of an ungated joined source, its gate reading the query source's own plain
+ * columns (`joinGateDecline`), redeclared in its declaring file with its gates
+ * (`compileJoinGated`; in a storage destination, in the served copy's copy of
+ * it) and proven by `joinGraft`.
  *
  * Rollups are offered in the plan's order, cheapest read first (coarsest,
  * then database before `storage=`); the first that answers is used. A
@@ -834,9 +833,10 @@ export class RollupVariantServe {
             "the query's reads could not be traced",
          );
       }
-      // Fan-out grains and join-level measures through the join: a fan-out grain dimension, and
-      // the other grain dimensions of a join-level sum or count, grouped or
-      // fixed at every level that aggregates through the join.
+      // Fan-out grains and join-level measures through the join: a fan-out
+      // grain dimension, and the other grain dimensions of a join-level sum or
+      // count, grouped or fixed at every level that aggregates through the
+      // join.
       if (levels) {
          const loose = checkJoinCoverage(
             branch,
@@ -1299,12 +1299,12 @@ export class RollupVariantServe {
          bindings: [...tablesRead, table.binding],
          ...graft,
          // Every table the answer reads is judged: past a gate, the query
-         // source's own tables in the destination must each be a gate-keeping table
-         // (admitted past its own gate, or holding only ungated rows), and
-         // the rollup one that holds only ungated rows, each holding the
-         // gate's columns exactly (the exactness rule, in the router); past a gate
-         // or under a row scope, each is compared as its source compares it
-         // (the stored-side collation check reads every one).
+         // source's own tables in the destination must each be a gate-keeping
+         // table (admitted past its own gate, or holding only ungated rows),
+         // and the rollup one that holds only ungated rows, each holding the
+         // gate's columns exactly (the exactness rule, in the router); past a
+         // gate or under a row scope, each is compared as its source compares
+         // it (the stored-side collation check reads every one).
          gateTablesRead: [...tablesRead, table.binding],
       };
    }

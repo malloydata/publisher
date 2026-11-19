@@ -239,9 +239,10 @@ function refusalOf(
          `another join's condition reads \`${name}\`, whose rows the rollup does not keep`,
       );
    }
-   // Fan-out grains and join-level measures across the join are judged per query (checkJoinCoverage),
-   // except a join key that is itself a fan-out dimension: a joined row would
-   // then meet the parent rows of more than one key.
+   // Fan-out grains and join-level measures across the join are judged per
+   // query (checkJoinCoverage), except a join key that is itself a fan-out
+   // dimension: a joined row would then meet the parent rows of more than one
+   // key.
    if (plan.fanOutDimensions.includes(join.keyColumn)) {
       return refuse(
          "rollup_grain_too_coarse",
@@ -379,22 +380,22 @@ function bareOperand(expr: MeasureExpr): string[] | undefined {
 }
 
 /**
- * Fan-out grains and join-level measures through the join, level by level: the base branch's
- * `checkCoverage` rule, read on the caller's compiled query, where the
- * rollup's fields are `<join>.<field>`. A rollup row is one group of the
- * joined rows, matched to each parent row with its key, so a measure partial
- * re-summed across groups that share a joined row would count that row
- * twice. Each level that aggregates anything through the join must group or
- * fix (`where: <join>.d = <value>`, there or above) every fan-out grain
- * dimension of the rollup, and every grain dimension a join-level sum
- * or count it reads merges across. Grouping or fixing the parent's own
- * key field fixes the join's key column: every rollup row a parent row meets
- * carries that key. A level that only reads the parent's own fields, or
- * another join's, aggregates nothing through the join: the parent's
- * aggregates are taken over its own rows whatever the join matches. Anything
- * the check cannot place (an expression over the join's measures, a
- * `having:`, a field it cannot trace) is held to every measure's dimensions;
- * an ungrouped aggregate (`all`, `exclude`) declines.
+ * Fan-out grains and join-level measures through the join, level by level: the
+ * base branch's `checkCoverage` rule, read on the caller's compiled query,
+ * where the rollup's fields are `<join>.<field>`. A rollup row is one group of
+ * the joined rows, matched to each parent row with its key, so a measure
+ * partial re-summed across groups that share a joined row would count that row
+ * twice. Each level that aggregates anything through the join must group or fix
+ * (`where: <join>.d = <value>`, there or above) every fan-out grain dimension
+ * of the rollup, and every grain dimension a join-level sum or count it reads
+ * merges across. Grouping or fixing the parent's own key field fixes the join's
+ * key column: every rollup row a parent row meets carries that key. A level
+ * that only reads the parent's own fields, or another join's, aggregates
+ * nothing through the join: the parent's aggregates are taken over its own rows
+ * whatever the join matches. Anything the check cannot place (an expression
+ * over the join's measures, a `having:`, a field it cannot trace) is held to
+ * every measure's dimensions; an ungrouped aggregate (`all`, `exclude`)
+ * declines.
  *
  * `parentReads` says how a parent field reads the join
  * (`sourceFieldJoinReads`). Returns why the branch cannot answer, or undefined.

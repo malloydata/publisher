@@ -289,10 +289,11 @@ interface CompanionRound {
 type CompanionCompile = (from: MaterializePlan[]) => Promise<CompanionRound>;
 
 /**
- * Plan the model's sources, only those it declares itself. Caller-dependent dimensions: plan once
- * from the IR, probe the computed dimensions that plan would store, and plan
- * again with the answers. A probe only ever leaves a dimension out or
- * refuses a source, so every dimension the second plan stores was probed.
+ * Plan the model's sources, only those it declares itself. Caller-dependent
+ * dimensions: plan once from the IR, probe the computed dimensions that plan
+ * would store, and plan again with the answers. A probe only ever leaves a
+ * dimension out or refuses a source, so every dimension the second plan stores
+ * was probed.
  */
 async function planWithProbes(
    args: CompanionArgs,
@@ -337,8 +338,8 @@ function companionCompiler(
    const readModelText = () =>
       (modelText ??= files.read(pathToFileURL(modelFile)));
    // A build copy compiled on its own, beside the author's model, so its
-   // imports resolve as the author's do; never run. The hidden-field check reads which hidden
-   // fields the copy lets the build select off it.
+   // imports resolve as the author's do; never run. The hidden-field check
+   // reads which hidden fields the copy lets the build select off it.
    const compileCopy = async (fileName: string, text: string) => {
       const url = pathToFileURL(path.join(path.dirname(modelFile), fileName));
       const { model } = await files.compile(url, new Map([[url.href, text]]));
@@ -688,10 +689,10 @@ async function compileCompanion(
       throw new CompanionCompileError(error, overlay, copyOwners);
    });
    const checkCompilers = new Map<string, KeyCheckCompiler>();
-   // The inlined join_one checks' SQL, compiled now (never run here) so a build runs it
-   // against the joined source's connection before it writes anything.
-   // Each check can also be compiled again over a run's compiler manifest, so
-   // a run whose parent build reads the joined source's persisted table checks
+   // The inlined join_one checks' SQL, compiled now (never run here) so a build
+   // runs it against the joined source's connection before it writes anything.
+   // Each check can also be compiled again over a run's compiler manifest, so a
+   // run whose parent build reads the joined source's persisted table checks
    // that table (inline_uniqueness.ts).
    for (const plan of plans) {
       for (const check of plan.uniquenessChecks ?? []) {
@@ -954,20 +955,20 @@ function liftedName(c: { dimension: string; join?: string }): string {
  * columns, whose own access modifiers the copy lifts. One copy does all
  * three a plan needs.
  *
- * Given terms: a source with given-reading `where:` terms must be declared in that model and read givens
- * declared in local files; otherwise, or when the file cannot be read or a
- * term not placed in it, the plan is refused (fail closed: built from the
- * author's file, the term would be baked into the table with the given's
- * default). Each given declared in another file is imported from that file.
- * A current-time term the build leaves out must be written in the model file
- * itself, its own declaration or a base declared there; otherwise the plan is
- * refused the same way (built from the author's file, the table would hold
- * only the rows older than the build's cut-off).
+ * Given terms: a source with given-reading `where:` terms must be declared in
+ * that model and read givens declared in local files; otherwise, or when the
+ * file cannot be read or a term not placed in it, the plan is refused (fail
+ * closed: built from the author's file, the term would be baked into the table
+ * with the given's default). Each given declared in another file is imported
+ * from that file. A current-time term the build leaves out must be written in
+ * the model file itself, its own declaration or a base declared there;
+ * otherwise the plan is refused the same way (built from the author's file, the
+ * table would hold only the rows older than the build's cut-off).
  *
  * Extension tables: one whose copy cannot be written (its parent no longer
  * planned, a declaration that does not re-root) builds over the raw chain
- * instead, which a source with given-reading terms or hidden fields still gets a copy
- * for.
+ * instead, which a source with given-reading terms or hidden fields still gets
+ * a copy for.
  *
  * Hidden columns: which ones the build can select is settled by compiling the
  * copy over the raw chain (`compileCopy`) and reading its source: a field
@@ -1243,8 +1244,8 @@ async function copiedPlan(
 }
 
 /**
- * Hidden fields: the columns the build copy lets the build select, read off the copy
- * compiled over the raw chain, when it lets it select at least one of the
+ * Hidden fields: the columns the build copy lets the build select, read off the
+ * copy compiled over the raw chain, when it lets it select at least one of the
  * plan's hidden columns; undefined otherwise (none is lifted).
  */
 async function liftedColumnsOf(

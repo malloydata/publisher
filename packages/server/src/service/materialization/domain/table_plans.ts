@@ -537,7 +537,8 @@ export interface RollupVariantPlan extends RollupPlan {
    /**
     * Every gate of the base is its own (none inherited from a source it
     * extends, none through a join or a derivation): what the gate policy
-    * keeps under own-gate keeping for a database rollup with the gated-sources switch off.
+    * keeps under own-gate keeping for a database rollup with the gated-sources
+    * switch off.
     */
    baseGateOwn?: true;
    /**

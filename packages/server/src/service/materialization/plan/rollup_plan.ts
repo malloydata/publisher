@@ -216,8 +216,8 @@ export interface ParentKeyNeed {
 /**
  * Whether a rollup at `placement` over a gated base may be read past its
  * base's gate (and so is worth building), by the gate policy: on either
- * tier, under `materialize.gatedSources` or, with it off, under own-gate keeping when every
- * gate is the base's `own`, or a lock reading no row field.
+ * tier, under `materialize.gatedSources` or, with it off, under own-gate
+ * keeping when every gate is the base's `own`, or a lock reading no row field.
  */
 function rollupsServeGatedBases(
    placement: { storage?: string },
@@ -271,18 +271,17 @@ function isRollupVariantPlan(plan: unknown): plan is RollupVariantPlan {
 }
 
 /**
- * Whether a planned rollup's base gate is enforced when it is read (route, then govern, for
- * rollups): `govern()` grafts and proves the base's gates on the rollup
- * variant, so the tier checks that refuse a gated build (the database and
- * storage `authorize` refusals) do not apply to it. True only for a rollup
- * the rollup leg planned (a `#(rollup)` one, or a v1 `#@ preaggregate`
- * line read as one) over a gated base, whose every gate the
- * planner proved exact on the rollup (table 1: each field a grain dimension,
- * no gated join), at a
- * placement the gate policy allows (`domain/gate_policy.ts`). The build plan, the
- * host-instructed build and the serve bind all ask this one question, through
- * `gateEnforcedAtRead`, so a rollup is never built that cannot be read, nor
- * read because it was built.
+ * Whether a planned rollup's base gate is enforced when it is read (route, then
+ * govern, for rollups): `govern()` grafts and proves the base's gates on the
+ * rollup variant, so the tier checks that refuse a gated build (the database
+ * and storage `authorize` refusals) do not apply to it. True only for a rollup
+ * the rollup leg planned (a `#(rollup)` one, or a v1 `#@ preaggregate` line
+ * read as one) over a gated base, whose every gate the planner proved exact on
+ * the rollup (table 1: each field a grain dimension, no gated join), at a
+ * placement the gate policy allows (`domain/gate_policy.ts`). The build plan,
+ * the host-instructed build and the serve bind all ask this one question,
+ * through `gateEnforcedAtRead`, so a rollup is never built that cannot be read,
+ * nor read because it was built.
  */
 export function rollupGateEnforcedAtRead(plan: unknown): boolean {
    if (typeof plan !== "object" || plan === null) return false;
@@ -1307,9 +1306,9 @@ function declarationRefusal(
          "a source it joins has a row-level gate, which a rollup cannot re-apply to its rows",
       );
    }
-   // Access filters: a gate's fields must be in the grain for its rows to be filtered;
-   // a gate that reads through a join (or anything but a dimension) can
-   // never be re-applied to a rollup's rows.
+   // Access filters: a gate's fields must be in the grain for its rows to be
+   // filtered; a gate that reads through a join (or anything but a dimension)
+   // can never be re-applied to a rollup's rows.
    const ungated = [
       ...gate.unkeepable,
       ...gate.dimensions.filter((g) => !decl.grain.includes(g)),
@@ -1681,9 +1680,9 @@ function lockOnlyAt(
  * Whether every gate in `entries` is an `#(authorize)` lock that reads no row
  * field: each was read off a resolved entry point, is on the lock route,
  * names no field of `def` (`dimensions` and `unkeepable` empty: the same
- * identifier walk the access-filter check runs), and its text holds nothing but givens,
- * literals and the lock grammar's words. A row filter always reads a field,
- * so it is never lock-only.
+ * identifier walk the access-filter check runs), and its text holds nothing but
+ * givens, literals and the lock grammar's words. A row filter always reads a
+ * field, so it is never lock-only.
  */
 function locksReadNoRowField(
    entries: ReturnType<typeof collectEntryPointGates>,

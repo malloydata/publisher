@@ -172,17 +172,17 @@ export function bindStorageEntries(args: {
       });
       return [];
    });
-   // The table, not the name, is what own-gate keeping admits: every name a gate-keeping table is
-   // bound under is marked, since every one reads that one table (an
-   // extension that shares its base's table re-roots the base). So any
-   // sharer of a gate-kept source's content address counts as gate-keeping, an
-   // ungated sharer included: a gated entry point that joins an ungated
-   // sharer is served from the table because a gated sibling stores into
-   // it. Nothing leaks: the SQL, and so the rows, are identical, and
-   // `govern()` grafts and proves the entry point's own gate on the answer
-   // as on live. A `storage=` rollup plan admitted past its base's gates is
-   // marked too: its variant grafts and proves them (rollup_variants.ts). A
-   // view is never marked (its leg passes a gate only with the switch).
+   // The table, not the name, is what own-gate keeping admits: every name a
+   // gate-keeping table is bound under is marked, since every one reads that
+   // one table (an extension that shares its base's table re-roots the base).
+   // So any sharer of a gate-kept source's content address counts as
+   // gate-keeping, an ungated sharer included: a gated entry point that joins
+   // an ungated sharer is served from the table because a gated sibling stores
+   // into it. Nothing leaks: the SQL, and so the rows, are identical, and
+   // `govern()` grafts and proves the entry point's own gate on the answer as
+   // on live. A `storage=` rollup plan admitted past its base's gates is marked
+   // too: its variant grafts and proves them (rollup_variants.ts). A view is
+   // never marked (its leg passes a gate only with the switch).
    const bindings = admittedBindings.map((binding) =>
       keptTables.has(binding.virtualHandle) &&
       (binding.kind === "persist" ||
@@ -192,10 +192,10 @@ export function bindStorageEntries(args: {
          : binding,
    );
    // A table that holds only ungated rows is read past a gated entry point's
-   // gate as a database table is (the ungated-rows rule): every source stored at its
-   // address, by the plan, not only those bound, is proven ungated. A rollup
-   // too (its base ungated): the rollup leg's join branch reads one past a
-   // gated query source in a storage destination. A persisted view's or
+   // gate as a database table is (the ungated-rows rule): every source stored
+   // at its address, by the plan, not only those bound, is proven ungated. A
+   // rollup too (its base ungated): the rollup leg's join branch reads one past
+   // a gated query source in a storage destination. A persisted view's or
    // query's leg decides a gate on its own, so neither is marked.
    const ungatedTables = ungatedTableAddresses(
       eligibility?.ungated,
@@ -246,8 +246,8 @@ export function ungatedTableAddresses(
 
 /**
  * The tables (content addresses) plan admitted past a stored source's own
- * row-level gate under own-gate keeping: the address of every `gateKept` source. The one
- * rule both the bind (which marks each binding of such a table
+ * row-level gate under own-gate keeping: the address of every `gateKept`
+ * source. The one rule both the bind (which marks each binding of such a table
  * `ownGateKept`) and the serve verdict (for a table not bound yet) read.
  */
 export function keptTableAddresses(

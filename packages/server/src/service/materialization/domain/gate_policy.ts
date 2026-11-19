@@ -30,30 +30,29 @@
  * behind `PUBLISHER_MATERIALIZE_GATED_SOURCES`, and no new leg, tier or kind
  * may keep its gates, nor a row be loosened, without that review's sign-off.
  * Rows were loosened outside it by maintainer decision, for consistency,
- * ahead of the review: own-gate keeping keeps a source's own row-level gate (an attributed
- * row filter or lock, no inherited row filter) on the served leg for a
- * database `#(materialize)` table, as v1 database does, and for a `storage=`
- * table under exactly the same conditions, v1 `#@ persist` and
- * `#(materialize)` alike; and on the rollup leg for a database rollup whose
- * base's gates are all its own and each proven exact on the rollup (every
- * field a grain dimension), which the gated-sources switch already admits.
- * The review then covers that consistent behaviour. The ungated-rows rule,
- * a gated entry point over an ungated stored source, is the same rule on the
- * `storage=` tier: a table proven to hold only ungated rows counts as a
- * gate-keeping table, as a database table does (reviewed in the security
- * review, including the lock-gated join widening). The rollup
- * leg's join branch over an ungated base's database rollup answers past a
- * gated query source on the existing rollup row (a database table), its gate
- * grafted on the variant (`joinGateDecline` in rollup_variants.ts). Pending
- * that review's sign-off: a rollup, on either tier, keeps a base gate set
- * made only of `#(authorize)` locks reading no row field, own or inherited
- * (`lockOnly`), and the rollup leg keeps an answer on any tier whose entry
- * point's gates read no column (`gatesReadNoColumn`). Also pending it: a
- * `storage=` rollup keeps its base's gates on the same terms as a database
- * one, its own under own-gate keeping and any proven one under the switch, read only when
- * its gate columns are stored exactly and in no other zone.
- * `gate_policy_frozen.spec.ts` enumerates every row this file allows and
- * fails on any change, naming the review.
+ * ahead of the review: own-gate keeping keeps a source's own row-level gate (an
+ * attributed row filter or lock, no inherited row filter) on the served leg for
+ * a database `#(materialize)` table, as v1 database does, and for a `storage=`
+ * table under exactly the same conditions, v1 `#@ persist` and `#(materialize)`
+ * alike; and on the rollup leg for a database rollup whose base's gates are all
+ * its own and each proven exact on the rollup (every field a grain dimension),
+ * which the gated-sources switch already admits. The review then covers that
+ * consistent behaviour. The ungated-rows rule, a gated entry point over an
+ * ungated stored source, is the same rule on the `storage=` tier: a table
+ * proven to hold only ungated rows counts as a gate-keeping table, as a
+ * database table does (reviewed in the security review, including the
+ * lock-gated join widening). The rollup leg's join branch over an ungated
+ * base's database rollup answers past a gated query source on the existing
+ * rollup row (a database table), its gate grafted on the variant
+ * (`joinGateDecline` in rollup_variants.ts). Pending that review's sign-off: a
+ * rollup, on either tier, keeps a base gate set made only of `#(authorize)`
+ * locks reading no row field, own or inherited (`lockOnly`), and the rollup leg
+ * keeps an answer on any tier whose entry point's gates read no column
+ * (`gatesReadNoColumn`). Also pending it: a `storage=` rollup keeps its base's
+ * gates on the same terms as a database one, its own under own-gate keeping and
+ * any proven one under the switch, read only when its gate columns are stored
+ * exactly and in no other zone. `gate_policy_frozen.spec.ts` enumerates every
+ * row this file allows and fails on any change, naming the review.
  */
 
 import type { Switches } from "./switches";
@@ -142,11 +141,11 @@ const ROWS: Record<GateKind, Row> = {
    // `#@ preaggregate` line read as one alike. A rollup no variant was
    // planned for keeps none.
    //
-   // Own-gate keeping for a rollup on either tier, with the switch off: its base's own
-   // gates, each proven exact on the rollup (every field a grain dimension),
-   // as a stored source keeps its own row-level gate. At read, a `storage=`
-   // rollup's gate columns must also be stored exactly and compared as its
-   // source compares them (`answerKeepsGates`, the router's comparison
+   // Own-gate keeping for a rollup on either tier, with the switch off: its
+   // base's own gates, each proven exact on the rollup (every field a grain
+   // dimension), as a stored source keeps its own row-level gate. At read, a
+   // `storage=` rollup's gate columns must also be stored exactly and compared
+   // as its source compares them (`answerKeepsGates`, the router's comparison
    // rules).
    //
    // A base whose every gate is a lock reading no row field, own or
@@ -177,17 +176,17 @@ function ownRowLevelGate(t: GatedTable): boolean {
 }
 
 function materializedKeepsGates(t: GatedTable, s: GateSwitches): boolean {
-   // Own-gate keeping for `#(materialize)`, database or `storage=`, with the gated-sources
-   // switch on or off. A maintainer-approved exception made ahead of the
-   // question-14 review, for consistency: database and `storage=` behave the
-   // same under a source's own row-level gate, and the review covers that.
+   // Own-gate keeping for `#(materialize)`, database or `storage=`, with the
+   // gated-sources switch on or off. A maintainer-approved exception made ahead
+   // of the question-14 review, for consistency: database and `storage=` behave
+   // the same under a source's own row-level gate, and the review covers that.
    return s.materialize && ownRowLevelGate(t);
 }
 
 function persistKeepsGates(t: GatedTable): boolean {
-   // Own-gate keeping for a v1 table, database (as since the v1 cutover) or `storage=` on
-   // the same conditions, the maintainer-approved exception made ahead of
-   // the question-14 review. No switch is read.
+   // Own-gate keeping for a v1 table, database (as since the v1 cutover) or
+   // `storage=` on the same conditions, the maintainer-approved exception made
+   // ahead of the question-14 review. No switch is read.
    return ownRowLevelGate(t);
 }
 
@@ -234,8 +233,8 @@ export interface TableRead {
    readonly tier: GateTier;
    /**
     * A `storage=` table plan admitted past its source's own row-level gate
-    * under own-gate keeping (`Binding.ownGateKept`), or a `storage=` rollup admitted past
-    * its base's gates. Absent reads false: fail closed.
+    * under own-gate keeping (`Binding.ownGateKept`), or a `storage=` rollup
+    * admitted past its base's gates. Absent reads false: fail closed.
     */
    readonly ownGateKept?: boolean;
    /**
@@ -290,11 +289,11 @@ export function gateColumnsExact(t: TableRead): boolean {
 }
 
 /**
- * Whether a table an answer read is a gate-keeping table: a database one (as since
- * the v1 cutover), a `storage=` one plan admitted past its own gate, or a
- * `storage=` one that holds only ungated rows (the ungated-rows rule: a gated entry point
- * over an ungated stored source is served from its table on every tier, the
- * gate grafted and proven on the answer as on a database table).
+ * Whether a table an answer read is a gate-keeping table: a database one (as
+ * since the v1 cutover), a `storage=` one plan admitted past its own gate, or a
+ * `storage=` one that holds only ungated rows (the ungated-rows rule: a gated
+ * entry point over an ungated stored source is served from its table on every
+ * tier, the gate grafted and proven on the answer as on a database table).
  */
 function g3Table(t: TableRead): boolean {
    return (
@@ -305,12 +304,12 @@ function g3Table(t: TableRead): boolean {
 }
 
 /**
- * Whether a table a rollup answer read keeps the gates under own-gate keeping: a database
- * one, a `storage=` one plan admitted past its base's own gates
- * (`ownGateKept`), a `storage=` one that holds only ungated rows (the ungated-rows rule: a
- * join branch in a storage destination reads the query source's own tables
- * there beside a rollup of an ungated joined source), or any one when the
- * entry point's gates read no column (locks only).
+ * Whether a table a rollup answer read keeps the gates under own-gate keeping:
+ * a database one, a `storage=` one plan admitted past its base's own gates
+ * (`ownGateKept`), a `storage=` one that holds only ungated rows (the
+ * ungated-rows rule: a join branch in a storage destination reads the query
+ * source's own tables there beside a rollup of an ungated joined source), or
+ * any one when the entry point's gates read no column (locks only).
  */
 function g3RollupTable(t: TableRead): boolean {
    return g3Table(t) || t.gatesReadNoColumn === true;
@@ -343,12 +342,12 @@ export function legMayPassGate(
  * Whether an answer a leg produced past an entry-point gate keeps the gates,
  * given the tables it read. Never when a column the gates read is stored
  * inexactly ({@link gateColumnsExact}), under any switch. Otherwise always
- * under the gated-sources switch; under own-gate keeping alone, only when it read at least
- * one table and every one is a gate-keeping table: for the served copy, database,
- * `storage=` admitted past its own gate, or `storage=` holding only ungated
- * rows; for the rollup leg, database, `storage=` admitted past its base's
- * own gates, `storage=` holding only ungated rows,
- * or any tier when the entry point's gates are locks reading no column.
+ * under the gated-sources switch; under own-gate keeping alone, only when it
+ * read at least one table and every one is a gate-keeping table: for the served
+ * copy, database, `storage=` admitted past its own gate, or `storage=` holding
+ * only ungated rows; for the rollup leg, database, `storage=` admitted past its
+ * base's own gates, `storage=` holding only ungated rows, or any tier when the
+ * entry point's gates are locks reading no column.
  */
 export function answerKeepsGates(
    leg: GateLeg,
