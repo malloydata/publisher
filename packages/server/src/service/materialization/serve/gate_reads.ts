@@ -194,6 +194,13 @@ interface FilterContext {
    readonly namedMeasures: boolean;
    /** The named measures already followed, by path. */
    readonly followed: Set<string>;
+   /**
+    * The first stage applied to stored rows, and what the stage before it
+    * outputs (the entry point when 0): a stage before it was computed by
+    * the build, so its outputs are stored columns, read by their type.
+    */
+   readonly fromStage: number;
+   readonly base: unknown;
 }
 
 function asArray(x: unknown): unknown[] {
@@ -232,6 +239,36 @@ function filteredTerms(e: unknown, out: unknown[] = [], depth = 0): unknown[] {
       }
    }
    for (const v of Object.values(e)) filteredTerms(v, out, depth + 1);
+   return out;
+}
+
+/**
+ * `e` with each field reference (`node: "field"`) replaced by what `to`
+ * returns for its path, or undefined when `to` returns undefined for any.
+ */
+function withFields(
+   e: unknown,
+   to: (path: string[]) => unknown,
+   depth = 0,
+): unknown {
+   if (depth > 64) return undefined;
+   if (e === null || typeof e !== "object") return e;
+   if (Array.isArray(e)) {
+      const out = e.map((x) => withFields(x, to, depth + 1));
+      return out.some((x, i) => x === undefined && e[i] !== undefined)
+         ? undefined
+         : out;
+   }
+   const n = e as { node?: unknown; path?: unknown };
+   if (n.node === "field" && Array.isArray(n.path)) {
+      return to(n.path as string[]);
+   }
+   const out: Record<string, unknown> = {};
+   for (const [k, v] of Object.entries(e)) {
+      const w = withFields(v, to, depth + 1);
+      if (w === undefined && v !== undefined) return undefined;
+      out[k] = w;
+   }
    return out;
 }
 
@@ -728,11 +765,17 @@ class GateReadWalk {
       fromStage: number,
       namedMeasures: boolean,
    ): void {
+      const stages = pipeline as QueryStage[];
       const ctx: FilterContext = {
          entry,
-         pipeline: pipeline as QueryStage[],
+         pipeline: stages,
          namedMeasures,
          followed: new Set(),
+         fromStage,
+         base:
+            fromStage === 0
+               ? entry
+               : (stages[fromStage - 1]?.outputStruct ?? {}),
       };
       ctx.pipeline.forEach((stage, i) => {
          if (i >= fromStage) this.stageFilters(ctx, stage, i);
@@ -742,20 +785,22 @@ class GateReadWalk {
    /**
     * One stage's terms and its fields' filters: stage `i` of the query reads
     * the entry point (0) or the previous stage's output, as a nest in it
-    * does in its own first stage. A nest's later stage (`nestInput`, its
-    * input) is read as unresolved unless it compares no string.
+    * does in its own first stage. `prior`: the stages whose output this
+    * stage reads, from the entry point. A nest's later stage (`nested`) is
+    * read as unresolved unless it compares no string.
     */
    private stageFilters(
       ctx: FilterContext,
       stage: QueryStage,
       i: number,
-      nestInput?: unknown,
+      prior: readonly QueryStage[] = ctx.pipeline.slice(0, i),
+      nested = false,
    ): void {
       const term = (raw: unknown) => {
          // A `having:` names the stage's own outputs: read each as what it is.
          const e = this.outputsResolved(raw, stage);
-         if (nestInput !== undefined) this.nestTerm(e, nestInput);
-         else if (i === 0) this.entryTerm(ctx, e, []);
+         if (nested) this.nestTerm(ctx, e, prior);
+         else if (prior.length === 0) this.entryTerm(ctx, e, []);
          else this.stageTerm(ctx, e, i);
       };
       for (const f of asArray(stage.filterList)) term((f as { e?: unknown }).e);
@@ -766,21 +811,22 @@ class GateReadWalk {
             const nest = qf.pipeline as QueryStage[];
             nest.forEach((s, j) =>
                j === 0
-                  ? this.stageFilters(ctx, s, i, nestInput)
+                  ? this.stageFilters(ctx, s, i, prior, nested)
                   : this.stageFilters(
                        ctx,
                        s,
                        j,
-                       nest[j - 1].outputStruct ?? {},
+                       [...prior, ...nest.slice(0, j)],
+                       true,
                     ),
             );
          } else if (qf.type === "fieldref" && Array.isArray(qf.path)) {
-            if (i === 0 && nestInput === undefined) {
+            if (prior.length === 0 && !nested) {
                this.namedMeasure(ctx, qf.path as string[]);
             }
          } else if (qf.e !== undefined) {
             for (const t of filteredTerms(qf.e)) term(t);
-            if (i === 0 && nestInput === undefined) {
+            if (prior.length === 0 && !nested) {
                for (const p of fieldPathsIn(qf.e)) this.namedMeasure(ctx, p);
             }
          }
@@ -839,11 +885,7 @@ class GateReadWalk {
          return f?.expressionType === "aggregate" && nonStringType(f.type);
       };
       for (const p of paths) if (measure(p)) this.namedMeasure(ctx, p);
-      const computedScalar = paths.some((p) => {
-         const f = fieldAt(ctx.entry, p);
-         return f === undefined || (f.e !== undefined && !measure(p));
-      });
-      if (!computedScalar && this.leavesNotString(e, owner)) return;
+      if (this.comparesNoStringThroughScalars(e, owner)) return;
       this.scoped = true;
       this.comparesNoString = false;
       if (!this.equalityOrNotString(e, owner)) this.equalityOnly = false;
@@ -854,10 +896,157 @@ class GateReadWalk {
       }
    }
 
+   /**
+    * Whether `e` compares no string, reading each computed field it names
+    * through what computes it: a dimension through its own expression, and
+    * an output of a query-shaped source whose table the answer does not read
+    * through the stage that computes it. A field's type says what it yields,
+    * not what it compares (`is_books is category = 'books'` and `select: sb
+    * is category = 'books'` are booleans), and `leavesNotString` reads only
+    * the type. A measure's value is a number; its own filters are followed
+    * as terms of their own.
+    */
+   private comparesNoStringThroughScalars(
+      e: unknown,
+      source: unknown,
+      depth = 0,
+   ): boolean {
+      if (depth > 32 || !this.leavesNotString(e, source)) return false;
+      return fieldPathsIn(e).every((p) => {
+         const f = fieldAt(source, p);
+         if (f === undefined) return false;
+         const owner =
+            p.length === 1 ? source : fieldAt(source, p.slice(0, -1));
+         if (f.e !== undefined) {
+            return (
+               f.expressionType === "aggregate" ||
+               this.comparesNoStringThroughScalars(f.e, owner, depth + 1)
+            );
+         }
+         const query = (owner as { query?: QueryLike } | undefined)?.query;
+         if (query === undefined || this.isStored(owner)) return true;
+         const base = this.baseOf(query);
+         const stages = asArray(query.pipeline) as QueryStage[];
+         return (
+            base !== undefined &&
+            stages.length > 0 &&
+            this.stageOutputsCompareNoString(
+               { node: "field", path: [p[p.length - 1]] },
+               stages,
+               base,
+               depth + 1,
+            )
+         );
+      });
+   }
+
+   /**
+    * Whether `e`, which names the outputs of the last of `stages` (a query
+    * on `base`), compares no string: each output is replaced by what
+    * computes it, back to `base`'s own fields. An aggregate reads what it
+    * aggregates, its filters, and the stage's grouping keys (`n is count()`
+    * grouped by a string counts what that string's comparison groups). An
+    * output that cannot be followed (a nest, an analytic) compares a string.
+    */
+   private stageOutputsCompareNoString(
+      e: unknown,
+      stages: readonly QueryStage[],
+      base: unknown,
+      depth = 0,
+   ): boolean {
+      if (depth > 32) return false;
+      if (stages.length === 0) {
+         return this.comparesNoStringThroughScalars(e, base, depth);
+      }
+      const last = stages.length - 1;
+      const input = last === 0 ? base : undefined;
+      const outputs = asArray(stages[last].queryFields) as (FieldLike & {
+         expressionType?: unknown;
+      })[];
+      const aggregate = (qf: (typeof outputs)[number]) =>
+         qf.expressionType === "aggregate" ||
+         (qf.type === "fieldref" &&
+            Array.isArray(qf.path) &&
+            fieldAt(input, qf.path as string[])?.expressionType ===
+               "aggregate");
+      const scalar = (qf: (typeof outputs)[number]): unknown => {
+         if (qf.type === "fieldref" && Array.isArray(qf.path)) {
+            return { node: "field", path: qf.path };
+         }
+         const kind = qf.expressionType;
+         return qf.e !== undefined && (kind === undefined || kind === "scalar")
+            ? qf.e
+            : undefined;
+      };
+      const keys = outputs.filter((qf) => !aggregate(qf)).map(scalar);
+      const byName = this.stageFields(stages[last]);
+      const sub = withFields(e, (path) => {
+         const qf = path.length === 1 ? byName.get(path[0]) : undefined;
+         if (qf === undefined) return undefined;
+         if (!aggregate(qf)) return scalar(qf);
+         const parts: unknown[] = [];
+         const measure =
+            qf.type === "fieldref" ? { node: "field", path: qf.path } : qf.e;
+         if (!this.aggregateReads(measure, input, [], parts, depth)) {
+            return undefined;
+         }
+         if (keys.some((k) => k === undefined)) return undefined;
+         return { node: "()", parts: [...parts, ...keys] };
+      });
+      return (
+         sub !== undefined &&
+         this.stageOutputsCompareNoString(
+            sub,
+            stages.slice(0, last),
+            base,
+            depth + 1,
+         )
+      );
+   }
+
+   /**
+    * What an aggregate expression reads, into `out`: each field it
+    * aggregates, a named measure through its own expression, and each
+    * filter's terms; false when it is too deep to read.
+    */
+   private aggregateReads(
+      e: unknown,
+      source: unknown,
+      prefix: readonly string[],
+      out: unknown[],
+      depth: number,
+   ): boolean {
+      if (depth > 32) return false;
+      const under = (t: unknown) =>
+         withFields(t, (p) => ({ node: "field", path: [...prefix, ...p] }));
+      for (const t of filteredTerms(e)) out.push(under(t));
+      for (const p of fieldPathsIn(e)) {
+         const path = [...prefix, ...p];
+         const f = fieldAt(source, path);
+         if (f?.expressionType === "aggregate" && f.e !== undefined) {
+            if (
+               !this.aggregateReads(
+                  f.e,
+                  source,
+                  path.slice(0, -1),
+                  out,
+                  depth + 1,
+               )
+            ) {
+               return false;
+            }
+         } else {
+            out.push({ node: "field", path });
+         }
+      }
+      return true;
+   }
+
    /** A term of a later stage, on the previous stage's output. */
    private stageTerm(ctx: FilterContext, e: unknown, i: number): void {
       const input = ctx.pipeline[i - 1]?.outputStruct;
-      if (this.leavesNotString(e, input)) return;
+      const prior = ctx.pipeline.slice(ctx.fromStage, i);
+      if (this.stageOutputsCompareNoString(e, prior, ctx.base)) return;
       this.scoped = true;
       this.comparesNoString = false;
       if (!this.equalityOrNotString(e, input)) this.equalityOnly = false;
@@ -868,9 +1057,17 @@ class GateReadWalk {
       }
    }
 
-   /** A term of a nest's own later stage: unresolved unless it compares no string. */
-   private nestTerm(e: unknown, input: unknown): void {
-      if (this.leavesNotString(e, input)) return;
+   /**
+    * A term of a nest's own later stage, on the stages before it (`prior`,
+    * from the query's first): unresolved unless it compares no string.
+    */
+   private nestTerm(
+      ctx: FilterContext,
+      e: unknown,
+      prior: readonly QueryStage[],
+   ): void {
+      const followed = prior.slice(ctx.fromStage);
+      if (this.stageOutputsCompareNoString(e, followed, ctx.base)) return;
       this.scoped = true;
       this.comparesNoString = false;
       this.unresolved = true;
