@@ -1703,8 +1703,18 @@ async function planV1PersistSources(
                model: declaredIn,
             });
          }
-      } catch {
-         // No findings for a source whose annotations cannot be read.
+      } catch (err) {
+         // The source is still planned, so its gate is classified below;
+         // only its annotation findings are lost, which this line reports.
+         logger.warn(
+            "Failed to read a persist source's annotations; planned without their findings",
+            {
+               modelPath,
+               sourceID,
+               sourceName: source.name,
+               error: errMessage(err),
+            },
+         );
       }
       classificationCtx ??= {
          modelDef: modelDefOf(malloyModel),
