@@ -369,7 +369,7 @@ export class PersistedViewServe {
          table,
          modelPath: this.host.modelPath(),
          subject: `${plan.sourceName} -> ${plan.viewName}`,
-         cacheScope: variant.cacheScope ?? "",
+         cacheScope: variant.cacheScope,
          compilerKey: this.compilerKeyOf(plan.buildSourceID),
       });
    }
@@ -728,8 +728,12 @@ export async function readStoredVariant(args: {
    modelPath: string;
    /** What the variant answers, for the log. */
    subject: string;
-   /** The graft cache scope of this variant. */
-   cacheScope: string;
+   /**
+    * The graft cache scope of this variant: its compile's own. Undefined on
+    * a compiled variant is refused rather than read as a scope shared with
+    * every other such variant.
+    */
+   cacheScope: string | undefined;
    /** The key Malloy substitutes a database table under, when not its address. */
    compilerKey?: string;
 }): Promise<ViewAnswer> {
@@ -761,6 +765,10 @@ export async function readStoredVariant(args: {
          "the query does not compile against the stored view",
       );
    }
+   if (!args.cacheScope) {
+      throw new Error("a compiled variant has no graft cache scope of its own");
+   }
+   const cacheScope = args.cacheScope;
    const runnable = variant.materializer.loadRestrictedQuery(args.queryString);
    let sql: string;
    try {
@@ -818,7 +826,7 @@ export async function readStoredVariant(args: {
       graftScope: {
          modelDef: variant.modelDef,
          materializer: variant.materializer,
-         cacheScope: args.cacheScope,
+         cacheScope,
          ...(variant.runtime ? { runtime: variant.runtime } : {}),
       },
    };
