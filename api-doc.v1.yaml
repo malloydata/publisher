@@ -225,10 +225,11 @@ info:
 
 
     Headers a gateway must strip: `x-publisher-bypass-authorize`. When the deployment sets
-    `PUBLISHER_BYPASS_AUTHORIZE_SECRET`, a request carrying that secret in this header skips the `#(authorize)` gate on
-    `:query` and `:compile`, the one input that turns a gate's 403 into a 200. It exists for an internal service the
-    deployment trusts, so the gateway removes it from every inbound request and only that service, behind the gateway,
-    sets it. It is not part of any operation's parameters and no generated client offers it.
+    `PUBLISHER_BYPASS_AUTHORIZE_SECRET`, a request carrying that secret in this header skips gate evaluation on `:query`
+    and `:compile`, the `#(authorize)` lock and the `#(access_filter)` filter alike: the one input that turns a gate's
+    403 into a 200. With the variable unset the header is refused. It exists for an internal service the deployment
+    trusts (an indexer), so the gateway removes it from every inbound request and only that service, behind the
+    gateway, sets it. It is not part of any operation's parameters and no generated client offers it.
 servers:
   - url: /api/v1
     description: This server
@@ -1746,9 +1747,9 @@ paths:
         given
         that is missing or does not parse as its type answers 400 `INVALID_REQUEST` with `details.field: givens.<name>`,
         except a given a gate reads: a missing gate given answers 403 `ACCESS_DENIED`, as an unsatisfied gate does, so
-        the answer does not reveal the gate. Publisher honours `x-publisher-bypass-authorize`, which skips the
-        `#(authorize)` gate for an internal service that holds the deployment's bypass secret; a gateway strips it from
-        every inbound request (see the info text)."
+        the answer does not reveal the gate. Publisher honours `x-publisher-bypass-authorize`, which skips
+        every gate for an internal service that holds the deployment's bypass secret; a gateway strips it from every
+        inbound request (see the info text)."
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}:compile:
@@ -1812,11 +1813,10 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
-      description: "Loads the version when it is not loaded (a hydrate when the compiled-model store has an
-        entry). A model in the path that does not exist answers 404 `NOT_FOUND`,
-        at every scope. Publisher honours `x-publisher-bypass-authorize`, which skips the `#(authorize)` gate for an
-        internal service that holds the deployment's bypass secret; a gateway strips it from every inbound request (see
-        the info text)."
+      description: "Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). A model
+        in the path that does not exist answers 404 `NOT_FOUND`, at every scope. Publisher honours
+        `x-publisher-bypass-authorize`, which skips every gate for an internal service that holds the deployment's bypass
+        secret; a gateway strips it from every inbound request (see the info text)."
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/reports:

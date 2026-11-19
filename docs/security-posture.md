@@ -81,6 +81,13 @@ stands in front of Publisher and does all of the following:
    `PUBLISHER_CALLER_HEADER`) and a `traceparent`, so
    the [access record](access-record.md) names the caller.
 
+**Headers a gateway must strip.** `x-publisher-bypass-authorize` is the one request header that
+changes what Publisher enforces: carrying the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET`, it skips
+`#(authorize)` and `#(access_filter)` on a query or a compile check. Remove it from every inbound
+request at the gateway, so only an internal service behind the gateway (an indexer) can set it. The
+`/api/v1` spec states the same rule in its overview rather than as a parameter or a security scheme,
+so no generated client offers it.
+
 Without that tier the controls are advisory. Anyone who can reach the port can set their own givens
 and pass any gate. The rest of this page is the detail behind that rule.
 
