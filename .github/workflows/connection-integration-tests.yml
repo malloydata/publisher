@@ -32,6 +32,8 @@ on:
       - "packages/server/src/service/query_execution.ts"
       - "packages/server/src/service/model_serving.ts"
       - "packages/server/src/controller/connection.controller.ts"
+      - "packages/server/src/controller/legacy_report.controller.ts"
+      - "packages/server/src/service/query_metadata.ts"
       - "packages/server/tests/integration/statement_usage/**"
       # Materialization: the manifest's read-cost value, each dialect's
       # catalog read of a database table's column types, and the specs that
@@ -81,6 +83,8 @@ on:
       - "packages/server/src/service/query_execution.ts"
       - "packages/server/src/service/model_serving.ts"
       - "packages/server/src/controller/connection.controller.ts"
+      - "packages/server/src/controller/legacy_report.controller.ts"
+      - "packages/server/src/service/query_metadata.ts"
       - "packages/server/tests/integration/statement_usage/**"
       # Materialization: the manifest's read-cost value, each dialect's
       # catalog read of a database table's column types, and the specs that

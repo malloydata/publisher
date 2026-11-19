@@ -255,4 +255,20 @@ describe.skipIf(!url)("statement_usage bytes_out on a real server", () => {
          ["sql", "error", false],
       ]);
    });
+
+   it("a notebook cell whose result the row cap refuses still records the statement once, without bytes_out", async () => {
+      const records = await recordsDuring(capped, async () => {
+         const res = await fetch(
+            `${env(capped)}/packages/pa/notebooks/nb.malloynb/cells/1`,
+         );
+         expect(res.status).toBe(413);
+      });
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+         surface: "serve",
+         rows: 3,
+         status: "ok",
+      });
+      expect(records[0]).not.toHaveProperty("bytes_out");
+   });
 });

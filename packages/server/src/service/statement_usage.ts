@@ -39,7 +39,9 @@ export interface StatementUsage {
     * or compact; MCP's `execute_query` asks for compact), a notebook cell's
     * `result`, raw SQL's `data`. The envelope around it is not counted: the
     * other fields of the HTTP response, or the metadata of an MCP tool's
-    * answer. Absent on a build, a load or a copy (they return no rows), on a
+    * answer. For MCP's `execute_query` it is the compact result the query
+    * returned to the tool, before the tool trims rows to fit its size budget,
+    * so the agent can receive fewer bytes than it counts. Absent on a build, a load or a copy (they return no rows), on a
     * failed statement, and when the result was never serialized (a cap
     * refused it).
     */
