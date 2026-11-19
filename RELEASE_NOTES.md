@@ -25,6 +25,30 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Changed: the status verdict for a `storage=` table whose own gate column is stored with a zone.** A query past such a source's row-level gate is already answered live: the column is stored as `TIMESTAMP WITH TIME ZONE`, which the destination compares in its own session zone rather than the source's. The source's serve verdict (`serveVerdicts`) still reported that table as keeping the gate, so it could say `serves` for a gated source whose every query was answered live. It now says `live` with reason `row_level_gate`, the decline it reports for any other gate a table cannot keep, matching what queries do. **Who is affected:** a status reader whose package stores a gate column zoned on a `storage=` table, with the gated-sources switch on, or with the table admitted past its own gate or holding only ungated rows. Query answers do not change.
 
+## [Unreleased] — check mode for CI, and a strict readiness probe
+
+**New: `--check` loads and compiles every package the config names, reports what is wrong, and exits.**
+Run the server with `--check` (or `PUBLISHER_CHECK=true`) and it reads the config as written (the
+`--config` file, or the one in the server root; never the bundled samples and never stored state),
+loads every package it names into a temporary server root of its own, and exits instead of serving:
+`0` when everything loaded, `1` when anything did not, `2` when it could not check (no config, a
+setting that does not parse). It binds no port and writes nothing to the server root. Each problem is
+one line on stdout, `<file>:<line>:<col>: error: <message> [<env>/<package>]`, and on GitHub Actions
+also an `::error` workflow command, so the annotation lands on the file; the log goes to stderr. A
+package published from a local directory has every model's errors reported, not only the first its load
+stopped at. The run ends with `PUBLISHER_CHECK_OK`, `PUBLISHER_CHECK_FAILED` (with the counts
+`PUBLISHER_READY` carries plus `errors` and `warnings`) or `PUBLISHER_CHECK_ERROR` on stderr. A
+package's `warn`-severity `warnings` are printed and do not fail the check unless
+`--check-fail-on-warnings` is set. [Check mode](docs/configuration.md#check-mode-for-ci) has the format,
+and [deployment.md](docs/deployment.md#checking-packages-in-ci) a GitHub Actions workflow.
+
+**New: `GET /health/readiness?strict=true` fails while a package is failed or stale.** It answers `503`,
+naming each entry's environment and package under `loadErrors` (the causes stay on `/api/v0/status`),
+while any configured environment or package failed to load or a package serves a stale model after a
+failed reload. Plain `/health/readiness` is unchanged: `200` once the server is ready, whatever loaded.
+**Who is affected:** nobody who does not ask for it. A probe that already sends a `strict` query
+parameter with a value other than `true` or `false` now gets `400`.
+
 ## [Unreleased] — a materialization run's logs carry error codes, not error messages
 
 **Changed: a run's logs name an error by its code, never its message.** A warehouse driver's message can quote the SQL that failed or a value from a row, so every log line a materialization run, its reclaim or its scheduler writes now carries `code` (the error's code, as `materialization.run.finished` already did) in place of `error`. A second error on the same line is `restoreCode`, `cleanupCode` or `transitionErrorCode` (was `restoreError`, `cleanupError`, `transitionError`). Three lines change shape beyond that: a source the eligibility gate refuses logs its refusal code as `reason` (was the refusal's message); the warning that a run's manifest did not load into the package no longer carries the message, which stays on the run's record; and the warning that the SSH proxy of a federated storage build did not close carries `code` instead of the message in its text. The run's record still holds the redacted message, so `GET …/materializations/{id}` is unchanged. An incremental source skipped because no new data arrived now logs at `info` (it is the steady state of a schedule); a seed and an unreadable frontier still warn. `materialization.run.finished`'s `durationMs` on a committed run now spans the whole run, rebinds and reclaim included, as `publisher_materialization_run_duration_ms` always did. **Who is affected:** an operator whose log queries or alerts read `error` (or the renamed fields) on these lines: read `code`.

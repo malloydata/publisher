@@ -57,6 +57,24 @@ export const launch = [
       },
    }),
    setting({
+      key: "check",
+      type: boolean(),
+      default: false,
+      kind: "launch",
+      description:
+         "Load and compile every package the config names, print each problem, and exit: 0 clean, 1 problems found, 2 could not check. Binds no port.",
+      notes: "For CI. Reads the config as written (the `--config` file, or `publisher.config.json` in the server root; never the bundled samples and never stored state), loads every package it names into a temporary server root it deletes afterwards, prints one line per problem to stdout (`<file>:<line>:<col>: error: <message> [<env>/<package>]`), then `PUBLISHER_CHECK_OK`, `PUBLISHER_CHECK_FAILED` or `PUBLISHER_CHECK_ERROR` to stderr. Exits `0` when everything loaded, `1` when anything did not, and `2` when it could not check (no config, a config or setting that does not parse, storage that would not open). Binds no port, writes nothing to the server root, and writes no `.mcp.json`. See [Check mode](#check-mode-for-ci).",
+   }),
+   setting({
+      key: "checkFailOnWarnings",
+      type: boolean(),
+      default: false,
+      kind: "launch",
+      description:
+         "With {check}, also exit 1 when a package that loaded reports a warning.",
+      notes: "With `check`, also fail (exit `1`) when a package that loaded carries a `warn`-severity entry in its `warnings` (a render tag the renderer cannot apply, a refused `#@ persist`, a report that does not resolve, and the like). Off, those are printed as `warning:` lines and counted, and do not fail the check. A finding with severity `error` fails the check either way. Has no effect without `check`.",
+   }),
+   setting({
       key: "watchEnvironments",
       type: list(),
       default: [],

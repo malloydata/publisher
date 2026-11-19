@@ -97,6 +97,50 @@ no `package` means the environment itself failed to initialize, and its packages
 it. Either way the fix is usually the `location` in `publisher.config.json`, or a missing
 `publisher.json` in the package directory.
 
+A probe can ask the same question: `GET /health/readiness?strict=true` answers `503`, naming each
+entry's environment and package (the causes stay on `/status`), while anything is in `loadErrors`,
+where plain `/health/readiness` stays `200` once the server is ready
+([readiness probes](configuration.md#readiness-probes)).
+
+## Checking packages in CI
+
+To fail a pull request that breaks a model, run the server in [check mode](configuration.md#check-mode-for-ci):
+it loads and compiles every package the config names, prints each error with its file, line and
+column, and exits `1` if anything failed to load (`2` if it could not check at all), without binding
+a port or writing to the server root. This workflow checks a repository that holds its
+`publisher.config.json` and packages at the root, with DuckDB-backed (or credential-free)
+connections:
+
+```yaml
+# .github/workflows/malloy-check.yml
+name: Malloy check
+on: [pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Load and compile every package
+        run: npx --yes @malloy-publisher/server@latest --check --config ./publisher.config.json
+```
+
+- Run it from the repository root, as above: on GitHub Actions each problem is also printed as an
+  `::error` workflow command naming its file relative to the working directory, which is how the
+  annotation lands on the file in the pull request.
+- Each run reads the config and the package files as they are in the checkout; nothing carries over
+  between runs.
+- A connection that needs credentials reads them the way the server does, from the variables the
+  config's `${VAR}` references name, so pass them as `env:` from the repository's secrets.
+- Add `--check-fail-on-warnings` to fail on package warnings as well, such as a render tag the
+  renderer cannot apply.
+- Pin a version (`@malloy-publisher/server@0.x.y`) instead of `@latest` for a check that does not move
+  under you.
+- To check a running deployment instead, as a post-deploy smoke test, poll
+  `GET /health/readiness?strict=true` until it answers `200`, and fail on `503`.
+
 ## Docker
 
 Two ways to run Publisher in Docker: build the image from source, or pull the pre-built image from

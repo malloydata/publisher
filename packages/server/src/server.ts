@@ -6,7 +6,13 @@
 // before the call below; it precedes everything this process chooses to do.
 import { assertSupportedNodeVersion } from "./node_version_check";
 import { printHelpIfAsked } from "./cli_args";
-import { Settings, SettingsError } from "./settings";
+import { externalEnv, Settings, SettingsError } from "./settings";
+import {
+   CHECK_COULD_NOT_RUN,
+   checkErrorLine,
+   checkRequested,
+   githubErrorCommand,
+} from "./check_signals";
 import {
    initFailedLine,
    redactPgSecrets,
@@ -41,6 +47,16 @@ if (failures.length > 0) {
    process.stderr.write(
       `${redactSignedUrlParams(redactPgSecrets(message))}\n${initFailedLine(message)}`,
    );
+   // Check mode could not check: its own line and code, so CI tells a broken
+   // setup from broken models.
+   if (checkRequested(argv, () => loaded.get("check"))) {
+      process.stderr.write(checkErrorLine(message));
+      // The ::error annotation check mode prints for every other failure.
+      if (externalEnv("GITHUB_ACTIONS") === "true") {
+         process.stdout.write(githubErrorCommand(message));
+      }
+      process.exit(CHECK_COULD_NOT_RUN);
+   }
    process.exit(1);
 }
 
@@ -55,6 +71,14 @@ for (const warning of loaded.warnings) {
 // One line naming each setting given and where it came from; secrets show as (set).
 const { settingsLine } = await import("./settings/reference");
 logger.info(settingsLine(loaded));
+
+if (loaded.get("check")) {
+   // Check mode: load and compile every package the config names into a
+   // temporary root, print what is wrong, and exit; nothing binds,
+   // so which APIs the config serves does not matter. See check.ts.
+   const { runCheck } = await import("./check");
+   process.exit(await runCheck(loaded));
+}
 
 // Checked before either server's module loads, so a contradiction fails startup
 // before anything binds or opens storage. Imported here, after the version check,

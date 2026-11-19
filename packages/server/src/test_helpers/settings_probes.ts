@@ -104,6 +104,8 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
       getUnresolvedPublisherConfigPath(serverRoot) === null,
    initializeStorage: () => settings.get("initializeStorage"),
    watchEnvironments: () => settings.get("watchEnvironments"),
+   check: () => settings.get("check"),
+   checkFailOnWarnings: () => settings.get("checkFailOnWarnings"),
 
    "mcp.port": () => readiness().mcpPort,
    "mcp.host": () => settings.get("mcp.host"),

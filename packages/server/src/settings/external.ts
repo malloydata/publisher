@@ -14,7 +14,9 @@ export type ExternalVariable =
    | "OTEL_EXPORTER_OTLP_ENDPOINT"
    | "GOOGLE_APPLICATION_CREDENTIALS"
    | "PGSSLMODE"
-   | "PGSERVICE";
+   | "PGSERVICE"
+   // Set by GitHub Actions; check mode then also prints workflow commands.
+   | "GITHUB_ACTIONS";
 
 export function externalEnv(name: ExternalVariable): string | undefined {
    return process.env[name];

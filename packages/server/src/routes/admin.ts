@@ -11,7 +11,7 @@
 
 import bodyParser from "body-parser";
 import express from "express";
-import { registerHealthEndpoints } from "../health";
+import { type LoadProblem, registerHealthEndpoints } from "../health";
 import { httpMetricsMiddleware } from "../instrumentation";
 import { loggerMiddleware } from "../logger";
 import type { WatchModeController } from "../controller/watch-mode.controller";
@@ -206,14 +206,17 @@ export function registerWatchModeRoutes(
  * `watchMode` is null with serving off, which loads no environments to watch.
  * `metrics` serves `/metrics` when the admin listener is the process's only
  * one; in-process, the main API already serves the same registry.
+ * `loadProblems` is what strict readiness fails on; the standalone admin
+ * server loads no packages and passes none.
  */
 export function createAdminApp(
    catalogs: CatalogAdmin | null,
    watchMode: WatchModeController | null,
    metrics?: express.RequestHandler,
+   loadProblems?: () => readonly LoadProblem[],
 ): express.Express {
    const adminApp = express();
-   registerHealthEndpoints(adminApp);
+   registerHealthEndpoints(adminApp, { loadProblems });
    if (metrics) adminApp.get("/metrics", metrics);
    adminApp.use(loggerMiddleware);
    adminApp.use(httpMetricsMiddleware);

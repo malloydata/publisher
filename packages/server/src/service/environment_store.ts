@@ -1003,6 +1003,9 @@ export class EnvironmentStore
     * moment as every other readiness signal and never for a failed boot.
     */
    private emitReadinessLine(): void {
+      // Check mode binds nothing, so there is no url to announce; its own
+      // PUBLISHER_CHECK_OK / PUBLISHER_CHECK_FAILED line takes this one's place.
+      if (settings.get("check")) return;
       let packages = 0;
       let loadErrors = this.failedEnvironments.size;
       for (const environment of this.environments.values()) {
@@ -1912,6 +1915,32 @@ export class EnvironmentStore
 
    /** Load errors, stale packages, and why the server is empty or failed. */
    private addStatusProblems(status: ServerStatusBody): void {
+      const loadErrors = this.getLoadProblems();
+      // Absent, not empty, when nothing failed.
+      if (loadErrors.length > 0) {
+         status.loadErrors = loadErrors;
+      }
+      // The one place a /status poller learns the server found no config.
+      if (this.unconfiguredNotice && status.environments.length === 0) {
+         status.emptyReason = this.unconfiguredNotice;
+      }
+      if (this.initError) {
+         status.initError = this.initError;
+      }
+   }
+
+   /** Why initialization failed, or null when it did not (or has not yet). */
+   public getInitError(): string | null {
+      return this.initError;
+   }
+
+   /**
+    * What `/status` reports under `loadErrors`, read from memory alone: every
+    * configured environment or package that did not load, and every serving
+    * package whose latest reload failed to compile (`stale: true`). Empty
+    * when nothing failed. The strict readiness probe and check mode read it.
+    */
+   public getLoadProblems(): LoadError[] {
       const loadErrors: LoadError[] = [];
       for (const [environmentName, message] of this.failedEnvironments) {
          loadErrors.push({ environment: environmentName, message });
@@ -1942,23 +1971,42 @@ export class EnvironmentStore
             });
          }
       }
-      // Absent, not empty, when nothing failed. A load error can quote a
-      // driver's text: never a storage URL in it (the server's own file
-      // paths, which name no bucket, stay).
-      if (loadErrors.length > 0) {
-         status.loadErrors = loadErrors.map((e) => ({
-            ...e,
-            ...(e.message !== undefined
-               ? { message: redactStorageUrls(e.message) }
-               : {}),
-         }));
+      // A load error can quote a driver's text: never a storage URL in it
+      // (the server's own file paths, which name no bucket, stay).
+      return loadErrors.map((e) => ({
+         ...e,
+         ...(e.message !== undefined
+            ? { message: redactStorageUrls(e.message) }
+            : {}),
+      }));
+   }
+
+   /**
+    * The local directory a configured package is published from, read from
+    * the config as it is now, or undefined when the package is not in it or
+    * its location is not a local path (git, GCS, S3, a zip URL). Check mode
+    * compiles a failed package from here to report every model's errors.
+    */
+   public async configuredLocalSource(
+      environmentName: string,
+      packageName: string,
+   ): Promise<string | undefined> {
+      let manifest: ProcessedPublisherConfig;
+      try {
+         manifest = await EnvironmentStore.reloadEnvironmentManifest(
+            this.serverRootPath,
+         );
+      } catch {
+         return undefined;
       }
-      // The one place a /status poller learns the server found no config.
-      if (this.unconfiguredNotice && status.environments.length === 0) {
-         status.emptyReason = this.unconfiguredNotice;
-      }
-      if (this.initError) {
-         status.initError = this.initError;
+      const location = manifest.environments
+         .find((environment) => environment.name === environmentName)
+         ?.packages.find((pkg) => pkg.name === packageName)?.location;
+      if (location === undefined || !isLocalPath(location)) return undefined;
+      try {
+         return this.resolveLocalPath(location);
+      } catch {
+         return undefined;
       }
    }
 

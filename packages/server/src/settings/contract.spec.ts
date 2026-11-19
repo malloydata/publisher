@@ -704,6 +704,45 @@ export const CONTRACT: Record<string, Case[]> = {
       },
    ],
 
+   check: [
+      { name: "unset", expect: value(false) },
+      { name: "--check", argv: ["--check"], expect: value(true) },
+      {
+         name: "PUBLISHER_CHECK",
+         env: { PUBLISHER_CHECK: "true" },
+         expect: value(true),
+      },
+      {
+         name: "--no-check wins over the variable",
+         env: { PUBLISHER_CHECK: "true" },
+         argv: ["--no-check"],
+         expect: value(false),
+      },
+      {
+         name: "not a boolean fails",
+         env: { PUBLISHER_CHECK: "maybe" },
+         expect: fails("PUBLISHER_CHECK"),
+      },
+      {
+         name: "not read from the file",
+         file: { check: true },
+         expect: warned(false, "it decides which file is read"),
+      },
+   ],
+   checkFailOnWarnings: [
+      { name: "unset", expect: value(false) },
+      {
+         name: "--check-fail-on-warnings",
+         argv: ["--check-fail-on-warnings"],
+         expect: value(true),
+      },
+      {
+         name: "PUBLISHER_CHECK_FAIL_ON_WARNINGS",
+         env: { PUBLISHER_CHECK_FAIL_ON_WARNINGS: "true" },
+         expect: value(true),
+      },
+   ],
+
    // ── mcp ───────────────────────────────────────────────────────────────
    "mcp.port": [
       { name: "unset", expect: value(4040) },
