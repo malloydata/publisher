@@ -71,6 +71,7 @@
         "annotationFields": {
           "name": "recent_body"
         },
+        "asOfBuild": true,
         "columns": [
           {
             "name": "id",

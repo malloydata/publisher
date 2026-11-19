@@ -153,6 +153,7 @@
         "annotationFields": {
           "storage": "lake"
         },
+        "asOfBuild": true,
         "columns": [
           {
             "name": "region",
