@@ -19,7 +19,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import {
    entryTable,
-   ledgerRowKey,
+   recordedTableKey,
    mayBeSameTable,
    placedLeafKey,
 } from "../domain/physical_table";
@@ -1101,7 +1101,7 @@ export function validateInstructions(
             : undefined) ?? byAddress.get(instruction.sourceEntityId);
       if (!planSource) continue; // Unreachable: every instruction matched above.
       instructed.set(
-         ledgerRowKey({
+         recordedTableKey({
             connectionName: planSource.connectionName,
             storageDestinationName: instruction.destination,
             physicalTableName: instruction.physicalTableName,
@@ -1114,7 +1114,7 @@ export function validateInstructions(
       );
       if (instruction.destination) {
          instructedIntoStorage.add(
-            ledgerRowKey({
+            recordedTableKey({
                connectionName: planSource.connectionName,
                physicalTableName: instruction.physicalTableName,
             }),
@@ -1124,7 +1124,7 @@ export function validateInstructions(
 
    const seen = new Set<string>();
    for (const entry of ledger) {
-      const key = ledgerRowKey(entry);
+      const key = recordedTableKey(entry);
       const table =
          `'${entry.physicalTableName}' ` +
          (entry.storageDestinationName
@@ -1143,7 +1143,7 @@ export function validateInstructions(
          // build's index keys on the destination, so it finds no boundary).
          // An entry naming a DIFFERENT destination is refused below.
          const storedHere = instructedIntoStorage.has(
-            ledgerRowKey({
+            recordedTableKey({
                connectionName: entry.connectionName,
                physicalTableName: entry.physicalTableName,
             }),

@@ -99,6 +99,7 @@ import {
    entryTable,
    leafKey,
    mayBeSameTable,
+   recordedTableKey,
    tableKey,
 } from "../domain/physical_table";
 import { previousDestinationOf, type RenamedTable } from "./run_instructions";
@@ -193,7 +194,7 @@ export function keptTablesResolverFor(
 
 /** One kept table, wherever it is listed. */
 function keptKey(t: KeptTable): string {
-   return tableKey(entryTable(t));
+   return recordedTableKey(t);
 }
 
 /** The {@link RenamedTable}s a run's metadata records, or empty. */
@@ -226,13 +227,11 @@ function renamedKey(
       | "previousPlace"
    >,
 ): string {
-   return tableKey(
-      entryTable({
-         connectionName: t.connectionName,
-         storageDestinationName: previousDestinationOf(t),
-         physicalTableName: t.previousName,
-      }),
-   );
+   return recordedTableKey({
+      connectionName: t.connectionName,
+      storageDestinationName: previousDestinationOf(t),
+      physicalTableName: t.previousName,
+   });
 }
 
 /** When a committed run committed; the serving line is ordered by it. */
@@ -250,9 +249,9 @@ function committedAt(m: Materialization): number {
  */
 function reclaimableEntries(m: Materialization): ManifestEntry[] {
    const entries = Object.values(m.manifest?.entries ?? {});
-   const named = new Set(entries.map((e) => tableKey(entryTable(e))));
+   const named = new Set(entries.map((e) => recordedTableKey(e)));
    for (const target of writeTargetsIn(m.metadata ?? null)) {
-      const key = tableKey(entryTable(target));
+      const key = recordedTableKey(target);
       if (named.has(key)) continue;
       named.add(key);
       entries.push({
@@ -445,6 +444,20 @@ function recordedNameViews(
 }
 
 /**
+ * The key {@link tablesStillReferenced} holds a referenced table under, in its
+ * place: case-folded in a destination (DuckDB folds), exactly as written on a
+ * connection, whose dialect is not known here. A case variant on a folding
+ * warehouse is still kept, by its table segment ({@link leafReferenceKey}).
+ */
+function referenceKey(entry: {
+   connectionName?: string | null;
+   storageDestinationName?: string | null;
+   physicalTableName: string;
+}): string {
+   return tableKey(entryTable(entry), !!entry.storageDestinationName);
+}
+
+/**
  * The key {@link tablesStillReferenced} holds a table segment under, so a
  * reclaim keeps any table a committed run names anywhere under that segment.
  */
@@ -470,7 +483,7 @@ function tablesStillReferenced(
       if (other.status !== "MANIFEST_FILE_READY") continue;
       for (const e of Object.values(other.manifest?.entries ?? {})) {
          if (e.physicalTableName) {
-            stillReferenced.add(tableKey(entryTable(e)));
+            stillReferenced.add(referenceKey(e));
             stillReferenced.add(leafReferenceKey(e.physicalTableName));
          }
       }
@@ -496,7 +509,7 @@ async function keptInPlace(
    const destForKey = entry.storageDestinationName ?? connectionName;
    const verdict = dropVerdict({
       referencedThere: stillReferenced.has(
-         tableKey(entryTable({ ...entry, connectionName, physicalTableName })),
+         referenceKey({ ...entry, connectionName, physicalTableName }),
       ),
       referencedByLeaf: stillReferenced.has(
          leafReferenceKey(physicalTableName),
@@ -939,9 +952,7 @@ export class Reclaimer {
             if (!dest || !table) continue;
             if (
                dropVerdict({
-                  referencedThere: stillReferenced.has(
-                     tableKey(entryTable(entry)),
-                  ),
+                  referencedThere: stillReferenced.has(referenceKey(entry)),
                   referencedByLeaf: stillReferenced.has(
                      leafReferenceKey(table),
                   ),

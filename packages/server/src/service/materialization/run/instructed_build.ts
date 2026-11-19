@@ -15,6 +15,7 @@
  * manifest; the committer does.
  */
 
+import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "./error_code";
 import { instructionTier } from "../domain/placement";
 import {
@@ -1045,6 +1046,10 @@ export class InstructedBuild {
       // out, to warn and write anyway.
       const target = tableKey(
          instructedTable(instruction, graphConnectionName),
+         tableNamesFoldCase(
+            persistSource.dialectName,
+            !!instruction.destination,
+         ),
       );
       const written = run.writtenTargets.get(target);
       if (written && written.sourceEntityId === sourceEntityId) {

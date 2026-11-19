@@ -7,13 +7,15 @@
  * namespaces that may share a name), and is compared three ways, each
  * named for what it is safe for:
  *
- * - {@link tableKey}: every segment unquoted and case-folded, in its place:
- *   the one key for "this table" in a run (a duplicate target, a failed
- *   target's reuse, a reclaim's bookkeeping, a name collision). `Foo`,
- *   `"foo"` and `foo` are one table here; `a.t` and `b.t` are two.
- * - {@link ledgerRowKey}: the name as written, on its connection and in its
- *   destination: a run store ledger row's identity, which the store matches
- *   exactly, so a host's echoed ledger is matched by the same key.
+ * - {@link tableKey}: the written name in its place, case-folded only where
+ *   the place folds it (every DuckDB destination; a connection whose dialect
+ *   folds table names), never elsewhere: on Postgres `"T"` and `"t"` are two
+ *   tables. A run's duplicate target and failed target's reuse.
+ * - {@link recordedTableKey}: a recorded table exactly as recorded, on its
+ *   connection and in its destination: a ledger row (the store matches it
+ *   exactly, and a host echoes back the names it was given) and the
+ *   reclaim's bookkeeping of the tables it renamed away from and keeps, so
+ *   two recorded tables are never decided as one.
  * - {@link leafKey} / {@link placedLeafKey}: the last segment, unquoted and
  *   case-folded (in its place, for the placed form). Over-wide: `a.t` and
  *   `b.t` are one table here, which only ever makes a run refuse, a version
@@ -71,35 +73,33 @@ export function entryTable(entry: {
 }
 
 /**
- * The one key for "this table": every segment unquoted and case-folded, in
- * its place. JSON-encoded because a physical name can contain a space.
- * Folding is the conservative direction for a run (a second route to one
- * table is skipped, a name collision refused, a reclaim keeps rather than
- * drops twice): `Foo` and `foo` are one table on every case-folding engine,
- * and two quoted names differing only in case are rare enough to be written
- * once.
+ * "This table" as a run compares it: the written name in its place, every
+ * segment case-folded only when `foldsCase` (the place's own folding:
+ * `tableNamesFoldCase`), else exactly as written. JSON-encoded because a
+ * physical name can contain a space. Never folds where the warehouse keeps
+ * case, so two tables there are never one.
  */
-export function tableKey(t: PhysicalTable): string {
+export function tableKey(t: PhysicalTable, foldsCase: boolean): string {
    return JSON.stringify([
       t.place.kind,
       t.place.name,
-      foldedSegments(t.name).join("."),
+      foldsCase ? foldedSegments(t.name).join(".") : t.name,
    ]);
 }
 
 /**
- * A run store ledger row's identity: the name as written, on its connection
- * and in its destination (both, since the store keys a row by both). Exact,
- * because the store matches the row exactly and a host echoes back the names
- * it was given.
+ * A recorded table's identity: the name as written, on its connection and in
+ * its destination (both, as the store keys a ledger row and a run records a
+ * table). Exact: the store matches a row exactly, a host echoes back the
+ * names it was given, and the reclaim decides each recorded table on its own.
  */
-export function ledgerRowKey(row: {
-   connectionName: string;
+export function recordedTableKey(row: {
+   connectionName?: string | null;
    storageDestinationName?: string | null;
    physicalTableName: string;
 }): string {
    return JSON.stringify([
-      row.connectionName,
+      row.connectionName ?? "",
       row.storageDestinationName ?? "",
       row.physicalTableName,
    ]);

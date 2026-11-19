@@ -8,10 +8,12 @@
  * as a diff of the tables below rather than as a silent move.
  *
  * - written: `tableKey` (a run's duplicate-target skip and failed-target
- *   reuse, a name collision, a reclaim's bookkeeping): every segment unquoted
- *   and case-folded, the whole path compared;
- * - ledger: `ledgerRowKey` (a ledger row, matched as the store matches it):
- *   the name as written;
+ *   reuse) in a place that folds case (a destination, a folding dialect):
+ *   every segment unquoted and case-folded, the whole path compared;
+ *   `keeping`: the same key in a place that keeps case (Postgres): the name
+ *   exactly as written;
+ * - ledger: `recordedTableKey` (a ledger row, matched as the store matches
+ *   it, and the reclaim's renamed and kept tables): the name as written;
  * - identity: `tableIdentity` (claims, superseding, the owned-name lock),
  *   `tableIdentityKey` (the uniqueness ledger; the run's
  *   `writtenTableIdentity` is this key over the instruction's place) and
@@ -21,8 +23,9 @@
  *   unquoted and case-folded, containers matched by suffix.
  *
  * The keys live in `domain/physical_table.ts`; `tableIdentity` and
- * `tableIdentityKey` delegate to it. The written key folded case and quotes
- * in the run refactor (approved): `Foo` and `foo` were two targets before.
+ * `tableIdentityKey` delegate to it. The written key folds case and quotes
+ * in the run refactor where the place folds them (approved): `Foo` and `foo`
+ * were two targets before everywhere; they still are on Postgres.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -32,7 +35,7 @@ import { tableIdentityKey } from "./run/inline_uniqueness";
 import {
    instructedTable,
    leafKey,
-   ledgerRowKey,
+   recordedTableKey,
    mayBeSameTable,
    tableKey,
 } from "./domain/physical_table";
@@ -42,8 +45,9 @@ import type { BuildInstruction } from "./domain/types";
 function physicalTargetKey(
    instruction: BuildInstruction,
    connectionName: string,
+   foldsCase = true,
 ): string {
-   return tableKey(instructedTable(instruction, connectionName));
+   return tableKey(instructedTable(instruction, connectionName), foldsCase);
 }
 
 /** A ledger row's key on a connection, in a destination when given. */
@@ -52,7 +56,7 @@ function tableKeyOf(
    storageDestinationName: string | undefined,
    physicalTableName: string,
 ): string {
-   return ledgerRowKey({
+   return recordedTableKey({
       connectionName,
       storageDestinationName,
       physicalTableName,
@@ -67,6 +71,9 @@ function sameUnder(a: string, b: string) {
       written:
          physicalTargetKey(instruction(a), "duckdb") ===
          physicalTargetKey(instruction(b), "duckdb"),
+      keeping:
+         physicalTargetKey(instruction(a), "pg", false) ===
+         physicalTargetKey(instruction(b), "pg", false),
       ledger:
          tableKeyOf("duckdb", undefined, a) ===
          tableKeyOf("duckdb", undefined, b),
@@ -83,6 +90,7 @@ function sameUnder(a: string, b: string) {
 type Answers = ReturnType<typeof sameUnder>;
 const all = (v: boolean): Answers => ({
    written: v,
+   keeping: v,
    ledger: v,
    identity: v,
    uniqueness: v,
@@ -91,7 +99,7 @@ const all = (v: boolean): Answers => ({
    mayBeOne: v,
 });
 /** The ledger's exact key says two tables; every folding key says one. */
-const FOLDED: Answers = { ...all(true), ledger: false };
+const FOLDED: Answers = { ...all(true), keeping: false, ledger: false };
 /** Spelled with other containers: the written key compares the whole path. */
 const QUALIFIED: Answers = { ...FOLDED, written: false };
 
@@ -207,5 +215,19 @@ describe("where a table lives, per key", () => {
          tableIdentityKey("connection", "b", "t"),
       );
       expect(tableKeyOf("duckdb", "lake", "t")).toBe('["duckdb","lake","t"]');
+   });
+});
+
+describe("a recorded table, as the reclaim keys it", () => {
+   it("decides each recorded table on its own: case, and the connection that wrote a destination table, both count", () => {
+      const key = (connectionName: string, name: string, dest?: string) =>
+         recordedTableKey({
+            connectionName,
+            storageDestinationName: dest,
+            physicalTableName: name,
+         });
+      expect(key("pg", "s.Orders")).not.toBe(key("pg", "s.orders"));
+      expect(key("pg", "t", "lake")).not.toBe(key("bq", "t", "lake"));
+      expect(key("pg", "t", "lake")).toBe(key("pg", "t", "lake"));
    });
 });

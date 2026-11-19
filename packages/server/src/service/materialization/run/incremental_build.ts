@@ -23,7 +23,7 @@
  */
 
 import { errorCodeOf } from "./error_code";
-import { ledgerRowKey } from "../domain/physical_table";
+import { recordedTableKey } from "../domain/physical_table";
 import { logger } from "../../../logger";
 import {
    persistSourceDeclaredColumns,
@@ -146,7 +146,7 @@ export function indexCallerLedger(
    const index = new Map<string, RecordedBoundary>();
    for (const entry of entries) {
       index.set(
-         ledgerRowKey({
+         recordedTableKey({
             connectionName: entry.connectionName,
             storageDestinationName: entry.storageDestinationName,
             physicalTableName: entry.physicalTableName,
@@ -331,7 +331,7 @@ export async function planSourceRefresh(params: {
       // No fallback to the local store for a table the caller omitted: a
       // worker's own row may be a generation stale, which is why this mode
       // exists. No entry means the ordinary `no_boundary` seed.
-      ledgerEntry = context.callerLedger.get(ledgerRowKey(lineage)) ?? null;
+      ledgerEntry = context.callerLedger.get(recordedTableKey(lineage)) ?? null;
    } else {
       try {
          ledgerEntry = await context.ledger.getIncrementalLedgerEntry(
