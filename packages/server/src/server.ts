@@ -6,11 +6,12 @@
 // before the call below; it precedes everything this process chooses to do.
 import { assertSupportedNodeVersion } from "./node_version_check";
 import { printHelpIfAsked } from "./cli_args";
-import { Settings, SettingsError } from "./settings";
+import { externalEnv, Settings, SettingsError } from "./settings";
 import {
    CHECK_COULD_NOT_RUN,
    checkErrorLine,
    checkRequested,
+   githubErrorCommand,
 } from "./check_signals";
 import {
    initFailedLine,
@@ -50,6 +51,10 @@ if (failures.length > 0) {
    // setup from broken models.
    if (checkRequested(argv, () => loaded.get("check"))) {
       process.stderr.write(checkErrorLine(message));
+      // The ::error annotation check mode prints for every other failure.
+      if (externalEnv("GITHUB_ACTIONS") === "true") {
+         process.stdout.write(githubErrorCommand(message));
+      }
       process.exit(CHECK_COULD_NOT_RUN);
    }
    process.exit(1);

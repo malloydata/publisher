@@ -18,8 +18,13 @@ import {
    formatFinding,
    githubAnnotation,
    problemFinding,
+   sweepStaleCheckRoots,
 } from "./check";
-import { checkErrorLine, checkRequested } from "./check_signals";
+import {
+   checkErrorLine,
+   checkRequested,
+   githubErrorCommand,
+} from "./check_signals";
 import { Settings } from "./settings";
 
 const report = (over: Partial<CheckReport> = {}): CheckReport => ({
@@ -205,7 +210,31 @@ describe("the config check mode reads", () => {
    });
 });
 
+describe("stale temporary roots", () => {
+   it("removes a root whose process is gone, and keeps a live one's", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "check-sweep-"));
+      // Far above any pid in use: no such process.
+      const dead = path.join(dir, "publisher-check-2147483646-abc");
+      const live = path.join(dir, `publisher-check-${process.ppid}-abc`);
+      const other = path.join(dir, "unrelated-123-abc");
+      for (const d of [dead, live, other]) fs.mkdirSync(d);
+      expect(sweepStaleCheckRoots(dir)).toEqual([
+         "publisher-check-2147483646-abc",
+      ]);
+      expect(fs.existsSync(dead)).toBe(false);
+      expect(fs.existsSync(live)).toBe(true);
+      expect(fs.existsSync(other)).toBe(true);
+      fs.rmSync(dir, { recursive: true, force: true });
+   });
+});
+
 describe("GitHub Actions annotations", () => {
+   it("a settings failure is a bare ::error with escaped lines", () => {
+      expect(githubErrorCommand("bad\nvalue 5%")).toBe(
+         "::error title=Malloy check::bad%0Avalue 5%25\n",
+      );
+   });
+
    it("land on the file, line and column", () => {
       expect(
          githubAnnotation({

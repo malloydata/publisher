@@ -507,6 +507,96 @@ export function checkConfigPath(
    };
 }
 
+const TEMP_ROOT_PREFIX = "publisher-check-";
+
+/** Whether `pid` names a live process (one this user may signal or not). */
+function alive(pid: number): boolean {
+   try {
+      process.kill(pid, 0);
+      return true;
+   } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+   }
+}
+
+/**
+ * Remove the temporary roots of earlier checks whose process is gone, a
+ * SIGKILL or a power cut having skipped their cleanup. A root is named
+ * `publisher-check-<pid>-…`, so one whose pid is alive is left alone.
+ */
+export function sweepStaleCheckRoots(dir: string = os.tmpdir()): string[] {
+   const removed: string[] = [];
+   let names: string[];
+   try {
+      names = fs.readdirSync(dir);
+   } catch {
+      return removed;
+   }
+   for (const name of names) {
+      const match = /^publisher-check-(\d+)-/.exec(name);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      if (pid === process.pid || alive(pid)) continue;
+      try {
+         fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+         removed.push(name);
+      } catch {
+         // Another sweep got there first, or it is not ours to remove.
+      }
+   }
+   return removed;
+}
+
+const EXIT_SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 } as const;
+
+/**
+ * Remove `root` however check mode ends: on SIGHUP, SIGINT or SIGTERM it is
+ * removed synchronously and the process exits 128 + the signal's number, as
+ * a shell reports it; on an uncaught exception or unhandled rejection it is
+ * removed and the process exits 2, could not check. Returns the uninstaller
+ * for the normal path, which removes the root itself.
+ */
+export function guardTempRoot(root: string): () => void {
+   const remove = () => {
+      try {
+         fs.rmSync(root, { recursive: true, force: true });
+      } catch {
+         // Exiting either way; the next check's sweep removes what is left.
+      }
+   };
+   const fail = (reason: string, code: number) => {
+      remove();
+      try {
+         process.stderr.write(checkErrorLine(reason));
+      } catch {
+         // stderr may be gone with the terminal.
+      }
+      process.exit(code);
+   };
+   const handlers = Object.entries(EXIT_SIGNALS).map(
+      ([signal, number]) =>
+         [
+            signal as NodeJS.Signals,
+            () => fail(`Interrupted by ${signal}.`, 128 + number),
+         ] as const,
+   );
+   const onCrash = (error: unknown) =>
+      fail(
+         `Check mode crashed: ${error instanceof Error ? error.message : String(error)}`,
+         CHECK_COULD_NOT_RUN,
+      );
+   for (const [signal, handler] of handlers) process.on(signal, handler);
+   process.on("uncaughtException", onCrash);
+   process.on("unhandledRejection", onCrash);
+   process.on("exit", remove);
+   return () => {
+      for (const [signal, handler] of handlers) process.off(signal, handler);
+      process.off("uncaughtException", onCrash);
+      process.off("unhandledRejection", onCrash);
+      process.off("exit", remove);
+   };
+}
+
 /**
  * What server.ts runs when `check` is on: find the config, load it into a
  * fresh temporary server root with no listener, report, delete the root, and
@@ -521,8 +611,13 @@ export async function runCheck(loaded: Settings): Promise<CheckExitCode> {
       return printCheckReport(couldNotCheck(config.missing), options);
    }
    let root: string | undefined;
+   let unguard = () => {};
    try {
-      root = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-check-"));
+      sweepStaleCheckRoots();
+      root = fs.mkdtempSync(
+         path.join(os.tmpdir(), `${TEMP_ROOT_PREFIX}${process.pid}-`),
+      );
+      unguard = guardTempRoot(root);
       Settings.install(checkSettings(loaded, root, config.path));
       const { prepareBoot } = await import("./main_server");
       const { assertDuckDBResourceConfig } = await import("./config");
@@ -550,6 +645,7 @@ export async function runCheck(loaded: Settings): Promise<CheckExitCode> {
       } catch {
          // The process exits next either way.
       }
+      unguard();
       if (root !== undefined) {
          try {
             fs.rmSync(root, { recursive: true, force: true });

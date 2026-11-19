@@ -1042,7 +1042,8 @@ PUBLISHER_CHECK_FAILED environments=1 packages=1 load_errors=1 errors=2 warnings
   parentheses.
 - **On GitHub Actions** (`GITHUB_ACTIONS=true`, which the runner sets), each line is followed by its
   workflow command, `::error file=…,line=…,col=…::<message>` (or `::warning`), so the annotation
-  lands on the file in the pull request. GitHub hides those lines from the log. The file must be
+  lands on the file in the pull request; a setting that does not parse is a bare `::error::`. GitHub
+  hides those lines from the log. The file must be
   relative to the checkout for the annotation to attach, so run the check from the repository root.
 - **Every model's errors, not only the first.** A package that fails to load stops at its first model
   that does not compile. When the package's `location` is a local directory, check mode compiles every
@@ -1064,6 +1065,14 @@ PUBLISHER_CHECK_FAILED environments=1 packages=1 load_errors=1 errors=2 warnings
   environments, a config or setting that does not parse (which also prints `PUBLISHER_INIT_FAILED`), or
   storage or a temporary directory that could not be created. A stale model cannot occur, since nothing
   has reloaded; the strict readiness probe above covers that on a running server.
+- **It starts from an empty server root**, as a fresh CI environment does. A model that reads tables
+  loaded or persisted earlier into a DuckDB or DuckLake file under the server root (an environment's
+  `publisher_data/`) fails `--check` even though the running server serves it; point such a connection
+  at a file outside the server root, or build the tables as part of the check's setup.
+- **Interrupted**, by SIGHUP, SIGINT or SIGTERM, it removes its temporary root, prints
+  `PUBLISHER_CHECK_ERROR error="Interrupted by <signal>."` and exits `128 +` the signal's number (`143`
+  for SIGTERM); a crash removes it and exits `2`. A root left behind by a check that was killed
+  outright (`publisher-check-<pid>-…` in the system temporary directory) is removed by the next check.
 
 [deployment.md](deployment.md#checking-packages-in-ci) has a GitHub Actions workflow that runs it on
 every pull request.

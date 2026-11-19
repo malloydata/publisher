@@ -13,8 +13,12 @@
 
 import { afterEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import fs from "fs";
+import net from "net";
+import os from "os";
 import path from "path";
 import {
+   getFreePort,
+   pollUntil,
    spawnServer,
    type SpawnedServer,
    tempDir,
@@ -216,6 +220,72 @@ describe("check mode", () => {
          ),
       ]);
       expect(fs.readdirSync(server!.serverRoot)).toEqual([]);
+   });
+
+   it("removes its temporary root and exits 143 on SIGTERM", async () => {
+      // A Postgres connection to a port that accepts and never answers, so
+      // the load blocks until the signal arrives, however fast the machine.
+      const hole = net.createServer(() => {});
+      await new Promise<void>((r) => hole.listen(0, "127.0.0.1", r));
+      cleanups.push(() => hole.close());
+      const port = (hole.address() as net.AddressInfo).port;
+      const blocked = source("blocked", {
+         "m.malloy": "source: s is pg.table('public.t')\n",
+      });
+      server = await spawnServer({
+         // Pinned, so the harness returns at once instead of waiting for a
+         // listener that check mode never opens.
+         restPort: await getFreePort(),
+         mcpPort: await getFreePort(),
+         config: {
+            environments: [
+               {
+                  name: ENV,
+                  packages: [{ name: "blocked", location: blocked }],
+                  connections: [
+                     {
+                        name: "pg",
+                        type: "postgres",
+                        postgresConnection: {
+                           host: "127.0.0.1",
+                           port,
+                           databaseName: "x",
+                           userName: "u",
+                           password: "p",
+                        },
+                     },
+                  ],
+               },
+            ],
+         },
+         env: { GITHUB_ACTIONS: undefined },
+         args: ["--check"],
+      });
+      const pid = server.proc.pid!;
+      const ours = () =>
+         fs
+            .readdirSync(os.tmpdir())
+            .filter((name) => name.startsWith(`publisher-check-${pid}-`));
+      await pollUntil(() => ours().length > 0 || server!.exited(), 60_000, 10);
+      expect(server.exited()).toBe(false);
+      server.proc.kill("SIGTERM");
+      const code = await server.waitForExit(60_000);
+      expect(code).toBe(143);
+      expect(ours()).toEqual([]);
+      expect(server.stderr()).toContain(
+         'PUBLISHER_CHECK_ERROR error="Interrupted by SIGTERM."',
+      );
+   });
+
+   it("prints ::error under GitHub Actions when a setting does not parse", async () => {
+      const { code, stdout } = await check({
+         env: {
+            PUBLISHER_CHECK_FAIL_ON_WARNINGS: "maybe",
+            GITHUB_ACTIONS: "true",
+         },
+      });
+      expect(code).toBe(2);
+      expect(stdout).toStartWith("::error title=Malloy check::");
    });
 
    it("exits 2 when --config names a missing file", async () => {

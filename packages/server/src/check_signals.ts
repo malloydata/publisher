@@ -43,3 +43,14 @@ export function checkRequested(
       return true;
    }
 }
+
+/**
+ * A message as a bare GitHub Actions `::error::` workflow command, with `%`,
+ * CR and LF escaped as GitHub reads them. For a failure with no file.
+ */
+export function githubErrorCommand(message: string): string {
+   return `::error title=Malloy check::${message
+      .replace(/%/g, "%25")
+      .replace(/\r/g, "%0D")
+      .replace(/\n/g, "%0A")}\n`;
+}
