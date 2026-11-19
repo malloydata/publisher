@@ -23,24 +23,27 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — check mode for CI, and a strict readiness probe
 
-**New: `--check` loads and compiles every configured package, reports what is wrong, and exits.** Run
-the server with `--check` (or `PUBLISHER_CHECK=true`) and it boots as it would with the same
-`--config` and `--server_root`, loads every configured environment and package, and exits instead of
-serving: `0` when everything loaded, `1` when anything did not. It binds no port. Each problem is one
-line on stdout, `<file>:<line>:<col>: error: <message> [<env>/<package>]`, and a package published from
-a local directory has every model's errors reported, not only the first its load stopped at. The run
-ends with `PUBLISHER_CHECK_OK` or `PUBLISHER_CHECK_FAILED` on stderr, with the same counts
-`PUBLISHER_READY` carries plus `errors` and `warnings`. A package's `warn`-severity `warnings` are
-printed and do not fail the check unless `--check-fail-on-warnings` is set. [Check mode](docs/configuration.md#check-mode-for-ci)
-has the format, and [deployment.md](docs/deployment.md#checking-packages-in-ci) a GitHub Actions
-workflow.
+**New: `--check` loads and compiles every package the config names, reports what is wrong, and exits.**
+Run the server with `--check` (or `PUBLISHER_CHECK=true`) and it reads the config as written (the
+`--config` file, or the one in the server root; never the bundled samples and never stored state),
+loads every package it names into a temporary server root of its own, and exits instead of serving:
+`0` when everything loaded, `1` when anything did not, `2` when it could not check (no config, a
+setting that does not parse). It binds no port and writes nothing to the server root. Each problem is
+one line on stdout, `<file>:<line>:<col>: error: <message> [<env>/<package>]`, and on GitHub Actions
+also an `::error` workflow command, so the annotation lands on the file; the log goes to stderr. A
+package published from a local directory has every model's errors reported, not only the first its load
+stopped at. The run ends with `PUBLISHER_CHECK_OK`, `PUBLISHER_CHECK_FAILED` (with the counts
+`PUBLISHER_READY` carries plus `errors` and `warnings`) or `PUBLISHER_CHECK_ERROR` on stderr. A
+package's `warn`-severity `warnings` are printed and do not fail the check unless
+`--check-fail-on-warnings` is set. [Check mode](docs/configuration.md#check-mode-for-ci) has the format,
+and [deployment.md](docs/deployment.md#checking-packages-in-ci) a GitHub Actions workflow.
 
 **New: `GET /health/readiness?strict=true` fails while a package is failed or stale.** It answers `503`,
-naming each entry under `loadErrors` as `/api/v0/status` does, while any configured environment or
-package failed to load or a package serves a stale model after a failed reload. Plain
-`/health/readiness` is unchanged: `200` once the server is ready, whatever loaded. **Who is affected:**
-nobody who does not ask for it. A probe that already sends a `strict` query parameter with a value
-other than `true` or `false` now gets `400`.
+naming each entry's environment and package under `loadErrors` (the causes stay on `/api/v0/status`),
+while any configured environment or package failed to load or a package serves a stale model after a
+failed reload. Plain `/health/readiness` is unchanged: `200` once the server is ready, whatever loaded.
+**Who is affected:** nobody who does not ask for it. A probe that already sends a `strict` query
+parameter with a value other than `true` or `false` now gets `400`.
 
 ## [Unreleased] — a materialization run's logs carry error codes, not error messages
 

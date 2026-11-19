@@ -211,7 +211,7 @@ team should own. All of it becomes product:
   `loadErrors`, and marks one still serving its previous model after a failed reload with
   `stale: true`; the startup line `PUBLISHER_READY … load_errors=<n>` counts them
   ([startup signals](configuration.md#startup-signals)). `publisher --check` boots, compiles every
-  package, prints each model's errors with file, line and column, and exits non-zero
+  package the config names, prints each model's errors with file, line and column, and exits non-zero
   ([check mode](configuration.md#check-mode-for-ci)); `GET /health/readiness?strict=true` answers
   503 while any package is failed or serving stale, naming each, where plain readiness stays 200
   ([readiness probes](configuration.md#readiness-probes)).

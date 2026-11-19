@@ -98,15 +98,17 @@ it. Either way the fix is usually the `location` in `publisher.config.json`, or 
 `publisher.json` in the package directory.
 
 A probe can ask the same question: `GET /health/readiness?strict=true` answers `503`, naming each
-entry, while anything is in `loadErrors`, where plain `/health/readiness` stays `200` once the server
-is ready ([readiness probes](configuration.md#readiness-probes)).
+entry's environment and package (the causes stay on `/status`), while anything is in `loadErrors`,
+where plain `/health/readiness` stays `200` once the server is ready
+([readiness probes](configuration.md#readiness-probes)).
 
 ## Checking packages in CI
 
 To fail a pull request that breaks a model, run the server in [check mode](configuration.md#check-mode-for-ci):
-it loads and compiles every configured package, prints each error with its file, line and column, and
-exits `1` if anything failed to load, without binding a port. This workflow checks a repository that
-holds its `publisher.config.json` and packages at the root, with DuckDB-backed (or credential-free)
+it loads and compiles every package the config names, prints each error with its file, line and
+column, and exits `1` if anything failed to load (`2` if it could not check at all), without binding
+a port or writing to the server root. This workflow checks a repository that holds its
+`publisher.config.json` and packages at the root, with DuckDB-backed (or credential-free)
 connections:
 
 ```yaml
@@ -122,16 +124,14 @@ jobs:
         with:
           node-version: 20
       - name: Load and compile every package
-        run: |
-          mkdir -p "$RUNNER_TEMP/publisher"
-          npx --yes @malloy-publisher/server@latest --check \
-            --config ./publisher.config.json \
-            --server_root "$RUNNER_TEMP/publisher"
+        run: npx --yes @malloy-publisher/server@latest --check --config ./publisher.config.json
 ```
 
-- The server root is a fresh, existing directory (the server does not create it) so the check reads
-  the config as written; a root holding an earlier `publisher.db` restores the environments stored
-  there instead.
+- Run it from the repository root, as above: on GitHub Actions each problem is also printed as an
+  `::error` workflow command naming its file relative to the working directory, which is how the
+  annotation lands on the file in the pull request.
+- Each run reads the config and the package files as they are in the checkout; nothing carries over
+  between runs.
 - A connection that needs credentials reads them the way the server does, from the variables the
   config's `${VAR}` references name, so pass them as `env:` from the repository's secrets.
 - Add `--check-fail-on-warnings` to fail on package warnings as well, such as a render tag the
