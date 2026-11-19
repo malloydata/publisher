@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — the serve verdict reports a zoned gate column on a storage= table as queries see it
+
+**Changed: the status verdict for a `storage=` table whose own gate column is stored with a zone.** A query past such a source's row-level gate is already answered live: the column is stored as `TIMESTAMP WITH TIME ZONE`, which the destination compares in its own session zone rather than the source's. The source's serve verdict (`serveVerdicts`) still reported that table as keeping the gate, so it could say `serves` for a gated source whose every query was answered live. It now says `live` with reason `row_level_gate`, the decline it reports for any other gate a table cannot keep, matching what queries do. **Who is affected:** a status reader whose package stores a gate column zoned on a `storage=` table, with the gated-sources switch on, or with the table admitted past its own gate or holding only ungated rows. Query answers do not change.
+
 ## [Unreleased] — check mode for CI, and a strict readiness probe
 
 **New: `--check` loads and compiles every package the config names, reports what is wrong, and exits.**

@@ -7,7 +7,7 @@
  * leg x table read x gate shape x switch. It drives the router's own
  * candidates (`variantsOf` and `routeQuery`) over a real author compile, so
  * every rule an answer passes today is in it at once: the gate policy
- * (`domain/gate_policy.ts`, legMayPassGate / answerKeepsGates), the bind's
+ * (`domain/gate_policy.ts`, through `domain/admission.ts`), the bind's
  * marks (`ownGateKept`, `holdsOnlyUngatedRows`), and query_serving's
  * exactness, zone, collation, composite and row-scope checks.
  *
@@ -34,15 +34,20 @@ import { installSettings } from "../../test_helpers/settings_env";
 import { routeQuery } from "../query_router";
 import { variantsOf } from "../query_serving";
 import { type Binding, EMPTY_SNAPSHOT, pin } from "./domain/binding";
-import { admitRead, type ReadFacts } from "./domain/admission";
 import {
-   answerKeepsGates,
-   SERVING_GATE_CONTEXT,
-   type TableRead,
-} from "./domain/gate_policy";
+   admitRead,
+   keepsGatesWhenReadExact,
+   type ReadFacts,
+} from "./domain/admission";
+import type { TableRead } from "./domain/gate_policy";
 import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
 import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
+import {
+   type CollationProbe,
+   collationProbe,
+   ReadAdmission,
+} from "./serve/read_admission";
 
 const DUMP = process.env.ADMISSION_DUMP;
 const dumped: Record<string, unknown> = {};
@@ -79,7 +84,14 @@ source: zoned_gate is base
 source: composite_gate is compose(base, base)
 `;
 
-/** The gate shapes, by the author source that has each. */
+/**
+ * The gate shapes, by the author source that has each. `str_order_gate`
+ * (`region > $S`) and `zoned_gate` (`at > @2020-01-01`) cannot exist in a
+ * real package: the access-filter grammar admits only `field = $GIVEN` and
+ * `field in $GIVEN`, and refuses an ordering at load. They are kept here, as
+ * this compile reads them without that check, to pin how admission judges an
+ * ordering and a zoned column past a gate.
+ */
 const SHAPES = {
    "no gate": "open",
    "no gate, a where: on a float column": "scoped",
@@ -126,10 +138,9 @@ afterAll(async () => {
 const authorOf = (
    source: string,
    collation: "binary" | "nocase" = "binary",
+   query = "{ select: id }",
 ): QueryMaterializer =>
-   authors[collation]
-      .loadModel(MODEL)
-      .loadQuery(`run: ${source} -> { select: id }`);
+   authors[collation].loadModel(MODEL).loadQuery(`run: ${source} -> ${query}`);
 
 // ---------------------------------------------------------------------------
 // The tables an answer read, and the stored side's collation.
@@ -248,9 +259,19 @@ async function routed(args: {
    storedCollation?: "binary" | "nocase";
    /** The router cannot read what the gates and row scope read. */
    unreadable?: boolean;
+   /** The caller's query after its source; `{ select: id }` when absent. */
+   query?: string;
+   /** Add a declined candidate's internal detail to the outcome. */
+   withDetail?: boolean;
+   /** The collation probe port; the real one when absent. */
+   probe?: CollationProbe;
 }): Promise<string> {
    const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
-   const authorRunnable = authorOf(SHAPES[args.shape], args.authorCollation);
+   const authorRunnable = authorOf(
+      SHAPES[args.shape],
+      args.authorCollation,
+      args.query,
+   );
    // The routed compile: the author's own query (so a composite resolves to
    // the same member), read through a runtime whose stored tables compare
    // as `storedCollation`.
@@ -261,12 +282,14 @@ async function routed(args: {
    const candidates = variantsOf(
       makeLegs(pinned, legHost(args.leg, args.tables, runnable)),
       {
-         queryString: `run: ${SHAPES[args.shape]} -> v`,
+         queryString: args.query
+            ? `run: ${SHAPES[args.shape]} -> ${args.query}`
+            : `run: ${SHAPES[args.shape]} -> v`,
          givens: undefined,
          authorRunnable,
       },
       pinned,
-      { modelPath: "m.malloy" },
+      { modelPath: "m.malloy", ...(args.probe ? { probe: args.probe } : {}) },
    );
    const unreadable = args.unreadable
       ? spyOn(gateReads, "gateReadsOfQuery").mockResolvedValue(undefined)
@@ -282,7 +305,9 @@ async function routed(args: {
          ? "used, past the gate"
          : "used";
    }
-   return `skipped ${c.reason}${c.code ? ` (${c.code})` : ""}`;
+   return `skipped ${c.reason}${c.code ? ` (${c.code})` : ""}${
+      args.withDetail && c.detail ? `: ${c.detail}` : ""
+   }`;
 }
 
 /** Run `fn` with the switches set, restoring them after. */
@@ -996,6 +1021,276 @@ describe("read admission over moved columns and unreadable reads, gated sources 
    }
 });
 
+/**
+ * The caller's own query filters (`where:` in the query, not the source),
+ * judged against each table an answer read: what the router decides per leg,
+ * table read and collation, with the internal detail the decline carries.
+ * Source `open` (no gate, no scope), gated sources off.
+ */
+const QUERY_FILTERS: Record<string, Record<string, string>> = {
+   "a number filter": {
+      "binary, served, database": "used",
+      "binary, served, storage": "used",
+      "binary, rollup, database": "used",
+      "binary, rollup, storage": "used",
+      "binary, view, database": "used",
+      "binary, view, storage": "used",
+      "binary, query, database": "used",
+      "binary, query, storage": "used",
+      "author instance nocase, served, database": "used",
+      "author instance nocase, served, storage": "used",
+      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, storage": "used",
+      "author instance nocase, view, database": "used",
+      "author instance nocase, view, storage": "used",
+      "author instance nocase, query, database": "used",
+      "author instance nocase, query, storage": "used",
+      "stored table nocase, served, database": "used",
+      "stored table nocase, served, storage": "used",
+      "stored table nocase, rollup, database": "used",
+      "stored table nocase, rollup, storage": "used",
+      "stored table nocase, view, database": "used",
+      "stored table nocase, view, storage": "used",
+      "stored table nocase, query, database": "used",
+      "stored table nocase, query, storage": "used",
+   },
+   "a string equality filter": {
+      "binary, served, database": "used",
+      "binary, served, storage": "used",
+      "binary, rollup, database": "used",
+      "binary, rollup, storage": "used",
+      "binary, view, database": "used",
+      "binary, view, storage": "used",
+      "binary, query, database": "used",
+      "binary, query, storage": "used",
+      "author instance nocase, served, database": "used",
+      "author instance nocase, served, storage":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, view, database": "used",
+      "author instance nocase, view, storage":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, query, database": "used",
+      "author instance nocase, query, storage":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "stored table nocase, served, database":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, served, storage":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, rollup, database":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, view, database":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, view, storage":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, query, database":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, query, storage":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+   },
+   "a string ordering filter": {
+      "binary, served, database": "used",
+      "binary, served, storage": "used",
+      "binary, rollup, database": "used",
+      "binary, rollup, storage": "used",
+      "binary, view, database": "used",
+      "binary, view, storage": "used",
+      "binary, query, database": "used",
+      "binary, query, storage": "used",
+      "author instance nocase, served, database": "used",
+      "author instance nocase, served, storage":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, view, database": "used",
+      "author instance nocase, view, storage":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, query, database": "used",
+      "author instance nocase, query, storage":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "stored table nocase, served, database":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, served, storage":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, rollup, database":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, view, database":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, view, storage":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, query, database":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, query, storage":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+   },
+};
+
+const FILTERS = {
+   "a number filter": "{ where: id = 1; select: id }",
+   "a string equality filter": "{ where: region = 'east'; select: id }",
+   "a string ordering filter": "{ where: region > 'M'; select: id }",
+} as const;
+
+describe("the caller's query filters, per leg, table read and collation", () => {
+   for (const [filter, query] of Object.entries(FILTERS)) {
+      it(filter, async () => {
+         const rows: Record<string, string> = {};
+         await withSwitches(false, async () => {
+            for (const [where, collations] of [
+               ["binary", {}],
+               ["author instance nocase", { authorCollation: "nocase" }],
+               ["stored table nocase", { storedCollation: "nocase" }],
+            ] as const) {
+               for (const leg of LEGS) {
+                  for (const read of ["database", "storage"]) {
+                     rows[`${where}, ${leg}, ${read}`] = await routed({
+                        leg,
+                        shape: "no gate",
+                        tables: READS[read],
+                        query,
+                        withDetail: true,
+                        ...collations,
+                     });
+                  }
+               }
+            }
+         });
+         if (DUMP) {
+            ((dumped.queryFilters ??= {}) as Record<string, unknown>)[filter] =
+               rows;
+         } else {
+            expect(rows).toEqual(QUERY_FILTERS[filter] ?? {});
+         }
+      });
+   }
+});
+
+/**
+ * What the router reads of each gate shape's author compile today: the
+ * gates' and row scope's reads (`gateReadsOfQuery`), as admission uses them.
+ */
+const SHAPE_READS: Record<string, unknown> = {
+   "no gate": {
+      scoped: false,
+      gated: false,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [],
+   },
+   "no gate, a where: on a float column": {
+      scoped: true,
+      gated: false,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [["amount"]],
+   },
+   "no gate, a where: ordering a string": {
+      scoped: true,
+      gated: false,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: false,
+      columns: [["region"]],
+   },
+   "row filter, number": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [["id"]],
+   },
+   "row filter, string equality": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: true,
+      columns: [["region"]],
+   },
+   "row filter, string ordering": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: true,
+      columns: [["region"]],
+   },
+   "row filter, boolean over a string": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: false,
+      columns: [["late", "region"]],
+   },
+   "lock only": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [],
+   },
+   "row filter, float column": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [["amount"]],
+   },
+   "row filter, zoned timestamp column": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [["at"]],
+   },
+   "row filter on a composite": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: false,
+      columns: [],
+   },
+};
+
+describe("what the router reads of each gate shape", () => {
+   it("per shape", async () => {
+      const rows: Record<string, unknown> = {};
+      for (const shape of Object.keys(SHAPES) as Shape[]) {
+         const reads = await gateReads.gateReadsOfQuery(
+            authorOf(SHAPES[shape]),
+         );
+         rows[shape] =
+            reads === undefined
+               ? "unread"
+               : {
+                    scoped: reads.scoped,
+                    gated: reads.gated,
+                    unresolved: reads.unresolved,
+                    comparesNoString: reads.comparesNoString,
+                    equalityOnly: reads.equalityOnly,
+                    columns: reads.columns.map((c) => [...c]),
+                 };
+      }
+      if (DUMP) dumped.shapeReads = rows;
+      else expect(rows).toEqual(SHAPE_READS);
+   });
+});
+
 describe("the bind's admission marks", () => {
    it("marks a table kept past its own gate when ANY source stored at its address is (OR over sharers)", () => {
       const address = { a: "x", b: "x", c: "y" } as Record<string, string>;
@@ -1029,12 +1324,13 @@ describe("the bind's admission marks", () => {
 });
 
 /**
- * The serve verdict's question (`serve_verdicts.ts` `keepsGate`), asked of
- * one source's own table as it asks it: the gate policy over the table's
- * tier, marks and gate column types, with none of the router's comparison,
- * composite or row-scope checks. So it says `true` for a `storage=` table
- * whose gate column is zoned, where the router above declines the same read
- * (`row filter, zoned timestamp column`): the drift `admitRead` removes.
+ * The serve verdict's question (`serve_verdicts.ts` `keepsGate`, through
+ * admission's `keepsGatesWhenReadExact`), asked of one source's own table
+ * as it asks it: the gate policy and the zone rule over the table's tier,
+ * marks and gate column types, with none of the router's per-query
+ * collation, composite or row-scope checks. A `storage=` table whose gate
+ * column is stored zoned is reported as not keeping the gate, as the router
+ * declines the same read (`row filter, zoned timestamp column`).
  */
 const VERDICT: Record<string, Record<string, boolean>> = {
    "gated sources off": {
@@ -1048,11 +1344,11 @@ const VERDICT: Record<string, Record<string, boolean>> = {
       "storage, string gate column": false,
       "storage, kept past its own gate, number gate column": true,
       "storage, kept past its own gate, float gate column": false,
-      "storage, kept past its own gate, zoned gate column": true,
+      "storage, kept past its own gate, zoned gate column": false,
       "storage, kept past its own gate, string gate column": true,
       "storage, holding only ungated rows, number gate column": true,
       "storage, holding only ungated rows, float gate column": false,
-      "storage, holding only ungated rows, zoned gate column": true,
+      "storage, holding only ungated rows, zoned gate column": false,
       "storage, holding only ungated rows, string gate column": true,
    },
    "gated sources on": {
@@ -1062,15 +1358,15 @@ const VERDICT: Record<string, Record<string, boolean>> = {
       "database, string gate column": true,
       "storage, number gate column": true,
       "storage, float gate column": false,
-      "storage, zoned gate column": true,
+      "storage, zoned gate column": false,
       "storage, string gate column": true,
       "storage, kept past its own gate, number gate column": true,
       "storage, kept past its own gate, float gate column": false,
-      "storage, kept past its own gate, zoned gate column": true,
+      "storage, kept past its own gate, zoned gate column": false,
       "storage, kept past its own gate, string gate column": true,
       "storage, holding only ungated rows, number gate column": true,
       "storage, holding only ungated rows, float gate column": false,
-      "storage, holding only ungated rows, zoned gate column": true,
+      "storage, holding only ungated rows, zoned gate column": false,
       "storage, holding only ungated rows, string gate column": true,
    },
 };
@@ -1086,7 +1382,7 @@ describe("the serve verdict's narrower question, for the same tables", () => {
                ["zoned gate column", ["TIMESTAMP WITH TIME ZONE"]],
                ["string gate column", ["VARCHAR"]],
             ] as const) {
-               rows[`${read}, ${columns}`] = answerKeepsGates(
+               rows[`${read}, ${columns}`] = keepsGatesWhenReadExact(
                   "served",
                   [
                      {
@@ -1102,7 +1398,6 @@ describe("the serve verdict's narrower question, for the same tables", () => {
                      },
                   ],
                   { materialize: true, gatedSources },
-                  SERVING_GATE_CONTEXT,
                );
             }
          }
@@ -1159,15 +1454,16 @@ const SHAPE_FACTS: Record<
    "row filter on a composite": { composite: true, types: ["BIGINT"] },
 };
 
-/** admitRead's verdict for one row, written as the router's outcome reads. */
-function admitted(args: {
-   leg: Leg;
+/**
+ * The facts {@link SHAPE_FACTS} writes by hand for one row: the tables
+ * as the router judges them, and what it knows of the query.
+ */
+function handFacts(args: {
    shape: Shape;
    tables: Binding[];
-   gatedSources: boolean;
    authorCollation?: "binary" | "nocase";
    storedCollation?: "binary" | "nocase";
-}): string {
+}): { tables: TableRead[]; facts: ReadFacts } {
    const f = SHAPE_FACTS[args.shape];
    const gated = GATED(args.shape);
    const tables: TableRead[] = args.tables.map((t) => ({
@@ -1190,13 +1486,31 @@ function admitted(args: {
       compositeRowFilter: f.composite === true,
       reads: { scoped: f.scoped === true, gated },
       columnsListed: tables.some((t) => t.tier === "storage"),
-      sourceCollationRefusal: refusal(args.authorCollation),
-      storedCollationRefusal: refusal(args.storedCollation),
+      probes: {
+         scope: {
+            source: { refusal: refusal(args.authorCollation) },
+            stored: { refusal: refusal(args.storedCollation) },
+         },
+      },
    };
+   return { tables, facts };
+}
+
+/** admitRead's verdict for one row, written as the router's outcome reads. */
+function admitted(args: {
+   leg: Leg;
+   shape: Shape;
+   tables: Binding[];
+   gatedSources: boolean;
+   authorCollation?: "binary" | "nocase";
+   storedCollation?: "binary" | "nocase";
+}): string {
+   const { tables, facts } = handFacts(args);
    const verdict = admitRead(args.leg, tables, facts, {
       materialize: true,
       gatedSources: args.gatedSources,
    });
+   if (verdict.admit === "needs_probe") return "needs a probe";
    if (verdict.admit) {
       return verdict.pastEntryPointGate ? "used, past the gate" : "used";
    }
@@ -1252,14 +1566,22 @@ function admittedOverMoves(args: {
       columnsListed: tables.some(
          (t) => t.tier === "storage" || t.gateColumnTypes !== undefined,
       ),
-      sourceCollationRefusal: args.unreadable
-         ? "what the scope compares cannot be read"
-         : undefined,
+      probes: {
+         scope: {
+            source: {
+               refusal: args.unreadable
+                  ? "what the scope compares cannot be read"
+                  : undefined,
+            },
+            stored: { refusal: undefined },
+         },
+      },
    };
    const verdict = admitRead(args.leg, tables, facts, {
       materialize: true,
       gatedSources: false,
    });
+   if (verdict.admit === "needs_probe") return "needs a probe";
    if (verdict.admit) {
       return verdict.pastEntryPointGate ? "used, past the gate" : "used";
    }
@@ -1337,4 +1659,171 @@ describe("admitRead reproduces the router's admission", () => {
          expect({ shape, rows }).toEqual({ shape, rows: expected });
       }
    });
+});
+
+/**
+ * The facts above are written by hand; the router gathers its own, through
+ * the admission shell, from the author's compile and each answer. They must
+ * be the same facts, or the table above proves nothing about the router.
+ * Every probe answers binary here (a fake port), so only the probes asked
+ * differ between rows, and the verdicts must agree.
+ */
+describe("the admission shell gathers the facts admitRead is held to", () => {
+   const probeAll: CollationProbe = {
+      sourceRefusal: async () => undefined,
+      storedRefusal: async () => undefined,
+   };
+   for (const [switchLabel, gatedSources] of SWITCHES) {
+      it(switchLabel, async () => {
+         await withSwitches(gatedSources, async () => {
+            for (const shape of Object.keys(SHAPES) as Shape[]) {
+               for (const leg of LEGS) {
+                  for (const [read, bindings] of Object.entries(READS)) {
+                     const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+                     const authorRunnable = authorOf(SHAPES[shape]);
+                     const query = {
+                        queryString: `run: ${SHAPES[shape]} -> v`,
+                        givens: undefined,
+                        authorRunnable,
+                     };
+                     const [made] = makeLegs(
+                        pinned,
+                        legHost(leg, bindings, authorRunnable),
+                     ).filter((l) => l.kind === leg);
+                     const answer = await made.attempt(query, pinned);
+                     const gathered = await new ReadAdmission(
+                        query,
+                        { materialize: true, gatedSources },
+                        probeAll,
+                     ).decide(leg, answer, GATED(shape));
+                     const hand = handFacts({ shape, tables: bindings });
+                     const row = `${shape} | ${leg}, ${read}`;
+                     // The row scope's facts are read for the legs that
+                     // re-apply one.
+                     if (leg === "served" || leg === "rollup") {
+                        expect({ row, reads: gathered.facts.reads }).toEqual({
+                           row,
+                           reads: hand.facts.reads,
+                        });
+                     }
+                     expect({
+                        row,
+                        composite: gathered.facts.compositeRowFilter,
+                        columnsListed: gathered.facts.columnsListed,
+                        tables: judgedOf(
+                           gathered.tables,
+                           shape === "row filter on a composite",
+                        ),
+                     }).toEqual({
+                        row,
+                        composite: hand.facts.compositeRowFilter,
+                        columnsListed: hand.facts.columnsListed,
+                        tables: judgedOf(
+                           hand.tables,
+                           shape === "row filter on a composite",
+                        ),
+                     });
+                     const verdict = admitRead(leg, hand.tables, hand.facts, {
+                        materialize: true,
+                        gatedSources,
+                     });
+                     expect({
+                        row,
+                        verdict: gathered.verdict as unknown,
+                     }).toEqual({ row, verdict });
+                  }
+               }
+            }
+         });
+      });
+   }
+});
+
+/**
+ * A judged table as admission reads it. A composite's gate reads no column
+ * the walk lists (its row filter is declined before any column is judged),
+ * so its hand-written column types are not compared.
+ */
+function judgedOf(tables: readonly TableRead[], composite = false): unknown[] {
+   return tables.map((t) => ({
+      tier: t.tier,
+      ownGateKept: t.ownGateKept === true,
+      holdsOnlyUngatedRows: t.holdsOnlyUngatedRows === true,
+      ...(composite
+         ? {}
+         : {
+              gateColumnTypes: t.gateColumnTypes,
+              gatesReadNoColumn: t.gatesReadNoColumn === true,
+           }),
+   }));
+}
+
+/**
+ * Each probe runs at most once per answer: asking about one answer before
+ * the gate and again past it reuses the probes' answers, so a routed query
+ * never runs one probe twice (the router before the admission shell ran each
+ * at most once per rule).
+ */
+describe("the collation probes run at most once per answer", () => {
+   it("for every leg, table read, gate shape, filter and collation", async () => {
+      const repeated: string[] = [];
+      await withSwitches(false, async () => {
+         for (const shape of Object.keys(SHAPES) as Shape[]) {
+            for (const query of [
+               undefined,
+               ...Object.values(FILTERS),
+               "{ group_by: region; order_by: region }",
+            ]) {
+               for (const collations of [
+                  {},
+                  { authorCollation: "nocase" as const },
+                  { storedCollation: "nocase" as const },
+               ]) {
+                  for (const leg of LEGS) {
+                     for (const [read, tables] of Object.entries(READS)) {
+                        const seen = new Set<string>();
+                        const ids = new Map<unknown, number>();
+                        const idOf = (o: unknown) => {
+                           if (!ids.has(o)) ids.set(o, ids.size + 1);
+                           return ids.get(o)!;
+                        };
+                        const count = (side: string, a: object) => {
+                           const args = a as {
+                              reads?: unknown;
+                              tables?: unknown;
+                           };
+                           const k = `${side}:${idOf(args.reads)}:${idOf(args.tables)}`;
+                           if (seen.has(k)) {
+                              repeated.push(
+                                 `${shape} | ${query ?? "-"} | ${JSON.stringify(collations)} | ${leg}, ${read} | ${side}`,
+                              );
+                           }
+                           seen.add(k);
+                        };
+                        const probe: CollationProbe = {
+                           sourceRefusal: (a) => {
+                              count("source", a);
+                              return collationProbe.sourceRefusal(a);
+                           },
+                           storedRefusal: (a) => {
+                              count("stored", a);
+                              return collationProbe.storedRefusal(a);
+                           },
+                        };
+                        await routed({
+                           leg,
+                           shape,
+                           tables,
+                           probe,
+                           ...(query ? { query } : {}),
+                           ...collations,
+                        });
+                     }
+                  }
+               }
+            }
+         }
+      });
+      expect(repeated).toEqual([]);
+   }, 300_000);
 });

@@ -22,7 +22,10 @@ import {
    ACCESS_FILTER_ROUTE,
    canonicalAuthorizeRoute,
 } from "../../authorize_routes";
-import { collectEntryPointGates } from "../../gate_classification";
+import {
+   collectEntryPointGates,
+   type GateEntry,
+} from "../../gate_classification";
 import {
    readPreparedQuery,
    resolveStructRefSource,
@@ -32,15 +35,6 @@ import { malloyIdentifiers } from "../../query_text";
 
 import { fieldPathsIn } from "./gate_paths";
 import type { GateReads } from "./gate_reads_types";
-
-// The comparison rule beside the column rules, and what a query's result
-// orders and groups strings by, read by the router through this module.
-export {
-   storedTableCollationRefusal,
-   storedTypeIsString,
-   stringGateCollationRefusal,
-} from "./gate_collation";
-export { resultReadsOfQuery } from "./result_reads";
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
 export function gateIdentifiers(exprs: readonly string[]): string[] {
@@ -1176,17 +1170,17 @@ export function gateReadNames(
 }
 
 /**
- * The gate texts that apply to `struct` as an entry point, both routes (a
- * lock reads only givens and literals, so its names never match a column),
- * or undefined when the walk cannot read them: a reader fails closed on that.
+ * The gates that apply to `struct` as an entry point, both routes, as the
+ * governor walks them (own, inherited, a derivation's base), or `unreadable`
+ * when the walk cannot read them: no struct or model to walk, a walk that
+ * throws, or the walk's own fail-closed deny (an entry with no entry point to
+ * graft on). Serve's one walk: every caller maps `unreadable` to a deny.
  */
-export function entryPointGateExprs(
+export function entryGates(
    struct: unknown,
    modelDef: unknown,
-   /** Only the gates on this route; absent, both. */
-   route?: string,
-): string[] | undefined {
-   if (struct === undefined || modelDef === undefined) return undefined;
+): GateEntry[] | "unreadable" {
+   if (struct === undefined || modelDef === undefined) return "unreadable";
    try {
       const entries = collectEntryPointGates(
          struct as SourceDef,
@@ -1194,18 +1188,34 @@ export function entryPointGateExprs(
          new Set(),
          true,
       );
-      // The walk's fail-closed deny (no entry point to graft on).
-      if (entries.some((e) => e.struct === undefined)) return undefined;
-      return entries
-         .filter(
-            (e) =>
-               route === undefined ||
-               canonicalAuthorizeRoute(e.route) === route,
-         )
-         .flatMap((e) => [...e.exprs]);
+      return entries.some((e) => e.struct === undefined)
+         ? "unreadable"
+         : entries;
    } catch {
-      return undefined;
+      return "unreadable";
    }
+}
+
+/**
+ * The gate texts that apply to `struct` as an entry point ({@link
+ * entryGates}), both routes (a lock reads only givens and literals, so its
+ * names never match a column), or undefined when the walk cannot read them:
+ * a reader fails closed on that.
+ */
+export function entryPointGateExprs(
+   struct: unknown,
+   modelDef: unknown,
+   /** Only the gates on this route; absent, both. */
+   route?: string,
+): string[] | undefined {
+   const entries = entryGates(struct, modelDef);
+   if (entries === "unreadable") return undefined;
+   return entries
+      .filter(
+         (e) =>
+            route === undefined || canonicalAuthorizeRoute(e.route) === route,
+      )
+      .flatMap((e) => [...e.exprs]);
 }
 
 type Schema = readonly { name: string; type: string }[];

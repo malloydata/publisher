@@ -38,10 +38,8 @@ import {
 } from "../package_load/package_load_pool";
 import { SourceMap } from "./materialization/text/source_map";
 import { answerKeepsGates } from "./materialization/domain/gate_policy";
-import {
-   compileInputOf,
-   type ServedCopyServe,
-} from "./materialization/serve/served_copy_serve";
+import { compileInputOf } from "./materialization/serve/served_copy_lanes";
+import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import { unrecordedAudit } from "./access_record";
 import { Model } from "./model";
 import { QueryPrivileges } from "./model_query_request";
