@@ -120,7 +120,7 @@ describe("raw SQL on a DuckLake destination", () => {
       expect(reopened).toEqual(["credible"]);
    });
 
-   it("renews an expired credential and answers the request", async () => {
+   it("renews an expired credential once for two requests that meet it together, and answers both", async () => {
       stubDuckLake({});
       env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
          origin: "storage-destination",
@@ -131,23 +131,36 @@ describe("raw SQL on a DuckLake destination", () => {
       )) as DuckDBConnection & {
          setStorageSecretRenewer(renew: () => Promise<void>): void;
       };
-      const renew = sinon.fake.resolves(undefined);
+      let renewed = false;
+      const renew = sinon.fake(async () => {
+         await new Promise((r) => setTimeout(r, 20));
+         renewed = true;
+      });
       connection.setStorageSecretRenewer(renew);
-      // The storage refuses the first read, as an aged chain secret is.
-      let reads = 0;
-      sinon
-         .stub(DuckDBConnection.prototype, "runSQLStream")
-         .callsFake(async function* () {
-            if (reads++ === 0) {
-               throw new Error("HTTP Error: ExpiredToken: token expired");
-            }
-            yield { x: 1 };
-         });
+      // The storage refuses reads until the renewal, as it refuses an aged
+      // chain secret. Injected into the native DuckDB stream, so the statement
+      // gate, the lockdown and the hard close run around it as in production.
+      const native = (
+         connection as unknown as {
+            connection: { stream(sql: string): Promise<unknown> };
+         }
+      ).connection;
+      const stream = native.stream.bind(native);
+      let refused = 0;
+      sinon.stub(native, "stream").callsFake(async (sql: string) => {
+         if (!renewed) {
+            refused++;
+            throw new Error("HTTP Error: ExpiredToken: token expired");
+         }
+         return stream(sql);
+      });
 
-      expect(
-         await sqlQuery(controller, "SELECT x FROM credible.main.t"),
-      ).toEqual({ rows: [{ x: 1 }] });
+      const answers = await Promise.all([
+         sqlQuery(controller, "SELECT 1 AS x"),
+         sqlQuery(controller, "SELECT 1 AS x"),
+      ]);
+      expect(answers).toEqual([{ rows: [{ x: 1 }] }, { rows: [{ x: 1 }] }]);
       expect(renew.callCount).toBe(1);
-      expect(reads).toBe(2);
+      expect(refused).toBe(2);
    });
 });

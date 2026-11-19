@@ -44,6 +44,7 @@ import {
 } from "@malloydata/malloy";
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
+import { AsyncLocalStorage } from "async_hooks";
 import { createHash } from "crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
@@ -3093,10 +3094,28 @@ class AzureDuckDBConnection extends DuckDBConnection {
    }
 }
 
+/**
+ * The DuckLake connection whose storage-secret renewal the current async chain
+ * is running, so a statement the renewal itself issues does not renew again.
+ */
+const renewingStorageSecretOf = new AsyncLocalStorage<object>();
+
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
    private storageSecretRenewer?: () => Promise<void>;
-   private renewingStorageSecret = false;
+   /**
+    * The renewal in flight, shared by every statement that failed on the
+    * expired credential meanwhile: the statement gate hands the connection to
+    * the next statement as soon as one fails, so a second can fail before the
+    * first's renewal has run, and it must wait for that renewal, not give up.
+    */
+   private storageSecretRenewal?: Promise<void>;
+   /**
+    * How many renewals have completed. A statement that started before the
+    * latest one completed ran on the old credential, so it runs again on the
+    * new one rather than renewing a credential that is already fresh.
+    */
+   private storageSecretRenewals = 0;
 
    /** @see RenewableStorageSecret */
    setStorageSecretRenewer(renew: () => Promise<void>): void {
@@ -3119,13 +3138,18 @@ class DuckLakeConnection extends DuckDBConnection {
       sql: string,
       options?: Parameters<DuckDBConnection["runSQL"]>[1],
    ): Promise<Awaited<ReturnType<DuckDBConnection["runSQL"]>>> {
+      const renewalsBefore = this.storageSecretRenewals;
       try {
          return await super.runSQL(sql, options);
       } catch (error) {
-         if (!(await this.renewedStorageSecretAfter(error))) {
+         if (!(await this.renewedStorageSecretAfter(error, renewalsBefore))) {
             throw await this.catalogUnavailableOr(error);
          }
-         return await super.runSQL(sql, options);
+         try {
+            return await super.runSQL(sql, options);
+         } catch (rerunError) {
+            throw await this.catalogUnavailableOr(rerunError);
+         }
       }
    }
 
@@ -3142,16 +3166,21 @@ class DuckLakeConnection extends DuckDBConnection {
       sql: string,
       options?: Parameters<DuckDBConnection["runSQLStream"]>[1],
    ): AsyncIterableIterator<QueryRecord> {
+      const renewalsBefore = this.storageSecretRenewals;
       let rows = super.runSQLStream(sql, options);
       let first: IteratorResult<QueryRecord>;
       try {
          first = await rows.next();
       } catch (error) {
-         if (!(await this.renewedStorageSecretAfter(error))) {
+         if (!(await this.renewedStorageSecretAfter(error, renewalsBefore))) {
             throw await this.catalogUnavailableOr(error);
          }
          rows = super.runSQLStream(sql, options);
-         first = await rows.next();
+         try {
+            first = await rows.next();
+         } catch (rerunError) {
+            throw await this.catalogUnavailableOr(rerunError);
+         }
       }
       if (first.done) return;
       // A consumer that stops early (a cap, an abort) returns this stream; the
@@ -3168,31 +3197,49 @@ class DuckLakeConnection extends DuckDBConnection {
    /**
     * Re-resolve the storage credential when `error` is an expired one, so
     * the caller runs its statement again; false, renewing nothing, otherwise.
+    * A renewal already in flight is joined rather than started again, and
+    * one that completed since the statement started (`renewalsBefore`) is
+    * taken as done, so statements failing together share one renewal and each
+    * runs once more.
     */
-   private async renewedStorageSecretAfter(error: unknown): Promise<boolean> {
-      // The renewal's own statement runs through runSQL; the flag stops a
-      // failure there from recursing.
+   private async renewedStorageSecretAfter(
+      error: unknown,
+      renewalsBefore: number,
+   ): Promise<boolean> {
       const renew = this.storageSecretRenewer;
       if (
          !renew ||
          !shouldRenewStorageSecret({
             error,
             hasRenewer: !!renew,
-            alreadyRenewing: this.renewingStorageSecret,
+            // The renewal's own statement runs through runSQL: a failure there
+            // is the renewal's to throw, not one to wait on itself for.
+            alreadyRenewing: renewingStorageSecretOf.getStore() === this,
          })
       ) {
          return false;
       }
-      logger.info(
-         "Object-storage credential expired; re-resolving and retrying once",
-         { connection: this.connectionName },
-      );
-      this.renewingStorageSecret = true;
-      try {
-         await renew();
-      } finally {
-         this.renewingStorageSecret = false;
+      if (
+         !this.storageSecretRenewal &&
+         this.storageSecretRenewals === renewalsBefore
+      ) {
+         logger.info(
+            "Object-storage credential expired; re-resolving and retrying once",
+            { connection: this.connectionName },
+         );
+         const renewal = renewingStorageSecretOf
+            .run(this, renew)
+            .then(() => {
+               this.storageSecretRenewals++;
+            })
+            .finally(() => {
+               if (this.storageSecretRenewal === renewal) {
+                  this.storageSecretRenewal = undefined;
+               }
+            });
+         this.storageSecretRenewal = renewal;
       }
+      await this.storageSecretRenewal;
       return true;
    }
 

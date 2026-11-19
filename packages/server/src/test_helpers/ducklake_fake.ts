@@ -54,13 +54,16 @@ export interface FakeInstance {
  * what is attached, and whether the instance is locked. On a locked instance
  * a `CREATE SECRET` is refused, as the statement gate refuses it.
  * `beforeSecret` runs before each `CREATE SECRET`, numbered from 1, so a
- * spec can hold one until something else has happened.
+ * spec can hold one until something else has happened. `beforeRead` runs
+ * before any other statement (a caller's read), and may throw as the
+ * statement would.
  */
 export function stubDuckLake(hooks: {
    beforeSecret?: (n: number) => Promise<void>;
    onAttach?: (n: number) => void;
    onLock?: () => void;
    beforeCatalogCheck?: (n: number) => Promise<void>;
+   beforeRead?: (sql: string) => Promise<void>;
 }): { stateOf: (c: DuckDBConnection) => FakeInstance } {
    const states = new WeakMap<object, FakeInstance>();
    // The connection's native instance, opened for real (only its statements
@@ -161,6 +164,7 @@ export function stubDuckLake(hooks: {
          }
          return rows([{ v: "" }]);
       }
+      await hooks.beforeRead?.(q);
       // A read of a catalog's table binds only when the catalog is attached.
       const read = /FROM "?([A-Za-z_]+)"?\.main\./.exec(q);
       if (read && !state.attached.has(read[1])) {

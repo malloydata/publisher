@@ -399,6 +399,32 @@ async function drain(
    }
 }
 
+/**
+ * Fail the native DuckDB stream beneath `connection` with the error `fail`
+ * returns for that call (numbered from 1), and otherwise run it: the statement
+ * gate, the lockdown and the hard close still run around it, as in production.
+ */
+function failNativeStreams(
+   connection: DuckDBConnection,
+   fail: (call: number) => Promise<Error | undefined>,
+): sinon.SinonStub {
+   const native = (
+      connection as unknown as {
+         connection: { stream(sql: string): Promise<unknown> };
+      }
+   ).connection;
+   const original = native.stream.bind(native);
+   let call = 0;
+   return sinon.stub(native, "stream").callsFake(async (sql: string) => {
+      const error = await fail(++call);
+      if (error) throw error;
+      return original(sql);
+   });
+}
+
+const expiredToken = () =>
+   new Error("HTTP Error: ExpiredToken: The provided token has expired.");
+
 /** A connection that can be handed a storage-secret renewer, as a chain secret's is. */
 type Renewable = DuckDBConnection & {
    setStorageSecretRenewer(renew: () => Promise<void>): void;
@@ -539,6 +565,176 @@ describe("a stream on a DuckLake destination", () => {
          );
          expect(read.error).toBe(second);
          expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("shares one renewal between two streams that both meet the expired credential", async () => {
+      stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         // The gate hands the connection to the second stream as soon as the
+         // first fails, so the second fails while the first's renewal runs.
+         const renewing = signal();
+         const secondFailed = signal();
+         let renewed = false;
+         const renew = sinon.fake(async () => {
+            renewing.fire();
+            await within(secondFailed.promise, 2000);
+            renewed = true;
+         });
+         connection.setStorageSecretRenewer(renew);
+         failNativeStreams(connection, async (call) => {
+            if (renewed) return undefined;
+            if (call === 2) {
+               await within(renewing.promise, 2000);
+               secondFailed.fire();
+            }
+            return expiredToken();
+         });
+
+         const [a, b] = await Promise.all([
+            drain(connection.runSQLStream("SELECT 1 AS x")),
+            drain(connection.runSQLStream("SELECT 1 AS x")),
+         ]);
+         expect(a).toEqual({ rows: [{ x: 1 }] });
+         expect(b).toEqual({ rows: [{ x: 1 }] });
+         expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("shares one renewal between two statements that both meet the expired credential", async () => {
+      const renewing = signal();
+      const secondFailed = signal();
+      let renewed = false;
+      let reads = 0;
+      stubDuckLake({
+         beforeRead: async (sql) => {
+            if (!sql.includes("expiring") || renewed) return;
+            if (++reads === 2) {
+               await within(renewing.promise, 2000);
+               secondFailed.fire();
+            }
+            throw expiredToken();
+         },
+      });
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const renew = sinon.fake(async () => {
+            renewing.fire();
+            await within(secondFailed.promise, 2000);
+            renewed = true;
+         });
+         connection.setStorageSecretRenewer(renew);
+
+         const results = await Promise.allSettled([
+            connection.runSQL("SELECT 1 AS expiring"),
+            connection.runSQL("SELECT 1 AS expiring"),
+         ]);
+         expect(results.map((r) => r.status)).toEqual([
+            "fulfilled",
+            "fulfilled",
+         ]);
+         expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("throws a renewal whose own statement meets the expired credential, rather than wait on itself", async () => {
+      stubDuckLake({
+         beforeRead: async (sql) => {
+            if (sql.includes("expiring")) throw expiredToken();
+         },
+      });
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const renew = sinon.fake(async () => {
+            await connection.runSQL("SELECT 'secret' AS expiring");
+         });
+         connection.setStorageSecretRenewer(renew);
+         const failure = await connection.runSQL("SELECT 1 AS expiring").then(
+            () => undefined,
+            (error: unknown) => error,
+         );
+         expect(String(failure)).toContain("ExpiredToken");
+         expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("confirms a catalog lost while the credential renewed, on a statement's run after the renewal", async () => {
+      let renewed = false;
+      const { stateOf } = stubDuckLake({
+         beforeRead: async (sql) => {
+            if (sql.includes("credible.main.t") && !renewed) {
+               throw expiredToken();
+            }
+         },
+      });
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const state = stateOf(connection);
+         connection.setStorageSecretRenewer(async () => {
+            state.attached.delete("credible");
+            renewed = true;
+         });
+         const failure = await connection
+            .runSQL("SELECT count(*) FROM credible.main.t")
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(failure).toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         // The cached check was dropped: the next lookup checks again.
+         const checksBefore = state.catalogChecks;
+         expect(await lookUp(env)).not.toBe(connection);
+         expect(state.catalogChecks).toBe(checksBefore + 1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("confirms a catalog lost while the credential renewed, on a stream's run after the renewal", async () => {
+      const { stateOf } = stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         await lookUp(env);
+         const connection = await lookUp(env);
+         const state = stateOf(connection);
+         let renewed = false;
+         connection.setStorageSecretRenewer(async () => {
+            await loseCatalog(connection, state);
+            renewed = true;
+         });
+         failNativeStreams(connection, async () =>
+            renewed ? undefined : expiredToken(),
+         );
+         const read = await drain(
+            connection.runSQLStream("SELECT * FROM credible.main.t"),
+         );
+         expect(read.error).toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         const checksBefore = state.catalogChecks;
+         expect(await lookUp(env)).not.toBe(connection);
+         expect(state.catalogChecks).toBe(checksBefore + 1);
       } finally {
          await env.releaseConnections().catch(() => {});
       }
