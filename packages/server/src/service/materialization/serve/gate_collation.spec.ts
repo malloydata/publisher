@@ -6,11 +6,10 @@ import { PostgresConnection } from "@malloydata/db-postgres";
 import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
-   equalityOnlyExpr,
-   gateReadsOfQuery,
    storedTableCollationRefusal,
    stringGateCollationRefusal,
-} from "./gate_reads";
+} from "./gate_collation";
+import { equalityOnlyExpr, gateReadsOfQuery } from "./gate_reads";
 import {
    duckdbCollation,
    duckdbTableCollation,

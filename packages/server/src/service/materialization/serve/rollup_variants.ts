@@ -106,7 +106,6 @@ import {
 import type {
    MalloyConfig,
    ModelDef,
-   SourceDef,
    ModelMaterializer,
    QueryMaterializer,
 } from "@malloydata/malloy";
@@ -147,7 +146,7 @@ import {
 } from "../../governance/ir/prepared_query";
 import { packageFiles } from "../text/package_files";
 import { fieldPathsIn } from "./gate_paths";
-import { gateIdentifiers } from "./gate_reads";
+import { entryGates, gateIdentifiers } from "./gate_reads";
 import {
    emitMeasureExpr,
    generateRollupBuildFile,
@@ -174,11 +173,7 @@ import {
    type JoinRollupBranch,
 } from "./join_rollup";
 import { compileDeclaringFileVariant } from "./declaring_file_variant";
-import {
-   collectEntryPointGates,
-   type GraftRuntime,
-   type GraftScope,
-} from "../../gate_classification";
+import type { GraftRuntime, GraftScope } from "../../gate_classification";
 import { enforcedGatesOf, type EnforcedGates } from "../../access_record";
 import { sameGateSet } from "../../governance/query_governor";
 import { fieldNotes, noteSource } from "../text/field_notes";
@@ -1127,19 +1122,9 @@ export class RollupVariantServe {
       // The author's source, redeclared in its declaring file: where the
       // governor finds the gate's graft target.
       if (!struct || struct.sourceID !== q.sourceID) throw contractSkip();
-      let written: EnforcedGates;
-      try {
-         written = enforcedGatesOf(
-            collectEntryPointGates(
-               struct as unknown as SourceDef,
-               model as ModelDef,
-               new Set(),
-               true,
-            ),
-         );
-      } catch {
-         throw contractSkip();
-      }
+      const writtenEntries = entryGates(struct, model);
+      if (writtenEntries === "unreadable") throw contractSkip();
+      const written = enforcedGatesOf(writtenEntries);
       if (!sameGateSet(q.gates, written)) throw contractSkip();
       return {
          graftScope: {
@@ -2786,10 +2771,8 @@ function notCompiledDetail(
  * (`big = $TENANT` reads `big`), matched without case; a given or keyword
  * that happens to share a column's name only declines more often.
  *
- * Written over the gate texts alone, so a shared reader of a gate's
- * identifiers (`gateIdentifiers`) can replace {@link gateNames}: the rollup
- * counterpart of the served copy's check that a gate's columns are kept
- * (`checkGateColumnsKept`).
+ * The rollup counterpart of the served copy's check that a gate's columns
+ * are kept (`checkGateColumnsKept`).
  */
 function gateReadsLeftOut(
    gates: EnforcedGates,
@@ -2797,14 +2780,9 @@ function gateReadsLeftOut(
 ): string | undefined {
    if (leftOut.length === 0) return undefined;
    const out = new Set(leftOut.map((c) => c.toLowerCase()));
-   return gateNames([...gates.authorize, ...gates.accessFilter]).find((n) =>
-      out.has(n.toLowerCase()),
+   return gateIdentifiers([...gates.authorize, ...gates.accessFilter]).find(
+      (n) => out.has(n.toLowerCase()),
    );
-}
-
-/** The identifiers a gate's text names, fields or not. */
-function gateNames(exprs: readonly string[]): string[] {
-   return [...new Set(exprs.flatMap((expr) => malloyIdentifiers(expr)))];
 }
 
 /** The rollup's own `sourceID`, as its build companion declares it. */
@@ -3339,29 +3317,21 @@ function joinGateDecline(
 }
 
 /**
- * The gates the live entry point carries (the governor's walk: own,
- * inherited, a derivation's base), or undefined when it has none. A walk
- * that cannot be read counts as a gate no rollup proves.
+ * The gates the live entry point carries ({@link entryGates}), or undefined
+ * when it has none. A walk that cannot be read counts as a gate no rollup
+ * proves.
  */
 function liveEntryPointGates(
    struct: unknown,
    modelDef: unknown,
 ): EnforcedGates | undefined {
-   try {
-      const gates = enforcedGatesOf(
-         collectEntryPointGates(
-            struct as SourceDef,
-            modelDef as ModelDef,
-            new Set(),
-            true,
-         ),
-      );
-      return gates.authorize.length + gates.accessFilter.length > 0
-         ? gates
-         : undefined;
-   } catch {
+   const entries = entryGates(struct, modelDef);
+   if (entries === "unreadable")
       return { authorize: ["false"], accessFilter: [] };
-   }
+   const gates = enforcedGatesOf(entries);
+   return gates.authorize.length + gates.accessFilter.length > 0
+      ? gates
+      : undefined;
 }
 
 /**
@@ -3386,19 +3356,9 @@ function proveGates(
       ? resolveStructRefSource<{ sourceID?: unknown }>(routed.structRef, model)
       : undefined;
    if (!struct || struct.sourceID !== query.sourceID) throw contractSkip();
-   let written: EnforcedGates;
-   try {
-      written = enforcedGatesOf(
-         collectEntryPointGates(
-            struct as unknown as SourceDef,
-            model as ModelDef,
-            new Set(),
-            true,
-         ),
-      );
-   } catch {
-      throw contractSkip();
-   }
+   const writtenEntries = entryGates(struct, model);
+   if (writtenEntries === "unreadable") throw contractSkip();
+   const written = enforcedGatesOf(writtenEntries);
    if (!sameGateSet(live, written)) throw contractSkip();
    const fields = new Map(
       (

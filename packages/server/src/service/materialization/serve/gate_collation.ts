@@ -48,7 +48,6 @@ import {
    EMPTY_BUILD_MANIFEST,
    type ModelDef,
    type ModelMaterializer,
-   type SourceDef,
    type QueryMaterializer,
 } from "@malloydata/malloy";
 import { malloyIdentifiers } from "../../query_text";
@@ -57,11 +56,11 @@ import {
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
-import { collectEntryPointGates } from "../../gate_classification";
 import { capabilitiesOf } from "../domain/dialect";
 
 import type { CollationProbe, GateReads } from "./gate_reads_types";
 import { fieldPathsIn } from "./gate_paths";
+import { entryGates } from "./gate_reads";
 
 type Collation = "binary" | "deterministic" | "unknown";
 
@@ -636,23 +635,15 @@ function namedEntryOf(
    const same = (a: unknown, b: unknown) =>
       JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
    if (!same(base.filterList, s.filterList)) return undefined;
-   try {
-      const gates = (x: unknown) => {
-         const entries = collectEntryPointGates(
-            x as SourceDef,
-            modelDef,
-            new Set(),
-            true,
-         );
-         // The walk's fail-closed deny reads as unequal.
-         if (entries.some((e) => e.struct === undefined)) return undefined;
-         return entries.map((e) => [e.route, [...e.exprs]]);
-      };
-      const own = gates(struct);
-      if (own === undefined || !same(gates(base), own)) return undefined;
-   } catch {
-      return undefined;
-   }
+   // The walk's fail-closed deny reads as unequal.
+   const gates = (x: unknown) => {
+      const entries = entryGates(x, modelDef);
+      return entries === "unreadable"
+         ? undefined
+         : entries.map((e) => [e.route, [...e.exprs]]);
+   };
+   const own = gates(struct);
+   if (own === undefined || !same(gates(base), own)) return undefined;
    return s.as;
 }
 
