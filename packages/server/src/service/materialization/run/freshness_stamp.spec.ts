@@ -384,7 +384,7 @@ describe("a standalone run's carry-forward", () => {
          [["s1", "s2"]],
       );
       const { instructions, carried } = deriveSelfInstructions(
-         { ...nowReading, asOfBuild: ["s1"] },
+         { ...nowReading, asOfBuild: { s1: { name: "s1", reads: [] } } },
          undefined,
          {
             b1aaaaaaaaaaaaaa: prior("b1aaaaaaaaaaaaaa", "s1"),

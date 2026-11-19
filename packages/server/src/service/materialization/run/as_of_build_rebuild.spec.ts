@@ -12,9 +12,9 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
-import { compilePackageBuildPlan } from "../plan/build_plan_compile";
 import type { ManifestEntry } from "../domain/types";
 import { deriveSelfInstructions } from "./run_instructions";
+import { compileRunPlan } from "./run_plan";
 
 const packages = tempBuildPlanPackages();
 afterEach(async () => {
@@ -40,14 +40,14 @@ source: plain is ev -> { select: * }
 describe("a run over a table stored as of its build", () => {
    it("rebuilds it on every run and carries the rest forward", async () => {
       const pkg = await packages.create({ "m.malloy": MODEL });
-      const compiled = await compilePackageBuildPlan(pkg);
+      const { runPlan: compiled } = await compileRunPlan(pkg);
       const byName = Object.fromEntries(
          Object.entries(compiled.tables).map(([sourceID, t]) => [
             t.source.name,
             sourceID,
          ]),
       );
-      expect([...(compiled.asOfBuild ?? [])].sort()).toEqual(
+      expect(Object.keys(compiled.asOfBuild ?? {}).sort()).toEqual(
          [byName.last7, byName.past].sort(),
       );
       // The first run: everything builds.

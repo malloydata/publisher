@@ -764,7 +764,7 @@ function rebuildsEveryRun(
 ): boolean {
    return (
       options.forceRefresh === true ||
-      (compiled.asOfBuild?.includes(sourceID) ?? false)
+      Object.hasOwn(compiled.asOfBuild ?? {}, sourceID)
    );
 }
 

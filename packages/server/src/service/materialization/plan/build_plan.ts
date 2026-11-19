@@ -1998,9 +1998,6 @@ export function finishBuildPlan(
    const plan = {
       ...(ctx.versionScoped ? { versionScoped: true } : {}),
       ...parts,
-      asOfBuild: Object.entries(parts.tables)
-         .filter(([, table]) => storedAsOfBuild(table.source, table.kind))
-         .map(([sourceID]) => sourceID),
       connectionDigests: ctx.connectionDigests,
       connectionTypes: resolveConnectionTypes(ctx.connections),
       connections: ctx.connections,

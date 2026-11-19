@@ -9,6 +9,7 @@
 
 import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
 import { describe, expect, it } from "bun:test";
+import { derivePackagePlan } from "./build_plan";
 import { planPackages } from "../../../test_helpers/materialization_fixture";
 import {
    FixedConnectionMap,
@@ -178,7 +179,7 @@ source: ops is ${TABLE} extend {
       const findings = viewFindings(c);
       expect(findings.some((m) => m.includes("reads a given"))).toBe(true);
       expect(findings.some((m) => m.includes("current time"))).toBe(false);
-      expect(c.asOfBuild).toEqual([
+      expect(Object.keys(derivePackagePlan(c, null).asOfBuild ?? {})).toEqual([
          expect.stringContaining("ops__recent__view"),
       ]);
    });
@@ -201,7 +202,9 @@ source: ops2 is ${TABLE} extend {
          "ops__star__view",
       ]);
       expect(viewFindings(c)).toEqual([]);
-      expect(c.asOfBuild).toEqual([expect.stringContaining("ops__star__view")]);
+      expect(Object.keys(derivePackagePlan(c, null).asOfBuild ?? {})).toEqual([
+         expect.stringContaining("ops__star__view"),
+      ]);
    });
 
    it("plans a view whose later stage names a field like a current-time dimension", async () => {

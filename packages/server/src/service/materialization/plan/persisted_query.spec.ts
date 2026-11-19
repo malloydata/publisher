@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "./build_plan_compile";
+import { derivePackagePlan } from "./build_plan";
 import { buildKindOf } from "../run/run_telemetry";
 import { PERSIST_QUERY_NOT_BUILT } from "./persisted_query";
 
@@ -297,7 +298,9 @@ describe("#@ persist on a named query, PUBLISHER_MATERIALIZE on", () => {
          const c = await compiled(text);
          expect(built(c)).toContain("q__query");
          expect(notBuilt(c)).toEqual([]);
-         expect(c.asOfBuild).toEqual([expect.stringContaining("q__query")]);
+         expect(
+            Object.keys(derivePackagePlan(c, null).asOfBuild ?? {}),
+         ).toEqual([expect.stringContaining("q__query")]);
       });
    }
 
