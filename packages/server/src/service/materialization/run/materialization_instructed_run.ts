@@ -258,6 +258,8 @@ export interface PendingRefusal {
 interface InstructionIndex {
    bySourceID: Map<string, BuildInstruction>;
    bySourceEntityId: Map<string, BuildInstruction>;
+   /** The run's planned sources, when known, so a sourceID is judged by it. */
+   planned?: Readonly<Record<string, unknown>>;
 }
 
 /** The instruction one source builds under, and how it was found. */
@@ -271,6 +273,7 @@ export interface ResolvedInstruction {
 
 export function indexInstructions(
    instructions: BuildInstruction[],
+   planned?: Readonly<Record<string, unknown>>,
 ): InstructionIndex {
    // Indexed by sourceID first: sourceEntityId is opaque, caller-assigned
    // identity, and matching on a recomputed content hash would silently skip
@@ -309,7 +312,7 @@ export function indexInstructions(
       }
       bySourceEntityId.set(instruction.sourceEntityId, instruction);
    }
-   return { bySourceID, bySourceEntityId };
+   return { bySourceID, bySourceEntityId, ...(planned ? { planned } : {}) };
 }
 
 /**
@@ -349,6 +352,18 @@ export function resolveInstruction(
    }
    const instruction = index.bySourceEntityId.get(sourceEntityId);
    if (!instruction) return undefined;
+   // The address is the fallback for an instruction WITHOUT a sourceID. One
+   // that names another planned source was the host's for that source alone:
+   // this one (an extension sharing its address) was not instructed, so it is
+   // skipped. Its table is the named source's, which it reads by address
+   // through its own gate; serving judges it from the plan, not this run.
+   if (
+      instruction.sourceID !== undefined &&
+      instruction.sourceID !== persistSource.sourceID &&
+      index.planned?.[instruction.sourceID] !== undefined
+   ) {
+      return undefined;
+   }
    return { instruction, orchestrated: false, sourceEntityId };
 }
 
