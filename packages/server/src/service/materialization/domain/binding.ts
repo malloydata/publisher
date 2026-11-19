@@ -52,6 +52,11 @@ type BindingTier = Tier;
  */
 export interface Binding {
    readonly kind: BindingKind;
+   /**
+    * Its stored relation reads the current time, so it holds the rows as of
+    * its build (`PackagePlan.asOfBuild`); see `TableRead.asOfBuild`.
+    */
+   readonly asOfBuild?: boolean;
    readonly tier: BindingTier;
    /** The Malloy source name it rebinds (`source: <sourceName> is ...`). */
    sourceName: string;

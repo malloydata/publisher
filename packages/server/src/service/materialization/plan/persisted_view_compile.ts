@@ -174,12 +174,9 @@ async function persistedViewRefusalReason(
          reason: "the view has no stage to store",
          refusal: "no_stored_columns",
       };
-   if (pipelineReadsCurrentTime(def, stages)) {
-      return {
-         reason: "its result reads the current time, so it differs per read",
-         refusal: "current_time",
-      };
-   }
+   // A result that reads the current time is stored as of its build and
+   // rebuilt on every run, unless its source is gated (below).
+   const readsNow = pipelineReadsCurrentTime(def, stages);
    const last = stages[stages.length - 1];
    // On either tier: the view leg never answers from a nested result (it
    // cannot rebuild a nest's rows exactly), so a table built for one would
@@ -193,6 +190,15 @@ async function persistedViewRefusalReason(
    }
    const gates = collectEntryPointGates(node.def as never, modelDef as never);
    if (gates.length === 0) return undefined;
+   if (readsNow) {
+      return {
+         reason:
+            "its result reads the current time and its source carries a " +
+            "row-level gate, whose decision a result stored as of its build " +
+            "would freeze",
+         refusal: "current_time",
+      };
+   }
    // Named by the gates' kind, as on every mechanism.
    const gateRefusal = gateRefusalReason(gates.map((g) => g.route));
    if (gates.some((g) => !g.struct)) {
@@ -386,12 +392,8 @@ async function persistedQueryRefusalReason(
          reason: "its source cannot be read",
          refusal: "run_target_unsupported",
       };
-   if (pipelineReadsCurrentTime(def, stages)) {
-      return {
-         reason: "its result reads the current time, so it differs per read",
-         refusal: "current_time",
-      };
-   }
+   // A result that reads the current time is stored as of its build and
+   // rebuilt on every run; a gate anywhere refuses the query below.
    const last = stages[stages.length - 1];
    if ((last.outputStruct?.fields ?? []).some(isNested)) {
       return {

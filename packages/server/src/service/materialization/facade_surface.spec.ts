@@ -55,6 +55,7 @@ function publicMembersOf(file: string, className: string): string[] {
 const FACADE_SURFACE = [
    "annotationFindingWarnings",
    "applyLoadBuildPlan",
+   "asOfBuildWarnings",
    "bind",
    "bindingState",
    "boundDatabaseEntries",

@@ -101,7 +101,20 @@ export interface CompiledBuildPlan<Finding = unknown> {
     * compile), for the wire plan's `omittedSources`. Absent: none.
     */
    omittedSources?: Omission[];
+   /**
+    * Every sourceID an access decision of the package reads: a dependency,
+    * at any depth, of a definition that carries a gate or reads a given
+    * (`collectAccessReads` in `plan/`). A relation that reads the current
+    * time is refused when it is one. `"*"` when a walk could not finish.
+    */
+   accessReads?: readonly string[];
 }
+
+/**
+ * The name `accessReads` holds when a walk could not finish: every stored
+ * relation counts as one an access decision reads (fail closed).
+ */
+export const EVERY_SOURCE = "*";
 
 /** The planned sources of `build` in build order, skipping any not in `tables`. */
 export function* sourcesInBuildOrder(

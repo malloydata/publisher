@@ -3,18 +3,22 @@
     "buildErrors": {},
     "built": [
       {
+        "name": "recent_body",
+        "tier": "storage"
+      },
+      {
         "name": "recent_read",
         "tier": "storage"
       }
     ],
     "verdicts": [
-      "recent_read:serves",
-      "recent_body:live:refused"
+      "recent_body:serves",
+      "recent_read:serves"
     ],
     "warnings": [
       {
-        "code": "persist-not-built",
-        "message": "Source 'recent_body' cannot be materialized: the relation it persists reads the current time (`now`), in its query, a view it runs, the `where:`, a field or a join of the source that query reads, or the query of a query-shaped source it is built from or joins. Its table would hold the rows as of the build and serve them until the next rebuild, while a live query reads `now` again every time, so it is not built and is answered live. To serve it from a table, move the `now` into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), or stop persisting this source.",
+        "code": "persist-reads-current-time",
+        "message": "#@ persist on source \"recent_body\" stores a relation that reads the current time (`where: created_at >= now - 3650 days`), so its answers are as of its last build rather than of each query, and it is rebuilt on every run. To answer as of each query instead, move the window into the persisted source's own extend block (a `where:`, dimension or measure there is applied at every read), read a given there, or persist a finer source that keeps the time column and filter it at query time.",
         "subject": "recent_body"
       }
     ]
@@ -60,7 +64,14 @@
       "equalToLive": true,
       "malloy": "run: recent_body -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -82,13 +93,17 @@
           "sourceName": "recent_body"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a window in the persisted query",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -139,7 +154,16 @@
             "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "recent_body",
+            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -204,7 +228,14 @@
       "equalToLive": true,
       "malloy": "run: recent_body -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
@@ -226,13 +257,17 @@
           "sourceName": "recent_body"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a window in the persisted query",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -283,7 +318,16 @@
             "tableId": "b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "recent_body",
+            "tableId": "107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [

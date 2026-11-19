@@ -6262,6 +6262,14 @@ components:
                   `persist-incremental-no-merge-key`: an incremental source
                   with no `merge_key=`, so each refresh replaces its watermark
                   range (`subject` the source; `warn`).
+                  `persist-reads-current-time`: a `#@ persist` source,
+                  persisted view or persisted named query whose stored
+                  relation reads the current time (`now`, or a relative time
+                  filter string such as `f'last 7 days'`), so its answers are
+                  as of its last build and it is rebuilt on every run; the
+                  message names where it reads the clock and how to answer as
+                  of each query instead (one per table, `subject` the source,
+                  the view as `<source> -> <view>`, or the query; `warn`).
                   `persist-incremental-shared-address`: sources that compile to
                   the same SQL on one connection, so they share one table and
                   one boundary, where at least one is incremental (one per
@@ -10857,8 +10865,12 @@ components:
           default: false
           description: >-
             Build a new table even when a source's sourceEntityId is unchanged —
-            that is, defeat skip-if-unchanged, which would otherwise carry the
-            existing table forward and run no SQL for that source.
+            that is, defeat skip-if-unchanged, which would otherwise carry an
+            unchanged table forward and run no SQL for that source. Not every
+            unchanged table is carried: one whose source refreshes
+            incrementally, one past its declared freshness window, and one
+            whose stored relation reads the current time (the plan entry's
+            `asOfBuild`) are rebuilt on every run without this flag.
 
             It means ONLY that. It never re-seeds a source declaring
             `refresh="incremental"`: such a source is exempt from
@@ -11659,6 +11671,19 @@ components:
             advances its serving table by a bounded delta in place instead of
             being rebuilt, so the mode also governs the build path — which is why
             it is validated rather than passed through.
+        asOfBuild:
+          type: boolean
+          description: >-
+            True when this source's stored relation reads the current time
+            (`now`, or a relative time filter string such as
+            `f'last 7 days'`), so its table holds the rows as of its build
+            and its answers are as of that build (a `#@ persist` source, a
+            persisted view or a persisted named query; the package carries a
+            `persist-reads-current-time` warning for it). Unchanged SQL does
+            not mean unchanged rows, so such a table must be rebuilt on every
+            run: a host that reuses a ready table by `sourceEntityId` must
+            not reuse this one, and a standalone run never carries it
+            forward. Absent otherwise.
         freshness:
           oneOf:
             - $ref: "#/components/schemas/Freshness"

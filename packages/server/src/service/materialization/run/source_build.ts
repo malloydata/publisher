@@ -65,6 +65,46 @@ import type {
 import { compiledTextReader } from "../../../utils";
 
 /**
+ * The persisted sources `persistSource` reads, from the author's model
+ * (`reachPersisted`), with the lift context the walk used: `reached`, the
+ * stored tables a build stacks on or reports, and `reachedIds`, those and
+ * every persisted source below them, which alone may fill a compiler key
+ * they map to ({@link manifestForCompiler}).
+ */
+export function persistedReach(
+   persistSource: PersistSource,
+   environment: Pick<BuildEnvironment, "getPackagePath">,
+   planFacts: Pick<ChainedPlanFacts, "persistSourceIds">,
+): {
+   lift: ReturnType<typeof authorModelLiftContext>;
+   reached: ReturnType<typeof reachPersisted>;
+   reachedIds: ReadonlySet<string>;
+} {
+   const plannedDef = plannedModelDefOf(persistSource);
+   const lift = authorModelLiftContext(
+      plannedDef,
+      compiledTextReader(plannedDef, environment.getPackagePath?.()),
+   );
+   // Which stored tables this source reads, and whether the substituted
+   // manifest holds each, decided once for both tiers. It drives stacking on
+   // parents, strict refusal, and the entry's `upstreamReuse`.
+   const isPersisted = (_name: string, sourceID: string) =>
+      planFacts.persistSourceIds.has(sourceID);
+   const reached = reachPersisted(lift, persistSource.name, isPersisted);
+   // An upstream the render inlines (its table absent) is compiled through to
+   // what it reads, so the compiler can look up any persisted source below
+   // it: those keys belong to this source's reach too.
+   const reachedIds = new Set<string>();
+   const pending = [...reached.persisted];
+   for (let next = pending.pop(); next; next = pending.pop()) {
+      if (reachedIds.has(next.sourceID)) continue;
+      reachedIds.add(next.sourceID);
+      pending.push(...reachPersisted(lift, next.name, isPersisted).persisted);
+   }
+   return { lift, reached, reachedIds };
+}
+
+/**
  * Render a source's build SQL over the run's manifest, refusing an upstream a
  * host supplied at the wrong tier and naming a strict miss by the author's
  * source; with what the later stages read from the render.
@@ -90,14 +130,32 @@ function renderBuildSQL(
    // before parent reuse could run. Strict is enforced below, where a
    // recompute would really happen. A database build keeps strict: its
    // buildSQL IS what runs.
+   //
+   // `reducedManifest` is keyed by address only, as the ledger is; the
+   // compiler looks an upstream up by its own key, which differs from the
+   // address of a source whose address folds in a `name=`, projection or
+   // destination. So the render reads `buildManifest`, which also files each
+   // entry under that key: for an upstream this source reads, only that
+   // upstream's own entry, never a same-SQL sibling's.
+   //
+   // `_model._modelDef` is compiler-internal. If a compiler bump removes it,
+   // the walk below finds nothing and the entry carries no
+   // `upstreamReuse`: a visible gap, not a wrong answer.
+   const { lift, reached, reachedIds } = persistedReach(
+      persistSource,
+      environment,
+      planFacts,
+   );
    const reducedManifest = manifestExcludingStorage(
       manifest,
       builtEntries,
       planFacts,
    );
-   const buildManifest = isStorageBuild
-      ? { ...reducedManifest, strict: false }
-      : reducedManifest;
+   const buildManifest = manifestForCompiler(
+      isStorageBuild ? { ...reducedManifest, strict: false } : reducedManifest,
+      planFacts,
+      reachedIds,
+   );
    // Entries left out of the warehouse render only because they are at the
    // wrong tier for the upstream as declared now, by address.
    const wrongTier = Object.entries(builtEntries).filter(
@@ -145,6 +203,7 @@ function renderBuildSQL(
             manifestForCompiler(
                { ...buildManifest, entries, strict: false },
                planFacts,
+               reachedIds,
             ),
          );
       let base: string | undefined;
@@ -174,14 +233,6 @@ function renderBuildSQL(
          if (read.length > 0) refuseHostSupplied(read);
       }
    }
-   // `_model._modelDef` is compiler-internal. If a compiler bump removes it,
-   // the walk below finds nothing and the entry carries no
-   // `upstreamReuse`: a visible gap, not a wrong answer.
-   const plannedDef = plannedModelDefOf(persistSource);
-   const lift = authorModelLiftContext(
-      plannedDef,
-      compiledTextReader(plannedDef, environment.getPackagePath?.()),
-   );
    // A strict miss as a reason names it: a name only the generated files
    // declare by the author's source it stands for, read from the
    // companion's own name for it or its declared name.
@@ -241,6 +292,8 @@ function renderBuildSQL(
       buildManifest,
       wrongTier,
       lift,
+      reached,
+      reachedIds,
       presentedMiss,
       buildSQL,
    };
@@ -267,15 +320,11 @@ function classifyStoredUpstreams(
       buildManifest,
       wrongTier,
       lift,
+      reached,
+      reachedIds,
       presentedMiss,
       buildSQL,
    } = rendered;
-   // Which stored tables this source reads, and whether the substituted
-   // manifest holds each, decided once for both tiers. It drives stacking on
-   // parents, strict refusal, and the entry's `upstreamReuse`.
-   const reached = reachPersisted(lift, persistSource.name, (_name, sourceID) =>
-      planFacts.persistSourceIds.has(sourceID),
-   );
    // The compiler's reach, rendered twice over the full manifest.
    // Permissively, compared with the build SQL: a difference means a stored
    // table was inlined. Strictly: the one possible miss is a persist source
@@ -288,6 +337,7 @@ function classifyStoredUpstreams(
    const fullForCompiler = manifestForCompiler(
       manifest.buildManifest,
       planFacts,
+      reachedIds,
    );
    const excludedSomething =
       Object.keys(reducedManifest.entries).length !==
