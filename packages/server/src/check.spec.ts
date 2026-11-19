@@ -229,6 +229,16 @@ describe("stale temporary roots", () => {
 });
 
 describe("GitHub Actions annotations", () => {
+   it("never prints a secret a message quotes", () => {
+      const quoted =
+         'PUBLISHER_PORT: "postgres://u:s3cretPW@h/d" is not a port number';
+      expect(githubErrorCommand(quoted)).not.toContain("s3cretPW");
+      expect(checkErrorLine(quoted)).not.toContain("s3cretPW");
+      const finding = { ...error, file: "a.malloy", message: quoted };
+      expect(formatFinding(finding)).not.toContain("s3cretPW");
+      expect(githubAnnotation(finding)).not.toContain("s3cretPW");
+   });
+
    it("a settings failure is a bare ::error with escaped lines", () => {
       expect(githubErrorCommand("bad\nvalue 5%")).toBe(
          "::error title=Malloy check::bad%0Avalue 5%25\n",

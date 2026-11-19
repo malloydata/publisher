@@ -31,7 +31,11 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import type { components } from "./api";
-import { CHECK_COULD_NOT_RUN, checkErrorLine } from "./check_signals";
+import {
+   CHECK_COULD_NOT_RUN,
+   checkErrorLine,
+   redactCheckText,
+} from "./check_signals";
 import { logger } from "./logger";
 import { externalEnv, Settings } from "./settings";
 import type { EnvironmentStore } from "./service/environment_store";
@@ -76,9 +80,9 @@ export interface CheckOptions {
    failOnWarnings: boolean;
 }
 
-/** One line of text: a load error's message spans several. */
+/** One line of text, redacted: a load error's message spans several. */
 function oneLine(text: string): string {
-   return text
+   return redactCheckText(text)
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
@@ -552,8 +556,8 @@ const EXIT_SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 } as const;
 /**
  * Remove `root` however check mode ends: on SIGHUP, SIGINT or SIGTERM it is
  * removed synchronously and the process exits 128 + the signal's number, as
- * a shell reports it; on an uncaught exception or unhandled rejection it is
- * removed and the process exits 2, could not check. Returns the uninstaller
+ * a shell reports it; on an uncaught exception it is removed and the process
+ * exits 2, could not check. On any other exit it is removed too. Returns the uninstaller
  * for the normal path, which removes the root itself.
  */
 export function guardTempRoot(root: string): () => void {
@@ -586,13 +590,14 @@ export function guardTempRoot(root: string): () => void {
          CHECK_COULD_NOT_RUN,
       );
    for (const [signal, handler] of handlers) process.on(signal, handler);
+   // Only a synchronous throw is fatal. A stray rejection (a driver's,
+   // say) is left to process_safety's backstop, which logs it, rather than
+   // turned into a flaky exit 2.
    process.on("uncaughtException", onCrash);
-   process.on("unhandledRejection", onCrash);
    process.on("exit", remove);
    return () => {
       for (const [signal, handler] of handlers) process.off(signal, handler);
       process.off("uncaughtException", onCrash);
-      process.off("unhandledRejection", onCrash);
       process.off("exit", remove);
    };
 }

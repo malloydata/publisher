@@ -1073,6 +1073,9 @@ PUBLISHER_CHECK_FAILED environments=1 packages=1 load_errors=1 errors=2 warnings
   `PUBLISHER_CHECK_ERROR error="Interrupted by <signal>."` and exits `128 +` the signal's number (`143`
   for SIGTERM); a crash removes it and exits `2`. A root left behind by a check that was killed
   outright (`publisher-check-<pid>-…` in the system temporary directory) is removed by the next check.
+  That sweep reads process ids, so checks in separate PID namespaces sharing one temporary directory
+  (containers with a host-mounted `/tmp`) can remove each other's live roots: give each container its
+  own `TMPDIR`.
 
 [deployment.md](deployment.md#checking-packages-in-ci) has a GitHub Actions workflow that runs it on
 every pull request.

@@ -288,6 +288,19 @@ describe("check mode", () => {
       expect(stdout).toStartWith("::error title=Malloy check::");
    });
 
+   it("never prints a secret a setting that does not parse quotes", async () => {
+      const { code, stdout, stderr } = await check({
+         env: {
+            GITHUB_ACTIONS: "true",
+            PUBLISHER_PORT: "postgres://u:s3cretPW@h/d",
+         },
+      });
+      expect(code).toBe(2);
+      expect(stdout).toStartWith("::error title=Malloy check::");
+      expect(stderr).toContain("PUBLISHER_CHECK_ERROR");
+      expect(server!.output()).not.toContain("s3cretPW");
+   });
+
    it("exits 2 when --config names a missing file", async () => {
       const { code, stderr } = await check({
          args: ["--config", path.join(path.sep, "no", "such", "config.json")],
