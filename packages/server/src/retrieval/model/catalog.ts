@@ -1777,6 +1777,12 @@ function isTableColumn(x: unknown): x is { name: string } {
    );
 }
 
+function compareFieldNames(a: unknown, b: unknown): number {
+   const x = String((a as { name?: unknown })?.name ?? "");
+   const y = String((b as { name?: unknown })?.name ?? "");
+   return x < y ? -1 : x > y ? 1 : 0;
+}
+
 /** The name Malloy gives a query source, with a fresh UUID on every compile. */
 const QUERY_SOURCE_NAME = /QuerySource-[0-9a-f-]{36}/g;
 
@@ -1795,8 +1801,13 @@ export function readDefinitionOf(
             return value.replace(QUERY_SOURCE_NAME, "QuerySource");
          if (!Array.isArray(value)) return value;
          const kept = value.filter((v) => !isOtherNote(v));
+         // Fields by name: their order decides nothing a read returns, and
+         // a warehouse can list a table's columns in a different order on
+         // the next schema fetch.
          return key === "fields"
-            ? kept.map((f) => (isTableColumn(f) ? { name: f.name } : f))
+            ? kept
+                 .map((f) => (isTableColumn(f) ? { name: f.name } : f))
+                 .sort((a, b) => compareFieldNames(a, b))
             : kept;
       },
    );
