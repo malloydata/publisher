@@ -60,7 +60,8 @@ async function ducklakeLoaded(connection: {
    runSQL(sql: string): Promise<unknown>;
 }): Promise<boolean> {
    const [row] = rowsOf(
-      await connection.runSQL(
+      await runInternalSQL(
+         connection,
          "SELECT count(*) AS n FROM duckdb_functions() WHERE function_name = 'ducklake_snapshots'",
       ),
    );
@@ -194,6 +195,18 @@ async function expectCommonVectorsRefused(
       "SELECT * FROM __ducklake_metadata_lake.ducklake_metadata",
       'SELECT * FROM "__DuckLake_Metadata_lake".main.ducklake_metadata',
       "SELECT 1 AS a /* duckdb_databases() */",
+      "SELECT * FROM pragma_database_list",
+      'SELECT * FROM "PRAGMA_DATABASE_LIST"()',
+      "SELECT * FROM pragma_show('t')",
+      "SELECT current_setting('allowed_paths') AS p",
+      "SELECT * FROM duckdb_variables()",
+      "SELECT getvariable('v') AS v",
+      "SELECT * FROM load_aws_credentials()",
+      "SELECT * FROM ducklake_settings('lake')",
+      "SELECT * FROM ducklake_options('lake')",
+      "SELECT * FROM ducklake_snapshots('lake')",
+      "SELECT * FROM ducklake_list_files('lake', 't')",
+      "SELECT * FROM ducklake_some_future_fn /* c */ ('lake')",
    ]) {
       expect(await refused(connection, statement)).toContain("locked down");
       expect(await refusedStream(connection, statement)).toContain(
@@ -566,6 +579,10 @@ describe("author SQL in a model on a DuckDB connection reads as one SELECT", () 
          `source: s is duckdb.sql("SELECT * FROM duckdb_settings()")`,
          `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_string("(SELECT max(path) FROM duckdb_databases())") }`,
          `source: s is duckdb.table('__ducklake_metadata_lake.ducklake_metadata')`,
+         `source: s is duckdb.sql("SELECT * FROM pragma_database_list")`,
+         `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_string("current_setting('allowed_paths')") }`,
+         `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_string("(SELECT max(path) FROM ducklake_list_files('lake', 't'))") }`,
+         `source: s is duckdb.sql("SELECT * FROM ducklake_snapshots('lake')")`,
       ]) {
          await expect(load(model)).rejects.toThrow(
             /introspection|does not exist/,
@@ -903,6 +920,37 @@ describe("a networked instance with a DuckLake catalog: setup, then lock", () =>
       await expectCommonVectorsRefused(connection);
    });
 
+   it("refuses DuckLake's own functions, maintenance included, and leaves the catalog as it was", async () => {
+      const snapshots = async () =>
+         Number(
+            rowsOf(
+               await runInternalSQL(
+                  connection,
+                  "SELECT count(*) AS n FROM ducklake_snapshots('lake')",
+               ),
+            )[0]?.n,
+         );
+      const before = await snapshots();
+      for (const statement of [
+         "SELECT * FROM ducklake_set_commit_message('lake', 'a', 'b')",
+         "SELECT * FROM ducklake_expire_snapshots('lake', older_than => now())",
+         "CALL ducklake_cleanup_old_files('lake', cleanup_all => true)",
+         "SELECT * FROM ducklake_delete_orphaned_files('lake', cleanup_all => true)",
+         "SELECT * FROM ducklake_set_option('lake', 'data_inlining_row_limit', 7)",
+         "SELECT * FROM ducklake_table_info('lake')",
+      ]) {
+         expect(await refused(connection, statement)).toContain("locked down");
+      }
+      expect(await snapshots()).toBe(before);
+      // A table whose name starts like DuckLake's functions still reads.
+      await connection.runSQL(
+         "CREATE TABLE lake.ducklake_named AS SELECT 1 AS v",
+      );
+      expect(
+         rowsOf(await connection.runSQL("SELECT v FROM lake.ducklake_named")),
+      ).toEqual([{ v: 1 }]);
+   });
+
    it("is idempotent on a locked instance", async () => {
       await lockDownDuckDBSession(connection);
    });
@@ -924,7 +972,8 @@ describe("two lookups locking one instance at once", () => {
          ]);
          expect(
             rowsOf(
-               await connection.runSQL(
+               await runInternalSQL(
+                  connection,
                   "SELECT current_setting('lock_configuration') AS v",
                ),
             ),
