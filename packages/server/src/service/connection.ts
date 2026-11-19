@@ -27,10 +27,7 @@ import {
 // Registers the "publisher" connection type (proxies SQL to a remote Publisher);
 // lookupConnection resolves it through the registry like any other type.
 import "@malloydata/db-publisher";
-import {
-   buildPoolOptions,
-   SnowflakeConnection,
-} from "@malloydata/db-snowflake";
+import type { SnowflakeConnection } from "@malloydata/db-snowflake";
 import "@malloydata/db-sqlserver";
 import type { SQLServerConnection } from "@malloydata/db-sqlserver";
 import "@malloydata/db-trino";
@@ -85,9 +82,11 @@ import {
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
    parseServiceAccountKey,
+   removeUndefined,
    postgresStatementTimeoutMs,
    PROXIED_SSLMODES,
 } from "./connection_config";
+import { buildSnowflakeConnection } from "./snowflake_connection";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
@@ -3378,71 +3377,6 @@ function entryToDuckDBOptions(
    return { ...removeUndefined(rest), name };
 }
 
-/**
- * Drop keys whose value is `undefined` or `null`.
- *
- * The null guard for connectors Publisher builds itself, outside Malloy's
- * registry (which strips nulls on its own path). A surviving `null` reaches
- * `makeDigest`, which reads `.length` off each part, and throws on the first
- * digest; the package-load worker takes that digest, so the whole package fails
- * to load ("import reference failure") while /compile still succeeds.
- *
- * Nulls come from an explicit `null` in publisher.config.json or a client
- * serializing unset optionals over POST /connections, and persist through the
- * repository's JSON round trip. An explicit null and an omitted field produce
- * the same digest.
- */
-function removeUndefined<T extends object>(
-   value: T,
-): { [K in keyof T]?: Exclude<T[K], null> } {
-   return Object.fromEntries(
-      Object.entries(value).filter(
-         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
-      ),
-   ) as { [K in keyof T]?: Exclude<T[K], null> };
-}
-
-function buildSnowflakePrivateKeyConnection(
-   metadata: EnvironmentConnectionMetadata,
-): SnowflakeConnection {
-   const name = metadata.apiConnection.name!;
-   const snowflake = metadata.apiConnection.snowflakeConnection;
-   if (!snowflake?.privateKey) {
-      throw new Error(
-         `Snowflake private key is required for connection ${name}`,
-      );
-   }
-   if (!snowflake.account) {
-      throw new Error(`Snowflake account is required for connection ${name}`);
-   }
-   if (!snowflake.username) {
-      throw new Error(`Snowflake username is required for connection ${name}`);
-   }
-   if (!snowflake.warehouse) {
-      throw new Error(`Snowflake warehouse is required for connection ${name}`);
-   }
-
-   return new SnowflakeConnection(name, {
-      connOptions: {
-         account: snowflake.account,
-         username: snowflake.username,
-         privateKey: normalizeSnowflakePrivateKey(snowflake.privateKey),
-         authenticator: "SNOWFLAKE_JWT",
-         warehouse: snowflake.warehouse,
-         ...removeUndefined({
-            password: snowflake.password,
-            privateKeyPass: snowflake.privateKeyPass,
-            database: snowflake.database,
-            schema: snowflake.schema,
-            role: snowflake.role,
-         }),
-      },
-      timeoutMs: snowflake.responseTimeoutMilliseconds,
-      // Same pool sizing as the registry path; server-owned, not in the API.
-      poolOptions: buildPoolOptions({ poolMin: 1, poolMax: 20 }),
-   });
-}
-
 // TLS mode for a proxied postgres connection, as pg connectionString query
 // params. The tunnel ends at 127.0.0.1, so no hostname check is possible here:
 // `verify-ca` checks the chain against NODE_EXTRA_CA_CERTS without the hostname,
@@ -3810,7 +3744,10 @@ export function buildEnvironmentMalloyConfig(
    // Promises are cached so concurrent lookups share one build and never leak a
    // losing instance's pool. One cache per branch keeps the concrete subtype.
    const duckLakeCache = new Map<string, Promise<DuckLakeConnection>>();
-   const snowflakeJwtCache = new Map<string, Promise<SnowflakeConnection>>();
+   const snowflakeConnectionCache = new Map<
+      string,
+      Promise<SnowflakeConnection>
+   >();
    const azureDuckDBCache = new Map<string, Promise<AzureDuckDBConnection>>();
    const proxyConnectionCache = new Map<
       string,
@@ -4214,13 +4151,18 @@ export function buildEnvironmentMalloyConfig(
                return connectionPromise;
             }
 
-            if (metadata?.hasSnowflakePrivateKey) {
-               let connectionPromise = snowflakeJwtCache.get(name!);
+            // Every Snowflake connection, password or key pair, so each reads
+            // its rows the same way (snowflake_connection.ts).
+            if (metadata?.apiConnection.type === "snowflake") {
+               let connectionPromise = snowflakeConnectionCache.get(name!);
                if (!connectionPromise) {
                   connectionPromise = Promise.resolve(
-                     buildSnowflakePrivateKeyConnection(metadata),
+                     buildSnowflakeConnection(
+                        name!,
+                        metadata.apiConnection.snowflakeConnection,
+                     ),
                   );
-                  snowflakeJwtCache.set(name!, connectionPromise);
+                  snowflakeConnectionCache.set(name!, connectionPromise);
                }
                return connectionPromise;
             }
@@ -4350,7 +4292,7 @@ export function buildEnvironmentMalloyConfig(
       releaseConnections: async () => {
          const wrapperPromises: Promise<Connection>[] = [
             ...duckLakeCache.values(),
-            ...snowflakeJwtCache.values(),
+            ...snowflakeConnectionCache.values(),
             ...azureDuckDBCache.values(),
             ...proxyConnectionCache.values(),
             ...postgresConnectionCache.values(),
@@ -4374,7 +4316,7 @@ export function buildEnvironmentMalloyConfig(
          );
          duckLakeCache.clear();
          duckLakeCurrent.clear();
-         snowflakeJwtCache.clear();
+         snowflakeConnectionCache.clear();
          azureDuckDBCache.clear();
          proxyConnectionCache.clear();
          postgresConnectionCache.clear();

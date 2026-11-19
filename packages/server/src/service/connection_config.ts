@@ -117,7 +117,6 @@ export type EnvironmentConnectionMetadata = {
    apiConnection: ApiConnection;
    attachedDatabases: AttachedDatabase[];
    hasAzureAttachment: boolean;
-   hasSnowflakePrivateKey: boolean;
    isDuckLake: boolean;
    databasePath?: string;
    workingDirectory: string;
@@ -1363,6 +1362,30 @@ function configBoolean(value: unknown, name: string): boolean | undefined {
    );
 }
 
+/**
+ * Drop keys whose value is `undefined` or `null`.
+ *
+ * The null guard for connectors Publisher builds itself, outside Malloy's
+ * registry (which strips nulls on its own path). A surviving `null` reaches
+ * `makeDigest`, which reads `.length` off each part, and throws on the first
+ * digest; the package-load worker takes that digest, so the whole package fails
+ * to load ("import reference failure") while /compile still succeeds.
+ *
+ * Nulls come from an explicit `null` in publisher.config.json or a client
+ * serializing unset optionals over POST /connections, and persist through the
+ * repository's JSON round trip. An explicit null and an omitted field produce
+ * the same digest.
+ */
+export function removeUndefined<T extends object>(
+   value: T,
+): { [K in keyof T]?: Exclude<T[K], null> } {
+   return Object.fromEntries(
+      Object.entries(value).filter(
+         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
+      ),
+   ) as { [K in keyof T]?: Exclude<T[K], null> };
+}
+
 function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
    return {
       is: "snowflake",
@@ -1379,10 +1402,9 @@ function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
       ),
       warehouse: connection.snowflakeConnection?.warehouse,
       // An explicit `null` here would throw in Malloy's `makeDigest` (see
-      // nullToUndefined). Defense in depth: Malloy's connection lookup drops
-      // nulls today, but that guard is not a contract and the dependency is a
-      // caret range. The key-pair path that bypasses the lookup is handled by
-      // `removeUndefined` in connection.ts.
+      // nullToUndefined). Publisher builds every Snowflake connection itself
+      // (snowflake_connection.ts), which drops them too; this entry only
+      // registers the name.
       database: nullToUndefined(connection.snowflakeConnection?.database),
       schema: nullToUndefined(connection.snowflakeConnection?.schema),
       role: nullToUndefined(connection.snowflakeConnection?.role),
@@ -1600,9 +1622,6 @@ export function assembleEnvironmentConnections(
          hasAzureAttachment: attachedDatabases.some(
             (database) => database.type === "azure",
          ),
-         hasSnowflakePrivateKey:
-            connection.type === "snowflake" &&
-            !!connection.snowflakeConnection?.privateKey,
          isDuckLake,
          databasePath,
          workingDirectory: environmentPath,

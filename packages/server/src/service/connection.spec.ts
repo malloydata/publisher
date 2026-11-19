@@ -2005,9 +2005,9 @@ describe("connection integration tests", () => {
          });
 
          it("should drop explicitly-null Snowflake options from private-key connOptions", async () => {
-            // This is the path that actually throws. A key-pair connection
+            // This is the path that actually throws. A Snowflake connection
             // bypasses the core connection registry (which strips nulls itself)
-            // and is built directly by buildSnowflakePrivateKeyConnection, where
+            // and is built directly by buildSnowflakeConnection, where
             // cloneApiConnection's shallow spread leaves nulls intact. A
             // surviving null reaches SnowflakeConnection.getDigest(), whose
             // makeDigest reads `.length` off each part and special-cases only
