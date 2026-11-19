@@ -121,11 +121,7 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {};
 export const MATERIALIZATION_HISTORY_ALLOWLIST = {};
 
 /** H4: exports no other file imports, "<file>#<name>": step. */
-export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
-   // Read only inside its own file; was hidden by a namespace import.
-   "service/materialization/package_warnings.ts#DATABASE_TABLE_UNREAD_CODE":
-      "2n",
-};
+export const MATERIALIZATION_UNIMPORTED_EXPORTS = {};
 /** Annotation payload reads outside plan/declaration.ts, per file. */
 export const RATCHET_ANNOTATION_READS = {};
 /** Reads of `_modelDef`, `_query`, `_sourceDef` or `_explore` outside governance/ir, per file. */
