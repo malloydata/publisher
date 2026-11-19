@@ -47,7 +47,7 @@ describe("expired-credential retry decision", () => {
       ).toBe(false);
    });
 
-   it("does not renew while a renewal is already in flight", () => {
+   it("does not renew for a statement the renewal itself issues", () => {
       // The renewal issues its own statement through the same runSQL, so without
       // this the failure of that statement would recurse.
       expect(
