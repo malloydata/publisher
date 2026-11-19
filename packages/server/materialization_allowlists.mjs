@@ -196,7 +196,7 @@ export const RATCHET_SWITCH_READS = {
    "service/materialization/plan/rollup_compile.ts": { count: 1, step: "2q" },
    "service/materialization/plan/rollup_plan.ts": { count: 2, step: "2q" },
    "service/materialization/run/build_upstreams.ts": { count: 2, step: "2q" },
-   "service/materialization/run/instructed_build.ts": { count: 2, step: "2q" },
+   "service/materialization/run/instructed_build.ts": { count: 1, step: "2q" },
    "service/materialization/run/manifest_committer.ts": {
       count: 1,
       step: "2q",
