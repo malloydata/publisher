@@ -43,7 +43,11 @@ import type { TableRead } from "./domain/gate_policy";
 import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
 import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
-import { type CollationProbe, ReadAdmission } from "./serve/read_admission";
+import {
+   type CollationProbe,
+   collationProbe,
+   ReadAdmission,
+} from "./serve/read_admission";
 
 const DUMP = process.env.ADMISSION_DUMP;
 const dumped: Record<string, unknown> = {};
@@ -252,6 +256,8 @@ async function routed(args: {
    query?: string;
    /** Add a declined candidate's internal detail to the outcome. */
    withDetail?: boolean;
+   /** The collation probe port; the real one when absent. */
+   probe?: CollationProbe;
 }): Promise<string> {
    const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
    const authorRunnable = authorOf(
@@ -276,7 +282,7 @@ async function routed(args: {
          authorRunnable,
       },
       pinned,
-      { modelPath: "m.malloy" },
+      { modelPath: "m.malloy", ...(args.probe ? { probe: args.probe } : {}) },
    );
    const unreadable = args.unreadable
       ? spyOn(gateReads, "gateReadsOfQuery").mockResolvedValue(undefined)
@@ -1744,3 +1750,69 @@ function judgedOf(tables: readonly TableRead[], composite = false): unknown[] {
            }),
    }));
 }
+
+/**
+ * Each probe runs at most once per answer: asking about one answer before
+ * the gate and again past it reuses the probes' answers, so a routed query
+ * never runs one probe twice (the router before the admission shell ran each
+ * at most once per rule).
+ */
+describe("the collation probes run at most once per answer", () => {
+   it("for every leg, table read, gate shape, filter and collation", async () => {
+      const repeated: string[] = [];
+      await withSwitches(false, async () => {
+         for (const shape of Object.keys(SHAPES) as Shape[]) {
+            for (const query of [undefined, ...Object.values(FILTERS)]) {
+               for (const collations of [
+                  {},
+                  { authorCollation: "nocase" as const },
+                  { storedCollation: "nocase" as const },
+               ]) {
+                  for (const leg of LEGS) {
+                     for (const [read, tables] of Object.entries(READS)) {
+                        const seen = new Set<string>();
+                        const ids = new Map<unknown, number>();
+                        const idOf = (o: unknown) => {
+                           if (!ids.has(o)) ids.set(o, ids.size + 1);
+                           return ids.get(o)!;
+                        };
+                        const count = (side: string, a: object) => {
+                           const args = a as {
+                              reads?: unknown;
+                              tables?: unknown;
+                           };
+                           const k = `${side}:${idOf(args.reads)}:${idOf(args.tables)}`;
+                           if (seen.has(k)) {
+                              repeated.push(
+                                 `${shape} | ${query ?? "-"} | ${JSON.stringify(collations)} | ${leg}, ${read} | ${side}`,
+                              );
+                           }
+                           seen.add(k);
+                        };
+                        const probe: CollationProbe = {
+                           sourceRefusal: (a) => {
+                              count("source", a);
+                              return collationProbe.sourceRefusal(a);
+                           },
+                           storedRefusal: (a) => {
+                              count("stored", a);
+                              return collationProbe.storedRefusal(a);
+                           },
+                        };
+                        await routed({
+                           leg,
+                           shape,
+                           tables,
+                           probe,
+                           ...(query ? { query } : {}),
+                           ...collations,
+                        });
+                     }
+                  }
+               }
+            }
+         }
+      });
+      expect(repeated).toEqual([]);
+   }, 300_000);
+});

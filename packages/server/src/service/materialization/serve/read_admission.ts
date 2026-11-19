@@ -11,8 +11,9 @@
  *
  * One {@link ReadAdmission} per query: what it reads of the author's compile
  * is read once per set of stored sources an answer read, and each answer's
- * gathered facts are kept with the answer, so asking about one answer twice
- * (before the gate and past it) probes nothing twice.
+ * gathered facts, the probes' answers among them, are kept with the answer,
+ * so asking about one answer twice (before the gate and past it) runs no
+ * probe twice.
  */
 
 import type { QueryMaterializer } from "@malloydata/malloy";
@@ -66,6 +67,8 @@ interface Gathered {
    readonly scopeReads: () => Promise<GateReads | undefined>;
    readonly filterReads?: GateReads;
    readonly filterTables: readonly TableRead[];
+   /** The probes' answers so far, kept across this answer's decisions. */
+   probes: NonNullable<ReadFacts["probes"]>;
 }
 
 /** Read admission for one query. */
@@ -134,6 +137,7 @@ export class ReadAdmission {
          ...g.facts,
          pastEntryPointGate,
          compositeRowFilter: pastEntryPointGate && (await this.compositeOnce()),
+         probes: g.probes,
       };
       for (;;) {
          const verdict = admitRead(leg, g.tables, facts, this.switches);
@@ -146,6 +150,7 @@ export class ReadAdmission {
             };
          }
          facts = await this.withProbe(facts, verdict.probe, g, answer);
+         g.probes = facts.probes ?? {};
       }
    }
 
@@ -193,6 +198,7 @@ export class ReadAdmission {
          scopeReads,
          ...(filters.reads ? { filterReads: filters.reads } : {}),
          filterTables: filters.facts.applies ? filters.facts.tables : [],
+         probes: {},
          facts: {
             pastEntryPointGate: false,
             compositeRowFilter: false,
