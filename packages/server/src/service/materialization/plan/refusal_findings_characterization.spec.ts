@@ -13,6 +13,7 @@ import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -90,7 +91,18 @@ describe("refusal findings, byte for byte", () => {
 
    /** `value` as JSON with the package directory written `<DIR>`. */
    function normalized(value: unknown): unknown {
-      return JSON.parse(JSON.stringify(value).split(tempDir).join("<DIR>"));
+      // A source's URL spells the directory as a file URL (`file:///D:/…` on
+      // Windows, where the path itself has backslashes and a drive letter),
+      // so replace that form first, then the plain path as JSON escapes it.
+      const dirUrl = pathToFileURL(tempDir).href;
+      const dirJson = JSON.stringify(tempDir).slice(1, -1);
+      return JSON.parse(
+         JSON.stringify(value)
+            .split(dirUrl)
+            .join("file://<DIR>")
+            .split(dirJson)
+            .join("<DIR>"),
+      );
    }
 
    const MAT_GIVEN =
