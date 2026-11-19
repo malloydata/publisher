@@ -48,9 +48,9 @@ import type {
 import {
    collectIncrementalDeclarations,
    deriveColumns,
+   type RunPlan,
    storedColumnOf,
-} from "../plan/build_plan";
-import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
+} from "./run_plan";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import { storageDeltaTarget } from "./incremental_storage";
 import { type StorageIncrementalRefresh } from "./materialization_build_session";
@@ -810,7 +810,7 @@ export function ledgerFields(
  * compiled source's schema and query, which the wire plan does not carry.
  */
 export function incrementalRunContext(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    run: {
       environmentId: string;
       packageName: string;

@@ -45,18 +45,19 @@ import {
    getPersistStorageMode,
 } from "../../../config";
 import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
-import { addressSQL, computeSourceEntityId } from "../plan/build_plan";
 import {
-   sourcesInBuildOrder,
-   type CompiledBuildPlan,
-} from "../domain/compiled_build_plan";
+   addressSQL,
+   computeSourceEntityId,
+   declaredStorage,
+   type RunPlan,
+} from "./run_plan";
+import { sourcesInBuildOrder } from "../domain/compiled_build_plan";
 import {
    classifySourceFailure,
    failedUpstreamsOf,
    type FailedUpstream,
 } from "./build_failure_class";
 import {
-   declaredStorage,
    redactConnectionSecrets,
    type BuildEnvironment,
    type BuildQueryMetadata,
@@ -72,7 +73,7 @@ import { reportSourceFailed } from "./run_telemetry";
 
 /** One instructed run: what `InstructedBuild.run` reads. */
 export interface InstructedBuildOptions {
-   compiled: CompiledBuildPlan;
+   compiled: RunPlan;
    /**
     * The declared freshness window of each table, by address, at the run's
     * start: a rollup reads its base's stored table only when that table is
@@ -314,8 +315,8 @@ export function indexInstructions(
 export function resolveInstruction(
    index: InstructionIndex,
    persistSource: PersistSource,
-   connectionDigests: CompiledBuildPlan["connectionDigests"],
-   tableFolds?: CompiledBuildPlan["tableFolds"],
+   connectionDigests: RunPlan["connectionDigests"],
+   tableFolds?: RunPlan["tableFolds"],
 ): ResolvedInstruction | undefined {
    // sourceID first, so the caller's sourceEntityId scheme stays opaque; the
    // sourceEntityId lookup is the fallback for instructions without one.
@@ -359,11 +360,11 @@ export function resolveInstruction(
  * setting is `false` (it is on by default).
  */
 export function assertNoTableCollisions(
-   builds: CompiledBuildPlan["builds"],
-   tables: CompiledBuildPlan["tables"],
-   connectionDigests: CompiledBuildPlan["connectionDigests"],
+   builds: RunPlan["builds"],
+   tables: RunPlan["tables"],
+   connectionDigests: RunPlan["connectionDigests"],
    index: InstructionIndex,
-   tableFolds?: CompiledBuildPlan["tableFolds"],
+   tableFolds?: RunPlan["tableFolds"],
 ): void {
    // Keyed by the table segment on its connection or destination: `main.t`
    // and `t` may be one table, as the plan's collision check reads them
@@ -484,7 +485,7 @@ export function assertNoTableCollisions(
 export function assertInstructedDestinationWritable(
    persistSource: PersistSource,
    instruction: BuildInstruction,
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
 ): void {
    if (instructsUnwritableDestination(instruction, getPersistStorageMode())) {
       throw new BadRequestError(

@@ -28,7 +28,7 @@ import {
    buildSQLOf,
    projectToStoredColumns,
    resolveQueryMetadata,
-} from "../plan/build_plan";
+} from "./run_plan";
 import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
 import { BuildInstruction, ManifestEntry } from "../domain/types";

@@ -55,7 +55,7 @@ import {
 } from "../stored_column_types";
 import { quoteManifestTablePath, quoteTablePath } from "../../quoting";
 import { reachPersisted } from "../text/source_map";
-import { extensionOverStoredModel } from "../plan/materialize_stored_chain";
+import { extensionOverStoredModel } from "./run_plan";
 import {
    type MaterializeParent,
    type MaterializePlan,

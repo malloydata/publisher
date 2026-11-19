@@ -20,6 +20,7 @@
  * the instructed build and the run lifecycle.
  */
 
+import type { RunPlan } from "./run_plan";
 import { instructionTier } from "../domain/placement";
 import { AsyncLocalStorage } from "async_hooks";
 import { getPersistStorageMode } from "../../../config";
@@ -37,7 +38,6 @@ import {
    recordBuildOutcome,
    recordBuildReadBytes,
 } from "../../../materialization_metrics";
-import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
 import {
    isPersistedQuerySourceID,
    PERSISTED_VIEW_COMPANION_SUFFIX,
@@ -83,7 +83,7 @@ export function runTriggerOf(args: {
  * by its generated companion's sourceID, else as `persist`.
  */
 export function buildKindOf(
-   compiled: Pick<CompiledBuildPlan, "tables">,
+   compiled: Pick<RunPlan, "tables">,
    sourceID: string | undefined,
 ): BuildKind {
    if (sourceID === undefined) return "persist";
@@ -101,7 +101,7 @@ export function buildKindOf(
  * a kind; an address the plan does not list is left to the caller.
  */
 export function buildKindsByAddress(
-   compiled: Pick<CompiledBuildPlan, "tables">,
+   compiled: Pick<RunPlan, "tables">,
    plan: Pick<BuildPlan, "sources"> | null | undefined,
 ): Map<string, BuildKind> {
    const kinds = new Map<string, BuildKind>();

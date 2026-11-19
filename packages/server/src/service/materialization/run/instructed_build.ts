@@ -37,7 +37,17 @@ import type {
    RollupKeyCheck,
 } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
-import { buildSQLOf, presentAs } from "../plan/addressing";
+import {
+   assertMaterializationEligible,
+   assertPlacementNamed,
+   assertTierEligible,
+   buildSQLOf,
+   computeSourceEntityId,
+   deriveAnnotationFields,
+   presentAs,
+   type RunPlan,
+   tierGateInputs,
+} from "./run_plan";
 import { outputColumnsOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
@@ -77,20 +87,9 @@ import {
    storedColumnTypeMismatches,
 } from "../stored_column_types";
 import {
-   computeSourceEntityId,
-   deriveAnnotationFields,
-   tierGateInputs,
-} from "../plan/build_plan";
-import {
-   type CompiledBuildPlan,
    materializePlansOf,
    sourcesInBuildOrder,
 } from "../domain/compiled_build_plan";
-import {
-   assertMaterializationEligible,
-   assertPlacementNamed,
-   assertTierEligible,
-} from "../plan/materialization_eligibility";
 import {
    BuildInstruction,
    ManifestEntry,
@@ -248,9 +247,7 @@ interface GatedSource {
 }
 
 /** sourceID -> the sourceIDs it reads, merged across every connection's build. */
-function upstreamsBySourceID(
-   builds: CompiledBuildPlan["builds"],
-): Map<string, string[]> {
+function upstreamsBySourceID(builds: RunPlan["builds"]): Map<string, string[]> {
    const out = new Map<string, string[]>();
    for (const build of builds) {
       for (const [sourceID, reads] of Object.entries(build.dependsOn ?? {})) {
@@ -728,9 +725,9 @@ export class InstructedBuild {
     */
    private async buildEveryTable(
       run: InstructedRun,
-      builds: CompiledBuildPlan["builds"],
-      tables: CompiledBuildPlan["tables"],
-      connections: CompiledBuildPlan["connections"],
+      builds: RunPlan["builds"],
+      tables: RunPlan["tables"],
+      connections: RunPlan["connections"],
    ): Promise<void> {
       const deferred: {
          persistSource: PersistSource;
@@ -806,7 +803,7 @@ export class InstructedBuild {
     */
    private seedInstructedRun(
       seedEntries: Record<string, ManifestEntry>,
-      connections: CompiledBuildPlan["connections"],
+      connections: RunPlan["connections"],
       strict: boolean,
    ): Pick<InstructedRun, "manifest" | "entries"> {
       // Accumulates physical names as sources build so downstreams resolve to
@@ -1777,7 +1774,7 @@ async function storedJoinOf(
  */
 async function checkRollupKeys(
    ledger: UniquenessLedger,
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    entry: ManifestEntry,
    connection: MalloyConnection,
@@ -1825,7 +1822,7 @@ async function checkRollupKeys(
 
 /** The key check a run builds for the rollup `sourceID`, if any (known limitation 29). */
 function rollupKeyCheckOf(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sourceID: string,
 ): RollupKeyCheck | undefined {
    return (
@@ -1837,7 +1834,7 @@ function rollupKeyCheckOf(
 
 /** The query source key checks a run builds for the rollup `sourceID`. */
 function rollupParentKeyChecksOf(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sourceID: string,
 ): ParentKeyCheck[] {
    return (

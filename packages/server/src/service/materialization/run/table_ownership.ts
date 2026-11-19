@@ -77,8 +77,7 @@ import { logger } from "../../../logger";
 import { externalEnv } from "../../../settings/external";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
-import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
-import { deriveAnnotationFields } from "../plan/persist_source_fields";
+import { deriveAnnotationFields, type RunPlan } from "./run_plan";
 import { isLegacyFailedEntry, type ManifestEntry } from "../domain/types";
 import { capabilitiesOf } from "../domain/dialect";
 import { hasReservedTableSuffix } from "../domain/table_name";
@@ -178,7 +177,7 @@ export function assertNoOwnedNameHeld(lock: string): void {
  * table that defaults to its source's name are Publisher's.
  */
 export function hasAuthorTableName(
-   compiled: Pick<CompiledBuildPlan, "tables">,
+   compiled: Pick<RunPlan, "tables">,
    persistSource: PersistSource,
 ): boolean {
    const table = compiled.tables[persistSource.sourceID];

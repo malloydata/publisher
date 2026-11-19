@@ -66,7 +66,7 @@ import {
    plannedSources,
    projectToStoredColumns,
    storedColumnNames,
-} from "../plan/build_plan";
+} from "./run_plan";
 import {
    bigQueryQueryLabelValue,
    snowflakeQueryTagValue,

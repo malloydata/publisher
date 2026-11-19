@@ -54,11 +54,7 @@ import {
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationHost } from "../host";
-import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
-import {
-   compilePackageBuildPlan,
-   runLoadGateText,
-} from "../plan/build_plan_compile";
+import { compileRunPlan, type RunPlan, runPlanGateText } from "./run_plan";
 import {
    BuildInstruction,
    LedgerEntry,
@@ -165,7 +161,7 @@ export interface RunCollaborators {
    deriveSelfInstructions: typeof deriveSelfInstructions;
    /** The run's incremental context, over the service's ledger store. */
    incrementalRunContext(
-      compiled: CompiledBuildPlan,
+      compiled: RunPlan,
       run: Parameters<typeof incrementalRunContext>[1],
    ): IncrementalRunContext | undefined;
    /** The instructed build loop ({@link InstructedBuild.run}). */
@@ -281,7 +277,7 @@ interface RunTarget {
    pkg: Awaited<ReturnType<RunTarget["environment"]["getPackage"]>>;
    owned: string | undefined;
    reader: ServingReader;
-   compiled: CompiledBuildPlan;
+   compiled: RunPlan;
 }
 
 /** A run's instructions, and what deriving them decided. */
@@ -1169,9 +1165,9 @@ export class MaterializationService {
       // no lock; an unversioned package's can be replaced under it.
       const compiled =
          versionId !== undefined
-            ? await compilePackageBuildPlan(pkg, signal)
+            ? await compileRunPlan(pkg, signal)
             : await environment.withPackageLock(packageName, () =>
-                 compilePackageBuildPlan(pkg, signal),
+                 compileRunPlan(pkg, signal),
               );
 
       // A `#@ persist` source Malloy's build walk did not plan fails the
@@ -1187,7 +1183,7 @@ export class MaterializationService {
          versionId === undefined &&
          environment.getStaleCompileErrors().has(packageName);
       // The load gate's own text, so the run and the load agree.
-      const invalid = runLoadGateText(compiled, pkg, {
+      const invalid = runPlanGateText(compiled, pkg, {
          enforceCollisions: getPersistCollisionEnforce(),
          versionScoped: owned !== undefined,
       });

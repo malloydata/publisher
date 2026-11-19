@@ -18,7 +18,15 @@
  */
 
 import { declaredDestination, storageWritable } from "../domain/placement";
-import { generatedNameOwner } from "../plan/build_file_generator";
+import {
+   buildSQLOf,
+   compilerBuildId,
+   computeSourceEntityId,
+   declaredStorage,
+   deriveAnnotationFields,
+   generatedNameOwner,
+   type TableFolds,
+} from "./run_plan";
 import {
    isPersistedResultSourceID,
    type MaterializePlan,
@@ -44,14 +52,6 @@ import {
    SourceFailure,
 } from "../domain/types";
 import { errMessage } from "../../../utils";
-import {
-   buildSQLOf,
-   computeSourceEntityId,
-   deriveAnnotationFields,
-   compilerBuildId,
-   type TableFolds,
-} from "../plan/build_plan";
-import { declaredStorage } from "../plan/persist_source_fields";
 import {
    mergeQueryMetadata,
    type QueryContext,
@@ -387,7 +387,7 @@ export function compilerMissingUpstream(
 export function chainedPlanFacts(
    tables: Readonly<Record<string, { source: PersistSource }>>,
    connectionDigests: Record<string, string>,
-   /** The plan's table folds (CompiledBuildPlan.tableFolds). */
+   /** The plan's table folds (RunPlan.tableFolds). */
    tableFolds: TableFolds | undefined,
    /**
     * The run's instruction for a source, when it has one: its `destination`
@@ -828,7 +828,6 @@ export function manifestExcludingStorage(
  * `PERSIST_STORAGE_MODE`, so a `storage=` source is recognizable even when the
  * tier is off.
  */
-export { declaredStorage };
 
 /**
  * The EFFECTIVE `storage=` destination name for a build, or undefined for the

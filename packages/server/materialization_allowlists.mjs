@@ -10,38 +10,21 @@
 
 /** Import-direction pairs (R5 to R10, H5), "<importer> -> <module>": step. */
 export const MATERIALIZATION_IMPORT_ALLOWLIST = {
-   // R8: plan/, run/ and serve/ never import one another.
-   "service/materialization/run/incremental_build.ts -> service/materialization/plan/build_plan":
+   // R8: plan/, run/ and serve/ never import one another. run/ enters plan/
+   // through run_plan.ts alone.
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/addressing":
       "2m",
-   "service/materialization/run/incremental_storage.ts -> service/materialization/plan/build_plan":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/build_file_generator":
       "2m",
-   "service/materialization/run/instructed_build.ts -> service/materialization/plan/addressing":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/build_plan":
       "2m",
-   "service/materialization/run/instructed_build.ts -> service/materialization/plan/build_plan":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/build_plan_compile":
       "2m",
-   "service/materialization/run/instructed_build.ts -> service/materialization/plan/materialization_eligibility":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/materialization_eligibility":
       "2m",
-   "service/materialization/run/materialization_build_session.ts -> service/materialization/plan/build_plan":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/materialize_stored_chain":
       "2m",
-   "service/materialization/run/materialization_instructed_run.ts -> service/materialization/plan/build_plan":
-      "2m",
-   "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/build_file_generator":
-      "2m",
-   "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/build_plan":
-      "2m",
-   "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/persist_source_fields":
-      "2m",
-   "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan_compile":
-      "2m",
-   "service/materialization/run/run_instructions.ts -> service/materialization/plan/build_plan":
-      "2m",
-   "service/materialization/run/run_instructions.ts -> service/materialization/plan/materialization_eligibility":
-      "2m",
-   "service/materialization/run/source_build.ts -> service/materialization/plan/build_plan":
-      "2m",
-   "service/materialization/run/storage_build_strategy.ts -> service/materialization/plan/materialize_stored_chain":
-      "2m",
-   "service/materialization/run/table_ownership.ts -> service/materialization/plan/persist_source_fields":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/persist_source_fields":
       "2m",
    "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/persist_dynamic_terms":
       "2m",
