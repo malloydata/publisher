@@ -418,7 +418,9 @@ DuckDB sees it, any statement that creates or drops a secret, that reaches DuckD
 profiling (which DuckDB's configuration lock does not cover), that runs SQL taken from text
 (`query()`, a serialized plan, `IMPORT DATABASE`), or that introspects the instance's catalog,
 settings, secrets, variables or pragmas, calls DuckLake's own functions, or reaches an attached
-database other than through its tables; author SQL
+database other than through its tables (an attached database's Postgres system schemas,
+`pg_catalog`, `information_schema`, `pg_toast` and `pg_temp_N`, included; DuckDB's own
+`information_schema` and `pg_catalog` still read); author SQL
 that does any of these is refused when the package loads. A Postgres database attached to DuckDB
 (a DuckLake catalog, an attached database, a federated build source) is attached through a
 temporary DuckDB secret that holds its user, password and client-key password, so its attach path carries no credential. It reads each statement with DuckDB's own

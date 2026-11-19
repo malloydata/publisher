@@ -74,6 +74,103 @@ export const INTROSPECTION_PREFIXES: readonly string[] = [
  */
 export const DUCKLAKE_FUNCTION_PREFIX = "ducklake_";
 
+/**
+ * Whether `schema` (lowercased) is one of the schemas Postgres keeps its own
+ * catalog in: `pg_catalog`, `information_schema`, `pg_toast`, and the
+ * per-session `pg_temp_N` and `pg_toast_temp_N`. Postgres reserves the `pg_`
+ * prefix for these, so no user schema shares a name with one.
+ */
+export function isPostgresSystemSchema(schema: string): boolean {
+   return (
+      schema === "information_schema" ||
+      schema === "pg_catalog" ||
+      schema === "pg_toast" ||
+      /^pg_(toast_)?temp(_\d+)?$/.test(schema)
+   );
+}
+
+/**
+ * Whether `catalog.schema` (lowercased) names a Postgres system schema of an
+ * attached database: an attached Postgres alias or a DuckLake catalog's
+ * metadata alias. DuckDB's own `information_schema` and `pg_catalog` live in
+ * its `system` catalog, which no attachment may be named, and are read
+ * unqualified or as `system.<schema>`; every other catalog holding one of
+ * these schemas is an attached database.
+ */
+export function isAttachedSystemSchema(
+   catalog: string,
+   schema: string,
+): boolean {
+   return (
+      catalog !== "" && catalog !== "system" && isPostgresSystemSchema(schema)
+   );
+}
+
+/** One part of SQL as {@link attachedSystemSchemaInParts} reads it. */
+export type NamePart = { kind: "word" | "dot" | "other"; value: string };
+
+/**
+ * The first `catalog.schema` in `parts` that names an attached database's
+ * Postgres system schema ({@link isAttachedSystemSchema}): a word, a dot and
+ * a word, wherever they stand. Undefined when there is none.
+ */
+export function attachedSystemSchemaInParts(
+   parts: readonly NamePart[],
+): string | undefined {
+   for (let i = 0; i + 2 < parts.length; i++) {
+      const [catalog, dot, schema] = [parts[i], parts[i + 1], parts[i + 2]];
+      if (
+         catalog.kind === "word" &&
+         dot.kind === "dot" &&
+         schema.kind === "word" &&
+         isAttachedSystemSchema(catalog.value, schema.value)
+      ) {
+         return `${catalog.value}.${schema.value}`;
+      }
+   }
+   return undefined;
+}
+
+/**
+ * The first attached Postgres system schema `sql` names as `catalog.schema`
+ * (`pg.pg_catalog.pg_settings`, `"PG"."Information_Schema".tables`), read as
+ * raw text: double quotes are dropped and string contents read as code, so
+ * quoting a name hides nothing. Lexical; DuckDB's own parse
+ * ({@link introspectionCallInParse}) catches a reference this misses.
+ */
+export function attachedSystemSchemaIn(sql: string): string | undefined {
+   const lower = sql.toLowerCase();
+   const parts: NamePart[] = [];
+   // One pass, linear in the text: no backtracking pattern runs on caller SQL.
+   for (const match of lower.matchAll(/[a-z0-9_$\u0080-\uffff]+|[^\s"]/g)) {
+      const text = match[0];
+      parts.push(
+         text === "."
+            ? { kind: "dot", value: text }
+            : /^[a-z0-9_$\u0080-\uffff]/.test(text)
+              ? { kind: "word", value: text }
+              : { kind: "other", value: text },
+      );
+   }
+   return attachedSystemSchemaInParts(parts);
+}
+
+/**
+ * The attached Postgres system schema a node of DuckDB's serialized parse
+ * reads (a table reference, or a `SHOW`/`DESCRIBE` of one), as
+ * `catalog.schema`, or undefined.
+ */
+export function attachedSystemSchemaOfNode(
+   node: Record<string, unknown>,
+): string | undefined {
+   const { catalog_name: catalog, schema_name: schema } = node;
+   if (typeof catalog !== "string" || typeof schema !== "string") {
+      return undefined;
+   }
+   const [c, s] = [catalog.toLowerCase(), schema.toLowerCase()];
+   return isAttachedSystemSchema(c, s) ? `${c}.${s}` : undefined;
+}
+
 /** Whether `word` (lowercased) is a refused introspection name. */
 export function isIntrospectionName(word: string): boolean {
    return (
@@ -92,8 +189,10 @@ export function isIntrospectionCall(name: string): boolean {
 /**
  * The first refused introspection name in `sql`, read as raw words with no
  * regard to comments, quotes or strings (so quoting a name hides nothing),
- * then any `ducklake_` name written as a call; or undefined. Lexical: DuckDB's
- * own parse ({@link introspectionCallInParse}) catches a call this misses.
+ * then any `ducklake_` name written as a call, then an attached database's
+ * Postgres system schema ({@link attachedSystemSchemaIn}); or undefined.
+ * Lexical: DuckDB's own parse ({@link introspectionCallInParse}) catches a
+ * call or a reference this misses.
  */
 export function introspectionNameIn(sql: string): string | undefined {
    const lower = sql.toLowerCase();
@@ -110,13 +209,14 @@ export function introspectionNameIn(sql: string): string | undefined {
          if (lower[i] === "(") call = word;
       }
    }
-   return call;
+   return call ?? attachedSystemSchemaIn(sql);
 }
 
 /**
  * The first refused name in DuckDB's serialized parse of a statement
- * (`json_serialize_sql`): a function it calls, or a table or catalog it
- * names. Undefined when there is none.
+ * (`json_serialize_sql`): a function it calls, a table or catalog it names,
+ * or an attached database's Postgres system schema it reads (as
+ * `catalog.schema`). Undefined when there is none.
  */
 export function introspectionCallInParse(parsed: unknown): string | undefined {
    let found: string | undefined;
@@ -126,6 +226,8 @@ export function introspectionCallInParse(parsed: unknown): string | undefined {
          node.forEach(walk);
          return;
       }
+      found = attachedSystemSchemaOfNode(node as Record<string, unknown>);
+      if (found) return;
       for (const [key, value] of Object.entries(node)) {
          if (typeof value === "string") {
             const name = value.toLowerCase();

@@ -63,6 +63,9 @@ import {
 } from "../config";
 import { logger } from "../logger";
 import {
+   attachedSystemSchemaIn,
+   attachedSystemSchemaInParts,
+   attachedSystemSchemaOfNode,
    DUCKLAKE_FUNCTION_PREFIX,
    introspectionCallInParse,
    introspectionNameIn,
@@ -1021,10 +1024,11 @@ function secretStatementAt(words: string[], w: number): string | undefined {
 /**
  * Why `sql` must not run on a locked instance, read lexically, or undefined.
  * Two layers, both fail-closed: the raw words of the whole text (a refused
- * name anywhere, `IMPORT DATABASE`, a CREATE or DROP of a secret), and the
- * tokens (a call of `query`, and a secret statement with comments between its
- * words), where comment and string text is re-read the same way, to any
- * depth.
+ * name anywhere, `IMPORT DATABASE`, a CREATE or DROP of a secret, an attached
+ * database's Postgres system schema), and the tokens (a call of `query`, a
+ * secret statement with comments between its words, and an attached
+ * database's Postgres system schema with comments around its dot), where
+ * comment and string text is re-read the same way, to any depth.
  */
 export function refusedOnLockedInstance(
    sql: string,
@@ -1041,7 +1045,21 @@ export function refusedOnLockedInstance(
       const secret = secretStatementAt(words, w);
       if (secret) return secret;
    }
+   const rawSchema = attachedSystemSchemaIn(sql);
+   if (rawSchema) return `'${rawSchema}'`;
    const tokens = tokenizeDuckDBSQL(sql);
+   const codeSchema = attachedSystemSchemaInParts(
+      tokens
+         .filter((token) => token.kind !== "comment")
+         .map((token) =>
+            token.kind === "word"
+               ? { kind: "word" as const, value: token.value }
+               : token.kind === "punct" && token.value === "."
+                 ? { kind: "dot" as const, value: "." }
+                 : { kind: "other" as const, value: token.value },
+         ),
+   );
+   if (codeSchema) return `'${codeSchema}'`;
    const codeWords: string[] = [];
    for (let t = 0; t < tokens.length; t++) {
       const token = tokens[t];
@@ -1087,7 +1105,8 @@ export function refusedOnLockedInstance(
 /**
  * Why DuckDB's own parser says `sql` must not run, or undefined. The parser
  * serializes SELECT statements only (`json_serialize_sql`, single_select.ts):
- * for those, every function and table it names is checked; SQL it fails to
+ * for those, every function and table it names, and the catalog and schema
+ * of every table it reads, is checked; SQL it fails to
  * parse is refused (DuckDB would refuse it too); other statement kinds are
  * left to {@link refusedOnLockedInstance}, which reads every statement.
  */
@@ -1103,6 +1122,13 @@ async function refusedByParser(sql: string): Promise<string | undefined> {
       if (refused || node === null || typeof node !== "object") return;
       if (Array.isArray(node)) {
          node.forEach(walk);
+         return;
+      }
+      const schema = attachedSystemSchemaOfNode(
+         node as Record<string, unknown>,
+      );
+      if (schema) {
+         refused = `'${schema}'`;
          return;
       }
       for (const [key, value] of Object.entries(node)) {
@@ -1266,9 +1292,10 @@ export async function assertStatementAllowed(
  * it and start another statement. Decided by DuckDB's parser, for sources of
  * the DuckDB dialect only; a built-in function's own template (its
  * `overload`) is the compiler's SQL and is not read. Author SQL and `.table()`
- * paths that name an introspection function or a DuckLake metadata catalog
- * (duckdb_introspection.ts) are refused here too, at load, because a build
- * session runs author SQL before any lock would refuse it.
+ * paths that name an introspection function, a DuckLake metadata catalog or
+ * an attached database's Postgres system schema (duckdb_introspection.ts) are
+ * refused here too, at load, because a build session runs author SQL before
+ * any lock would refuse it.
  */
 export async function authorSqlRefusals(
    modelPath: string,
@@ -1362,7 +1389,12 @@ export async function authorSqlRefusals(
       else if (!(await isOneSelect(sql))) refuse(what, sql);
    }
    for (const tablePath of tablePaths) {
-      const name = introspectionNameIn(tablePath);
+      // Malloy reads a DuckDB table path as written, after FROM.
+      const name =
+         introspectionNameIn(tablePath) ??
+         introspectionCallInParse(
+            (await serializeSQL(`SELECT * FROM ${tablePath}`)).statements,
+         );
       if (name) introspection("a .table() source", name);
    }
    return refusals;
