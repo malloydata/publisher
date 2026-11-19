@@ -13,7 +13,7 @@ const MODEL = `
 source: k is duckdb.sql("SELECT 'books' AS kname, 1 AS w") extend {
   primary_key: kname
 }
-source: t is duckdb.sql("SELECT 1 AS id, 'books' AS category, 2 AS amt, DATE '2020-01-01' AS d") extend {
+source: t is duckdb.sql("SELECT 1 AS id, 'books' AS category, 'toys' AS category2, 2 AS amt, DATE '2020-01-01' AS d") extend {
   primary_key: id
   join_one: kk is k with category
   measure: c is count()
@@ -195,6 +195,84 @@ describe("resultReadsOfQuery: what a result orders and groups strings by", () =>
          "run: t -> { group_by: b is pick 'y' when 'B' < 'a' else 'n'; aggregate: c }",
       );
       expect(lit.ordered.comparesOnlyColumns).toBe(false);
+   });
+
+   // Each mirrors what Postgres's `pg_collation_for` says of the value: a
+   // `when:`'s, a join key's or a non-string step's column gives the value
+   // made from literals no collation of its own, so it is the default's.
+   it("derives a value's collation bottom-up, as Postgres does", async () => {
+      const cases: [string, string[], boolean][] = [
+         // pg_collation_for(concat(CASE WHEN c > 'b' THEN 'a' ELSE 'B' END, '')) = default
+         [
+            "run: t -> { aggregate: x is max(concat(pick 'a' when category > 'b' else 'B', '')) }",
+            ["category"],
+            false,
+         ],
+         // pg_collation_for(cast(length(c) - 6 as text)) = default
+         [
+            "run: t -> { group_by: s is cast(length(category) - 6 as string) }",
+            [],
+            false,
+         ],
+         [
+            "run: t -> { select: id, s is cast(strpos(category, 'a') - 2 as string); order_by: s }",
+            [],
+            false,
+         ],
+         [
+            "run: t -> { aggregate: x is max(concat(pick 'a' when kk.w > 0 else 'B', '')) }",
+            [],
+            false,
+         ],
+         [
+            "run: t -> { group_by: g is coalesce(pick 'a' when category = 'x' else null, 'B') > 'M'; aggregate: c }",
+            [],
+            false,
+         ],
+         // pg_collation_for(concat(c, '!')) = c's; c > 'M' compares under c's
+         [
+            "run: t -> { group_by: l is concat(category, '!') }",
+            ["category"],
+            true,
+         ],
+         [
+            "run: t -> { group_by: g is category > 'M'; aggregate: c }",
+            ["category"],
+            true,
+         ],
+         [
+            "run: t -> { group_by: s is substr(category, 1, 2) }",
+            ["category"],
+            true,
+         ],
+      ];
+      for (const [q, ordered, onlyColumns] of cases) {
+         const r = await reads(q);
+         expect(r.ordered.comparesNoString, q).toBe(false);
+         expect(paths(r.ordered), q).toEqual(ordered);
+         expect(r.ordered.comparesOnlyColumns, q).toBe(onlyColumns);
+      }
+      const strpos = await reads(
+         "run: t -> { select: id, s is cast(strpos(category, 'a') - 2 as string); order_by: s }",
+      );
+      expect(paths(strpos.grouped)).toEqual(["category"]);
+   });
+
+   it("groups the columns one value combines, which must share a collation", async () => {
+      const eq = await reads(
+         "run: t -> { group_by: e is category = category2; aggregate: c }",
+      );
+      expect(eq.grouped.sameCollation).toEqual([[["category"], ["category2"]]]);
+      const cat = await reads(
+         "run: t -> { group_by: s is concat(category, category2) }",
+      );
+      expect(cat.ordered.sameCollation).toEqual([
+         [["category"], ["category2"]],
+      ]);
+      const one = await reads(
+         "run: t -> { group_by: l is concat(category, '!') }",
+      );
+      expect(one.ordered.sameCollation).toBeUndefined();
    });
 
    it("reads a number made from a string's length as no string read", async () => {
