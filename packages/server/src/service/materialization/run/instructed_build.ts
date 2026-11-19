@@ -40,12 +40,10 @@ import type {
 } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
 import {
-   assertMaterializationEligible,
    assertPlacementNamed,
    assertTierEligible,
    buildSQLOf,
    computeSourceEntityId,
-   deriveAnnotationFields,
    presentAs,
    type RunPlan,
    tierGateInputs,
@@ -476,7 +474,7 @@ export class InstructedBuild {
          packageRuns,
       } = options;
       const { builds, tables, connectionDigests, connections } = compiled;
-      const index = indexInstructions(instructions);
+      const index = indexInstructions(instructions, tables);
       const run: InstructedRun = {
          compiled,
          environment,
@@ -936,7 +934,7 @@ export class InstructedBuild {
 
    /**
     * The gates before one instructed source's build: its instruction, its
-    * eligibility, a database sibling's refusal, the storage re-assert, and
+    * eligibility (its tier's gate), a database sibling's refusal, and
     * another route to a table this run built or failed. What the build needs,
     * or undefined when the source is not built (any refusal recorded).
     */
@@ -1022,19 +1020,6 @@ export class InstructedBuild {
             run.heldBackBySibling = true;
             return undefined;
          }
-      }
-
-      // Re-assert (idempotent) so no path into a storage build is ungated.
-      if (
-         !orchestrated &&
-         instructionTier(instruction, getPersistStorageMode()) === "storage" &&
-         run.clearedTiers?.get(persistSource.sourceID) !== "storage"
-      ) {
-         assertMaterializationEligible(
-            persistSource,
-            deriveAnnotationFields(persistSource),
-            { connectionTypes: run.compiled.connectionTypes },
-         );
       }
 
       // One physical table, written once. A base and its extension (`#@
@@ -1243,7 +1228,7 @@ export class InstructedBuild {
       resolved: ResolvedInstruction,
    ): boolean {
       const { compiled } = run;
-      const { instruction, orchestrated } = resolved;
+      const { instruction } = resolved;
       // Auto-run refused it and reported it already; it reaches the loop only
       // through an eligible sibling's instruction on the same address.
       if (run.priorRefusedIDs.has(persistSource.sourceID)) return true;
@@ -1253,18 +1238,20 @@ export class InstructedBuild {
       // instructs a refused source, so reaching the catch means the plan and
       // this gate disagreed.
       try {
-         // Host-supplied storage instructions are gated too, not trusted.
-         // Skipped when the mode is off: the destination refusal owns that.
+         // Every instruction into storage, however it was found, takes the
+         // storage gate the plan uses, so no path into a storage build is
+         // ungated; host-supplied ones are gated too, not trusted. Skipped
+         // when the mode is off: the destination refusal owns that.
          const storage =
-            orchestrated &&
             instructionTier(instruction, getPersistStorageMode()) === "storage";
          // Every other instruction (database, or any build while the mode is
-         // off) takes the database gate however it was instructed, unless
-         // auto-run already cleared the source through one of the two gates.
-         // Never both: the storage gate already runs the same IR walk.
+         // off) takes the database gate, unless auto-run already cleared the
+         // source for this tier. Never both: the storage gate already runs
+         // the same IR walk.
          // Its own placement, never a sibling's (assertPlacementNamed).
          assertPlacementNamed(persistSource);
-         if (storage || !run.clearedTiers?.has(persistSource.sourceID)) {
+         const cleared = run.clearedTiers?.get(persistSource.sourceID);
+         if (storage ? cleared !== "storage" : cleared === undefined) {
             assertTierEligible(
                persistSource,
                storage,

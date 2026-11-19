@@ -127,7 +127,6 @@ export {
 } from "../plan/build_plan";
 export { generatedNameOwner } from "../plan/build_file_generator";
 export {
-   assertMaterializationEligible,
    assertPlacementNamed,
    assertTierEligible,
 } from "../plan/materialization_eligibility";
