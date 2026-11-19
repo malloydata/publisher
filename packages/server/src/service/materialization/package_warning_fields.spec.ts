@@ -12,6 +12,8 @@ import { describe, expect, it } from "bun:test";
 import { relaxedCollision } from "./plan/load_gate_text";
 import {
    annotationFindingWarnings,
+   asOfBuildWarnings,
+   PERSIST_READS_CURRENT_TIME_CODE,
    RETAINED_WARNING_ALIASES,
    storageWarnings,
    verdictWarnings,
@@ -126,5 +128,54 @@ describe("a materialization warning's reason", () => {
             severity: "warn",
          }),
       ]);
+   });
+});
+
+describe("a table stored as of its build", () => {
+   it("warns once per table, naming the source, view or query and where it reads the clock", () => {
+      const warnings = asOfBuildWarnings(
+         {
+            "recent@file:///m.malloy": {
+               name: "recent",
+               modelPath: "m.malloy",
+               reads: ["`where: ts ~ f'last 7 days'`"],
+            },
+            "orders__last7__view@file:///m.malloy": {
+               name: "orders__last7__view",
+               modelPath: "m.malloy",
+               reads: [],
+            },
+            "daily__query@file:///m.malloy.persist-view.malloy": {
+               name: "daily__query",
+               reads: ["the field `today`"],
+            },
+         },
+         {
+            "orders__last7__view@file:///m.malloy": {
+               sourceName: "orders",
+               viewName: "last7",
+            },
+         },
+      );
+      expect(
+         warnings.map((w) => [w.code, w.subject, w.severity, w.model]),
+      ).toEqual([
+         [PERSIST_READS_CURRENT_TIME_CODE, "recent", "warn", "m.malloy"],
+         [
+            PERSIST_READS_CURRENT_TIME_CODE,
+            "orders -> last7",
+            "warn",
+            "m.malloy",
+         ],
+         [PERSIST_READS_CURRENT_TIME_CODE, "daily", "warn", undefined],
+      ]);
+      expect(warnings[0].message).toContain(
+         "reads the current time (`where: ts ~ f'last 7 days'`)",
+      );
+      expect(warnings[0].message).toContain("as of its last build");
+      expect(warnings[0].message).toContain("rebuilt on every run");
+      expect(warnings[0].message).toContain("own extend block");
+      expect(warnings[1].message).toContain('view "last7" of source "orders"');
+      expect(warnings[2].message).toContain('query "daily"');
    });
 });

@@ -8,9 +8,12 @@
  * (DuckDB's `LOCALTIMESTAMP`), so a table built with it would hold the
  * window as of the build. Each route treats it as `now`: a `#(materialize)`
  * `where:` holding one is not built, a dimension over one is computed at read,
- * a rollup over a base that filters with one is not built, and a persisted
- * view that filters with one is not built. Every answer equals live at both
- * clocks. An absolute filter string still builds and serves from its table.
+ * and a rollup over a base that filters with one is not built: every one of
+ * those answers equals live at both clocks. A persisted view that filters
+ * with one is built and served as of its build, as a v1 `#@ persist` is: it
+ * equals live at the build's clock, keeps the build's window after the clock
+ * moves, and is rebuilt on every run. An absolute filter string builds and
+ * serves from its table.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -73,7 +76,7 @@ source: r_2025 is ev extend {
 source: v is ev extend {
   measure: n is count()
   #@ persist storage="lake"
-  view: last7 is { where: ts ~ f'last 7 days'; group_by: g; aggregate: n }
+  view: last7 is { where: ts ~ f'last 7 days'; group_by: id; aggregate: n }
   #@ persist storage="lake"
   view: in2025 is { where: ts ~ f'2025'; group_by: g; aggregate: n }
 }
@@ -103,11 +106,26 @@ describe("a relative filter string under v2 materialization", () => {
       ]);
    });
 
-   it("refuses the persisted view that filters with one, and builds the absolute one", () => {
-      expect(fixture.viewRefusals.some((r) => r.includes("current time"))).toBe(
-         true,
-      );
-      expect(fixture.viewRefusals.length).toBe(1);
+   it("refuses no persisted view: one that filters with one is stored as of its build", () => {
+      expect(fixture.viewRefusals).toEqual([]);
+   });
+
+   it("serves the persisted view as of its build: equal to live at the build's clock, the build's window after", async () => {
+      fixture.setClock(BUILT_AT);
+      const atBuild = await fixture.run({
+         name: "v.last7 at build",
+         malloy: "run: v -> last7",
+      });
+      expect(rowDifference(atBuild.live, atBuild.served)).toBeUndefined();
+      expect(atBuild.servedFrom).toBe("storage");
+      fixture.setClock(LATER);
+      const later = await fixture.run({
+         name: "v.last7 later",
+         malloy: "run: v -> last7",
+      });
+      expect(later.servedFrom).toBe("storage");
+      expect(later.served).toEqual(atBuild.served);
+      expect(rowDifference(later.live, later.served)).toBeDefined();
    });
 
    const cases: [string, string, string, boolean][] = [
@@ -129,7 +147,6 @@ describe("a relative filter string under v2 materialization", () => {
          "run: r_base -> { group_by: g; aggregate: total; order_by: g }",
          false,
       ],
-      ["a persisted view", "v", "run: v -> last7", false],
    ];
 
    for (const at of [BUILT_AT, LATER]) {

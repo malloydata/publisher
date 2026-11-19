@@ -25,6 +25,7 @@ import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import { errMessage } from "../../utils";
 import type { BuildPlanPackage } from "./plan/build_plan";
 import type {
+   AsOfBuildSource,
    DatabaseSourceEligibility,
    PackagePlan,
    PersistedViewName,
@@ -89,6 +90,8 @@ interface PlanRecord {
     * sources' included.
     */
    buildConnectionNames: ReadonlySet<string>;
+   /** See PackagePlan.asOfBuild. */
+   asOfBuild: Readonly<Record<string, AsOfBuildSource>>;
 }
 
 /** A record holding nothing: no plan, both eligibilities unknown. */
@@ -106,6 +109,7 @@ const EMPTY_RECORD: PlanRecord = {
    incrementalDeclarations: {},
    persistedViews: {},
    buildConnectionNames: new Set(),
+   asOfBuild: {},
 };
 
 /**
@@ -232,6 +236,10 @@ export class PlanLifecycle {
    get persistedViews(): Record<string, PersistedViewName> {
       return this.serving().persistedViews;
    }
+   /** See PackagePlan.asOfBuild. */
+   get asOfBuild(): Readonly<Record<string, AsOfBuildSource>> {
+      return this.serving().asOfBuild;
+   }
 
    // Test seams, and `Package`'s own setters for a spec that isolates a
    // filter: each replaces the record in force with one changed field.
@@ -354,6 +362,7 @@ export class PlanLifecycle {
          incrementalDeclarations: outcome.incrementalDeclarations,
          persistedViews: outcome.persistedViews,
          buildConnectionNames: new Set(outcome.buildConnectionNames),
+         asOfBuild: outcome.asOfBuild ?? {},
       };
    }
 

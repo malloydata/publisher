@@ -214,10 +214,24 @@ export interface PackagePlan<Finding = unknown> {
    /** The `#(materialize)` plans, by the author's sourceID. */
    materializePlans: Record<string, MaterializePlan>;
    /**
+    * The planned tables stored as of their build (`storedAsOfBuild`: a v1
+    * `#@ persist`, persisted view or query whose build reads the current
+    * time), by sourceID: each one's name, model and where it reads the clock.
+    */
+   asOfBuild?: Record<string, AsOfBuildSource>;
+   /**
     * The declarations this derivation refused for eligibility, counted by
     * reason, for the caller to record: deriving a plan counts nothing.
     */
    eligibilityRefused: EligibilityRefusals;
+}
+
+/** A planned table stored as of its build: see {@link PackagePlan.asOfBuild}. */
+export interface AsOfBuildSource {
+   name: string;
+   modelPath?: string;
+   /** Where its build reads the current time, in the author's words. */
+   reads: string[];
 }
 
 /** Eligibility refusals, counted by reason. */

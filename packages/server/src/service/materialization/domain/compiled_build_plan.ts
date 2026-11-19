@@ -91,6 +91,11 @@ export interface CompiledBuildPlan<Finding = unknown> {
    /** Each persisted view's build source, named as its author wrote it. */
    persistedViews?: Record<string, PersistedViewName>;
    /**
+    * The sourceIDs of the tables stored as of their build (`storedAsOfBuild`
+    * in `plan/`): a run rebuilds each one, never carrying it forward.
+    */
+   asOfBuild?: readonly string[];
+   /**
     * Each `#(materialize)` uniqueness check's compiler over a run's compiler
     * manifest, by `keyCheckCompilerKey`; set only on a plan compiled on the thread
     * that builds (`build_plan_compile.ts`).

@@ -1057,12 +1057,31 @@ export class PackageMaterialization {
    serveVerdicts(
       views?: ReadonlyMap<string, ViewServeVerdict[]>,
    ): ServeVerdict[] {
-      return this.verdicts.verdicts(views);
+      return this.withAsOfBuild(this.verdicts.verdicts(views));
    }
 
    /** See {@link ServeVerdicts.preview}. */
-   previewServeVerdicts(): Promise<ServeVerdict[]> {
-      return this.verdicts.preview();
+   async previewServeVerdicts(): Promise<ServeVerdict[]> {
+      return this.withAsOfBuild(await this.verdicts.preview());
+   }
+
+   /**
+    * A verdict that serves a table stored as of its build says so in its
+    * message: its answers are as of its last build, not of each query.
+    */
+   private withAsOfBuild(verdicts: ServeVerdict[]): ServeVerdict[] {
+      const asOfBuild = this.plan.asOfBuild;
+      return verdicts.map((v) =>
+         v.verdict === "serves" && asOfBuild[v.sourceID]
+            ? {
+                 ...v,
+                 message:
+                    `${v.message} Its answers are as of its last build, ` +
+                    `since its relation reads the current time; it is ` +
+                    `rebuilt on every run.`,
+              }
+            : v,
+      );
    }
 
    // ---- Warnings and publish rejections (package_warnings.ts) -------------
@@ -1125,6 +1144,14 @@ export class PackageMaterialization {
          this.plan.materializePlans,
          this.plan.refusalNotices,
          only,
+      );
+   }
+
+   /** See package_warnings.ts, `asOfBuildWarnings`. */
+   asOfBuildWarnings(): ApiPackageWarning[] {
+      return warnings.asOfBuildWarnings(
+         this.plan.asOfBuild,
+         this.plan.persistedViews,
       );
    }
 

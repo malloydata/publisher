@@ -949,7 +949,10 @@ export interface TierGateInputs {
    tables?: Readonly<
       Record<
          string,
-         Pick<TablePlan, "kind" | "materialize" | "rollup" | "gate">
+         Pick<TablePlan, "kind" | "materialize" | "rollup" | "gate"> & {
+            /** The planned source, which the access-input rule reads. */
+            source?: PersistSource;
+         }
       >
    >;
    /**
@@ -1110,13 +1113,21 @@ export function assertTierEligible(
 }
 
 /**
- * Refuse a v1 `#@ persist` source whose build reads the current time
- * ({@link buildReadsCurrentTime}: `now`, or a relative time filter string):
- * its table would hold the rows as of the build and serve them until the next
- * rebuild, while a live query reads the clock again every time. Not built, and answered live. `now` in the source's own
- * extend block is re-applied at every read, so it is admitted. A rollup
- * (rollup_plan.ts, `rollup-not-built`, reason `current_time`) and a `#(materialize)` source
- * (materialize_plan.ts) are judged by their own planners.
+ * Refuse a v1 `#@ persist` source, persisted view or persisted query whose
+ * build reads the current time ({@link buildReadsCurrentTime}: `now`, or a
+ * relative time filter string) where a table as of its build is unsafe:
+ *
+ * - it is gated (`#(authorize)` or `#(access_filter)` beneath it): the rows a
+ *   caller may see would be decided by a clock frozen at the build;
+ * - it is an access input ({@link currentTimeAccessInput}): the rows it
+ *   holds decide what a caller may see, so a frozen clock is a stale grant;
+ * - it refreshes incrementally: a delta reads only rows past its watermark,
+ *   so a window over the clock would never drop the rows it has passed.
+ *
+ * Every other such source builds, and is served as of its build and rebuilt
+ * on every run (see {@link storedAsOfBuild}). A rollup (rollup_plan.ts) and
+ * a `#(materialize)` source (materialize_plan.ts) are judged by their own
+ * planners.
  */
 export function assertBuildReadsNoCurrentTime(
    source: PersistSource,
@@ -1125,20 +1136,105 @@ export function assertBuildReadsNoCurrentTime(
    const table = plan?.tables?.[source.sourceID];
    if (table?.rollup || table?.materialize) return;
    if (!buildReadsCurrentTime(source)) return;
+   const why = currentTimeRefusalCause(source, plan);
+   if (why === undefined) return;
    throw new MaterializationEligibilityError({
       reason: "current_time",
       message:
          `Source '${source.name}' cannot be materialized: the relation it ` +
          `persists reads the current time (\`now\`, or a relative time ` +
-         `filter such as \`f'last 7 days'\` or \`f'today'\`), in its query, ` +
-         `a view it runs, the \`where:\`, a field or a join of the source ` +
-         `that query reads, or the query of a query-shaped source it is ` +
-         `built from or joins. Its table would hold the rows as of the build ` +
-         `and serve them until the next rebuild, while a live query reads ` +
-         `the clock again every time, so it is not built and is answered ` +
-         `live. To serve it from a table, move the \`now\` or the filter ` +
-         `into the persisted source's own extend block (a \`where:\`, ` +
-         `dimension or measure there is applied at every read), or stop ` +
-         `persisting this source.`,
+         `filter such as \`f'last 7 days'\`), so its table would hold the ` +
+         `rows as of its build, and ${why}. It is not built and is answered ` +
+         `live. To serve it from a table, move the \`now\` or the filter into ` +
+         `the persisted source's own extend block (a \`where:\`, dimension or ` +
+         `measure there is applied at every read).`,
    });
+}
+
+/**
+ * Why a source whose build reads the current time must not be stored as of
+ * its build, or undefined when it may be ({@link assertBuildReadsNoCurrentTime}).
+ */
+function currentTimeRefusalCause(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): string | undefined {
+   if (referencesAuthorize(source)) {
+      return (
+         "it is protected by an #(authorize) or #(access_filter) gate, whose " +
+         "decision a table as of its build would freeze"
+      );
+   }
+   if (deriveAnnotationFields(source).refresh === "incremental") {
+      return (
+         "it refreshes incrementally, and a delta never re-reads the rows " +
+         "its window has passed"
+      );
+   }
+   if (currentTimeAccessInput(source, plan)) {
+      return (
+         "its rows decide what a caller may see (it is scoped by a given, " +
+         "joins a source scoped by one, or a gated source joins it), so a " +
+         "table as of its build would keep a grant past its time"
+      );
+   }
+   return undefined;
+}
+
+/**
+ * Whether a source's rows are an access decision: its own read-time terms or
+ * joins read a given (a caller-scoped source, or one that joins a grant
+ * table, {@link admitGivenPositions}), or a gated table of the plan joins it
+ * by name (a grant or visibility table a gate reads). Fails closed: a
+ * classification that cannot be read counts.
+ */
+function currentTimeAccessInput(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): boolean {
+   const admitted = admitGivenPositions(source);
+   if (!admitted.ok) return true;
+   if (admitted.terms.length > 0 || (admitted.joinedTerms ?? []).length > 0) {
+      return true;
+   }
+   return gateJoinedSourceIDs(plan).has(source.sourceID);
+}
+
+const gateJoinedMemo = new WeakMap<object, ReadonlySet<string>>();
+
+/** The sourceIDs a gated table of the plan joins, at any depth of its joins. */
+function gateJoinedSourceIDs(
+   plan: TierGateInputs | undefined,
+): ReadonlySet<string> {
+   const tables = plan?.tables;
+   if (!tables) return new Set();
+   const memo = gateJoinedMemo.get(tables);
+   if (memo) return memo;
+   const out = new Set<string>();
+   for (const table of Object.values(tables)) {
+      const gated = table.source;
+      if (!gated || !referencesAuthorize(gated)) continue;
+      try {
+         collectJoinedSourceIDs(sourceDefOf(gated), out, 0);
+      } catch {
+         // Unreadable joins name nothing; the gate refuses the source itself.
+      }
+   }
+   gateJoinedMemo.set(tables, out);
+   return out;
+}
+
+function collectJoinedSourceIDs(
+   def: unknown,
+   out: Set<string>,
+   depth: number,
+): void {
+   if (depth > 8 || def === null || typeof def !== "object") return;
+   const fields = (def as { fields?: unknown }).fields;
+   for (const f of Array.isArray(fields) ? fields : []) {
+      const field = f as { join?: unknown; sourceID?: unknown };
+      if (field?.join === undefined) continue;
+      if (typeof field.sourceID === "string") out.add(field.sourceID);
+      collectJoinedSourceIDs(field, out, depth + 1);
+   }
 }

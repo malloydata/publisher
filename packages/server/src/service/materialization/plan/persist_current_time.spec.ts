@@ -16,7 +16,11 @@ import {
 } from "../../../test_helpers/incremental_test_harness";
 import { collectSourceEligibility } from "./eligibility_collect";
 import { assertTierEligible } from "./materialization_eligibility";
-import { buildReadsCurrentTime } from "./persist_dynamic_terms";
+import {
+   buildReadsCurrentTime,
+   currentTimeReadsOf,
+   storedAsOfBuild,
+} from "./persist_dynamic_terms";
 
 let connections: FixedConnectionMap;
 
@@ -197,41 +201,141 @@ describe("buildReadsCurrentTime", () => {
    }
 });
 
-describe("assertTierEligible: the current_time refusal on both tiers", () => {
+/** The refusal assertTierEligible throws for `source`, or undefined. */
+function refusalOf(
+   source: PersistSource,
+   storage: boolean,
+   plan?: Parameters<typeof assertTierEligible>[2],
+): MaterializationEligibilityError | undefined {
+   try {
+      assertTierEligible(source, storage, plan);
+      return undefined;
+   } catch (err) {
+      expect(err).toBeInstanceOf(MaterializationEligibilityError);
+      return err as MaterializationEligibilityError;
+   }
+}
+
+describe("assertTierEligible: a source whose build reads now", () => {
    for (const [annotation, storage] of [
       [`#@ persist name="p"`, false],
       [`#@ persist name="p" storage=lake`, true],
    ] as const) {
-      it(`refuses ${storage ? "storage=" : "database"} with current_time`, async () => {
+      const tier = storage ? "storage=" : "database";
+
+      it(`builds an ungated one on ${tier}, stored as of its build`, async () => {
          const source = await persistSource(
             `${annotation}\nsource: p is ev -> { where: ts < now; select: * }`,
          );
-         let caught: unknown;
-         try {
-            assertTierEligible(source, storage, undefined);
-         } catch (err) {
-            caught = err;
-         }
-         expect(caught).toBeInstanceOf(MaterializationEligibilityError);
-         expect((caught as MaterializationEligibilityError).reason).toBe(
-            "current_time",
-         );
-         expect((caught as Error).message).toContain("answered live");
+         expect(refusalOf(source, storage)).toBeUndefined();
+         expect(storedAsOfBuild(source, "persist")).toBe(true);
+         expect(currentTimeReadsOf(source)).toEqual(["`where: ts < now`"]);
       });
 
-      it(`admits ${storage ? "storage=" : "database"} with now in its own extend block`, async () => {
+      it(`refuses an incremental one on ${tier} as current_time`, async () => {
+         const source = await persistSource(
+            `${annotation} refresh="incremental" watermark="ts"\nsource: p is ev -> { where: ts < now; select: * }`,
+         );
+         const refusal = refusalOf(source, storage);
+         expect(refusal?.reason).toBe("current_time");
+         expect(refusal?.message).toContain("refreshes incrementally");
+      });
+
+      it(`refuses one scoped by a given (an access input) on ${tier} as current_time`, async () => {
+         const { sources } = await compilePersistSources(
+            connections,
+            `##! experimental { persistence givens }
+given: ORG :: number is 1
+${HEAD.replace("##! experimental.persistence\n", "")}
+${annotation}
+source: p is ev -> { where: ts < now; select: * } extend { where: id = $ORG }
+`,
+         );
+         const refusal = refusalOf(sources["p"], storage);
+         expect(refusal?.reason).toBe("current_time");
+         expect(refusal?.message).toContain("decide what a caller may see");
+      });
+
+      it(`admits now in its own extend block on ${tier}, not stored as of its build`, async () => {
          const source = await persistSource(
             `${annotation}\nsource: p is ev extend { where: ts < now }`,
          );
-         expect(() =>
-            assertTierEligible(source, storage, undefined),
-         ).not.toThrow();
+         expect(refusalOf(source, storage)).toBeUndefined();
+         expect(storedAsOfBuild(source, "persist")).toBe(false);
       });
    }
+
+   it("refuses a gated one as current_time", async () => {
+      const { sources } = await compilePersistSources(
+         connections,
+         `##! experimental { persistence givens }
+given: ORG :: number is 1
+${HEAD.replace("##! experimental.persistence\n", "")}
+#(access_filter) id = $ORG
+#@ persist name="p"
+source: p is ev -> { where: ts < now; select: * } extend {}
+`,
+      );
+      const p = sources["p"];
+      // Its own row-level gate, which a database table keeps at read: only
+      // the clock refuses it.
+      const gate = { classification: "row_level" as const, attributed: true };
+      const refusal = refusalOf(p, false, {
+         tables: { [p.sourceID]: { kind: "persist", source: p, gate } },
+      });
+      expect(refusal?.reason).toBe("current_time");
+      expect(refusal?.message).toContain("gate");
+      const ungated = await persistSource(
+         `#@ persist name="p"\nsource: p is ev -> { where: ts < now; select: * } extend {}`,
+      );
+      expect(
+         refusalOf(ungated, false, {
+            tables: {
+               [ungated.sourceID]: { kind: "persist", source: ungated },
+            },
+         }),
+      ).toBeUndefined();
+   });
+
+   it("refuses one a gated table of the plan joins (a grant table) as current_time", async () => {
+      const { sources } = await compilePersistSources(
+         connections,
+         `##! experimental { persistence givens }
+given: ORG :: number is 1
+${HEAD.replace("##! experimental.persistence\n", "")}
+#@ persist name="grants"
+source: grants is ev -> { where: ts < now; select: id }
+#(access_filter) g.id = $ORG
+#@ persist name="gated"
+source: gated is ev -> { select: * } extend { join_one: g is grants on g.id = id }
+#@ persist name="alone"
+source: alone is ev -> { where: ts < now; select: id }
+`,
+      );
+      const tables = Object.fromEntries(
+         Object.values(sources).map((source) => [
+            source.sourceID,
+            { kind: "persist" as const, source },
+         ]),
+      );
+      const refusal = refusalOf(sources["grants"], false, { tables });
+      expect(refusal?.reason).toBe("current_time");
+      expect(refusal?.message).toContain("a gated source joins it");
+      expect(refusalOf(sources["alone"], false, { tables })).toBeUndefined();
+   });
+
+   it("leaves a rollup and a #(materialize) table to their own planners", async () => {
+      const source = await persistSource(
+         `#@ persist name="p"\nsource: p is ev -> { where: ts < now; select: * }`,
+      );
+      expect(storedAsOfBuild(source, "materialize")).toBe(false);
+      expect(storedAsOfBuild(source, "rollup")).toBe(false);
+      expect(storedAsOfBuild(source, "view")).toBe(true);
+   });
 });
 
-describe("collectSourceEligibility: a stored table is not served for it either", () => {
-   it("lists the source as refused, so a table built before is not bound", async () => {
+describe("collectSourceEligibility: an ungated source over now is eligible", () => {
+   it("lists it as eligible, so its table is bound and served", async () => {
       const { sources } = await compilePersistSources(
          connections,
          `${HEAD}
@@ -254,11 +358,9 @@ source: ok is ev -> { select: * } extend { where: ts < now }
          connectionDigests: {},
          addresses: {},
       });
-      const refusedID = sources["p"].sourceID;
-      expect(eligibility.refused[refusedID]).toContain(
-         "reads the current time",
+      expect([...eligibility.eligible].sort()).toEqual(
+         [sources["p"].sourceID, sources["ok"].sourceID].sort(),
       );
-      expect(eligibility.eligible).toEqual([sources["ok"].sourceID]);
    });
 });
 
@@ -432,7 +534,7 @@ describe("buildReadsCurrentTime: filter strings", () => {
       });
    }
 
-   it("refuses a relative filter on both tiers with current_time", async () => {
+   it("builds a relative filter on both tiers, stored as of its build, and names it", async () => {
       for (const storage of [false, true]) {
          const { sources } = await compilePersistSources(
             connections,
@@ -441,18 +543,30 @@ describe("buildReadsCurrentTime: filter strings", () => {
 source: p is ev -> { where: ts ~ f'last 7 days'; select: * }
 `,
          );
-         let caught: unknown;
-         try {
-            assertTierEligible(sources["p"], storage, undefined);
-         } catch (err) {
-            caught = err;
-         }
-         expect(caught).toBeInstanceOf(MaterializationEligibilityError);
-         expect((caught as MaterializationEligibilityError).reason).toBe(
-            "current_time",
-         );
-         expect((caught as Error).message).toContain("f'last 7 days'");
+         expect(refusalOf(sources["p"], storage)).toBeUndefined();
+         expect(storedAsOfBuild(sources["p"], "persist")).toBe(true);
+         expect(currentTimeReadsOf(sources["p"])).toEqual([
+            "`where: ts ~ f'last 7 days'`",
+         ]);
       }
+   });
+
+   it("refuses a relative filter on an incremental source as current_time", async () => {
+      const { sources } = await compilePersistSources(
+         connections,
+         `${FILTER_HEAD}
+#@ persist name="p" refresh="incremental" watermark="ts"
+source: p is ev -> { where: ts ~ f'last 7 days'; select: * }
+`,
+      );
+      expect(refusalOf(sources["p"], false)?.reason).toBe("current_time");
+   });
+
+   it("names a field the persisted query computes", async () => {
+      const source = await filterPersistSource(
+         "source: p is ev -> { select: id, recent is ts ~ f'last 7 days' }",
+      );
+      expect(currentTimeReadsOf(source)).toEqual(["the field `recent`"]);
    });
 
    it("refuses a filter given that defaults to a relative window as reads_given", async () => {

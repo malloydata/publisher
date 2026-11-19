@@ -347,4 +347,53 @@ describe("a standalone run's carry-forward", () => {
          "b2bbbbbbbbbbbbbb",
       ]);
    });
+
+   it("never carries a table stored as of its build: its build reads the current time", () => {
+      const nowReading = compiledWith(
+         {
+            s1: fakeSource({
+               name: "s1",
+               sourceEntityId: "b1aaaaaaaaaaaaaa",
+               sourceDef: {
+                  type: "query_source",
+                  query: {
+                     structRef: { type: "table", fields: [] },
+                     pipeline: [
+                        {
+                           type: "project",
+                           filterList: [
+                              {
+                                 node: "filterCondition",
+                                 code: "ts > now",
+                                 e: {
+                                    node: ">",
+                                    kids: {
+                                       left: { node: "field", path: ["ts"] },
+                                       right: { node: "now" },
+                                    },
+                                 },
+                              },
+                           ],
+                        },
+                     ],
+                  },
+               },
+            }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "b2bbbbbbbbbbbbbb" }),
+         },
+         [["s1", "s2"]],
+      );
+      const { instructions, carried } = deriveSelfInstructions(
+         { ...nowReading, asOfBuild: ["s1"] },
+         undefined,
+         {
+            b1aaaaaaaaaaaaaa: prior("b1aaaaaaaaaaaaaa", "s1"),
+            b2bbbbbbbbbbbbbb: prior("b2bbbbbbbbbbbbbb", "s2"),
+         },
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "b1aaaaaaaaaaaaaa",
+      ]);
+      expect(Object.keys(carried)).toEqual(["b2bbbbbbbbbbbbbb"]);
+   });
 });

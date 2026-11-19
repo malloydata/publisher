@@ -750,6 +750,23 @@ export function previousDestinationOf(
 }
 
 /**
+ * Whether a run rebuilds a table even when it is unchanged: under
+ * `forceRefresh` (a scheduled fire, `forceRefresh`), and always for a table
+ * stored as of its build (its build reads the current time), since unchanged
+ * SQL does not mean unchanged rows.
+ */
+function rebuildsEveryRun(
+   compiled: RunPlan,
+   options: { forceRefresh?: boolean },
+   sourceID: string,
+): boolean {
+   return (
+      options.forceRefresh === true ||
+      (compiled.asOfBuild?.includes(sourceID) ?? false)
+   );
+}
+
+/**
  * Derive auto-run's own build instructions. Each persist source (respecting
  * `sourceNames`) gets a self-assigned physical name and COPY realization,
  * unless its sourceEntityId is unchanged since `priorEntries`, in which case
@@ -913,7 +930,7 @@ export function deriveSelfInstructions(
       // is its own.
       if (
          !deltaEligible &&
-         !options.forceRefresh &&
+         !rebuildsEveryRun(compiled, options, persistSource.sourceID) &&
          sameDestination &&
          !options.pastWindow?.(sourceEntityId, prior!) &&
          samePath(

@@ -89,9 +89,13 @@ afterAll(() => packages.cleanup());
  */
 const ELIGIBILITY_REFUSALS_PER_REFUSED_SOURCE = 1;
 
-const NOW_SOURCE = `##! experimental.persistence
+// Refused as current_time: its build reads the clock, and a given scopes it
+// (an access input), so a table as of its build would keep a grant past its
+// time.
+const NOW_SOURCE = `##! experimental { persistence givens }
+given: ORG :: number is 1
 #@ persist
-source: recent is duckdb.sql("select 1 as id, now() as at") -> { where: at > now() - 1 day; select: id }
+source: recent is duckdb.sql("select 1 as id, now() as at") -> { where: at > now() - 1 day; select: id } extend { where: id = $ORG }
 `;
 
 const BLANK_STORAGE_SOURCE = `##! experimental.persistence

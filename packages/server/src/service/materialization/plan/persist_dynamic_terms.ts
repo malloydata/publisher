@@ -218,6 +218,106 @@ export function buildReadsCurrentTime(persistSource: PersistSource): boolean {
 }
 
 /**
+ * Whether a planned table is stored as of its build: a v1 `#@ persist`
+ * source, a persisted view or a persisted query (`kind` `persist` or `view`)
+ * whose build reads the current time ({@link buildReadsCurrentTime}). Such a
+ * table is rebuilt on every run, never carried forward as unchanged, and its
+ * package says its answers are as of its build. A `#(materialize)` table
+ * stores a rolling window and applies it again at read, and a rollup that
+ * reads the clock is refused, so neither is one.
+ */
+export function storedAsOfBuild(
+   persistSource: PersistSource,
+   kind: string | undefined,
+): boolean {
+   if (kind !== "persist" && kind !== "view") return false;
+   // A source whose definition cannot be read is refused elsewhere; it is
+   // not called stored as of its build.
+   let def: unknown;
+   try {
+      def = sourceDefOf(persistSource) as unknown;
+   } catch {
+      return false;
+   }
+   if (def === null || typeof def !== "object") return false;
+   return buildReadsCurrentTime(persistSource);
+}
+
+/**
+ * Where the BUILD of a persist source reads the current time, in the
+ * author's words, for a message: each `where:` term (`where: ts ~ f'last 7
+ * days'`) and each field (`` the field `recent` ``) of the persisted relation
+ * that reads it, at most `limit`, first found first. Empty when none is
+ * named (the clock is read somewhere the compiler records no text).
+ */
+export function currentTimeReadsOf(
+   persistSource: PersistSource,
+   limit = 3,
+): string[] {
+   let relation: unknown;
+   try {
+      const def = sourceDefOf(persistSource) as unknown;
+      if (def === null || typeof def !== "object") return [];
+      const query = (def as { query?: unknown }).query;
+      if (query !== null && typeof query === "object") {
+         relation = query;
+      } else {
+         const {
+            filterList: _readTimeFilters,
+            fields: _readTimeFields,
+            ...rest
+         } = def as Record<string, unknown>;
+         relation = rest;
+      }
+   } catch {
+      return [];
+   }
+   const out: string[] = [];
+   const seen = new WeakSet<object>();
+   const walk = (node: unknown, depth: number): void => {
+      if (out.length >= limit || depth > MAX_WALK_DEPTH) return;
+      if (node === null || typeof node !== "object") return;
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (Array.isArray(node)) {
+         for (const item of node) walk(item, depth + 1);
+         return;
+      }
+      const record = node as Record<string, unknown>;
+      const e = record.e;
+      if (e !== undefined && readsCurrentTime(e)) {
+         const code = record.code;
+         const name = record.as ?? record.name;
+         // malloy-text: the author's own text, quoted in a warning's message,
+         // not generated Malloy
+         const said =
+            record.node === "filterCondition" && typeof code === "string"
+               ? `\`where: ${code}\``
+               : typeof name === "string" && record.join === undefined
+                 ? `the field \`${name}\``
+                 : undefined;
+         if (said !== undefined) {
+            if (!out.includes(said)) out.push(said);
+            return;
+         }
+      }
+      for (const [key, value] of Object.entries(record)) {
+         if (
+            key === "at" ||
+            key === "location" ||
+            key === "annotations" ||
+            key === "stableFilter"
+         ) {
+            continue;
+         }
+         walk(value, depth + 1);
+      }
+   };
+   walk(relation, 0);
+   return out;
+}
+
+/**
  * Whether a compiled query reads the current time, as its SQL would: its
  * stages ({@link pipelineReadsCurrentTime}) over the source it reads. A source
  * referenced by name rather than inlined is decided by the whole query.

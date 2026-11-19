@@ -6262,6 +6262,14 @@ components:
                   `persist-incremental-no-merge-key`: an incremental source
                   with no `merge_key=`, so each refresh replaces its watermark
                   range (`subject` the source; `warn`).
+                  `persist-reads-current-time`: a `#@ persist` source,
+                  persisted view or persisted named query whose stored
+                  relation reads the current time (`now`, or a relative time
+                  filter string such as `f'last 7 days'`), so its answers are
+                  as of its last build and it is rebuilt on every run; the
+                  message names where it reads the clock and how to answer as
+                  of each query instead (one per table, `subject` the source,
+                  the view as `<source> -> <view>`, or the query; `warn`).
                   `persist-incremental-shared-address`: sources that compile to
                   the same SQL on one connection, so they share one table and
                   one boundary, where at least one is incremental (one per

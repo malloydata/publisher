@@ -152,7 +152,12 @@ import {
    getPersistCollisionEnforce,
 } from "../../../config";
 import { resolveConnectionTypes } from "../../connection_type";
-import { admitGivenPositions, type DynamicTerm } from "./persist_dynamic_terms";
+import {
+   admitGivenPositions,
+   currentTimeReadsOf,
+   storedAsOfBuild,
+   type DynamicTerm,
+} from "./persist_dynamic_terms";
 import {
    declaredStorage,
    deriveAnnotationFields,
@@ -195,6 +200,7 @@ import {
 import {
    countRefusal,
    noModelGateLines,
+   type AsOfBuildSource,
    type EligibilityRefusals,
    type ModelGateLines,
    type PackagePlan,
@@ -2003,6 +2009,9 @@ export function finishBuildPlan(
    const plan = {
       ...(ctx.versionScoped ? { versionScoped: true } : {}),
       ...parts,
+      asOfBuild: Object.entries(parts.tables)
+         .filter(([, table]) => storedAsOfBuild(table.source, table.kind))
+         .map(([sourceID]) => sourceID),
       connectionDigests: ctx.connectionDigests,
       connectionTypes: resolveConnectionTypes(ctx.connections),
       connections: ctx.connections,
@@ -2137,8 +2146,27 @@ export function derivePackagePlan(
          .sort(),
       incrementalDeclarations,
       materializePlans: materializePlansOf(compiled.tables),
+      asOfBuild: asOfBuildOf(plan, compiled.tables),
       eligibilityRefused: { ...counts },
    };
+}
+
+/** The planned tables stored as of their build (`PackagePlan.asOfBuild`). */
+function asOfBuildOf(
+   plan: BuildPlan | null,
+   tables: Readonly<Record<string, TablePlan>>,
+): Record<string, AsOfBuildSource> {
+   const out: Record<string, AsOfBuildSource> = {};
+   for (const [sourceID, table] of Object.entries(tables)) {
+      if (!plan?.sources?.[sourceID]) continue;
+      if (!storedAsOfBuild(table.source, table.kind)) continue;
+      out[sourceID] = {
+         name: table.source.name,
+         ...(table.modelPath ? { modelPath: table.modelPath } : {}),
+         reads: currentTimeReadsOf(table.source),
+      };
+   }
+   return out;
 }
 
 /** Each planned table as plain data: its compiled source and target left out. */
