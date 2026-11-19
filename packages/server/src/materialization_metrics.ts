@@ -33,7 +33,7 @@ import type {
 
 /**
  * Every label below is a closed union whose values are listed in a const array
- * (materialization v2 plan, section 5, "Step 4 specification"), so a spec can
+ * (the telemetry specification in docs/materialization-v2-plan.md), so a spec can
  * enumerate each one and adding a value is a reviewed change. No instrument
  * here carries a package, environment, source, model, table, destination,
  * connection or query label, and none is filled from a runtime string.
@@ -163,7 +163,7 @@ type RouteOutcome = (typeof ROUTE_OUTCOMES)[number];
 type SkipReason = components["schemas"]["SkipReason"];
 /**
  * `publisher_query_route_total{reason}`: `NONE` when used, else the public
- * `SkipReason` the path report shows (2h's one vocabulary).
+ * `SkipReason` the path report shows (one vocabulary for both).
  */
 export const ROUTE_REASONS = [
    "NONE",
@@ -475,13 +475,13 @@ const eligibilityRefusedCounter = lazyCounter(
 const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",
    "Captured DuckDB column types mapped to json in a stored table's declared " +
-      "type (type fidelity loss). Named for the retired storage serve shape. " +
+      "type (type fidelity loss). " +
       "Label: kind ('array'|'unrecognized').",
 );
 const storedColumnTypeMismatchCounter = lazyCounter(
    "publisher_storage_column_type_mismatch_total",
    "Stored columns whose DuckDB type does not serve as the type Malloy " +
-      "declares for them (ms2data/service#6642). Labels: stage ('build' = " +
+      "declares for them. Labels: stage ('build' = " +
       "found after a storage build; 'serve' = found when a model's bindings " +
       "are set, then cast on read or left out of the served copy so queries " +
       "reading it are answered live), declared (the Malloy type).",
@@ -497,8 +497,8 @@ const chainedStorageBuildCounter = lazyCounter(
 const staleUpstreamEntryCounter = lazyCounter(
    "publisher_materialization_stale_upstream_entry_total",
    "Builds that could not use an upstream's manifest entry because it is at a " +
-      "different tier than the upstream is declared on now (ms2data/service#7087: " +
-      "a source moved to or from storage= keeps its content address). The build " +
+      "different tier than the upstream is declared on now (a source moved to " +
+      "or from storage= keeps its content address). The build " +
       "recomputes that upstream from raw instead, which reads the warehouse. " +
       "Label: tier ('database'|'storage'), the tier of the build that " +
       "recomputed.",

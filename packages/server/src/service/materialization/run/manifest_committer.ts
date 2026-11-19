@@ -14,7 +14,7 @@
  * the run; the run's record says what is served.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { storageWritable } from "../domain/placement";
 import { redactStorageUrls } from "../../../pg_helpers";
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";

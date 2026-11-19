@@ -13,7 +13,7 @@
  * session; logs and attribution-skipped counts.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { logger } from "../../../logger";
 import { recordAttributionSkipped } from "../../../materialization_metrics";

@@ -714,6 +714,9 @@ export async function compilePersistedResultVariant(args: {
    });
 }
 
+/** The failed variants {@link readStoredVariant} has warned of. */
+const warnedFailures = new WeakSet<object>();
+
 /**
  * Compile the caller's text on a compiled variant and check that its SQL
  * reads the stored table, or throw a {@link LegDecline}: the tail every
@@ -755,11 +758,14 @@ export async function readStoredVariant(args: {
            }
          : args.buildManifest;
    if (!variant.materializer || !variant.modelDef) {
-      logger.warn("A persisted-view variant did not compile", {
-         modelPath: args.modelPath,
-         view: args.subject,
-         error: variant.error,
-      });
+      // Warned once per compiled variant: the leg asks on every query.
+      const fields = { modelPath: args.modelPath, view: args.subject };
+      if (warnedFailures.has(variant)) {
+         logger.debug("A persisted-view variant did not compile", fields);
+      } else {
+         warnedFailures.add(variant);
+         logger.warn("A persisted-view variant did not compile", fields);
+      }
       throw new LegDecline(
          "view_missing_field",
          "the query does not compile against the stored view",

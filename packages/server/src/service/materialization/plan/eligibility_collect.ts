@@ -8,6 +8,7 @@
  */
 
 import { refusalKey, tierOf } from "./refusal_key";
+import { errorCodeOf } from "../../../error_code";
 import { components } from "../../../api";
 import { MaterializationEligibilityError } from "../../../errors";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
@@ -582,8 +583,8 @@ export function collectDatabaseSourceEligibility(
                {
                   sourceID,
                   sourceName: source.name,
-                  refusal: errMessage(err),
-                  error: errMessage(idErr),
+                  refusal: errorCodeOf(err),
+                  code: errorCodeOf(idErr),
                },
             );
             continue;
@@ -601,7 +602,7 @@ export function collectDatabaseSourceEligibility(
       } catch (err) {
          logger.warn(
             "Dropping an eligible database source: its content address could not be computed",
-            { sourceID, sourceName: source.name, error: errMessage(err) },
+            { sourceID, sourceName: source.name, code: errorCodeOf(err) },
          );
          continue;
       }

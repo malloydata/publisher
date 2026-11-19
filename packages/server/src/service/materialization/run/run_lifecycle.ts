@@ -30,7 +30,7 @@ import {
 import { errMessage } from "../../../utils";
 import { MaterializationStatus } from "../domain/types";
 import { VALID_TRANSITIONS } from "./run_status";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { runFailureReported } from "./run_telemetry";
 
 /**

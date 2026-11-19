@@ -23,6 +23,7 @@
  */
 
 import { refusalKey, tierOf } from "./refusal_key";
+import { errorCodeOf } from "../../../error_code";
 import type { KeyCheckCompiler } from "../domain/key_check";
 import {
    exploreOf,
@@ -424,7 +425,7 @@ export async function resolvePackageConnections(
          map.set(name, await pkg.getMalloyConnection(name));
       } catch (err) {
          logger.warn(`Failed to resolve connection ${name}`, {
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -598,7 +599,7 @@ export async function classifyPersistSourceGate(
    } catch (err) {
       logger.warn("Failed to classify persist source gate; refusing", {
          sourceID: persistSource.sourceID,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
       return { classification: "rejected", attributed: false };
    }
@@ -1547,14 +1548,19 @@ function reportPersistLineFindings(
    args: CollectArgs & { planModel: MalloyModel },
 ): void {
    const { modelPath, packagePath, malloyModel, planModel } = args;
-   const parseErrors = targets.tagParseLog.filter((msg) => {
-      logger.warn("Persist annotation issue", {
+   // An error is reported as a finding below, so only the rest are logged,
+   // at debug, by Malloy's code.
+   for (const msg of targets.tagParseLog) {
+      if (msg.severity === "error") continue;
+      logger.debug("Persist annotation issue", {
          modelPath,
-         message: msg.message,
+         code: msg.code,
          severity: msg.severity,
       });
-      return msg.severity === "error";
-   });
+   }
+   const parseErrors = targets.tagParseLog.filter(
+      (msg) => msg.severity === "error",
+   );
 
    // A `#@` line that does not parse is reported by what it cost. Malloy drops
    // a source only when none of its `#@` lines parse; when another does, the
@@ -1685,7 +1691,7 @@ async function planV1PersistSources(
                modelPath,
                sourceID,
                sourceName: source.name,
-               error: errMessage(err),
+               code: errorCodeOf(err),
             },
          );
       }
@@ -1782,7 +1788,7 @@ export function deriveBuildPlan(
             sourceID,
             sourceName: source.name,
             reason,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
          omitted.push({ sourceID, reason });
       }
@@ -2421,7 +2427,7 @@ export function collectIncrementalDeclarations(
          // declaration it can read.
          logger.warn("Failed to resolve a source's incremental declaration", {
             sourceID,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }

@@ -14,7 +14,7 @@
  * store's unique index; every table write goes through its collaborators.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { leafKey } from "../domain/physical_table";
 import {
    BadRequestError,

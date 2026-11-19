@@ -229,6 +229,8 @@ export class PackageMaterialization {
     * a later clear leaves the version live, not back on this server's store.
     */
    private hostOwned = false;
+   /** The declined bindings already warned of ({@link logDecline}). */
+   private readonly warnedDeclines = new Set<string>();
    /**
     * The type findings of the bound `storage=` tables a model's own
     * `#@ persist` check does not make ({@link boundTableTypeFindings}), as of
@@ -816,7 +818,8 @@ export class PackageMaterialization {
       for (const _entry of Object.keys(admitted.entries)) recordSourceBound();
       for (const decline of admitted.declined) {
          recordSourceDeclined(decline.reason);
-         logger.warn(
+         this.logDecline(
+            `database\u0000${decline.sourceEntityId}\u0000${decline.detail}`,
             "Refusing a database serve binding: the source is not eligible to be served from a materialized table",
             {
                packageName: this.owner.packageName(),
@@ -836,6 +839,24 @@ export class PackageMaterialization {
          );
       }
       return admitted.entries;
+   }
+
+   /**
+    * Log a declined binding: warned the first time, then at debug, since a
+    * rebind of an unchanged manifest (a poll) declines the same entries
+    * again.
+    */
+   private logDecline(
+      key: string,
+      message: string,
+      fields: Record<string, unknown>,
+   ): void {
+      if (this.warnedDeclines.has(key)) {
+         logger.debug(message, fields);
+         return;
+      }
+      this.warnedDeclines.add(key);
+      logger.warn(message, fields);
    }
 
    /** The `storage=` bindings the bind admits, logging the rest. */
@@ -869,7 +890,8 @@ export class PackageMaterialization {
       }
       for (const decline of admitted.declined) {
          recordSourceDeclined(decline.reason);
-         logger.warn(
+         this.logDecline(
+            `storage\u0000${decline.sourceName}\u0000${decline.detail}`,
             "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
             {
                packageName: this.owner.packageName(),

@@ -14,7 +14,7 @@ import { isRollupOrigin, originOf } from "./domain/table_plans";
 import { isSourceDef, type SourceDef } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../../config";
 import { logger } from "../../logger";
-import { errMessage } from "../../utils";
+import { errorCodeOf } from "../../error_code";
 import type { Model } from "../model";
 import { collectEntryPointGates } from "../gate_classification";
 import { structsReachedFrom } from "../governance/ir/source_graph";
@@ -141,6 +141,12 @@ export class ServeVerdicts {
    private entryPointMemo:
       | { models: Map<string, Model>; index: EntryPointIndex | undefined }
       | undefined;
+   /**
+    * The plan whose verdicts last failed to compute: a status poll asks again
+    * and again, so each plan's failure is warned once and then logged at
+    * debug.
+    */
+   private verdictFailureWarnedFor: object | undefined;
 
    constructor(private readonly host: ServeVerdictsHost) {}
 
@@ -151,14 +157,21 @@ export class ServeVerdicts {
     * returned, so the dry run, package read or status poll never fails here.
     */
    verdicts(views?: ReadonlyMap<string, ViewServeVerdict[]>): ServeVerdict[] {
-      if (!this.host.plan.buildPlan) return [];
+      const plan = this.host.plan.buildPlan;
+      if (!plan) return [];
       try {
          return this.compute(views);
       } catch (error) {
-         logger.warn("Could not compute serve verdicts", {
+         const fields = {
             packageName: this.host.packageName(),
-            error: errMessage(error),
-         });
+            code: errorCodeOf(error),
+         };
+         if (this.verdictFailureWarnedFor === plan) {
+            logger.debug("Could not compute serve verdicts", fields);
+         } else {
+            this.verdictFailureWarnedFor = plan;
+            logger.warn("Could not compute serve verdicts", fields);
+         }
          return [];
       }
    }
@@ -232,7 +245,7 @@ export class ServeVerdicts {
       } catch (error) {
          logger.warn("Could not declare the preview's serve bindings", {
             packageName: packageName(),
-            error: errMessage(error),
+            code: errorCodeOf(error),
          });
          bindings = [];
       }
@@ -249,7 +262,7 @@ export class ServeVerdicts {
             } catch (error) {
                logger.debug("Could not preview a model's storage views", {
                   packageName: packageName(),
-                  error: errMessage(error),
+                  code: errorCodeOf(error),
                });
             }
          }
@@ -260,7 +273,7 @@ export class ServeVerdicts {
       } catch (error) {
          logger.warn("Could not preview the v1 cutover's serve paths", {
             packageName: packageName(),
-            error: errMessage(error),
+            code: errorCodeOf(error),
          });
          return verdicts;
       }
@@ -712,7 +725,7 @@ export class ServeVerdicts {
       } catch (error) {
          logger.debug("Could not read which sources the entry points reach", {
             packageName: this.host.packageName(),
-            error: errMessage(error),
+            code: errorCodeOf(error),
          });
          index = undefined;
       }

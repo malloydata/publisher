@@ -31,7 +31,7 @@ import {
    WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import {
    recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,

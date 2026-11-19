@@ -16,7 +16,7 @@
  * marked as its own.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import {
    dropVerdict,
    isTransientGuard,
@@ -957,7 +957,11 @@ export class Reclaimer {
             ) {
                logger.info(
                   "Keeping a table from a failed run: a live manifest still serves it",
-                  { destinationName: dest, physicalTableName: table },
+                  {
+                     packageName: owner.packageName,
+                     destinationName: dest,
+                     physicalTableName: table,
+                  },
                );
                continue;
             }
@@ -971,6 +975,7 @@ export class Reclaimer {
       } catch (err) {
          // Never let cleanup mask the build failure that triggered it.
          logger.warn("Failed-run table reclaim did not complete", {
+            packageName: owner.packageName,
             code: errorCodeOf(err),
          });
       }
@@ -2061,7 +2066,7 @@ export class Reclaimer {
          logger.warn("Failed to reclaim a version's tables", {
             environmentName,
             packageName,
-            version: versionId,
+            versionId,
             code: errorCodeOf(err),
          });
       }
@@ -2100,7 +2105,7 @@ export class Reclaimer {
          logger.warn("Failed to reclaim what a deleted version owed", {
             environmentName,
             packageName,
-            version: versionId,
+            versionId,
             code: errorCodeOf(err),
          });
       }
@@ -2123,7 +2128,7 @@ export class Reclaimer {
          logger.warn("Failed to stop a deleted version's builds", {
             environmentName,
             packageName,
-            version: versionId,
+            versionId,
             code: errorCodeOf(err),
          });
       }
@@ -2167,7 +2172,7 @@ export class Reclaimer {
       environmentId: string,
       packageName: string,
       versionId: string,
-      cause: "archived" | "deleted",
+      ended: "archived" | "deleted",
    ): Promise<void> {
       // Read once, the references with the runs they exclude: the version is
       // out of service, so it starts no run, and its tables carry its name,
@@ -2217,8 +2222,8 @@ export class Reclaimer {
                {
                   environmentName,
                   packageName,
-                  version: versionId,
-                  cause,
+                  versionId,
+                  cause: ended,
                   runId: m.id,
                   tables: owed.map((e) => e.physicalTableName),
                },
@@ -2226,11 +2231,11 @@ export class Reclaimer {
          }
       }
       logger.info(
-         `Reclaimed ${cause === "archived" ? "an archived" : "a deleted"} version's tables`,
+         `Reclaimed ${ended === "archived" ? "an archived" : "a deleted"} version's tables`,
          {
             environmentName,
             packageName,
-            version: versionId,
+            versionId,
             runs: runs.length,
          },
       );

@@ -11,6 +11,7 @@
  */
 
 import { tierOf } from "./refusal_key";
+import { errorCodeOf } from "../../../error_code";
 import type { RefusedReason } from "../domain/types";
 import {
    hiddenAccess,
@@ -209,7 +210,7 @@ export async function tryCompileMaterializeCompanion(args: {
             "A model's extension tables could not be chained on parents in other files; they build over the raw chain",
             {
                modelPath: args.modelPath,
-               error: error instanceof Error ? error.message : String(error),
+               code: errorCodeOf(error),
             },
          );
          return { plans: planned.plans, parents: new Map() };
@@ -387,13 +388,12 @@ async function unchainStoredChainsNotCompiling(
       ? await storedChainsNotCompiling(round.generated, foreign.parents)
       : new Map<string, string>();
    if (unstored.size === 0) return round;
-   for (const [sourceID, error] of unstored) {
+   for (const sourceID of unstored.keys()) {
       logger.warn(
          "A storage= extension table does not compile over its parent's stored table alone; it builds over the raw chain",
          {
             modelPath: args.modelPath,
             sourceName: planOf(round.plans, sourceID)?.sourceName,
-            error,
          },
       );
    }
@@ -1648,14 +1648,14 @@ function nextRound(
    if (plan?.buildsOver) {
       logger.warn(
          "An extension table of a #(materialize) model did not compile over its parent's build source; it builds over the raw chain",
-         { modelPath, sourceName: plan.sourceName, error: error.message },
+         { modelPath, sourceName: plan.sourceName, code: errorCodeOf(error) },
       );
       return plans.map((p) => (p === plan ? withoutParent(p) : p));
    }
    if (plan) {
       logger.error(
          "A #(materialize) source's generated build did not compile; it is not built, and the model's other sources are",
-         { modelPath, sourceName: plan.sourceName, error: error.message },
+         { modelPath, sourceName: plan.sourceName, code: errorCodeOf(error) },
       );
       ctx.refuse({
          sourceName: plan.sourceName,
@@ -1677,7 +1677,7 @@ function nextRound(
       // did before P10, with the same rows.
       logger.warn(
          "Extension tables of a #(materialize) model did not compile over their parents' build sources; they build over the raw chain",
-         { modelPath, error: error.message },
+         { modelPath, code: errorCodeOf(error) },
       );
       return plans.map(withoutParent);
    }
@@ -1824,7 +1824,7 @@ async function crossFileParents(
                {
                   modelPath: args.modelPath,
                   parentFile: path.relative(args.packagePath, file),
-                  error: error instanceof Error ? error.message : String(error),
+                  code: errorCodeOf(error),
                },
             );
             return undefined;
@@ -2241,6 +2241,6 @@ export function logCompanionFailure(
 ): void {
    logger.error(COMPANION_FAILURE_TEXT[failure.kind], {
       modelPath,
-      error: failure.error,
+      code: errorCodeOf(failure.error),
    });
 }

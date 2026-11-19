@@ -12,7 +12,7 @@
 import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { errMessage } from "../../../utils";
 import { quoteRenameTarget, quoteTablePath } from "../../quoting";
 import { storedColumnsOfOutput } from "../stored_column_types";

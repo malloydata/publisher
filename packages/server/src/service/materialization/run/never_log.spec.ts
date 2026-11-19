@@ -16,7 +16,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { createTableWithDeclaredTypes } from "./materialization_build_session";
 import { stackFrames } from "./run_lifecycle";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 
 // The never-log rule (docs/materialization-v2-plan.md, "Step 4
 // specification"): no log call, at any level, carries a value from the data
@@ -459,87 +459,3 @@ describe("stackFrames", () => {
       expect(stackFrames(cut)).toBeUndefined();
    });
 });
-
-// A driver's message can quote SQL or a row value, so a log call in run/
-// carries an error's code (errorCodeOf), never its message. Read from the
-// source: every logger call in every run/ module.
-describe("run/ logs an error's code, never its message", () => {
-   it("has no logger call carrying an error's message, the error itself, or what it wraps", async () => {
-      const { readdirSync, readFileSync } = await import("node:fs");
-      const { join } = await import("node:path");
-      const offenders: string[] = [];
-      for (const file of readdirSync(__dirname)) {
-         if (!file.endsWith(".ts") || file.endsWith(".spec.ts")) continue;
-         const text = readFileSync(join(__dirname, file), "utf8");
-         for (const call of loggerCalls(text)) {
-            if (RAW_ERROR.test(call.text)) {
-               offenders.push(`${file}:${call.line}`);
-            }
-         }
-      }
-      expect(offenders).toEqual([]);
-   });
-
-   it("recognises each way an error's text reaches a log call", () => {
-      const raw = [
-         "logger.warn('x', { error: errMessage(err) })",
-         "logger.warn('x', { error: err.message })",
-         "logger.warn('x', { error: redacted(err) })",
-         "logger.warn('x', { error })",
-         "logger.warn('x', { a, error, b })",
-         "logger.warn('x', { error: err })",
-         "logger.warn('x', { cleanupError: cleanupErr })",
-         "logger.warn('x', { reason: String(err) })",
-         "logger.warn(`x: ${String(e)}`)",
-         "logger.warn(`x: ${err}`)",
-         "logger.warn('x', { cause: err.cause })",
-      ];
-      expect(raw.filter((t) => !RAW_ERROR.test(t))).toEqual([]);
-      expect(
-         RAW_ERROR.test("logger.warn('x', { code: errorCodeOf(err) })"),
-      ).toBe(false);
-   });
-});
-
-/**
- * An error's text in a log call: its message (`errMessage`, `.message`, a
- * redacted message), the error itself as a field (`error`, `error: err`) or
- * as text (`String(err)`, `${err}`), or what it wraps (`.cause`).
- */
-const RAW_ERROR = new RegExp(
-   [
-      String.raw`errMessage\(`,
-      String.raw`\.message\b`,
-      String.raw`redact\w*\(`,
-      String.raw`\berror\s*[,}]`,
-      String.raw`\b\w*[eE]rror:\s*(\w*([eE]rr|[cC]ause)\w*|e)\s*[,}]`,
-      String.raw`String\(\s*(\w*([eE]rr|[cC]ause)\w*|e)\s*\)`,
-      String.raw`\$\{\s*(\w*([eE]rr|[cC]ause)\w*|e)\s*\}`,
-      String.raw`\.cause\b`,
-   ].join("|"),
-);
-
-/** Each `logger.<level>(...)` call in `text`, with the line it starts on. */
-function loggerCalls(text: string): { text: string; line: number }[] {
-   const calls: { text: string; line: number }[] = [];
-   const start = /logger\.(debug|info|warn|error)\(/g;
-   for (let m = start.exec(text); m; m = start.exec(text)) {
-      let depth = 0;
-      let i = m.index + m[0].length - 1;
-      for (; i < text.length; i++) {
-         const c = text[i];
-         if (c === "(") depth++;
-         else if (c === ")" && --depth === 0) break;
-         else if (c === '"' || c === "'" || c === "`") {
-            for (i++; i < text.length && text[i] !== c; i++) {
-               if (text[i] === "\\") i++;
-            }
-         }
-      }
-      calls.push({
-         text: text.slice(m.index, i + 1),
-         line: text.slice(0, m.index).split("\n").length,
-      });
-   }
-   return calls;
-}

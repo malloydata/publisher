@@ -40,6 +40,7 @@ import type {
    ModelMaterializer,
    Runtime,
 } from "@malloydata/malloy";
+import { errorCodeOf } from "../../../error_code";
 import * as path from "path";
 import { getMaterializeEnabled } from "../../../config";
 import { pathToFileURL } from "url";
@@ -670,7 +671,7 @@ async function compileOverStoredBases(args: {
             {
                modelPath: args.modelPath,
                base: name,
-               error: error instanceof Error ? error.message : String(error),
+               code: errorCodeOf(error),
             },
          );
          stored.delete(name);
@@ -689,7 +690,7 @@ async function compileOverStoredBases(args: {
          "The rollups over #(materialize) bases build from the warehouse: their companion over the bases' stored tables did not compile",
          {
             modelPath: args.modelPath,
-            error: error instanceof Error ? error.message : String(error),
+            code: errorCodeOf(error),
          },
       );
       out.clear();
@@ -768,7 +769,7 @@ function warnWarehouse(modelPath: string, error: unknown): void {
       "The rollups of a model build from the warehouse: their companion over the bases' stored tables did not compile",
       {
          modelPath,
-         error: error instanceof Error ? error.message : String(error),
+         code: errorCodeOf(error),
       },
    );
 }
@@ -840,7 +841,7 @@ export async function compileParentKeyChecks(
                {
                   source: name,
                   keyColumn,
-                  error: error instanceof Error ? error.message : String(error),
+                  code: errorCodeOf(error),
                },
             );
             return undefined;
@@ -920,7 +921,7 @@ async function compileRollupKeyChecks(
          logger.warn("A #(rollup) rollup's key check did not compile", {
             modelPath,
             rollup: plan.rollupSourceName,
-            error: error instanceof Error ? error.message : String(error),
+            code: errorCodeOf(error),
          });
       }
    }

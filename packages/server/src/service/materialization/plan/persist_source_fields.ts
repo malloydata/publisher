@@ -10,6 +10,7 @@
  */
 
 import { exploreOf } from "../../governance/ir/compiled_model";
+import { errorCodeOf } from "../../../error_code";
 import type { AtomicField, PersistSource } from "@malloydata/malloy";
 import {
    destinationOf,
@@ -19,7 +20,6 @@ import {
 } from "./declaration";
 import { components } from "../../../api";
 import { logger } from "../../../logger";
-import { errMessage } from "../../../utils";
 
 type WireColumn = components["schemas"]["Column"];
 
@@ -35,7 +35,7 @@ export function deriveColumns(persistSource: PersistSource): WireColumn[] {
    } catch (err) {
       logger.warn("Failed to derive columns for persist source", {
          sourceID: persistSource.sourceID,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
       return [];
    }

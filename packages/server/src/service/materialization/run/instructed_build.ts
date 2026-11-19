@@ -16,7 +16,7 @@
  */
 
 import { tableNamesFoldCase } from "../domain/storage_table_path";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { instructionTier } from "../domain/placement";
 import {
    instructedTable,

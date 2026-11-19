@@ -69,7 +69,7 @@
  * the same names write the same mark.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { leafKey } from "../domain/physical_table";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PersistSource } from "@malloydata/malloy";

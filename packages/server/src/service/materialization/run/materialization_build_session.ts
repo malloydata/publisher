@@ -39,7 +39,7 @@ import {
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { errMessage } from "../../../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
 import { fromSubselect } from "../subselect";

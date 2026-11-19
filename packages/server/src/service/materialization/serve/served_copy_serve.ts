@@ -2203,7 +2203,6 @@ export class ServedCopyServe {
             {
                modelPath: this.host.modelPath(),
                sourceName: c.reroot.sourceName,
-               problem: f.message,
             },
          );
          if (c.reroot.inlinedJoins?.length) {
