@@ -308,15 +308,7 @@ export const RATCHET_VOCABULARY_UNIONS = {
 };
 /**
  * Names docs/materialization-v2-plan.md says were deleted outright that the
- * tree still holds, name: the step that deletes them.
+ * tree still holds, name: the planned step that deletes them. A name kept for
+ * good is not a deleted name and is not listed.
  */
-export const DELETED_NAMES_PENDING = {
-   // The bound database entries' type.
-   FreshnessManifest: "2g.1",
-   // The router's adapters over the leg (query_router.ts, query_serving.ts).
-   keepsContracts: "2g.2",
-   keepsContractsFor: "2g.2",
-   onSkip: "2g.2",
-   // The check-compiler registry, now a field of the compiled plan.
-   keyCheckCompilers: "2i",
-};
+export const DELETED_NAMES_PENDING = {};

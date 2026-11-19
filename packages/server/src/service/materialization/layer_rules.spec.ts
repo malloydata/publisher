@@ -861,21 +861,18 @@ describe("the domain model's ratchets", () => {
    });
 
    it("the names the plan deleted outright stay deleted", () => {
-      // docs/materialization-v2-plan.md, "Deleted outright": each name is
-      // gone from src/, or listed with the step that deletes it.
+      // docs/materialization-v2-plan.md, "Deleted outright" and its status
+      // against code: each name deleted is gone from src/, or listed with the
+      // step that deletes it. A name the status keeps for good (the router's
+      // adapters, `FreshnessManifest`, `keyCheckCompilers`) is not here.
       const deleted = [
          "materialization_serve_transform",
          "StorageBindings",
-         "FreshnessManifest",
          "BoundTable",
          "readCasts",
          "RoutedExtra",
          "routedAnswer",
-         "keepsContracts",
-         "keepsContractsFor",
-         "onSkip",
          "explainDecline",
-         "keyCheckCompilers",
       ];
       const files = walk(SRC_DIR).filter((f) => !isSpec(f));
       const code = files.map((f) => codeLines(f).join("\n"));
