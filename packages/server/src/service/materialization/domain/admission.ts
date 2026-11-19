@@ -121,11 +121,9 @@ function rowScopeDecline(
    const { reads } = facts;
    if (reads === undefined && !facts.columnsListed) return undefined;
    if (reads !== undefined && (!reads.scoped || reads.gated)) return undefined;
-   if (
-      leg === "served" &&
-      facts.columnsListed &&
-      !tables.every(gateColumnsExact)
-   ) {
+   // Only a listed table carries gateColumnTypes; an unlisted database one
+   // is exact by its tier (gateColumnsExact).
+   if (leg === "served" && !tables.every(gateColumnsExact)) {
       return "row_scope_inexact";
    }
    return comparisonRefusal(tables, facts) !== undefined
