@@ -1313,11 +1313,11 @@ describe("the bind's admission marks", () => {
 /**
  * The serve verdict's question (`serve_verdicts.ts` `keepsGate`, through
  * admission's `keepsGatesWhenReadExact`), asked of one source's own table
- * as it asks it: the gate policy over the table's
- * tier, marks and gate column types, with none of the router's comparison,
- * composite or row-scope checks. So it says `true` for a `storage=` table
- * whose gate column is zoned, where the router above declines the same read
- * (`row filter, zoned timestamp column`): the drift `admitRead` removes.
+ * as it asks it: the gate policy and the zone rule over the table's tier,
+ * marks and gate column types, with none of the router's per-query
+ * collation, composite or row-scope checks. A `storage=` table whose gate
+ * column is stored zoned is reported as not keeping the gate, as the router
+ * declines the same read (`row filter, zoned timestamp column`).
  */
 const VERDICT: Record<string, Record<string, boolean>> = {
    "gated sources off": {
@@ -1331,11 +1331,11 @@ const VERDICT: Record<string, Record<string, boolean>> = {
       "storage, string gate column": false,
       "storage, kept past its own gate, number gate column": true,
       "storage, kept past its own gate, float gate column": false,
-      "storage, kept past its own gate, zoned gate column": true,
+      "storage, kept past its own gate, zoned gate column": false,
       "storage, kept past its own gate, string gate column": true,
       "storage, holding only ungated rows, number gate column": true,
       "storage, holding only ungated rows, float gate column": false,
-      "storage, holding only ungated rows, zoned gate column": true,
+      "storage, holding only ungated rows, zoned gate column": false,
       "storage, holding only ungated rows, string gate column": true,
    },
    "gated sources on": {
@@ -1345,15 +1345,15 @@ const VERDICT: Record<string, Record<string, boolean>> = {
       "database, string gate column": true,
       "storage, number gate column": true,
       "storage, float gate column": false,
-      "storage, zoned gate column": true,
+      "storage, zoned gate column": false,
       "storage, string gate column": true,
       "storage, kept past its own gate, number gate column": true,
       "storage, kept past its own gate, float gate column": false,
-      "storage, kept past its own gate, zoned gate column": true,
+      "storage, kept past its own gate, zoned gate column": false,
       "storage, kept past its own gate, string gate column": true,
       "storage, holding only ungated rows, number gate column": true,
       "storage, holding only ungated rows, float gate column": false,
-      "storage, holding only ungated rows, zoned gate column": true,
+      "storage, holding only ungated rows, zoned gate column": false,
       "storage, holding only ungated rows, string gate column": true,
    },
 };

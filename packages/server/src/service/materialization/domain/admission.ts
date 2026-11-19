@@ -153,11 +153,24 @@ export function mayAttempt(leg: Leg, s: GateSwitches): boolean {
 }
 
 /**
+ * Whether a `storage=` table among `tables` holds a gate column stored with
+ * a zone, which the destination session compares in its own zone rather
+ * than the source's: {@link admitRead}'s zone rule.
+ */
+function storesGateColumnZoned(tables: readonly TableRead[]): boolean {
+   return tables
+      .filter((t) => t.tier === "storage")
+      .flatMap((t) => t.gateColumnTypes ?? [])
+      .some((type) => ZONED_STORED_TYPE.test(type));
+}
+
+/**
  * Whether an answer `leg` produced reading `tables` keeps an entry point's
- * gates, when its read compares exactly as live does: the gate policy's part
- * of {@link admitRead}, without the per-query rules (zone, collation, row
- * scope, a composite's row filter). The serve verdict asks this of a
- * source's own table, before any query.
+ * gates, when its read compares as live does: the gate policy's part of
+ * {@link admitRead} and its zone rule (both read only the tables), without
+ * the per-query rules (collation, row scope, the caller's filters, a
+ * composite's row filter). The serve verdict asks this of a source's own
+ * table, before any query.
  */
 export function keepsGatesWhenReadExact(
    leg: Leg,
@@ -167,6 +180,7 @@ export function keepsGatesWhenReadExact(
    const gateLeg = gateLegOf(leg);
    return (
       gateLeg !== undefined &&
+      !storesGateColumnZoned(tables) &&
       answerKeepsGates(gateLeg, tables, s, SERVING_GATE_CONTEXT)
    );
 }
@@ -187,8 +201,7 @@ function comparisonRefusal(
    facts: ReadFacts,
 ): ComparisonOutcome {
    const stored = tables.filter((t) => t.tier === "storage");
-   const types = stored.flatMap((t) => t.gateColumnTypes ?? []);
-   if (types.some((type) => ZONED_STORED_TYPE.test(type))) {
+   if (storesGateColumnZoned(tables)) {
       return { refusal: "a gate column stored with a zone" };
    }
    const probes = facts.probes?.[comparison];
