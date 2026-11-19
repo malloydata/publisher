@@ -42,6 +42,7 @@ function facts(
       keepsGate: () => false,
       boundEntityIds: new Set(),
       boundStorageNames: new Set(),
+      boundStorageIds: new Set(),
       servedStorageNames: new Set(),
       // The bind keeps every source, none is a #(materialize) source or a
       // persisted result, and every deployment fact is unknown.
@@ -129,6 +130,121 @@ describe("computeServeVerdicts", () => {
          }),
       );
       expect(serves.verdict).toBe("serves");
+   });
+
+   // F-45: a host may place a source with no `storage=` in a storage
+   // destination, and queries read it from that storage binding
+   // (`storageLookupOf`). The verdict's tier is the binding's, as theirs is.
+   it("judges a source a host placed in storage by its storage binding, not its annotation", () => {
+      const sources = [
+         plan("orders"),
+         plan("orders_rollup_1", { origin: "rollup" }),
+         plan("ops__by_carrier__view"),
+      ];
+      const names = new Set(sources.map(([, s]) => s.name));
+      const asked: string[] = [];
+      const verdicts = computeServeVerdicts(
+         facts(sources, {
+            boundStorageNames: names,
+            boundStorageIds: new Set(sources.map(([id]) => id)),
+            servedStorageNames: names,
+            keepsGate: (_id, tier) => {
+               asked.push(tier);
+               return true;
+            },
+            refusedAtBind: (_id, _source, tier) => {
+               asked.push(tier);
+               return undefined;
+            },
+            gated: () => true,
+         }),
+      );
+      expect(verdicts.map((v) => [v.tier, v.verdict])).toEqual([
+         ["storage", "serves"],
+         ["storage", "serves"],
+         ["storage", "serves"],
+      ]);
+      // The gate and the bind are asked of the storage tier too.
+      expect(new Set(asked)).toEqual(new Set(["storage"]));
+      // With no storage binding, the annotation still decides.
+      const [unbound] = computeServeVerdicts(facts([plan("orders")]));
+      expect(unbound).toMatchObject({
+         tier: "database",
+         verdict: "awaiting_build",
+      });
+   });
+
+   it("takes the tier by sourceID: of two sources sharing a name, only the one a storage binding stores is judged on storage", () => {
+      const [placedID, placed] = plan("orders");
+      const twinID = "orders@file:///pkg/other.malloy";
+      const twin = { ...placed, sourceID: twinID, modelPath: "other.malloy" };
+      const verdicts = computeServeVerdicts(
+         facts(
+            [
+               [placedID, placed],
+               [twinID, { ...twin, sourceEntityId: "entity-twin" }],
+            ],
+            {
+               // The name is bound, as the binding is filed under it; only
+               // one sourceID is stored.
+               boundStorageNames: new Set(["orders"]),
+               servedStorageNames: new Set(["orders"]),
+               boundStorageIds: new Set([placedID]),
+            },
+         ),
+      );
+      expect(verdicts.map((v) => [v.sourceID, v.tier, v.verdict])).toEqual([
+         [placedID, "storage", "serves"],
+         [twinID, "database", "awaiting_build"],
+      ]);
+   });
+
+   it("reads a served-copy source from its fresh database table when its storage table is stale, and a rollup from its storage binding", () => {
+      const persisted = plan("orders");
+      const rollup = plan("orders_rollup_1", { origin: "rollup" });
+      const both = {
+         boundStorageNames: new Set(["orders", "orders_rollup_1"]),
+         servedStorageNames: new Set(["orders", "orders_rollup_1"]),
+         boundStorageIds: new Set([persisted[0], rollup[0]]),
+         freshStorageIds: new Set<string>(),
+         freshStorageNames: new Set<string>(),
+         boundEntityIds: new Set(["entity-orders", "entity-orders_rollup_1"]),
+         freshEntityIds: new Set(["entity-orders", "entity-orders_rollup_1"]),
+      };
+      const verdicts = computeServeVerdicts(facts([persisted, rollup], both));
+      expect(verdicts.map((v) => [v.sourceName, v.tier, v.verdict])).toEqual([
+         ["orders", "database", "serves"],
+         // A rollup's leg reads its storage binding, stale or not.
+         ["orders_rollup_1", "storage", "live"],
+      ]);
+      // A fresh storage table is still the one read.
+      const [fresh] = computeServeVerdicts(
+         facts([persisted], {
+            ...both,
+            freshStorageIds: new Set([persisted[0]]),
+            freshStorageNames: new Set(["orders"]),
+         }),
+      );
+      expect([fresh.tier, fresh.verdict]).toEqual(["storage", "serves"]);
+   });
+
+   it("names no storage= to drop for a host's storage binding while the storage mode is off", () => {
+      const [verdict] = computeServeVerdicts(
+         facts([plan("orders")], {
+            storageMode: "off",
+            boundStorageNames: new Set(["orders"]),
+            boundStorageIds: new Set([plan("orders")[0]]),
+         }),
+      );
+      expect(verdict).toMatchObject({
+         tier: "storage",
+         verdict: "live",
+         reason: "storage_mode",
+      });
+      expect(verdict.message).not.toContain("storage=");
+      expect(verdict.fixes).toEqual([
+         "Set PERSIST_STORAGE_MODE=on on the server.",
+      ]);
    });
 
    it("serves nothing from storage unless PERSIST_STORAGE_MODE is on", () => {
