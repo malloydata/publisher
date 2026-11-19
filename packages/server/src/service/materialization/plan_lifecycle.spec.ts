@@ -316,8 +316,9 @@ describe("PlanLifecycle after a failed refresh", () => {
       expect(plan.connectionNames()).toBeNull();
    });
 
-   it("a refresh that fails after a good plan keeps the whole last good record for serving, every side table included", async () => {
+   it("a refresh that fails after a good plan keeps the whole last good record, every side table included, behind a null buildPlan", async () => {
       const { plan, outcome } = await failedAfterEdit();
+      expect(plan.buildPlan).toBeNull();
       expect([...plan.rollupsKeepingGates]).toEqual(["r@m.malloy"]);
       expect(plan.refusedRollups).toBe(outcome.refusedRollups);
       expect(plan.refusalNotices).toBe(outcome.refusalNotices);

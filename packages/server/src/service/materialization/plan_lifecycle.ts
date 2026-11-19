@@ -114,12 +114,15 @@ const EMPTY_RECORD: PlanRecord = {
  * The rule for what a failure keeps:
  *  - A failed load keeps nothing: no plan, both eligibilities unknown, which
  *    refuses every stored read until a plan is derived.
- *  - A failed re-derivation keeps the last good record for SERVING only
- *    (bindings, the served copy, the verdicts and the warnings read
- *    `serving`), its database eligibility less every address a source on an
- *    edited connection builds: that table was built through the connection
- *    as it was. Nothing VALIDATES against it (`current` is null), so no
- *    route or run reads the pre-edit plan as the plan.
+ *  - A failed re-derivation keeps the last good record, whole, as `serving`,
+ *    its database eligibility less every address a source on an edited
+ *    connection builds: that table was built through the connection as it
+ *    was. A host's rebind matches against it. Nothing VALIDATES against it
+ *    (`current` is null), so no route or run reads the pre-edit plan as the
+ *    plan; the warnings and serve verdicts that start from `buildPlan` read
+ *    nothing of it either, as stored reads are refused during the outage.
+ *    The record is kept whole rather than trimmed to what a rebind reads, so
+ *    every transition replaces one value.
  */
 interface PlanState {
    /** The plan derived last; null before any load, and after a failure. */
