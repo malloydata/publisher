@@ -110,6 +110,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
    accessReads?: readonly string[];
 }
 
+/**
+ * The name `accessReads` holds when a walk could not finish: every stored
+ * relation counts as one an access decision reads (fail closed).
+ */
+export const EVERY_SOURCE = "*";
+
 /** The planned sources of `build` in build order, skipping any not in `tables`. */
 export function* sourcesInBuildOrder(
    build: SourceBuild,

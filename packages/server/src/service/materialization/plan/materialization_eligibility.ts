@@ -55,7 +55,7 @@ import {
    readTimeDynamicTerms,
 } from "./persist_dynamic_terms";
 import { routeReadsEnv } from "../../motly";
-import { EVERY_SOURCE } from "./access_closure";
+import { EVERY_SOURCE } from "../domain/compiled_build_plan";
 import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import {

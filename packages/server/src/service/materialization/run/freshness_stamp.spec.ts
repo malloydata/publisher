@@ -384,7 +384,12 @@ describe("a standalone run's carry-forward", () => {
          [["s1", "s2"]],
       );
       const { instructions, carried } = deriveSelfInstructions(
-         { ...nowReading, asOfBuild: { s1: { name: "s1", reads: [] } } },
+         {
+            ...nowReading,
+            asOfBuild: { s1: { name: "s1", reads: [] } },
+            // No access decision reads it, so the gate builds it.
+            accessReads: [],
+         },
          undefined,
          {
             b1aaaaaaaaaaaaaa: prior("b1aaaaaaaaaaaaaa", "s1"),

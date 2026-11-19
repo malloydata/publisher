@@ -23,16 +23,11 @@
  */
 
 import { readsAGiven } from "../../probe_compiler";
+import { EVERY_SOURCE } from "../domain/compiled_build_plan";
 import { irCarriesAGate } from "./materialization_eligibility";
 
 /** Max IR depth to walk for names; deep enough for real models. */
 const MAX_WALK_DEPTH = 200;
-
-/**
- * The name added when a walk could not finish: every stored relation counts
- * as one an access decision reads (fail closed).
- */
-export const EVERY_SOURCE = "*";
 
 /** Keys whose string value names another source a definition depends on. */
 const DEPENDENCY_KEYS: ReadonlySet<string> = new Set(["sourceID", "extends"]);
