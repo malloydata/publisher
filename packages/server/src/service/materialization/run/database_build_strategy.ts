@@ -35,7 +35,7 @@ import {
    refreshFields,
    resetLedger,
 } from "./incremental_build";
-import { backupSuffix, stagingSuffix } from "./materialization_run_support";
+import { backupSuffix, stagingSuffix } from "./build_table_names";
 import { transactionalSwapSql } from "./warehouse_sql";
 import { runAsInternalStatement } from "../../duckdb_lockdown";
 

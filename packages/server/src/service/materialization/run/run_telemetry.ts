@@ -42,10 +42,12 @@ import {
    isPersistedQuerySourceID,
    PERSISTED_VIEW_COMPANION_SUFFIX,
 } from "../domain/table_plans";
-import type {
-   BuildInstruction,
-   BuildPlan,
-   ManifestEntry,
+import {
+   type BuildInstruction,
+   type BuildPlan,
+   isLegacyFailedEntry,
+   type ManifestEntry,
+   type SourceFailure,
 } from "../domain/types";
 import type { BuildRetryable } from "./build_failure_class";
 import { BilledReadNotCapturedError } from "./materialization_build_session";
@@ -406,4 +408,26 @@ export function reportSourceReused(kind: BuildKind, tier: BuildTier): void {
    const run = currentRun.getStore();
    if (run) run.tally.reused++;
    recordBuildOutcome({ kind, tier, outcome: "reused" });
+}
+
+/**
+ * How many sources a run built, failed on, and reused, counted from what the
+ * build returned (an instruction can be skipped without building).
+ * `failures` is the authority on what failed; a legacy entry mirroring a
+ * failure (`ManifestEntry.error`) is excluded from the other counts so one
+ * lost source is not also reported as built or reused.
+ */
+export function tallySources(
+   entries: Record<string, ManifestEntry>,
+   failures: Record<string, SourceFailure>,
+   carried: Record<string, ManifestEntry>,
+): { sourcesBuilt: number; sourcesFailed: number; sourcesReused: number } {
+   const built = Object.values(entries).filter(
+      (e) => !isLegacyFailedEntry(e) && !carried[e.sourceEntityId!],
+   );
+   return {
+      sourcesBuilt: built.length,
+      sourcesFailed: Object.keys(failures).length,
+      sourcesReused: Object.keys(carried).filter((id) => !failures[id]).length,
+   };
 }

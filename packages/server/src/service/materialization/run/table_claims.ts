@@ -25,7 +25,7 @@ import {
    type WriteTarget,
 } from "../../versions/materialization_scope";
 import { BuildInstruction } from "../domain/types";
-import { isActiveRun } from "./materialization_run_support";
+import { isActiveRun } from "./run_status";
 import { KeyedLock } from "./keyed_lock";
 import { assertNoOwnedNameHeld } from "./table_ownership";
 

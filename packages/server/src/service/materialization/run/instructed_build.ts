@@ -113,16 +113,20 @@ import { freshnessOf } from "../domain/freshness";
 import { STORAGE_DIALECT } from "../domain/dialect";
 import {
    allSourcesRefusedError,
+   refusalRecord,
+} from "./materialization_instructed_run";
+import {
    BuildEnvironment,
    chainedPlanFacts,
-   upstreamEntryIsCurrent,
-   isReclaimableStorageTable,
    manifestExcludingStorage,
-   refusalRecord,
+   upstreamEntryIsCurrent,
+} from "./build_upstreams";
+import {
+   isReclaimableStorageTable,
    reportRetainedStorageTables,
-   selfAssignTableName,
-   statementRunOptions,
-} from "./materialization_run_support";
+} from "./reclaimer";
+import { selfAssignTableName } from "./build_table_names";
+import { statementRunOptions } from "./build_query_tag";
 import {
    dropOwnNameView,
    provenOwnView,

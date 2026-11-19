@@ -2,19 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * What a build needs from the plan about stored tables, and the run's shared
- * helpers. The plan's facts ({@link ChainedPlanFacts}, {@link chainedPlanFacts})
- * and the manifest the compiler renders over ({@link manifestForCompiler},
+ * What a build needs from the plan about its stored upstreams: the plan's
+ * facts ({@link ChainedPlanFacts}, {@link chainedPlanFacts}) and the manifest
+ * the compiler renders over ({@link manifestForCompiler},
  * {@link upstreamReuseFromManifest}); which upstream entries are current for
  * their declared tier, and the refusal of one a host supplied at the wrong
  * tier ({@link HostSuppliedWrongTierError}); the environment surface a build
- * reads ({@link BuildEnvironment}); staging and backup names, the run's status
- * transitions, its tallies and its table keys. Read by most of `run/` and the
- * materialization controller.
+ * reads ({@link BuildEnvironment}); the destination a declared `storage=`
+ * builds into; and a run's results named package-relative.
  *
- * Mostly pure. The exceptions log and count: a wrong-tier recompute
- * ({@link noteWrongTierRecompute}) and the storage tables a failed run keeps
- * ({@link reportRetainedStorageTables}).
+ * Mostly pure. The exception logs and counts a wrong-tier recompute
+ * ({@link noteWrongTierRecompute}).
  */
 
 import { declaredDestination, storageWritable } from "../domain/placement";
@@ -23,47 +21,20 @@ import {
    compilerBuildId,
    computeSourceEntityId,
    declaredStorage,
-   deriveAnnotationFields,
    generatedNameOwner,
    type TableFolds,
 } from "./run_plan";
-import {
-   isPersistedResultSourceID,
-   type MaterializePlan,
-   originOfTable,
-} from "../domain/table_plans";
+import { type MaterializePlan } from "../domain/table_plans";
 import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
-import {
-   ChainedShapeNotCarriedError,
-   MaterializationEligibilityError,
-} from "../../../errors";
+import { ChainedShapeNotCarriedError } from "../../../errors";
 import { logger } from "../../../logger";
-import {
-   recordStaleUpstreamEntry,
-   recordStorageTableRetained,
-} from "../../../materialization_metrics";
-import {
-   isLegacyFailedEntry,
-   MaterializationStatus,
-   ManifestEntry,
-   RefusedSource,
-   SourceFailure,
-} from "../domain/types";
-import { errMessage } from "../../../utils";
-import {
-   mergeQueryMetadata,
-   type QueryContext,
-   type QueryMetadata,
-} from "../../query_metadata";
-import type { components } from "../../../api";
+import { recordStaleUpstreamEntry } from "../../../materialization_metrics";
+import { ManifestEntry, RefusedSource, SourceFailure } from "../domain/types";
 import { getPersistStorageMode } from "../../../config";
-import { escapeSQL } from "../../connection";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
-
 import type { ApiConnection } from "../../model";
-import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 import { packageRelativeText } from "../../../package_relative_text";
 
 /**
@@ -460,7 +431,7 @@ export function chainedPlanFacts(
 
 /**
  * Whether a manifest entry describes the table its source is declared to have
- * NOW (pinned by materialization_run_support.spec.ts). An entry's tier is its
+ * NOW (pinned by build_upstreams.spec.ts). An entry's tier is its
  * `storageDestinationName`, or null for a warehouse table. A source moved to
  * or from `storage=` keeps its content address, so a carried or referenced
  * entry can be the table from before the move: a warehouse table for a source
@@ -693,92 +664,6 @@ export function withChainBuildText<E extends BuildEnvironment>(
 export const PACKAGE_STALE_MARKER = "serves a model older than its files";
 
 /**
- * What a build needs to tag its statements: the package-level metadata layer
- * and the run's context. Constant for the run; a source adds only its name.
- */
-export interface BuildQueryMetadata {
-   packageMaterialization:
-      | components["schemas"]["PackageMaterializationConfig"]
-      | null;
-   context: QueryContext;
-}
-
-/**
- * A connection's two metadata layers: the overridable default and the
- * deployment-enforced properties. Fails open: an unreadable connection costs
- * the tags, never the statement.
- */
-export function connectionMetadataLayers(
-   environment: BuildEnvironment,
-   connectionName: string,
-): { default: QueryMetadata | null; enforced: QueryMetadata | null } {
-   try {
-      const connection = environment.getApiConnection(connectionName);
-      return {
-         default: connection?.queryMetadata ?? null,
-         enforced: connection?.queryMetadataEnforced ?? null,
-      };
-   } catch (error) {
-      // Logged because the lost enforced layer has no metric behind it.
-      logger.debug("No query-metadata layers for connection", {
-         connectionName,
-         error,
-      });
-      return { default: null, enforced: null };
-   }
-}
-
-/**
- * The query metadata a run's own statement on `connectionName` carries (an
- * ownership probe, a mark, a drop): the connection's layers under the run's
- * context. Fails open, as a build's does.
- */
-export function statementRunOptions(
-   environment: BuildEnvironment,
-   connectionName: string,
-   context: QueryContext,
-): { queryMetadata?: QueryMetadata } {
-   const layers = connectionMetadataLayers(environment, connectionName);
-   const resolved = mergeQueryMetadata({
-      connection: layers.default,
-      enforced: layers.enforced,
-      context,
-   });
-   return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
-}
-
-/**
- * Length of the sourceEntityId prefix used when synthesizing staging table
- * names. 12 hex chars is 48 bits of entropy, well inside every dialect's
- * identifier limit (Postgres is the tightest at 63).
- */
-export const STAGING_ID_LEN = 12;
-
-/** Staging suffix appended to a table name while it is being built. */
-export function stagingSuffix(sourceEntityId: string): string {
-   // Drop hyphens so a UUID-shaped id still yields a bare identifier fragment.
-   return `_${sourceEntityId.replace(/-/g, "").substring(0, STAGING_ID_LEN)}`;
-}
-
-/**
- * Suffix of the name a served table is moved aside to while its rebuilt
- * replacement is renamed into place. The same length as {@link stagingSuffix},
- * so it fits wherever a staging name does, and never equal to it.
- */
-export function backupSuffix(sourceEntityId: string): string {
-   return `_o${sourceEntityId.replace(/-/g, "").substring(0, STAGING_ID_LEN - 1)}`;
-}
-
-/**
- * Physical table name the publisher self-assigns in auto-run mode: the
- * `#@ persist name=<table>` value if present, else the Malloy source name.
- * The author owns quoting the `name=` value for the dialect.
- */
-export function selfAssignTableName(persistSource: PersistSource): string {
-   return deriveAnnotationFields(persistSource).name || persistSource.name;
-}
-
-/**
  * The build manifest for a `storage=` build, with storage-held entries removed.
  * The build runs in the source warehouse, so dropping them makes the compiler
  * INLINE the upstream (or strictly miss) instead of emitting a cross-engine
@@ -847,225 +732,6 @@ export function resolveStorageDestination(
       declaredStorage(persistSource),
       getPersistStorageMode(),
    );
-}
-
-/** Connection-config keys whose string values are credentials to redact. */
-const SENSITIVE_KEY =
-   /pass(word)?|secret|private_?key|service_?account|access_?key|token|connection_?string|account/i;
-
-/** Collect credential string values (from sensitively-named keys) in a config. */
-function collectSensitiveValues(
-   value: unknown,
-   out: Set<string>,
-   seen: WeakSet<object> = new WeakSet(),
-): void {
-   if (value === null || typeof value !== "object") return;
-   // Callers pass a LIVE connection whose driver/pool graph can be cyclic;
-   // without this guard the stack overflow would replace the error being
-   // redacted. Mirrors the guard in redactSensitive.
-   if (seen.has(value)) return;
-   seen.add(value);
-   if (Array.isArray(value)) {
-      for (const v of value) collectSensitiveValues(v, out, seen);
-      return;
-   }
-   for (const [key, v] of Object.entries(value)) {
-      if (typeof v === "string" && v.length >= 4 && SENSITIVE_KEY.test(key)) {
-         out.add(v);
-      } else {
-         collectSensitiveValues(v, out, seen);
-      }
-   }
-}
-
-/**
- * How many sources a run built, failed on, and reused, counted from what the
- * build returned (an instruction can be skipped without building).
- * `failures` is the authority on what failed; a legacy entry mirroring a
- * failure (`ManifestEntry.error`) is excluded from the other counts so one
- * lost source is not also reported as built or reused.
- */
-export function tallySources(
-   entries: Record<string, ManifestEntry>,
-   failures: Record<string, SourceFailure>,
-   carried: Record<string, ManifestEntry>,
-): { sourcesBuilt: number; sourcesFailed: number; sourcesReused: number } {
-   const built = Object.values(entries).filter(
-      (e) => !isLegacyFailedEntry(e) && !carried[e.sourceEntityId!],
-   );
-   return {
-      sourcesBuilt: built.length,
-      sourcesFailed: Object.keys(failures).length,
-      sourcesReused: Object.keys(carried).filter((id) => !failures[id]).length,
-   };
-}
-
-/**
- * The record a run keeps for a source the eligibility gate refused, in the
- * plan's `RefusedSource` shape so both report it identically.
- */
-export function refusalRecord(
-   persistSource: PersistSource,
-   err: MaterializationEligibilityError,
-   tier: RefusedSource["tier"],
-   modelPath: string | undefined,
-   /** Its planned table's kind, which names its mechanism (`origin`). */
-   kind?: Parameters<typeof originOfTable>[0],
-): RefusedSource {
-   return {
-      origin:
-         tier === "preaggregate"
-            ? "rollup"
-            : originOfTable(
-                 kind ??
-                    (isPersistedResultSourceID(persistSource.sourceID)
-                       ? "view"
-                       : "persist"),
-                 persistSource.sourceID,
-              ),
-      name: persistSource.name,
-      sourceID: persistSource.sourceID,
-      ...(modelPath ? { modelPath } : {}),
-      tier,
-      reason: err.reason || "authorize",
-      message: errMessage(err),
-   };
-}
-
-/**
- * The run-level refusal when every targeted source was refused. Several
- * refusals are joined so the run names every source, not only the first.
- */
-export function allSourcesRefusedError(
-   errors: MaterializationEligibilityError[],
-): MaterializationEligibilityError {
-   if (errors.length === 1) return errors[0];
-   const reason = errors.every((e) => e.reason === errors[0].reason)
-      ? errors[0].reason
-      : undefined;
-   return new MaterializationEligibilityError({
-      message: errors.map((e) => e.message).join("; "),
-      reason,
-   });
-}
-
-/**
- * Redact the concrete credential values found in the given connections out of
- * an error message, keeping the rest legible ("schema not found" still tells
- * the operator what to fix) while never leaking passwords, secrets, service
- * account JSON or connection strings a federation or attach error can echo.
- */
-export function redactConnectionSecrets(
-   message: string,
-   ...connections: unknown[]
-): string {
-   const secrets = new Set<string>();
-   // One `seen` across arguments: a source and destination may share a subgraph.
-   const seen = new WeakSet<object>();
-   for (const c of connections) collectSensitiveValues(c, secrets, seen);
-   // A storage URL (bucket, organization and database paths) too: the result
-   // is recorded on the run, which callers read.
-   let redacted = redactStorageUrls(redactPgSecrets(message));
-   for (const s of secrets) {
-      redacted = redacted.split(s).join("***");
-      // A DuckDB error may echo the SQL, where a secret with a single quote
-      // appears escaped (`''`), so redact the escaped form too.
-      const escaped = escapeSQL(s);
-      if (escaped !== s) redacted = redacted.split(escaped).join("***");
-   }
-   return redacted;
-}
-
-/** Classify a thrown build error as cancelled (cooperative abort) or failed. */
-export function outcomeFor(
-   signal: AbortSignal | undefined,
-): "failed" | "cancelled" {
-   return signal?.aborted ? "cancelled" : "failed";
-}
-
-/** A run that can write nothing more. */
-const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
-   "MANIFEST_FILE_READY",
-   "FAILED",
-   "CANCELLED",
-]);
-
-/** Whether a run with `status` has not settled: it may still write. */
-export function isActiveRun(status: string): boolean {
-   return !TERMINAL_RUN_STATUSES.has(status);
-}
-
-/**
- * Allowed status transitions: PENDING → MANIFEST_ROWS_READY (tables built) →
- * MANIFEST_FILE_READY. MANIFEST_FILE_READY, FAILED and CANCELLED are terminal.
- */
-export const VALID_TRANSITIONS: Record<
-   MaterializationStatus,
-   MaterializationStatus[]
-> = {
-   PENDING: ["MANIFEST_ROWS_READY", "FAILED", "CANCELLED"],
-   MANIFEST_ROWS_READY: ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"],
-   MANIFEST_FILE_READY: [],
-   FAILED: [],
-   CANCELLED: [],
-};
-
-/**
- * Name the stored tables a failed run wrote and did not reclaim. Otherwise
- * there is no record at all (no manifest committed, and the host's orphan
- * sweep does not cover storage destinations; see
- * {@link isReclaimableStorageTable}).
- *
- * Deliberately does NOT call them orphans: `refresh: "full"` covers both a
- * rebuild at a fresh generational name (unreferenced) and a seed fallback on
- * the stable name a previous manifest still binds (live). It reports only what
- * is certain.
- */
-export function reportRetainedStorageTables(
-   retained: ManifestEntry[],
-   packageName: string,
-): void {
-   for (const entry of retained) {
-      recordStorageTableRetained();
-      logger.warn(
-         "A failed run left a table in a storage destination and did not reclaim " +
-            "it: the source is refreshed incrementally, so this name may be the " +
-            "one it serves from. Unreferenced if the run was building a fresh " +
-            "generation, in which case reclaiming it needs the destination sweep.",
-         {
-            packageName,
-            sourceName: entry.sourceName,
-            destinationName: entry.storageDestinationName,
-            physicalTableName: entry.physicalTableName,
-            refresh: entry.refresh,
-         },
-      );
-   }
-}
-
-/**
- * Whether a manifest entry names a stored table a failed run may reclaim.
- *
- * An INCREMENTALLY REFRESHED source (`entry.refresh` present) is never
- * reclaimed: its physical name is stable across runs, a prior manifest may bind
- * it, and a refresh writes it in place. Dropping it because a later source
- * failed would take the source off its table until a rebuild. A source with a
- * stored upstream is retained on the same terms, because the host sees its
- * `refresh="incremental"` and hands it a stable serving name too.
- *
- * Conservative in one direction: an incremental source's FIRST (or forced)
- * build is at a fresh, unbound name that `entry.refresh` cannot distinguish,
- * so it leaks. The host's orphan sweep does not catch it (it enumerates a
- * connection's catalog and skips storage-destination rows), and the reclaim's
- * `stillReferenced` check only sees READY manifests of the SAME package name.
- * Accepted: a destination already accumulates superseded generations, and
- * leaking costs storage while reclaiming a serving table costs data. The
- * premise (an incremental source is built at the name it serves from) is the
- * host's to keep; minting generations per source rather than per address
- * breaks it.
- */
-export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
-   return !!entry.storageDestinationName && entry.refresh === undefined;
 }
 
 /**

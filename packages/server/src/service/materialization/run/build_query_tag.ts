@@ -20,7 +20,14 @@
  */
 
 import { snowflakeSetQueryTagStatement } from "./warehouse_sql";
-import type { QueryMetadata } from "../../query_metadata";
+import type { components } from "../../../api";
+import { logger } from "../../../logger";
+import {
+   mergeQueryMetadata,
+   type QueryContext,
+   type QueryMetadata,
+} from "../../query_metadata";
+import type { BuildEnvironment } from "./build_upstreams";
 
 /**
  * Snowflake's `QUERY_TAG` ceiling. The bag arrives already bounded to this on
@@ -183,4 +190,59 @@ export function bigQueryQueryLabelValue(
    }
    if (rendered.size === 0) return undefined;
    return [...rendered].map(([key, value]) => `${key}:${value}`).join(",");
+}
+
+/**
+ * What a build needs to tag its statements: the package-level metadata layer
+ * and the run's context. Constant for the run; a source adds only its name.
+ */
+export interface BuildQueryMetadata {
+   packageMaterialization:
+      | components["schemas"]["PackageMaterializationConfig"]
+      | null;
+   context: QueryContext;
+}
+
+/**
+ * A connection's two metadata layers: the overridable default and the
+ * deployment-enforced properties. Fails open: an unreadable connection costs
+ * the tags, never the statement.
+ */
+export function connectionMetadataLayers(
+   environment: BuildEnvironment,
+   connectionName: string,
+): { default: QueryMetadata | null; enforced: QueryMetadata | null } {
+   try {
+      const connection = environment.getApiConnection(connectionName);
+      return {
+         default: connection?.queryMetadata ?? null,
+         enforced: connection?.queryMetadataEnforced ?? null,
+      };
+   } catch (error) {
+      // Logged because the lost enforced layer has no metric behind it.
+      logger.debug("No query-metadata layers for connection", {
+         connectionName,
+         error,
+      });
+      return { default: null, enforced: null };
+   }
+}
+
+/**
+ * The query metadata a run's own statement on `connectionName` carries (an
+ * ownership probe, a mark, a drop): the connection's layers under the run's
+ * context. Fails open, as a build's does.
+ */
+export function statementRunOptions(
+   environment: BuildEnvironment,
+   connectionName: string,
+   context: QueryContext,
+): { queryMetadata?: QueryMetadata } {
+   const layers = connectionMetadataLayers(environment, connectionName);
+   const resolved = mergeQueryMetadata({
+      connection: layers.default,
+      enforced: layers.enforced,
+      context,
+   });
+   return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
 }

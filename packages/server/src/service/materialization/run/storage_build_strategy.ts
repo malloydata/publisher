@@ -96,20 +96,20 @@ import {
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
+import { backupSuffix } from "./build_table_names";
 import {
-   backupSuffix,
    BuildEnvironment,
-   ChainedPlanFacts,
-   NO_PLAN_FACTS,
-   redactConnectionSecrets,
-   currentUpstreamEntries,
-   noteWrongTierRecompute,
    ChainedPackageStaleError,
+   ChainedPlanFacts,
+   currentUpstreamEntries,
    HostSuppliedWrongTierError,
+   NO_PLAN_FACTS,
+   noteWrongTierRecompute,
    upstreamEntryIsCurrent,
    WRONG_TIER_MARKER,
    wrongTierDetail,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import { redactConnectionSecrets } from "./connection_redaction";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 import { compiledTextReader } from "../../../utils";
 import {

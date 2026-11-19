@@ -36,7 +36,7 @@ import { errMessage } from "../../../utils";
 import {
    HostSuppliedWrongTierError,
    strictMissSourceId,
-} from "./materialization_run_support";
+} from "./build_upstreams";
 import { InlinedJoinNotUniqueError } from "./inline_uniqueness";
 import type { SourceFailure } from "../domain/types";
 

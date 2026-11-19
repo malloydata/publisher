@@ -76,10 +76,9 @@ import type { EligibilityTier } from "./materialization_instructed_run";
 import {
    allSourcesRefusedError,
    refusalRecord,
-   resolveStorageDestination,
-   selfAssignTableName,
-   STAGING_ID_LEN,
-} from "./materialization_run_support";
+} from "./materialization_instructed_run";
+import { resolveStorageDestination } from "./build_upstreams";
+import { selfAssignTableName, STAGING_ID_LEN } from "./build_table_names";
 import { hasAuthorTableName } from "./table_ownership";
 
 /**

@@ -46,7 +46,7 @@ import {
    type RollupKeyRecord,
 } from "./inline_uniqueness";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
-import type { RunLifecycle } from "./run_lifecycle";
+import { type RunLifecycle } from "./run_lifecycle";
 
 /**
  * What a run records when it reaches MANIFEST_FILE_READY about its manifest

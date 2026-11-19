@@ -24,7 +24,7 @@ import type {
 } from "../domain/types";
 import { foldDistinctTableNames, planAddresses } from "../plan/addressing";
 import { InstructedBuild } from "./instructed_build";
-import type { BuildEnvironment } from "./materialization_run_support";
+import { type BuildEnvironment } from "./build_upstreams";
 
 const SHARED = "btwinshared0address";
 const DOWNSTREAM = "btwindownstream0col";

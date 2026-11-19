@@ -57,17 +57,21 @@ import {
    failedUpstreamsOf,
    type FailedUpstream,
 } from "./build_failure_class";
+import { redactConnectionSecrets } from "./connection_redaction";
 import {
-   redactConnectionSecrets,
    type BuildEnvironment,
-   type BuildQueryMetadata,
    type ChainedPlanFacts,
    type WarehouseReach,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import { type BuildQueryMetadata } from "./build_query_tag";
 import type { IncrementalRunContext } from "./incremental_build";
 import type { UniquenessLedger } from "./inline_uniqueness";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import {
+   isPersistedResultSourceID,
+   originOfTable,
+} from "../domain/table_plans";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { reportSourceFailed } from "./run_telemetry";
 
@@ -643,4 +647,53 @@ export function recordInstructedBuildFailure(
       materializedTableId: instruction.materializedTableId,
       error: reason,
    } as ManifestEntry;
+}
+
+/**
+ * The record a run keeps for a source the eligibility gate refused, in the
+ * plan's `RefusedSource` shape so both report it identically.
+ */
+export function refusalRecord(
+   persistSource: PersistSource,
+   err: MaterializationEligibilityError,
+   tier: RefusedSource["tier"],
+   modelPath: string | undefined,
+   /** Its planned table's kind, which names its mechanism (`origin`). */
+   kind?: Parameters<typeof originOfTable>[0],
+): RefusedSource {
+   return {
+      origin:
+         tier === "preaggregate"
+            ? "rollup"
+            : originOfTable(
+                 kind ??
+                    (isPersistedResultSourceID(persistSource.sourceID)
+                       ? "view"
+                       : "persist"),
+                 persistSource.sourceID,
+              ),
+      name: persistSource.name,
+      sourceID: persistSource.sourceID,
+      ...(modelPath ? { modelPath } : {}),
+      tier,
+      reason: err.reason || "authorize",
+      message: errMessage(err),
+   };
+}
+
+/**
+ * The run-level refusal when every targeted source was refused. Several
+ * refusals are joined so the run names every source, not only the first.
+ */
+export function allSourcesRefusedError(
+   errors: MaterializationEligibilityError[],
+): MaterializationEligibilityError {
+   if (errors.length === 1) return errors[0];
+   const reason = errors.every((e) => e.reason === errors[0].reason)
+      ? errors[0].reason
+      : undefined;
+   return new MaterializationEligibilityError({
+      message: errors.map((e) => e.message).join("; "),
+      reason,
+   });
 }

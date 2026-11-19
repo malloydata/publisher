@@ -56,7 +56,7 @@ import * as connection from "../../src/service/connection";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import * as dialects from "../../src/service/materialization/domain/dialect";
-import { backupSuffix } from "../../src/service/materialization/run/materialization_run_support";
+import { backupSuffix } from "../../src/service/materialization/run/build_table_names";
 import { listStorageTables } from "../../src/service/materialization/run/materialization_build_session";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../src/service/model_query_request";

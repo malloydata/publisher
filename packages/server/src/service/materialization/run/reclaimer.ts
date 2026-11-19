@@ -37,6 +37,7 @@ import { UnquotableIdentifierError } from "../../quoting";
 import {
    type DropOccasion,
    recordDropTables,
+   recordStorageTableRetained,
 } from "../../../materialization_metrics";
 import {
    Materialization,
@@ -65,14 +66,11 @@ import {
 } from "../domain/types";
 import { DatabaseTier } from "./database_build_strategy";
 import { StorageBuildStrategy } from "./storage_build_strategy";
-import {
-   backupSuffix,
-   BuildEnvironment,
-   stagingSuffix,
-   statementRunOptions,
-   isActiveRun,
-   redactConnectionSecrets,
-} from "./materialization_run_support";
+import { backupSuffix, stagingSuffix } from "./build_table_names";
+import { BuildEnvironment } from "./build_upstreams";
+import { statementRunOptions } from "./build_query_tag";
+import { isActiveRun } from "./run_status";
+import { redactConnectionSecrets } from "./connection_redaction";
 import {
    dropLeftoverNameViews,
    heldByOwnNameView,
@@ -95,7 +93,7 @@ import {
    type TableSiteContext,
 } from "./table_site";
 import { capabilitiesOf } from "../domain/dialect";
-import type { RunLifecycle } from "./run_lifecycle";
+import { type RunLifecycle } from "./run_lifecycle";
 import {
    entryTable,
    leafKey,
@@ -2305,4 +2303,62 @@ function logRetiredByView(
       "Skipped drop: a name= view this package made in an earlier release replaced the table, which is gone",
       { runId: materializationId, physicalTableName },
    );
+}
+
+/**
+ * Name the stored tables a failed run wrote and did not reclaim. Otherwise
+ * there is no record at all (no manifest committed, and the host's orphan
+ * sweep does not cover storage destinations; see
+ * {@link isReclaimableStorageTable}).
+ *
+ * Deliberately does NOT call them orphans: `refresh: "full"` covers both a
+ * rebuild at a fresh generational name (unreferenced) and a seed fallback on
+ * the stable name a previous manifest still binds (live). It reports only what
+ * is certain.
+ */
+export function reportRetainedStorageTables(
+   retained: ManifestEntry[],
+   packageName: string,
+): void {
+   for (const entry of retained) {
+      recordStorageTableRetained();
+      logger.warn(
+         "A failed run left a table in a storage destination and did not reclaim " +
+            "it: the source is refreshed incrementally, so this name may be the " +
+            "one it serves from. Unreferenced if the run was building a fresh " +
+            "generation, in which case reclaiming it needs the destination sweep.",
+         {
+            packageName,
+            sourceName: entry.sourceName,
+            destinationName: entry.storageDestinationName,
+            physicalTableName: entry.physicalTableName,
+            refresh: entry.refresh,
+         },
+      );
+   }
+}
+
+/**
+ * Whether a manifest entry names a stored table a failed run may reclaim.
+ *
+ * An INCREMENTALLY REFRESHED source (`entry.refresh` present) is never
+ * reclaimed: its physical name is stable across runs, a prior manifest may bind
+ * it, and a refresh writes it in place. Dropping it because a later source
+ * failed would take the source off its table until a rebuild. A source with a
+ * stored upstream is retained on the same terms, because the host sees its
+ * `refresh="incremental"` and hands it a stable serving name too.
+ *
+ * Conservative in one direction: an incremental source's FIRST (or forced)
+ * build is at a fresh, unbound name that `entry.refresh` cannot distinguish,
+ * so it leaks. The host's orphan sweep does not catch it (it enumerates a
+ * connection's catalog and skips storage-destination rows), and the reclaim's
+ * `stillReferenced` check only sees READY manifests of the SAME package name.
+ * Accepted: a destination already accumulates superseded generations, and
+ * leaking costs storage while reclaiming a serving table costs data. The
+ * premise (an incremental source is built at the name it serves from) is the
+ * host's to keep; minting generations per source rather than per address
+ * breaks it.
+ */
+export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
+   return !!entry.storageDestinationName && entry.refresh === undefined;
 }

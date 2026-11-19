@@ -22,7 +22,7 @@ import type {
    RefusedSource,
 } from "../domain/types";
 import { InstructedBuild } from "./instructed_build";
-import type { BuildEnvironment } from "./materialization_run_support";
+import { type BuildEnvironment } from "./build_upstreams";
 
 const ADDRESS = "bshared0emptystorage";
 

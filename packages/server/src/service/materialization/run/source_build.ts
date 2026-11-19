@@ -40,21 +40,23 @@ import {
 } from "./incremental_build";
 import {
    BuildEnvironment,
-   BuildQueryMetadata,
    ChainedPlanFacts,
    compilerMissingUpstream,
-   connectionMetadataLayers,
+   HostSuppliedWrongTierError,
    manifestExcludingStorage,
    manifestForCompiler,
    NO_PLAN_FACTS,
    noteWrongTierRecompute,
    presentedSourceName,
    strictMissSourceId,
-   HostSuppliedWrongTierError,
    upstreamEntryIsCurrent,
    upstreamReuseFromManifest,
    wrongTierDetail,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import {
+   BuildQueryMetadata,
+   connectionMetadataLayers,
+} from "./build_query_tag";
 import type {
    StorageBuildRequest,
    StoredRollupBase,

@@ -86,14 +86,13 @@ import {
    referenceManifestToEntries,
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
+import { isActiveRun, outcomeFor } from "./run_status";
 import {
-   isActiveRun,
-   outcomeFor,
    packageRelativeRun,
-   tallySources,
    type WarehouseReach,
    withChainBuildText,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import { tallySources } from "./run_telemetry";
 import type { QueryContext } from "../../query_metadata";
 import { packageOwner } from "./table_mark_sql";
 import { Reclaimer, RENAMED_TABLES_KEY } from "./reclaimer";

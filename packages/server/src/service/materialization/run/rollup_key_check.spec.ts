@@ -51,7 +51,7 @@ import { ManifestCommitter } from "./manifest_committer";
 import { splitManifestEntries } from "./manifest_loader";
 import { deriveServeBindings } from "../domain/binding";
 import { storedKeyChecksOf } from "../plan/rollup_plan";
-import type { BuildEnvironment } from "./materialization_run_support";
+import { type BuildEnvironment } from "./build_upstreams";
 import { buildSource } from "./source_build";
 import * as fs from "node:fs";
 import * as path from "node:path";

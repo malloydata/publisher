@@ -48,7 +48,7 @@ import {
    createTableWithDeclaredTypes,
    issuePassthroughRead,
 } from "./run/materialization_build_session";
-import { noteWrongTierRecompute } from "./run/materialization_run_support";
+import { noteWrongTierRecompute } from "./run/build_upstreams";
 import { MaterializationScheduler } from "./run/materialization_scheduler";
 import {
    MaterializationService,
