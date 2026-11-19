@@ -6491,10 +6491,11 @@ components:
             description is `Version.description`; a reader that wants a fallback reads it there. `null` clears the one
             set."
         location:
-          $ref: "#/components/schemas/PackageLocation"
+          type: string
           x-immutable: true
-          description: Where the package's versions are fetched from. Set on create; a `PATCH` that changes it answers
-            400 `INVALID_REQUEST`. A publish with a body `location` publishes from it and records it here, the one way
+          description: Where the package's versions are fetched from, as a local path, a git or GitHub URL, a `gs://` or
+            `s3://` URI, or a `.zip`; for a live package, the local directory the server watches and reads in place.
+            Set on create; a `PATCH` that changes it answers 400 `INVALID_REQUEST`. A publish with a body `location` publishes from it and records it here, the one way
             to move it.
         latestVersionId:
           $ref: "#/components/schemas/VersionId"
@@ -6527,18 +6528,6 @@ components:
         nextCursor:
           $ref: "#/components/schemas/Cursor"
       readOnly: true
-
-    PackageLocation:
-      type: object
-      description: Where a package's content comes from, the package's and a version's `location`.
-      required:
-        - location
-      properties:
-        location:
-          type: string
-          description: A local path, a git or GitHub URL, a `gs://` or `s3://` URI, or a `.zip`. What `POST …/versions`
-            fetches when given no location. For a live package, the local directory the server watches and reads in
-            place.
 
     PackageStatus:
       type: object
@@ -8784,9 +8773,9 @@ components:
           readOnly: true
           description: The version a server-made version was made from; undo is pointing `latestVersionId` back at it.
         location:
-          $ref: "#/components/schemas/PackageLocation"
+          type: string
           x-immutable: true
-          description: Where the version was fetched from. Set on publish and never changed. Absent on the publish means
+          description: Where the version was fetched from, in the form `Package.location` takes. Set on publish and never changed. Absent on the publish means
             the package's recorded location; sent, it becomes the package's recorded `location`.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
