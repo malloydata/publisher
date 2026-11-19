@@ -97,6 +97,15 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/plan/build_plan_compile.ts -> materialization_metrics":
       "2o",
    "service/materialization/plan/eligibility_collect.ts -> logger": "2o",
+   // H6: plan/, serve/, domain/ and text/ read no setting; the shell reads
+   // the switches once and passes them down (2q, the domain model's switches).
+   "service/materialization/plan/addressing.ts -> config": "2q",
+   "service/materialization/plan/build_plan.ts -> config": "2q",
+   "service/materialization/plan/materialization_eligibility.ts -> config":
+      "2q",
+   "service/materialization/plan/rollup_compile.ts -> config": "2q",
+   "service/materialization/plan/rollup_plan.ts -> config": "2q",
+   "service/materialization/serve/rollup_variants.ts -> config": "2q",
    "service/materialization/plan/materialize_compile.ts -> logger": "2o",
    "service/materialization/plan/persist_source_fields.ts -> logger": "2o",
    "service/materialization/plan/rollup_compile.ts -> logger": "2o",
@@ -112,7 +121,11 @@ export const MATERIALIZATION_HEADER_ALLOWLIST = {};
 export const MATERIALIZATION_HISTORY_ALLOWLIST = {};
 
 /** H4: exports no other file imports, "<file>#<name>": step. */
-export const MATERIALIZATION_UNIMPORTED_EXPORTS = {};
+export const MATERIALIZATION_UNIMPORTED_EXPORTS = {
+   // Read only inside its own file; was hidden by a namespace import.
+   "service/materialization/package_warnings.ts#DATABASE_TABLE_UNREAD_CODE":
+      "2n",
+};
 /** Annotation payload reads outside plan/declaration.ts, per file. */
 export const RATCHET_ANNOTATION_READS = {};
 /** Reads of `_modelDef`, `_query`, `_sourceDef` or `_explore` outside governance/ir, per file. */
@@ -175,3 +188,139 @@ export const RATCHET_DIALECT_LITERALS = {
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {};
+/** Switch reads outside config.ts, the facade and the query pipeline, per file. */
+export const RATCHET_SWITCH_READS = {
+   "main_server.ts": { count: 1, step: "2q" },
+   "service/annotation_near_miss.ts": { count: 2, step: "2q" },
+   "service/environment.ts": { count: 2, step: "2q" },
+   "service/materialization/plan/addressing.ts": { count: 3, step: "2q" },
+   "service/materialization/plan/build_plan.ts": { count: 3, step: "2q" },
+   "service/materialization/plan/materialization_eligibility.ts": {
+      count: 4,
+      step: "2q",
+   },
+   "service/materialization/plan/rollup_compile.ts": { count: 1, step: "2q" },
+   "service/materialization/plan/rollup_plan.ts": { count: 2, step: "2q" },
+   "service/materialization/run/build_upstreams.ts": { count: 2, step: "2q" },
+   "service/materialization/run/instructed_build.ts": { count: 2, step: "2q" },
+   "service/materialization/run/manifest_committer.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/run/materialization_instructed_run.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/run/run_instructions.ts": { count: 1, step: "2q" },
+   "service/materialization/run/run_telemetry.ts": { count: 1, step: "2q" },
+   "service/materialization/run/source_build.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/rollup_variants.ts": { count: 2, step: "2q" },
+   "service/materialization/serve_verdicts.ts": { count: 3, step: "2q" },
+};
+/**
+ * Tier decisions outside domain/placement.ts, per file: a tier read off a
+ * record that carries it should read the record's `tier`.
+ */
+export const RATCHET_TIER_DECISIONS = {
+   "service/materialization/plan/eligibility_collect.ts": {
+      count: 2,
+      step: "2q",
+   },
+   "service/materialization/plan/refusal_key.ts": { count: 1, step: "2q" },
+   "service/materialization/plan/rollup_plan.ts": { count: 1, step: "2q" },
+   "service/materialization/run/instructed_build.ts": { count: 2, step: "2q" },
+   "service/materialization/run/materialization_service.ts": {
+      count: 2,
+      step: "2q",
+   },
+   "service/materialization/run/run_instructions.ts": { count: 3, step: "2q" },
+   "service/materialization/run/source_build.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/leg.ts": { count: 3, step: "2q" },
+   "service/materialization/serve/query_path.ts": { count: 3, step: "2q" },
+   "service/materialization/serve/serve_verdict.ts": { count: 2, step: "2q" },
+   "service/model.ts": { count: 1, step: "2q" },
+};
+/** Table-name comparisons outside domain/physical_table.ts, per file. */
+export const RATCHET_TABLE_IDENTITY = {
+   "service/materialization/plan/eligibility_collect.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/run/materialization_instructed_run.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/run/reclaimer.ts": { count: 1, step: "2q" },
+   "service/materialization/run/warehouse_sql.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/query_path.ts": { count: 1, step: "2q" },
+};
+/** Stored-type regexes outside stored_column_types.ts, per file. */
+export const RATCHET_STORED_TYPE_PATTERNS = {
+   "service/materialization/domain/admission.ts": { count: 1, step: "2r" },
+   "service/materialization/domain/gate_policy.ts": { count: 1, step: "2r" },
+   "service/materialization/serve/bind.ts": { count: 4, step: "2r" },
+   "service/materialization/serve/leg.ts": { count: 1, step: "2r" },
+   "service/materialization/serve/rollup_variants.ts": { count: 1, step: "2r" },
+   "service/materialization/serve/served_copy_serve.ts": {
+      count: 2,
+      step: "2r",
+   },
+};
+/**
+ * SQL and connection reads in serve/, per file: the collation probe (behind
+ * its port, a file move away from the shell) and the served copy's runtime.
+ */
+export const RATCHET_SERVE_IO = {
+   "service/materialization/serve/gate_collation.ts": { count: 10, step: "2r" },
+   "service/materialization/serve/served_copy_config.ts": {
+      count: 2,
+      step: "2r",
+   },
+};
+/** Gate-policy and admitRead imports outside their owner, "<file>#<name>": step. */
+export const RATCHET_ADMISSION_IMPORTS = {
+   // The plan's build-time gate rule reads the table rule directly.
+   "service/materialization/plan/materialization_eligibility.ts#tableKeepsGates":
+      "2r",
+   "service/materialization/plan/rollup_plan.ts#tableKeepsGates": "2r",
+};
+/**
+ * Unions and `as const` lists of kind, tier or leg words written out outside
+ * domain/vocabulary.ts, per file: each derives from the vocabulary instead.
+ */
+export const RATCHET_VOCABULARY_UNIONS = {
+   "materialization_metrics.ts": { count: 2, step: "2q" },
+   "service/materialization/domain/gate_policy.ts": { count: 2, step: "2q" },
+   "service/materialization/domain/table_plans.ts": { count: 3, step: "2q" },
+   "service/materialization/plan/materialization_eligibility.ts": {
+      count: 3,
+      step: "2q",
+   },
+   "service/materialization/plan/materialize_plan.ts": { count: 2, step: "2q" },
+   "service/materialization/plan/refusal_key.ts": { count: 1, step: "2q" },
+   "service/materialization/run/build_upstreams.ts": { count: 2, step: "2q" },
+   "service/materialization/run/materialization_instructed_run.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/serve/gate_collation.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/leg.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/query_path.ts": { count: 3, step: "2q" },
+   "service/materialization/serve/serve_verdict.ts": { count: 5, step: "2q" },
+   "service/materialization/serve/view_variants.ts": { count: 2, step: "2q" },
+   "service/materialization/serve_verdicts.ts": { count: 1, step: "2q" },
+};
+/**
+ * Names docs/materialization-v2-plan.md says were deleted outright that the
+ * tree still holds, name: the step that deletes them.
+ */
+export const DELETED_NAMES_PENDING = {
+   // The bound database entries' type.
+   FreshnessManifest: "2g.1",
+   // The router's adapters over the leg (query_router.ts, query_serving.ts).
+   keepsContracts: "2g.2",
+   keepsContractsFor: "2g.2",
+   onSkip: "2g.2",
+   // The check-compiler registry, now a field of the compiled plan.
+   keyCheckCompilers: "2i",
+};

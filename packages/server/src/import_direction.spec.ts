@@ -423,6 +423,37 @@ describe("import-direction rule: fixtures", () => {
       ).toEqual([]);
    });
 
+   it("H6: plan/, serve/, domain/ and text/ never import config", () => {
+      // domain/ and text/ are leaves, so their own rows fire too.
+      for (const [layer, ids] of [
+         ["plan", ["H6"]],
+         ["serve", ["H6"]],
+         ["domain", ["H6", "R5"]],
+         ["text", ["H6", "R6"]],
+      ] as const) {
+         expect(
+            ruleIds(
+               lint(
+                  `service/materialization/${layer}/x.ts`,
+                  `import { getMaterializeEnabled } from "../../../config";`,
+               ),
+            ).sort(),
+         ).toEqual([...ids]);
+      }
+      expect(
+         lint(
+            "service/materialization/run/x.ts",
+            `import { getMaterializeEnabled } from "../../../config";`,
+         ),
+      ).toEqual([]);
+      expect(
+         lint(
+            "service/materialization/package_materialization.ts",
+            `import { getMaterializeEnabled } from "../../config";`,
+         ),
+      ).toEqual([]);
+   });
+
    it("leaves look-alikes, packages and other layers alone", () => {
       expect(
          lint(
@@ -505,7 +536,7 @@ describe("import-direction allowlist", () => {
       for (const slice of Object.values(allowlist)) {
          // An architecture-plan slice, or a materialization phase 5 step.
          expect(slice).toMatch(
-            /^(U[1-4]|D[1-6]|V[1-5]|C[1-4]|L|R|2[a-p]|2g\.[1-4]|5)$/,
+            /^(U[1-4]|D[1-6]|V[1-5]|C[1-4]|L|R|2[a-r]|2g\.[1-4]|5)$/,
          );
       }
    });

@@ -348,6 +348,18 @@ const IMPORT_DIRECTION_RULES = [
       message:
          "telemetry is emitted from run/, the facade and the query pipeline only: return a value and let the shell log or count it",
    },
+   {
+      id: "H6",
+      from: (f) =>
+         MZ_PLAN.test(f) ||
+         MZ_SERVE.test(f) ||
+         MZ_DOMAIN.test(f) ||
+         MZ_TEXT.test(f),
+      to: (m) => m === "config",
+      allowTypeImports: true,
+      message:
+         "plan/, serve/, domain/ and text/ read no setting: the shell reads the switches once (domain/switches.ts) and passes them down",
+   },
 ];
 export const IMPORT_DIRECTION_ALLOWLIST = {
    ...MATERIALIZATION_IMPORT_ALLOWLIST,
