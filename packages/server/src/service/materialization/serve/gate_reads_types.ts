@@ -67,4 +67,11 @@ export interface GateReads {
     * not a comparison here.
     */
    readonly comparesNoString: boolean;
+   /**
+    * Every string these compare is a column's, or derived from one: none is
+    * a literal or a given alone, so no comparison falls back to the
+    * database's default collation (a column's collation outranks it).
+    * Absent reads false.
+    */
+   readonly comparesOnlyColumns?: boolean;
 }

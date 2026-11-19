@@ -34,6 +34,7 @@ import {
    gateColumnTypesOf,
    gateReadsOfQuery,
    queryFilterReadsOfQuery,
+   resultReadsOfQuery,
    storedTableCollationRefusal,
    storedTypeIsString,
    stringGateCollationRefusal,
@@ -209,6 +210,7 @@ export function variantsOf(
                facts,
                givens,
             );
+            await assertResultOrdersAsLive(answer, leg.kind, facts, givens);
             if (leg.kind === "served") {
                logger.debug("Serving query from the served copy (virtual)", {
                   modelPath: args.modelPath,
@@ -452,6 +454,110 @@ async function assertQueryFiltersCompareAsLive(
          throw new LegDecline("view_missing_field", message);
       case "query":
          throw new LegDecline("query_missing_field", message);
+   }
+}
+
+/**
+ * A `storage=` table compares strings byte-exact, so a result read from one
+ * is kept only where the query's result does not depend on comparing a
+ * string the source compares otherwise (`serve/result_reads.ts`): an
+ * ordering, a range comparison, a `min`/`max` of a string needs the source
+ * column's collation to be binary (a Postgres `C`, `POSIX` or builtin
+ * collation; a DuckDB instance that names none), and a grouping, a distinct
+ * count, an equality or a join on a string needs it to be at least
+ * deterministic, where equality is byte equality. Judged by the source side
+ * of the query filters' rule (`stringGateCollationRefusal`): the source
+ * column's collation, probed once per compiled model. The stored side (a
+ * DuckLake table holds no collated column) is not read again per answer.
+ *
+ * Only a `storage=` table is judged: a database table sits in its source's
+ * warehouse and compares as its source does. Only a source whose dialect's
+ * collation is read (Postgres per column, DuckDB per instance): a dialect
+ * read as binary needs nothing, and any other is left as it was. Which
+ * stages count: every one on the served copy and a rollup; on a persisted
+ * view or named query, the later stages, and the ordering its read applies
+ * again to its own last stage's stored rows. Fails closed: a result that
+ * cannot be read answers live.
+ */
+async function assertResultOrdersAsLive(
+   answer: LegAnswer,
+   leg: LegKind,
+   facts: QueryFacts,
+   givens: Record<string, unknown> | undefined,
+): Promise<void> {
+   const persisted = leg === "view" || leg === "query";
+   const read = persisted
+      ? (answer.tablesRead ?? [])
+      : (answer.gateTablesRead ?? answer.tablesRead ?? []);
+   const storage = read.filter((t) => t.tier === "storage");
+   if (storage.length === 0) return;
+   let fromStage = 0;
+   let orderOnly: number | undefined;
+   if (persisted) {
+      const later = (
+         leg === "view"
+            ? extractRunViewCall(facts.queryString)
+            : extractRunQueryCall(facts.queryString)
+      )?.laterStages;
+      const pipeline = (
+         await readPreparedQuery(facts.authorRunnable).catch(() => undefined)
+      )?.pipeline;
+      // Unread: every stage is judged, which only declines more.
+      if (later !== undefined && Array.isArray(pipeline)) {
+         orderOnly = pipeline.length - later - 1;
+         fromStage = orderOnly + 1;
+      }
+   }
+   const reads = await resultReadsOfQuery(
+      facts.authorRunnable,
+      storedSourceIDs(read),
+      { fromStage, ...(orderOnly !== undefined ? { orderOnly } : {}) },
+   );
+   const collation = reads?.stringCollation;
+   if (
+      reads !== undefined &&
+      collation !== "column" &&
+      collation !== "instance"
+   ) {
+      return;
+   }
+   let why: string | undefined;
+   if (reads === undefined) {
+      why = "the query's result unread";
+   } else {
+      for (const [what, r] of [
+         ["orders", reads.ordered],
+         ["groups or compares", reads.grouped],
+      ] as const) {
+         const refused = await stringGateCollationRefusal({
+            authorRunnable: facts.authorRunnable,
+            reads: r,
+            stringStored: true,
+            ...(givens ? { givens } : {}),
+         });
+         if (refused !== undefined) {
+            why = `the result ${what} a string a stored table does not compare as its source does: ${refused}`;
+            break;
+         }
+      }
+   }
+   if (why === undefined) return;
+   const tableIds = storage.flatMap((t) => {
+      const handle = (t as { virtualHandle?: unknown }).virtualHandle;
+      return typeof handle === "string" ? [handle] : [];
+   });
+   switch (leg) {
+      case "served":
+         throw new LegDecline("served_copy_not_served", why, { tableIds });
+      case "rollup":
+         throw new LegDecline("rollup_row_level_gate", why, {
+            shapeCheck: true,
+            tableIds,
+         });
+      case "view":
+         throw new LegDecline("view_missing_field", why);
+      case "query":
+         throw new LegDecline("query_missing_field", why);
    }
 }
 
