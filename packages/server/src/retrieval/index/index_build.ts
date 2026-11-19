@@ -149,7 +149,9 @@ interface FcjLlm {
 /**
  * The values each dimension's question line shows (the `values` wording): the
  * list its doc gives, then its most frequent stored values, distinct, at most
- * QUESTION_LINE_MAX_VALUES. Dimensions with neither are absent.
+ * QUESTION_LINE_MAX_VALUES. Dimensions with neither are absent. A value stored
+ * under a key is left out: the questions are shared by every caller, so they
+ * must not carry one report's values.
  */
 function questionLineValues(
    index: ValueIndex,
@@ -157,7 +159,7 @@ function questionLineValues(
 ): Map<string, string[]> {
    const stored = new Map<string, Array<{ value: string; count: number }>>();
    for (const v of index.values) {
-      if (v.origin !== "data") continue;
+      if (v.origin !== "data" || v.key !== undefined) continue;
       const list = stored.get(v.dimension) ?? [];
       list.push({ value: v.value, count: v.count });
       stored.set(v.dimension, list);

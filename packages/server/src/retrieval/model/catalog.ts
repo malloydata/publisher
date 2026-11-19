@@ -142,13 +142,16 @@ export interface CatalogSource {
     */
    gated: boolean;
    /**
-    * Set when every gate on the source is `column = $GIVEN` over a scalar
-    * given that is not secure, with no `#(authorize)`, in a model that
-    * declares no secure given: the gate splits the rows by report or tenant
-    * rather than protecting them. The value index reads the keys
-    * `retrieval.dimensionValues.givens` lists, through the gate, and stores
-    * each value with its key; a search returns only the values under the key
-    * the caller's givens name, as hosted Credible does. Sorted by column.
+    * Set when every `#(access_filter)` term on the source is `column =
+    * $GIVEN` over a scalar given, no given in scope is secure, and no source
+    * it joins is locked or carries a secure given (partitionKeyOf): the gate
+    * splits the rows by report or tenant rather than protecting them. The
+    * value index reads the keys `retrieval.dimensionValues.givens` lists,
+    * through the gate, and stores each value with its key; a search returns
+    * only the values under the key the caller's givens name, as hosted
+    * Credible does, and only to a caller its own `#(authorize)` admits
+    * (hasAuthorize). Empty for a source whose only gate is `#(authorize)`.
+    * Sorted by column.
     */
    partitionKey?: PartitionKey;
    /**
@@ -162,6 +165,20 @@ export interface CatalogSource {
     * definition for the source.
     */
    readDefinition?: string;
+   /**
+    * The givens a read of this source can depend on: every given its
+    * compiled definition (joins inlined, gates included) names, and the
+    * givens their defaults name. The value index reads the source once per
+    * combination of these, not of every given the config lists. Undefined
+    * when the model has no compiled definition for the source.
+    */
+   readGivens?: string[];
+   /**
+    * The source carries an `#(authorize)` lock. Its stored values are
+    * returned only to a caller whose givens pass the lock, checked at search
+    * time with the same check a query runs (Model.assertAuthorized).
+    */
+   hasAuthorize?: boolean;
    /** Keys of every node the source owns, sources excluded, in walk order. */
    fields: string[];
 }
@@ -261,7 +278,17 @@ export interface CatalogModel {
 type ModelCodeReader = (url: string) => ModelCode | undefined;
 
 /** The gate columns a source's values are split by, and the given naming each. */
-export type PartitionKey = ReadonlyArray<{ column: string; given: string }>;
+/**
+ * The columns a gate splits a source's rows by, with the given each is
+ * compared to and that given's declared type (number, string, date,
+ * timestamp or boolean), which decides how a key is written as text. Empty
+ * for a source whose only gate is `#(authorize)`: its rows are not split.
+ */
+export type PartitionKey = ReadonlyArray<{
+   column: string;
+   given: string;
+   type: string;
+}>;
 
 interface CatalogInput {
    /** The entity index's direct entities: no joined copy assembly would rebuild. */
@@ -271,6 +298,8 @@ interface CatalogInput {
    gatedByContext: ReadonlyMap<string, boolean>;
    /** Per (model path, source): its partition key, when its gate has one. */
    partitionKeyByContext?: ReadonlyMap<string, PartitionKey>;
+   /** Sources carrying an `#(authorize)` lock, by (model path, source). */
+   authorizedByContext?: ReadonlySet<string>;
    /** Deny-all sources, by (model path, source): nothing they document is copied. */
    droppedSources?: ReadonlySet<string>;
    models: readonly CatalogModel[];
@@ -1158,6 +1187,11 @@ export function buildCatalog(input: CatalogInput): Catalog {
          entities: [e],
       };
       const readDefinition = readDefinitionOf(model?.modelDef, e.name);
+      const readGivens = readGivensOf(model?.modelDef, e.name);
+      const hasAuthorize =
+         input.authorizedByContext?.has(
+            sourceContextKey(e.modelPath, e.name),
+         ) ?? false;
       sources.set(key, {
          key,
          name: e.name,
@@ -1167,6 +1201,8 @@ export function buildCatalog(input: CatalogInput): Catalog {
          gated,
          ...(partitionKey ? { partitionKey } : {}),
          ...(readDefinition ? { readDefinition } : {}),
+         ...(readGivens ? { readGivens } : {}),
+         ...(hasAuthorize ? { hasAuthorize } : {}),
          fields: [],
       });
       nodes.set(node.key, node);
@@ -1655,19 +1691,21 @@ export async function catalogInputOf(
    }
    const gatedByContext = new Map<string, boolean>();
    const partitionKeyByContext = new Map<string, PartitionKey>();
-   // A keyed source's stored values go to any caller who names the key,
-   // with no gate checked again at search time. A gate over givens that are
-   // not secure only splits rows the caller can already name, but an
-   // `#(authorize)` or a secure given protects them, and the configured
-   // givens the read ran with may have passed one on a joined source. So one
-   // anywhere in the package, served or only joined, keys nothing: stricter
-   // than hosted, which judges each source alone. The test reads the compiled
-   // text, so a doc that only mentions one also counts, the safe side.
-   const protectsRows =
-      (pkgIndex.droppedSources?.size ?? 0) > 0 ||
-      models.some(
-         (m) => m.modelDef && LOCK_NOTE.test(JSON.stringify(m.modelDef)),
+   const authorizedByContext = new Set<string>();
+   // A keyed source's stored values go to any caller who names the key and
+   // passes the source's own `#(authorize)`, checked again at search time.
+   // What that check cannot see is a lock on a source this one joins, or a
+   // secure given, whose scope is not known here. So a source that carries a
+   // secure given, or joins one that is denied outright, locked or carries
+   // a secure given, keys nothing. Judged per source, as hosted does.
+   const lockedByContext = (key: string): boolean => {
+      if (pkgIndex.droppedSources?.has(key)) return true;
+      const ctx = pkgIndex.sourceContext.get(key);
+      return (
+         Boolean(ctx?.authorize?.length) ||
+         (ctx?.givens ?? []).some(isSecureGiven)
       );
+   };
    for (const [key, ctx] of pkgIndex.sourceContext) {
       gatedByContext.set(
          key,
@@ -1675,7 +1713,11 @@ export async function catalogInputOf(
             Boolean(ctx.authorize?.length) ||
             (ctx.givens ?? []).some(isSecureGiven),
       );
-      const partitionKey = protectsRows ? undefined : partitionKeyOf(ctx);
+      if (ctx.authorize?.length) authorizedByContext.add(key);
+      const joinsLocked = (pkgIndex.topology.get(key) ?? []).some((r) =>
+         lockedByContext(sourceContextKey(r.targetModelPath, r.targetSource)),
+      );
+      const partitionKey = joinsLocked ? undefined : partitionKeyOf(ctx);
       if (partitionKey) partitionKeyByContext.set(key, partitionKey);
    }
    return {
@@ -1683,6 +1725,7 @@ export async function catalogInputOf(
       topology: pkgIndex.topology,
       gatedByContext,
       partitionKeyByContext,
+      authorizedByContext,
       droppedSources: pkgIndex.droppedSources,
       models,
       modelCode: modelCodeReader(pkgIndex.pkg),
@@ -1703,7 +1746,7 @@ function modelCodeReader(pkg: PackageIndex["pkg"]): ModelCodeReader {
 }
 
 /** A gate in a note: it changes the rows a read sees, so it stays in the hash. */
-const GATE_NOTE = /#\|?\s*\(\s*(access_filter|authorize)\b/;
+const GATE_NOTE = /#\|?\s*[([{<]?\s*(access_filter|authorize)\b/;
 
 /** A note (`{ text, at }`) that is not a gate: a doc or another tag. */
 function isOtherNote(x: unknown): boolean {
@@ -1760,9 +1803,6 @@ export function readDefinitionOf(
    return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-/** An `#(authorize)` lock or a `#(secure)` given, anywhere in a note. */
-const LOCK_NOTE = /#\|?\s*[([{<]?\s*(authorize|secure)\b/;
-
 const SCALAR_GIVEN_TYPES = new Set([
    "number",
    "string",
@@ -1779,19 +1819,21 @@ function isSecureGiven(g: SourceContextGiven): boolean {
  * The columns a source's gate splits its rows by, or undefined when the gate
  * does more than split them. The rule is hosted Credible's for a source it
  * keys by the caller's givens (docs/rlac-get-context-design.md section 7.1 in
- * the service repo): no `#(authorize)`, and every `#(access_filter)` term is
- * `column = $GIVEN` over a declared scalar given. A secure given anywhere in
- * the model rules it out, because which source a secure given scopes is not
- * known here. Under those rules the caller may already send any value of the
- * given to `execute_query`, so returning the values under the key they name
- * shows nothing the query path would refuse.
+ * the service repo): every `#(access_filter)` term is `column = $GIVEN` over
+ * a declared scalar given, and no given in scope is secure. Under those rules
+ * the caller may already send any value of the given to `execute_query`, so
+ * returning the values under the key they name shows nothing the query path
+ * would refuse. An `#(authorize)` lock does not split rows, since it reads
+ * only the caller's givens: a source with one is keyed the same way, and its
+ * lock is checked at search time. A source whose only gate is a lock gets an
+ * empty key.
  */
 export function partitionKeyOf(
    ctx: Pick<SourceContextEntry, "accessFilter" | "authorize" | "givens">,
 ): PartitionKey | undefined {
-   if (!ctx.accessFilter?.length || ctx.authorize?.length) return undefined;
    const givens = ctx.givens ?? [];
    if (givens.some(isSecureGiven)) return undefined;
+   if (!ctx.accessFilter?.length) return ctx.authorize?.length ? [] : undefined;
    const givenTypes = new Map(
       givens.flatMap((g) => (g.type ? [[g.name, g.type] as const] : [])),
    );
@@ -1810,7 +1852,57 @@ export function partitionKeyOf(
    }
    return [...byColumn]
       .sort(([a], [b]) => comparePaths(a, b))
-      .map(([column, given]) => ({ column, given }));
+      .map(([column, given]) => ({
+         column,
+         given,
+         type: givenTypes.get(given) ?? "string",
+      }));
+}
+
+/** A given named in text: `$NAME`. */
+const GIVEN_IN_TEXT = /\$([A-Za-z_][A-Za-z0-9_]*)/g;
+
+/** See {@link CatalogSource.readGivens}. */
+export function readGivensOf(
+   modelDef: ModelDef | undefined,
+   name: string,
+): string[] | undefined {
+   const compiled = compiledSource(modelDef, name);
+   if (!compiled) return undefined;
+   const declared = modelDef?.givens ?? {};
+   const nameOf = (id: string) => declared[id]?.name;
+   const names = new Set<string>();
+   const ids: string[] = [];
+   // A reference node carries the given's id; a gate is note text, `$NAME`.
+   JSON.stringify(compiled, (_key, value: unknown) => {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+         const v = value as { node?: unknown; id?: unknown; refName?: unknown };
+         if (v.node === "given" && typeof v.id === "string") ids.push(v.id);
+         if (v.node === "given" && typeof v.refName === "string")
+            names.add(v.refName);
+      }
+      if (typeof value === "string") {
+         for (const m of value.matchAll(GIVEN_IN_TEXT)) names.add(m[1]);
+      }
+      return value;
+   });
+   // A default can name another given.
+   for (let i = 0; i < ids.length; i += 1) {
+      const given = declared[ids[i]];
+      if (!given) continue;
+      names.add(given.name);
+      for (const u of given.givenUsage ?? []) {
+         if (!ids.includes(u.id)) ids.push(u.id);
+      }
+   }
+   for (const n of [...names]) {
+      const id = Object.keys(declared).find((k) => nameOf(k) === n);
+      for (const u of (id && declared[id]?.givenUsage) || []) {
+         const other = nameOf(u.id);
+         if (other) names.add(other);
+      }
+   }
+   return [...names].sort();
 }
 
 function samePartitionKey(

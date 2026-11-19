@@ -264,6 +264,7 @@ export function storeServing(
       getEnvironment: async () => ({
          getPackage: async () => pkg,
          getStaleCompileErrors: () => new Map(),
+         listApiConnections: () => [],
       }),
       ...extra,
    } as never;

@@ -129,8 +129,9 @@ export interface FcjSettings {
     * PROVISIONAL, on by default. With `values` on, the stored values are also
     * embedded at index time (`value_embeddings`), and the find stage ranks
     * dimensions by the meaning of a target's value phrases as a fourth list,
-    * beside the spelling match. Gated sources' values are never embedded.
-    * Off: spelling only, as before.
+    * beside the spelling match. A gated source's values are embedded only
+    * when it is keyed by the givens `retrieval.dimensionValues.givens` lists
+    * (CatalogSource.partitionKey). Off: spelling only, as before.
     */
    valueEmbeddings: boolean;
    /** One LLM call per cluster that picks the fields to return. */

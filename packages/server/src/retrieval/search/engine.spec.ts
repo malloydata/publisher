@@ -938,6 +938,7 @@ describe("a package removed while its index builds", () => {
          getPackage: async () => pkg,
          peekPackage: () => served,
          getStaleCompileErrors: () => new Map(),
+         listApiConnections: () => [],
       };
       const store: PackageLookup & EnvironmentPeek = {
          getEnvironment: async () => environment as unknown as Environment,

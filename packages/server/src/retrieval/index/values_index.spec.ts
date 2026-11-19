@@ -20,6 +20,7 @@ import {
    callerKeyOf,
    combinationsOf,
    MEANING_SHORT_FLOOR,
+   partitionKeyPart,
    ValueIndex,
    type IndexValueFetcher,
    type IndexValueRequest,
@@ -57,8 +58,12 @@ beforeAll(async () => {
 });
 
 const noParts = new Map<string, DocParts>();
+/** The environment's connections, as the read key sees them. */
+let connections: unknown[] = [{ name: "duckdb", type: "duckdb" }];
 const read = (f = fetcher) => ({
-   environmentStore: {} as never,
+   environmentStore: {
+      getEnvironment: async () => ({ listApiConnections: () => connections }),
+   } as never,
    environmentName: "env",
    packageName: "fixture",
    fetcher: f,
@@ -286,8 +291,60 @@ describe("value index build with stored reads", () => {
          asked.length = 0;
          await build(db, fetcher, { cap: 2, reuseMaxAgeMs: 0 });
          expect(asked.map((r) => r.source)).toEqual(["cities", "flights"]);
+
+         // A rotated credential keeps the reads; a connection pointed
+         // elsewhere reads again.
+         const before = connections;
+         try {
+            connections = [{ name: "duckdb", type: "duckdb", password: "new" }];
+            asked.length = 0;
+            await build(db, fetcher, { cap: 2 });
+            expect(asked).toEqual([]);
+            connections = [{ name: "duckdb", type: "duckdb", role: "other" }];
+            await build(db, fetcher, { cap: 2 });
+            expect(asked.map((r) => r.source)).toEqual(["cities", "flights"]);
+         } finally {
+            connections = before;
+         }
       } finally {
          if (definition) cities.readDefinition = definition;
+         await close();
+      }
+   });
+
+   it("checks the read budget before every read, and stores the reads it made", async () => {
+      const { db, close } = await openTempDb(createCatalogTables);
+      const cities = fixture.catalog.sources.get("cities@travel.malloy")!;
+      cities.gated = true;
+      cities.partitionKey = [
+         { column: "tenant", given: "TENANT", type: "string" },
+      ];
+      let clock = 0;
+      const slow: IndexValueFetcher = async (req) => {
+         asked.push(req);
+         clock += 100;
+         return { values: [], truncated: false };
+      };
+      const realNow = Date.now;
+      Date.now = () => realNow() + clock;
+      try {
+         asked.length = 0;
+         const first = await build(db, slow, {
+            givens: { TENANT: ["a", "b", "c", "d"] },
+            readBudgetMs: 150,
+         });
+         // Two reads fit; the rest of the dimension waits for the retry.
+         expect(asked.filter((r) => r.source === "cities").length).toBe(2);
+         expect(first.report.failed.map((f) => f.dimension)).toContain(CITY);
+         asked.length = 0;
+         await build(db, slow, { givens: { TENANT: ["a", "b", "c", "d"] } });
+         expect(
+            asked.filter((r) => r.source === "cities").map((r) => r.givens),
+         ).toEqual([{ TENANT: "c" }, { TENANT: "d" }]);
+      } finally {
+         Date.now = realNow;
+         cities.gated = false;
+         delete cities.partitionKey;
          await close();
       }
    });
@@ -296,7 +353,9 @@ describe("value index build with stored reads", () => {
       const { db, close } = await openTempDb(createCatalogTables);
       const cities = fixture.catalog.sources.get("cities@travel.malloy")!;
       cities.gated = true;
-      cities.partitionKey = [{ column: "tenant", given: "TENANT" }];
+      cities.partitionKey = [
+         { column: "tenant", given: "TENANT", type: "string" },
+      ];
       const keyed: IndexValueFetcher = async (req) => {
          if (req.source !== "cities") return fetcher(req);
          asked.push(req);
@@ -312,13 +371,13 @@ describe("value index build with stored reads", () => {
          const { index, report } = await build(db, keyed, {
             givens: { TENANT: ["acme", "globex"] },
          });
+         // flights reads no given, so its one read is reused.
          expect(asked.map((r) => [r.source, r.givens?.TENANT])).toEqual([
             ["cities", "globex"],
-            ["flights", "globex"],
          ]);
          expect(report).toMatchObject({
-            dimensionsRead: 2,
-            dimensionsReused: 0,
+            dimensionsRead: 1,
+            dimensionsReused: 1,
          });
          expect(
             index.values
@@ -415,6 +474,43 @@ source: t is s extend {
          ),
       ).not.toBe(plain);
    });
+
+   it("sees a gate in any bracket the annotation reader accepts", async () => {
+      for (const [open, close] of [
+         ["[", "]"],
+         ["{", "}"],
+         ["<", ">"],
+      ]) {
+         const gate = (g: string) =>
+            hashOf(
+               base(
+                  "One row per city.",
+                  "",
+                  `#${open}access_filter${close} tenant = ${g}`,
+               ),
+            );
+         expect(await gate("$TENANT")).not.toBe(await gate("'acme'"));
+      }
+   });
+});
+
+describe("a partition key part", () => {
+   it("reads only a number given as a number", () => {
+      expect(partitionKeyPart("001", "string")).toBe("001");
+      expect(partitionKeyPart("1", "string")).toBe("1");
+      expect(partitionKeyPart("362023.0", "number")).toBe("362023");
+      expect(partitionKeyPart(362023, "number")).toBe("362023");
+      expect(partitionKeyPart("001", "number")).toBe("1");
+      expect(partitionKeyPart(["7"], "number")).toBe("7");
+      // Past 2^53 every digit is kept, so two IDs never fold together.
+      expect(partitionKeyPart("9007199254740993", "number")).toBe(
+         "9007199254740993",
+      );
+      expect(partitionKeyPart(9007199254740993n, "number")).toBe(
+         "9007199254740993",
+      );
+      expect(partitionKeyPart(null, "number")).toBeUndefined();
+   });
 });
 
 describe("value index build over a source whose gate splits its rows", () => {
@@ -436,7 +532,9 @@ describe("value index build over a source whose gate splits its rows", () => {
    const withKey = async <T>(run: () => Promise<T>): Promise<T> => {
       const cities = fixture.catalog.sources.get("cities@travel.malloy")!;
       cities.gated = true;
-      cities.partitionKey = [{ column: "tenant", given: "TENANT" }];
+      cities.partitionKey = [
+         { column: "tenant", given: "TENANT", type: "string" },
+      ];
       try {
          return await run();
       } finally {
@@ -480,19 +578,19 @@ describe("value index build over a source whose gate splits its rows", () => {
          ).toEqual([
             ["cities", "acme", ["tenant"]],
             ["cities", "globex", ["tenant"]],
-            ["flights", "acme", undefined],
-            ["flights", "globex", undefined],
+            // flights reads no given: read once, with none.
+            ["flights", undefined, undefined],
          ]);
          expect(
             index.values
                .filter((v) => v.dimension === CITY)
                .map((v) => `${v.key}:${v.value}`),
          ).toEqual(["acme:Denver", "acme:Boulder", "globex:Paris"]);
-         // An unkeyed value read under two combinations is one value.
+         // Read once, so its count is not summed across the combinations.
          expect(
             index.values.find((v) => v.value === "Denver International (DIA)")
                ?.count,
-         ).toBe(20);
+         ).toBe(10);
          expect(report.dimensionsRead).toBe(2);
          const searchAs = (givens?: Record<string, unknown>) => {
             const key = callerKeyOf(fixture.catalog, givens);
