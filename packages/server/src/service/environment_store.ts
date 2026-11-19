@@ -52,6 +52,7 @@ import {
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { validateConnectionSqlFields } from "./connection_config";
+import { deleteUnconfiguredRetrievalRows } from "../storage/duckdb/schema";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
 import {
    Environment,
@@ -943,6 +944,15 @@ export class EnvironmentStore
             );
 
          await this.cleanupAndCreatePublisherPath();
+         if (reInit) {
+            await deleteUnconfiguredRetrievalRows(
+               this.storageManager.getDuckDbConnection(),
+               environmentManifest.environments.map((e) => ({
+                  environment: e.name,
+                  packages: e.packages.map((p) => p.name),
+               })),
+            );
+         }
 
          const repository = this.storageManager.getRepository();
 

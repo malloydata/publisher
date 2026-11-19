@@ -12,7 +12,7 @@ export async function initializeSchema(
 
    if (force) {
       logger.info(
-         "Reinitializing database schema dropping and recreating all tables",
+         "Reinitializing database schema: dropping and recreating every table but the retrieval caches",
       );
       await dropAllTables(db);
    } else if (!initialized) {
@@ -977,6 +977,56 @@ async function dropLegacyProjectSchema(db: DuckDBConnection): Promise<void> {
    }
 }
 
+/**
+ * What retrieval derived from the models and the warehouse: value reads,
+ * embeddings and LLM output. `--init` keeps them. Each row is reused only
+ * while what it was built from is unchanged (a source's definition hash, the
+ * embedded text, an LLM input hash), so a kept row is never served stale, and
+ * dropping them would only repeat the warehouse reads and provider calls.
+ * Holds every table in ENGINE_TABLES (retrieval/index/catalog_store.ts).
+ */
+export const RETRIEVAL_CACHE_TABLES = [
+   "catalog_nodes",
+   "catalog_edges",
+   "doc_parts",
+   "node_questions",
+   "catalog_embeddings",
+   "dimension_values",
+   "value_embeddings",
+   "dimension_value_reads",
+   "source_summaries",
+] as const;
+
+/**
+ * After `--init`, delete the retrieval rows of every package the config no
+ * longer serves. A package removed from the config is never deleted through
+ * the API, so nothing else would remove them, and some hold warehouse values.
+ */
+export async function deleteUnconfiguredRetrievalRows(
+   db: DuckDBConnection,
+   configured: { environment: string; packages: string[] }[],
+): Promise<void> {
+   const pairs = configured.flatMap((e) =>
+      e.packages.map((p) => [e.environment, p]),
+   );
+   const keep =
+      pairs.length === 0
+         ? "FALSE"
+         : `(environment_name, package_name) IN (${pairs.map(() => "(?, ?)").join(", ")})`;
+   for (const table of RETRIEVAL_CACHE_TABLES) {
+      try {
+         await db.run(`DELETE FROM ${table} WHERE NOT ${keep}`, pairs.flat());
+      } catch (err) {
+         // Empty the table rather than keep a removed package's values.
+         logger.warn(
+            `Could not delete the rows of unconfigured packages from ${table}; emptying it`,
+            err,
+         );
+         await db.run(`DELETE FROM ${table}`);
+      }
+   }
+}
+
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
    const tables = [
       "build_manifests",
@@ -989,17 +1039,9 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "environments",
       "themes",
       "workload_log",
+      // Written by an earlier release's index; nothing reads them now.
       "entity_embeddings",
       "entity_keyphrases",
-      "source_summaries",
-      "catalog_nodes",
-      "catalog_edges",
-      "doc_parts",
-      "node_questions",
-      "catalog_embeddings",
-      "dimension_values",
-      "value_embeddings",
-      "dimension_value_reads",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

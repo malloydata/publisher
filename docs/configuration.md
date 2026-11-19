@@ -109,7 +109,7 @@ and this table is generated from it. The names are today's; the configuration de
 | `root` | `PUBLISHER_ROOT` | `--root <dir>` | `SERVER_ROOT`, `--server_root` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |
 | `config` | `PUBLISHER_CONFIG` | `--config <path>` | `PUBLISHER_CONFIG_PATH` | _unset_ | Path to the `publisher.config.json` to read, instead of the one in the server root. A path that does not exist is reported at startup, and the server starts with no environments. |
 | `useBundledDefault` | `PUBLISHER_USE_BUNDLED_DEFAULT` | `--use-bundled-default`, `--no-use-bundled-default` |  | on unless `root` or `config` is given; never in tests | Set to `true` to fall back to the sample config bundled inside the installed package when neither `--config` is passed nor a `publisher.config.json` exists at the server root. The server sets this itself on a zero-flag start (so a bare `npx @malloy-publisher/server` boots the samples); passing `--config` or `--server_root` leaves it unset. Because the bundled config lives inside the install, relative package locations resolve against the server root in this mode rather than the config's directory. |
-| `initializeStorage` | `PUBLISHER_INITIALIZE_STORAGE` | `--initialize-storage`, `--no-initialize-storage`, `--init` | `INITIALIZE_STORAGE` | `false` | Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. Also exposed as the `start:init` / `start:dev:init` scripts. |
+| `initializeStorage` | `PUBLISHER_INITIALIZE_STORAGE` | `--initialize-storage`, `--no-initialize-storage`, `--init` | `INITIALIZE_STORAGE` | `false` | Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. The search index (stored value reads, embeddings and LLM output) is kept, since each entry is reused only while what it was built from is unchanged; the rows of a package the config no longer lists are deleted. Also exposed as the `start:init` / `start:dev:init` scripts. |
 | `watchEnvironments` | `PUBLISHER_WATCH_ENVIRONMENTS` | `--watch-environments <name>`, `--watch-env <name>` | `PUBLISHER_WATCH` | _none_ | Dev only. Mount the named environment's local-dir packages in place (a symlink, not a copy) and watch them, so edits to your source recompile that package and live-reload any open pages. Repeat the flag or use a comma-separated list to mount several in place; only the first one auto-reloads. Leave unset in production, where packages are copied and stay decoupled from their source. |
 | `mcp.port` | `PUBLISHER_MCP_PORT` | `--mcp-port <n>` | `MCP_PORT`, `--mcp_port` | `4040` | MCP HTTP port. Serves the MCP tools (`list_packages`, `get_context`, `execute_query`, `compile_model`, `reload_package`, `get_status`, `search_malloy_docs`, `search_database_schema`, `get_skill`, `get_agent`, `list_reports`, `show_report`, and the panel-only `report_api`) and the agent skills as MCP prompts. `list_packages` is listed first because it is where an agent starts: `get_context` requires an environment and package in its `scopes`, and those names come from there. |
 | `mcp.host` | `PUBLISHER_MCP_HOST` | `--mcp-host <addr>` | `MCP_HOST`, `--mcp_host` | `host` when given, else `127.0.0.1` | Host binding for the MCP server. Takes precedence over `PUBLISHER_HOST`. Set `0.0.0.0` to expose MCP on the network, behind an authenticating gateway. |
@@ -346,8 +346,9 @@ What to know before turning it on:
   to keep everything on the machine; with a local server also set `EMBEDDING_MODEL` to a model that
   server actually serves, since the default names an OpenAI model.
 - Storage: vectors are stored in the server's own `publisher.db`, keyed by a content hash, so only new
-  or changed text is embedded, across restarts too. `--init` wipes them with the rest of persisted
-  storage; the only cost of a wipe is embedding again.
+  or changed text is embedded, across restarts too. `--init` keeps them, and deletes only those of a
+  package the config no longer lists. To embed everything again, stop the server and delete
+  `publisher.db`.
 - When indexing starts: when a package loads, at boot, on add or install, and on reload, without waiting
   for a question. Each batch of up to 256 rows is saved as it returns, so a failure part-way keeps what
   was saved. A 429, a 5xx or a timeout is retried up to five times with exponential backoff and jitter,
@@ -680,7 +681,7 @@ edit, a reload or a restart. A stored read is reused while it is less than 24 ho
 compiled definition is unchanged, apart from docs and line positions. So editing a doc reads nothing.
 Changing anything else in a source (its table, a `where:`, a join, any field, a gate) reads that source's
 `#(index)` dimensions again, and other sources keep theirs. Listing one more report reads only that
-report. Starting with `--init` drops the database and every stored read with it.
+report. `--init` keeps stored reads, apart from those of a package the config no longer lists.
 
 **Access.** A value is data, and a gate applies to it as it does to `execute_query`.
 
