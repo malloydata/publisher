@@ -79,16 +79,32 @@ function accepts(
    });
 }
 
-function freePort(): Promise<number> {
-   return new Promise((resolve, reject) => {
-      const srv = net.createServer();
-      srv.on("error", reject);
-      srv.listen(0, () => {
-         const address = srv.address();
-         const port = typeof address === "object" && address ? address.port : 0;
-         srv.close(() => resolve(port));
+/** Every port {@link freePort} has handed out in this process. */
+const handedOut = new Set<number>();
+
+/**
+ * A free port, never one already handed out in this process: each is released
+ * before it is returned, so the OS could hand the REST port out again as the
+ * MCP port.
+ */
+async function freePort(): Promise<number> {
+   for (let attempt = 0; attempt < 100; attempt++) {
+      const port = await new Promise<number>((resolve, reject) => {
+         const srv = net.createServer();
+         srv.on("error", reject);
+         srv.listen(0, () => {
+            const address = srv.address();
+            const port =
+               typeof address === "object" && address ? address.port : 0;
+            srv.close(() => resolve(port));
+         });
       });
-   });
+      if (port && !handedOut.has(port)) {
+         handedOut.add(port);
+         return port;
+      }
+   }
+   throw new Error("no free port this process has not already handed out");
 }
 
 /**
