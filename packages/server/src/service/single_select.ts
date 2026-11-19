@@ -116,8 +116,10 @@ export async function classifySelect(
 }
 
 /**
- * Throws a 400 unless `sql` is exactly one SELECT that names no introspection
- * function or DuckLake metadata catalog (duckdb_introspection.ts).
+ * Throws a 400 unless `sql` is exactly one SELECT that names no refused name
+ * (duckdb_introspection.ts): an introspection function or view, a DuckLake
+ * metadata catalog, a name the lockdown gate refuses, or an attached
+ * database's Postgres system schema.
  */
 export async function assertSingleSelect(
    connectionName: string,
@@ -135,7 +137,8 @@ export async function assertSingleSelect(
       throw new BadRequestError(
          `'${connectionName}' is a ${kind}: raw SQL on it may not name '${name}', ` +
             `because Publisher's DuckDB connections do not expose catalog and ` +
-            `settings introspection, or an attached database beyond its tables, to SQL.`,
+            `settings introspection, logging, profiling, SQL run from text, ` +
+            `or an attached database beyond its tables, to SQL.`,
       );
    }
    const why =

@@ -66,6 +66,7 @@ import {
    attachedSystemSchemaIn,
    attachedSystemSchemaInParts,
    attachedSystemSchemaOfNode,
+   CALL_ONLY_NAMES,
    DUCKLAKE_FUNCTION_PREFIX,
    introspectionCallInParse,
    introspectionNameIn,
@@ -825,43 +826,6 @@ export function setupIdentity(value: unknown): string {
 
 // --- The statement gate on a locked instance ---------------------------------
 
-/**
- * Names that reach DuckDB's logging and profiling, which DuckDB 1.5.5's
- * `lock_configuration` does not cover (a locked session could otherwise log
- * other callers' query text and the signed request headers of the instance's
- * own reads, and read them back), or that run SQL taken from text the gate
- * cannot see through (`query`, `query_table`, `json_execute_serialized_sql`,
- * `import_database`). Checked against `duckdb_functions()` on 1.5.5 with
- * json, icu, excel, ducklake and httpfs loaded.
- *
- * Refused wherever the name appears as a word (in code, a comment, a string
- * literal, at any depth): none is a plausible column or table name, so the
- * gate does not need to know how DuckDB would have read it. `query` is the
- * exception, refused only where it is called ({@link CALL_ONLY}).
- */
-const REFUSED_NAMES: ReadonlySet<string> = new Set([
-   "enable_logging",
-   "disable_logging",
-   "truncate_duckdb_logs",
-   "duckdb_logs",
-   "duckdb_logs_parsed",
-   "duckdb_log_contexts",
-   "write_log",
-   "parse_duckdb_log_message",
-   "enable_profiling",
-   "disable_profiling",
-   "enable_profile",
-   "disable_profile",
-   "all_profiling_output",
-   "duckdb_profiling_settings",
-   "query_table",
-   "json_execute_serialized_sql",
-   "import_database",
-]);
-
-/** Refused only as a call: a column or alias named `query` is common. */
-const CALL_ONLY: ReadonlySet<string> = new Set(["query"]);
-
 /** Words that may stand between CREATE/DROP and SECRET. */
 const SECRET_MODIFIERS = new Set([
    "or",
@@ -1036,7 +1000,7 @@ export function refusedOnLockedInstance(
 ): string | undefined {
    const words = rawWords(sql);
    for (let w = 0; w < words.length; w++) {
-      if (REFUSED_NAMES.has(words[w]) || isIntrospectionName(words[w])) {
+      if (isIntrospectionName(words[w])) {
          return `'${words[w]}'`;
       }
       if (words[w] === "import" && words[w + 1] === "database") {
@@ -1075,7 +1039,7 @@ export function refusedOnLockedInstance(
       if (token.kind !== "word") continue;
       codeWords.push(token.value);
       if (
-         CALL_ONLY.has(token.value) ||
+         CALL_ONLY_NAMES.has(token.value) ||
          token.value.startsWith(DUCKLAKE_FUNCTION_PREFIX)
       ) {
          const next = tokens.slice(t + 1).find((x) => x.kind !== "comment");
@@ -1140,11 +1104,9 @@ async function refusedByParser(sql: string): Promise<string | undefined> {
          ) {
             const name = value.toLowerCase();
             if (
-               REFUSED_NAMES.has(name) ||
-               (key === "function_name"
+               key === "function_name"
                   ? isIntrospectionCall(name)
-                  : isIntrospectionName(name)) ||
-               (key === "function_name" && CALL_ONLY.has(name))
+                  : isIntrospectionName(name)
             ) {
                refused = `'${name}'`;
                return;
@@ -1361,8 +1323,9 @@ export async function authorSqlRefusals(
       refusals.push(
          `${modelPath}: ${what} on a DuckDB connection names '${name}', which ` +
             `author SQL may not use: Publisher's DuckDB connections do not ` +
-            `expose catalog and settings introspection, or an attached ` +
-            `database beyond its tables, to SQL.`,
+            `expose catalog and settings introspection, logging, profiling, ` +
+            `SQL run from text, or an attached database beyond its tables, ` +
+            `to SQL.`,
       );
    };
    for (const { fragments, argCount } of expressions) {

@@ -33,6 +33,16 @@ export const INTROSPECTION_NAMES: ReadonlySet<string> = new Set([
    "postgres_execute",
    "postgres_attach",
    "postgres_configure_pool",
+   // DuckDB's own pg_catalog views over a refused function: pg_settings
+   // reads duckdb_settings(), pg_database duckdb_databases(), and
+   // pg_prepared_statements the connection's prepared statements (with
+   // duckdb_prepared_statements, the function it reads). DuckDB 1.5.5's other
+   // pg_catalog and information_schema views read only catalog names and
+   // types (duckdb_tables, duckdb_columns, duckdb_schemas and their kind).
+   "pg_settings",
+   "pg_database",
+   "pg_prepared_statements",
+   "duckdb_prepared_statements",
    // DuckLake's own functions, as DuckDB 1.5.5 registers them: refused as
    // words anywhere, and every other `ducklake_` name as a call
    // ({@link DUCKLAKE_FUNCTION_PREFIX}).
@@ -73,6 +83,47 @@ export const INTROSPECTION_PREFIXES: readonly string[] = [
  * called. Only as a call: a catalog or table may well be named `ducklake_…`.
  */
 export const DUCKLAKE_FUNCTION_PREFIX = "ducklake_";
+
+/**
+ * Names that reach DuckDB's logging and profiling, which DuckDB 1.5.5's
+ * `lock_configuration` does not cover (a locked session could otherwise log
+ * other callers' query text and the signed request headers of the instance's
+ * own reads, and read them back), or that run SQL taken from text the gate
+ * cannot see through (`query`, `query_table`, `json_execute_serialized_sql`,
+ * `import_database`). Checked against `duckdb_functions()` on 1.5.5 with
+ * json, icu, excel, ducklake and httpfs loaded.
+ *
+ * Refused wherever the name appears as a word (in code, a comment, a string
+ * literal, at any depth): none is a plausible column or table name, so the
+ * gate does not need to know how DuckDB would have read it. One list for the
+ * gate on a locked instance and for the load-time author SQL check
+ * (duckdb_lockdown.ts), which must refuse them too: a build session runs
+ * author SQL before any lock, and a name assembled from text at run time
+ * (`query_table('a' || 'b')`) is one no lexical check could see. `query` is the
+ * exception, refused only where it is called ({@link CALL_ONLY_NAMES}).
+ */
+export const STATEMENT_REFUSED_NAMES: ReadonlySet<string> = new Set([
+   "enable_logging",
+   "disable_logging",
+   "truncate_duckdb_logs",
+   "duckdb_logs",
+   "duckdb_logs_parsed",
+   "duckdb_log_contexts",
+   "write_log",
+   "parse_duckdb_log_message",
+   "enable_profiling",
+   "disable_profiling",
+   "enable_profile",
+   "disable_profile",
+   "all_profiling_output",
+   "duckdb_profiling_settings",
+   "query_table",
+   "json_execute_serialized_sql",
+   "import_database",
+]);
+
+/** Refused only as a call: a column or alias named `query` is common. */
+export const CALL_ONLY_NAMES: ReadonlySet<string> = new Set(["query"]);
 
 /**
  * Whether `schema` (lowercased) is one of the schemas Postgres keeps its own
@@ -175,6 +226,7 @@ export function attachedSystemSchemaOfNode(
 export function isIntrospectionName(word: string): boolean {
    return (
       INTROSPECTION_NAMES.has(word) ||
+      STATEMENT_REFUSED_NAMES.has(word) ||
       INTROSPECTION_PREFIXES.some((prefix) => word.startsWith(prefix))
    );
 }
@@ -182,14 +234,16 @@ export function isIntrospectionName(word: string): boolean {
 /** Whether calling `name` (lowercased) is refused. */
 export function isIntrospectionCall(name: string): boolean {
    return (
-      isIntrospectionName(name) || name.startsWith(DUCKLAKE_FUNCTION_PREFIX)
+      isIntrospectionName(name) ||
+      CALL_ONLY_NAMES.has(name) ||
+      name.startsWith(DUCKLAKE_FUNCTION_PREFIX)
    );
 }
 
 /**
  * The first refused introspection name in `sql`, read as raw words with no
  * regard to comments, quotes or strings (so quoting a name hides nothing),
- * then any `ducklake_` name written as a call, then an attached database's
+ * then any `ducklake_` name or `query` written as a call, then an attached database's
  * Postgres system schema ({@link attachedSystemSchemaIn}); or undefined.
  * Lexical: DuckDB's own parse ({@link introspectionCallInParse}) catches a
  * call or a reference this misses.
@@ -202,7 +256,11 @@ export function introspectionNameIn(sql: string): string | undefined {
    for (const match of lower.matchAll(/[a-z0-9_$\u0080-\uffff]+/g)) {
       const word = match[0];
       if (isIntrospectionName(word)) return word;
-      if (call === undefined && word.startsWith(DUCKLAKE_FUNCTION_PREFIX)) {
+      if (
+         call === undefined &&
+         (word.startsWith(DUCKLAKE_FUNCTION_PREFIX) ||
+            CALL_ONLY_NAMES.has(word))
+      ) {
          let i = (match.index ?? 0) + word.length;
          if (lower[i] === '"') i++;
          while (i < lower.length && /\s/.test(lower[i])) i++;

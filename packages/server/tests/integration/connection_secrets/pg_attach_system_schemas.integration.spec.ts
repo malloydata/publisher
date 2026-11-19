@@ -99,6 +99,8 @@ describe.skipIf(!PG_URL)(
                "}",
                "",
             ].join("\n"),
+            by_query_table:
+               "source: s is duck.sql(\"SELECT * FROM query_table('app.pg_' || 'catalog.pg_roles')\")\n",
             by_metadata_alias:
                'source: s is lake.sql("SELECT * FROM __ducklake_metadata_lake.pg_catalog.pg_settings")\n',
          };
@@ -222,6 +224,9 @@ describe.skipIf(!PG_URL)(
                [
                   "SELECT * FROM __ducklake_metadata_lake.pg_catalog.pg_settings",
                   "SELECT * FROM __ducklake_metadata_lake.information_schema.tables",
+                  "SELECT name, setting FROM pg_settings",
+                  "SELECT * FROM system.pg_catalog.pg_database",
+                  "SELECT * FROM query_table('lake.main.' || 'sales')",
                ],
             ],
          ];
@@ -258,6 +263,7 @@ describe.skipIf(!PG_URL)(
             "by_sql",
             "by_table",
             "by_expression",
+            "by_query_table",
             "by_metadata_alias",
          ]) {
             const failed = loadErrors.find((e) => e.package === name);

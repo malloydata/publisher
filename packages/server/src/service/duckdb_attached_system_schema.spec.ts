@@ -36,7 +36,7 @@ import { assertSingleSelect, serializeSQL } from "./single_select";
 const REFUSED: [string, string][] = [
    ["SELECT * FROM pg.pg_catalog.pg_authid", "pg.pg_catalog"],
    ["SELECT * FROM pg.pg_catalog.pg_stat_activity", "pg.pg_catalog"],
-   ["SELECT name, setting FROM pg.pg_catalog.pg_settings", "pg.pg_catalog"],
+   ["SELECT rolname FROM pg.pg_catalog.pg_roles", "pg.pg_catalog"],
    ["SELECT * FROM pg.information_schema.tables", "pg.information_schema"],
    ["SELECT * FROM pg.pg_toast.pg_toast_2619", "pg.pg_toast"],
    ["SELECT * FROM pg.pg_temp_3.t", "pg.pg_temp_3"],
@@ -55,7 +55,7 @@ const REFUSED: [string, string][] = [
       "pg.information_schema",
    ],
    [
-      "SELECT * FROM (SELECT * FROM app.pg_catalog.pg_settings) AS s",
+      "SELECT * FROM (SELECT * FROM app.pg_catalog.pg_roles) AS s",
       "app.pg_catalog",
    ],
    [
@@ -176,7 +176,7 @@ describe("author SQL (the load check)", () => {
       for (const source of [
          table("pg.pg_catalog.pg_authid"),
          table('"PG"."Information_Schema"."tables"'),
-         table("pg /* c */ . pg_catalog . pg_settings"),
+         table("pg /* c */ . pg_catalog . pg_roles"),
          expression(["(SELECT max(rolname) FROM pg.pg_catalog.pg_authid)"]),
          expression([
             '(SELECT count(*) FROM "pg"."information_schema"."columns")',
@@ -252,6 +252,7 @@ describe("the gate on a locked instance with an attached database", () => {
             "CREATE TEMP TABLE x AS SELECT * FROM pg/**/.pg_catalog.pg_authid",
             "pg.pg_catalog",
          ],
+         ...REFUSED_VIEWS,
       ]) {
          const message = await refused(sql);
          expect(message).toContain("locked down");
@@ -292,5 +293,111 @@ describe("the gate on a locked instance with an attached database", () => {
       expect(refusedFetch.errors["pg.pg_catalog.pg_authid"]).toContain(
          "locked down",
       );
+   });
+});
+
+/** DuckDB's own catalog views over a refused function, in every qualification. */
+const REFUSED_VIEWS: [string, string][] = [
+   "pg_settings",
+   "pg_database",
+   "pg_prepared_statements",
+]
+   .flatMap((view): [string, string][] => [
+      [`SELECT * FROM ${view}`, view],
+      [`SELECT * FROM pg_catalog.${view}`, view],
+      [`SELECT * FROM system.pg_catalog.${view}`, view],
+      [`SELECT * FROM "PG_CATALOG"."${view.toUpperCase()}"`, view],
+   ])
+   .concat([
+      [
+         "SELECT * FROM duckdb_prepared_statements()",
+         "duckdb_prepared_statements",
+      ],
+   ]);
+
+/** Names the lockdown gate refuses, assembled at run time from text. */
+const DYNAMIC: string[] = [
+   "SELECT * FROM query_table('pg.pg_' || 'catalog.pg_authid')",
+   "SELECT * FROM query('SELECT * FROM ' || 'duckdb_' || 'settings()')",
+   "SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT 1'))",
+];
+
+describe("DuckDB's own catalog views over refused functions", () => {
+   it.each(REFUSED_VIEWS)("refuses %p in raw SQL", async (sql, name) => {
+      const refused = assertSingleSelect(
+         "duck",
+         sql,
+         "locked-down DuckDB connection",
+      );
+      await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+      await expect(refused).rejects.toThrow(`may not name '${name}'`);
+   });
+
+   it.each(REFUSED_VIEWS)("refuses %p in author SQL", async (sql) => {
+      const refusals = await authorSqlRefusals("m.malloy", {
+         dialect: "duckdb",
+         sources: [{ type: "sql_select", selectStr: sql }],
+      });
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).toContain("author SQL may not use");
+   });
+});
+
+describe("names the gate refuses are refused at load too", () => {
+   it("refuses a .sql() source, a raw SQL expression and a .table() path that assemble a name at run time", async () => {
+      for (const sql of DYNAMIC) {
+         const fromClause = sql.replace(/^SELECT \* FROM /, "");
+         for (const source of [
+            { type: "sql_select", selectStr: sql },
+            {
+               type: "table",
+               tablePath: "app.main.t",
+               fields: [
+                  {
+                     e: {
+                        node: "genericSQLExpr",
+                        src: [`(SELECT count(*) FROM ${fromClause})`],
+                        kids: { args: [] },
+                     },
+                  },
+               ],
+            },
+            { type: "table", tablePath: fromClause },
+         ]) {
+            const refusals = await authorSqlRefusals("m.malloy", {
+               dialect: "duckdb",
+               sources: [source],
+            });
+            expect(refusals).toHaveLength(1);
+            expect(refusals[0]).toContain("author SQL may not use");
+         }
+      }
+   });
+
+   it("refuses them in raw SQL with a 400", async () => {
+      for (const sql of DYNAMIC) {
+         await expect(
+            assertSingleSelect("duck", sql, "locked-down DuckDB connection"),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      }
+   });
+
+   it("lets a column or alias named query through", async () => {
+      await assertSingleSelect(
+         "duck",
+         "SELECT 1 AS query, t.query FROM (SELECT 2 AS query) AS t",
+         "locked-down DuckDB connection",
+      );
+      expect(
+         await authorSqlRefusals("m.malloy", {
+            dialect: "duckdb",
+            sources: [
+               {
+                  type: "sql_select",
+                  selectStr: "SELECT query FROM (SELECT 'x' AS query) AS q",
+               },
+            ],
+         }),
+      ).toEqual([]);
    });
 });
