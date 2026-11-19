@@ -361,6 +361,11 @@ type AuthorReroot = Reroot & {
     * bigint type Malloy does not read back as one).
     */
    columnsLeftOut?: readonly string[];
+   /**
+    * Why each of {@link columnsLeftOut} is left out, as a caller-safe phrase
+    * (`leftOutPhrase`), for the decline of a query that reads one.
+    */
+   leftOutWhy?: ReadonlyMap<string, string>;
 };
 
 /**
@@ -746,10 +751,25 @@ export class ServedCopyServe {
                const tableIds = compiled.aliased
                   .filter((b) => b.sourceIDs?.some((id) => sourceIDs.has(id)))
                   .map((b) => b.virtualHandle);
+               // Each column named with why a table leaves it out (its
+               // declared and stored types, or that the table lacks it):
+               // each distinct reason of the tables that leave it out.
+               const why = [
+                  ...new Set(
+                     named.flatMap((c) => {
+                        const reasons = [...sourceIDs]
+                           .map((id) => compiled.leftOutWhy?.get(id)?.get(c))
+                           .filter((w): w is string => w !== undefined);
+                        return reasons.length > 0
+                           ? reasons
+                           : [noCastPhrase(`column \`${c}\``)];
+                     }),
+                  ),
+               ];
                decline(
                   "the query reads a stored column the served copy leaves out of its table's type",
                   "served_copy_column_left_out",
-                  `the stored table cannot answer with live's columns: no cast reads ${named.map((c) => `column \`${c}\``).join(", ")} as declared`,
+                  `the stored table cannot answer with live's columns: ${why.join("; ")}`,
                   tableIds,
                );
             }
@@ -1193,6 +1213,21 @@ export class ServedCopyServe {
       let columns: ServedColumn[];
       let inlinedJoins: InlinedJoin[] = [];
       let columnsLeftOut: string[] = [];
+      // A column named in a caller's detail or the package warning, unless
+      // the author's source hides it: then only that one is.
+      const hidden = new Set([
+         ...(plan?.columns ?? [])
+            .filter((c) => c.access !== undefined)
+            .flatMap((c) => [c.column, c.dimension]),
+         ...[...fieldsByName]
+            .filter(
+               ([, f]) =>
+                  (f as { accessModifier?: unknown }).accessModifier !==
+                  undefined,
+            )
+            .map(([name]) => name),
+      ]);
+      const leftOutWhy = new Map<string, string>();
       const subject: RerootSubject = {
          binding,
          node,
@@ -1202,6 +1237,9 @@ export class ServedCopyServe {
          timeframeOf,
          problems,
          storesOutputNames: !plan,
+         columnRef: (name) =>
+            hidden.has(name) ? "a hidden column" : `column \`${name}\``,
+         leftOutWhy,
       };
       if (plan) {
          const stored = materializedColumnsOf(subject, plan);
@@ -1234,6 +1272,7 @@ export class ServedCopyServe {
                sourceName,
                sourceID: node.sourceID,
                reason: "column_types",
+               ...leftOutDetail(subject, columnsLeftOut),
             });
             return undefined;
          }
@@ -1318,7 +1357,17 @@ export class ServedCopyServe {
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
-         ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
+         ...(columnsLeftOut.length > 0
+            ? {
+                 columnsLeftOut,
+                 leftOutWhy: new Map(
+                    columnsLeftOut.map((c) => [
+                       c,
+                       leftOutWhy.get(c) ?? noCastPhrase(subject.columnRef(c)),
+                    ]),
+                 ),
+              }
+            : {}),
          // An `except:` naming a column the table does not store has nothing
          // to exclude on any re-root, v1 or `#(materialize)`.
          dropsUnstoredExcepts: true as const,
@@ -1387,6 +1436,7 @@ export class ServedCopyServe {
             sourceName,
             sourceID: node.sourceID,
             reason: "column_types",
+            ...leftOutDetail(subject, columnsLeftOut),
          });
          return undefined;
       }
@@ -1420,6 +1470,16 @@ export class ServedCopyServe {
       const undeclarable = columns
          .filter(undeclarableColumn)
          .map((c) => c.name);
+      for (const c of columns.filter(undeclarableColumn)) {
+         subject.leftOutWhy.set(
+            c.name,
+            leftOutPhrase(
+               subject.columnRef(c.name),
+               fieldsByName.get(c.name),
+               c.type,
+            ),
+         );
+      }
       if (undeclarable.length > 0 && undeclarable.length < columns.length) {
          columns = columns.filter((c) => !undeclarable.includes(c.name));
          columnsLeftOut = [...columnsLeftOut, ...undeclarable];
@@ -1429,6 +1489,9 @@ export class ServedCopyServe {
             sourceName,
             sourceID: node.sourceID,
             reason: "column_types",
+            detail: undeclarable
+               .map((n) => subject.leftOutWhy.get(n))
+               .join("; "),
          });
          return undefined;
       }
@@ -2348,6 +2411,11 @@ export class ServedCopyServe {
                .filter((c) => (c.reroot.columnsLeftOut ?? []).length > 0)
                .map((c) => [c.reroot.sourceID, c.reroot.columnsLeftOut!]),
          ),
+         leftOutWhy: new Map(
+            candidates
+               .filter((c) => c.reroot.leftOutWhy !== undefined)
+               .map((c) => [c.reroot.sourceID, c.reroot.leftOutWhy!]),
+         ),
          inlinedJoins: new Map(
             candidates
                .filter((c) => c.reroot.inlinedJoins?.length)
@@ -2537,10 +2605,20 @@ function withoutLeftOutColumn(
    );
    const failing = placed.length > 0 ? placed : naming;
    for (const c of failing) {
+      // The left-out columns the model's text reads, each with why.
+      const read = (c.reroot.columnsLeftOut ?? []).filter((n) => named.has(n));
       problems.push({
          sourceName: c.reroot.sourceName,
          sourceID: c.reroot.sourceID,
          reason: "column_types",
+         ...(read.length > 0
+            ? {
+                 detail: read
+                    .map((n) => c.reroot.leftOutWhy?.get(n))
+                    .filter((w): w is string => w !== undefined)
+                    .join("; "),
+              }
+            : {}),
       });
       withoutKept.delete(c);
    }
@@ -2682,6 +2760,91 @@ interface RerootSubject {
     * after its renames (`BigIntegerReadOptions.storesOutputNames`).
     */
    storesOutputNames: boolean;
+   /** How a caller's detail names a column: `column \`x\``, or `a hidden column`. */
+   columnRef(name: string): string;
+   /** Why each column left out so far is, by name ({@link leftOutPhrase}). */
+   leftOutWhy: Map<string, string>;
+}
+
+/**
+ * A live field's Malloy type as the author would write it (`string[]`,
+ * `{ a::string, n::number }[]`), for a caller's detail; undefined when it is
+ * not a basic type, or a list or record of them.
+ */
+function liveTypeText(field: unknown, depth = 0): string | undefined {
+   const f = field as
+      | { type?: unknown; elementTypeDef?: unknown; fields?: unknown }
+      | undefined;
+   if (typeof f?.type !== "string" || depth > 16) return undefined;
+   if (f.type === "record") return recordTypeText(f.fields, depth);
+   if (f.type !== "array") return f.type;
+   const element = f.elementTypeDef as { type?: unknown } | undefined;
+   const inner =
+      element?.type === "record_element"
+         ? recordTypeText(f.fields, depth)
+         : liveTypeText(element, depth + 1);
+   return inner === undefined ? undefined : `${inner}[]`;
+}
+
+/** {@link liveTypeText} of a record's fields, `{ a::string, n::number }`. */
+function recordTypeText(fields: unknown, depth: number): string | undefined {
+   if (!Array.isArray(fields) || fields.length === 0) return undefined;
+   const parts: string[] = [];
+   for (const raw of fields) {
+      const field = raw as { name?: unknown; as?: unknown };
+      const name = field.as ?? field.name;
+      const type = liveTypeText(raw, depth + 1);
+      if (typeof name !== "string" || type === undefined) return undefined;
+      parts.push(`${name}::${type}`);
+   }
+   return `{ ${parts.join(", ")} }`;
+}
+
+/** Whether live answers a field as a list, of scalars or of records. */
+function isList(field: unknown): boolean {
+   return (field as { type?: unknown } | undefined)?.type === "array";
+}
+
+/**
+ * Why a stored column is left out, or cannot be carried, in a caller's
+ * words: the column (as {@link RerootSubject.columnRef} names it) with its
+ * declared type and its stored type, or that the table does not hold it.
+ */
+function leftOutPhrase(
+   ref: string,
+   field: unknown,
+   storedType: string | undefined,
+): string {
+   const live = liveTypeText(field);
+   const declared = live === undefined ? "" : `declared \`${live}\``;
+   if (storedType === undefined) {
+      return `${ref}${declared ? ` (${declared})` : ""} is not in the stored table`;
+   }
+   return (
+      `${ref} (${declared ? `${declared}, ` : ""}stored as ${storedType}) ` +
+      "has no declaration that reads it back as live answers it"
+   );
+}
+
+/** The phrase for a column no cast reads as declared, as a decline has said it. */
+function noCastPhrase(ref: string): string {
+   return `no cast reads ${ref} as declared`;
+}
+
+/** A `column_types` problem's `detail` naming `columns`, when there are any. */
+function leftOutDetail(
+   subject: RerootSubject,
+   columns: readonly string[],
+): { detail?: string } {
+   if (columns.length === 0) return {};
+   return {
+      detail: columns
+         .map(
+            (c) =>
+               subject.leftOutWhy.get(c) ?? noCastPhrase(subject.columnRef(c)),
+         )
+         .join("; "),
+   };
 }
 
 /**
@@ -2763,6 +2926,28 @@ function materializedColumnsOf(
          columnsLeftOut.push(c.column);
          continue;
       }
+      // A list the table does not hold (a `storage=` table built before its
+      // build stored arrays, until its next full build) is left out as a
+      // stored list no declaration reads back is: only a query reading it
+      // (the copy's compile of it fails, directly or through a field,
+      // filter or nest over it) answers live, and every other query reads
+      // the table.
+      if (
+         type === undefined &&
+         c.column === c.dimension &&
+         isList(fieldsByName.get(c.dimension))
+      ) {
+         columnsLeftOut.push(c.column);
+         subject.leftOutWhy.set(
+            c.column,
+            leftOutPhrase(
+               subject.columnRef(c.column),
+               fieldsByName.get(c.dimension),
+               undefined,
+            ),
+         );
+         continue;
+      }
       // A build that stored a dimension under another name cannot be
       // read back as that field.
       if (type === undefined || c.column !== c.dimension) {
@@ -2770,6 +2955,14 @@ function materializedColumnsOf(
             sourceName,
             sourceID: node.sourceID,
             reason: "column_types",
+            detail:
+               type === undefined
+                  ? leftOutPhrase(
+                       subject.columnRef(c.dimension),
+                       fieldsByName.get(c.dimension),
+                       undefined,
+                    )
+                  : `${subject.columnRef(c.dimension)} is stored under another name`,
          });
          return undefined;
       }
@@ -2801,10 +2994,30 @@ function materializedColumnsOf(
          j.columns.some((c) => storedMalloyType(c.type) === undefined),
       )
    ) {
+      // Each joined column no `type:` declares, named through its join
+      // unless the join or the field is hidden.
+      const undeclared = (joined ?? []).flatMap((j) => {
+         const fields = joinedFieldsAt(def.fields, [j.join]);
+         return j.columns
+            .filter((c) => storedMalloyType(c.type) === undefined)
+            .map((c) => {
+               const field = fields.find((f) => fieldNameOf(f) === c.name);
+               const hidden =
+                  j.access !== undefined ||
+                  (field as { accessModifier?: unknown } | undefined)
+                     ?.accessModifier !== undefined;
+               return leftOutPhrase(
+                  hidden ? "a hidden column" : `column \`${j.join}.${c.name}\``,
+                  field,
+                  c.type,
+               );
+            });
+      });
       problems.push({
          sourceName,
          sourceID: node.sourceID,
          reason: "column_types",
+         ...(undeclared.length > 0 ? { detail: undeclared.join("; ") } : {}),
       });
       return undefined;
    }
